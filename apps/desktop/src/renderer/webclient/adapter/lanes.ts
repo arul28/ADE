@@ -12,8 +12,13 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
 
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
-    return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+    return idempotent
+      ? commands.call<T>(action, asRecord(args), { fallback })
+      : commands.call<T>(action, asRecord(args), mutation);
   }
 
   /**
@@ -95,12 +100,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     // the warning and refreshes. A host that cannot run this must therefore
     // reject, not hand back a status object nobody reads.
     resolveBranchDrift: (args: unknown) =>
-      commands.call<ResolveLaneBranchDriftResult>("lanes.resolveBranchDrift", asRecord(args), {
-        fallback: () => {
-          throw new Error("Resolving branch drift is unavailable on the connected ADE host.");
-        },
-        idempotent: false,
-      }),
+      commands.call<ResolveLaneBranchDriftResult>("lanes.resolveBranchDrift", asRecord(args), mutation),
     rename: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
@@ -125,20 +125,10 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     },
     archiveAndReclaim: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("archiveAndReclaim", pin);
-      return await commands.call<ArchiveAndReclaimLaneResult>("lanes.archiveAndReclaim", asRecord(args), {
-        fallback: () => {
-          throw new Error("Archive & Reclaim is unavailable on the connected ADE host.");
-        },
-        idempotent: false,
-      });
+      return await commands.call<ArchiveAndReclaimLaneResult>("lanes.archiveAndReclaim", asRecord(args), mutation);
     },
     unarchive: async (args: unknown) => {
-      const result = await commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), {
-        fallback: () => {
-          throw new Error("Restoring a reclaimed lane is unavailable on the connected ADE host.");
-        },
-        idempotent: false,
-      });
+      const result = await commands.call<RestoreLaneResult>("lanes.unarchive", asRecord(args), mutation);
       emitLifecycle(lifecycleFromLane(
         result.worktreeRecreated ? "lane-restored" : "lane-unarchived",
         result.lane,

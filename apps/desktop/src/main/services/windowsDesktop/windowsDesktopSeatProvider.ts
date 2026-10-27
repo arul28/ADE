@@ -178,6 +178,12 @@ function asSetupResult(
     ? asWindowsDesktopStatus(record.status)
     : asWindowsDesktopStatus(record.windowsDesktop ?? fallbackStatus);
   const requiresAdmin = asBoolean(record.requiresAdmin);
+  // Setup is a no-op on a PC that already allows child sessions and Remote
+  // Desktop (see the Windows host's `windows.setup`), and the helper reports
+  // only the post-call state, so "already set up" is the honest sentence
+  // whenever no password action was asked for and the answer says it is
+  // configured.
+  const alreadySetUp = status.childSessionsEnabled && status.remoteDesktopAllowed;
   // The two fields every seat's setup answer shares, composed here where the
   // kind of step is known: a surface that is not the wizard prints one
   // sentence and knows whether the user still has a step, without asking
@@ -192,7 +198,9 @@ function asSetupResult(
         ? "ADE's saved Windows password is gone."
         : args.savePassword === true
           ? "Windows Desktop setup ran and the Windows password is saved on the PC."
-          : "Windows Desktop setup ran on the PC.",
+          : alreadySetUp
+            ? "Windows Desktop is already set up on this PC."
+            : "Windows Desktop setup ran on the PC.",
   };
 }
 

@@ -173,7 +173,7 @@ export async function installLinuxDesktopPackages(missing: readonly string[]): P
       alreadyInstalled: false,
       command: plan.command,
       needsUser: true,
-      message: `ADE cannot install system packages here (not root, and no sudo). Run as root: ${argv.join(" ")}`,
+      message: `ADE cannot run the install itself here (not root, and sudo is not on ADE's own PATH). Run as root: ${argv.join(" ")}, or in your shell: ${plan.command}`,
     };
   }
   const env = { ...process.env, DEBIAN_FRONTEND: "noninteractive" };

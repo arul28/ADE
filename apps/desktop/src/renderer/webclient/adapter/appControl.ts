@@ -151,6 +151,8 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   let detachTransport: (() => void) | null = null;
   /** Mounted views that show frames. Only they keep the subscription. */
   let frameHolds = 0;
+  // A subscription is a write on the host: the host's answer, or a rejection.
+  const mutation = { idempotent: false } as const;
   /**
    * The newest frame the subscription delivered, kept after it ends. A view
    * that mounts again paints this at once through `getLatestFrame`, before the
@@ -211,7 +213,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
     void commands.call(
       "appControl.streamUnsubscribe",
       { subscriptionId: current.id },
-      { fallback: null, idempotent: false },
+      mutation,
     ).catch(() => {});
   };
 
@@ -236,7 +238,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
       const result = await commands.call(
         "appControl.streamSubscribe",
         { laneId, subscriptionId: id, viewerLabel: "Web viewer" },
-        { fallback: null as SyncAppControlStreamSubscribeResult | null, idempotent: false },
+        mutation,
       );
       registered = Boolean(result);
     } catch {
@@ -253,7 +255,7 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
         void commands.call(
           "appControl.streamUnsubscribe",
           { subscriptionId: id },
-          { fallback: null, idempotent: false },
+          mutation,
         ).catch(() => {});
       }
       // A listener that arrived meanwhile was turned away by `subscribing`.
@@ -402,13 +404,13 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
           ...(args.viewerLabel ? { viewerLabel: args.viewerLabel } : {}),
           ...(typeof args.maxFps === "number" ? { maxFps: args.maxFps } : {}),
         },
-        { fallback: null as SyncAppControlStreamSubscribeResult | null, idempotent: false },
+        mutation,
       ),
     streamUnsubscribe: (args) =>
       commands.call(
         "appControl.streamUnsubscribe",
         { subscriptionId: args.subscriptionId },
-        { fallback: null, idempotent: false },
+        mutation,
       ),
     onStreamFrame: (listener) => client.onAppControlStreamFrame(listener),
     onStreamEnded: (listener) => client.onAppControlStreamEnded(listener),

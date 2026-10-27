@@ -693,6 +693,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const startedRoot = getActiveProjectRoot();
     // The snapshot read is unpinned, so it follows the window's binding.
     const startedBindingKey = appStore.getState().projectBinding?.key ?? null;
+    // The root alone does not identify the machine: two machines can show a
+    // checkout at the same path, and this answer belongs to the one that was
+    // bound when the read started.
+    const stillCurrent = () =>
+      requestId === laneGithubPrTagsRequestRef.current
+      && getActiveProjectRoot() === startedRoot
+      && (appStore.getState().projectBinding?.key ?? null) === startedBindingKey;
     try {
       const snapshot = await getGitHubSnapshotCoalesced(
         {
@@ -701,13 +708,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         },
         { projectRoot: startedRoot, bindingKey: startedBindingKey },
       );
-      if (requestId !== laneGithubPrTagsRequestRef.current) return false;
-      if (getActiveProjectRoot() !== startedRoot) return false;
+      if (!stillCurrent()) return false;
       setLaneGithubPrTags(snapshot.repoPullRequests);
       return true;
     } catch {
-      if (requestId !== laneGithubPrTagsRequestRef.current) return false;
-      if (getActiveProjectRoot() !== startedRoot) return false;
+      if (!stillCurrent()) return false;
       // Keep the last usable GitHub snapshot visible on transient refresh failures.
       return false;
     }

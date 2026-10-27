@@ -204,7 +204,7 @@ export function GitHubTab({
     /** A timer or a `prs-updated` reaction, not a person pressing Refresh. */
     automaticRefresh?: boolean;
   }) => {
-    const requestKey = snapshotRequestKey(options);
+    const requestKey = snapshotRequestKey(projectBindingKey, options);
     const inFlightSnapshot = inFlightSnapshotRef.current;
     if (options?.force !== true && inFlightSnapshot && snapshotRequestSatisfies(inFlightSnapshot, requestKey)) {
       return inFlightSnapshot.request;
@@ -219,6 +219,7 @@ export function GitHubTab({
     let pending!: Promise<GitHubPrSnapshot>;
     const isCurrentSnapshotRequest = () =>
       inFlightSnapshotRef.current?.request === pending
+      && inFlightSnapshotRef.current.bindingKey === requestKey.bindingKey
       && inFlightSnapshotRef.current.includeExternalClosed === requestKey.includeExternalClosed
       && inFlightSnapshotRef.current.historyPageLimit === requestKey.historyPageLimit;
     pending = (async () => {

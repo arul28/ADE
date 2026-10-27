@@ -13,10 +13,6 @@ export type WebAnalyticsNamespace = {
 
 const WEB_ANALYTICS_ENABLED_KEY = "ade:web-product-analytics-enabled";
 const DEFAULT_DAILY_BUDGET = 200;
-const NOT_CONFIGURED: ProductAnalyticsCaptureResult = {
-  accepted: false,
-  reason: "not_configured",
-};
 const DISABLED: ProductAnalyticsCaptureResult = {
   accepted: false,
   reason: "disabled",
@@ -61,6 +57,8 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
   let enabled = readEnabledPreference();
   let consentSyncTail: Promise<void> = Promise.resolve();
   let disconnectedForFailedDisable = false;
+  // A capture is a write on the host: the host's answer, or a rejection.
+  const mutation = { idempotent: false } as const;
 
   const combineStatus = (remote: ProductAnalyticsStatus): ProductAnalyticsStatus => ({
     ...remote,
@@ -132,11 +130,7 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
       return await infra.commands.call<ProductAnalyticsCaptureResult>(
         "analytics.capture",
         { ...input, surface: "web" },
-        {
-          fallback: NOT_CONFIGURED,
-          requireProject: false,
-          idempotent: false,
-        },
+        { ...mutation, requireProject: false },
       );
     },
     getStatus,

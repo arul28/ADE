@@ -161,8 +161,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     deliveredEventSet.clear();
   }));
 
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
-    return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+    return idempotent
+      ? commands.call<T>(action, asRecord(args), { fallback })
+      : commands.call<T>(action, asRecord(args), mutation);
   }
 
   function callRequired<T>(
@@ -171,11 +176,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     capability: "Scheduled work" | "Chat history" | "Chat" | "Usage limit" | "Usage",
     idempotent: boolean,
   ): Promise<T> {
+    if (!idempotent) return commands.call<T>(action, asRecord(args), mutation);
     return commands.call<T>(action, asRecord(args), {
       fallback: () => {
         throw new Error(`${capability} action '${action}' is unavailable on the connected ADE host.`);
       },
-      idempotent,
     });
   }
 

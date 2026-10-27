@@ -266,7 +266,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       allowPrompt: readFlag(args, ["--allow-prompt", "--prompt"]),
       savePassword: readFlag(args, ["--save-password"]),
       forgetPassword: readFlag(args, ["--forget-password"]),
-    });
+    }, "mac-desktop-setup");
   }
   if (sub === "takeover" || sub === "take-over") {
     // Windows only, and never an agent's own move: it signs the holder out.

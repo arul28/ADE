@@ -13,7 +13,8 @@
 //!
 //! A lane's worker lives exactly as long as the lane: `display.create` starts
 //! it, and the worker drops its own queue entry once its screen is gone, after
-//! the destroy has run and the requests already queued are answered. Nothing
+//! the destroy has run and the requests already queued are answered. It also
+//! drops the entry when its own create failed and left no lane behind. Nothing
 //! else removes or re-creates that entry, so a request cannot strand a worker
 //! for a lane that no longer exists.
 
@@ -290,7 +291,8 @@ fn spawn_watcher(lane: Arc<Lane>, out: Arc<Output>) {
 ///
 /// The worker owns the entry. It holds the gate while it answers a request;
 /// once `Driver::destroy` has run it receives `LANE_GONE`, removes its own
-/// entry, and ends after answering the requests already queued behind it.
+/// entry, and ends after answering the requests already queued behind it. A
+/// `display.create` that failed before a lane existed removes it the same way.
 /// Nothing else inserts or removes that entry, so it cannot outlive its lane,
 /// and no request can re-create it for a lane whose destroy is still running.
 fn lane_queue(driver: &Arc<Driver>, lane_id: &str) -> LaneQueue {
@@ -303,14 +305,12 @@ fn lane_queue(driver: &Arc<Driver>, lane_id: &str) -> LaneQueue {
         .name(format!("lane-{}", &lane_id.chars().take(8).collect::<String>()))
         .spawn(move || {
             while let Ok(req) = rx.recv() {
+                let op = req.str_field("op").unwrap_or_default();
                 // Its screen is gone. Drop the entry if it is still this
                 // worker's, so no new worker is created for the id, then keep
                 // answering what is already queued until the channel ends.
-                if req.get("op").and_then(|op| op.as_str()) == Some(LANE_GONE) {
-                    let mut queues = worker_driver.queues.lock().unwrap();
-                    if queues.get(&worker_lane).map(|queue| Arc::ptr_eq(&queue.gate, &gate_for_worker)).unwrap_or(false) {
-                        queues.remove(&worker_lane);
-                    }
+                if op == LANE_GONE {
+                    drop_own_entry(&worker_driver, &worker_lane, &gate_for_worker);
                     continue;
                 }
                 let id = req.get("id").cloned().unwrap_or(Value::Null);
@@ -321,11 +321,32 @@ fn lane_queue(driver: &Arc<Driver>, lane_id: &str) -> LaneQueue {
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| worker_driver.handle(&req)))
                         .unwrap_or_else(|_| Err(DriverError::new(code::INTERNAL_ERROR, "The driver hit an internal fault on this request.")))
                 };
+                // A `display.create` that failed before a lane existed (no
+                // Xvfb, a taken display number) has nothing left to serve.
+                // `display.destroy` finds no lane, so it returns before it
+                // wakes this worker, and the entry would idle until the driver
+                // exits. The worker owns the entry, so it drops its own; a
+                // retry then starts a fresh worker, as it did before.
+                if op == "display.create"
+                    && result.is_err()
+                    && !worker_driver.lanes.lock().unwrap().contains_key(&worker_lane)
+                {
+                    drop_own_entry(&worker_driver, &worker_lane, &gate_for_worker);
+                }
                 worker_driver.out.reply(&id, result);
             }
         })
         .expect("lane worker");
     LaneQueue { tx, gate }
+}
+
+/// Removes this worker's queue entry, if the map still holds it and it is not a
+/// newer worker's: the one place that ends the worker's ownership of the id.
+fn drop_own_entry(driver: &Driver, lane_id: &str, gate: &Arc<Mutex<()>>) {
+    let mut queues = driver.queues.lock().unwrap();
+    if queues.get(lane_id).map(|queue| Arc::ptr_eq(&queue.gate, gate)).unwrap_or(false) {
+        queues.remove(lane_id);
+    }
 }
 
 /// An X server a crashed earlier driver left behind (its parent is gone and

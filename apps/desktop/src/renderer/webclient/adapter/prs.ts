@@ -18,6 +18,9 @@ const READ_CACHE_TTL_MS = 3_000;
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   const { commands, events } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the wrapper too.
+  const mutation = { idempotent: false } as const;
 
   const emptyMobileSnapshot = (): PrMobileSnapshot => ({
     generatedAt: new Date().toISOString(),
@@ -59,7 +62,9 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   }
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
-    return commands.call<T>(action, asRecord(args), { fallback, idempotent });
+    return idempotent
+      ? commands.call<T>(action, asRecord(args), { fallback })
+      : commands.call<T>(action, asRecord(args), mutation);
   }
 
   function read<T>(action: string, args: unknown, fallback: T): Promise<T> {

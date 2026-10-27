@@ -481,6 +481,21 @@ export function formatMacDesktopStatus(value: unknown): string {
   return sections.join("\n");
 }
 
+/**
+ * `screen setup`: the one sentence the seat service wrote, then the command a
+ * person runs when a step is left to them.
+ *
+ * The service composes the sentence on the host it is about, so this prints it
+ * rather than re-deriving which host it is from the CLI's own platform.
+ */
+export function formatMacDesktopSetup(value: unknown): string {
+  const result = isRecord(value) ? value : {};
+  const message = asString(result.message)
+    ?? (result.needsUser === true ? "Setup needs a step only the user can do." : "Setup finished.");
+  const command = asString(result.command)?.trim();
+  return command ? `${message}\n\ninstall with  ${command}` : message;
+}
+
 /** `screen open`: what launched, the windows that appeared, or why none did. */
 export function formatMacDesktopOpen(value: unknown): string {
   const result = isRecord(value) ? value : {};

@@ -9,8 +9,12 @@ type Fallback<T> = T | (() => T | Promise<T>);
 
 export type CommandCallOptions<T> = {
   fallback: Fallback<T>;
-  /** Mutation guard: false prevents this call from ever entering the read cache. */
-  idempotent?: boolean;
+  /**
+   * Read guard, and the default: an omitted flag is a read too. `true` only
+   * says it out loud. A mutation has no fallback, so `{ idempotent: false }`
+   * cannot be written in this shape.
+   */
+  idempotent?: true;
   /**
    * The caller needs the host's own answer. When the host cannot give one, the
    * call rejects instead of resolving `fallback` or the last successful read,
@@ -29,11 +33,15 @@ export type CommandCallOptions<T> = {
  * caller could pass that would be honest to resolve when the host never took
  * the call. `idempotent: false` selects this shape, and a mutation has no read
  * key, so every branch that would resolve an offline answer rejects before a
- * fallback could be reached. Write `{ idempotent: false }` and nothing else:
- * the read shape is the one that carries a fallback.
+ * fallback could be reached. The two shapes are disjoint: a fallback is a read,
+ * and `idempotent: false` with a fallback does not compile.
  */
-export type CommandMutationCallOptions = Omit<CommandCallOptions<never>, "fallback" | "cacheTtlMs"> & {
+export type CommandMutationCallOptions = {
   idempotent: false;
+  /** Same rule as a read's: the host's own answer, or a rejection. */
+  authoritative?: boolean;
+  requireProject?: boolean;
+  timeoutMs?: number;
 };
 
 const RECOVERABLE_CODES = new Set([

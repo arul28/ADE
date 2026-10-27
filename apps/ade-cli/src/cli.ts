@@ -411,6 +411,7 @@ import {
   formatMacDesktopProofFiled,
   formatMacDesktopRecording,
   formatMacDesktopScreenshot,
+  formatMacDesktopSetup,
   formatMacDesktopStatus,
   formatMacDesktopStop,
   formatMacDesktopWindowAction,
@@ -704,6 +705,7 @@ export type FormatterId =
   | "ios-sim-selection"
   | "ios-sim-preview"
   | "mac-desktop-status"
+  | "mac-desktop-setup"
   | "mac-desktop-stop"
   | "mac-desktop-windows"
   | "mac-desktop-observation"
@@ -34736,6 +34738,8 @@ function formatTextOutput(
       return formatIosSimPreview(value);
     case "mac-desktop-status":
       return formatMacDesktopStatus(value);
+    case "mac-desktop-setup":
+      return formatMacDesktopSetup(value);
     case "mac-desktop-stop":
       return formatMacDesktopStop(value);
     case "mac-desktop-windows":

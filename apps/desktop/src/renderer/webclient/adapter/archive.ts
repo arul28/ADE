@@ -18,6 +18,9 @@ import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGua
  */
 export function createArchiveNamespace(infra: AdapterInfra): AdeNamespace<"archive"> {
   const { commands } = infra;
+  // A read carries a fallback; a mutation has none — its fallback could never
+  // be resolved — so the two shapes stay disjoint at the call site.
+  const mutation = { idempotent: false } as const;
 
   const emptySummary = (olderThanDays?: number): ArchiveSummary => ({
     total: 0,
@@ -51,12 +54,7 @@ export function createArchiveNamespace(infra: AdapterInfra): AdeNamespace<"archi
     restore: async (args: ArchiveActionArgs, pin?: RuntimePinArg): Promise<ArchiveActionResult> => {
       assertWebRuntimePinRoutable("archive.restore", pin, infra);
       try {
-        return await commands.call<ArchiveActionResult>("archive.restore", { ...args }, {
-          fallback: () => {
-            throw new Error("The archive is unavailable on the connected ADE host.");
-          },
-          idempotent: false,
-        });
+        return await commands.call<ArchiveActionResult>("archive.restore", { ...args }, mutation);
       } finally {
         invalidate();
       }
@@ -64,12 +62,7 @@ export function createArchiveNamespace(infra: AdapterInfra): AdeNamespace<"archi
     delete: async (args: ArchiveActionArgs, pin?: RuntimePinArg): Promise<ArchiveActionResult> => {
       assertWebRuntimePinRoutable("archive.delete", pin, infra);
       try {
-        return await commands.call<ArchiveActionResult>("archive.delete", { ...args }, {
-          fallback: () => {
-            throw new Error("The archive is unavailable on the connected ADE host.");
-          },
-          idempotent: false,
-        });
+        return await commands.call<ArchiveActionResult>("archive.delete", { ...args }, mutation);
       } finally {
         invalidate();
       }

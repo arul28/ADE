@@ -416,9 +416,7 @@ export function visibleWorkToolDefinitions(context: WorkToolContext): typeof WOR
     && (definition.id !== "side-chat" || context.hasSideChat === true))
     .map((definition) => {
       const label = hostLaneScreenLabel(definition.id, context.hostPlatform ?? null);
-      return label
-        ? { ...definition, label, hint: workToolHint(definition.id, context.hostPlatform ?? null) ?? definition.hint }
-        : definition;
+      return label ? { ...definition, label, hint: `${label} is off` } : definition;
     });
 }
 
