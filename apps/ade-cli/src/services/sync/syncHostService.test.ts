@@ -29,6 +29,7 @@ import type {
   TerminalSessionChangedEvent,
 } from "../../../../desktop/src/shared/types";
 import {
+  SYNC_CHANGESET_ACK_WINDOW_CAPABILITY,
   SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
   SYNC_INVALIDATION_BATCH_MAX_ENVELOPE_BYTES,
   SYNC_INVALIDATION_TABLE_MAX_BYTES,
@@ -318,7 +319,9 @@ describe("buildSyncHostHelloOkPayload", () => {
     const withRoster = buildSyncHostHelloOkPayload({ ...base, rosterEnabled: true });
     expect(withoutRoster.features).not.toHaveProperty("rosterPeer");
     expect(withRoster.features.rosterPeer).toEqual({ enabled: true });
-    expect(withRoster.features.roster).toEqual({ enabled: true });
+    // Roster hosts also serve older chats by page (`roster_chats_request`).
+    expect(withRoster.features.roster).toEqual({ enabled: true, chatPages: true });
+    expect(withoutRoster.features.roster).toEqual({ enabled: false });
   });
 
   it("selects deflate only when the peer explicitly offers it", () => {
@@ -506,11 +509,15 @@ describe("buildSyncHostHelloOkPayload", () => {
     // must NOT be advertised as available.
     expect(payload.features.rpcChannel).toBe(false);
     expect(payload.features.portForward).toBe(false);
-    expect(payload.features.commandRouting).toEqual({
+    // A peer without a saved digest and without `commandRoutingGroupsV1`
+    // gets the full list, plus the digest it can echo on its next connect.
+    expect(payload.features.commandRouting).toMatchObject({
       mode: "allowlisted",
       supportedActions: [remoteCommand.action, localPresenceCommand.action],
       actions: [remoteCommand, localPresenceCommand],
     });
+    expect(payload.features.commandRouting.actionsDigest).toEqual(expect.any(String));
+    expect(payload.features.commandRouting).not.toHaveProperty("actionsUnchanged");
     expect(payload.features.mobileCompatibility).toEqual({
       contractVersion: MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
       mode: "limited",
@@ -7647,34 +7654,88 @@ describe("outbound changeset ack retries", () => {
     return { host, logger, exportChangesSince };
   }
 
+  /** The host's clock: real time plus an offset the test moves forward. */
+  function createHostClock() {
+    const realDateNow = Date.now.bind(Date);
+    let offsetMs = 0;
+    const spy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + offsetMs);
+    return {
+      advance(ms: number) { offsetMs += ms; },
+      restore() { spy.mockRestore(); },
+    };
+  }
+
+  function ackChangeset(peer: { ws: WebSocket }, batch: SyncChangesetBatchPayload): void {
+    peer.ws.send(encodeSyncEnvelope({
+      type: "changeset_ack",
+      requestId: batch.batchId,
+      payload: {
+        batchId: batch.batchId,
+        fromDbVersion: batch.fromDbVersion,
+        toDbVersion: batch.toDbVersion,
+        appliedDbVersion: batch.toDbVersion,
+        appliedCount: batch.changes.length,
+        ok: true,
+      } satisfies SyncChangesetAckPayload,
+    }));
+  }
+
+  /**
+   * A phone's first screen. Its first batch goes out right after hello as an
+   * ordinary batch, even while a compact reseed builds (it carries the rows
+   * the first screen waits for), and catch-up then waits out the first
+   * seconds after hello. Acks that batch, moves the clock past that window
+   * (3 s, at most 8 s while a first chat page is on the wire) and returns it.
+   */
+  async function finishPhoneFirstScreen(
+    peer: { ws: WebSocket; envelopes: Array<{ type: string; payload?: unknown }> },
+    clock: { advance(ms: number): void },
+  ): Promise<SyncChangesetBatchPayload> {
+    const envelope = await waitForValue(
+      () => peer.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+      "phone first batch",
+    );
+    const first = envelope.payload as SyncChangesetBatchPayload;
+    expect(first.reason).toBe("broadcast");
+    ackChangeset(peer, first);
+    clock.advance(8_000);
+    return first;
+  }
+
   it("reseeds a far-behind iOS replica once, then resumes incrementally from the acknowledged watermark", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
+    // Still more than the reseed gap behind after its first batch.
+    const targetDbVersion = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2_501;
     const state = {
-      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      dbVersion: targetDbVersion,
       changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
     };
     const { host, exportChangesSince } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-far-behind", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      const first = await finishPhoneFirstScreen(peer, clock);
 
       const reseedEnvelope = await waitForValue(
-        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).reason === "catchup"),
         "far-behind replica reseed",
       );
       const reseed = reseedEnvelope.payload as SyncChangesetBatchPayload;
-      expect(reseed.reason).toBe("catchup");
-      expect(reseed.fromDbVersion).toBe(0);
-      expect(reseed.toDbVersion).toBe(SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1);
+      expect(reseed.fromDbVersion).toBe(first.toDbVersion);
+      expect(reseed.toDbVersion).toBe(targetDbVersion);
+      // The whole compacted state, rows the first batch carried included.
       expect(reseed.changes).toHaveLength(2_500);
-      expect(peer.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(1);
-      expect(exportChangesSince.mock.calls.length).toBeGreaterThan(1);
-      expect(exportChangesSince.mock.calls.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
-      expect(exportChangesSince.mock.calls.every(([, options]) => options?.rejectOversizedVersionGroup === true)).toBe(true);
-      expect(exportChangesSince.mock.calls[0]?.[1]?.excludeTables).toEqual(expect.arrayContaining([
+      expect(peer.envelopes.filter((envelope) => envelope.type === "changeset_batch")).toHaveLength(2);
+      const reseedExports = exportChangesSince.mock.calls.filter(([, options]) => options?.rejectOversizedVersionGroup === true);
+      expect(reseedExports.length).toBeGreaterThan(1);
+      expect(reseedExports.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
+      expect(reseedExports[0]?.[1]?.excludeTables).toEqual(expect.arrayContaining([
         "operations",
         "attempt_transcripts",
         "sync_cluster_state",
@@ -7708,16 +7769,18 @@ describe("outbound changeset ack retries", () => {
       const incrementalEnvelope = await waitForValue(
         () => peer?.envelopes.find((envelope) =>
           envelope.type === "changeset_batch"
-          && (envelope.payload as SyncChangesetBatchPayload).batchId !== reseed.batchId),
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== reseed.batchId
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== first.batchId),
         "post-reseed incremental batch",
       );
       expect(incrementalEnvelope.payload).toMatchObject({
         reason: "broadcast",
-        fromDbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
-        toDbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2,
+        fromDbVersion: targetDbVersion,
+        toDbVersion: targetDbVersion + 1,
       });
       expect((incrementalEnvelope.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
     } finally {
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -7747,6 +7810,7 @@ describe("outbound changeset ack retries", () => {
       changes: [prRow(1, "pull_requests", 0)],
     };
     const { host } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
@@ -7754,6 +7818,7 @@ describe("outbound changeset ack retries", () => {
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-pr-filter", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      await finishPhoneFirstScreen(peer, clock);
 
       state.dbVersion = 2;
       state.changes.push(prRow(2, "pull_request_snapshots", 1));
@@ -7771,6 +7836,7 @@ describe("outbound changeset ack retries", () => {
       expect(tables).toContain("pull_requests");
       expect(tables).not.toContain("pull_request_snapshots");
     } finally {
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -7779,36 +7845,37 @@ describe("outbound changeset ack retries", () => {
 
   it("retries an abandoned far-behind replica reseed from its old cursor after recovery backoff", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
-    const targetDbVersion = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    // More rows than the first batch carries, and still more than the gap
+    // behind after it.
+    const targetDbVersion = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 301;
     const state = {
       dbVersion: targetDbVersion,
-      changes: Array.from({ length: 10 }, (_, index) => makeChange(index + 1, index)),
+      changes: Array.from({ length: 300 }, (_, index) => makeChange(index + 1, index)),
     };
     const { host, logger } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
-    let dateNowSpy: { mockRestore(): void } | null = null;
     try {
       const port = await host.waitUntilListening();
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-recovery", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      const first = await finishPhoneFirstScreen(peer, clock);
 
       const firstEnvelope = await waitForValue(
-        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).reason === "catchup"),
         "initial compact reseed",
       );
       const firstReseed = firstEnvelope.payload as SyncChangesetBatchPayload;
       expect(firstReseed).toMatchObject({
-        reason: "catchup",
-        fromDbVersion: 0,
+        fromDbVersion: first.toDbVersion,
         toDbVersion: targetDbVersion,
       });
 
-      const realDateNow = Date.now.bind(Date);
-      let clockOffsetMs = 0;
-      dateNowSpy = vi.spyOn(Date, "now").mockImplementation(() => realDateNow() + clockOffsetMs);
       for (let attemptCount = 2; attemptCount <= 6; attemptCount += 1) {
-        clockOffsetMs += 11_000;
+        clock.advance(11_000);
         await waitForValue(
           () => peer?.envelopes.filter((envelope) =>
             envelope.type === "changeset_batch"
@@ -7818,7 +7885,7 @@ describe("outbound changeset ack retries", () => {
         );
       }
 
-      clockOffsetMs += 11_000;
+      clock.advance(11_000);
       await waitForValue(
         () => logger.warn.mock.calls.find(([event, fields]) =>
           event === "sync_host.changeset_recovery_started"
@@ -7830,24 +7897,26 @@ describe("outbound changeset ack retries", () => {
       expect(peer.envelopes.filter((envelope) =>
         envelope.type === "changeset_batch"
         && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId
+        && (envelope.payload as SyncChangesetBatchPayload).batchId !== first.batchId
       )).toHaveLength(0);
 
-      clockOffsetMs += 500;
+      clock.advance(500);
       const retryEnvelope = await waitForValue(
         () => peer?.envelopes.find((envelope) =>
           envelope.type === "changeset_batch"
-          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId),
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstReseed.batchId
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== first.batchId),
         "compact reseed after recovery backoff",
       );
       const retryReseed = retryEnvelope.payload as SyncChangesetBatchPayload;
       expect(retryReseed.batchId).not.toBe(firstReseed.batchId);
       expect(retryReseed).toMatchObject({
         reason: "catchup",
-        fromDbVersion: 0,
+        fromDbVersion: first.toDbVersion,
         toDbVersion: targetDbVersion,
       });
     } finally {
-      dateNowSpy?.mockRestore();
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -7857,12 +7926,13 @@ describe("outbound changeset ack retries", () => {
   it("admits only one new compact reseed per poll before sending the next far-behind phone", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const state = {
-      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1,
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2_501,
       changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
     };
     const { host } = createControlledChangesetHost(projectRoot, state, createDiscoveryLogger(), {
       pollIntervalMs: 250,
     });
+    const clock = createHostClock();
     let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
@@ -7874,23 +7944,27 @@ describe("outbound changeset ack retries", () => {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
 
-      const firstEnvelope = await waitForValue(
-        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+      await finishPhoneFirstScreen(firstPeer, clock);
+      await finishPhoneFirstScreen(secondPeer, clock);
+      const peers = [firstPeer, secondPeer];
+      const reseedOf = (peer: (typeof peers)[number]) => peer.envelopes.find((envelope) =>
+        envelope.type === "changeset_batch"
+        && (envelope.payload as SyncChangesetBatchPayload).reason === "catchup");
+
+      const admitted = await waitForValue(
+        () => peers.find((peer) => reseedOf(peer) != null),
         "first admitted compact reseed",
       );
-      expect((firstEnvelope.payload as SyncChangesetBatchPayload).reason).toBe("catchup");
+      const waiting = admitted === firstPeer ? secondPeer : firstPeer;
       // The shared cache becomes ready for both peers on this poll. The second
       // send must wait for the following generation instead of gzip/framing two
       // logical snapshots back-to-back on the host event loop.
       await new Promise((resolve) => setTimeout(resolve, 30));
-      expect(secondPeer.envelopes.some((envelope) => envelope.type === "changeset_batch")).toBe(false);
+      expect(reseedOf(waiting)).toBeUndefined();
 
-      const secondEnvelope = await waitForValue(
-        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
-        "second compact reseed on a later poll",
-      );
-      expect((secondEnvelope.payload as SyncChangesetBatchPayload).reason).toBe("catchup");
+      await waitForValue(() => reseedOf(waiting), "second compact reseed on a later poll");
     } finally {
+      clock.restore();
       firstPeer?.ws.close();
       secondPeer?.ws.close();
       await host.dispose();
@@ -7918,17 +7992,21 @@ describe("outbound changeset ack retries", () => {
         "accelerated sparse compact reseed",
         2_000,
       );
+      // From the phone's cursor, which the ordinary pump may already have
+      // moved across empty windows while the reseed was built.
       expect(reseedEnvelope.payload).toMatchObject({
         reason: "catchup",
-        fromDbVersion: 0,
         toDbVersion: state.dbVersion,
         changes: [],
       });
-      expect(exportChangesSince).toHaveBeenCalledTimes(Math.ceil(state.dbVersion / 250_000));
+      expect((reseedEnvelope.payload as SyncChangesetBatchPayload).fromDbVersion).toBeLessThan(state.dbVersion);
+      // The reseed build crosses the whole range from 0 in bounded windows.
+      const reseedExports = exportChangesSince.mock.calls.filter(([, options]) => options?.rejectOversizedVersionGroup === true);
+      expect(reseedExports).toHaveLength(Math.ceil(state.dbVersion / 250_000));
       expect(exportChangesSince.mock.calls.every(([fromDbVersion, options]) =>
         (options?.throughDbVersion ?? fromDbVersion) - fromDbVersion <= 250_000,
       )).toBe(true);
-      expect(exportChangesSince.mock.calls.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
+      expect(reseedExports.every(([, options]) => options?.maxRows === 1_000)).toBe(true);
     } finally {
       peer?.ws.close();
       await host.dispose();
@@ -7944,6 +8022,7 @@ describe("outbound changeset ack retries", () => {
       changes: Array.from({ length: 10_001 }, (_, index) => makeChange(index + 1, index)),
     };
     const { host } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
     let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
@@ -7951,30 +8030,39 @@ describe("outbound changeset ack retries", () => {
       firstPeer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-cache-first", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      const firstScreen = await finishPhoneFirstScreen(firstPeer, clock);
+      // Over the row cap: incremental replay, never a reseed.
       const fallback = await waitForValue(
-        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => firstPeer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== firstScreen.batchId),
         "initial oversized compact fallback",
       );
       expect((fallback.payload as SyncChangesetBatchPayload).reason).toBe("broadcast");
       firstPeer.ws.close();
       firstPeer = null;
 
+      // Later changes leave a compacted state under the cap: 300 rows, more
+      // than one first batch carries.
       state.dbVersion += SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
-      state.changes = [makeChange(state.dbVersion, 0)];
+      state.changes = Array.from({ length: 300 }, (_, index) => makeChange(index + 1, index));
       secondPeer = await connectPeer(port, host.getBootstrapToken(), "ios-oversized-cache-second", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      const secondScreen = await finishPhoneFirstScreen(secondPeer, clock);
       const rebuilt = await waitForValue(
-        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => secondPeer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).reason === "catchup"),
         "rebuilt compact cache",
       );
       expect(rebuilt.payload).toMatchObject({
-        reason: "catchup",
-        fromDbVersion: 0,
+        fromDbVersion: secondScreen.toDbVersion,
         toDbVersion: state.dbVersion,
       });
-      expect((rebuilt.payload as SyncChangesetBatchPayload).changes).toHaveLength(1);
+      expect((rebuilt.payload as SyncChangesetBatchPayload).changes).toHaveLength(300);
     } finally {
+      clock.restore();
       firstPeer?.ws.close();
       secondPeer?.ws.close();
       await host.dispose();
@@ -7984,12 +8072,17 @@ describe("outbound changeset ack retries", () => {
 
   it("refreshes a shared reseed cache before it can leave another replica far behind", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
-    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    // More rows than one first batch carries, still more than the gap behind.
+    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 301;
     const state = {
       dbVersion: firstTarget,
-      changes: Array.from({ length: 10 }, (_, index) => makeChange(index + 1, index)),
+      changes: Array.from({ length: 300 }, (_, index) => makeChange(index + 1, index)),
     };
     const { host } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
+    const reseedOf = (peer: { envelopes: Array<{ type: string; payload?: unknown }> }) => peer.envelopes.find((envelope) =>
+      envelope.type === "changeset_batch"
+      && (envelope.payload as SyncChangesetBatchPayload).reason === "catchup");
     let firstPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     let secondPeer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
@@ -7997,10 +8090,8 @@ describe("outbound changeset ack retries", () => {
       firstPeer = await connectPeer(port, host.getBootstrapToken(), "ios-first-reseed", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
-      const firstEnvelope = await waitForValue(
-        () => firstPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
-        "first compact reseed",
-      );
+      await finishPhoneFirstScreen(firstPeer, clock);
+      const firstEnvelope = await waitForValue(() => firstPeer && reseedOf(firstPeer), "first compact reseed");
       expect((firstEnvelope.payload as SyncChangesetBatchPayload).toDbVersion).toBe(firstTarget);
       firstPeer.ws.close();
       firstPeer = null;
@@ -8011,15 +8102,13 @@ describe("outbound changeset ack retries", () => {
       secondPeer = await connectPeer(port, host.getBootstrapToken(), "ios-later-reseed", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
-      const secondEnvelope = await waitForValue(
-        () => secondPeer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
-        "refreshed compact reseed",
-      );
+      await finishPhoneFirstScreen(secondPeer, clock);
+      const secondEnvelope = await waitForValue(() => secondPeer && reseedOf(secondPeer), "refreshed compact reseed");
       const secondReseed = secondEnvelope.payload as SyncChangesetBatchPayload;
-      expect(secondReseed.reason).toBe("catchup");
       expect(secondReseed.toDbVersion).toBe(secondTarget);
-      expect(secondReseed.changes).toHaveLength(11);
+      expect(secondReseed.changes).toHaveLength(301);
     } finally {
+      clock.restore();
       firstPeer?.ws.close();
       secondPeer?.ws.close();
       await host.dispose();
@@ -8029,7 +8118,7 @@ describe("outbound changeset ack retries", () => {
 
   it("retargets a compact reseed when the database advances beyond the threshold during construction", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
-    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
+    const firstTarget = SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2_501;
     const secondTarget = firstTarget + SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 1;
     const state = {
       dbVersion: firstTarget,
@@ -8043,28 +8132,34 @@ describe("outbound changeset ack retries", () => {
         .filter((change) => Number(change.db_version) <= (options?.throughDbVersion ?? Number.MAX_SAFE_INTEGER))
         .filter((change) => !options?.excludeTables?.includes(change.table))
         .slice(0, options?.maxRows ?? state.changes.length);
-      if (!advancedDuringBuild) {
+      // The first export of the reseed build (the phone's first ordinary
+      // batch exports too, without this option).
+      if (!advancedDuringBuild && options?.rejectOversizedVersionGroup === true) {
         advancedDuringBuild = true;
         state.dbVersion = secondTarget;
         state.changes.push(makeChange(secondTarget, state.changes.length));
       }
       return exported;
     });
+    const clock = createHostClock();
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-growing-reseed", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      await finishPhoneFirstScreen(peer, clock);
       const envelope = await waitForValue(
-        () => peer?.envelopes.find((candidate) => candidate.type === "changeset_batch"),
+        () => peer?.envelopes.find((candidate) =>
+          candidate.type === "changeset_batch"
+          && (candidate.payload as SyncChangesetBatchPayload).reason === "catchup"),
         "retargeted compact reseed",
       );
       const reseed = envelope.payload as SyncChangesetBatchPayload;
-      expect(reseed.reason).toBe("catchup");
       expect(reseed.toDbVersion).toBe(secondTarget);
       expect(reseed.changes).toHaveLength(2_501);
     } finally {
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -8079,20 +8174,25 @@ describe("outbound changeset ack retries", () => {
     };
     const logger = createDiscoveryLogger();
     const { host } = createControlledChangesetHost(projectRoot, state, logger);
+    const clock = createHostClock();
     let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
     try {
       const port = await host.waitUntilListening();
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-reseed-too-large", {
         capabilities: ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY],
       });
+      const first = await finishPhoneFirstScreen(peer, clock);
+      expect(first).toMatchObject({ fromDbVersion: 0, toDbVersion: 250 });
       const batchEnvelope = await waitForValue(
-        () => peer?.envelopes.find((envelope) => envelope.type === "changeset_batch"),
+        () => peer?.envelopes.find((envelope) =>
+          envelope.type === "changeset_batch"
+          && (envelope.payload as SyncChangesetBatchPayload).batchId !== first.batchId),
         "incremental fallback after oversized reseed",
       );
       const batch = batchEnvelope.payload as SyncChangesetBatchPayload;
       expect(batch.reason).toBe("broadcast");
-      expect(batch.fromDbVersion).toBe(0);
-      expect(batch.toDbVersion).toBe(250);
+      expect(batch.fromDbVersion).toBe(250);
+      expect(batch.toDbVersion).toBe(500);
       expect(batch.changes).toHaveLength(250);
       expect(logger.info).toHaveBeenCalledWith(
         "sync_host.mobile_replica_reseed_fallback",
@@ -8102,6 +8202,7 @@ describe("outbound changeset ack retries", () => {
         }),
       );
     } finally {
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -8142,6 +8243,64 @@ describe("outbound changeset ack retries", () => {
       expect(batch.changes).toHaveLength(250);
       expect(batch.toDbVersion).toBe(250);
     } finally {
+      peer?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
+  it("keeps an ack window intact when a phone acks a later batch short of its end", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: 1_000,
+      changes: Array.from({ length: 1_000 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
+    let peer: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    try {
+      const port = await host.waitUntilListening();
+      peer = await connectPeer(port, host.getBootstrapToken(), "ios-ack-window", {
+        capabilities: ["changesetAck", SYNC_CHANGESET_ACK_WINDOW_CAPABILITY],
+      });
+      const batches = () => peer!.envelopes
+        .filter((envelope) => envelope.type === "changeset_batch")
+        .map((envelope) => envelope.payload as SyncChangesetBatchPayload);
+      const first = await finishPhoneFirstScreen(peer, clock);
+      // Past the first screen, several batches go out without waiting for acks.
+      await waitForValue(() => (batches().length >= 4 ? true : null), "a window of batches in flight");
+      const [, pending, , last] = batches();
+      expect(pending!.fromDbVersion).toBe(first.toDbVersion);
+      expect(last!.toDbVersion).toBe(state.dbVersion);
+
+      // The phone applied only part of the last batch.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "changeset_ack",
+        requestId: last!.batchId,
+        payload: {
+          batchId: last!.batchId,
+          fromDbVersion: last!.fromDbVersion,
+          toDbVersion: last!.toDbVersion - 1,
+          appliedDbVersion: last!.toDbVersion - 1,
+          appliedCount: last!.changes.length - 1,
+          ok: true,
+        } satisfies SyncChangesetAckPayload,
+      }));
+      // Frames are handled in order: the pong means the ack was handled.
+      peer.ws.send(encodeSyncEnvelope({
+        type: "heartbeat",
+        requestId: "after-short-ack",
+        payload: { kind: "ping", sentAt: new Date().toISOString() },
+      }));
+      await waitForEnvelope(peer.envelopes, "heartbeat", "after-short-ack");
+      // No ack covers the pending batch, so it is the one sent again; resending
+      // the last one would skip the versions between them.
+      clock.advance(11_000);
+      const resent = await waitForValue(() => batches()[4], "resend after the ack timeout");
+      expect(resent.batchId).toBe(pending!.batchId);
+      expect(resent.fromDbVersion).toBe(first.toDbVersion);
+    } finally {
+      clock.restore();
       peer?.ws.close();
       await host.dispose();
       cleanup();
@@ -14431,7 +14590,7 @@ describe("createSyncHostService all-projects roster", () => {
     return createSyncHostService(args);
   }
 
-  it("answers roster_subscribe with a seq:1 snapshot and bumps per-peer seq on re-subscribe", async () => {
+  it("answers roster_subscribe with a snapshot and a higher seq on re-subscribe", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const rosterState = { projects: [rosterProject("project-a", 1), rosterProject("project-b", 0)] };
     const host = createRosterHost(projectRoot, rosterState);
@@ -14442,12 +14601,14 @@ describe("createSyncHostService all-projects roster", () => {
 
       peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-1", payload: {} }));
       const snapshot = await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-1");
-      expect(snapshot.payload).toMatchObject({ seq: 1 });
+      // A snapshot starts a seq epoch (so a reconnect can resume by seq).
+      const firstSeq = (snapshot.payload as { seq: number }).seq;
+      expect(Number.isSafeInteger(firstSeq) && firstSeq > 0).toBe(true);
       expect((snapshot.payload as { projects: unknown[] }).projects).toHaveLength(2);
 
       peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-2", payload: {} }));
       const second = await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-2");
-      expect(second.payload).toMatchObject({ seq: 2 });
+      expect((second.payload as { seq: number }).seq).toBeGreaterThan(firstSeq);
     } finally {
       try {
         peer?.ws.close();
@@ -14469,7 +14630,8 @@ describe("createSyncHostService all-projects roster", () => {
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-roster-2");
 
       peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-1", payload: {} }));
-      await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-1");
+      const snapshot = await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-1");
+      const snapshotSeq = (snapshot.payload as { seq: number }).seq;
 
       // Mutate one project, then dirty the roster via a project-catalog change.
       rosterState.projects = [rosterProject("project-a", 5), rosterProject("project-b", 0)];
@@ -14483,7 +14645,7 @@ describe("createSyncHostService all-projects roster", () => {
         () => peer?.envelopes.find((envelope) => envelope.type === "roster_delta"),
         "roster_delta after dirty",
       );
-      expect(delta.payload).toMatchObject({ seq: 2 });
+      expect(delta.payload).toMatchObject({ seq: snapshotSeq + 1 });
       const changed = (delta.payload as { changed?: Array<{ projectId: string; runningCount: number }> }).changed ?? [];
       expect(changed).toHaveLength(1);
       expect(changed[0]).toMatchObject({ projectId: "project-a", runningCount: 5 });
@@ -14520,7 +14682,8 @@ describe("createSyncHostService all-projects roster", () => {
       peer = await connectPeer(port, host.getBootstrapToken(), "ios-roster-activity");
 
       peer.ws.send(encodeSyncEnvelope({ type: "roster_subscribe", requestId: "roster-activity", payload: {} }));
-      await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-activity");
+      const snapshot = await waitForEnvelope(peer.envelopes, "roster_snapshot", "roster-activity");
+      const snapshotSeq = (snapshot.payload as { seq: number }).seq;
 
       rosterState.projects = [{
         ...rosterProject("project-a", 1),
@@ -14543,7 +14706,7 @@ describe("createSyncHostService all-projects roster", () => {
         "roster_delta after session activity update",
       );
       expect(delta.payload).toMatchObject({
-        seq: 2,
+        seq: snapshotSeq + 1,
         changed: [{
           projectId: "project-a",
           chats: [{ id: "session-1", activityStatus: { value: "testing" } }],

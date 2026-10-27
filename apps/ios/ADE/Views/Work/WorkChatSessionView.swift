@@ -235,9 +235,10 @@ func workChatShouldRequestOlderHistory(
   loading: Bool,
   hasError: Bool,
   hasBufferedEntries: Bool,
-  hasHostHistory: Bool
+  hasHostHistory: Bool,
+  triggerDistance: CGFloat = workChatOlderHistoryTriggerDistance
 ) -> Bool {
-  guard distanceFromTop <= workChatOlderHistoryTriggerDistance,
+  guard distanceFromTop <= triggerDistance,
         triggerArmed,
         !loading
   else { return false }
@@ -1114,6 +1115,16 @@ struct WorkChatSessionView: View {
 
   var hiddenTimelineCount: Int {
     timelinePresentation.hiddenCount
+  }
+
+  /// Set once per chat while its first page came reduced on a weak link and
+  /// older history waits on the host; drives the background prefetch.
+  var weakLinkPrefetchKey: String? {
+    guard syncServiceReference.service?.chatFirstPageIsReducedForWeakLink == true,
+          frame?.hasOlderHistory == true,
+          (frame?.presentation.timelineCount ?? 0) > 0
+    else { return nil }
+    return session.id
   }
 
   var canRequestOlderTranscriptHistory: Bool {
@@ -2412,7 +2423,15 @@ struct WorkChatSessionView: View {
   /// Older-history scroll-back trigger, driven by the shared scroll sample.
   @MainActor
   private func requestOlderHistoryIfScrolledNearTop(distanceFromTop: CGFloat) {
-    if distanceFromTop > workChatOlderHistoryRearmDistance {
+    // On a weak link a host page takes a second or more, so loading starts
+    // about one and a half screens before the top instead of 240 pt, and
+    // re-arms the same distance further out.
+    let weakLink = syncServiceReference.service?.chatFirstPageIsReducedForWeakLink == true
+    let triggerDistance = weakLink
+      ? max(workChatOlderHistoryTriggerDistance, scrollViewportHeight * 1.5)
+      : workChatOlderHistoryTriggerDistance
+    let rearmDistance = triggerDistance + (workChatOlderHistoryRearmDistance - workChatOlderHistoryTriggerDistance)
+    if distanceFromTop > rearmDistance {
       if !olderHistoryTriggerArmed {
         olderHistoryTriggerArmed = true
       }
@@ -2440,7 +2459,8 @@ struct WorkChatSessionView: View {
       loading: olderHistoryLoadInFlight,
       hasError: olderHistoryLoadError != nil,
       hasBufferedEntries: hiddenTimelineCount > 0,
-      hasHostHistory: canRequestOlderTranscriptHistory
+      hasHostHistory: canRequestOlderTranscriptHistory,
+      triggerDistance: triggerDistance
     ) else { return }
     olderHistoryTriggerArmed = false
     requestEarlierTimelineEntries(automatically: true)
@@ -2449,6 +2469,22 @@ struct WorkChatSessionView: View {
   /// Timeline/scroll change handlers, split from `body` for type-checker budget.
   private func timelineScrollHandlers<V: View>(_ content: V) -> some View {
     content
+        // A weak link's first page is about the last turn (see
+        // `syncWeakLinkChatSubscriptionMaxBytes`). Once it is on screen, the next
+        // older page loads in the background into the paging buffer, so scrolling
+        // up reveals rows that are already here: no wait, no jump, no gap.
+        .task(id: weakLinkPrefetchKey) {
+          guard weakLinkPrefetchKey != nil else { return }
+          try? await Task.sleep(nanoseconds: 600_000_000)
+          guard !Task.isCancelled,
+                canRequestOlderTranscriptHistory,
+                !olderHistoryLoadInFlight,
+                let onLoadOlderTranscript
+          else { return }
+          olderHistoryLoadInFlight = true
+          _ = await onLoadOlderTranscript()
+          olderHistoryLoadInFlight = false
+        }
         .onChange(of: timelinePresentation.timelineCount) { oldCount, newCount in
           let previousTailId = lastTimelineTailId
           let nextTailId = timelinePresentation.timelineLastId

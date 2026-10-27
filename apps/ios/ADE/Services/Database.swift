@@ -997,16 +997,20 @@ final class DatabaseService {
 
   func replaceTerminalSessions(
     _ sessions: [TerminalSessionSummary],
-    expectedProjectId: String? = nil
+    expectedProjectId: String? = nil,
+    pruneAbsent: Bool = true
   ) throws {
     try withLock {
-      try replaceTerminalSessionsLocked(sessions, expectedProjectId: expectedProjectId)
+      try replaceTerminalSessionsLocked(sessions, expectedProjectId: expectedProjectId, pruneAbsent: pruneAbsent)
     }
   }
 
   private func replaceTerminalSessionsLocked(
     _ sessions: [TerminalSessionSummary],
-    expectedProjectId: String? = nil
+    expectedProjectId: String? = nil,
+    /// False for a partial list (a first connect's head rows): rows it does
+    /// not name are kept, with their deltas, checkpoints and links.
+    pruneAbsent: Bool = true
   ) throws {
     guard db != nil else { return }
     guard let projectId = currentProjectIdLocked() else {
@@ -1043,12 +1047,12 @@ final class DatabaseService {
       if !sessionIds.isEmpty {
         try prepareTemporaryIdTable(named: "temp_hydrated_session_ids", ids: sessionIds)
       }
-      if hasTable(named: "session_deltas") {
+      if pruneAbsent, hasTable(named: "session_deltas") {
         _ = try execute("delete from session_deltas where project_id = ?") { statement in
           try bindText(projectId, to: statement, index: 1)
         }
       }
-      if hasTable(named: "checkpoints") {
+      if pruneAbsent, hasTable(named: "checkpoints") {
         if sessionIds.isEmpty {
           try exec("""
             update checkpoints
@@ -1085,7 +1089,7 @@ final class DatabaseService {
           """)
         }
       }
-      if hasTable(named: "claude_sessions") {
+      if pruneAbsent, hasTable(named: "claude_sessions") {
         if sessionIds.isEmpty {
           try exec("""
             update claude_sessions
@@ -1330,7 +1334,9 @@ final class DatabaseService {
         }
       }
 
-      if sessionIds.isEmpty {
+      if !pruneAbsent {
+        // A partial list: nothing it leaves out is removed.
+      } else if sessionIds.isEmpty {
         try exec("""
           delete from terminal_sessions
            where exists (

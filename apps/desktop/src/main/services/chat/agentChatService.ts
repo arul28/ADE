@@ -15927,6 +15927,12 @@ export function createAgentChatService(args: {
   const readRecentTranscriptEnvelopesForSessionIdAsync = async (
     sessionId: string,
     signal?: AbortSignal,
+    /**
+     * Checked after each page with what was kept so far (oldest first): true
+     * stops the read. A caller that only needs the newest entries stops once
+     * it has them, instead of reading and converting the whole window.
+     */
+    enough?: (keptOldestFirst: AgentChatEventEnvelope[]) => boolean,
   ): Promise<AgentChatEventEnvelope[]> => {
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
     if (!transcriptPath) return [];
@@ -15988,6 +15994,7 @@ export function createAgentChatService(args: {
         retainedConversationEvents >= maxRetainedEvents
         || retainedChars >= maxRetainedChars
         || !page.hasMore
+        || (enough != null && enough([...newestFirst].reverse()))
       ) {
         break;
       }
@@ -74200,9 +74207,22 @@ export function createAgentChatService(args: {
     if (!trimmedId.length) return [];
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return [];
+    const hasSince = typeof since === "string" && since.trim().length > 0;
+    const entryLimit = typeof limit === "number" && limit > 0 ? Math.floor(limit) : null;
     const entries = transcriptEntriesFromEnvelopes(
       trimmedId,
-      await readRecentTranscriptEnvelopesForSessionIdAsync(trimmedId, signal),
+      await readRecentTranscriptEnvelopesForSessionIdAsync(
+        trimmedId,
+        signal,
+        // Enough once the kept part holds two more user entries than the
+        // limit: the last `limit` entries then lie past two whole turns, which
+        // a cut further back (a steer's other rows, a split message) cannot
+        // reach. `--since` filters by time, so it reads the whole window.
+        entryLimit != null && !hasSince
+          ? (kept) => transcriptEntriesFromEnvelopes(trimmedId, kept)
+            .filter((entry) => entry.role === "user").length >= entryLimit + 2
+          : undefined,
+      ),
     );
     let filtered = entries;
     if (typeof since === "string" && since.trim().length) {

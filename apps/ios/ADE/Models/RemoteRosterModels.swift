@@ -290,8 +290,85 @@ struct RemoteRosterProject: Codable, Equatable, Identifiable {
   /// Normalized git origin of the project's repository (newer hosts). The
   /// Work tab matches the same repository across machines on it.
   var repoOriginUrl: String? = nil
+  /// How many chats the host has for this project (`rosterChatPagesV1`):
+  /// `chats` then holds only the head rows, and `roster_chats_request` returns
+  /// the rest. Nil from hosts that send every chat.
+  var chatTotal: Int? = nil
 
   var id: String { projectId }
+}
+
+/// `roster_chats`: chats of one project beyond its head rows.
+struct RemoteRosterChatsPayload: Codable, Equatable {
+  var projectId: String
+  var chats: [RemoteRosterChat]
+  var hasMore: Bool
+  var next: RemoteRosterChatsCursor? = nil
+  var total: Int
+}
+
+/// Where the next `roster_chats_request` page starts.
+struct RemoteRosterChatsCursor: Codable, Equatable {
+  var lastActivityAt: String?
+  var id: String
+
+  var payload: [String: Any] {
+    ["lastActivityAt": lastActivityAt ?? NSNull(), "id": id]
+  }
+}
+
+/// Older chats of one project that the user loaded on demand. Kept apart from
+/// the roster's own rows, which deltas replace and reorder.
+struct RosterOlderChats: Equatable {
+  var chats: [RemoteRosterChat] = []
+  /// Nil before the first page; then the next page's start, or nil at the end.
+  var next: RemoteRosterChatsCursor? = nil
+  var reachedEnd = false
+  var loading = false
+}
+
+extension RemoteRosterProject {
+  /// Chats the host has that this app does not hold yet.
+  var unloadedChatCount: Int {
+    guard let chatTotal else { return 0 }
+    return max(0, chatTotal - chats.count)
+  }
+
+  /// This project with the older chats the user loaded after its own rows. A
+  /// row the roster carries wins over a loaded copy of the same chat.
+  func mergingOlderChats(_ older: RosterOlderChats?) -> RemoteRosterProject {
+    guard let older, !older.chats.isEmpty else { return self }
+    let rosterIds = Set(chats.map(\.id))
+    let extra = older.chats.filter { !rosterIds.contains($0.id) && !$0.isIdentityChat }
+    guard !extra.isEmpty else { return self }
+    var next = self
+    next.chats.append(contentsOf: extra)
+    return next
+  }
+}
+
+extension RosterOlderChats {
+  /// `older` after one `roster_chats` page: new rows added, a known row
+  /// replaced by the newer copy.
+  func adding(_ page: RemoteRosterChatsPayload, isIdRequest: Bool) -> RosterOlderChats {
+    var next = self
+    var indexById: [String: Int] = [:]
+    for (index, chat) in next.chats.enumerated() { indexById[chat.id] = index }
+    for chat in page.chats {
+      if let index = indexById[chat.id] {
+        next.chats[index] = chat
+      } else {
+        indexById[chat.id] = next.chats.count
+        next.chats.append(chat)
+      }
+    }
+    if !isIdRequest {
+      next.next = page.hasMore ? page.next : nil
+      next.reachedEnd = !page.hasMore || page.next == nil
+    }
+    next.loading = false
+    return next
+  }
 }
 
 struct RosterSessionNavigationTarget: Equatable {
@@ -487,6 +564,106 @@ struct RemoteRosterDeltaPayload: Codable, Equatable {
   var seq: Int
   var changed: [RemoteRosterProject]?
   var removed: [String]?
+  /// Per-chat updates (`rosterChatDeltaV1`): sent only to an app that declares
+  /// the capability. Older hosts never send it.
+  var patched: [RemoteRosterProjectPatch]? = nil
+}
+
+extension RemoteRosterDeltaPayload {
+  /// Every project id this delta changes, removes or patches.
+  var touchedProjectIds: Set<String> {
+    Set((changed ?? []).map(\.projectId))
+      .union(removed ?? [])
+      .union((patched ?? []).map(\.projectId))
+  }
+
+  /// The chat rows this delta carries, as projects (whole changed projects,
+  /// and each patched project with only its upserted chats). `projects` is the
+  /// store after the delta was applied.
+  func deliveredChatRows(in projects: [RemoteRosterProject]) -> [RemoteRosterProject] {
+    var rows = changed ?? []
+    for patch in patched ?? [] {
+      guard var project = projects.first(where: { $0.projectId == patch.projectId }) else { continue }
+      project.chats = patch.chats ?? []
+      rows.append(project)
+    }
+    return rows
+  }
+}
+
+/// Every roster project field except `chats`.
+struct RemoteRosterProjectHead: Codable, Equatable {
+  var projectId: String
+  var rootPath: String?
+  var displayName: String
+  var iconDataUrl: String?
+  var lastOpenedAt: String?
+  var booted: Bool
+  var runningCount: Int
+  var attentionCount: Int
+  var lanes: [RemoteRosterLane]
+  var repoOriginUrl: String? = nil
+  var chatTotal: Int? = nil
+}
+
+/// A per-chat change to a project the app already holds. Apply the head, then
+/// upsert `chats` by id, drop `removedChatIds`, then reorder by `order`.
+struct RemoteRosterProjectPatch: Codable, Equatable {
+  var projectId: String
+  var head: RemoteRosterProjectHead?
+  var chats: [RemoteRosterChat]?
+  var removedChatIds: [String]?
+  /// Every chat id in display order; absent when the order did not change.
+  var order: [String]?
+}
+
+extension RemoteRosterProject {
+  mutating func apply(head: RemoteRosterProjectHead) {
+    rootPath = head.rootPath
+    displayName = head.displayName
+    iconDataUrl = head.iconDataUrl
+    lastOpenedAt = head.lastOpenedAt
+    booted = head.booted
+    runningCount = head.runningCount
+    attentionCount = head.attentionCount
+    lanes = head.lanes
+    repoOriginUrl = head.repoOriginUrl
+    chatTotal = head.chatTotal
+  }
+
+  /// This project with `patch` applied, or nil when the patch is for another
+  /// project.
+  func applying(_ patch: RemoteRosterProjectPatch) -> RemoteRosterProject? {
+    guard patch.projectId == projectId else { return nil }
+    var next = self
+    if let head = patch.head { next.apply(head: head) }
+    var rows = next.chats
+    if let upserts = patch.chats, !upserts.isEmpty {
+      var indexById: [String: Int] = [:]
+      for (index, chat) in rows.enumerated() { indexById[chat.id] = index }
+      for chat in upserts {
+        if let index = indexById[chat.id] {
+          rows[index] = chat
+        } else {
+          indexById[chat.id] = rows.count
+          rows.append(chat)
+        }
+      }
+    }
+    if let removed = patch.removedChatIds, !removed.isEmpty {
+      let removedIds = Set(removed)
+      rows.removeAll { removedIds.contains($0.id) }
+    }
+    if let order = patch.order {
+      var byId: [String: RemoteRosterChat] = [:]
+      for chat in rows { byId[chat.id] = chat }
+      // The host's order is authoritative. An id this app does not hold is an
+      // identity chat it filtered out, so it is skipped.
+      rows = order.compactMap { byId[$0] }
+    }
+    next.chats = rows
+    return next
+  }
 }
 
 /// Result of applying a `roster_delta` against the current store. Kept as a pure
@@ -537,6 +714,12 @@ func rosterApplyDelta(
   for projectId in delta.removed ?? [] { byId.removeValue(forKey: projectId) }
   for project in delta.changed ?? [] {
     byId[project.projectId] = project.excludingIdentityChats()
+  }
+  for patch in delta.patched ?? [] {
+    // A patch is relative to a project this app holds; without it the
+    // baseline is unknown, so ask for a fresh snapshot.
+    guard let patched = byId[patch.projectId]?.applying(patch) else { return .needsSnapshot }
+    byId[patch.projectId] = patched.excludingIdentityChats()
   }
   return .applied(projects: Array(byId.values), seq: delta.seq)
 }

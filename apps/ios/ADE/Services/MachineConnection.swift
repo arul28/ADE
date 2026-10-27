@@ -40,6 +40,16 @@ final class MachineConnection {
   private(set) var phase: Phase = .idle
   private(set) var rosterProjects: [RemoteRosterProject]
   private(set) var rosterRevision = 0
+  /// Older chats the user loaded per project id (`rosterChatPagesV1`), beyond
+  /// the roster's head rows. Not persisted; a full snapshot drops them.
+  private(set) var rosterOlderChats: [String: RosterOlderChats] = [:]
+  private var rosterOlderChatsGeneration = 0
+
+  /// The roster with the older chats the user loaded.
+  var rosterProjectsIncludingOlderChats: [RemoteRosterProject] {
+    guard !rosterOlderChats.isEmpty else { return rosterProjects }
+    return rosterProjects.map { $0.mergingOlderChats(rosterOlderChats[$0.projectId]) }
+  }
   /// Wall time of the last frame from this machine (drives "last update").
   private(set) var lastUpdateAt: Date?
   private(set) var supportsChatStreaming = false
@@ -344,8 +354,9 @@ final class MachineConnection {
     liveRouteKind = nil
     liveAddress = nil
     // The roster subscription belongs to the socket; keep the rows for the
-    // offline view and ask for a fresh snapshot on the next socket.
-    rosterSeq = nil
+    // offline view and the seq for the next socket's `sinceSeq`. A brain that
+    // still holds that roster state answers with a delta, any other brain
+    // with a full snapshot.
     let error = NSError(domain: "ADE", code: 14, userInfo: [NSLocalizedDescriptionKey: "Can’t reach this computer right now."])
     let requests = pending
     pending.removeAll()
@@ -465,7 +476,7 @@ final class MachineConnection {
         resolve(requestId: pre.requestId, result: .failure(NSError(domain: "ADE", code: 6, userInfo: [NSLocalizedDescriptionKey: message])))
       }
     case "command_result", "chat_history", "chat_tool_result", "file_response", "relay_reauthorize_result",
-         "project_set_icon_result":
+         "project_set_icon_result", "roster_chats":
       resolve(requestId: pre.requestId, result: .success(payload))
     case "roster_snapshot":
       guard let snapshot = machineConnectionDecode(payload, as: RemoteRosterSnapshotPayload.self) else { return }
@@ -714,6 +725,67 @@ final class MachineConnection {
     send(type: "roster_subscribe", requestId: nil, payload: payload)
   }
 
+  /// Load older chats of a project (`roster_chats_request`): the next page,
+  /// or with `all` every page left. Does nothing when the host sent every chat.
+  func loadOlderRosterChats(projectId: String, all: Bool = false) async {
+    for _ in 0..<(all ? 40 : 1) {
+      guard isLive,
+            let project = rosterProjects.first(where: { $0.projectId == projectId }),
+            project.unloadedChatCount > 0 || rosterOlderChats[projectId] != nil
+      else { return }
+      var state = rosterOlderChats[projectId] ?? RosterOlderChats()
+      guard !state.reachedEnd, !state.loading else { return }
+      state.loading = true
+      rosterOlderChats[projectId] = state
+      var payload: [String: Any] = ["projectId": projectId, "limit": all ? 500 : 100]
+      if let next = state.next { payload["before"] = next.payload }
+      guard let page = await requestRosterChats(payload: payload) else {
+        if var failed = rosterOlderChats[projectId] {
+          failed.loading = false
+          rosterOlderChats[projectId] = failed
+        }
+        return
+      }
+      guard let current = rosterOlderChats[projectId] else { return }
+      rosterOlderChats[projectId] = current.adding(page, isIdRequest: false)
+      rosterRevision &+= 1
+      onChange?()
+      if rosterOlderChats[projectId]?.reachedEnd == true { return }
+    }
+  }
+
+  /// Fetch chats the head rows leave out, by id. Returns true when any arrived.
+  @discardableResult
+  func loadRosterChats(projectId: String, ids: [String]) async -> Bool {
+    let wanted = ids.filter { !$0.isEmpty }
+    guard !wanted.isEmpty, isLive,
+          let project = rosterProjects.first(where: { $0.projectId == projectId }),
+          project.chatTotal != nil,
+          let page = await requestRosterChats(payload: ["projectId": projectId, "ids": wanted]),
+          !page.chats.isEmpty
+    else { return false }
+    rosterOlderChats[projectId] = (rosterOlderChats[projectId] ?? RosterOlderChats()).adding(page, isIdRequest: true)
+    rosterRevision &+= 1
+    onChange?()
+    return true
+  }
+
+  private func requestRosterChats(payload: [String: Any]) async -> RemoteRosterChatsPayload? {
+    let generation = rosterOlderChatsGeneration
+    do {
+      let raw = try await request(
+        type: "roster_chats_request",
+        payload: payload,
+        timeoutNanoseconds: 20_000_000_000,
+        timeoutMessage: "Timed out loading older chats."
+      )
+      guard generation == rosterOlderChatsGeneration else { return nil }
+      return machineConnectionDecode(raw, as: RemoteRosterChatsPayload.self)
+    } catch {
+      return nil
+    }
+  }
+
   /// Ask for a fresh roster snapshot (after an action on this machine).
   func requestRosterSnapshot() {
     guard isLive else { return }
@@ -724,6 +796,14 @@ final class MachineConnection {
   private func applyRosterSnapshot(_ snapshot: RemoteRosterSnapshotPayload) {
     let next = snapshot.projects.map { $0.excludingIdentityChats() }
     rosterSeq = snapshot.seq
+    // A full snapshot is a fresh start: older chats loaded before it may have
+    // changed or gone, so the user loads them again.
+    rosterOlderChatsGeneration &+= 1
+    if !rosterOlderChats.isEmpty {
+      rosterOlderChats = [:]
+      rosterRevision &+= 1
+      onChange?()
+    }
     if next != rosterProjects {
       rosterProjects = next
       rosterRevision &+= 1
@@ -753,7 +833,7 @@ final class MachineConnection {
         schedulePersistRoster()
         onChange?()
       }
-      applyRosterFreshness(delta.changed ?? [])
+      applyRosterFreshness(delta.deliveredChatRows(in: next))
     }
   }
 

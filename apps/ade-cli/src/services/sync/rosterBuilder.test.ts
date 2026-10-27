@@ -245,7 +245,8 @@ describe("buildRosterSnapshot", () => {
     // Activity publishes this row as agent:<machineKey>:<chat.id>; using the
     // parent chat_session_id here would prevent live/roster collision dedupe.
     expect(row?.id).toBe("cli-codex");
-    expect(row?.chatSessionId).toBeNull();
+    // A null field is left out of the roster row; both read as "none".
+    expect(row?.chatSessionId ?? null).toBeNull();
   });
 
   it("maps disk status truthfully (running→idle, awaiting, failed) when un-booted", async () => {
@@ -278,8 +279,8 @@ describe("buildRosterSnapshot", () => {
       activityStatusChangedAt: "2026-01-02T00:02:00.000Z",
       lifecycleUpdatedAt: "2026-01-02T00:01:00Z",
       lastActivityAt: "2026-01-02T00:02:00.000Z",
-      exitCode: null,
     });
+    expect(byId.get("chat-run")?.exitCode ?? null).toBeNull();
     expect(byId.get("chat-await")).toMatchObject({
       attentionRequestedAt: "2026-01-03T00:01:00Z",
       attentionMessage: "Choose a release target",
@@ -307,7 +308,7 @@ describe("buildRosterSnapshot", () => {
 
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     const chat = projects[0]!.chats.find((row) => row.id === "chat-run")!;
-    expect(chat.activityStatus).toBeNull();
+    expect(chat.activityStatus ?? null).toBeNull();
     expect(chat.activityStatusChangedAt).toBe("2026-01-02T00:03:00Z");
     expect(chat.lifecycleUpdatedAt).toBe("2026-01-02T00:01:00Z");
     expect(chat.lastActivityAt).toBe("2026-01-02T00:03:00Z");
@@ -330,12 +331,12 @@ describe("buildRosterSnapshot", () => {
 
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     const chat = projects[0]!.chats.find((row) => row.id === "chat-run")!;
-    expect(chat.settledAt).toBeNull();
-    expect(chat.statusNote).toBeNull();
-    expect(chat.activityStatus).toBeNull();
-    expect(chat.attentionRequestedAt).toBeNull();
-    expect(chat.attentionMessage).toBeNull();
-    expect(chat.lastTurnFailedAt).toBeNull();
+    expect(chat.settledAt ?? null).toBeNull();
+    expect(chat.statusNote ?? null).toBeNull();
+    expect(chat.activityStatus ?? null).toBeNull();
+    expect(chat.attentionRequestedAt ?? null).toBeNull();
+    expect(chat.attentionMessage ?? null).toBeNull();
+    expect(chat.lastTurnFailedAt ?? null).toBeNull();
   });
 
   it("hard-truncates the preview to ~120 chars and reads sidecar provider/model", async () => {
