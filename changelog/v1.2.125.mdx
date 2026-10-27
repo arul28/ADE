@@ -1,0 +1,62 @@
+---
+title: "v1.2.125"
+description: "Release notes for ADE v1.2.125 - October 27, 2026"
+---
+
+ADE 1.2.125 fixes clicks in the desktop app after 1.2.124 and keeps a Mac online when it is updated from another machine. It also carries everything 1.2.124 brought: much faster long chats, project switching and phone connections, Linux lane screens, PR filters, and What's new after each update.
+
+## New
+
+- After an update, What's new shows the newest features you haven't seen, then these notes in one place (#1939).
+- Linux machines give each lane its own screen, which you can watch and control from the desktop, the web and your phone. They work on Ubuntu, Debian, Fedora and Arch, on x64 and arm64 (#1927, #1935).
+- The PRs tab filters by label, author and assignee, and splits each PR's size into code, tests and docs (#1921).
+- Agents can watch a terminal and are woken when it prints something new (#1912).
+- Settings chips in chat open the exact setting, and some settings can only be changed by you (#1910).
+- GPT-6.1 Terra is available, and GPT-6.1 Sol is the new Codex default (#1920).
+- A connection doctor explains why a machine won't connect (#1913).
+- ADE works behind a company proxy and trusts your system's root certificates (#1905).
+
+## Improved
+
+- Long chats open instantly and stream with far less work, on this machine and across machines (#1934).
+- Switching projects, launching and reading from another machine are faster (#1931, #1937).
+- The phone connects in 2.4 s cold and reconnects in about 1 s, even on a slow network (#1932).
+- Lane refreshes are faster, and the brain no longer freezes for 2 s at a time (#1933).
+- The PRs tab makes far fewer GitHub requests (#1921).
+- Claude reads PDFs as documents, and a steer can move a running Bash command to the background (#1911).
+- Pick the shell new terminals start with, trust a local self-signed certificate in the browser, and stop a chat's dev server from its Work row (#1912).
+- The phone stays quiet while you're at the computer (#1913).
+- Chat, the sidebar, dialogs, settings, Home and themes got a round of polish (#1925).
+- Wallpapers shuffle pictures that fit your screen, with a sharper copy for 1080p and 1440p (#1900).
+- Claude Code 2.1.310, Codex 0.164.0 and Cursor SDK 1.0.40 (#1649, #1650, #1578).
+
+## Fixed
+
+- The desktop app takes clicks again; in 1.2.124 the whole window acted as its title bar, so a click dragged the window instead (#1942).
+- Updating a Mac from another machine while ADE is closed there opens ADE to install the update, so the Mac keeps its permission to read your projects and stays online (#1942).
+- Continue on another account keeps the same chat (#1926).
+- Needs you clears when you reply, and ADE's pushes fall back to its GitHub token (#1914).
+- Busy remote machines keep their connection (#1923).
+- Chats stay in another machine's sidebar, and proof shows inline across machines (#1916).
+- A subagent's PR shows in the chats that started it (#1918).
+- Deleting a lane keeps new files, and your personal git config no longer changes ADE's git reads (#1902).
+- SSH alias remotes count as GitHub, and a refused push says why (#1901).
+- The window remembers its place, Enter works with input methods, and right-to-left text lays out correctly (#1903).
+- Claude chats answer MCP questions on ADE's input card, and automation active hours follow their time zone (#1904).
+- Codex waits show as one tool row (#1899).
+- Agents use the lane screen only when nothing else can (#1906).
+- Fixes from a long CTO run: a subagent waiting on you tells its parent, and the CTO lists its own jobs (#1909, #1915).
+
+## iOS
+
+- React to PRs, edit comments and watch checks live (#1924).
+- Close browser tabs, and use link menus in chats (#1924).
+- Proof shows inline in chats from another machine (#1916). This is in TestFlight build 117.
+
+## Windows
+
+- Agent commands can use cmd switches, and the sandbox never opens network paths (#1917).
+
+## macOS
+
+- ADE now needs macOS 13 or later; Macs on macOS 12 stay on 1.2.123 (#1905).

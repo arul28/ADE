@@ -12,6 +12,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
 
+## [1.2.125] - 2026-10-27
+
+### Desktop and web
+
+- The desktop app takes clicks again: in 1.2.124 the window's title-bar drag area covered the whole window under Electron 44 (#1942).
+- A remote update of a Mac whose ADE app is closed opens the app to install it, instead of switching the brain to a runtime macOS had not given folder permissions; a project folder the brain can't read now fails only that project (#1942).
+- What's new lists a repeated release note once (#1942).
+- Carries all of 1.2.124 below, which most computers could not use.
+
 ## [1.2.124] - 2026-10-27
 
 ### Desktop and web
@@ -2775,6 +2784,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.124...HEAD
+[1.2.125]: https://github.com/arul28/ADE/compare/v1.2.124...v1.2.125
 [1.2.124]: https://github.com/arul28/ADE/compare/v1.2.123...v1.2.124
 [1.2.123]: https://github.com/arul28/ADE/compare/v1.2.122...v1.2.123
 [1.2.122]: https://github.com/arul28/ADE/compare/v1.2.121...v1.2.122
