@@ -36,7 +36,6 @@ import { Z_LAYERS } from "../ui/zLayers";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { PrWatchPill } from "./PrWatchPill";
-import { useAppStore } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -160,7 +159,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const isRemote = scope.isRemote;
   const projectRoot = scope.rootPath;
   // Scopes the cached PR list when there is no pin (the tab's own machine).
-  const prListBindingKey = useAppStore((state) => state.projectBinding?.key ?? null);
+  const prListBindingKey = scope.binding?.key ?? null;
   // Keep PR refresh identity stable across unrelated lane-list updates. The
   // array is replaced by status refreshes, which otherwise re-subscribes the
   // PR event pump even when this lane's identity is unchanged.
