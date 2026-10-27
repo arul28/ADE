@@ -72,14 +72,25 @@ export function linuxHostTags(): LinuxHostTags {
 
 const reported = new Set<string>();
 
+/** What each kind says in Sentry. Fixed: the helper's own error text can carry Xvfb or ffmpeg output. */
+const PROBLEM_DESCRIPTIONS: Record<LinuxScreenProblemKind, string> = {
+  helper_start_failed: "the screen helper did not start",
+  helper_lost: "the screen helper exited with lane screens up",
+  display_create_failed: "a lane screen did not come up",
+  display_degraded: "a lane screen came up without its accessibility bus",
+  recording_interrupted: "a lane recording's encoder stopped",
+  setup_failed: "setup did not leave the screen ready",
+};
+
 /**
  * One Sentry issue per kind and distribution. `detail` narrows the once-per-process
  * key (an error code, the missing packages), so a second, different failure of
- * the same kind still reports.
+ * the same kind still reports. Callers pass structured fields only (codes,
+ * counts, package names); the error text stays in their local log line,
+ * because terminal output never goes to Sentry.
  */
 export function reportLinuxScreenProblem(
   kind: LinuxScreenProblemKind,
-  message: string,
   extra: Record<string, unknown> = {},
   detail = "",
 ): void {
@@ -87,7 +98,7 @@ export function reportLinuxScreenProblem(
   if (reported.has(key)) return;
   reported.add(key);
   const host = linuxHostTags();
-  captureProblem(`linux_screen.${kind}: ${message}`, {
+  captureProblem(`linux_screen.${kind}: ${PROBLEM_DESCRIPTIONS[kind]}`, {
     level: "warning",
     tags: { feature: "linux_screen", "linux_screen.kind": kind, ...host },
     extra: { ...extra, ...(detail ? { detail } : {}) },
@@ -150,10 +161,10 @@ export function reportLinuxSetupOutcome(
     const why = !result.command
       ? "no encoder available"
       : packageManager ? "install failed" : "no supported package manager";
-    reportLinuxScreenProblem("setup_failed", why, extra, `${why}|${before}`);
+    reportLinuxScreenProblem("setup_failed", { ...extra, why }, `${why}|${before}`);
     return;
   }
   if (missingAfter?.length) {
-    reportLinuxScreenProblem("setup_failed", "still missing after install", extra, `after|${missingAfter.join(",")}`);
+    reportLinuxScreenProblem("setup_failed", { ...extra, why: "still missing after install" }, `after|${missingAfter.join(",")}`);
   }
 }

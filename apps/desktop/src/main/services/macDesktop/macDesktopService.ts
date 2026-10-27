@@ -835,7 +835,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         // helper sends it once; a stop already running ignores a repeat.
         if (!laneId) return;
         const interruption = asNullableString(event.error) ?? "The lane's recording stopped unexpectedly.";
-        if (isLinuxSeat) reportLinuxScreenProblem("recording_interrupted", interruption);
+        if (isLinuxSeat) reportLinuxScreenProblem("recording_interrupted");
         recording.interruptRecording(laneId, interruption);
         return;
       }
@@ -952,7 +952,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
     // Only a loss that took a lane's screen: an idle exit would use up the
     // once-per-process report before a real one.
     const lostLanes = ownership.laneIds().length;
-    if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", reason, { lanes: lostLanes });
+    if (isLinuxSeat && lostLanes > 0) reportLinuxScreenProblem("helper_lost", { lanes: lostLanes });
     for (const laneId of ownership.laneIds()) forgetDisplay(laneId, "driver_lost");
     ownership.clear();
     recording.clear();
@@ -1425,7 +1425,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
         await driverLifecycle.ensureDriver().catch((error) => {
           const message = error instanceof Error ? error.message : String(error);
           deps.logger.warn("mac_desktop.status_driver_start_failed", { error: message });
-          if (isLinuxSeat) reportLinuxScreenProblem("helper_start_failed", message);
+          if (isLinuxSeat) reportLinuxScreenProblem("helper_start_failed");
         });
       } else if (driverLifecycle.isDriverRunning()) {
         await driverLifecycle.refreshDriverHealth();

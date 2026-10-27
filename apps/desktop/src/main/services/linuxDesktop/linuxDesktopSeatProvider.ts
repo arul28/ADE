@@ -57,10 +57,9 @@ export function createLinuxSeatProvider(client: Parameters<typeof createSeatProv
         reply = await provider.create(args);
       } catch (error) {
         const code = (error as { code?: unknown } | null)?.code;
-        const message = error instanceof Error ? error.message : String(error);
         // A refusal the caller caused (a bad size, a lane already busy) is its answer, not a host fault.
         if (expectedErrorKind(error) !== "user") {
-          reportLinuxScreenProblem("display_create_failed", message, { code }, typeof code === "string" ? code : "");
+          reportLinuxScreenProblem("display_create_failed", { code }, typeof code === "string" ? code : "");
         }
         throw error;
       }
@@ -77,7 +76,7 @@ function reportDegradedScreen(reply: unknown): void {
   const facts = linux as { windowManager?: unknown; accessibility?: unknown; accessibilityError?: unknown };
   const accessibilityError = typeof facts.accessibilityError === "string" ? facts.accessibilityError : null;
   if (accessibilityError && !/not installed/i.test(accessibilityError)) {
-    reportLinuxScreenProblem("display_degraded", `accessibility bus: ${accessibilityError}`, {}, "accessibility");
+    reportLinuxScreenProblem("display_degraded", {}, "accessibility");
   } else if (accessibilityError) {
     logLinuxScreenFact("display_degraded", { accessibilityError }, "accessibility");
   }
