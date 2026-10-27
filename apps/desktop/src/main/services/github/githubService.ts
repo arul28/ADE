@@ -2705,8 +2705,9 @@ export function createGithubService({
     async getCredentialRevision(): Promise<string> {
       const revision = sharedGhAuth.credentialInventoryRevision;
       try {
-        const inventory = await readCredentialInventory();
-        const token = githubOperationCredentialCandidates(inventory.candidates, "read")[0]?.token ?? "";
+        // The same cooldown-aware selection `getReadTokenOrThrowAsync` uses, so
+        // the identity names the credential that actually minted the URL.
+        const token = (await readAuthToken("read")).token ?? "";
         return `${revision}:${token ? githubCredentialTokenDigest(token) : "none"}`;
       } catch {
         return `${revision}:unknown`;
