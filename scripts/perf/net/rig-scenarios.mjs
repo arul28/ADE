@@ -132,10 +132,20 @@ if (mode === "start") {
     requestAnimationFrame(tick);
   })()` });
   for (let round = 1; round <= rounds; round++) {
+    // Page.reload returns once the reload starts, so the old document can still answer: only a document
+    // with a new navigation origin counts.
+    const previousOrigin = await ev("performance.timeOrigin");
     const before = await proxyTotals();
     await send("Page.reload", { ignoreCache: false });
     let ready = {};
-    for (let i = 0; i < 600; i++) { await sleep(100); try { ready = (await ev("window.__rigReady")) ?? {}; } catch { ready = {}; } if (Object.keys(ready).length >= Object.keys(sets).length) break; }
+    for (let i = 0; i < 600; i++) {
+      await sleep(100);
+      let read = null;
+      try { read = await ev("({ origin: performance.timeOrigin, ready: window.__rigReady ?? null })"); } catch { read = null; }
+      if (!read || read.origin === previousOrigin || !read.ready) { ready = {}; continue; }
+      ready = read.ready;
+      if (Object.keys(ready).length >= Object.keys(sets).length) break;
+    }
     const after = await proxyTotals();
     const all = Object.keys(ready).length === Object.keys(sets).length ? Math.max(...Object.values(ready)) : null;
     emit({ scenario: "start-reload", round, allMachinesMs: all, perMachineMs: ready, bytes: delta(before, after) });
