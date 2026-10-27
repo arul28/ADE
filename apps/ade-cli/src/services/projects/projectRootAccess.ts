@@ -34,6 +34,8 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill("SIGKILL");
+      // Settle now: a child stuck in the kernel may report its exit late.
+      resolve(`it did not answer within ${PROJECT_ROOT_READ_TIMEOUT_MS / 1000} seconds`);
     }, PROJECT_ROOT_READ_TIMEOUT_MS);
     child.stderr.on("data", (chunk: Buffer) => {
       if (stderr.length < 2_000) stderr += chunk.toString("utf8");
@@ -44,8 +46,7 @@ export async function assertProjectRootReadable(projectRoot: string): Promise<vo
     });
     child.on("close", (code) => {
       clearTimeout(timer);
-      if (timedOut) resolve(`it did not answer within ${PROJECT_ROOT_READ_TIMEOUT_MS / 1000} seconds`);
-      else resolve(code === 0 ? null : stderr.trim() || `ls exited with ${code}`);
+      if (!timedOut) resolve(code === 0 ? null : stderr.trim() || `ls exited with ${code}`);
     });
   });
   if (!failure) return;

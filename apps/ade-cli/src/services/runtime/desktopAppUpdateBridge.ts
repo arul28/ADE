@@ -243,7 +243,13 @@ export async function requestUpdateThroughClosedApp(args: {
       targetVersion: args.targetVersion,
       connectTimeoutMs: CLOSED_APP_POLL_MS,
     });
-    if (routing.attached) return routing;
+    if (routing.attached) {
+      // "unsupported" would send the caller to the standalone update, the very
+      // switch this route exists to avoid.
+      return routing.result.outcome === "unsupported"
+        ? refuse(routing.result.message || "this ADE build cannot update itself")
+        : routing;
+    }
     detail = routing.detail;
   }
   return refuse(`${detail} within ${CLOSED_APP_ANSWER_WAIT_MS / 1000} seconds`);
