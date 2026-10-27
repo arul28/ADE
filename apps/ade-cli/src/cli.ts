@@ -1250,8 +1250,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade code                                      Open ADE Work chat in the terminal
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)

@@ -184,8 +184,11 @@ would not add one; a full build (or one with libopenh264) does. A browser is not
 a dependency; `ade screen open <url>` names what to install when none is found.
 
 Tested end to end (setup from a bare image, a screen, typed input, a recording
-and its cut demo) on Ubuntu 24.04 x64, and on Ubuntu 24.04, Fedora 44 and
-Arch Linux ARM on arm64. What differs between them, and is handled:
+and its cut demo) on Ubuntu 24.04, Fedora 44, Debian 13 and Arch Linux on x64,
+and on Ubuntu 24.04, Fedora 44 and Arch Linux ARM on arm64. On x64 a phone
+client over the sync socket also paired by PIN, watched the live stream, took
+control and typed into the lane's window. What differs between them, and is
+handled:
 
 - Fedora's `ffmpeg-free` has no libx264: recording uses libopenh264, and the
   demo engine passes over a system ffmpeg without libx264 or `drawtext` for
