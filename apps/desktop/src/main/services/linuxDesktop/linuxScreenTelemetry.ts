@@ -14,6 +14,8 @@
 
 import fs from "node:fs";
 import { captureProblem, sendSentryLog } from "../../../shared/sentry/capture";
+import type { LinuxDesktopSetupResult } from "../../../shared/types/macDesktop";
+import { linuxPackageManagerId } from "./linuxDesktopSetup";
 
 export type LinuxScreenProblemKind =
   /** The helper could not start, or exited while lanes had screens. */
@@ -103,4 +105,49 @@ export function logLinuxScreenFact(event: string, attributes: Record<string, unk
   if (reported.has(key)) return;
   reported.add(key);
   sendSentryLog("warn", `linux_screen.${event}`, { ...linuxHostTags(), ...attributes });
+}
+
+/**
+ * What a Linux host lacks before setup, by distribution: the inventory that
+ * says whether the package names and the encoder fallback hold up. Once per
+ * process per distinct report.
+ */
+export function logLinuxHostReport(report: { missing: readonly string[]; encoder: string | null }): void {
+  const missing = report.missing.join(",");
+  logLinuxScreenFact(
+    "host_report",
+    { missing, encoder: report.encoder ?? "none", packageManager: linuxPackageManagerId() ?? "none" },
+    `${missing}|${report.encoder ?? ""}`,
+  );
+}
+
+/**
+ * A setup that did not leave the screen ready: wrong package names, an install
+ * that left something missing, an ffmpeg with no encoder. A sudo that wants a
+ * password is the machine's policy, so it is a log line, not an issue.
+ */
+export function reportLinuxSetupOutcome(
+  missingBefore: readonly string[],
+  result: LinuxDesktopSetupResult,
+  missingAfter: readonly string[] | null,
+): void {
+  const before = missingBefore.join(",");
+  const extra = {
+    packageManager: linuxPackageManagerId() ?? "none",
+    missingBefore: before,
+    missingAfter: missingAfter?.join(",") ?? "unknown",
+    message: result.message.slice(0, 500),
+  };
+  if (!result.installed) {
+    if (result.needsUser && result.command) {
+      logLinuxScreenFact("setup_needs_user", extra, before);
+      return;
+    }
+    const why = result.command ? "install failed" : "no supported package manager or encoder";
+    reportLinuxScreenProblem("setup_failed", why, extra, `${why}|${before}`);
+    return;
+  }
+  if (missingAfter?.length) {
+    reportLinuxScreenProblem("setup_failed", "still missing after install", extra, `after|${missingAfter.join(",")}`);
+  }
 }

@@ -63,6 +63,9 @@ export type ProducedDemoVideo = {
 
 const PLAYABLE_RAW = new Set([".mp4", ".mov", ".m4v"]);
 
+/** Engine sets whose total failure was already reported by this process. */
+const reportedEngineFailures = new Set<string>();
+
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -246,11 +249,16 @@ export async function produceDemoVideo(args: {
   }
   // Every engine that could read the file failed: the user gets the uncut
   // recording, and nothing else would tell ADE the demo pipeline is broken here.
-  captureProblem(`demo_video.all_engines_failed: ${lastReason}`, {
-    level: "warning",
-    tags: { feature: "demo_video", platform: process.platform, arch: process.arch },
-    extra: { engines: engines.map((engine) => engine.id).join(",") },
-    fingerprint: ["demo_video", "all_engines_failed", process.platform, engines.map((engine) => engine.id).join(",")],
-  });
+  // Once per process: a machine that cannot render fails every recording.
+  const engineIds = engines.map((engine) => engine.id).join(",");
+  if (!reportedEngineFailures.has(engineIds)) {
+    reportedEngineFailures.add(engineIds);
+    captureProblem(`demo_video.all_engines_failed: ${lastReason}`, {
+      level: "warning",
+      tags: { feature: "demo_video", platform: process.platform, arch: process.arch },
+      extra: { engines: engineIds },
+      fingerprint: ["demo_video", "all_engines_failed", process.platform, engineIds],
+    });
+  }
   return await fileRawAsIs(lastReason, lastAnalysis);
 }
