@@ -2976,7 +2976,8 @@ describe("AgentChatComposer", () => {
     const issueRow = screen.getByRole("button", { name: /ADE-123/ });
     expect(issueRow).toBeTruthy();
     fireEvent.click(issueRow!);
-    fireEvent.click(screen.getByRole("button", { name: "Attach issue" }));
+    // The detail pane, with its action button, loads with the first selection.
+    fireEvent.click(await screen.findByRole("button", { name: "Attach issue" }));
 
     await waitFor(() => {
       expect(onAddContextAttachment).toHaveBeenCalledTimes(1);
