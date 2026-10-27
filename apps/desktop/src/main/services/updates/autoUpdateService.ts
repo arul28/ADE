@@ -437,6 +437,8 @@ function reconcilePersistedUpdateState(args: {
       nextState.recentlyInstalledUpdate = {
         version: args.currentVersion,
         installedAt: args.now,
+        fromVersion: pendingInstall.fromVersion,
+        ...(pendingInstall.requestedRemotely ? { requestedRemotely: true } : {}),
         releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
           ?? pendingInstall.releaseNotesUrl,
         githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion, args.releaseRepository),
@@ -2104,7 +2106,7 @@ export function createAutoUpdateService({
     }
   }
 
-  async function quitAndInstall(resumeChats = false): Promise<boolean> {
+  async function quitAndInstall(resumeChats = false, options: { requestedRemotely?: boolean } = {}): Promise<boolean> {
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -2193,6 +2195,7 @@ export function createAutoUpdateService({
           targetVersion: snapshot.version ?? installVersion,
           releaseNotesUrl: snapshot.releaseNotesUrl,
           requestedAt: now(),
+          ...(options.requestedRemotely ? { requestedRemotely: true } : {}),
           ...(resumedChats.length > 0 ? { resumedChats } : {}),
         },
         recentlyInstalledUpdate: undefined,

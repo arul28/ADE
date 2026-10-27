@@ -1,4 +1,4 @@
-import { DeviceMobile } from "@phosphor-icons/react";
+import { DeviceMobile, HandTap, Lightning } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import gif from "./assets/phone-stream.gif";
@@ -11,7 +11,11 @@ export default function PhoneSimulatorAnnouncement({ close }: AnnouncementPagePr
       close={close}
       place={{ icon: <DeviceMobile size={17} weight="fill" />, name: "iPhone app" }}
       headline="Use the simulator from your iPhone."
-      sentence="ADE streams the simulator to your phone. Tap and swipe it like a real iPhone, and see each change as it lands."
+      sentence="ADE streams the simulator to your phone. Tap and swipe it like a real iPhone, and see every change as it lands."
+      marks={[
+        { icon: <HandTap size={14} weight="fill" />, label: "Touch control" },
+        { icon: <Lightning size={14} weight="fill" />, label: "Live updates" },
+      ]}
       media={{
         gif,
         still,

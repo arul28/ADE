@@ -1,29 +1,46 @@
-import { Suspense, useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { ArrowLeft, ArrowRight, X } from "@phosphor-icons/react";
 import { Dialog } from "../ui/dialog";
 import { useAppStore } from "../../state/appStore";
 import { selectEffectiveThemeId, useAppearanceStore } from "../../state/appearanceStore";
 import { resolveTheme, resolveThemeById } from "../../../shared/theme";
+import { bundledReleaseNotes } from "../../../shared/bundledReleaseNotes";
+import type { UpdateInterruptedChat } from "../../../shared/types";
 import { useActiveScene } from "../../scene/useScene";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import { onboardingSettledBeforeThisLaunch } from "../../onboarding/onboardingProgress";
 import { floatingLayerBusy, launchGateOpen } from "../ui/overlayState";
-import { ANNOUNCEMENT_PAGES, type AnnouncementPageDef } from "./announcementPages";
-import { dueAnnouncements, markAnnouncementSeen, useSeenAnnouncements } from "./announcementSeen";
+import type { AnnouncementPageDef } from "./announcementPages";
+import {
+  allAnnouncements,
+  dueAnnouncements,
+  inProjectShowingAllowed,
+  markAnnouncementSeen,
+  markShowing,
+  useSeenAnnouncements,
+} from "./announcementSeen";
+import { releaseNotesDigest, type ReleaseNotesDigest } from "./releaseNotesDigest";
+import { ReleaseNotesPage } from "./ReleaseNotesPage";
 import "./announcements.css";
 
 /**
- * The "What's new" modal. Shows the pages this computer has not seen
- * (`announcementPages.ts`), one at a time, inside a project only — never on
- * Home — and only when nothing else wants the user's attention:
+ * The "What's new" modal. It opens three ways:
  *
- * - onboarding is not running, and finished (or was skipped) before this app
- *   launch, so a brand-new user meets these on a later visit, not mid-setup;
- * - no dialog, setup screen or tour card is up;
- * - the project has been open a few seconds.
+ * - **After an update** this computer installed itself (not one pressed on
+ *   another machine): on the first launch of the new version, on whatever
+ *   screen ADE opens to. Up to three unseen catalogue pages, then "And more",
+ *   the release notes since the version it came from. AutoUpdateControl asks
+ *   for it (`openWhatsNewAfterUpdate`) in place of its old notice.
+ * - **Inside a project**, by itself: up to three unseen catalogue pages, at
+ *   most once a day (an after-update showing counts), and only when nothing
+ *   else wants the user's attention — onboarding finished or was skipped
+ *   before this launch, no dialog, setup screen or tour card is up, and the
+ *   project has been open a few seconds.
+ * - **Help › What's new** or the command palette: every catalogue page,
+ *   newest first, then this version's notes.
  *
- * A page counts as seen once it is on screen. Help › What's new and the
- * command palette reopen every page (`openWhatsNew`).
+ * A catalogue page counts as seen once it is on screen, whichever way it
+ * opened, and never shows by itself again (`announcementSeen.ts`).
  *
  * Cost: with nothing due (the usual case) this renders nothing and holds one
  * storage subscription. With pages due it checks the conditions every few
@@ -31,30 +48,83 @@ import "./announcements.css";
  */
 
 const OPEN_EVENT = "ade:open-whats-new";
+const AFTER_UPDATE_EVENT = "ade:open-whats-new-after-update";
 /** The project settles before anything shows over it. */
 const SETTLE_MS = 4_000;
 const CHECK_INTERVAL_MS = 3_000;
+
+export type AfterUpdateDetail = {
+  version: string;
+  fromVersion: string | null;
+  resumedChats: readonly UpdateInterruptedChat[];
+  changelogUrl: string | null;
+  githubReleaseUrl: string | null;
+  /** Called once the modal closes, so the update record can be put away. */
+  onClose: () => void;
+};
+
+type NotesPage = {
+  digest: ReleaseNotesDigest | null;
+  resumedChats: readonly UpdateInterruptedChat[];
+  changelogUrl: string | null;
+  githubReleaseUrl: string | null;
+};
+
+type Showing = { pages: readonly AnnouncementPageDef[]; notes: NotesPage | null; onClose?: () => void };
 
 /** Opens every "What's new" page (Help menu, command palette). */
 export function openWhatsNew(): void {
   window.dispatchEvent(new Event(OPEN_EVENT));
 }
 
+/** The first launch after this computer installed an update (AutoUpdateControl). */
+export function openWhatsNewAfterUpdate(detail: AfterUpdateDetail): void {
+  window.dispatchEvent(new CustomEvent<AfterUpdateDetail>(AFTER_UPDATE_EVENT, { detail }));
+}
+
 export function AnnouncementsHost() {
   const seen = useSeenAnnouncements();
   const due = useMemo(() => dueAnnouncements(seen), [seen]);
   const inProject = useAppStore((state) => Boolean(state.project) && !state.showWelcome);
-  const [pages, setPages] = useState<readonly AnnouncementPageDef[] | null>(null);
+  const [showing, setShowing] = useState<Showing | null>(null);
   const [shownThisLaunch, setShownThisLaunch] = useState(false);
 
   useEffect(() => {
-    const open = () => setPages(ANNOUNCEMENT_PAGES);
-    window.addEventListener(OPEN_EVENT, open);
-    return () => window.removeEventListener(OPEN_EVENT, open);
+    const openAll = () => {
+      const version = bundledReleaseNotes.version;
+      const digest = releaseNotesDigest(version);
+      // The after-update showing stays: replacing it would drop its onClose, and the next launch would show it again.
+      setShowing((current) => current?.onClose ? current : {
+        pages: allAnnouncements(),
+        notes: digest ? { digest, resumedChats: [], changelogUrl: null, githubReleaseUrl: null } : null,
+      });
+    };
+    const openAfterUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<AfterUpdateDetail>).detail;
+      if (!detail) return;
+      markShowing();
+      setShownThisLaunch(true);
+      setShowing({
+        pages: dueAnnouncements(),
+        notes: {
+          digest: releaseNotesDigest(detail.version, detail.fromVersion),
+          resumedChats: detail.resumedChats,
+          changelogUrl: detail.changelogUrl,
+          githubReleaseUrl: detail.githubReleaseUrl,
+        },
+        onClose: detail.onClose,
+      });
+    };
+    window.addEventListener(OPEN_EVENT, openAll);
+    window.addEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
+    return () => {
+      window.removeEventListener(OPEN_EVENT, openAll);
+      window.removeEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
+    };
   }, []);
 
-  // Wait for a quiet moment inside a project, once per launch.
-  const waiting = !pages && !shownThisLaunch && inProject && due.length > 0;
+  // Wait for a quiet moment inside a project, once per launch and once a day.
+  const waiting = !showing && !shownThisLaunch && inProject && due.length > 0;
   useEffect(() => {
     if (!waiting) return undefined;
     const since = Date.now();
@@ -62,15 +132,24 @@ export function AnnouncementsHost() {
       if (document.hidden || Date.now() - since < SETTLE_MS) return;
       if (!onboardingSettledBeforeThisLaunch() || floatingLayerBusy() || launchGateOpen()) return;
       setShownThisLaunch(true);
-      setPages(dueAnnouncements());
+      if (!inProjectShowingAllowed()) return;
+      const pages = dueAnnouncements();
+      if (pages.length === 0) return;
+      markShowing();
+      setShowing({ pages, notes: null });
     };
     const interval = window.setInterval(check, CHECK_INTERVAL_MS);
     return () => window.clearInterval(interval);
   }, [waiting]);
 
-  const close = useCallback(() => setPages(null), []);
-  if (!pages?.length) return null;
-  return <AnnouncementsModal pages={pages} onClose={close} />;
+  const showingRef = useRef(showing);
+  showingRef.current = showing;
+  const close = useCallback(() => {
+    showingRef.current?.onClose?.();
+    setShowing(null);
+  }, []);
+  if (!showing || (showing.pages.length === 0 && !showing.notes)) return null;
+  return <AnnouncementsModal pages={showing.pages} notes={showing.notes} onClose={close} />;
 }
 
 /**
@@ -98,40 +177,54 @@ function useGlowColors(): CSSProperties {
   }, [customThemes, mode, scenePalette, themeId]);
 }
 
-function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPageDef[]; onClose: () => void }) {
+type ModalItem = { key: string; title: string; page: AnnouncementPageDef | null };
+
+function AnnouncementsModal({
+  pages,
+  notes,
+  onClose,
+}: {
+  pages: readonly AnnouncementPageDef[];
+  notes: NotesPage | null;
+  onClose: () => void;
+}) {
+  const items = useMemo<ModalItem[]>(() => [
+    ...pages.map((page) => ({ key: page.id, title: page.title, page })),
+    ...(notes ? [{ key: "and-more", title: pages.length > 0 ? "And more" : "What changed", page: null }] : []),
+  ], [notes, pages]);
   const [index, setIndex] = useState(0);
-  const page = pages[Math.min(index, pages.length - 1)]!;
-  const last = index >= pages.length - 1;
+  const item = items[Math.min(index, items.length - 1)]!;
+  const last = index >= items.length - 1;
 
   // On screen means seen; pages closed before they were reached stay due.
   useEffect(() => {
-    markAnnouncementSeen(page);
-  }, [page]);
+    if (item.page) markAnnouncementSeen(item.page);
+  }, [item.page]);
 
   const glowColors = useGlowColors();
-  const Page = page.Page;
+  const Page = item.page?.Page ?? null;
   return (
     <Dialog
       open
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      title={`What's new: ${page.title}`}
+      title={`What's new: ${item.title}`}
       hideHeader
       hideClose
       width={1080}
-      maxHeight="min(90vh, 900px)"
+      maxHeight="min(92vh, 900px)"
       bodyPadding={false}
       panelClassName="ade-whats-new"
       panelStyle={glowColors}
       testId="whats-new"
       footer={(
         <div className="ade-whats-new-foot">
-          {pages.length > 1 ? (
-            <div className="ade-whats-new-dots" aria-label={`Page ${index + 1} of ${pages.length}`}>
-              {pages.map((entry, entryIndex) => (
+          {items.length > 1 ? (
+            <div className="ade-whats-new-dots" aria-label={`Page ${index + 1} of ${items.length}`}>
+              {items.map((entry, entryIndex) => (
                 <button
-                  key={entry.id}
+                  key={entry.key}
                   type="button"
                   className="ade-whats-new-dot"
                   data-active={entryIndex === index ? "true" : undefined}
@@ -157,7 +250,7 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
               autoFocus
               onClick={() => (last ? onClose() : setIndex(index + 1))}
             >
-              {last ? "Got it" : "Next"}
+              {last ? "Done" : "Next"}
               {last ? null : <ArrowRight size={12} weight="bold" aria-hidden />}
             </button>
           </div>
@@ -177,9 +270,18 @@ function AnnouncementsModal({ pages, onClose }: { pages: readonly AnnouncementPa
       <button type="button" className="kit-icon-btn ade-whats-new-close" aria-label="Close" onClick={onClose}>
         <X size={13} weight="bold" />
       </button>
-      <Suspense fallback={<div className="ade-whats-new-loading" />}>
-        <Page key={page.id} close={onClose} />
-      </Suspense>
+      {Page ? (
+        <Suspense fallback={<div className="ade-whats-new-loading" />}>
+          <Page key={item.key} close={onClose} />
+        </Suspense>
+      ) : notes ? (
+        <ReleaseNotesPage
+          notes={notes.digest}
+          resumedChats={notes.resumedChats}
+          changelogUrl={notes.changelogUrl}
+          githubReleaseUrl={notes.githubReleaseUrl}
+        />
+      ) : null}
     </Dialog>
   );
 }

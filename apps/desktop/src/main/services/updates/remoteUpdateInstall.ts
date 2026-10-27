@@ -24,7 +24,7 @@ import type { Logger } from "../logging/logger";
 type UpdateService = {
   getSnapshot(): AutoUpdateSnapshot;
   checkForUpdates(options?: { userInitiated?: boolean }): Promise<void>;
-  quitAndInstall(resumeChats?: boolean): Promise<boolean>;
+  quitAndInstall(resumeChats?: boolean, options?: { requestedRemotely?: boolean }): Promise<boolean>;
   onStateChange(cb: (snapshot: AutoUpdateSnapshot) => void): () => void;
 };
 
@@ -98,7 +98,7 @@ export function createRemoteUpdateInstaller(args: {
       args.logger.info("autoUpdate.remote_install_start", { version });
       // Resume interrupted chats on relaunch, as the in-app button offers: the
       // person who asked is not here to resume them by hand.
-      void service.quitAndInstall(true).then(
+      void service.quitAndInstall(true, { requestedRemotely: true }).then(
         (started) => {
           if (!started) args.logger.warn("autoUpdate.remote_install_not_started", { version });
         },

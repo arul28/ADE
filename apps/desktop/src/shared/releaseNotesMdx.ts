@@ -44,8 +44,12 @@ function splitSummaryAndSections(body: string): { summarySource: string; section
   return { summarySource: body, sectionsSource: "" };
 }
 
-/** The Mintlify changelog page, reduced to the summary and section bullets. */
-export function parseReleaseNotesMdx(source: string): ReleaseNotesDocument | null {
+/**
+ * The Mintlify changelog page, reduced to the summary and section bullets.
+ * `keepInline` keeps each bullet's inline markdown (code, bold, links) for a
+ * reader that renders it; the summary is always plain.
+ */
+export function parseReleaseNotesMdx(source: string, options: { keepInline?: boolean } = {}): ReleaseNotesDocument | null {
   const withoutFrontmatter = source.replace(/^---\r?\n[\s\S]*?\r?\n---\s*/, "").trim();
   if (!withoutFrontmatter) return null;
   const { summarySource, sectionsSource } = splitSummaryAndSections(withoutFrontmatter);
@@ -62,7 +66,7 @@ export function parseReleaseNotesMdx(source: string): ReleaseNotesDocument | nul
     }
     const bullet = /^[-*]\s+(.+)$/.exec(line.trim());
     if (bullet && current) {
-      const item = plainText(bullet[1] ?? "");
+      const item = options.keepInline ? (bullet[1] ?? "").replace(/\s+/g, " ").trim() : plainText(bullet[1] ?? "");
       if (item) current.items.push(item);
     }
   }

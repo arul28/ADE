@@ -58,6 +58,8 @@ export type PendingInstallUpdate = {
   targetVersion: string;
   releaseNotesUrl: string | null;
   requestedAt: string;
+  /** "Update & restart" was pressed on another machine (see `remoteUpdateInstall`). */
+  requestedRemotely?: boolean;
   /**
    * Chats ADE armed a "continue" row for before this install, when the user
    * asked for it. Written by the quit that installs and read by the launch that

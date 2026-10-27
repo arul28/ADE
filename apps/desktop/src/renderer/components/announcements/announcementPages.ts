@@ -1,55 +1,100 @@
 import { lazy, type ComponentType, type LazyExoticComponent } from "react";
 
 /**
- * "What's new" pages: free-form announcements the owner writes as features
- * land, shown inside a project in one large modal (`AnnouncementsHost`).
+ * The "What's new" catalogue: one entry per feature page. Add an entry when a
+ * feature lands, remove it whenever. Nothing here is tied to a release; the
+ * pages in the catalogue when a version is cut ship with it.
  *
- * A page is any React component under `pages/`. Nothing about its layout is
- * fixed: video, an interactive demo, buttons that open a page or start a
- * tour step. The modal adds only the frame (close, "1 of 3", Back/Next).
+ * Who sees what (`announcementSeen.ts`):
+ * - a page shows by itself for 45 days after its `added` date, then only in
+ *   Help › What's new;
+ * - a computer never shows the same page twice, wherever it showed first;
+ * - at most 3 pages at a time, newest first: after an update (with the
+ *   release notes as an "And more" page) or, at most once a day, inside a
+ *   project. Pages left over show on a later day.
  *
- * Showing rules (`announcementSeen.ts`):
- * - each page shows once per computer, keyed by `id` + `revision`;
- * - a new entry here shows on every computer that has not seen it;
- * - bump `revision` to show an edited page again (a typo fix that keeps the
- *   revision does not re-show it);
- * - removing an entry stops it from ever showing.
- *
- * Order here is display order when several are due. Pages load lazily, so
- * an entry costs nothing until it is shown.
+ * Pages load lazily, so an entry costs nothing until it is shown.
  */
 
 export type AnnouncementPageProps = {
-  /** Close the whole "What's new" modal (a "Try it" button calls this before navigating). */
+  /** Close the whole "What's new" modal (a button that goes somewhere calls this first). */
   close: () => void;
 };
 
 export type AnnouncementPageDef = {
   /** Stable id; never reuse one for a different page. */
   id: string;
-  /** Bump to show the page again on computers that saw an earlier revision. */
-  revision: number;
-  /** Names the page for assistive tech and the Help menu list. */
+  /** The day the page was added (YYYY-MM-DD), not the day its feature merged. */
+  added: string;
+  /** Names the page for assistive tech and the page dots. */
   title: string;
   Page: LazyExoticComponent<ComponentType<AnnouncementPageProps>>;
 };
 
 export const ANNOUNCEMENT_PAGES: readonly AnnouncementPageDef[] = [
   {
+    id: "performance-wins",
+    added: "2026-10-28",
+    title: "Performance wins",
+    Page: lazy(() => import("./pages/PerformanceAnnouncement")),
+  },
+  {
+    id: "side-chats",
+    added: "2026-10-27",
+    title: "Side chats",
+    Page: lazy(() => import("./pages/SideChatsAnnouncement")),
+  },
+  {
+    id: "issues",
+    added: "2026-10-27",
+    title: "Jira, Linear and GitHub issues",
+    Page: lazy(() => import("./pages/IssuesAnnouncement")),
+  },
+  {
+    id: "music",
+    added: "2026-10-27",
+    title: "Apple Music and Spotify",
+    Page: lazy(() => import("./pages/MusicAnnouncement")),
+  },
+  {
+    id: "open-any-file",
+    added: "2026-10-27",
+    title: "Open any file",
+    Page: lazy(() => import("./pages/OpenAnyFileAnnouncement")),
+  },
+  {
+    id: "chats-every-machine",
+    added: "2026-10-27",
+    title: "Every machine's chats",
+    Page: lazy(() => import("./pages/ChatsEveryMachineAnnouncement")),
+  },
+  {
+    id: "phone-pull-requests",
+    added: "2026-10-27",
+    title: "Pull requests on your phone",
+    Page: lazy(() => import("./pages/PhonePullRequestsAnnouncement")),
+  },
+  {
+    id: "wallpapers",
+    added: "2026-10-27",
+    title: "Wallpapers for your screen",
+    Page: lazy(() => import("./pages/WallpapersAnnouncement")),
+  },
+  {
     id: "iphone-duo",
-    revision: 1,
+    added: "2026-10-21",
     title: "iPhone Duo in the simulator",
     Page: lazy(() => import("./pages/IphoneDuoAnnouncement")),
   },
   {
     id: "phone-simulator-stream",
-    revision: 1,
+    added: "2026-10-21",
     title: "The simulator on your iPhone",
     Page: lazy(() => import("./pages/PhoneSimulatorAnnouncement")),
   },
   {
     id: "windows-desktop",
-    revision: 1,
+    added: "2026-10-21",
     title: "Windows desktop from any machine",
     Page: lazy(() => import("./pages/WindowsDesktopAnnouncement")),
   },

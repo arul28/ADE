@@ -66,6 +66,8 @@ describe("createRemoteUpdateInstaller", () => {
     expect(updates.quitAndInstall).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(500);
     expect(updates.quitAndInstall).toHaveBeenCalledTimes(1);
+    // Marked as remote, so the updated machine does not open "What's new" for nobody.
+    expect(updates.quitAndInstall).toHaveBeenCalledWith(true, { requestedRemotely: true });
   });
 
   it("downloads first and installs once the download lands", async () => {

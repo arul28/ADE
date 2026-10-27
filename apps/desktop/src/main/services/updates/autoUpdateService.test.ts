@@ -414,6 +414,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot().recentlyInstalled).toEqual({
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
+      fromVersion: "1.2.2",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
       githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
     });
@@ -422,6 +423,7 @@ describe("createAutoUpdateService", () => {
       recentlyInstalledUpdate: {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
+        fromVersion: "1.2.2",
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
         githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
       },
@@ -3125,6 +3127,7 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot().recentlyInstalled).toEqual({
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
+      fromVersion: "1.2.2",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
       githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.4",
     });
