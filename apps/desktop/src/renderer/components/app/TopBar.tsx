@@ -2101,10 +2101,20 @@ export function TopBar({
   }
 
   return (
-    <header
-      className="ade-shell-header relative isolate flex items-center gap-3"
-      style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
-    >
+    <header className="ade-shell-header relative isolate flex items-center gap-3">
+      {/* The window's drag handle: an empty strip the size of the bar, first
+          in the bar so the controls' `no-drag` cuts holes in it. The header
+          itself is not a drag region: `app-region` inherits, and Chromium
+          (Electron 44) counts each descendant's full box, unclipped, so the
+          window-sized picture below made the whole window a title bar and
+          ate every click (v1.2.124). An explicit `app-region: none` reads as
+          `no-drag`, so the picture cannot opt out; it must not inherit. */}
+      <div
+        aria-hidden
+        data-app-region="drag"
+        className="pointer-events-none absolute inset-0 -z-10"
+        style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
+      />
       {/* The top bar's part of the window gradient. It is one field with the
           welcome screen and the new chat pane, so where they meet there is
           no seam. */}

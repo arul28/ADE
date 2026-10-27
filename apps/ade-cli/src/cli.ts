@@ -27661,15 +27661,29 @@ async function runServe(
 
   // "Update & restart" asks this machine's desktop app, when one is running, to
   // install its own update: an app that owns the brain puts its own runtime
-  // back over a standalone one.
+  // back over a standalone one. On a Mac whose app runs the brain but is
+  // closed, the app is opened to do it (`requestUpdateThroughClosedApp`).
   const requestDesktopAppUpdateFromServe = async (targetVersion: string | null) => {
-    const { requestDesktopAppUpdate } = await import("./services/runtime/desktopAppUpdateBridge");
-    const routing = await requestDesktopAppUpdate({
-      socketPath: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath,
-      targetVersion,
-    });
+    const { hostAppBundlePath, requestDesktopAppUpdate, requestUpdateThroughClosedApp } = await import(
+      "./services/runtime/desktopAppUpdateBridge"
+    );
+    const socketPath = process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim() || layout.desktopBridgeSocketPath;
+    let routing = await requestDesktopAppUpdate({ socketPath, targetVersion });
+    const closedAppBundlePath = routing.attached ? null : hostAppBundlePath();
+    if (closedAppBundlePath && !routing.attached) {
+      headlessProjectLogger.info("brain.remote_update_opening_app", {
+        appBundlePath: closedAppBundlePath,
+        detail: routing.detail,
+      });
+      routing = await requestUpdateThroughClosedApp({ appBundlePath: closedAppBundlePath, socketPath, targetVersion });
+    }
     headlessProjectLogger.info("brain.remote_update_route", routing.attached
-      ? { route: "desktop_app", outcome: routing.result.outcome, version: routing.result.version }
+      ? {
+        route: "desktop_app",
+        outcome: routing.result.outcome,
+        version: routing.result.version,
+        openedClosedApp: closedAppBundlePath != null,
+      }
       : { route: "standalone", detail: routing.detail });
     return routing;
   };

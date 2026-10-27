@@ -1,3 +1,4 @@
+import { execFile } from "node:child_process";
 import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 
 /**
@@ -170,4 +171,86 @@ export async function requestDesktopAppUpdate(args: {
       }
     }
   }
+}
+
+/**
+ * The macOS app bundle this brain runs from, when the brain is the app's own:
+ * launchd runs `/Applications/ADE.app/Contents/MacOS/ADE … cli.cjs serve`.
+ * Null for the standalone runtime (`~/.ade/bin/ade`), a development brain run
+ * by node, and every other platform.
+ */
+export function hostAppBundlePath(
+  execPath: string = process.execPath,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "darwin") return null;
+  return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
+}
+
+/** How long a closed app gets to open and answer on the bridge. */
+const CLOSED_APP_ANSWER_WAIT_MS = 60_000;
+const CLOSED_APP_POLL_MS = 2_000;
+
+function openAppInBackground(appBundlePath: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    // `-g` keeps it behind whatever is in front on that Mac.
+    execFile("/usr/bin/open", ["-g", "-a", appBundlePath], { timeout: 15_000 }, (error, _stdout, stderr) => {
+      if (error) reject(new Error(String(stderr ?? "").trim() || error.message));
+      else resolve();
+    });
+  });
+}
+
+/**
+ * "Update & restart" for a Mac whose brain is the app's own while the app is
+ * closed.
+ *
+ * The standalone update would move the brain to `~/.ade/bin/ade`. macOS keeps
+ * its privacy permissions per program, and that program has none: its first
+ * read of a project on an external drive, or in Desktop, Documents or
+ * Downloads, puts a permission prompt on that Mac's screen and the brain waits
+ * on it with nobody there to answer (Mac Studio, 2026-10-27: offline for 33
+ * minutes after "Update all machines"). So the app is opened in the background
+ * and installs its own update, as it does when it is already open. When it
+ * cannot be opened or never answers, the update is refused with that reason
+ * instead of switching the program that runs the brain.
+ */
+export async function requestUpdateThroughClosedApp(args: {
+  appBundlePath: string;
+  socketPath: string;
+  targetVersion: string | null;
+}): Promise<DesktopAppUpdateRouting> {
+  const refuse = (detail: string): DesktopAppUpdateRouting => ({
+    attached: true,
+    result: {
+      outcome: "failed",
+      currentVersion: null,
+      version: null,
+      message: `ADE is closed on this Mac and could not be opened to update itself (${detail}). Open ADE on this Mac, then update again.`,
+    },
+  });
+  try {
+    await openAppInBackground(args.appBundlePath);
+  } catch (error) {
+    return refuse(error instanceof Error ? error.message : String(error));
+  }
+  const deadline = Date.now() + CLOSED_APP_ANSWER_WAIT_MS;
+  let detail = "it did not answer";
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, CLOSED_APP_POLL_MS));
+    const routing = await requestDesktopAppUpdate({
+      socketPath: args.socketPath,
+      targetVersion: args.targetVersion,
+      connectTimeoutMs: CLOSED_APP_POLL_MS,
+    });
+    if (routing.attached) {
+      // "unsupported" would send the caller to the standalone update, the very
+      // switch this route exists to avoid.
+      return routing.result.outcome === "unsupported"
+        ? refuse(routing.result.message || "this ADE build cannot update itself")
+        : routing;
+    }
+    detail = routing.detail;
+  }
+  return refuse(`${detail} within ${CLOSED_APP_ANSWER_WAIT_MS / 1000} seconds`);
 }

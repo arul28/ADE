@@ -1,4 +1,5 @@
 import { assertLocalProjectDataAvailable, recordLocalProjectDatabaseIdentity } from "./services/projects/projectRegistry";
+import { assertProjectRootReadable } from "./services/projects/projectRootAccess";
 import { setSentryUserResolver } from "../../desktop/src/shared/sentry/eventFilter";
 import type { CrossMachineHandoffTransport } from "../../desktop/src/main/services/chat/crossMachineHandoffOrchestrator";
 import fs from "node:fs";
@@ -939,6 +940,10 @@ export async function createAdeRuntime(args: {
     throw new Error(`Primary worktree path does not exist: ${primaryWorktreePath}`);
   }
 
+  // Before the first read inside the folder: everything below reads it
+  // synchronously, and one macOS holds behind a permission prompt must fail
+  // here, off the event loop. Existence checks above only stat it.
+  await assertProjectRootReadable(projectRoot);
   assertLocalProjectDataAvailable(projectRoot);
   const hadAdeDb = fs.existsSync(path.join(projectRoot, ".ade", "ade.db"));
   // On Windows each project's credential store is sealed with its own DPAPI
