@@ -16,6 +16,8 @@ if (!source || !fs.existsSync(source)) throw new Error("usage: db-reads.bench.mt
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-db-reads-"));
 const copy = path.join(dir, "ade.db");
 fs.copyFileSync(source, copy);
+// A WAL database keeps recent commits in the -wal file until a checkpoint.
+if (fs.existsSync(`${source}-wal`)) fs.copyFileSync(`${source}-wal`, `${copy}-wal`);
 
 const { openKvDb } = await import("../../../apps/desktop/src/main/services/state/kvDb");
 const { collectAdeDatabaseUsageStats } = await import("../../../apps/desktop/src/main/services/usage/usageStatsStore");

@@ -260,8 +260,18 @@ export function createExportHelper(dbPath: string, extensionPath: string, busyTi
     if (message.error != null) entry.reject(new Error(message.error));
     else entry.resolve(message.rows ?? []);
   });
-  worker.on("error", (error) => failAll(error instanceof Error ? error : new Error(String(error))));
-  worker.on("exit", (code) => failAll(new Error(`export helper exited (${code})`)));
+  // A worker that died holds no connection, so a close does not wait for it.
+  const markReleased = (): void => {
+    Atomics.store(new Int32Array(closedFlag), 0, 1);
+  };
+  worker.on("error", (error) => {
+    markReleased();
+    failAll(error instanceof Error ? error : new Error(String(error)));
+  });
+  worker.on("exit", (code) => {
+    markReleased();
+    failAll(new Error(`export helper exited (${code})`));
+  });
   const send = (message: { type: "begin" | "end" } | { type: "all"; sql: string; params: Array<string | number> }): Promise<unknown[]> => {
     if (failure) return Promise.reject(failure);
     const id = ++nextId;

@@ -1372,7 +1372,7 @@ export function createFileService({
       clearPagedDirectoryEntriesCacheForRoot(workspace.rootPath);
       // A new folder holds no files, so the index gains the folder (and any
       // parent the mkdir made) rather than being thrown away and rebuilt.
-      const segments = normalizedRel.split("/").filter(Boolean);
+      const segments = normalizedRel.split("/").filter((segment) => segment && segment !== ".");
       for (let depth = 1; depth <= segments.length; depth += 1) {
         indexService.onFileChanged({
           workspaceId: args.workspaceId,

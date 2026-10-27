@@ -219,10 +219,17 @@ describe("cliExecutableResolver", () => {
     expect(probe()).not.toContain("/fake/login/bin");
     fs.writeFileSync(answers, "", "utf8");
     // ...and the next agent env does not wait on it again: it returns at once
-    // without the login PATH while a background probe retries...
+    // without the login PATH...
     expect(probe()).not.toContain("/fake/login/bin");
-    // ...and once that retry answers, agent envs get the login PATH.
-    await vi.waitFor(() => expect(probe()).toContain("/fake/login/bin"));
+    // ...and past the short retry gap a background probe retries; once that
+    // answers, agent envs get the login PATH.
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(Date.now() + 5_000);
+      await vi.waitFor(() => expect(probe()).toContain("/fake/login/bin"));
+    } finally {
+      vi.useRealTimers();
+    }
     // An answer is reused instead of spawning a shell per turn.
     fs.rmSync(answers);
     expect(probe()).toContain("/fake/login/bin");

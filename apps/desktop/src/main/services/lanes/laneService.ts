@@ -1256,7 +1256,10 @@ async function isExpectedGitWorktreeRootCached(worktreePath: string): Promise<bo
   const known = worktreeRootAnswers.get(worktreePath);
   if (signature && known?.signature === signature) return known.isRoot;
   const isRoot = await isExpectedGitWorktreeRoot(worktreePath);
-  if (signature) worktreeRootAnswers.set(worktreePath, { signature, isRoot });
+  // Only a yes is kept: a no is also what a timeout or a git that failed to
+  // start reports, and keeping it would hold the lane unavailable until a
+  // restart. A folder that really is not a worktree asks again each refresh.
+  if (signature && isRoot) worktreeRootAnswers.set(worktreePath, { signature, isRoot });
   else worktreeRootAnswers.delete(worktreePath);
   return isRoot;
 }

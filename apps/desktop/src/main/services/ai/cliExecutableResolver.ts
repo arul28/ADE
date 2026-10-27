@@ -621,7 +621,11 @@ function readShellPath(
   // env build: a timing-out shell blocked the brain for its whole timeout each.
   const failedAt = shellPathFailedAt.get(key);
   if (failedAt !== undefined && Date.now() - failedAt < SHELL_PATH_FAILURE_BACKOFF_MS) {
-    refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    // At most one background retry per few seconds: a shell that keeps failing
+    // is not respawned on every agent env build.
+    if (Date.now() - failedAt >= SHELL_PATH_RETRY_GAP_MS) {
+      refreshShellPathInBackground(key, shellPath, shellFlag, timeoutMs, env);
+    }
     return null;
   }
   const resolved = readShellPathUncached(shellPath, shellFlag, timeoutMs, env);
@@ -637,6 +641,8 @@ function readShellPath(
 
 /** How long after a failed synchronous shell probe its retries run in the background only. */
 const SHELL_PATH_FAILURE_BACKOFF_MS = 30_000;
+/** The shortest gap between background retries of a shell probe that failed. */
+const SHELL_PATH_RETRY_GAP_MS = 2_000;
 const shellPathFailedAt = new Map<string, number>();
 
 const shellPathRefreshesInFlight = new Set<string>();

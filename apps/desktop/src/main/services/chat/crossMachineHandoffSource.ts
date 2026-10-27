@@ -190,9 +190,12 @@ export function createCrossMachineHandoffSource(deps: CrossMachineHandoffSourceD
   const listMoveSessionIds = (): Set<string> | null => {
     if (!deps.db) return new Set();
     if (!deps.db.all) return null;
+    // Every key that starts with the prefix sorts below the prefix with its
+    // last character bumped by one (SQLite compares the UTF-8 bytes).
+    const prefixEnd = `${MOVE_KEY_PREFIX.slice(0, -1)}${String.fromCharCode(MOVE_KEY_PREFIX.charCodeAt(MOVE_KEY_PREFIX.length - 1) + 1)}`;
     const rows = deps.db.all<{ key: string }>(
       "select key from kv where key >= ? and key < ?",
-      [MOVE_KEY_PREFIX, `${MOVE_KEY_PREFIX}\uffff`],
+      [MOVE_KEY_PREFIX, prefixEnd],
     );
     return new Set(rows.map((row) => row.key.slice(MOVE_KEY_PREFIX.length)));
   };
