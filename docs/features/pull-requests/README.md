@@ -2452,8 +2452,9 @@ accepted and rebuilt, with manual redirects, and takes the 302's `Location`
 only if `githubSignedMediaUrl` accepts it (the asset bucket with an
 `X-Amz-Signature`, or `private-user-images` with a `jwt`); the signed URL is
 never fetched with the token. An HTML answer (SAML SSO / EMU) or a 401/403/404
-falls back to `POST /markdown` of `![](url)` in the PR's own repository and the
-signed `src` GitHub renders. The content type comes from the bucket's
+falls back to `POST /markdown` with an image markdown document (empty alt text,
+the attachment URL) in the PR's own repository and the signed `src` GitHub
+renders. The content type comes from the bucket's
 `response-content-type` or a tokenless one-byte ranged GET, and must be an
 image or a video (SVG is refused). Results are cached until a minute before
 the signed URL expires, failures for two minutes, 500 entries, with one
