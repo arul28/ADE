@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../../shared/deeplinks";
 import { parseAgentChatTranscript } from "../../../shared/chatTranscript";
 import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
@@ -1016,6 +1017,7 @@ export function createSearchService(deps: SearchServiceDeps) {
     if (!lane) {
       withTransaction(() => {
         deleteDocsWhere("lane_id = ? AND kind IN ('commit', 'branch')", [laneId]);
+        run("DELETE FROM sources WHERE source_id = ?", [`lanegit:${laneId}`]);
       });
       return;
     }
@@ -1047,49 +1049,56 @@ export function createSearchService(deps: SearchServiceDeps) {
     } catch {
       laneLink = `ade://lane/${encodeURIComponent(laneId)}`;
     }
+    const docs: Array<Parameters<typeof upsertDoc>[0]> = [];
+    for (const commit of commits) {
+      docs.push({
+        docId: `commit:${laneId}:${commit.sha}`,
+        kind: "commit",
+        laneId,
+        laneName: lane.name,
+        sessionId: null,
+        title: commit.subject,
+        rankTitle: commit.subject,
+        snippetSource: `${commit.shortSha} ${commit.authorName}`,
+        deepLink: buildDeeplink(
+          { kind: "commit", sha: commit.sha, laneId, ...(laneEnvelope ? { envelope: laneEnvelope } : {}) },
+          { form: "ade" },
+        ),
+        updatedAt: commit.authoredAt,
+        body: sanitizeIndexedText(
+          [commit.subject, commit.authorName, commit.sha, commit.shortSha].join("\n")
+        )
+      });
+    }
+    for (const branch of branches) {
+      docs.push({
+        docId: `branch:${laneId}:${branch.name}`,
+        kind: "branch",
+        laneId,
+        laneName: lane.name,
+        sessionId: null,
+        title: branch.name,
+        rankTitle: branch.name,
+        snippetSource: branch.lastCommitMessage ?? null,
+        deepLink: repo
+          ? buildDeeplink(
+            { kind: "branch", repoOwner: repo.owner, repoName: repo.name, branch: branch.name },
+            { form: "ade" },
+          )
+          : withQueryParam(laneLink, "branch", branch.name),
+        updatedAt: lane.createdAt,
+        body: sanitizeIndexedText([branch.name, branch.lastCommitMessage ?? ""].join("\n"))
+      });
+    }
+    // A lane's commits and branches rarely change between passes (every
+    // brain start re-queues every lane), and rewriting them is ~500
+    // statements and a commit for the primary lane, all on the event loop.
+    const fingerprint = createHash("sha1").update(JSON.stringify(docs)).digest("base64");
+    if (getSource(`lanegit:${laneId}`).state === fingerprint) return;
     withTransaction(() => {
       deleteDocsWhere("lane_id = ? AND kind IN ('commit', 'branch')", [laneId]);
-      for (const commit of commits) {
-        upsertDoc({
-          docId: `commit:${laneId}:${commit.sha}`,
-          kind: "commit",
-          laneId,
-          laneName: lane.name,
-          sessionId: null,
-          title: commit.subject,
-          rankTitle: commit.subject,
-          snippetSource: `${commit.shortSha} ${commit.authorName}`,
-          deepLink: buildDeeplink(
-            { kind: "commit", sha: commit.sha, laneId, ...(laneEnvelope ? { envelope: laneEnvelope } : {}) },
-            { form: "ade" },
-          ),
-          updatedAt: commit.authoredAt,
-          body: sanitizeIndexedText(
-            [commit.subject, commit.authorName, commit.sha, commit.shortSha].join("\n")
-          )
-        });
-      }
-      for (const branch of branches) {
-        upsertDoc({
-          docId: `branch:${laneId}:${branch.name}`,
-          kind: "branch",
-          laneId,
-          laneName: lane.name,
-          sessionId: null,
-          title: branch.name,
-          rankTitle: branch.name,
-          snippetSource: branch.lastCommitMessage ?? null,
-          deepLink: repo
-            ? buildDeeplink(
-              { kind: "branch", repoOwner: repo.owner, repoName: repo.name, branch: branch.name },
-              { form: "ade" },
-            )
-            : withQueryParam(laneLink, "branch", branch.name),
-          updatedAt: lane.createdAt,
-          body: sanitizeIndexedText([branch.name, branch.lastCommitMessage ?? ""].join("\n"))
-        });
-      }
-      putSource(`lanegit:${laneId}`, "lane-git", 0, 0, null);
+      for (const doc of docs) upsertDoc(doc);
+      putSource(`lanegit:${laneId}`, "lane-git", 0, 0, fingerprint);
     });
   };
 

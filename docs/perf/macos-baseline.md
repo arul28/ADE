@@ -1564,6 +1564,35 @@ Only the dirty/ahead/behind numbers can be old; lane names, archive state,
 parents and deleted lanes are read live. Without the option (desktop, older
 phones) the answer is the exact one.
 
+Brain, database and git against T3 Code's published numbers (ledger section
+F): ADE measured the way each T3 PR did, on the real-load clone (47 lanes, 505
+PRs, 1,012 PR projections), `main` e2f42f44c vs this branch, 5 runs per side,
+load 7-38. A statement timer and a sync-wait recorder were preloaded into the
+measurement brain for F2 and the near-miss check.
+
+| T3 measurement | T3 | Before (`main`) | Baseline | Ceiling |
+|---|---:|---:|---:|---:|
+| F1 PR discovery reads, one pass (T3 #25443, 500 threads) | 4.32 ms | 3.2-3.6 ms | 3.3 ms (worst run 3.9) | 5 ms |
+| F3 one `git rev-parse HEAD` through runGit, 200 runs (T3 #22759) | 2.7-3.0 ms | 6.9 ms (Xcode shim) | 3.0 ms (worst run 3.4; bare spawn here 2.6-3.2) | 4 ms |
+| F4 git processes, 1 + 4 overlapping `git status --full` (T3 #24478) | 46 | 35 | 22 | 30 |
+| F5 startup recovery read, 20 warm runs (T3 #22554) | 0.8 ms | 0.06 ms | 0.04-0.12 ms | 1 ms |
+| F2 longest database step on the event loop while a phone connects (T3 #23689) | 12.7 ms | 73 ms (runs 52-106) | 84 ms (runs 15-147) | 150 ms |
+| F2 a read beside the slowest read (T3 #24762) | 181-220 ms | <= 106 ms | <= 147 ms | 250 ms |
+
+F2's long step is the phone's sync export (`crsql_changes`), 75-147 ms per
+batch on this database; no other read passed 36 ms, and none of them overlapped
+a GC pause. ADE reads on the brain's one connection, so T3's 12.7 ms (a reader
+off the main thread) is out of reach without a reader worker. The search
+index no longer rewrites a lane's commits and branches when they are unchanged
+(each rewrite was ~500 statements and 10-86 ms on the event loop, every brain
+start), and overlapping change reads of one worktree share one follow-up read
+(15 -> 11 git processes in F4).
+
+`brain.event_loop_near_miss` every ~33 s at ~2.0 s with little CPU, seen on
+measurement brains: on `main` it is `security add-generic-password` timing out
+(spawnSync, 2,001-2,004 ms, from the credential store's key-material read); this
+branch makes no such call (0 near-misses in 10 runs vs 2 per run on `main`).
+
 Credential reads while another ADE process holds the store lock
 (`scripts/perf/service/credential-lock.bench.mts`: a second process holds
 the lock 3 s, a cold store reads one key with `getSync`, as the brain does
