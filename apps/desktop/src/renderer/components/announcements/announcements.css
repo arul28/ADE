@@ -99,7 +99,7 @@ html[data-motion="reduced"] .ade-whats-new-glow > span::before { animation: none
 }
 
 .ade-whats-new-loading {
-  height: clamp(400px, calc(90vh - 128px), 560px);
+  height: clamp(420px, calc(90vh - 120px), 620px);
 }
 
 .ade-whats-new-foot {

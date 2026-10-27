@@ -66,7 +66,26 @@ find the failed job before writing notes (step 2): a flaky job is rerun with
 Write `changelog/v<V>.mdx` (copy the previous one's shape), add it to
 `docs.json`'s changelog list, update the "Latest release" card in
 `changelog/index.mdx`, and add the `## [<V>]` section plus compare links to
-`CHANGELOG.md`. Then:
+`CHANGELOG.md`.
+
+These notes ship inside the app. On the first launch after a user installs
+the update on that computer, What's new shows up to 3 catalogue pages they
+have not seen, then an "And more" page with these notes for every version
+since the one they came from (sections merged, an icon per section). So:
+
+- Use `## New`, `## Improved`, `## Fixed`, then platform sections
+  (`## iOS`, `## Windows`). Other names still show, with a plain mark.
+- One plain sentence per bullet, ending in its PR number, e.g. `(#1896)`.
+  The app turns the numbers into links.
+- Pages are optional. A release with no new page still shows the notes.
+- New pages: list the merged PRs with a demo video or clean screenshots and
+  tell the owner which would make a page. A page is an entry in
+  `apps/desktop/src/renderer/components/announcements/announcementPages.ts`
+  (its `added` date is the day it ships) plus a short file in `pages/`. Use
+  real captures from the dev app, cropped to the feature, GIF or WebP in
+  `pages/assets/`. Pages show by themselves for 45 days.
+
+Then:
 
 ```bash
 node scripts/validate-docs.mjs

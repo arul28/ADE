@@ -285,6 +285,13 @@ export type LatestReleaseInfo = {
 export type RecentlyInstalledUpdate = {
   version: string;
   installedAt: string;
+  /** The version this install replaced. Absent on records that predate the field. */
+  fromVersion?: string;
+  /**
+   * True when "Update & restart" was pressed on another machine. Nobody here
+   * asked for it, so this machine skips the after-update "What's new".
+   */
+  requestedRemotely?: boolean;
   releaseNotesUrl: string | null;
   githubReleaseUrl: string | null;
   /**

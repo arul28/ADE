@@ -1,8 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowSquareOut, ArrowsClockwise, CheckCircle, GithubLogo, WarningCircle } from "@phosphor-icons/react";
-import { bundledReleaseNotes } from "../../../shared/bundledReleaseNotes";
 import { updateVersionLabel } from "../../../shared/updateVersions";
-import { parseReleaseNotesMdx, type ReleaseNotesDocument } from "../../../shared/releaseNotesMdx";
 import type { AppInfo, AutoUpdateSnapshot } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import {
@@ -14,6 +12,7 @@ import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
 import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
+import { openWhatsNewAfterUpdate } from "../announcements/AnnouncementsHost";
 
 const RUNTIME_SKEW_REFRESH_MS = 15_000;
 const RUNTIME_SKEW_TITLE = "ADE has an update. Update ADE before continuing.";
@@ -36,11 +35,6 @@ function activeRuntimeVersionSkew(value: RuntimeVersionSkew | null | undefined):
   return value;
 }
 
-function releaseNotesForVersion(version: string | null): ReleaseNotesDocument | null {
-  if (!version || bundledReleaseNotes.version !== version || !bundledReleaseNotes.markdown) return null;
-  return parseReleaseNotesMdx(bundledReleaseNotes.markdown);
-}
-
 export function AutoUpdateControl() {
   const [snapshot, setSnapshot] = useState<AutoUpdateSnapshot>(EMPTY_AUTO_UPDATE_SNAPSHOT);
   const [runtimeSkew, setRuntimeSkew] = useState<RuntimeVersionSkew | null>(null);
@@ -60,6 +54,44 @@ export function AutoUpdateControl() {
     mountedRef.current = false;
   }, []);
 
+  const dismissInstalledNotice = useCallback(() => {
+    setReleaseNotesOpen(false);
+    setSnapshot((current) => ({
+      ...current,
+      recentlyInstalled: null,
+    }));
+    void window.ade.updateDismissInstalledNotice().catch(() => {
+      // Ignore renderer-side dismissal failures.
+    });
+  }, []);
+
+  // An update this computer installed itself opens "What's new" (catalogue
+  // pages, then the release notes). One pressed on another machine stays
+  // quiet here: nobody at this computer asked for it. Its only notice is the
+  // chats it set to continue, when there are any.
+  const announcedInstallRef = useRef<string | null>(null);
+  const announceInstalled = useCallback((next: AutoUpdateSnapshot) => {
+    const installed = next.recentlyInstalled;
+    if (!installed) return;
+    const key = `${installed.version}:${installed.installedAt}`;
+    if (announcedInstallRef.current === key) return;
+    announcedInstallRef.current = key;
+    if (!installed.requestedRemotely) {
+      openWhatsNewAfterUpdate({
+        version: installed.version,
+        fromVersion: installed.fromVersion ?? null,
+        resumedChats: installed.resumedChats ?? [],
+        changelogUrl: installed.releaseNotesUrl,
+        githubReleaseUrl: installed.githubReleaseUrl,
+        onClose: dismissInstalledNotice,
+      });
+    } else if ((installed.resumedChats?.length ?? 0) > 0) {
+      setReleaseNotesOpen(true);
+    } else {
+      dismissInstalledNotice();
+    }
+  }, [dismissInstalledNotice]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -67,7 +99,7 @@ export function AutoUpdateControl() {
       .then((nextSnapshot) => {
         if (cancelled) return;
         setSnapshot(nextSnapshot);
-        setReleaseNotesOpen(Boolean(nextSnapshot.recentlyInstalled));
+        announceInstalled(nextSnapshot);
       })
       .catch(() => {
         // Best effort only.
@@ -86,16 +118,14 @@ export function AutoUpdateControl() {
       if (nextSnapshot.status !== "ready") {
         setInstallRequested(false);
       }
-      if (nextSnapshot.recentlyInstalled) {
-        setReleaseNotesOpen(true);
-      }
+      announceInstalled(nextSnapshot);
     });
 
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, []);
+  }, [announceInstalled]);
 
   useEffect(() => {
     let cancelled = false;
@@ -131,17 +161,6 @@ export function AutoUpdateControl() {
       window.clearInterval(timer);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
-  }, []);
-
-  const dismissInstalledNotice = useCallback(() => {
-    setReleaseNotesOpen(false);
-    setSnapshot((current) => ({
-      ...current,
-      recentlyInstalled: null,
-    }));
-    void window.ade.updateDismissInstalledNotice().catch(() => {
-      // Ignore renderer-side dismissal failures.
-    });
   }, []);
 
   const openInstalledLink = useCallback((url: string) => {
@@ -217,7 +236,6 @@ export function AutoUpdateControl() {
   const releaseNotesUrl = snapshot.recentlyInstalled?.releaseNotesUrl ?? null;
   const githubReleaseUrl = snapshot.recentlyInstalled?.githubReleaseUrl ?? null;
   const installedVersion = snapshot.recentlyInstalled?.version ?? null;
-  const installedReleaseNotes = releaseNotesForVersion(installedVersion);
   const resumedChats = snapshot.recentlyInstalled?.resumedChats ?? [];
   const runtimeRequiresDesktopUpdate = runtimeSkew?.state === "runtime_newer";
   const showRuntimeSkewIndicator = runtimeRequiresDesktopUpdate && !shouldShowIndicator && !showUpdateError;
@@ -358,7 +376,7 @@ export function AutoUpdateControl() {
         title={installedVersion ? `Updated to v${installedVersion}` : "ADE updated"}
         tone="success"
         icon={<CheckCircle size={16} weight="fill" />}
-        size={installedReleaseNotes || resumedChats.length > 0 ? "md" : "sm"}
+        size={resumedChats.length > 0 ? "md" : "sm"}
         actions={[
           ...(releaseNotesUrl
             ? [
@@ -381,7 +399,7 @@ export function AutoUpdateControl() {
         ]}
       >
         {resumedChats.length > 0 ? (
-          <div style={{ marginBottom: installedReleaseNotes ? 12 : 0 }}>
+          <div>
             <div style={{ fontWeight: 600, marginBottom: 4 }}>
               {resumedChats.length === 1
                 ? "Scheduled 1 chat to resume"
@@ -392,23 +410,6 @@ export function AutoUpdateControl() {
                 <li key={chat.sessionId} style={{ marginBottom: 2 }}>{chat.title}</li>
               ))}
             </ul>
-          </div>
-        ) : null}
-        {installedReleaseNotes ? (
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            {installedReleaseNotes.summary ? (
-              <p style={{ margin: 0 }}>{installedReleaseNotes.summary}</p>
-            ) : null}
-            {installedReleaseNotes.sections.map((section) => (
-              <div key={section.title}>
-                <div style={{ fontWeight: 600, marginBottom: 4 }}>{section.title}</div>
-                <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  {section.items.map((item) => (
-                    <li key={item} style={{ marginBottom: 2 }}>{item}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
           </div>
         ) : null}
       </Dialog>

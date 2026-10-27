@@ -1,4 +1,4 @@
-import { WindowsLogo } from "@phosphor-icons/react";
+import { AppleLogo, Camera, VideoCamera, WindowsLogo } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import gif from "./assets/windows-desktop.gif";
@@ -11,7 +11,12 @@ export default function WindowsDesktopAnnouncement({ close }: AnnouncementPagePr
       close={close}
       place={{ icon: <WindowsLogo size={17} weight="fill" color="#0078d4" />, name: "Windows desktop" }}
       headline="Agents can now use Windows."
-      sentence="From any computer, even a Mac, an agent can drive a private Windows desktop and send back screenshots and videos of what it did."
+      sentence="From any computer, even a Mac, an agent can drive its own Windows desktop and send back screenshots and videos of what it did."
+      marks={[
+        { icon: <AppleLogo size={14} weight="fill" />, label: "Works from a Mac" },
+        { icon: <Camera size={14} weight="fill" />, label: "Screenshots" },
+        { icon: <VideoCamera size={14} weight="fill" />, label: "Videos" },
+      ]}
       media={{
         gif,
         still,

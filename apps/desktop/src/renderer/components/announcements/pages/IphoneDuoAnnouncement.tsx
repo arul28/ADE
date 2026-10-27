@@ -1,4 +1,4 @@
-import { AppleLogo } from "@phosphor-icons/react";
+import { AppleLogo, Cube, DeviceMobileCamera, SlidersHorizontal } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
 import gif from "./assets/iphone-duo.gif";
@@ -11,7 +11,12 @@ export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) 
       close={close}
       place={{ icon: <AppleLogo size={17} weight="fill" />, name: "iOS simulator" }}
       headline="Test your app on iPhone Duo."
-      sentence="Run it on the foldable iPhone in the simulator, then drag the hinge to see it closed, half open and flat."
+      sentence="Run your app on the foldable iPhone in the simulator, then drag the hinge to see it closed, half open and flat."
+      marks={[
+        { icon: <SlidersHorizontal size={14} weight="bold" />, label: "Hinge slider" },
+        { icon: <Cube size={14} weight="fill" />, label: "3D view" },
+        { icon: <DeviceMobileCamera size={14} weight="fill" />, label: "Cover screen" },
+      ]}
       media={{
         gif,
         still,
