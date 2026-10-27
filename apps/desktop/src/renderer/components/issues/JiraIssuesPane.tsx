@@ -9,12 +9,15 @@ import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { JiraStatusIcon } from "../lanes/jiraBrand";
 import { cn } from "../ui/cn";
 import { Banner } from "../ui/notice";
-import { IssueViewer } from "./IssueViewer";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { useAppStore, useActiveProjectRoot } from "../../state/appStore";
 import { ChipPicker } from "./issuePickerChip";
 import { buildJiraLaunchIssue } from "../../lib/linearBatchLaunch";
 import { useIssueLaunchSelection } from "./useIssueLaunchSelection";
+
+// The viewer (markdown, proof media) loads when an issue is first opened, as in
+// the GitHub pane: the Jira button sits in the top bar, which every window loads.
+const IssueViewer = React.lazy(() => import("./IssueViewer").then((module) => ({ default: module.IssueViewer })));
 
 const STATE_FILTERS: Array<{ value: JiraIssueListState; label: string }> = [
   { value: "open", label: "Open" },
@@ -288,6 +291,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
       </div>
       <div className="min-h-0 min-w-0">
         {selectedKeyToShow ? (
+          <React.Suspense fallback={null}>
           <IssueViewer
             key={`${siteUrl}:${selectedKeyToShow}`}
             issueRef={{
@@ -299,6 +303,7 @@ export function JiraIssuesPane({ siteUrl, refreshKey }: { siteUrl: string; refre
             variant="pane"
             onOpenRelated={(ref) => { if (ref.provider === "jira") setSelectedKey(ref.key); }}
           />
+          </React.Suspense>
         ) : (
           <div className="grid h-full place-items-center text-[12px] text-[color:var(--kit-text-3)]">Select an issue.</div>
         )}
