@@ -13,8 +13,8 @@ export default function PerformanceAnnouncement({ close }: AnnouncementPageProps
     <WhatsNewFeature
       close={close}
       place={{ icon: <Lightning size={17} weight="fill" />, name: "Performance" }}
-      headline="Faster than T3 Code in 17 of 18 speed tests."
-      sentence="Long chats open instantly, switching is quicker and your phone reconnects in about a second. Lower is better; T3 Code's numbers are its own, from October 2026."
+      headline="Faster than T3 Code."
+      sentence="Ahead in 17 of 18 speed tests, against T3 Code's own published numbers."
       marks={[
         { icon: <DeviceMobile size={14} weight="fill" />, label: "iPhone on 3G" },
         { icon: <DesktopTower size={14} weight="fill" />, label: "Mac app" },
@@ -24,7 +24,7 @@ export default function PerformanceAnnouncement({ close }: AnnouncementPageProps
         kind: "images",
         width: 1568,
         height: 618,
-        holdMs: 6_000,
+        holdMs: 2_000,
         images: [
           { src: phone, alt: "iPhone app on slow 3G: ADE wins all 4 tests against T3 Code, including a 2.41 s cold start" },
           { src: macA, alt: "Mac app: ADE loads less code at launch and redraws less while streaming than T3 Code" },
