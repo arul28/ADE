@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useState } from "react";
 import type { ProjectMoveRecord, ProjectMoveVolume } from "../../../shared/types/projectMove";
 import { useAppStore } from "../../state/appStore";
 import { isMacPlatform } from "../../lib/platform";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { openMoveProjectDialog } from "../projectMove/ProjectMoveHost";
 import { chooseOldCopy } from "../projectMove/oldCopyActions";
@@ -21,7 +22,8 @@ import {
 export function ProjectLocationSection() {
   const project = useAppStore((s) => s.project);
   const binding = useAppStore((s) => s.projectBinding);
-  const api = window.ade?.projectMove;
+  const moveApi = window.ade?.projectMove;
+  const api = isAdeAvailable(moveApi) ? moveApi : undefined;
   const root = project?.rootPath ?? null;
   const remote = binding?.kind === "remote";
   const [volumes, setVolumes] = useState<ProjectMoveVolume[]>([]);

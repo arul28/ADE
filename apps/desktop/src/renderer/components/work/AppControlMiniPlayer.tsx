@@ -8,6 +8,7 @@ import type {
   OpenProjectBinding,
 } from "../../../shared/types";
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isWorkLivePreviewDisabled } from "../../state/workLiveCardState";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
 import {
@@ -325,7 +326,7 @@ function AppControlMiniPlayerBox({
   }, [laneId, shownForSeed]);
   useEffect(() => {
     const read = window.ade?.appControl?.getLatestFrame;
-    if (!shownForSeed || !connectedTargetId || typeof read !== "function") return undefined;
+    if (!shownForSeed || !connectedTargetId || !isAdeAvailable(read)) return undefined;
     let cancelled = false;
     void read({ laneId }, runtimePinRef.current)
       .then((frame) => {
@@ -347,7 +348,7 @@ function AppControlMiniPlayerBox({
   // event to learn from: one read, then events.
   useEffect(() => {
     const api = window.ade?.appControl;
-    if (typeof api?.getRecordingStatus !== "function") return undefined;
+    if (!isAdeAvailable(api?.getRecordingStatus)) return undefined;
     let cancelled = false;
     void api.getRecordingStatus({ laneId }, runtimePinRef.current)
       .then((status) => {
@@ -383,7 +384,7 @@ function AppControlMiniPlayerBox({
 
   const stopRecording = useCallback(async () => {
     const api = window.ade?.appControl;
-    if (typeof api?.stopRecording !== "function") return;
+    if (!isAdeAvailable(api?.stopRecording)) return;
     // The status the stop answers with is the one the event also carries;
     // taking it here means a lost event cannot leave the pill up.
     const status = await api.stopRecording(

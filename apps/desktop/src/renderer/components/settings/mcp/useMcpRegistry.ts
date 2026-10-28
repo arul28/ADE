@@ -110,7 +110,9 @@ export function useMcpRegistry(): McpRegistryApi {
   const readAll = useCallback(async (): Promise<McpRegistryView> => {
     const settings = window.ade?.accountSettings;
     const registry = window.ade?.mcpRegistry;
-    if (!settings || !registry) return { ...EMPTY, phase: "unavailable", message: NO_BRIDGE };
+    if (!isAdeAvailable(settings) || !isAdeAvailable(registry)) {
+      return { ...EMPTY, phase: "unavailable", message: NO_BRIDGE };
+    }
     // The scan and the context read files on this computer and need no brain,
     // so the "found here" list still shows when the registry itself cannot.
     const [context, scan] = await Promise.all([
@@ -247,7 +249,7 @@ export function useMcpRegistry(): McpRegistryApi {
     mode: "create" | "edit",
   ) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
+    if (!isAdeAvailable(registry)) return NO_BRIDGE;
     const server = normalizeMcpRegistryServer(draft);
     if (!server) return "ADE can't save that server. Check its name and its command or URL.";
     // A new name is checked against the brain's own list before anything is
@@ -288,7 +290,7 @@ export function useMcpRegistry(): McpRegistryApi {
 
   const removeServer = useCallback((name: string) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
+    if (!isAdeAvailable(registry)) return NO_BRIDGE;
     const written = await writeServers((current) => current.filter((entry) => entry.name !== name));
     if (written) return written;
     // A later server of the same name must not start out switched off here.
@@ -315,14 +317,14 @@ export function useMcpRegistry(): McpRegistryApi {
 
   const setSecret = useCallback((server: string, field: McpSecretField, name: string, value: string) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
+    if (!isAdeAvailable(registry)) return NO_BRIDGE;
     const stored = await registry.setSecret({ server, field, name, value });
     return stored.ok ? null : stored.message;
   }), [mutate]);
 
   const importFound = useCallback((name: string) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
+    if (!isAdeAvailable(registry)) return NO_BRIDGE;
     // The import replaces the vault values under this name. Read the list as
     // it is now, not as the page loaded it: another computer may have added a
     // server with this name, and its values must stay.
@@ -344,7 +346,7 @@ export function useMcpRegistry(): McpRegistryApi {
     let cancelled = false;
     const message = await mutate(async () => {
       const registry = window.ade?.mcpRegistry;
-      if (!registry) return NO_BRIDGE;
+      if (!isAdeAvailable(registry)) return NO_BRIDGE;
       const result = await registry.signIn({ server });
       if (result.ok) return null;
       cancelled = "cancelled" in result && result.cancelled === true;
@@ -359,7 +361,7 @@ export function useMcpRegistry(): McpRegistryApi {
 
   const signOut = useCallback((name: string) => mutate(async () => {
     const registry = window.ade?.mcpRegistry;
-    if (!registry) return NO_BRIDGE;
+    if (!isAdeAvailable(registry)) return NO_BRIDGE;
     const result = await registry.signOut({ server: name });
     return result.ok ? null : result.message;
   }), [mutate]);

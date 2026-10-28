@@ -3,6 +3,7 @@ import { Eye, Square } from "@phosphor-icons/react";
 import type { TerminalWatchSummary } from "../../../shared/terminalWatch";
 import type { OpenProjectBinding, TerminalSessionChangedEvent } from "../../../shared/types";
 import { isUnsupportedAdeActionError } from "../../../shared/codedError";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { showToast } from "../app/toast/toastStore";
 
 /**
@@ -41,7 +42,7 @@ export function useChatTerminalWatches(
     setLoadError(false);
     const list = window.ade?.terminal?.listWatches;
     // A host without terminal watches (the web client) shows none.
-    if (!chatId || typeof list !== "function") return undefined;
+    if (!chatId || !isAdeAvailable(list)) return undefined;
     let cancelled = false;
     // Session changes can start overlapping reads: only the newest one lands.
     let latest = 0;
@@ -64,7 +65,7 @@ export function useChatTerminalWatches(
     };
     void load();
     const subscribe = window.ade?.sessions?.onChanged;
-    const unsubscribe = typeof subscribe === "function"
+    const unsubscribe = isAdeAvailable(subscribe)
       ? subscribe((event: TerminalSessionChangedEvent) => {
         if (event?.sessionId === chatId) void load();
       }, pinRef.current ?? undefined)
@@ -78,7 +79,7 @@ export function useChatTerminalWatches(
 
   const stop = useCallback((watch: TerminalWatchSummary) => {
     const unwatch = window.ade?.terminal?.unwatch;
-    if (typeof unwatch !== "function") return;
+    if (!isAdeAvailable(unwatch)) return;
     const scope = scopeRef.current;
     // Optimistic: the row goes now; the brain's change event confirms it.
     setWatches((current) => current.filter((row) => row.watchId !== watch.watchId));

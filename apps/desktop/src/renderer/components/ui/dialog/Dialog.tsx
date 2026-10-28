@@ -4,6 +4,7 @@ import { NoticeButton, NoticeCloseButton, NoticeIcon, type NoticeAction } from "
 import type { NoticeTone } from "../notice/noticeTones";
 import { PortalContainerContext } from "../portalContainer";
 import { Z_LAYERS } from "../zLayers";
+import { zoomCompensatedLength, zoomCompensatedSizeStyle } from "../../../lib/webZoom";
 import "./dialog.css";
 
 /**
@@ -161,9 +162,11 @@ function isAboveDialogSurface(target: EventTarget | null): boolean {
   return target instanceof Element && target.closest(ABOVE_DIALOG_SURFACES) !== null;
 }
 
+// Viewport units in a caller's length go through the hosted-web zoom
+// compensation too, so an explicit `100dvh` cannot outgrow the window there.
 function cssLength(value: number | string | undefined): string | undefined {
   if (value == null) return undefined;
-  return typeof value === "number" ? `${value}px` : value;
+  return typeof value === "number" ? `${value}px` : zoomCompensatedLength(value);
 }
 
 export function Dialog({
@@ -316,7 +319,7 @@ export function Dialog({
             flexDirection: "column",
             overflow: "hidden",
             outline: "none",
-            ...panelStyle,
+            ...zoomCompensatedSizeStyle(panelStyle),
           }}
           onClick={stopClickPropagation ? (event) => event.stopPropagation() : undefined}
           onOpenAutoFocus={handleOpenAutoFocus}
@@ -418,7 +421,7 @@ export function Dialog({
                   fontSize: 12.5,
                   lineHeight: 1.5,
                   color: "var(--color-secondary-fg, var(--color-fg))",
-                  ...bodyStyle,
+                  ...zoomCompensatedSizeStyle(bodyStyle),
                 }}
               >
                 {children}

@@ -446,7 +446,7 @@ describe("WorkSidebar context targets", () => {
     cleanup();
     renderSidebar({ tab: "app-control", contextTarget: { kind: "chat", sessionId: "chat-1" } });
 
-    expect(screen.getByTestId("app-control-panel").getAttribute("data-session-id")).toBe("chat-1");
+    expect((await screen.findByTestId("app-control-panel")).getAttribute("data-session-id")).toBe("chat-1");
   });
 
   it("renders the attached terminal panel for running CLI session owners", () => {

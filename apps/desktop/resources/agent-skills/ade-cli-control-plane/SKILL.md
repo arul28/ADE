@@ -396,6 +396,9 @@ They are two separate signals on the row the user is looking at:
   **Needs you** for the rest of the run, and the person reads a live "blocked on
   you" badge about a decision that was already made. It clears only an
   agent-raised ask — never one the user raised, never a provider question card.
+  When you answered a subagent's question yourself, take its hand down too:
+  `ade chat ask --clear --session <subagent>` (only chats you started).
+  Snoozing it does not help: a snooze gives way to a raised hand.
   A message from another agent is not a user answer, so it does not clear the
   hand on its own.
 - **`ade notify --title "<t>" [--body "<b>"]` tells the user something they

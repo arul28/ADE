@@ -420,7 +420,7 @@ export function HeaderUsageControl({
         title="Usage"
         ariaLabelledBy="header-usage-title"
         closeTitle="Close usage"
-        width="w-[min(420px,calc(100vw-24px))]"
+        width="w-[min(420px,calc(100vw_/_var(--ade-web-zoom-factor,1)_-_24px))]"
         // The shell surface, the same hook every other top-bar popover reads,
         // with the theme's raised token as the fallback rather than the
         // shell's literal `#121019`: everything inside is drawn in `text-fg`,

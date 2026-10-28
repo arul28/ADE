@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef } from "react";
+import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
@@ -18,7 +18,6 @@ import type {
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { formatToolTypeLabel } from "../../lib/sessions";
 import { workRuntimeScopeKey } from "../../lib/chatMachineRouting";
-import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatPrPane } from "../chat/ChatPrPane";
 import { IssuesToolPanel } from "../issues/IssuesToolPanel";
 import { SideChatToolPanel } from "../chat/SideChatToolPanel";
@@ -43,6 +42,10 @@ import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
 import { WorkToolReadOnlyView } from "./WorkToolReadOnlyView";
 import { isWebCodecsAvailable } from "../chat/h264StreamPlayer";
 import { macDesktopWebApi } from "../chat/macDesktopWebStream";
+
+/** App Control loads when its tool is first opened; the chat pane shares the chunk. */
+const ChatAppControlPanel = lazy(() => import("../chat/ChatAppControlPanel")
+  .then((module) => ({ default: module.ChatAppControlPanel })));
 
 /**
  * One component per Work tool, keyed by tool id.
@@ -524,20 +527,24 @@ function WorkAppControlTool({
   }
   if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame padded frameRef={mountRef}>
-      <ChatAppControlPanel
-        // One session per lane: another lane is another session, read afresh.
-        key={`work-appcontrol:${mountScope}:${laneId}`}
-        sessionId={panelSessionId}
-        laneId={laneId}
-        laneName={activeLane?.name ?? null}
-        runtimePin={runtimePin}
-        projectRoot={laneRoot}
-        controlDisabledReason={null}
-        onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
-        onAddContext={canInsertContext ? onAddAppControlContext : undefined}
-        onInsertDraft={canInsertContext ? onInsertDraft : undefined}
-      />
+    <NativePanelFrame padded>
+      <Suspense fallback={null}>
+        <div ref={mountRef} className="h-full min-h-0">
+          <ChatAppControlPanel
+            // One session per lane: another lane is another session, read afresh.
+            key={`work-appcontrol:${mountScope}:${laneId}`}
+            sessionId={panelSessionId}
+            laneId={laneId}
+            laneName={activeLane?.name ?? null}
+            runtimePin={runtimePin}
+            projectRoot={laneRoot}
+            controlDisabledReason={null}
+            onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
+            onAddContext={canInsertContext ? onAddAppControlContext : undefined}
+            onInsertDraft={canInsertContext ? onInsertDraft : undefined}
+          />
+        </div>
+      </Suspense>
     </NativePanelFrame>
   );
 }

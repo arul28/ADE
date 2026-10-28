@@ -4,6 +4,7 @@ import { HOST_ONLY_CHAT_METADATA_KEYS } from "../../../shared/chatAutoResume";
 import type { AgentChatEvent, AgentChatEventEnvelope } from "../../../shared/types/chat";
 import {
   countHumanChildMessagesForTurn,
+  formatChildRaisedHandAnnotation,
   formatHumanChildMessageAnnotation,
   isHumanChildMessage,
   HOST_AUTHORED_MESSAGE_PROVENANCE_KEYS,
@@ -240,6 +241,27 @@ describe("formatHumanChildMessageAnnotation", () => {
   it("uses singular and plural copy", () => {
     expect(formatHumanChildMessageAnnotation(1)).toBe("The user also sent 1 message to this chat.");
     expect(formatHumanChildMessageAnnotation(3)).toBe("The user also sent 3 messages to this chat.");
+  });
+});
+
+describe("formatChildRaisedHandAnnotation", () => {
+  it("reports only agent-raised child asks and gives the parent the child-specific clear command", () => {
+    expect(formatChildRaisedHandAnnotation({ sessionId: CHILD })).toBeNull();
+    expect(formatChildRaisedHandAnnotation({
+      sessionId: CHILD,
+      attentionRequestedAt: "2026-10-28T12:00:00.000Z",
+      attentionSource: "user",
+      attentionMessage: "Wait for me.",
+    })).toBeNull();
+    expect(formatChildRaisedHandAnnotation({
+      sessionId: CHILD,
+      attentionRequestedAt: "2026-10-28T12:00:00.000Z",
+      attentionSource: "agent_explicit",
+      attentionMessage: " Need a test account\nfor this? ",
+    })).toBe(
+      "It raised its hand to the user (\"Need a test account for this?\")."
+      + " If you answer or resolve that yourself, lower it: ade chat ask --clear --session child-session",
+    );
   });
 });
 

@@ -239,6 +239,7 @@ import {
 import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
+  formatChildRaisedHandAnnotation,
   formatHumanChildMessageAnnotation,
   messageClearsAttentionMarkers,
   resolveSpawnEndedTurnId,
@@ -48855,8 +48856,12 @@ export function createAgentChatService(args: {
     } else {
       baseSummary = "Turn failed.";
     }
-    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
-    const childTitle = sessionService.get(childSessionId)?.title?.trim()
+    const childRow = sessionService.get(childSessionId);
+    const raisedHandAnnotation = childRow
+      ? formatChildRaisedHandAnnotation({ ...childRow, sessionId: childSessionId })
+      : null;
+    const summary = [baseSummary, humanAnnotation, raisedHandAnnotation].filter(Boolean).join("\n");
+    const childTitle = childRow?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
       childSessionId,

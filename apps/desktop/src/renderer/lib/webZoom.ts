@@ -102,6 +102,42 @@ export function toLayoutPx(rectPx: number): number {
   return rectPx / appliedFactor;
 }
 
+const VIEWPORT_LENGTH_RE = /(-?(?:\d+\.?\d*|\.\d+))([dsl]?v(?:h|w|min|max|b|i))\b/g;
+
+/**
+ * A CSS length with every viewport unit (`100vh`, `100dvh`, `50vw`, ...)
+ * divided by the hosted-web body zoom, so an overlay sized from the viewport
+ * still fits the window once `body { zoom }` scales it again. Electron sets no
+ * `--ade-web-zoom-factor`, so there the division is by 1 and the computed value
+ * is unchanged. A length that already reads the factor is left alone.
+ */
+export function zoomCompensatedLength(value: string): string {
+  if (value.includes("--ade-web-zoom-factor")) return value;
+  return value.replace(VIEWPORT_LENGTH_RE, "calc($1$2 / var(--ade-web-zoom-factor, 1))");
+}
+
+const VIEWPORT_SIZED_KEYS = ["width", "minWidth", "maxWidth", "height", "minHeight", "maxHeight"] as const;
+
+/**
+ * `style` with `zoomCompensatedLength` applied to its size properties. Returns
+ * the same object when nothing changes, so a memoized style stays stable.
+ */
+export function zoomCompensatedSizeStyle<T extends Partial<Record<(typeof VIEWPORT_SIZED_KEYS)[number], unknown>>>(
+  style: T | undefined,
+): T | undefined {
+  if (!style) return style;
+  let next: T | null = null;
+  for (const key of VIEWPORT_SIZED_KEYS) {
+    const value = style[key];
+    if (typeof value !== "string") continue;
+    const compensated = zoomCompensatedLength(value);
+    if (compensated === value) continue;
+    next ??= { ...style };
+    (next as Record<string, unknown>)[key] = compensated;
+  }
+  return next ?? style;
+}
+
 /** Test seam. */
 export function __resetHostedWebZoomForTests(): void {
   if (

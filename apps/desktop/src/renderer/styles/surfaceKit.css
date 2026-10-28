@@ -353,14 +353,6 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 14%, transparent);
 }
 
-/* The prompt box shows it has the caret: its whole edge takes the accent,
-   not just a hairline inside it. An outline, so a provider glow (inline
-   box-shadow) is left alone. */
-[data-chat-composer-mode]:has(:is(textarea, [contenteditable="true"]):focus) {
-  outline: 1.5px solid color-mix(in srgb, var(--color-accent) 60%, transparent);
-  outline-offset: 0;
-}
-
 /* The drafts button holds its slot while empty so icons never jump as you
    type; in a narrow composer that slot is worth more as room for labels. */
 @container chat-composer (max-width: 560px) {

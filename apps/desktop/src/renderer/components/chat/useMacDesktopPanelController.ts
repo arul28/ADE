@@ -1002,7 +1002,7 @@ export function useMacDesktopPanelController({
       setStatusError("Could not open System Settings on this Mac. Open Privacy & Security yourself.");
     };
     const open = window.ade.app.openSystemSettingsPane;
-    if (typeof open !== "function") {
+    if (!isAdeAvailable(open)) {
       failed();
       return;
     }

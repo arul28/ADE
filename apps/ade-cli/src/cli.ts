@@ -2592,7 +2592,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     --clear takes that hand back down (alias: 'ade chat unask'):
-                                                    only the marker this chat raised, never one the user raised.
+                                                    only the marker this chat or a subagent it started raised
+                                                    (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a

@@ -16,7 +16,7 @@ import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
 import type { DiffChanges, OpenProjectBinding, PrSummary, PrCheck } from "../../../shared/types";
 import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
-import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
+import { useLaneGitActionRuntimeState } from "../lanes/laneGitActionRuntime";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { chatRunsOnThisComputer, useChatRuntimeScopeForPin } from "./ChatRuntimeScope";

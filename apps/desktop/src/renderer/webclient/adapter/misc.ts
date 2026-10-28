@@ -35,7 +35,7 @@ import {
   type BuiltInBrowserStatus,
 } from "../../../shared/types/builtInBrowser";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
-import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
+import { WEB_KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
@@ -47,7 +47,10 @@ import { createComputerUseNamespace } from "./computerUse";
 import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
 import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
-import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, guardPinnedMembers, type RuntimePinArg, type RuntimePinScope } from "./runtimePinGuard";
+import type { ExportHistoryArgs, ExportHistoryResult, ListOperationsArgs, OperationRecord } from "../../../shared/types/git";
+import { buildHistoryExport } from "../../../shared/historyExport";
+import { triggerBrowserDownload } from "../../lib/transcriptExport";
 
 export type MiscNamespaces = {
   sync: AdeNamespace<"sync">;
@@ -348,12 +351,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const keybindings: Record<string, unknown> = {
     get: async () => ({
-      definitions: KEYBINDING_DEFINITIONS,
+      definitions: WEB_KEYBINDING_DEFINITIONS,
       overrides: localState.get("keybindingOverrides", []),
     }),
     set: async (overrides: unknown[]) => {
       localState.set("keybindingOverrides", overrides);
-      return { definitions: KEYBINDING_DEFINITIONS, overrides };
+      return { definitions: WEB_KEYBINDING_DEFINITIONS, overrides };
     },
   };
 
@@ -707,8 +710,11 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     getToolsCache: async () => EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
     ensureToolsCache: async () => EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT,
     onToolsCacheEvent: () => () => {},
-    storeApiKey: async (provider: string, key: string) => {
-      await call("ai.storeApiKey", { provider, key: key ? "__redacted__" : "" }, undefined, false);
+    // A secret never leaves the browser, and the host does not serve
+    // `ai.storeApiKey` (see syncRemoteCommandService): say so instead of
+    // sending a placeholder that a future handler would save as the key.
+    storeApiKey: async () => {
+      throw new Error("Saving this API key is only available in the ADE desktop app on that machine.");
     },
     deleteApiKey: async (provider: string) => {
       await call("ai.deleteApiKey", { provider }, undefined, false);
@@ -950,8 +956,48 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   };
 
   const history: Record<string, unknown> = {
-    listOperations: (args?: unknown) => call("history.listOperations", args, []),
-    exportOperations: async (args: unknown) => ({ operations: await call("history.listOperations", args, []) }),
+    listOperations: async (args?: ListOperationsArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("history.listOperations", pin, infra);
+      return await call<OperationRecord[]>("history.listOperations", args, []);
+    },
+    exportOperations: async (
+      args: ExportHistoryArgs,
+      pin?: RuntimePinArg,
+    ): Promise<ExportHistoryResult> => {
+      assertWebRuntimePinRoutable("history.exportOperations", pin, infra);
+      const status = args.status;
+      const listArgs: ListOperationsArgs = {
+        ...(typeof args.laneId === "string" ? { laneId: args.laneId } : {}),
+        ...(typeof args.kind === "string" ? { kind: args.kind } : {}),
+        ...(typeof status === "string" && status !== "all" ? { status } : {}),
+        limit: typeof args.limit === "number" ? args.limit : 1000,
+      };
+      const rows = await call<OperationRecord[]>("history.listOperations", listArgs, () => {
+        throw new Error("History export is unavailable on this machine.");
+      });
+      const filteredRows = status && status !== "all"
+        ? rows.filter((row) => row.status === status)
+        : rows;
+      const exportedAt = new Date().toISOString();
+      const project = state.getProject();
+      const format = args.format === "csv" ? "csv" : "json";
+      const { content, fileName } = buildHistoryExport({
+        format,
+        rows: filteredRows,
+        exportedAt,
+        project: { rootPath: project?.rootPath ?? "", displayName: project?.displayName ?? "ADE" },
+        filters: { laneId: listArgs.laneId, kind: listArgs.kind, status },
+      });
+      triggerBrowserDownload(fileName, content, format === "json" ? "application/json" : "text/csv");
+      return {
+        cancelled: false,
+        savedPath: fileName,
+        bytesWritten: new TextEncoder().encode(content).byteLength,
+        exportedAt,
+        rowCount: filteredRows.length,
+        format,
+      };
+    },
   };
 
   return {
@@ -971,7 +1017,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     workTools: createWorkToolsNamespace(call),
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
-    cto: createCtoNamespace(call),
+    cto: createCtoNamespace(call, infra),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
     agentTools: { detect: async () => [] } as AdeNamespace<"agentTools">,
@@ -1093,10 +1139,44 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
 // the host's Linear credential store. Credential writes stay with the fallback
 // proxy; the agent and issue-tracker actions below use their scoped action
 // domains, whose policy explicitly controls their reads and writes.
+// The CTO page passes its home machine's pin (preload/global.d.ts `cto`): a
+// pin naming another machine must refuse, not read or create a CTO session on
+// this one. Values are the pin's argument position.
+const CTO_PINNED_MEMBER_ARG_INDEX: Record<string, number> = {
+  getState: 1,
+  ensureSession: 1,
+  startFreshSession: 0,
+  getThreadHealth: 0,
+  listSessionLogs: 1,
+  updateIdentity: 1,
+  getMemory: 0,
+  updateMemory: 1,
+  searchMemory: 1,
+  getLinearConnectionStatus: 0,
+  setLinearToken: 1,
+  clearLinearToken: 0,
+  getOnboardingState: 0,
+  completeOnboardingStep: 1,
+  previewSystemPrompt: 1,
+  getLinearProjects: 0,
+  getLinearAgentOverview: 0,
+  startLinearAgentInstall: 0,
+  getLinearAgentInstallSession: 1,
+  registerLinearAgentMember: 1,
+  unregisterLinearAgentMember: 0,
+  updateLinearAgentSettings: 1,
+  uninstallLinearAgent: 0,
+  startLinearOAuth: 0,
+  getLinearOAuthSession: 1,
+  runProjectScan: 0,
+  getAttention: 0,
+};
+
 function createCtoNamespace(
   call: MiscCall,
+  scope: RuntimePinScope,
 ): NonNullable<Window["ade"]["cto"]> {
-  return {
+  return guardPinnedMembers<NonNullable<Window["ade"]["cto"]>>({
     getState: (args?: unknown) => call<CtoSnapshot>(
       "cto.getState",
       { recentLimit: asRecord(args).recentLimit ?? 20 },
@@ -1208,15 +1288,24 @@ function createCtoNamespace(
       { argsList: [issueId] },
       unavailableOnHost("Linear issue relations are unavailable on the connected ADE host."),
     ),
-  } as unknown as NonNullable<Window["ade"]["cto"]>;
+  } as unknown as NonNullable<Window["ade"]["cto"]>, "cto", CTO_PINNED_MEMBER_ARG_INDEX, scope);
 }
+
+const PROJECT_SECRETS_DESKTOP_ONLY = "Project secrets can only be changed in the ADE desktop app on that machine.";
 
 function createProjectSecretsNamespace(): AdeNamespace<"projectSecrets"> {
   return {
     list: async () => ({ secrets: [] }),
     get: async () => ({ value: null }),
-    set: async (args: { name?: string }) => ({ name: args.name ?? "", hasValue: false, updatedAt: new Date().toISOString() }),
-    delete: async (args: { name?: string }) => ({ deleted: false, name: args.name ?? "" }),
+    // Secret values stay on their machine. Saving one here used to resolve as
+    // if it worked while nothing was stored, so a chat asking for a secret
+    // waited forever; every caller shows this message instead.
+    set: async () => {
+      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
+    },
+    delete: async () => {
+      throw new Error(PROJECT_SECRETS_DESKTOP_ONLY);
+    },
     pullFromAccount: async () => ({ state: "unavailable" as const }),
   } as unknown as AdeNamespace<"projectSecrets">;
 }
@@ -1423,17 +1512,34 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
  * Automations run on the user's computer; the web client cannot build or run
  * them. It can read webhook automations (the `automations.webhook*` remote
  * commands), so it shows what each URL is doing. Anything that changes a URL
- * stays on the computer.
+ * stays on the computer. It can list rules and arm/remove a chat's auto
+ * handoff through the host's `automations.list/saveDraft/deleteRule` commands.
  */
 function createAutomationStubs(
   call: <T>(action: string, args: unknown, fallback: T | (() => T | Promise<T>), idempotent?: boolean) => Promise<T>,
-  infra: Parameters<typeof assertWebRuntimePinRoutable>[2],
+  infra: Parameters<typeof assertWebRuntimePinRoutable>[2] & Pick<AdapterInfra, "commands">,
 ): Record<string, unknown> {
   const onComputer = async () => {
     throw new Error("Make or change webhooks in ADE on your computer.");
   };
   return {
-    list: async () => [],
+    // The host's auto-handoff rule commands (the same ones the phone's session
+    // menu uses). The list is authoritative: the auto-handoff editor deletes
+    // the conditions a user turned off by id, so an empty fallback would read
+    // as "no rules" and the menu would offer a fresh setup over real ones.
+    // The host narrows saveDraft/deleteRule to `auto-handoff-*` chat-menu rules.
+    list: async (pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("automations.list", pin, infra);
+      return await infra.commands.call("automations.list", {}, { fallback: [], authoritative: true });
+    },
+    saveDraft: async (req: unknown, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("automations.saveDraft", pin, infra);
+      return await call("automations.saveDraft", req, null, false);
+    },
+    deleteRule: async (args: { id: string }, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("automations.deleteRule", pin, infra);
+      return await call("automations.deleteRule", args, null, false);
+    },
     onEvent: () => () => {},
     webhooks: {
       list: async (pin?: RuntimePinArg) => {

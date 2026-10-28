@@ -3789,9 +3789,19 @@ function scopeChatAdeActionArgs(
     && requestedSessionId != null
     && callerChatSessionId != null
     && runtime.sessionService.get(requestedSessionId)?.chatSessionId === callerChatSessionId;
+  // A subagent's question is often answered by the agent that started it. That
+  // agent may take the subagent's hand back down; otherwise it stays raised
+  // (and holds the lane out of Focus) until the person opens the subagent.
+  // The service only lowers a hand an agent raised, never a person's.
+  const requestedDescendantAsk = action === "clearAsk"
+    && requestedSessionId != null
+    && crossMachineMoveRelation(callerChatSessionId, requestedSessionId, (sessionId) =>
+      runtime.agentChatService?.getChatParentSessionId?.(sessionId)
+        ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId
+        ?? null) === "descendant";
   if (
     !callerChatSessionId
-    || (requestedSessionId && requestedSessionId !== callerChatSessionId && !requestedOwnedTerminal)
+    || (requestedSessionId && requestedSessionId !== callerChatSessionId && !requestedOwnedTerminal && !requestedDescendantAsk)
   ) {
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }

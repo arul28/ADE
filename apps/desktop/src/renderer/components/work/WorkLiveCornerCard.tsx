@@ -838,7 +838,7 @@ export function WorkLiveCornerCard({
     const browser = window.ade?.builtInBrowser;
     // Paired start/stop: the service refcounts, so a start we never stop leaves
     // a capture loop running for a card that has unmounted.
-    if (!browser?.startPreviewStream || !browser.stopPreviewStream) return undefined;
+    if (!isAdeAvailable(browser?.startPreviewStream) || !isAdeAvailable(browser?.stopPreviewStream)) return undefined;
     const { startPreviewStream, stopPreviewStream } = browser;
     const scope = browserViewRoot ? { projectRoot: browserViewRoot } : {};
     let started = true;

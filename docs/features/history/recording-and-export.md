@@ -10,10 +10,11 @@ The operationService and gitOperationsService both run inside the
 **active ADE runtime** (local machine runtime for local-bound windows,
 SSH-attached remote runtime for remote-bound windows). The same source
 files are also loaded by the desktop main process for the legacy
-in-process IPC fallback path. Export-to-disk is split: the runtime
-returns the row payload, then the desktop main process writes the
-file through the native save dialog (the file always lands on the
-user's local machine).
+in-process IPC fallback path. On desktop, export-to-disk is split: the runtime
+returns the row payload, then the desktop main process writes the file through
+the native save dialog. ADE Web serializes the same rows in the browser and
+downloads the file through the browser's download manager; `savedPath` is the
+download filename because the browser does not expose the destination path.
 
 ## Source file map
 

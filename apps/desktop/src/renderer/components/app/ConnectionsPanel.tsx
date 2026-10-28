@@ -339,7 +339,7 @@ export function ConnectionsPanel({
   }, [navigate, onClose]);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh - 96px)" }}>
+    <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)" }}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div style={{ padding: "12px 12px 0" }}>

@@ -3657,6 +3657,12 @@ parent-wake channel. Parents resolve routine decisions or escalate through
 their own parent; the top-level parent asks the user when a critical decision
 has no known safe solution.
 
+When a child finishes a turn with its own `ade chat ask` still raised, the
+parent's completion report includes the question and the child-specific
+`ade chat ask --clear --session <child>` command. After handling the question,
+the parent can lower only that child agent's ask; a user-raised hand remains
+under the user's control.
+
 A session summary also carries `parentIdentityKey` when its parent is an
 *identity* session — `"cto"` today — so a roster can badge a chat's origin
 without resolving the parent summary first. It is host-stamped, because identity

@@ -536,7 +536,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       testId="issue-create"
     >
       <div
-        className="flex max-h-[min(720px,calc(100vh-64px))] flex-col"
+        className="flex max-h-[min(720px,calc(100vh_/_var(--ade-web-zoom-factor,1)_-_64px))] flex-col"
         onKeyDown={(event) => {
           if (event.key === "Enter" && (isMacRuntimeTarget() ? event.metaKey : event.ctrlKey)) {
             event.preventDefault();

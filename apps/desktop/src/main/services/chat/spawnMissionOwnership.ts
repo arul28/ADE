@@ -66,6 +66,24 @@ export const formatHumanChildMessageAnnotation = (count: number): string | null 
   return `The user also sent ${count} messages to this chat.`;
 };
 
+/**
+ * The line a subagent's report carries while its own `ade chat ask` is still
+ * up. The parent often answers that question itself; without this it never
+ * learns the hand is raised, and the row keeps saying "Needs you" (holding its
+ * lane out of Work's Focus fold) until the person opens the subagent.
+ */
+export const formatChildRaisedHandAnnotation = (child: {
+  sessionId: string;
+  attentionRequestedAt?: string | null;
+  attentionSource?: string | null;
+  attentionMessage?: string | null;
+}): string | null => {
+  if (!child.attentionRequestedAt || child.attentionSource !== "agent_explicit") return null;
+  const question = child.attentionMessage?.replace(/\s+/g, " ").trim();
+  return `It raised its hand to the user${question ? ` ("${question.slice(0, 200)}")` : ""}.`
+    + ` If you answer or resolve that yourself, lower it: ade chat ask --clear --session ${child.sessionId}`;
+};
+
 /** Host-authored markers that are not human messages. Shared with the
  * untrusted-caller strip below. */
 const NON_DIRECTIVE_METADATA_KEYS = [

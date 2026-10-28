@@ -1,5 +1,7 @@
 import type { KeybindingDefinition, KeybindingsSnapshot } from "../../shared/types";
+import { WEB_KEYBINDING_DEFAULTS } from "../../shared/keybindings";
 import { isMacPlatform, modifierKeyLabel } from "./platform";
+import { isWebClientMode } from "./webClientMode";
 
 type ParsedCombo = {
   key: string;
@@ -98,15 +100,21 @@ export function eventMatchesBinding(event: KeyboardEvent, binding: string): bool
 export function getEffectiveBinding(
   snapshot: KeybindingsSnapshot | null,
   actionId: string,
-  fallback: string
+  desktopFallback: string
 ): string {
+  // In the hosted web client a browser-reserved desktop default (⌘T, Ctrl+Tab)
+  // never reaches the page, so the web default replaces it — including over a
+  // snapshot that still carries the desktop table. An override still wins.
+  const webDefault = isWebClientMode() ? WEB_KEYBINDING_DEFAULTS[actionId] : undefined;
+  const fallback = webDefault ?? desktopFallback;
   if (!snapshot) return fallback;
   const def = snapshot.definitions.find((d) => d.id === actionId) as KeybindingDefinition | undefined;
+  const defaultBinding = webDefault ?? def?.defaultBinding;
   const override = snapshot.overrides.find((o) => o.id === actionId);
-  const candidate = (override?.binding ?? def?.defaultBinding ?? fallback).trim();
+  const candidate = (override?.binding ?? defaultBinding ?? fallback).trim();
   if (parseBinding(candidate).length > 0) return candidate;
   // Invalid/empty binding: fall back to default.
-  const defBinding = (def?.defaultBinding ?? fallback).trim() || fallback;
+  const defBinding = (defaultBinding ?? fallback).trim() || fallback;
   return parseBinding(defBinding).length > 0 ? defBinding : fallback;
 }
 
