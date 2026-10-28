@@ -896,6 +896,7 @@ describe("prPollingService", () => {
       let step = 0;
       let summary = createSummary(entry.steps[0]);
       const events: Array<{ type?: string; kind?: string }> = [];
+      const announcedChanges: string[] = [];
       const service = createPrPollingService({
         logger: createLogger() as any,
         prService: {
@@ -914,6 +915,11 @@ describe("prPollingService", () => {
         } as any,
         projectConfigService: { get: () => ({ effective: {} }) } as any,
         onEvent: (event) => events.push(event),
+        onPullRequestsChanged: ({ changes }) => {
+          for (const change of changes) {
+            if (change.checksFailureAnnounced) announcedChanges.push(change.pr.id);
+          }
+        },
       });
       service.start();
       await vi.advanceTimersByTimeAsync(12_000);
@@ -924,6 +930,7 @@ describe("prPollingService", () => {
       service.dispose();
       const announcements = events.filter((event) => event.type === "pr-notification" && event.kind === "checks_failing");
       expect(announcements, entry.name).toHaveLength(entry.announcements);
+      expect(announcedChanges, entry.name).toHaveLength(entry.announcements);
       vi.useRealTimers();
     }
   });

@@ -3077,16 +3077,14 @@ describe("automationService integration", () => {
       }
     });
 
-    it("fails delete-lane clearly when no explicit, chain-created, or trigger lane exists", async () => {
+    it("refuses a manual delete-lane run when no lane can be resolved", async () => {
       const deleteLane = vi.fn(async () => undefined);
       const rule = buildRule({ id: "delete-lane-no-target", actions: [{ type: "delete-lane" }] });
       const { service, raw } = createHarness(rule, { delete: deleteLane });
       try {
-        const run = await service.triggerManually({ id: rule.id });
-        expect(run.status).toBe("failed");
-        expect(run.errorMessage).toContain("requires an explicit target lane");
+        await expect(service.triggerManually({ id: rule.id })).rejects.toThrow(/lane/i);
         expect(deleteLane).not.toHaveBeenCalled();
-        expect(mapExecRows(raw.exec("select status from automation_action_results"))).toEqual([{ status: "failed" }]);
+        expect(mapExecRows(raw.exec("select id from automation_runs"))).toEqual([]);
       } finally {
         service.dispose();
       }
