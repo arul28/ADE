@@ -2129,7 +2129,7 @@ describe("AgentChatPane companion drawers", () => {
     const appControlButton = screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!;
     fireEvent.click(appControlButton);
 
-    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
+    expect((await screen.findByTestId("app-control-panel")).textContent).toBe("App Control panel mounted");
     expect(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!.getAttribute("aria-pressed")).toBe("true");
 
     fireEvent.click(screen.getAllByRole("button", { name: "Close App Control drawer" })[0]!);
@@ -2966,7 +2966,7 @@ describe("AgentChatPane companion drawers", () => {
       expect(screen.getAllByRole("button", { name: "Open App Control drawer" }).length).toBeGreaterThan(0);
     });
     fireEvent.click(screen.getAllByRole("button", { name: "Open App Control drawer" })[0]!);
-    expect(screen.getByTestId("app-control-panel").textContent).toBe("App Control panel mounted");
+    expect((await screen.findByTestId("app-control-panel")).textContent).toBe("App Control panel mounted");
 
     const divider = screen.getByRole("separator", { name: "" });
     const splitParent = divider.parentElement;
@@ -13282,36 +13282,41 @@ describe("older transcript paging retries", () => {
     );
 
     await screen.findByText("newest visible message");
-    await requestOlderHistoryByScroll();
-    await waitFor(() => expect(attemptsFor(sessionA.sessionId)).toBe(1), { timeout: 4_000 });
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      await requestOlderHistoryByScroll();
+      await waitFor(() => expect(attemptsFor(sessionA.sessionId)).toBe(1));
 
-    // Switching chats cancels the backoff waiters, so the ladder must not keep
-    // firing against the chat nobody is looking at any more.
-    view.rerender(
-      <MemoryRouter>
-        <AgentChatPane
-          laneId={sessionB.laneId}
-          lockSessionId={sessionB.sessionId}
-          hideSessionTabs
-          initialSessionSummary={sessionB}
-          onSessionCreated={vi.fn()}
-        />
-      </MemoryRouter>,
-    );
-    await screen.findByText("newest visible message");
-    const sessionAAttemptsAtSwitch = attemptsFor(sessionA.sessionId);
+      // Switching chats cancels the backoff waiters, so the ladder must not keep
+      // firing against the chat nobody is looking at any more.
+      view.rerender(
+        <MemoryRouter>
+          <AgentChatPane
+            laneId={sessionB.laneId}
+            lockSessionId={sessionB.sessionId}
+            hideSessionTabs
+            initialSessionSummary={sessionB}
+            onSessionCreated={vi.fn()}
+          />
+        </MemoryRouter>,
+      );
+      await screen.findByText("newest visible message");
+      const sessionAAttemptsAtSwitch = attemptsFor(sessionA.sessionId);
 
-    // Comfortably past both backoff steps (800ms + 2400ms) of chat A's ladder.
-    await act(async () => {
-      await new Promise((resolve) => setTimeout(resolve, 4_000));
-    });
+      // Advance beyond both backoff steps (800ms, 2400ms) without wall time.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4_000);
+      });
 
-    expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
-    // Control: chat B's own ladder DOES run its retries in the same window when
-    // asked, so the assertion above is proving cancellation, not a short wait.
-    await requestOlderHistoryByScroll();
-    await waitFor(() => expect(attemptsFor(sessionB.sessionId)).toBe(3), { timeout: 8_000 });
-    expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
+      expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
+      // Control: chat B's own ladder DOES run its retries when asked, so the
+      // assertion above proves cancellation rather than a short wait.
+      await requestOlderHistoryByScroll();
+      await waitFor(() => expect(attemptsFor(sessionB.sessionId)).toBe(3));
+      expect(attemptsFor(sessionA.sessionId)).toBe(sessionAAttemptsAtSwitch);
+    } finally {
+      vi.useRealTimers();
+    }
   }, 30_000);
 });
 

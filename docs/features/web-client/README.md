@@ -30,6 +30,15 @@ development can exercise the direct candidates. Each connection cycle uses one
 correlation id, bounded endpoint metadata, and coarse failure classes so browser,
 directory, and relay logs can be joined without exposing credentials or URLs.
 
+The hosted client uses web-specific keyboard defaults for shortcuts reserved by
+browsers: `Mod+J` toggles tools, `Mod+Shift+O` opens a new chat, ``Ctrl+` `` moves
+to the next project tab, and `Ctrl+Shift+~` moves to the previous tab. User
+overrides still take precedence. Browser sessions cannot save provider API keys
+or project secrets; those changes must be made in the ADE desktop app on the
+machine. File and folder drops into the editor, and **Open externally**, are
+desktop-only because the browser cannot resolve local files to paths on the
+connected machine or open its native applications.
+
 Production hosting is Cloudflare Pages. The Pages URL is
 `https://ade-web-client.pages.dev`; the canonical product URL in source is
 `https://app.ade-app.dev` (`WEB_CLIENT_BASE_URL`). The canonical domain is live
@@ -1520,6 +1529,8 @@ Ops checks after deploy:
 
 - No OS notifications.
 - No external editor open.
+- No file or folder drop into the editor; the browser cannot map local dropped
+  files to paths on the connected machine.
 - No reveal in Finder / Explorer.
 - No native directory picker.
 - No local shell process. Terminal creation and IO go through the paired
