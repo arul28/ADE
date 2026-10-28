@@ -5204,6 +5204,15 @@ button, [role="button"] {
   to { transform: rotate(360deg); }
 }
 
+/* A spinner icon, stepped 30 times a second so the stepped loop clock drives
+   it; still under reduced motion. */
+.ade-icon-spin {
+  animation: ade-icon-spin 1s steps(30) infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-icon-spin { animation: none; }
+}
+
 /* Progress bar indeterminate */
 @keyframes ade-progress-indeterminate {
   0% { transform: translateX(-100%); }

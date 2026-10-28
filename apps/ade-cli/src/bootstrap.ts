@@ -3293,12 +3293,13 @@ export async function createAdeRuntime(args: {
           // turns active CI into an unbounded high-frequency GitHub API loop.
           for (const pr of changedPrs) searchServiceHolder.current?.notifyPrChanged(pr.id);
         }
-        for (const { pr, previousState, previousChecksStatus, previousReviewStatus } of changes) {
+        for (const { pr, previousState, previousChecksStatus, previousReviewStatus, checksFailureAnnounced } of changes) {
           automationService?.onPullRequestChanged?.({
             pr,
             previousState,
             previousChecksStatus,
             previousReviewStatus,
+            checksFailureAnnounced,
           });
         }
         prWatchService?.onPullRequestsChanged(changes.map((change) => change.pr.id));

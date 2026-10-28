@@ -188,6 +188,8 @@ export function createPrPollingService({
       previousReviewStatus: PrSummary["reviewStatus"] | null;
       previousMergeConflicts: boolean | null;
       previousBehindBaseBy: number | null;
+      /** This poll announced the PR's head red (the "checks failing" toast's rule). */
+      checksFailureAnnounced: boolean;
     }>;
     polledAt: string;
   }) => void | Promise<void>;
@@ -422,18 +424,28 @@ export function createPrPollingService({
         previousReviewStatus: PrSummary["reviewStatus"] | null;
         previousMergeConflicts: boolean | null;
         previousBehindBaseBy: number | null;
+        checksFailureAnnounced: boolean;
       }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
         const prevFingerprint = lastFingerprintByPrId.get(pr.id) ?? null;
         const nextFingerprint = getPrFingerprint(pr);
         const mergeReady = isMergeReady(pr);
+        const failure = rememberChecksFailure(
+          prev
+            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
+            : null,
+          pr,
+        );
+        // An announced failure is a change even when no field moved: a new
+        // head is only announced on the poll after it appeared, still red.
         const changed =
           !prev
           || prevFingerprint !== nextFingerprint
           || prev.checksStatus !== pr.checksStatus
           || prev.reviewStatus !== pr.reviewStatus
-          || prev.state !== pr.state;
+          || prev.state !== pr.state
+          || failure.announce;
         if (changed) {
           changedPrs.push(pr);
           changes.push({
@@ -443,15 +455,9 @@ export function createPrPollingService({
             previousReviewStatus: prev?.reviewStatus ?? null,
             previousMergeConflicts: prev?.mergeConflicts ?? null,
             previousBehindBaseBy: prev?.behindBaseBy ?? null,
+            checksFailureAnnounced: failure.announce,
           });
         }
-
-        const failure = rememberChecksFailure(
-          prev
-            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
-            : null,
-          pr,
-        );
         const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;

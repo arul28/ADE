@@ -1482,6 +1482,7 @@ function toRun(row: AutomationRunRow): AutomationRun {
     triggerMetadata: safeJsonParseRecord(row.trigger_metadata),
     summary: row.summary ?? null,
     billingCode: row.billing_code ?? null,
+    verificationRequired: Boolean(row.verification_required),
   };
 }
 
@@ -5853,6 +5854,8 @@ export function createAutomationService({
       previousState?: PrSummary["state"] | null;
       previousChecksStatus?: PrSummary["checksStatus"] | null;
       previousReviewStatus?: PrSummary["reviewStatus"] | null;
+      /** The poller announced this PR's head red: confirmed on that head, once. */
+      checksFailureAnnounced?: boolean;
     }) {
       const stateTransition =
         args.previousState && args.previousState !== args.pr.state
@@ -5881,16 +5884,14 @@ export function createAutomationService({
         scheduledAt: nowIso(),
       };
       if (!args.previousState) {
-        // Already failing when first seen: record its commit so only a new
-        // failure fires, never the backlog of a first sync.
-        if (args.pr.checksStatus === "failing") claimPrChecksFailure(args.pr);
         void dispatchTrigger({ triggerType: "git.pr_opened", ...baseContext });
         return;
       }
-      // Failing now: a fresh failure, or a new commit that is red as well
-      // (the poll can miss the pending in between). The per-commit claim
-      // keeps a re-run on the same commit quiet.
-      if (args.pr.checksStatus === "failing") notifyPrChecksFailed(args.pr, baseContext);
+      // The poller announces a head red once it has seen that head failing
+      // twice (a new head's first poll can carry the old head's checks) and
+      // never on its first look at a PR, so failures present at startup stay
+      // quiet. The per-commit claim keeps a second brain on the project from firing it too.
+      if (args.checksFailureAnnounced) notifyPrChecksFailed(args.pr, baseContext);
       if (args.pr.state === "merged" && args.previousState !== "merged") {
         void dispatchTrigger({
           triggerType: "git.pr_merged",

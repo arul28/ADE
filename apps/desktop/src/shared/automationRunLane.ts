@@ -13,25 +13,34 @@ export function createsLaneForRun(rule: RuleExecution): boolean {
 }
 
 /**
+ * Built-in steps that resolve the run's lane, and so make it under a creating
+ * lane mode (`resolveExecutionLaneId`), unless the step names its own lane.
+ */
+const LANE_RESOLVING_ACTIONS = new Set(["agent-session", "run-command", "run-tests", "predict-conflicts"]);
+
+/**
  * What lane a run of this rule needs from its caller.
  *
- * `"lane"` for `laneMode: "require-on-trigger"`. `"lane-to-delete"` for a
- * built-in `delete-lane` step that names no lane and follows no `create-lane`
- * step: it deletes the trigger's lane, so a manual run without one fails
- * mid-run (the "Clean up merged lanes" template run by hand). Callers ask for
- * the lane up front instead.
+ * `"lane-to-delete"` for a built-in `delete-lane` step that names no lane and
+ * has no lane made before it (by a `create-lane` step, or by a step that
+ * resolves the run's lane under `laneMode: "create"` / `"pr-branch"`): it
+ * deletes the trigger's lane, so a manual run without one fails mid-run (the
+ * "Clean up merged lanes" template run by hand). Callers ask for the lane up
+ * front, as the lane to delete. Otherwise `"lane"` for
+ * `laneMode: "require-on-trigger"`.
  */
 export function automationRunLaneNeed(rule: RuleExecution): "none" | "lane" | "lane-to-delete" {
   const execution = rule.execution;
   if (!execution) return "none";
-  if (requiresTriggerLane(rule)) return "lane";
-  if (createsLaneForRun(rule)) return "none";
-  if (execution.kind !== "built-in" || execution.targetLaneId?.trim()) return "none";
-  for (const action of execution.builtIn?.actions ?? []) {
-    if (action.type === "create-lane") return "none";
-    if (action.type === "delete-lane" && !action.targetLaneId?.trim()) return "lane-to-delete";
+  if (execution.kind === "built-in" && !execution.targetLaneId?.trim()) {
+    const createsLane = createsLaneForRun(rule);
+    for (const action of execution.builtIn?.actions ?? []) {
+      if (action.type === "create-lane") break;
+      if (createsLane && LANE_RESOLVING_ACTIONS.has(action.type) && !action.targetLaneId?.trim()) break;
+      if (action.type === "delete-lane" && !action.targetLaneId?.trim()) return "lane-to-delete";
+    }
   }
-  return "none";
+  return requiresTriggerLane(rule) ? "lane" : "none";
 }
 
 export function automationRunNeedsLane(rule: RuleExecution): boolean {

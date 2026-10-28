@@ -204,7 +204,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every open thread already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`ade prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
+        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every request in every open thread (including any the reviewer added after your last reply) already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`ade prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:fix-review-comments",
@@ -287,7 +287,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file pr.md`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
+        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, write the description to a temporary file outside the lane (a file inside it leaves the worktree dirty, and `ade prs create` refuses a dirty worktree), open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file <that file>`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
       toolPalette: ["repo", "git", "github"],
       outputs: { disposition: "open-pr-draft", createArtifact: true },
       guardrails: {},

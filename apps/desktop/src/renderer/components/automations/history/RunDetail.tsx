@@ -125,12 +125,16 @@ export function RunDetail({
   const { run } = detail;
   const metadata = (run.triggerMetadata ?? {}) as Record<string, unknown>;
   const pr = metadata.pr && typeof metadata.pr === "object" ? (metadata.pr as Record<string, unknown>) : {};
-  const laneId = detail.chatSession?.laneId ?? readString(metadata, "laneId");
-  const laneName = readString(metadata, "laneName");
+  const triggerLaneId = readString(metadata, "laneId");
+  const laneId = detail.chatSession?.laneId ?? triggerLaneId;
+  // The trigger's lane name, only while the run stayed on that lane: a run
+  // that made its own lane has the new lane's id here.
+  const laneName = laneId === triggerLaneId ? readString(metadata, "laneName") : null;
   const prUrl = readString(pr, "url") ?? readString(metadata, "prUrl");
   const title = detail.rule?.name ?? ruleName;
   const queueStatus = detail.rule?.queueStatus ? detail.rule.queueStatus.replace(/-/g, " ") : null;
-  const verifyBeforePublish = detail.rule?.verification?.verifyBeforePublish === true;
+  // What this run was held to, not the rule's current setting.
+  const verifyBeforePublish = run.verificationRequired === true;
   const state = runState(run.status);
   // What happened, said once: the run's error, else its summary.
   const message = run.errorMessage ?? run.summary;

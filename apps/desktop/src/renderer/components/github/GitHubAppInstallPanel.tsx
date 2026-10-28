@@ -30,7 +30,6 @@ const ADE_GITHUB_APP_NAME = "ADE";
 const ADE_GITHUB_APP_INSTALL_URL = "https://github.com/apps/ade-for-github/installations/new";
 const GITHUB_APP_INSTALLATIONS_URL = "https://github.com/settings/installations";
 const POST_AUTH_STATUS_RETRY_DELAYS_MS = [1_500, 3_000, 6_000] as const;
-const SPIN_STYLE: CSSProperties = { animation: "ade-icon-spin 1s steps(30) infinite" };
 
 type GitHubAppInstallPanelProps = {
   variant?: "settings" | "onboarding";
@@ -366,7 +365,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
       disabled={loading}
     >
-      <ArrowClockwise size={12} weight="bold" style={loading ? SPIN_STYLE : undefined} />
+      <ArrowClockwise size={12} weight="bold" className={loading ? "ade-icon-spin" : undefined} />
       {loading ? "Checking" : "Check again"}
     </button>
   );
@@ -544,7 +543,7 @@ function renderPill({ tone, color, label }: PillSpec, modern = false): ReactNode
     ) : tone === "warn" ? (
       <WarningCircle size={11} weight="fill" />
     ) : tone === "pending" ? (
-      <ArrowClockwise size={11} weight="bold" style={SPIN_STYLE} />
+      <ArrowClockwise size={11} weight="bold" className="ade-icon-spin" />
     ) : (
       <span style={neutralDotStyle} />
     );

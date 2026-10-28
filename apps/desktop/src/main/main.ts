@@ -4534,12 +4534,14 @@ app.whenReady().then(async () => {
               previousState,
               previousChecksStatus,
               previousReviewStatus,
+              checksFailureAnnounced,
             }) => {
               automationService?.onPullRequestChanged?.({
                 pr,
                 previousState,
                 previousChecksStatus,
                 previousReviewStatus,
+                checksFailureAnnounced,
               });
               return Promise.resolve();
             },

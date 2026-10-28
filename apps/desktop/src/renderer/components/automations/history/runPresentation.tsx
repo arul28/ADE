@@ -60,7 +60,7 @@ export function StatusGlyph({ status, size }: { status: string; size: number }) 
   const label = { role: "img", "aria-label": statusWord(status) } as const;
   const className = cn("shrink-0", STATE_TEXT[state]);
   if (state === "running") {
-    return <CircleNotch {...label} size={size} weight="bold" className={className} style={{ animation: "ade-icon-spin 1s steps(30) infinite" }} />;
+    return <CircleNotch {...label} size={size} weight="bold" className={cn(className, "ade-icon-spin")} />;
   }
   if (state === "paused") return <PauseCircle {...label} size={size} weight="fill" className={className} />;
   if (state === "succeeded") return <CheckCircle {...label} size={size} weight="fill" className={className} />;
