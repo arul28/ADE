@@ -2840,8 +2840,8 @@ function renderEvent(
      */
     interimText?: boolean;
     /**
-     * The last reply of a turn whose turn-end line is drawn. That line shows the
-     * time and copies the turn, so the reply reserves no hover strip of its own.
+     * The last reply of a turn whose turn-end line is drawn. Its hover time and
+     * Copy float into the gap above that line instead of reserving a strip.
      */
     turnEndText?: boolean;
     /** Interrupt-receipt identities whose queued messages already ran → collapse. */
@@ -3293,12 +3293,15 @@ function renderEvent(
           />
           {/* Hover actions sit in their own line under the prose, never on it:
               pinned over the text's top-right corner they covered the end of a
-              short line (interim narration) and the first line of a long one. */}
-          {options?.turnEndText ? null : <div
+              short line (interim narration) and the first line of a long one.
+              Interim narration and a finished turn's last reply float that line
+              into the gap below instead of reserving it: there it was an empty
+              strip above the next row or the turn-end line. */}
+          <div
             data-testid="assistant-text-hover-footer"
             className={cn(
               "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
-              options?.interimText
+              options?.interimText || options?.turnEndText
                 ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
                 : "mt-0.5",
             )}
@@ -3307,7 +3310,7 @@ function renderEvent(
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
               : null}
             <MessageCopyButton value={shownText} iconOnly />
-          </div>}
+          </div>
         </div>
       </motion.div>
     );
@@ -6727,8 +6730,8 @@ function AgentChatMessageListMain({
     }
     previousAssistantTurnCopyRef.current = byTurnId;
     // Every text row of a turn except its last visible one is interim narration.
-    // The last one of a turn that drew its turn-end line needs no hover strip:
-    // that line carries the time and Copy for the whole turn.
+    // The last one of a turn that drew its turn-end line floats its hover strip
+    // into the gap above that line rather than reserving the space.
     const endedTurnIds = new Set<string>();
     for (const row of rows) {
       if (row.event.type !== "done") continue;

@@ -5429,10 +5429,14 @@ button, [role="button"] {
   background: linear-gradient(120deg, #a78bfa, #e879f9 50%, #67e8f9);
 }
 
-/* The frame is the edge: hide the shell's own border under it so the two
-   never read as a doubled line. */
+/* The frame is the edge. The frame is a child, and the shell's
+   `overflow: hidden` clips children at the inside of its border, so a merely
+   transparent border still leaves a ring of the shell's own background outside
+   the frame: a doubled line. Trade the 1px border for 1px of padding instead;
+   the box keeps its size and the clip edge becomes the outer edge. */
 [data-chat-composer-mode][data-effort-frame] {
-  border-color: transparent;
+  border-width: 0;
+  padding: 1px;
 }
 
 [data-chat-composer-mode][data-effort-frame="top"] {
