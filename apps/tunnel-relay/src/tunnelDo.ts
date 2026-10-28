@@ -286,12 +286,23 @@ export class TunnelDurableObject implements DurableObject {
   private async syncMcpAccount(ws: WebSocket, desired: string | null, stale?: string): Promise<void> {
     const att = this.normalizedAttachment(ws);
     if (!att?.machineKey || !this.isOpen(ws)) return;
-    const result = await reconcileMcpAccount(this.state.storage, this.env, {
-      machineKey: att.machineKey.toLowerCase(),
-      desired,
-      joined: att.mcpAccountKey ?? null,
-      stale,
-    });
+    let result: Awaited<ReturnType<typeof reconcileMcpAccount>>;
+    try {
+      result = await reconcileMcpAccount(this.state.storage, this.env, {
+        machineKey: att.machineKey.toLowerCase(),
+        desired,
+        joined: att.mcpAccountKey ?? null,
+        stale,
+      });
+    } catch (error) {
+      // A storage step threw: keep what the brain wants and let the alarm try
+      // again, so a wake never falls back to the account it was leaving.
+      logTunnel("mcp_account_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+      const current = this.normalizedAttachment(ws) ?? att;
+      this.writeAttachment(ws, { ...current, mcpAccountWant: desired, mcpAccountRetry: true });
+      if (this.isOpen(ws)) await this.scheduleAlarmBy(Date.now() + MCP_ACCOUNT_RETRY_MS);
+      return;
+    }
     const { mcpAccountKey: _joined, mcpAccountRetry: _retry, ...rest } = this.normalizedAttachment(ws) ?? att;
     this.writeAttachment(ws, {
       ...rest,

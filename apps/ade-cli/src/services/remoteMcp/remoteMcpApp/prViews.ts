@@ -126,7 +126,7 @@ const prRowsCache: Record<string, Promise<Array<PrRow & { id?: string }>>> = {};
 function fillPrSummary(el: HTMLElement, prId: string | null, scope: Scope): void {
   if (!prId || !canCallTools()) return;
   const key = (scope.projectId ?? "") + "|" + (scope.machineKey ?? "");
-  const list = prRowsCache[key] ?? (prRowsCache[key] = callTool("prs_list", scoped(scope, {})).then((res) => {
+  const list = prRowsCache[key] ?? (prRowsCache[key] = callTool("prs_list", scoped(scope, { state: "all", limit: 200 })).then((res) => {
     // A failed read is not remembered, so the next card asks again.
     if (!res || res.isError) throw new Error("prs_list failed");
     const env = res.structuredContent;

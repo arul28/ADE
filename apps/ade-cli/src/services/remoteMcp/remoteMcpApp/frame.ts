@@ -20,20 +20,29 @@ export function scoped(scope: Scope, extra: Json): Json {
   for (const k of Object.keys(extra)) if (extra[k] !== undefined && extra[k] !== null) a[k] = extra[k];
   return a;
 }
+/** Bumped by every drill and every Back: only the newest drill may draw its answer. */
+let drillSeq = 0;
 /** Opens another tool's view in place; Back returns here. `title` names it when its result has none. */
 export function drill(name: string, args: Json, label: string, title?: string): void {
   if (!canCallTools()) return;
   state.stack.push({ tool: state.tool, args: state.args, result: state.result, title: state.title });
+  // Back while this loads discards it: its answer must not replace the card Back restored.
+  const mine = ++drillSeq;
+  const current = () => drillSeq === mine;
   renderNote("Loading " + label + "…", true);
   callTool(name, args).then((res) => {
+    if (!current()) return;
     state.tool = name;
     state.args = args;
     state.result = res;
     state.title = title ?? null;
     render();
-  }).catch((e: unknown) => renderNote(e instanceof Error ? e.message : "That did not work.", true, true));
+  }).catch((e: unknown) => {
+    if (current()) renderNote(e instanceof Error ? e.message : "That did not work.", true, true);
+  });
 }
 function goBack(): void {
+  drillSeq += 1;
   const prev = state.stack.pop();
   if (!prev) return;
   state.tool = prev.tool;

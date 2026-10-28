@@ -73,7 +73,7 @@ export function viewDiffPatch(r: unknown, scope: Scope): HTMLElement {
   const res = (isObj(r) ? r : {}) as Partial<FilePatch>;
   const patch = typeof res.patch === "string" ? res.patch : "";
   const path = str(res.path) ?? str(state.args.path) ?? "Diff";
-  const box = h("div", { cls: "diff", role: "region", "aria-label": "Diff of " + path });
+  const box = h("div", { cls: "diff", role: "region", "aria-label": "Diff of " + path, tabindex: "0" });
   if (res.isBinary === true) box.appendChild(h("div", { cls: "f", style: "padding:10px 14px" }, "Binary file; no text diff."));
   else if (!patch) box.appendChild(h("div", { cls: "f", style: "padding:10px 14px" }, "No changes in this file."));
   else {

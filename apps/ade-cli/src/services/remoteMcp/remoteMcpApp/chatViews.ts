@@ -136,7 +136,7 @@ function inlineMd(el: HTMLElement, t: string): HTMLElement {
 export function viewChatRead(r: unknown, scope: Scope): HTMLElement {
   const read = (isObj(r) ? r : {}) as Partial<TranscriptRead>;
   const entries = rows<AgentChatTranscriptEntry>(read.entries);
-  const tx = h("div", { cls: "tx", role: "log", "aria-label": "Transcript" });
+  const tx = h("div", { cls: "tx", role: "log", "aria-label": "Transcript", tabindex: "0" });
   if (read.truncated === true) tx.appendChild(h("div", { cls: "eyebrow", style: "text-align:center" }, "Earlier messages not shown"));
   if (!entries.length) tx.appendChild(h("div", { cls: "empty" }, "No messages yet."));
   for (const e of entries) {

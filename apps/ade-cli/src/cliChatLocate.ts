@@ -284,6 +284,16 @@ export function routedToLocation(parsed: ParsedCli, location: ChatLocation): Par
   };
 }
 
+/** The `ade chat read` that reaches the chat where it is: its machine, and its project or personal scope. */
+function readCommandFor(sessionId: string, location: ChatLocation): string {
+  const words = ["ade", "chat", "read", sessionId];
+  if (!location.isThisMachine) words.push("--machine", JSON.stringify(location.machineName));
+  if (location.scope.kind === "personal") words.push("--personal");
+  else if (!location.isThisMachine) words.push("--project", location.scope.projectId);
+  else if (location.scope.rootPath) words.push("--project-root", JSON.stringify(location.scope.rootPath));
+  return words.join(" ");
+}
+
 /** `ade chat locate <session>`: where a chat lives on the account. */
 export function chatLocateValue(report: ChatLocateReport): JsonObject {
   const only = report.matches.length === 1 ? report.matches[0]! : null;
@@ -301,9 +311,7 @@ export function chatLocateValue(report: ChatLocateReport): JsonObject {
     offline: report.offline,
     unreachable: report.unreachable,
     note: report.note,
-    read: only
-      ? `ade chat read ${report.sessionId}${only.isThisMachine ? "" : ` --machine ${JSON.stringify(only.machineName)}`}${only.scope.kind === "personal" ? " --personal" : ""}`
-      : null,
+    read: only ? readCommandFor(report.sessionId, only) : null,
   };
 }
 

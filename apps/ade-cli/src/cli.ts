@@ -14706,6 +14706,17 @@ async function runChatHereThenElsewhere(
   if (match?.isThisMachine && match.scope.kind === "personal" && !parsed.command.includes("--personal")) {
     return await runParsedCli(routedToLocation(parsed, match));
   }
+  // Here after all, in another project of this machine: run it in that one.
+  if (match?.isThisMachine && match.scope.kind === "project" && match.scope.rootPath
+    && !pathsEqual(path.resolve(match.scope.rootPath), path.resolve(resolveRoots(parsed.options).projectRoot))) {
+    const there = { ...routedToLocation(parsed, match), options: { ...parsed.options, projectRoot: match.scope.rootPath } };
+    const restoreShellScope = dropShellScopeForOtherProject(there.options);
+    try {
+      return await runParsedCli(there);
+    } finally {
+      restoreShellScope();
+    }
+  }
   if (!match) chatLookupMiss = report;
   if (failure) throw failure;
   const hint = chatOtherMachineHint(process.argv.slice(2));
