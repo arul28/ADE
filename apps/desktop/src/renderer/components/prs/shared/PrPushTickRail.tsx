@@ -1,8 +1,10 @@
 import React from "react";
+import { createPortal } from "react-dom";
 import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import type { DigestPushTick } from "./prDigestTimelineModel";
-import { cssZoomOf } from "../../../lib/webZoom";
+import { useTooltipPlacement } from "../../ui/useTooltipPlacement";
+import { Z_LAYERS } from "../../ui/zLayers";
 
 /**
  * A thin rail of ticks on the Overview's right edge — one per push. A click
@@ -20,22 +22,23 @@ export function PrPushTickRail({
   activeId: string | null;
   onSelect: (tick: DigestPushTick) => void;
 }) {
-  const [hover, setHover] = React.useState<{ tick: DigestPushTick; top: number } | null>(null);
-  const wrapperRef = React.useRef<HTMLDivElement | null>(null);
+  const [hover, setHover] = React.useState<{ tick: DigestPushTick } | null>(null);
+  const tickRef = React.useRef<HTMLElement | null>(null);
+  const tooltipRef = React.useRef<HTMLDivElement | null>(null);
+  const placement = useTooltipPlacement({ open: Boolean(hover), triggerRef: tickRef, tooltipRef, side: "left", remeasureKey: hover?.tick.id });
   const place = (target: HTMLElement, tick: DigestPushTick) => {
-    const wrapper = wrapperRef.current?.getBoundingClientRect();
-    const own = target.getBoundingClientRect();
-    // Screen rect difference, written as layout px in the absolute wrapper.
-    setHover({ tick, top: wrapper && wrapperRef.current ? (own.top - wrapper.top) / cssZoomOf(wrapperRef.current) : 0 });
+    tickRef.current = target;
+    setHover({ tick });
   };
   // One push leaves nothing to jump between: a lone tick read as an unlabelled
   // "–" pill beside the thread.
   if (ticks.length < 2) return null;
   return (
-    // The tooltip lives outside the scrolling list, which would clip it.
+    // The tooltip portals to the body, so neither the scrolling list nor the
+    // Overview's own overflow can clip it.
     // A solid pill over the thread's scrollbar: the ticks sit on it, so the
     // scrollbar thumb can never paint across them.
-    <div ref={wrapperRef} className="absolute z-30" style={{ right: 4, top: 10, bottom: 300 }} onMouseLeave={() => setHover(null)}>
+    <div className="absolute z-30" style={{ right: 4, top: 10, bottom: 300 }} onMouseLeave={() => setHover(null)}>
     <nav
       aria-label="Pushes"
       data-testid="pr-push-tick-rail"
@@ -80,13 +83,17 @@ export function PrPushTickRail({
         );
       })}
     </nav>
-      {hover ? (
+      {hover && typeof document !== "undefined" ? createPortal(
         <div
+          ref={tooltipRef}
           role="tooltip"
           data-testid="pr-push-tick-preview"
-          className="pointer-events-none absolute right-7 w-[240px] rounded-lg px-3 py-2"
+          className="pointer-events-none fixed w-[240px] rounded-lg px-3 py-2"
           style={{
-            top: Math.max(0, hover.top - 18),
+            left: placement?.x ?? 0,
+            top: placement?.y ?? 0,
+            visibility: placement ? "visible" : "hidden",
+            zIndex: Z_LAYERS.tooltip,
             background: "var(--color-popup-bg, var(--color-card))",
             boxShadow: `0 16px 40px -16px rgba(0,0,0,0.8), inset 0 0 0 1px ${fgTint(8)}`,
             fontFamily: SANS_FONT,
@@ -105,7 +112,8 @@ export function PrPushTickRail({
               ? "No comments"
               : `${hover.tick.commentCount} comment${hover.tick.commentCount === 1 ? "" : "s"}${hover.tick.openCount > 0 ? ` · ${hover.tick.openCount} open` : ""}`}
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

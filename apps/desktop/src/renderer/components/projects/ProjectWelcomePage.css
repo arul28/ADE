@@ -790,11 +790,8 @@ html[data-scene="image"] .ade-home-line { font-weight: 500; }
 .ade-welcome-machines-chip:hover,
 .ade-welcome-machines-chip[aria-expanded="true"] { color: var(--color-fg); border-color: color-mix(in srgb, var(--color-fg) 20%, transparent); }
 .ade-welcome-machines-chip .kit-dot { width: 5px; height: 5px; }
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .ade-welcome-machines-menu {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 6px);
-  z-index: 40;
   min-width: 220px;
   padding: 4px;
   border-radius: var(--radius-md);

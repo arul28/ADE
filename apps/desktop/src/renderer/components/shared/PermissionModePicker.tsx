@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { createPortal } from "react-dom";
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
@@ -31,6 +31,8 @@ import { toneText } from "../lanes/laneDesignTokens";
 
 const PERMISSION_MODE_MENU_WIDTH = 264;
 const PERMISSION_MODE_ROW_HEIGHT = 32;
+/** A menu whose top edge lands closer than this to the window's top flips below. */
+const MENU_VIEWPORT_PAD = 8;
 
 /**
  * Shared trigger chrome for permission pills. Previously hand-copied into both
@@ -185,7 +187,11 @@ export function PermissionModePicker<Value extends string>({
   title?: string;
 }) {
   const [open, setOpen] = useState(false);
+  // Opens above the pill (it lives in toolbars at the bottom of a composer or a
+  // dialog); flips below when the window has no room above it.
+  const [below, setBelow] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   // Inside a dialog the list portals into it: a modal dialog blocks pointer
   // events and focus everywhere outside its content.
   const portalContainer = usePortalContainer();
@@ -210,6 +216,20 @@ export function PermissionModePicker<Value extends string>({
       window.removeEventListener("keydown", handleKey);
     };
   }, [open]);
+
+  useLayoutEffect(() => {
+    if (!open) {
+      setBelow(false);
+      return;
+    }
+    const menu = menuRef.current;
+    const anchor = ref.current;
+    if (below || !menu || !anchor) return;
+    const menuTop = menu.getBoundingClientRect().top;
+    const anchorRect = anchor.getBoundingClientRect();
+    const roomBelow = window.innerHeight - anchorRect.bottom;
+    if (menuTop < MENU_VIEWPORT_PAD && roomBelow > anchorRect.top) setBelow(true);
+  }, [open, below]);
 
   if (!selectedOption) return null;
 
@@ -259,11 +279,12 @@ export function PermissionModePicker<Value extends string>({
           return (
             <ViewportOverlayHost layer="popover">
               <PermissionModeMenu
+                menuRef={menuRef}
                 ariaLabel={ariaLabel}
                 options={options}
                 selectedValue={selectedValue}
                 style={{
-                  ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH }),
+                  ...fixedMenuAboveAnchorStyle(rect, { width: PERMISSION_MODE_MENU_WIDTH, below }),
                   pointerEvents: "auto",
                 }}
                 onSelect={(value) => {
@@ -288,6 +309,7 @@ export function PermissionModePicker<Value extends string>({
  * also leaves room for full names. The highlight moves by transform only.
  */
 function PermissionModeMenu<Value extends string>({
+  menuRef,
   ariaLabel,
   options,
   selectedValue,
@@ -299,6 +321,7 @@ function PermissionModeMenu<Value extends string>({
   selectedValue: Value;
   style: React.CSSProperties;
   onSelect: (value: Value) => void;
+  menuRef?: React.Ref<HTMLDivElement>;
 }) {
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === selectedValue));
   const [pointedIndex, setPointedIndex] = useState<number | null>(null);
@@ -341,6 +364,7 @@ function PermissionModeMenu<Value extends string>({
 
   return (
     <div
+      ref={menuRef}
       data-permission-mode-picker-dropdown
       className={cn("absolute overflow-hidden rounded-2xl p-2.5", POPOVER_SURFACE_CLASS)}
       style={style}

@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo } from "react";
-import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
-import { CaretDown, ChatCircleDots, Check, Terminal } from "@phosphor-icons/react";
+import { ChatCircleDots, Terminal } from "@phosphor-icons/react";
 import type { AgentChatPermissionMode } from "../../../shared/types";
 import { batchLaunchSupportsFastMode, type BatchLaunchSessionType } from "../../lib/linearBatchLaunch";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
@@ -8,14 +7,9 @@ import { useFastModeEnabled } from "../../lib/fastModePolicy";
 import {
   applyClaudePermissionSelection,
   applyCodexPresetToControls,
-  CLAUDE_PERMISSION_OPTIONS,
   codexPresetFromControls,
-  CODEX_PERMISSION_PRESETS,
   cursorModeChoices,
   cursorModeLabel,
-  DROID_PERMISSION_OPTIONS,
-  MUSE_PERMISSION_OPTIONS,
-  OPENCODE_PERMISSION_OPTIONS,
   readUnifiedPermissionFromNativeControls,
   claudeSelectionMode,
 } from "../../lib/nativeLaunchControls";
@@ -24,8 +18,17 @@ import { ReasoningEffortPicker } from "./ModelPicker/ReasoningEffortPicker";
 import { resolveModelDescriptorWithRuntimeCatalog } from "./ModelPicker/modelCatalog";
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
-import { Z_LAYERS } from "../ui/zLayers";
-import { PERMISSION_TRIGGER_CLASS } from "./PermissionModePicker";
+import { PermissionModePicker, type PermissionModePickerOption } from "./PermissionModePicker";
+import {
+  CLAUDE_MODE_OPTIONS,
+  codexPermissionPickerOption,
+  cursorPermissionPickerOption,
+  DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS,
+  OPENCODE_PERMISSION_OPTIONS,
+  type CodexPermissionPreset,
+} from "./permissionModePickerOptions";
+import { getPermissionOptions } from "./permissionOptions";
 import { useRootAppStore } from "../../state/appStore";
 import { resolveHarnessLaunchTarget } from "../settings/harnesses/harnessLaunchTarget";
 
@@ -75,6 +78,21 @@ function SessionTypeToggle({
   );
 }
 
+// The Codex presets the launch offers, in the composer's order and wording.
+const CODEX_LAUNCH_PRESET_OPTIONS = getPermissionOptions({ family: "openai", isCliWrapped: true })
+  .filter((option) => option.value === "default" || option.value === "edit" || option.value === "plan" || option.value === "full-auto" || option.value === "config-toml")
+  .map(codexPermissionPickerOption);
+
+// Muse's plan mode is a chat interaction mode the launch does not carry, so the
+// launch offers its approval modes only.
+const MUSE_LAUNCH_OPTIONS = MUSE_PERMISSION_OPTIONS.filter(
+  (option): option is PermissionModePickerOption<NativeControlState["musePermissionMode"]> => option.value !== "plan",
+);
+
+/**
+ * The permission pill for a launch: the same `PermissionModePicker`, options and
+ * look as the chat composer, writing into the launch's native controls.
+ */
 function LaunchNativePermissionControls({
   modelId,
   nativeControls,
@@ -86,196 +104,87 @@ function LaunchNativePermissionControls({
   onNativeControlsChange: (next: NativeControlState) => void;
   disabled?: boolean;
 }) {
-  const [claudeOpen, setClaudeOpen] = React.useState(false);
-  const [codexOpen, setCodexOpen] = React.useState(false);
-  const claudeRef = React.useRef<HTMLDivElement | null>(null);
-  const codexRef = React.useRef<HTMLDivElement | null>(null);
   const descriptor = resolveModelDescriptorWithRuntimeCatalog(modelId) ?? getModelById(modelId);
   const provider = descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
 
-  React.useEffect(() => {
-    if (!claudeOpen && !codexOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      const target = event.target as Node;
-      if (claudeOpen && claudeRef.current && !claudeRef.current.contains(target)) setClaudeOpen(false);
-      if (codexOpen && codexRef.current && !codexRef.current.contains(target)) setCodexOpen(false);
-    };
-    window.addEventListener("mousedown", onPointerDown);
-    return () => window.removeEventListener("mousedown", onPointerDown);
-  }, [claudeOpen, codexOpen]);
-
   if (provider === "claude") {
-    const selected = CLAUDE_PERMISSION_OPTIONS.find((o) => o.value === claudeSelectionMode(nativeControls)) ?? CLAUDE_PERMISSION_OPTIONS[0]!;
     return (
-      <div ref={claudeRef} className="relative">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setClaudeOpen((open) => !open)}
-          className={cn(PERMISSION_TRIGGER_CLASS, claudeOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
-          title={selected.detail}
-        >
-          <span className="truncate font-medium">{selected.label}</span>
-          <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
-        </button>
-        {claudeOpen ? (
-          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
-            <ul className="py-1">
-              {CLAUDE_PERMISSION_OPTIONS.map((option) => {
-                const active = option.value === claudeSelectionMode(nativeControls);
-                return (
-                  <li key={option.value}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onNativeControlsChange(applyClaudePermissionSelection(option.value, nativeControls));
-                        setClaudeOpen(false);
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors",
-                        active ? "bg-fg/[0.06] text-fg" : "text-fg/72 hover:bg-fg/[0.04]",
-                      )}
-                      title={option.detail}
-                    >
-                      <span className="flex-1">{option.label}</span>
-                      {active ? <Check size={10} weight="bold" /> : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ) : null}
-      </div>
+      <PermissionModePicker
+        ariaLabel="Claude permission mode"
+        selectedValue={claudeSelectionMode(nativeControls)}
+        options={CLAUDE_MODE_OPTIONS}
+        disabled={disabled}
+        onSelect={(mode) => onNativeControlsChange(applyClaudePermissionSelection(mode, nativeControls))}
+      />
     );
   }
 
   if (provider === "codex") {
     const preset = codexPresetFromControls(nativeControls);
-    const activePreset = CODEX_PERMISSION_PRESETS.find((o) => o.value === preset);
-    const label = preset === "custom" ? "Custom" : activePreset?.label ?? "Default";
+    const options: Array<PermissionModePickerOption<CodexPermissionPreset>> = preset === "custom"
+      ? [
+        ...CODEX_LAUNCH_PRESET_OPTIONS,
+        { value: "custom", label: "Custom", detail: "Custom Codex approval/sandbox combination.", tone: "slate", icon: "config" },
+      ]
+      : CODEX_LAUNCH_PRESET_OPTIONS;
     return (
-      <div ref={codexRef} className="relative">
-        <button
-          type="button"
-          disabled={disabled}
-          onClick={() => setCodexOpen((open) => !open)}
-          className={cn(PERMISSION_TRIGGER_CLASS, codexOpen && "border-violet-400/30 bg-violet-500/[0.08]")}
-          title={activePreset?.detail}
-        >
-          <span className="truncate font-medium">{label}</span>
-          <CaretDown size={9} weight="bold" className="text-muted-fg/50" />
-        </button>
-        {codexOpen ? (
-          <div className={cn("absolute bottom-full left-0 mb-1.5 w-56 overflow-hidden", POPOVER_SURFACE_CLASS)} style={{ zIndex: Z_LAYERS.popover }}>
-            <ul className="py-1">
-              {CODEX_PERMISSION_PRESETS.map((option) => {
-                const active = preset === option.value;
-                return (
-                  <li key={option.value}>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onNativeControlsChange(applyCodexPresetToControls(option.value, nativeControls));
-                        setCodexOpen(false);
-                      }}
-                      className={cn(
-                        "flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors",
-                        active ? "bg-fg/[0.06] text-fg" : "text-fg/72 hover:bg-fg/[0.04]",
-                      )}
-                      title={option.detail}
-                    >
-                      <span className="flex-1">{option.label}</span>
-                      {active ? <Check size={10} weight="bold" /> : null}
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        ) : null}
-      </div>
+      <PermissionModePicker
+        ariaLabel="Codex permission mode"
+        selectedValue={preset}
+        options={options}
+        disabled={disabled}
+        onSelect={(next) => {
+          if (next === "custom") return;
+          onNativeControlsChange(applyCodexPresetToControls(next, nativeControls));
+        }}
+      />
     );
   }
 
   if (provider === "cursor") {
-    const modeValue = nativeControls.cursorModeId ?? "agent";
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Mode</span>
-        <select
-          value={modeValue}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({ ...nativeControls, cursorModeId: event.target.value })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {cursorModeChoices().map((modeId) => (
-            <option key={modeId} value={modeId}>{cursorModeLabel(modeId)}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Cursor mode"
+        selectedValue={nativeControls.cursorModeId ?? "agent"}
+        options={cursorModeChoices().map((modeId) => cursorPermissionPickerOption(modeId, cursorModeLabel(modeId)))}
+        disabled={disabled}
+        onSelect={(modeId) => onNativeControlsChange({ ...nativeControls, cursorModeId: modeId })}
+      />
     );
   }
 
   if (provider === "droid") {
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Autonomy</span>
-        <select
-          value={nativeControls.droidPermissionMode}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({
-            ...nativeControls,
-            droidPermissionMode: event.target.value as NativeControlState["droidPermissionMode"],
-          })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {DROID_PERMISSION_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Droid autonomy mode"
+        selectedValue={nativeControls.droidPermissionMode}
+        options={DROID_PERMISSION_OPTIONS}
+        disabled={disabled}
+        onSelect={(mode) => onNativeControlsChange({ ...nativeControls, droidPermissionMode: mode })}
+      />
     );
   }
 
   if (provider === "muse") {
     return (
-      <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-        <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Approvals</span>
-        <select
-          value={nativeControls.musePermissionMode}
-          disabled={disabled}
-          onChange={(event) => onNativeControlsChange({
-            ...nativeControls,
-            musePermissionMode: event.target.value as NativeControlState["musePermissionMode"],
-          })}
-          className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-        >
-          {MUSE_PERMISSION_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value} title={option.detail}>{option.label}</option>
-          ))}
-        </select>
-      </label>
+      <PermissionModePicker
+        ariaLabel="Muse approval mode"
+        selectedValue={nativeControls.musePermissionMode}
+        options={MUSE_LAUNCH_OPTIONS}
+        disabled={disabled}
+        onSelect={(mode) => onNativeControlsChange({ ...nativeControls, musePermissionMode: mode })}
+      />
     );
   }
 
   return (
-    <label className="inline-flex h-6 items-center gap-1.5 rounded-md border border-fg/[0.06] bg-fg/[0.03] px-1.5">
-      <span className="text-[9px] font-semibold uppercase tracking-wide text-muted-fg/55">Permissions</span>
-      <select
-        value={nativeControls.opencodePermissionMode}
-        disabled={disabled}
-        onChange={(event) => onNativeControlsChange({
-          ...nativeControls,
-          opencodePermissionMode: event.target.value as NativeControlState["opencodePermissionMode"],
-        })}
-        className="max-w-[7rem] bg-transparent text-[10.5px] text-fg/82 outline-none disabled:opacity-45"
-      >
-        {OPENCODE_PERMISSION_OPTIONS.map((option) => (
-          <option key={option.value} value={option.value}>{option.label}</option>
-        ))}
-      </select>
-    </label>
+    <PermissionModePicker
+      ariaLabel="OpenCode permission mode"
+      selectedValue={nativeControls.opencodePermissionMode}
+      options={OPENCODE_PERMISSION_OPTIONS}
+      disabled={disabled}
+      onSelect={(mode) => onNativeControlsChange({ ...nativeControls, opencodePermissionMode: mode })}
+    />
   );
 }
 

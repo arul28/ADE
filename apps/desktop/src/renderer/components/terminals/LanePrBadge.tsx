@@ -11,7 +11,7 @@ import {
 } from "../../lib/lanePrBadge";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { getPrCiDotColor, getPrReviewDotColor } from "../prs/shared/prVisuals";
-import { LanePrHoverCard } from "../lanes/LanePrHoverCard";
+import { HoverCard } from "../ui/HoverCard";
 import { PaneTooltip } from "../ui/PaneTooltip";
 import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
 
@@ -126,7 +126,7 @@ export function LanePrBadge({
       className="inline-flex shrink-0 items-center gap-1"
       title={`${allPrs.length} pull requests on this lane`}
     >
-      <LanePrHoverCard
+      <HoverCard
         className="inline-flex shrink-0 items-center gap-1"
         label={`Pull requests · ${allPrs.length}`}
         width={260}
@@ -220,7 +220,7 @@ export function LanePrBadge({
           <span style={{ color: lanePrStateColor(primaryPr.state) }}>{lanePrStateLabel(primaryPr.state)}</span>
           <CaretDown size={8} weight="bold" className="shrink-0 opacity-60" aria-hidden data-testid="lane-pr-badge-caret" />
         </span>
-      </LanePrHoverCard>
+      </HoverCard>
     </span>
   );
 }

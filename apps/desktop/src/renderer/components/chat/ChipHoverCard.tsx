@@ -72,7 +72,7 @@ import { ExtraChipCardBody, type ExtraChipCardData } from "./chipCardBodies";
 import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
 import { getModelById, resolveProviderGroupForModel } from "../../../shared/modelRegistry";
 import { modelMentionPermissionLabel } from "../../../shared/modelMentions";
-import { modelPermissionPresentation } from "../../lib/modelPermissionOptions";
+import { permissionModePresentation } from "../shared/permissionModePickerOptions";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { McpMentionCardBody } from "./McpMentionCardBody";
@@ -386,7 +386,7 @@ export async function loadChipCardData(
     } : null;
   }
   if (target.kind === "permission") {
-    const presentation = modelPermissionPresentation(target.provider, target.value);
+    const presentation = permissionModePresentation(target.provider, target.value);
     const risk = presentation.tone === "red" ? "high" : presentation.tone === "amber" ? "medium" : "low";
     const label = modelMentionPermissionLabel(target.value, target.provider);
     const meaning = risk === "high"

@@ -41,7 +41,7 @@ import { chipDisplayLabel, chipGlyph, splitTextIntoChipParts, type Chip, type Ch
 import type { AgentChatFileRef } from "../../../shared/types";
 import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { deriveSmartLinkPreview, type SmartLinkProvider } from "../../../shared/smartLinks";
-import { modelPermissionPresentation, permissionToneTextClass } from "../../lib/modelPermissionOptions";
+import { permissionModePresentation, permissionToneTextClass } from "../shared/permissionModePickerOptions";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { useChipHoverCard, useChipScopeSources, type ChipScopeSources } from "./ChipHoverCard";
@@ -171,7 +171,7 @@ function ChipIcon({ chip, markSvg, iconDataUrl }: { chip: Chip; markSvg: string 
     }
   }
   if (chip.source.origin === "permission") {
-    const presentation = modelPermissionPresentation(chip.source.provider, chip.source.value);
+    const presentation = permissionModePresentation(chip.source.provider, chip.source.value);
     return (
       <span aria-hidden className={`${ICON_MARK_CLASS} ${permissionToneTextClass(presentation.tone)}`}>
         <PermissionModeGlyph icon={presentation.icon} size={11} />

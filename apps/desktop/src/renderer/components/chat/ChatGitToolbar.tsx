@@ -32,7 +32,7 @@ import {
 } from "../../lib/lanePrBadge";
 import { prClaimedByOtherChat, selectPrsForChatInLane } from "../../../shared/prChatScope";
 import { requestChatPrSelection } from "./chatPrPaneRequests";
-import { Z_LAYERS } from "../ui/zLayers";
+import { HoverCard } from "../ui/HoverCard";
 import { selectChatPrs } from "../lanes/lanePageModel";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { PrWatchPill } from "./PrWatchPill";
@@ -559,80 +559,86 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         </button>
       );
     }
+    const pill = (
+      <button
+        type="button"
+        className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
+        onClick={() => {
+          if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
+          if (onTogglePrPane) { openLinkedPrInPane(); return; }
+          setPrMenuOpen((open) => !open);
+        }}
+        aria-expanded={prPillActive}
+        aria-haspopup="menu"
+        title={`${label}: ${linkedPr.title}`}
+      >
+        <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention(allPrs)) }} />
+        <span>{label}</span>
+        <GitHubStackBadge stack={linkedPr.stack} compact bare />
+        {checksIcon(linkedPr.checksStatus, linkedPr.state)}
+        <CaretRight
+          size={9}
+          weight="bold"
+          className={cn("text-fg/35 transition-transform duration-150", prPillActive && "rotate-90 text-fg/65")}
+        />
+      </button>
+    );
+    if (allPrs.length <= 1) return <div className="relative inline-flex items-center gap-1">{pill}</div>;
     return (
-      <div className="group relative inline-flex items-center gap-1">
-        <button
-          type="button"
-          className={cn(btnBase, "gap-1.5", prPillActive && "border-violet-400/25 bg-violet-500/[0.08] text-fg/80")}
-          onClick={() => {
-            if (prOpensPrsTab) { openPrInPrsTab(linkedPr); return; }
-            if (onTogglePrPane) { openLinkedPrInPane(); return; }
-            setPrMenuOpen((open) => !open);
-          }}
-          aria-expanded={prPillActive}
-          aria-haspopup="menu"
-          title={`${label}: ${linkedPr.title}`}
-        >
-          <span className="inline-block h-1.5 w-1.5 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention(allPrs)) }} />
-          <span>{label}</span>
-          <GitHubStackBadge stack={linkedPr.stack} compact bare />
-          {checksIcon(linkedPr.checksStatus, linkedPr.state)}
-          <CaretRight
-            size={9}
-            weight="bold"
-            className={cn("text-fg/35 transition-transform duration-150", prPillActive && "rotate-90 text-fg/65")}
-          />
-        </button>
-        {allPrs.length > 1 ? (
-          <div style={{ zIndex: Z_LAYERS.popover }} className="pointer-events-none invisible absolute right-0 top-full w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
-            <div className="rounded-lg border border-fg/[0.10] bg-(color:--work-popover-bg) p-1.5 shadow-2xl shadow-black/30">
-              <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">Pull requests · {allPrs.length}</div>
-              {allPrs.map((candidate) => (
-                <button
-                  type="button"
-                  key={candidate.id}
-                  className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.06]"
-                  onClick={() => openPr(candidate)}
-                  title={candidate.title || `PR #${candidate.githubPrNumber}`}
-                >
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention([candidate])) }} />
-                  <span className="min-w-0 flex-1">
-                    <span className="flex items-center gap-1.5 text-[10px] font-semibold text-fg/80">
-                      <span className="font-mono">#{candidate.githubPrNumber}</span>
-                      <span className="text-fg/55">{candidate.state}</span>
-                    </span>
-                    <span className="block truncate text-[9px] text-muted-fg/55">{candidate.title || "Untitled pull request"}</span>
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1" aria-label={`CI ${candidate.checksStatus}; review ${candidate.reviewStatus}`}>
-                    <span className={cn("h-1.5 w-1.5 rounded-full", candidate.checksStatus === "failing" ? "bg-red-400" : candidate.checksStatus === "passing" ? "bg-emerald-400" : "bg-fg/25")} />
-                    <span className={cn("h-1.5 w-1.5 rounded-full", candidate.reviewStatus === "changes_requested" ? "bg-red-400" : candidate.reviewStatus === "approved" ? "bg-emerald-400" : candidate.reviewStatus === "requested" ? "bg-amber-400" : "bg-fg/25")} />
-                  </span>
-                </button>
-              ))}
+      <HoverCard
+        className="inline-flex items-center gap-1"
+        label={`Pull requests (${allPrs.length})`}
+        width={280}
+        content={(
+          <div className="rounded-lg border border-fg/[0.10] bg-(color:--work-popover-bg) p-1.5 shadow-2xl shadow-black/30">
+            <div className="px-2 pb-1.5 pt-1 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-fg/45">Pull requests · {allPrs.length}</div>
+            {allPrs.map((candidate) => (
               <button
                 type="button"
-                className="mt-0.5 flex w-full items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
-                onClick={() => {
-                  if (runtimePin) {
-                    // The local PR tab cannot resolve a foreign machine's rows,
-                    // so this opens the owning machine's primary PR instead.
-                    openPr(linkedPr);
-                    return;
-                  }
-                  navigate(`/prs${buildPrsRouteSearch({
-                    activeTab: "normal",
-                    selectedPrId: null,
-                    selectedLaneId: laneId,
-                    selectedRebaseItemId: null,
-                  })}`);
-                }}
+                key={candidate.id}
+                className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-fg/[0.06]"
+                onClick={() => openPr(candidate)}
+                title={candidate.title || `PR #${candidate.githubPrNumber}`}
               >
-                {runtimePin ? "Open on its machine" : "Show all in Pull requests"}
+                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ background: lanePrAttentionColor(lanePrAggregateAttention([candidate])) }} />
+                <span className="min-w-0 flex-1">
+                  <span className="flex items-center gap-1.5 text-[10px] font-semibold text-fg/80">
+                    <span className="font-mono">#{candidate.githubPrNumber}</span>
+                    <span className="text-fg/55">{candidate.state}</span>
+                  </span>
+                  <span className="block truncate text-[9px] text-muted-fg/55">{candidate.title || "Untitled pull request"}</span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1" aria-label={`CI ${candidate.checksStatus}; review ${candidate.reviewStatus}`}>
+                  <span className={cn("h-1.5 w-1.5 rounded-full", candidate.checksStatus === "failing" ? "bg-red-400" : candidate.checksStatus === "passing" ? "bg-emerald-400" : "bg-fg/25")} />
+                  <span className={cn("h-1.5 w-1.5 rounded-full", candidate.reviewStatus === "changes_requested" ? "bg-red-400" : candidate.reviewStatus === "approved" ? "bg-emerald-400" : candidate.reviewStatus === "requested" ? "bg-amber-400" : "bg-fg/25")} />
+                </span>
               </button>
-            </div>
+            ))}
+            <button
+              type="button"
+              className="mt-0.5 flex w-full items-center rounded-md border-t border-fg/[0.06] px-2 pb-1 pt-1.5 text-left text-[10px] text-muted-fg/60 transition-colors hover:bg-fg/[0.06] hover:text-fg/85"
+              onClick={() => {
+                if (runtimePin) {
+                  // The local PR tab cannot resolve a foreign machine's rows,
+                  // so this opens the owning machine's primary PR instead.
+                  openPr(linkedPr);
+                  return;
+                }
+                navigate(`/prs${buildPrsRouteSearch({
+                  activeTab: "normal",
+                  selectedPrId: null,
+                  selectedLaneId: laneId,
+                  selectedRebaseItemId: null,
+                })}`);
+              }}
+            >
+              {runtimePin ? "Open on its machine" : "Show all in Pull requests"}
+            </button>
           </div>
-        ) : null}
-      </div>
+        )}
+      >
+        {pill}
+      </HoverCard>
     );
   }, [laneId, linkedPr, linkedPrOnly, linkedPrs, navigate, onTogglePrPane, openLinkedPrInPane, openPr, openPrInPrsTab, prOpensPrsTab, prPillActive, runtimePin]);
 

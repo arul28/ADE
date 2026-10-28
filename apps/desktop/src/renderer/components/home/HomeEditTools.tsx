@@ -1,6 +1,7 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { AppWindow, ArrowCounterClockwise, CaretDown, Check, Drop, FloppyDisk, PencilSimple, Plus, SquaresFour, Trash } from "@phosphor-icons/react";
 import { confirmDialog, promptDialog } from "../ui/dialog";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
 import { useAppStore } from "../../state/appStore";
 import { projectSidebarShortcutLabel } from "../app/projectSidebar/projectSidebarTabs";
@@ -26,33 +27,47 @@ function themeCardDefaults(): { opacity: number; blur: number } {
   return { opacity: Math.round(opacity), blur: Math.round(blurPx) };
 }
 
-function AppearancePopover({ onClose }: { onClose: () => void }) {
+type HomePopoverProps = {
+  /** The toolbar button that opened it; the popover hangs under it. */
+  anchorRef: RefObject<HTMLButtonElement | null>;
+  onClose: () => void;
+};
+
+/**
+ * A toolbar popover, portalled so the page's scroll area cannot clip it.
+ * Closes on an outside press or Escape (`AnchoredMenu`).
+ */
+function HomePopover({ anchorRef, onClose, className, label, children }: HomePopoverProps & {
+  className: string;
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <AnchoredMenu
+      open
+      anchorRef={anchorRef}
+      onClose={onClose}
+      placement="bottom-end"
+      offset={8}
+      zIndex={Z_LAYERS.popover}
+      className={className}
+      role="dialog"
+      aria-label={label}
+    >
+      {children}
+    </AnchoredMenu>
+  );
+}
+
+function AppearancePopover({ anchorRef, onClose }: HomePopoverProps) {
   const appearance = useHomeLayoutStore((s) => s.layout.appearance);
   const setAppearance = useHomeLayoutStore((s) => s.setAppearance);
   const defaults = useMemo(themeCardDefaults, []);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    const onPointer = (event: PointerEvent) => {
-      if (ref.current && !ref.current.contains(event.target as Node) && !(event.target as Element).closest?.("[data-home-popover-toggle]")) onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [onClose]);
   const opacity = appearance.cardOpacity ?? defaults.opacity;
   const blur = appearance.cardBlur ?? defaults.blur;
   const customized = appearance.cardOpacity != null || appearance.cardBlur != null;
   return (
-    <div ref={ref} className="ade-home-look" role="dialog" aria-label="Card look" style={{ zIndex: Z_LAYERS.popover }}>
+    <HomePopover anchorRef={anchorRef} onClose={onClose} className="ade-home-look" label="Card look">
       <label className="ade-home-look-row">
         <span>Card opacity</span>
         <input
@@ -88,18 +103,16 @@ function AppearancePopover({ onClose }: { onClose: () => void }) {
           Use theme look
         </button>
       </div>
-    </div>
+    </HomePopover>
   );
 }
 
 /** Which app buttons this layout shows beside the hero actions. */
-function AppsPopover({ onClose }: { onClose: () => void }) {
+function AppsPopover({ anchorRef, onClose }: HomePopoverProps) {
   const hiddenApps = useHomeLayoutStore((s) => s.layout.hiddenApps);
   const setAppShown = useHomeLayoutStore((s) => s.setAppShown);
-  const ref = useRef<HTMLDivElement | null>(null);
-  useDismiss(ref, onClose);
   return (
-    <div ref={ref} className="ade-home-look" role="dialog" aria-label="Apps" style={{ zIndex: Z_LAYERS.popover }}>
+    <HomePopover anchorRef={anchorRef} onClose={onClose} className="ade-home-look" label="Apps">
       {HOME_APPS.map((app) => {
         const shown = !hiddenApps.includes(app);
         return (
@@ -112,33 +125,11 @@ function AppsPopover({ onClose }: { onClose: () => void }) {
           </div>
         );
       })}
-    </div>
+    </HomePopover>
   );
 }
 
-/** Closes a popover on an outside pointer or Escape (toggle buttons carry `data-home-popover-toggle`). */
-function useDismiss(ref: React.RefObject<HTMLElement | null>, onClose: () => void) {
-  useEffect(() => {
-    const onPointer = (event: PointerEvent) => {
-      const target = event.target as Element;
-      if (ref.current && !ref.current.contains(target) && !target.closest?.("[data-home-popover-toggle]")) onClose();
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    document.addEventListener("pointerdown", onPointer);
-    document.addEventListener("keydown", onKey, true);
-    return () => {
-      document.removeEventListener("pointerdown", onPointer);
-      document.removeEventListener("keydown", onKey, true);
-    };
-  }, [onClose, ref]);
-}
-
-function LayoutsPopover({ onClose }: { onClose: () => void }) {
+function LayoutsPopover({ anchorRef, onClose }: HomePopoverProps) {
   const presets = useHomeLayoutStore((s) => s.presets);
   const activeId = useHomeLayoutStore((s) => s.activeId);
   const switchPreset = useHomeLayoutStore((s) => s.switchPreset);
@@ -147,10 +138,8 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
   const deletePreset = useHomeLayoutStore((s) => s.deletePreset);
   const keybindings = useAppStore((s) => s.keybindings);
   const shortcut = projectSidebarShortcutLabel(keybindings, HOME_LAYOUT_KEYBINDING);
-  const ref = useRef<HTMLDivElement | null>(null);
   // A prompt is a dialog over the page; the popover stays put under it.
   const [prompting, setPrompting] = useState(false);
-  useDismiss(ref, prompting ? () => {} : onClose);
   const full = savedPresetCount(presets) >= HOME_LAYOUT_PRESETS_MAX;
   const nameTaken = (value: string, exceptId?: string) =>
     presets.some((preset) => preset.id !== exceptId && preset.name.toLowerCase() === value.trim().toLowerCase())
@@ -183,7 +172,12 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
   };
 
   return (
-    <div ref={ref} className="ade-home-look ade-home-layouts" role="dialog" aria-label="Saved layouts" style={{ zIndex: Z_LAYERS.popover }}>
+    <HomePopover
+      anchorRef={anchorRef}
+      onClose={prompting ? () => {} : onClose}
+      className="ade-home-look ade-home-layouts"
+      label="Saved layouts"
+    >
       <div className="ade-home-layouts-list" role="radiogroup" aria-label="Layout">
         {presets.map((preset) => (
           <div key={preset.id} className="ade-home-layouts-row" data-active={preset.id === activeId || undefined}>
@@ -229,7 +223,7 @@ function LayoutsPopover({ onClose }: { onClose: () => void }) {
           <FloppyDisk size={12} aria-hidden /> Save as…
         </button>
       </div>
-    </div>
+    </HomePopover>
   );
 }
 
@@ -240,6 +234,9 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
   const [lookOpen, setLookOpen] = useState(false);
   const [layoutsOpen, setLayoutsOpen] = useState(false);
   const [appsOpen, setAppsOpen] = useState(false);
+  const layoutsButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lookButtonRef = useRef<HTMLButtonElement | null>(null);
+  const appsButtonRef = useRef<HTMLButtonElement | null>(null);
   // An empty cell on the page opens the gallery straight away, including the
   // click that turned edit mode on (the request is made before this mounts).
   const pickerRequest = useHomeGridMetrics((s) => s.pickerRequest);
@@ -254,6 +251,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
     <div className="ade-home-edit-bar" data-onboarding-anchor="home-edit-tools">
       <div className="ade-home-look-anchor">
         <button
+          ref={layoutsButtonRef}
           type="button"
           className="ade-home-action"
           aria-expanded={layoutsOpen}
@@ -270,7 +268,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           <span className="ade-home-action-label ade-home-layouts-current">{activeName}</span>
           <CaretDown size={11} aria-hidden />
         </button>
-        {layoutsOpen ? <LayoutsPopover onClose={() => setLayoutsOpen(false)} /> : null}
+        {layoutsOpen ? <LayoutsPopover anchorRef={layoutsButtonRef} onClose={() => setLayoutsOpen(false)} /> : null}
       </div>
       <button type="button" className="ade-home-action" onClick={() => setGalleryOpen(true)}>
         <Plus size={14} aria-hidden />
@@ -278,6 +276,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
       </button>
       <div className="ade-home-look-anchor">
         <button
+          ref={lookButtonRef}
           type="button"
           className="ade-home-action"
           aria-expanded={lookOpen}
@@ -291,10 +290,11 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           <Drop size={14} aria-hidden />
           <span className="ade-home-action-label">Card look</span>
         </button>
-        {lookOpen ? <AppearancePopover onClose={() => setLookOpen(false)} /> : null}
+        {lookOpen ? <AppearancePopover anchorRef={lookButtonRef} onClose={() => setLookOpen(false)} /> : null}
       </div>
       <div className="ade-home-look-anchor">
         <button
+          ref={appsButtonRef}
           type="button"
           className="ade-home-action"
           aria-expanded={appsOpen}
@@ -308,7 +308,7 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           <AppWindow size={14} aria-hidden />
           <span className="ade-home-action-label">Apps</span>
         </button>
-        {appsOpen ? <AppsPopover onClose={() => setAppsOpen(false)} /> : null}
+        {appsOpen ? <AppsPopover anchorRef={appsButtonRef} onClose={() => setAppsOpen(false)} /> : null}
       </div>
       <button
         type="button"

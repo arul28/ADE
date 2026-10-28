@@ -1187,6 +1187,7 @@ export function ChatAppControlPanel({
     [activeSession?.appKind, activeSession?.id, observation?.id, onAddContext],
   );
 
+  const dismissHandle = useCallback(() => setActiveHandle(null), []);
   const copyHandle = useCallback((handle: string) => {
     setActiveHandle((current) => (current === handle ? null : handle));
     void navigator.clipboard?.writeText?.(handle)
@@ -1821,6 +1822,7 @@ export function ChatAppControlPanel({
                     activeHandle={activeHandle}
                     copiedHandle={copiedHandle}
                     onSelectHandle={copyHandle}
+                    onDismissHandle={dismissHandle}
                     onAddToChat={onAddContext ? addHandleToChat : null}
                   />
                 ) : null}

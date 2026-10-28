@@ -1,5 +1,8 @@
-import React, { useId, useState } from "react";
+import React, { useId, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { useTooltipPlacement } from "../../ui/useTooltipPlacement";
+import { Z_LAYERS } from "../../ui/zLayers";
 
 /**
  * A "?" beside a title, with one short sentence behind it.
@@ -10,15 +13,20 @@ import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
  * page grows one. The explanation still exists; it just waits to be asked for.
  *
  * Hover and focus both open it, so it is reachable without a mouse, and it
- * closes on Escape.
+ * closes on Escape. It portals to the body so a scrolling settings pane cannot
+ * clip it, and flips above the "?" near the bottom of the window.
  */
 export function HelpHint({ text, label = "What is this?" }: { text: string; label?: string }) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const tooltipRef = useRef<HTMLSpanElement | null>(null);
+  const placement = useTooltipPlacement({ open, triggerRef, tooltipRef, side: "bottom", remeasureKey: text });
 
   return (
-    <span style={{ position: "relative", display: "inline-flex" }}>
+    <span style={{ display: "inline-flex" }}>
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         aria-describedby={open ? id : undefined}
@@ -51,15 +59,18 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
       >
         ?
       </button>
-      {open ? (
+      {open && typeof document !== "undefined" ? createPortal(
         <span
+          ref={tooltipRef}
           id={id}
           role="tooltip"
           style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            left: -4,
-            zIndex: 40,
+            position: "fixed",
+            left: placement?.x ?? 0,
+            top: placement?.y ?? 0,
+            visibility: placement ? "visible" : "hidden",
+            pointerEvents: "none",
+            zIndex: Z_LAYERS.tooltip,
             width: 248,
             padding: "7px 9px",
             borderRadius: 8,
@@ -73,7 +84,8 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
           }}
         >
           {text}
-        </span>
+        </span>,
+        document.body,
       ) : null}
     </span>
   );

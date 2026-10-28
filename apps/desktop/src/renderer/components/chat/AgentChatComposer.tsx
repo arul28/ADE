@@ -287,9 +287,15 @@ import {
   type StagedAttachment,
 } from "./chatAttachmentStaging";
 import {
-  DROID_PERMISSION_OPTIONS as BASE_DROID_PERMISSION_OPTIONS,
-  MUSE_PERMISSION_OPTIONS as BASE_MUSE_PERMISSION_OPTIONS,
-} from "../../lib/nativeLaunchControls";
+  CLAUDE_MODE_OPTIONS,
+  codexPermissionPickerOption,
+  cursorPermissionPickerOption,
+  DROID_PERMISSION_OPTIONS,
+  MUSE_PERMISSION_OPTIONS,
+  OPENCODE_PERMISSION_OPTIONS,
+  type CodexPermissionPreset,
+  type MusePermissionPickerValue,
+} from "../shared/permissionModePickerOptions";
 
 export type ComposerDraftEditIntent = {
   previousText: string;
@@ -1457,18 +1463,6 @@ function ComposerOverflowMenu({
 
 
 
-const CLAUDE_MODE_OPTIONS: Array<PermissionModePickerOption<AgentChatClaudePermissionMode>> = [
-  { value: "default", label: "Manual", detail: "Asks before edits, Bash and risky tools.", tone: "green", icon: "manual" },
-  { value: "auto", label: "Auto", detail: "A safety model approves each tool call.", tone: "amber", icon: "auto" },
-  { value: "acceptEdits", label: "Accept edits", triggerLabel: "Edits", detail: "Edits auto-approved; risky actions still ask.", tone: "amber", icon: "edit" },
-  { value: "plan", label: "Plan mode", triggerLabel: "Plan", detail: "Read-only: analyze and plan.", tone: "purple", icon: "plan" },
-  { value: "bypassPermissions", label: "Bypass", detail: "Never asks for permission in this chat.", tone: "red", icon: "full" },
-];
-
-
-
-type CodexPermissionPreset = "default" | "edit" | "plan" | "full-auto" | "config-toml" | "custom";
-
 function resolveCodexPermissionPreset(args: {
   codexApprovalPolicy?: AgentChatCodexApprovalPolicy;
   codexSandbox?: AgentChatCodexSandbox;
@@ -1481,67 +1475,6 @@ function resolveCodexPermissionPreset(args: {
   if (args.codexApprovalPolicy === "never" && args.codexSandbox === "danger-full-access") return "full-auto";
   return "custom";
 }
-
-function codexPermissionPickerOption(option: PermissionOption): PermissionModePickerOption<Exclude<CodexPermissionPreset, "custom">> {
-  switch (option.value) {
-    case "default":
-      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
-    case "edit":
-      return { value: "edit", label: option.label, triggerLabel: "Edit", detail: option.detail, tone: "amber", icon: "edit" };
-    case "plan":
-      return { value: "plan", label: option.label, triggerLabel: "Plan", detail: option.detail, tone: "purple", icon: "plan" };
-    case "full-auto":
-      return { value: "full-auto", label: option.label, triggerLabel: "Full", detail: option.detail, tone: "red", icon: "full" };
-    case "config-toml":
-      return { value: "config-toml", label: option.label, triggerLabel: "Config", detail: option.detail, tone: "slate", icon: "config" };
-    default:
-      return { value: "default", label: option.label, triggerLabel: "Default", detail: option.detail, tone: "green", icon: "manual" };
-  }
-}
-
-function cursorPermissionPickerOption(value: string, label: string): PermissionModePickerOption<string> {
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "plan") {
-    return { value, label, triggerLabel: label, detail: "Read-only planning mode.", tone: "purple", icon: "plan" };
-  }
-  if (normalized === "ask" || normalized === "edit") {
-    return { value, label, triggerLabel: label, detail: "Read-only Q&A mode.", tone: "green", icon: "manual" };
-  }
-  if (normalized === "full-auto" || normalized === "force" || normalized === "yolo") {
-    return { value, label, triggerLabel: label, detail: "Highest access mode for Cursor Agent.", tone: "red", icon: "full" };
-  }
-  return { value, label, triggerLabel: label, detail: "Cursor Agent's normal approval flow.", tone: "green", icon: "agent" };
-}
-
-const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpenCodePermissionMode>> = [
-  { value: "plan", label: "Plan", detail: "Read-only plan agent.", tone: "purple", icon: "plan" },
-  { value: "edit", label: "Edit", detail: "Allow edits; ask for the rest.", tone: "amber", icon: "edit" },
-  { value: "full-auto", label: "Full auto", detail: "Allow configured OpenCode tools.", tone: "red", icon: "full" },
-  { value: "config-toml", label: "Config", detail: "Use OpenCode config files.", tone: "slate", icon: "config" },
-];
-
-const DROID_PERMISSION_OPTION_PRESENTATION: Record<AgentChatDroidPermissionMode, Pick<PermissionModePickerOption<AgentChatDroidPermissionMode>, "triggerLabel" | "tone" | "icon">> = {
-  "read-only": { tone: "green", icon: "manual" },
-  "auto-low": { tone: "green", icon: "edit" },
-  "auto-medium": { tone: "amber", icon: "auto" },
-  "auto-high": { tone: "red", icon: "full" },
-  agi: { triggerLabel: "AGI", tone: "purple", icon: "agi" },
-};
-const DROID_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatDroidPermissionMode>> =
-  BASE_DROID_PERMISSION_OPTIONS.map((option) => ({ ...option, ...DROID_PERMISSION_OPTION_PRESENTATION[option.value] }));
-
-/** Muse's approval modes plus ADE's plan mode, which runs on `denyUnmatched`. */
-type MusePermissionPickerValue = AgentChatMusePermissionMode | "plan";
-const MUSE_PERMISSION_OPTION_PRESENTATION: Record<AgentChatMusePermissionMode, Pick<PermissionModePickerOption<MusePermissionPickerValue>, "triggerLabel" | "tone" | "icon">> = {
-  denyUnmatched: { triggerLabel: "Read-only", tone: "green", icon: "manual" },
-  promptUnmatched: { tone: "green", icon: "edit" },
-  onRequest: { tone: "amber", icon: "auto" },
-  allowAll: { triggerLabel: "Full", tone: "red", icon: "full" },
-};
-const MUSE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<MusePermissionPickerValue>> = [
-  { value: "plan", label: "Plan", detail: "Read-only planning with ADE's guidance.", tone: "purple", icon: "plan" },
-  ...BASE_MUSE_PERMISSION_OPTIONS.map((option) => ({ ...option, ...MUSE_PERMISSION_OPTION_PRESENTATION[option.value] })),
-];
 
 function resolveCursorModeOption(snapshot: AgentChatCursorModeSnapshot | null | undefined): AgentChatCursorConfigOption | null {
   if (!snapshot?.configOptions?.length) return null;

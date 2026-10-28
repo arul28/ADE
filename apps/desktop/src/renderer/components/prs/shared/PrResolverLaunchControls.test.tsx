@@ -75,12 +75,13 @@ describe("PrResolverLaunchControls", () => {
       permissionMode: "default",
     });
 
-    expect(screen.getByRole("button", { name: "Manual" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Accept edits" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Bypass" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Resolver permission mode" }));
+    expect(screen.getByRole("option", { name: "Manual" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Accept edits" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Bypass" })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Manual" }));
+    await user.click(screen.getByRole("option", { name: "Manual" }));
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("default");
   });
 
@@ -91,12 +92,13 @@ describe("PrResolverLaunchControls", () => {
       permissionMode: "default",
     });
 
-    expect(screen.getByRole("button", { name: "Default permissions" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Plan mode" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Full access" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Custom (config.toml)" })).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: "Resolver permission mode" }));
+    expect(screen.getByRole("option", { name: "Default permissions" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Plan mode" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Full access" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Custom (config.toml)" })).toBeTruthy();
 
-    await user.click(screen.getByRole("button", { name: "Custom (config.toml)" }));
+    await user.click(screen.getByRole("option", { name: "Custom (config.toml)" }));
     expect(props.onPermissionModeChange).toHaveBeenCalledWith("config-toml");
   });
 

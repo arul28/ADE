@@ -278,11 +278,8 @@ button.activity-pane-freshness {
   color: var(--color-accent);
 }
 
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .activity-filter-menu {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 5px);
-  left: 0;
   display: flex;
   min-width: 190px;
   max-height: 280px;
@@ -1179,11 +1176,8 @@ button.activity-pane-freshness {
   transform: scale(0.94);
 }
 
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .activity-settings-popover {
-  position: absolute;
-  top: calc(100% + 9px);
-  right: 0;
-  z-index: 80;
   width: min(400px, calc(100vw - 32px));
   max-height: min(560px, calc(100vh - 120px));
   overflow-y: auto;
