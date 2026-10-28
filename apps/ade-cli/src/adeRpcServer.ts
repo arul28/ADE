@@ -3485,13 +3485,8 @@ function scopeCrossMachineMoveArgs(
 ): Record<string, unknown> {
   const { callerIsPerson, boundChatSessionId } = caller;
   const requestedSourceSessionId = asOptionalTrimmedString(rawArgs.sourceSessionId);
-  // ADE chats keep their parent in their own lineage (the chat service);
-  // session rows carry it only for tracked agent CLIs. The relation walk
-  // stops at 32 links and on any cycle.
-  const parentSessionIdFor = (sessionId: string) =>
-    runtime.agentChatService?.getChatParentSessionId?.(sessionId)
-      ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId
-      ?? null;
+  // The relation walk stops at 32 links and on any cycle.
+  const parentSessionIdFor = (sessionId: string) => directParentSessionId(runtime, sessionId);
   const relationTo = (sessionId: string | null | undefined) =>
     crossMachineMoveRelation(boundChatSessionId, sessionId, parentSessionIdFor);
 
@@ -3813,6 +3808,18 @@ function ctoIdentityPatchTouchesCrossMachineAccess(patch: unknown): boolean {
   return isRecord(patch) && Object.prototype.hasOwnProperty.call(patch, "crossMachineEnabled");
 }
 
+/**
+ * A session's direct parent. ADE chats keep it in their own lineage (the chat
+ * service); session rows carry it only for tracked agent CLIs, so reading the
+ * row alone misses every chat subagent.
+ */
+function directParentSessionId(runtime: AdeRuntime, sessionId: string): string | null {
+  return asOptionalTrimmedString(
+    runtime.agentChatService?.getChatParentSessionId?.(sessionId)
+      ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId,
+  ) ?? null;
+}
+
 function withTrustedAgentProvenance(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3825,10 +3832,7 @@ function withTrustedAgentProvenance(
   // and for how long. Never trust the caller's copy; derive it from the bound
   // session and the target's persisted direct-parent relationship.
   stripHostAuthoredMessageProvenance(existingMetadata);
-  const targetSession = targetSessionId ? runtime.sessionService.get(targetSessionId) : null;
-  const targetParentSessionId = asOptionalTrimmedString(
-    targetSession?.orchestrationParentSessionId,
-  );
+  const targetParentSessionId = targetSessionId ? directParentSessionId(runtime, targetSessionId) : null;
   if (callerSessionId && targetParentSessionId === callerSessionId) {
     existingMetadata.spawnDispatch = {
       parentSessionId: callerSessionId,
@@ -6252,10 +6256,7 @@ async function runTool(args: {
         && requestedSessionId !== callerSessionId;
       let legacyBlankChildKickoff = false;
       if (legacyCrossSessionSend) {
-        const targetSession = runtime.sessionService.get(requestedSessionId);
-        const targetParentSessionId = asOptionalTrimmedString(
-          targetSession?.orchestrationParentSessionId,
-        );
+        const targetParentSessionId = directParentSessionId(runtime, requestedSessionId);
         const agentChatService = runtime.agentChatService;
         if (targetParentSessionId === callerSessionId && agentChatService) {
           try {

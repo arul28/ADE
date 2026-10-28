@@ -5368,11 +5368,14 @@ describe("adeRpcServer", () => {
     (fixture.runtime.agentChatService as any).getChatEventHistory = getChatEventHistory;
     (fixture.runtime.agentChatService as any).getChatEventHistoryPage = getChatEventHistoryPage;
     const ownChat = { id: "chat-1", laneId: "lane-1", chatSessionId: "chat-1" };
+    // A chat's parent lives in the chat service, not on its session row (rows
+    // carry it only for tracked agent CLIs).
+    (fixture.runtime.agentChatService as any).getChatParentSessionId = vi.fn((sessionId: string) =>
+      sessionId === "chat-2" || sessionId === "chat-4" ? "chat-1" : null);
     const blankChildChat = {
       id: "chat-2",
       laneId: "lane-1",
       chatSessionId: "chat-2",
-      orchestrationParentSessionId: "chat-1",
       spawnKind: "peer",
     };
     const unrelatedChat = {
@@ -5384,7 +5387,6 @@ describe("adeRpcServer", () => {
       id: "chat-4",
       laneId: "lane-1",
       chatSessionId: "chat-4",
-      orchestrationParentSessionId: "chat-1",
       spawnKind: "peer",
     };
     const ownTerminal = { id: "terminal-1", laneId: "lane-1", ptyId: "pty-1", chatSessionId: "chat-1" };
