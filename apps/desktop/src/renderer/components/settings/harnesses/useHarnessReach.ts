@@ -93,7 +93,7 @@ export function useHarnessReach({
 
   const loadProxy = useCallback(async (seq = ++requestSeqRef.current, binding = pinRef.current) => {
     const status = proxyBridge()?.status;
-    if (typeof status !== "function") {
+    if (!isAdeAvailable(status)) {
       if (seq === requestSeqRef.current) setProxyLogins(null);
       return;
     }
@@ -178,7 +178,7 @@ export function useHarnessReach({
 
   const proxySignIn = useCallback(async (provider: HarnessPresetAccountProvider) => {
     const signIn = proxyBridge()?.signIn;
-    if (typeof signIn !== "function") return;
+    if (!isAdeAvailable(signIn)) return;
     const seq = requestSeqRef.current;
     const binding = pinRef.current;
     setProxySigningIn(provider);
@@ -190,7 +190,7 @@ export function useHarnessReach({
     }
   }, [loadProxy]);
 
-  const proxyAvailable = Boolean(catalog?.proxyAvailable) && typeof proxyBridge()?.signIn === "function";
+  const proxyAvailable = Boolean(catalog?.proxyAvailable) && isAdeAvailable(proxyBridge()?.signIn);
 
   return {
     catalog,

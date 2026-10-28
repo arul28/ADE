@@ -22,6 +22,7 @@ import type {
 } from "../../../shared/types/builtInBrowserLoginImport";
 import type { SystemSettingsPaneId } from "../../../shared/types/systemSettings";
 import { isMacRuntimeTarget } from "../../lib/platform";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
 
@@ -202,7 +203,7 @@ export function BrowserLoginImportDialog({
       setError("Could not open System Settings. Open Privacy & Security › Full Disk Access yourself.");
     };
     const open = window.ade.app.openSystemSettingsPane;
-    if (typeof open !== "function") {
+    if (!isAdeAvailable(open)) {
       failed();
       return;
     }

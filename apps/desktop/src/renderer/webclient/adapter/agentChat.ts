@@ -48,7 +48,7 @@ import type {
 } from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
+import { requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -664,7 +664,9 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getImageDataUrl: async (path: string, pin?: RuntimePinArg) => {
       guardPin("getImageDataUrl", pin);
-      return { dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" };
+      // Chat attachments live in `.ade/attachments`, outside the artifact
+      // file-request jail. Use the chat command that owns those paths instead.
+      return await call<{ dataUrl: string }>("chat.getImageDataUrl", { path }, { dataUrl: "" });
     },
     resolveSmartLinkPreview: (args: unknown) => {
       const record = asRecord(args);

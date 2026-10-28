@@ -300,7 +300,10 @@ export function WebConnectionsChip() {
       </button>
 
       {open && anchor ? createPortal(
-        <ViewportOverlayHost layer="popover">
+        // In a narrow window this chip lives inside the Connections sheet,
+        // whose full-viewport backdrop sits on the sheet layer: on the popover
+        // layer every click on a machine row landed on that backdrop instead.
+        <ViewportOverlayHost layer="dialogPopover">
           <div
             ref={popoverRef}
             role="dialog"

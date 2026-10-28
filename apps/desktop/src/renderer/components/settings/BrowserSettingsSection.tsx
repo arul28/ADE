@@ -21,6 +21,7 @@ import {
 } from "./primitives";
 import { useSettingsAction } from "./useSettingsAction";
 import { Banner } from "../ui/notice";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import "./machineSettings.css";
 
 const SEARCH_ENGINE_OPTIONS: readonly { value: BuiltInBrowserSearchEngineId; label: string }[] = [
@@ -30,6 +31,7 @@ const SEARCH_ENGINE_OPTIONS: readonly { value: BuiltInBrowserSearchEngineId; lab
 
 /** Tab limit, download folder, address bar search, trusted local certificates. */
 export function BrowserSettingsSection() {
+  if (!isAdeAvailable(window.ade?.builtInBrowser?.browserSettings)) return null;
   return (
     <>
       <BrowserBehaviourSection />
@@ -215,8 +217,8 @@ function trustedCertificatesApi(): TrustedCertificatesApi | null {
     | null
     | undefined;
   return candidate
-    && typeof candidate.listTrustedCertificates === "function"
-    && typeof candidate.revokeTrustedCertificates === "function"
+    && isAdeAvailable(candidate.listTrustedCertificates)
+    && isAdeAvailable(candidate.revokeTrustedCertificates)
     ? (candidate as TrustedCertificatesApi)
     : null;
 }

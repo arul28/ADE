@@ -48,6 +48,7 @@ import { createGithubNamespace, githubDisconnectedStatus } from "./githubStub";
 import { createProviderAccountsNamespace } from "./providerAccounts";
 import type { AdapterInfra, AdeNamespace, MiscCall } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import type { ExportHistoryArgs, ExportHistoryResult, ListOperationsArgs, OperationRecord } from "../../../shared/types/git";
 
 export type MiscNamespaces = {
   sync: AdeNamespace<"sync">;
@@ -950,8 +951,98 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   };
 
   const history: Record<string, unknown> = {
-    listOperations: (args?: unknown) => call("history.listOperations", args, []),
-    exportOperations: async (args: unknown) => ({ operations: await call("history.listOperations", args, []) }),
+    listOperations: async (args?: ListOperationsArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("history.listOperations", pin, infra);
+      return await call<OperationRecord[]>("history.listOperations", args, []);
+    },
+    exportOperations: async (
+      args: ExportHistoryArgs,
+      pin?: RuntimePinArg,
+    ): Promise<ExportHistoryResult> => {
+      assertWebRuntimePinRoutable("history.exportOperations", pin, infra);
+      const status = args.status;
+      const listArgs: ListOperationsArgs = {
+        ...(typeof args.laneId === "string" ? { laneId: args.laneId } : {}),
+        ...(typeof args.kind === "string" ? { kind: args.kind } : {}),
+        ...(typeof status === "string" && status !== "all" ? { status } : {}),
+        limit: typeof args.limit === "number" ? args.limit : 1000,
+      };
+      const rows = await call<OperationRecord[]>("history.listOperations", listArgs, () => {
+        throw new Error("History export is unavailable on this machine.");
+      });
+      const filteredRows = status && status !== "all"
+        ? rows.filter((row) => row.status === status)
+        : rows;
+      const exportedAt = new Date().toISOString();
+      const project = state.getProject();
+      const projectSlug = (project?.displayName ?? "ADE").replace(/[^a-zA-Z0-9._-]+/g, "_") || "project";
+      const format = args.format === "csv" ? "csv" : "json";
+      const fileName = `ade-history-${projectSlug}-${exportedAt.slice(0, 10)}.${format}`;
+      let content: string;
+      if (format === "json") {
+        content = `${JSON.stringify({
+          exportedAt,
+          project: {
+            rootPath: project?.rootPath ?? "",
+            displayName: project?.displayName ?? "ADE",
+          },
+          filters: {
+            laneId: listArgs.laneId ?? null,
+            kind: listArgs.kind ?? null,
+            status: status ?? "all",
+          },
+          rowCount: filteredRows.length,
+          rows: filteredRows,
+        }, null, 2)}\n`;
+      } else {
+        const headers = [
+          "id",
+          "laneId",
+          "laneName",
+          "kind",
+          "status",
+          "startedAt",
+          "endedAt",
+          "preHeadSha",
+          "postHeadSha",
+          "metadataJson",
+        ];
+        const lines = [headers.join(",")];
+        for (const row of filteredRows) {
+          lines.push([
+            row.id,
+            row.laneId,
+            row.laneName,
+            row.kind,
+            row.status,
+            row.startedAt,
+            row.endedAt,
+            row.preHeadSha,
+            row.postHeadSha,
+            row.metadataJson,
+          ].map((value) => escapeHistoryCsvCell(value == null ? "" : String(value))).join(","));
+        }
+        content = `${lines.join("\n")}\n`;
+      }
+
+      const blob = new Blob([content], { type: format === "json" ? "application/json" : "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = fileName;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 1_000);
+      return {
+        cancelled: false,
+        savedPath: fileName,
+        bytesWritten: blob.size,
+        exportedAt,
+        rowCount: filteredRows.length,
+        format,
+      };
+    },
   };
 
   return {
@@ -1502,6 +1593,10 @@ function projectConfigSnapshot(rootPath: string): Record<string, unknown> {
       localPath: rootPath ? `${rootPath}/.ade/local.json` : "",
     },
   };
+}
+
+function escapeHistoryCsvCell(value: string): string {
+  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, '""')}"` : value;
 }
 
 function asRecord(args: unknown): Record<string, unknown> {

@@ -5279,12 +5279,6 @@ button, [role="button"] {
   transition: transform 200ms cubic-bezier(0.22, 1, 0.36, 1), background-color 160ms ease, box-shadow 160ms ease;
 }
 
-@keyframes ade-reasoning-ultra-sheen {
-  0%, 28% { transform: translateX(-135%) rotate(18deg); opacity: 0; }
-  45% { opacity: 0.7; }
-  72%, 100% { transform: translateX(135%) rotate(18deg); opacity: 0; }
-}
-
 /* Ultra is intentionally unmistakable, but the effect is opt-in to the
    selected highest tier so ordinary effort changes stay quiet. */
 .ade-reasoning-effort-trigger-ultra {
@@ -5296,31 +5290,6 @@ button, [role="button"] {
     0 0 0 1px rgba(232, 121, 249, 0.24),
     0 0 16px rgba(217, 70, 239, 0.26),
     0 0 30px rgba(34, 211, 238, 0.1);
-}
-
-.ade-reasoning-effort-trigger-ultra::after,
-.ade-reasoning-effort-content-ultra::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  background:
-    radial-gradient(circle at 14% 30%, rgba(255, 255, 255, 0.7) 0 0.7px, transparent 1.5px),
-    radial-gradient(circle at 84% 68%, rgba(103, 232, 249, 0.72) 0 0.7px, transparent 1.5px),
-    linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, 0.28) 48%, transparent 62%);
-  background-size: auto, auto, 220% 100%;
-  background-position: center, center, 0 0;
-  background-repeat: no-repeat;
-  /* steps = 3.8s x 30; see the note on `ade-launch-rail-sheen`. */
-  animation: ade-reasoning-ultra-sheen 3.8s steps(114) infinite;
-}
-
-.ade-reasoning-effort-trigger-ultra > *,
-.ade-reasoning-effort-content-ultra > * {
-  position: relative;
-  z-index: 1;
 }
 
 .ade-reasoning-effort-content-ultra {
@@ -5379,6 +5348,12 @@ button, [role="button"] {
 
 [data-effort-frame="ultra"] > .ade-composer-effort-frame {
   background: linear-gradient(120deg, #a78bfa, #e879f9 50%, #67e8f9);
+}
+
+/* The frame is the edge: hide the shell's own border under it so the two
+   never read as a doubled line. */
+[data-chat-composer-mode][data-effort-frame] {
+  border-color: transparent;
 }
 
 [data-chat-composer-mode][data-effort-frame="top"] {
@@ -5483,9 +5458,7 @@ button, [role="button"] {
   .ade-reasoning-effort-word,
   .ade-reasoning-effort-word[data-direction="up"],
   .ade-reasoning-effort-word[data-direction="down"],
-  .ade-workflow-active-card__sheen,
-  .ade-reasoning-effort-trigger-ultra::after,
-  .ade-reasoning-effort-content-ultra::after {
+  .ade-workflow-active-card__sheen {
     animation: none;
   }
   .ade-reasoning-slider-thumb,

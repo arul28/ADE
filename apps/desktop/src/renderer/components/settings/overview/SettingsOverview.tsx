@@ -22,6 +22,7 @@ import { AgentLaunchSetup } from "../../shared/AgentLaunchSetup";
 import { UsageSparkline } from "../../usage/UsageSparks";
 import { useAppStore } from "../../../state/appStore";
 import { formatTokens } from "../../../lib/format";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { categorySeries, formatBytes, formatMeasuredBytes, freeSpaceLevel } from "../storage/storageView";
 import { CountBar, FreeSpaceMeter, seriesColor, useChartTheme } from "../health/healthCharts";
 import { useProjectFix } from "../health/ProjectIssues";
@@ -311,11 +312,14 @@ function ProjectCard({ sources, onOpen }: { sources: Sources; onOpen: (route: st
           if (!cancelled) setArchived(lanes.filter((lane) => Boolean(lane.archivedAt)).length);
         })
         .catch(() => undefined);
-      void window.ade.storage?.getSnapshot?.({})
-        .then((snapshot) => {
-          if (!cancelled) setStorage(snapshot);
-        })
-        .catch(() => undefined);
+      const readStorage = window.ade.storage?.getSnapshot;
+      if (isAdeAvailable(readStorage)) {
+        void readStorage({})
+          .then((snapshot) => {
+            if (!cancelled) setStorage(snapshot);
+          })
+          .catch(() => undefined);
+      }
     }, 0);
     return () => {
       cancelled = true;
