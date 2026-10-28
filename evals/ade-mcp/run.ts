@@ -122,6 +122,8 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
       cwd: dir,
       env,
       stdio: ["ignore", "pipe", "pipe"],
+      // Its own process group on POSIX, so a timeout reaches the fake server under it too.
+      detached: process.platform !== "win32",
       windowsHide: true,
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
@@ -133,10 +135,12 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
       lines.push(...parts.filter((line) => line.trim()));
     });
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
+    let timedOut = false;
     const timer = setTimeout(() => {
       // The whole tree: on Windows a `.cmd` shim leaves `claude` under cmd.exe.
+      // Resolved on `close`, so the case folder is removed only after it exits.
+      timedOut = true;
       signalChildProcessTree(child, "SIGKILL");
-      resolve({ code: null, timedOut: true });
     }, RUN_TIMEOUT_MS);
     // `claude` missing or not startable: a failed case, not a crashed run.
     child.on("error", (error) => {
@@ -147,7 +151,7 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
     child.on("close", (code) => {
       clearTimeout(timer);
       if (buffer.trim()) lines.push(buffer);
-      resolve({ code, timedOut: false });
+      resolve({ code: timedOut ? null : code, timedOut });
     });
   });
   const events = lines.flatMap((line) => {

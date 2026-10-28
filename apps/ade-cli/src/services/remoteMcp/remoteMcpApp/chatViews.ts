@@ -15,7 +15,9 @@ function fillLaneNames(spans: Array<{ el: HTMLElement; id: string }>, scope: Sco
   if (!canCallTools()) { apply({}); return; }
   const key = (scope.projectId ?? "") + "|" + (scope.machineKey ?? "");
   const names = laneNameCache[key] ?? (laneNameCache[key] = callTool("lanes_list", scoped(scope, {})).then((res) => {
-    const env = res?.structuredContent;
+    // A failed read is not remembered: the rejection below drops it, so the next card asks again.
+    if (!res || res.isError) throw new Error("lanes_list failed");
+    const env = res.structuredContent;
     const map: Record<string, string> = {};
     for (const lane of rows<LaneRow>(isObj(env) ? env.result : null)) if (lane.id) map[lane.id] = lane.name ?? "";
     return map;
