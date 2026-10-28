@@ -51,8 +51,8 @@ export function buildHistoryExport(args: {
 }
 
 function escapeCsvCell(value: string): string {
-  // A cell starting with = + - @ runs as a formula in a spreadsheet; a lane
-  // name is user text, so it is kept literal with a leading apostrophe.
-  const cell = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  // Spreadsheet apps can interpret these leading characters as formulas.
+  // Prefix them before CSV quoting so exported text stays literal.
+  const cell = /^[=+\-@\t\r\n]/.test(value) ? `'${value}` : value;
   return /[",\r\n]/.test(cell) ? `"${cell.replace(/"/g, "\"\"")}"` : cell;
 }

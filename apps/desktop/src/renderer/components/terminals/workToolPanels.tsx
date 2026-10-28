@@ -527,21 +527,23 @@ function WorkAppControlTool({
   }
   if (!laneId) return <NoLaneEmptyLine />;
   return (
-    <NativePanelFrame padded frameRef={mountRef}>
+    <NativePanelFrame padded>
       <Suspense fallback={null}>
-      <ChatAppControlPanel
-        // One session per lane: another lane is another session, read afresh.
-        key={`work-appcontrol:${mountScope}:${laneId}`}
-        sessionId={panelSessionId}
-        laneId={laneId}
-        laneName={activeLane?.name ?? null}
-        runtimePin={runtimePin}
-        projectRoot={laneRoot}
-        controlDisabledReason={null}
-        onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
-        onAddContext={canInsertContext ? onAddAppControlContext : undefined}
-        onInsertDraft={canInsertContext ? onInsertDraft : undefined}
-      />
+        <div ref={mountRef} className="h-full min-h-0">
+          <ChatAppControlPanel
+            // One session per lane: another lane is another session, read afresh.
+            key={`work-appcontrol:${mountScope}:${laneId}`}
+            sessionId={panelSessionId}
+            laneId={laneId}
+            laneName={activeLane?.name ?? null}
+            runtimePin={runtimePin}
+            projectRoot={laneRoot}
+            controlDisabledReason={null}
+            onAddAttachment={shouldPersistPanelAttachment ? onAddAttachment : undefined}
+            onAddContext={canInsertContext ? onAddAppControlContext : undefined}
+            onInsertDraft={canInsertContext ? onInsertDraft : undefined}
+          />
+        </div>
       </Suspense>
     </NativePanelFrame>
   );

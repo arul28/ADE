@@ -496,6 +496,7 @@ export function ProjectWelcomePage() {
       event.preventDefault();
       dragDepthRef.current = 0;
       setIsDragOver(false);
+      if (isWebClientMode()) return;
       const file = event.dataTransfer.files?.[0];
       if (!file) return;
       try {
@@ -753,10 +754,10 @@ export function ProjectWelcomePage() {
       }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
-        // Cancelled on web too so the browser does not open the file in the
-        // tab; "none" refuses the drop there.
+        // Accept the drop so its handler can cancel browser navigation. Web
+        // mode leaves the folder untouched because it cannot resolve a host path.
         event.preventDefault();
-        event.dataTransfer.dropEffect = isWebClientMode() ? "none" : "copy";
+        event.dataTransfer.dropEffect = "copy";
       }}
       onDragLeave={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;

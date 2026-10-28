@@ -1570,10 +1570,9 @@ export function FilesWorkbench({
     (event: React.DragEvent<HTMLDivElement>) => {
       if (draggingTab || !Array.from(event.dataTransfer.types).includes("Files")) return;
       event.preventDefault();
-      // The web client cannot resolve a dropped file to a path on the connected
-      // machine, so it refuses the drop (no-drop cursor) instead of accepting it
-      // and doing nothing. Still cancelled so the browser does not open the file.
-      event.dataTransfer.dropEffect = isWebClientMode() ? "none" : "copy";
+      // Accept the drop so its handler can cancel browser navigation. Web mode
+      // leaves the file untouched because it cannot resolve a host path.
+      event.dataTransfer.dropEffect = "copy";
     },
     [draggingTab],
   );
