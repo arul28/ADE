@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { CaretDown, Check, MagnifyingGlass, Plus, X } from "@phosphor-icons/react";
+import { CaretDown, Check, MagnifyingGlass, Plus } from "@phosphor-icons/react";
 import type { LaneBranchActiveWorkItem, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../../state/crossMachineLanes";
@@ -7,6 +7,7 @@ import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, fgTint } from "../laneDesignTokens";
+import { Banner, InlineErrorNotice } from "../../ui/notice";
 import {
   formatBranchCheckoutError,
   stripRemotePrefix,
@@ -14,6 +15,7 @@ import {
   type LaneBranchOption,
 } from "../laneUtils";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
+import { extractError } from "../../../lib/format";
 
 type PendingBranchSwitch = {
   branchName: string;
@@ -72,7 +74,9 @@ export function LaneBranchSwitcher({
   const [branches, setBranches] = useState<LaneBranchOption[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // `failed: false` is the lane's state blocking the switch (uncommitted
+  // changes, the branch is open elsewhere): it warns, with no Report.
+  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
   const [query, setQuery] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
   const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
@@ -174,7 +178,7 @@ export function LaneBranchSwitcher({
     acknowledgeActiveWork?: boolean;
   }) => {
     if (lane.status.dirty) {
-      setError(`Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`);
+      setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`, failed: false });
       return;
     }
     const mode = request.mode ?? "existing";
@@ -193,10 +197,12 @@ export function LaneBranchSwitcher({
           baseRef: request.baseRef,
         }, pinRef.current);
         if (preview.duplicateLaneId) {
-          throw new Error(`Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`);
+          setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, failed: false });
+          return;
         }
         if (preview.dirty) {
-          throw new Error(`Cannot switch branches while ${lane.name} has uncommitted changes.`);
+          setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes.`, failed: false });
+          return;
         }
         if (preview.activeWork.length > 0) {
           setPendingSwitch({ branchName, mode, startPoint: request.startPoint, baseRef: request.baseRef, activeWork: preview.activeWork });
@@ -228,8 +234,10 @@ export function LaneBranchSwitcher({
       setNewBranchName("");
       succeeded = true;
     } catch (err) {
-      const raw = err instanceof Error ? err.message : String(err);
-      setError(formatBranchCheckoutError(raw, lane.name));
+      const raw = extractError(err);
+      const message = formatBranchCheckoutError(raw, lane.name);
+      // The formatter only rewrites git's "commit or stash first" refusal.
+      setError({ message, failed: message === raw.trim() });
     } finally {
       setBusy(false);
       if (succeeded) setOpen(false);
@@ -311,12 +319,14 @@ export function LaneBranchSwitcher({
         </button>
       ) : null}
       {error && !open ? (
-        <span className="ml-2 inline-flex min-w-0 items-center gap-1 text-[11px]" style={{ color: COLORS.danger }} title={error}>
-          <span className="truncate">{error}</span>
-          <button type="button" className="shrink-0" onClick={() => setError(null)} aria-label="Dismiss">
-            <X size={10} />
-          </button>
-        </span>
+        <InlineErrorNotice
+          id="lane-branch-switch"
+          message={error.message}
+          // Local changes or a branch held by another lane are the person's to sort out.
+          report={error.failed ? { surface: "lane_branch_switch", headline: "Couldn't switch branch" } : false}
+          onDismiss={() => setError(null)}
+          style={{ marginLeft: 8 }}
+        />
       ) : null}
       <AnchoredMenu
         open={open}
@@ -501,7 +511,17 @@ export function LaneBranchSwitcher({
               <div style={{ padding: "6px 12px", fontSize: 12, color: COLORS.textMuted }}>{query ? "No matching branches." : "No branches found."}</div>
             ) : null}
             {error ? (
-              <div style={{ padding: "6px 12px", fontSize: 11, color: COLORS.danger }}>{error}</div>
+              <Banner
+                layout="inline"
+                style={{ margin: "6px 12px" }}
+                model={{
+                  id: "lane-branch-switch-error",
+                  tone: error.failed ? "error" : "warning",
+                  title: error.message,
+                  report: error.failed ? { surface: "lane_branch_switch" } : false,
+                  dismiss: { onDismiss: () => setError(null) },
+                }}
+              />
             ) : null}
           </div>
       </AnchoredMenu>

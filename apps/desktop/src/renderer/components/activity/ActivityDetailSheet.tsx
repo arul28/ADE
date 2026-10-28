@@ -2,7 +2,6 @@ import React, { useEffect, useRef } from "react";
 import {
   ArrowSquareOut,
   CaretLeft,
-  WarningCircle,
   WifiSlash,
   XCircle,
 } from "@phosphor-icons/react";
@@ -14,6 +13,7 @@ import { cn } from "../ui/cn";
 import { activityCardPreview } from "./ActivityCard";
 import { activityBoardColumn } from "../../../shared/attention/activityBoardColumn";
 import { ActivityColumnMark } from "./ActivityColumnMark";
+import { Banner } from "../ui/notice";
 import {
   activityItemFailed,
   activityRowStatus,
@@ -190,10 +190,15 @@ export function ActivityDetailSheet({
           )}
 
           {errorMessage ? (
-            <div className="activity-sheet-banner" data-tone="error" role="alert">
-              <WarningCircle size={14} weight="fill" />
-              <span>{errorMessage}</span>
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "activity-sheet-action-error",
+                tone: "error",
+                title: errorMessage,
+                report: { surface: "activity_item_action" },
+              }}
+            />
           ) : null}
 
           {item.planProgress ? (

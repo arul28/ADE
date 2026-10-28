@@ -58,6 +58,7 @@ import {
 import type { SyncConnections } from "./useSyncConnections";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../lib/localSyncStatusReader";
+import { extractError } from "../../lib/format";
 
 export { useSyncConnections, type SyncConnections } from "./useSyncConnections";
 
@@ -269,7 +270,7 @@ export function ThisMacCard({
         setStartSyncFailure(result.message);
       }
     } catch (err) {
-      setStartSyncFailure(err instanceof Error ? err.message : String(err));
+      setStartSyncFailure(extractError(err));
     } finally {
       setStartingSync(false);
       void sync.refresh({ force: true });
@@ -355,7 +356,7 @@ export function ThisMacCard({
           return null;
         },
         (err: unknown) => {
-          readError = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
+          readError = stripElectronErrorWrapper(extractError(err));
           return null;
         },
       );
@@ -390,7 +391,7 @@ export function ThisMacCard({
         // The brain refuses a disconnect on a project that hosts. The project can
         // start hosting between the read above and this call, so the refusal reads
         // as the state it found, not as the brain's wording.
-        const message = stripElectronErrorWrapper(err instanceof Error ? err.message : String(err));
+        const message = stripElectronErrorWrapper(extractError(err));
         setStopFollowingFailure(message.includes(BRAIN_DISCONNECT_REFUSAL) ? alreadyHostingNotice(project) : message);
       } finally {
         setStoppingFollowing(false);
@@ -1015,7 +1016,7 @@ function PinManager({
       await onSetPin(value);
       setEditing(false);
     } catch (err) {
-      setPinError(err instanceof Error ? err.message : String(err));
+      setPinError(extractError(err));
     }
   };
 
@@ -1658,7 +1659,17 @@ function PinEditor({
           Cancel
         </button>
       </div>
-      {error ? <div style={{ ...helperTextStyle, color: COLORS.danger }}>{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "sync-pin-save-error",
+            tone: "error",
+            title: error,
+            report: { surface: "sync_pin_save" },
+          }}
+        />
+      ) : null}
     </div>
   );
 }

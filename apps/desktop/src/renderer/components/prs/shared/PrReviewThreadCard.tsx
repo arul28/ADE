@@ -33,11 +33,12 @@ import {
   outlineButton,
   fgTint,
 } from "../../lanes/laneDesignTokens";
-import { formatTimeAgo } from "./prFormatters";
+import { formatError, formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrCommentEditForm } from "./PrCommentEditForm";
 import { PrReactionBar } from "./PrReactionBar";
+import { Banner } from "../../ui/notice";
 import { usePrCommentEdit } from "./usePrCommentEdit";
 
 export type PrReviewThreadCardHandle = {
@@ -267,7 +268,17 @@ function CommentRow({
             opacity: editBusy || !editValue.trim() ? 0.5 : 1,
           })}
         />
-        {editError ? <span className="text-[11px]" style={{ color: COLORS.danger }}>{editError}</span> : null}
+        {editError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "pr-review-comment-edit-error",
+              tone: "error",
+              title: editError,
+              report: { surface: "pr_review_comment_edit" },
+            }}
+          />
+        ) : null}
       </>
     );
   } else if (body) {
@@ -408,7 +419,7 @@ export const PrReviewThreadCard = memo(
         setReplyValue("");
         setReplyOpen(false);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatError(err));
       } finally {
         replyInFlightRef.current = false;
         setBusy(null);
@@ -427,7 +438,7 @@ export const PrReviewThreadCard = memo(
         const result = await bridge({ prId, threadId: thread.id, resolved: next });
         setLocalResolved(result?.isResolved ?? next);
       } catch (err) {
-        setError(err instanceof Error ? err.message : String(err));
+        setError(formatError(err));
       } finally {
         resolveInFlightRef.current = false;
         setBusy(null);
@@ -571,25 +582,24 @@ export const PrReviewThreadCard = memo(
                 repoOwner={repoOwner}
                 repoName={repoName}
                 viewerLogin={viewerLogin}
-                onError={(err) => setError(err instanceof Error ? err.message : String(err))}
+                onError={(err) => setError(formatError(err))}
               />
             </div>
           ))}
         </div>
 
         {error ? (
-          <div
-            className="mx-4 mb-2 rounded-[6px] border px-3 py-2 text-[11px]"
-            style={{
-              borderColor: "color-mix(in srgb, var(--color-error) 40%, transparent)",
-              background: "color-mix(in srgb, var(--color-error) 10%, transparent)",
-              color: COLORS.danger,
-              fontFamily: SANS_FONT,
+          <Banner
+            layout="inline"
+            style={{ margin: "0 16px 8px" }}
+            model={{
+              id: "pr-review-thread-error",
+              tone: "error",
+              title: error,
+              report: { surface: "pr_review_thread" },
+              dismiss: { onDismiss: () => setError(null) },
             }}
-            role="alert"
-          >
-            {error}
-          </div>
+          />
         ) : null}
 
         {canMutate && replyOpen ? (

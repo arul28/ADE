@@ -16,6 +16,7 @@ import { LaneChip, LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip"
 import { ToolLogo } from "../terminals/ToolLogos";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { SettingsColumn } from "./primitives";
+import { Banner } from "../ui/notice";
 import "./primitives/settingsModern.css";
 import "./machineSettings.css";
 
@@ -521,13 +522,17 @@ export function ArchiveSection() {
           </header>
 
           {error && !items ? (
-            <div className="ade-ar-empty">
-              <div className="ade-ap-rowtitle">Couldn&apos;t open the archive</div>
-              <p className="ade-modern-muted">{error}</p>
-              <button type="button" onClick={() => void load()} className="ade-modern-btn" data-size="sm">
-                Try again
-              </button>
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "archive-load-error",
+                tone: "error",
+                title: "Couldn't open the archive",
+                actions: [{ label: "Try again", onClick: () => void load() }],
+                detail: error,
+                report: { surface: "archive_load", technicalDetail: error },
+              }}
+            />
           ) : items && visible.length === 0 ? (
             <div className="ade-ar-empty">
               <ArchiveIcon size={22} weight="light" />

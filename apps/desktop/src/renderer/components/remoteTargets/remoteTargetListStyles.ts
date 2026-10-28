@@ -32,13 +32,6 @@ export const helperTextStyle: CSSProperties = {
   lineHeight: 1.45,
 };
 
-export const inlineErrorTextStyle: CSSProperties = {
-  color: COLORS.danger,
-  fontFamily: SANS_FONT,
-  fontSize: 12,
-  lineHeight: 1.45,
-};
-
 export const inlineSuccessTextStyle: CSSProperties = {
   color: COLORS.success,
   fontFamily: SANS_FONT,

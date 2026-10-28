@@ -28,38 +28,12 @@ const VARIANT_CLASS: Record<ReportIssueVariant, string> = {
 };
 
 /**
- * Every error screen's escape hatch: build a redacted diagnostic report about
- * this screen and send it to ADE, with a GitHub issue as the fallback.
- *
- * The send happens in the main process (`diagnostics.sendManual` with this
- * screen's context): the renderer's CSP does not allow a request to the account
- * directory, and main already owns the report builder, the redaction and the
- * per-device daily budget. The GitHub issue opens only when the person asks
- * for it, through `openIssue`, which also puts the report on the clipboard.
- *
- * A preload without `sendManual` gets the older behaviour: open the GitHub
- * issue with the report copied.
- *
- * Deliberately self-contained — one import and one element per host screen —
- * so the error surfaces can be redesigned without untangling it.
+ * The send behind "Report issue", for a surface that places the button and its
+ * result itself (a notice puts the button with its actions and the result
+ * under its text). `available` is false on a preload with no diagnostics
+ * bridge: render nothing then.
  */
-export function ReportIssueButton({
-  context,
-  variant = "secondary",
-  className,
-  showDisclosure,
-}: {
-  context: DiagnosticReportRequestPayload;
-  variant?: ReportIssueVariant;
-  className?: string;
-  /**
-   * Whether to render the "What's in the report?" fold. On a full surface it
-   * belongs (people deserve to know before they send anything); inside a
-   * one-line banner it turns a strip into a paragraph, so ghost hides it by
-   * default. Pass explicitly to override either way.
-   */
-  showDisclosure?: boolean;
-}) {
+export function useIssueReport(context: DiagnosticReportRequestPayload) {
   const [sending, setSending] = useState(false);
   const [sent, setSent] = useState<DiagnosticsManualSendResult | null>(null);
   const [opening, setOpening] = useState(false);
@@ -120,12 +94,65 @@ export function ReportIssueButton({
     await openIssue();
   }, [canSend, openIssue, send]);
 
+  return {
+    available: Boolean(bridge?.openIssue),
+    canSend,
+    sending,
+    opening,
+    sent,
+    issue,
+    issueFailed,
+    copied,
+    copy,
+    send,
+    openIssue,
+    run,
+  };
+}
+
+export type IssueReportState = ReturnType<typeof useIssueReport>;
+
+/**
+ * Every error screen's escape hatch: build a redacted diagnostic report about
+ * this screen and send it to ADE, with a GitHub issue as the fallback.
+ *
+ * The send happens in the main process (`diagnostics.sendManual` with this
+ * screen's context): the renderer's CSP does not allow a request to the account
+ * directory, and main already owns the report builder, the redaction and the
+ * per-device daily budget. The GitHub issue opens only when the person asks
+ * for it, through `openIssue`, which also puts the report on the clipboard.
+ *
+ * A preload without `sendManual` gets the older behaviour: open the GitHub
+ * issue with the report copied.
+ *
+ * Deliberately self-contained — one import and one element per host screen —
+ * so the error surfaces can be redesigned without untangling it.
+ */
+export function ReportIssueButton({
+  context,
+  variant = "secondary",
+  className,
+  showDisclosure,
+}: {
+  context: DiagnosticReportRequestPayload;
+  variant?: ReportIssueVariant;
+  className?: string;
+  /**
+   * Whether to render the "What's in the report?" fold. On a full surface it
+   * belongs (people deserve to know before they send anything); inside a
+   * one-line banner it turns a strip into a paragraph, so ghost hides it by
+   * default. Pass explicitly to override either way.
+   */
+  showDisclosure?: boolean;
+}) {
+  const state = useIssueReport(context);
+  const { canSend, sending, opening, sent, issue, issueFailed, run } = state;
+
   // An older preload has no diagnostics bridge; offering a dead button is
   // worse than offering nothing on a screen that is already failing.
-  if (!bridge?.openIssue) return null;
+  if (!state.available) return null;
 
   const isGhost = variant === "ghost";
-  const sentReport = sent?.ok ? sent.report : undefined;
   const disclosed = showDisclosure ?? !isGhost;
 
   return (
@@ -146,85 +173,7 @@ export function ReportIssueButton({
         </button>
 
         {sent || issue || issueFailed ? (
-          <span
-            className={
-              (isGhost ? "text-[11px] " : "text-[12px] ")
-              + (sent && !sent.ok ? "text-amber-300/90" : "text-fg/60")
-            }
-            role="status"
-          >
-            {sent
-              ? sent.ok
-                ? `Sent to ADE — reference ${sent.reference}`
-                : describeManualSendFailure(sent)
-              : null}
-            {sentReport ? (
-              <>
-                {" · "}
-                <button
-                  type="button"
-                  onClick={() => void copy(sentReport)}
-                  className={REPORT_LINK_BUTTON}
-                >
-                  {copied ? "Copied" : "Copy report"}
-                </button>
-              </>
-            ) : null}
-            {sent && !sent.ok && (sent.reason === "failed" || sent.reason === "unavailable") ? (
-              <>
-                {" "}
-                <button
-                  type="button"
-                  onClick={() => void send()}
-                  disabled={sending}
-                  className={REPORT_LINK_BUTTON}
-                >
-                  Try again
-                </button>
-              </>
-            ) : null}
-            {sent ? (
-              <>
-                {" · "}
-                <button
-                  type="button"
-                  onClick={() => void openIssue()}
-                  disabled={opening}
-                  className={REPORT_LINK_BUTTON}
-                >
-                  {opening ? "Opening…" : "Open GitHub issue"}
-                </button>
-              </>
-            ) : null}
-            {issue ? (
-              <span className="text-fg/60">
-                {sent ? " " : null}
-                {issue.copied
-                  ? "Report copied — paste it into the GitHub issue that just opened."
-                  : "Report saved — copy it and paste it into the GitHub issue."}
-                {/* After a send, "Copy report" already copies; this one is for
-                    the GitHub path, or a send that returned no report. */}
-                {sent && sentReport ? null : (
-                  <>
-                    {" "}
-                    <button
-                      type="button"
-                      onClick={() => void copy(issue.report)}
-                      className={REPORT_LINK_BUTTON}
-                    >
-                      {copied ? "Copied" : "Copy again"}
-                    </button>
-                  </>
-                )}
-              </span>
-            ) : null}
-            {issueFailed ? (
-              <span className="text-amber-300/90">
-                {sent ? " " : null}
-                ADE couldn't prepare the report. Try again in a moment.
-              </span>
-            ) : null}
-          </span>
+          <ReportIssueResult state={state} className={isGhost ? "text-[11px] " : "text-[12px] "} />
         ) : null}
       </span>
 
@@ -265,6 +214,103 @@ export function ReportIssueButton({
               : "Nothing leaves this computer unless you post the GitHub issue."}
           </p>
         </details>
+      ) : null}
+    </span>
+  );
+}
+
+/** What happened after "Report issue": the reference, copy, retry, the GitHub fallback. */
+export function ReportIssueResult({
+  state,
+  className,
+  sentLabel = "Sent to ADE — reference",
+}: {
+  state: IssueReportState;
+  className?: string;
+  /** Words before the reference; a surface whose button already says "Sent" passes "Reference". */
+  sentLabel?: string;
+}): JSX.Element | null {
+  const { sent, issue, issueFailed, sending, opening, copied, copy, send, openIssue } = state;
+  if (!sent && !issue && !issueFailed) return null;
+  const sentReport = sent?.ok ? sent.report : undefined;
+  return (
+    <span
+      className={
+        (className ?? "")
+        + (sent && !sent.ok ? "text-amber-300/90" : "text-fg/60")
+      }
+      role="status"
+    >
+      {sent
+        ? sent.ok
+          ? `${sentLabel} ${sent.reference}`
+          : describeManualSendFailure(sent)
+        : null}
+      {sentReport ? (
+        <>
+          {" · "}
+          <button
+            type="button"
+            onClick={() => void copy(sentReport)}
+            className={REPORT_LINK_BUTTON}
+          >
+            {copied ? "Copied" : "Copy report"}
+          </button>
+        </>
+      ) : null}
+      {sent && !sent.ok && (sent.reason === "failed" || sent.reason === "unavailable") ? (
+        <>
+          {" "}
+          <button
+            type="button"
+            onClick={() => void send()}
+            disabled={sending}
+            className={REPORT_LINK_BUTTON}
+          >
+            Try again
+          </button>
+        </>
+      ) : null}
+      {sent ? (
+        <>
+          {" · "}
+          <button
+            type="button"
+            onClick={() => void openIssue()}
+            disabled={opening}
+            className={REPORT_LINK_BUTTON}
+          >
+            {opening ? "Opening…" : "Open GitHub issue"}
+          </button>
+        </>
+      ) : null}
+      {issue ? (
+        <span className="text-fg/60">
+          {sent ? " " : null}
+          {issue.copied
+            ? "Report copied — paste it into the GitHub issue that just opened."
+            : "Report saved — copy it and paste it into the GitHub issue."}
+          {/* After a send, "Copy report" already copies; this one is for
+              the GitHub path, or a send that returned no report. */}
+          {sent && sentReport ? null : (
+            <>
+              {" "}
+              <button
+                type="button"
+                onClick={() => void copy(issue.report)}
+                className={REPORT_LINK_BUTTON}
+              >
+                {copied ? "Copied" : "Copy again"}
+              </button>
+            </>
+          )}
+        </span>
+      ) : null}
+      {issueFailed ? (
+        <span className="text-amber-300/90">
+          {sent ? " " : null}
+          ADE couldn't prepare the report. Try again in a moment.
+        </span>
       ) : null}
     </span>
   );

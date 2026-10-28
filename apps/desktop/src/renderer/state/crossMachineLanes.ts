@@ -28,6 +28,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
+import { forwardSignalToSentry } from "../../shared/sentry/logBridge";
 import type {
   AgentChatSession,
   LaneSummary,
@@ -79,6 +80,12 @@ import { isAdeAvailable } from "../lib/adeAvailability";
 const REFRESH_COALESCE_MS = 400;
 /** A machine that stops answering must never stall the sidebar. */
 const MACHINE_READ_TIMEOUT_MS = 8_000;
+/**
+ * Failed reads in a row before Work says a machine's chats could not load. The
+ * first read after a reconnect often times out while that machine is still
+ * waking; the next one, ten seconds later, usually succeeds.
+ */
+export const MACHINE_READ_FAILURE_NOTICE_THRESHOLD = 2;
 /** Upper bound on machines read at once, so ten paired machines can't fan out. */
 const MAX_PARALLEL_MACHINE_READS = 4;
 /**
@@ -1330,6 +1337,29 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
   });
 }
 
+/**
+ * Remote calls still running per machine. Giving up at `MACHINE_READ_TIMEOUT_MS`
+ * does not cancel the call: the main process keeps it open for up to 25s. A
+ * new read every tick on top of it piles work onto a machine that is already
+ * slow (a cold Windows brain after an update), so its reads time out again
+ * and Work says it could not load its chats. A machine with a call still
+ * running sits the tick out instead.
+ */
+let machineCallsInFlight = new Map<string, number>();
+
+function trackMachineCall<T>(machineId: string, promise: Promise<T>): Promise<T> {
+  // A call that outlives a detach settles against the map it was counted in.
+  const counts = machineCallsInFlight;
+  counts.set(machineId, (counts.get(machineId) ?? 0) + 1);
+  const settle = () => {
+    const left = (counts.get(machineId) ?? 1) - 1;
+    if (left > 0) counts.set(machineId, left);
+    else counts.delete(machineId);
+  };
+  promise.then(settle, settle);
+  return promise;
+}
+
 /** The origin URL of the repo the tab is showing, when the bound machine knows it. */
 function resolveBoundRepoOriginUrl(scope: CrossMachineLaneScope): string | null {
   if (!scope.boundTargetId || !scope.boundProjectId) return null;
@@ -1462,8 +1492,10 @@ async function readMachine(
   depth: LaneReadDepth,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
-  const callAction = window.ade?.remoteRuntime?.callAction;
-  if (!isAdeAvailable(callAction)) return;
+  const rawCallAction = window.ade?.remoteRuntime?.callAction;
+  if (!isAdeAvailable(rawCallAction)) return;
+  if (machineCallsInFlight.has(machineId)) return;
+  const callAction: typeof rawCallAction = (...args) => trackMachineCall(machineId, rawCallAction(...args));
   const readLanes = (includeStatus: boolean) =>
     withTimeout(
       callAction(targetId, projectId, {
@@ -1572,15 +1604,29 @@ async function readMachine(
     // that is connected but refuses its very first read (a project folder that
     // is gone there) is a live machine with an error, which Work shows, not an
     // offline one it hides.
+    const message = error instanceof Error ? error.message : String(error);
     store.mergeCrossMachineLanes({
       machineId,
       machineName,
       targetId,
       projectId,
       ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
+    reportPersistentMachineReadFailure(machineId, message);
   }
+}
+
+/** Sends a machine's read failure to Sentry once, when Work starts showing it. */
+function reportPersistentMachineReadFailure(machineId: string, message: string): void {
+  const entry = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId];
+  if (entry?.failedReads !== MACHINE_READ_FAILURE_NOTICE_THRESHOLD) return;
+  forwardSignalToSentry("work.machine_read_failed", {
+    error: message,
+    failedReads: entry.failedReads,
+    online: entry.online,
+    hasRetainedSessions: entry.sessions.length > 0,
+  });
 }
 
 async function readThisMachine(
@@ -1663,6 +1709,7 @@ async function readThisMachine(
     noteChatLaunchSourceRead(chatLaunchBindingKey(binding), readStartedAtMs, new Set(sessions.map((session) => session.id)));
   } catch (error) {
     if (generation !== runtime.generation) return;
+    const message = error instanceof Error ? error.message : String(error);
     store.mergeCrossMachineLanes({
       machineId: THIS_MACHINE_ID,
       machineName: THIS_MACHINE_NAME,
@@ -1670,8 +1717,9 @@ async function readThisMachine(
       projectId: null,
       binding,
       online: true,
-      error: error instanceof Error ? error.message : String(error),
+      error: message,
     });
+    reportPersistentMachineReadFailure(THIS_MACHINE_ID, message);
   }
 }
 
@@ -2158,6 +2206,7 @@ function attach(): void {
 function detach(): void {
   runtime.generation += 1;
   runtime.lifecycle += 1;
+  machineCallsInFlight = new Map();
   if (runtime.timer) {
     clearTimeout(runtime.timer);
     runtime.timer = null;

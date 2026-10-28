@@ -15,6 +15,7 @@ import type {
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
+import { Banner } from "../../ui/notice";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { PrConflictBadge } from "../PrConflictBadge";
@@ -25,6 +26,7 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
+import { formatError } from "../shared/prFormatters";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
 import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
@@ -596,7 +598,9 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [urlProposalId, setUrlProposalId] = React.useState<string | null>(() => readQueryParam("proposalId"));
   const [commitBusy, setCommitBusy] = React.useState(false);
-  const [commitError, setCommitError] = React.useState<string | null>(null);
+  // `failed: false` is the proposal's or the machine's state (nothing to
+  // resolve, the machine is offline): it warns, with no Report.
+  const [commitError, setCommitError] = React.useState<{ message: string; failed: boolean } | null>(null);
   const [resimBusy, setResimBusy] = React.useState(false);
   const [deleteProposalBusy, setDeleteProposalBusy] = React.useState(false);
   const [deleteProposalConfirm, setDeleteProposalConfirm] = React.useState(false);
@@ -734,7 +738,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         const result = await window.ade.prs.commitIntegration(commitArgs, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         if (
           !isDirtyWorktreeErrorMessage(message)
           || !(await confirmDialog({
@@ -759,7 +763,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleCommitProposal = async (p: IntegrationProposal) => {
     const blocked = proposalBlocked(p.proposalId);
     if (blocked) {
-      setCommitError(blocked);
+      setCommitError({ message: blocked, failed: false });
       return;
     }
     // A PR created on another machine has that machine's id; the GitHub list
@@ -780,7 +784,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         onSelectPr(committedPrId);
       }
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
       await loadProposals();
       await onRefresh().catch(() => {});
     } finally {
@@ -791,7 +795,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleResimulate = async (p: IntegrationProposal) => {
     const blocked = proposalBlocked(p.proposalId);
     if (blocked) {
-      setCommitError(blocked);
+      setCommitError({ message: blocked, failed: false });
       return;
     }
     const pinArgs = proposalPin(p.proposalId);
@@ -835,17 +839,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           deleteIntegrationLane,
         }, ...pinArgs);
       } catch (cleanupError) {
-        cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        cleanupWarning = formatError(cleanupError);
       }
 
       refreshProposalMachine(p.proposalId);
       await loadProposals();
       setSelectedProposalId(listProposalId(p.proposalId, result.proposalId));
       if (cleanupWarning) {
-        setCommitError(`Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`);
+        setCommitError({ message: `Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`, failed: true });
       }
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
     } finally {
       setResimBusy(false);
     }
@@ -854,7 +858,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleDeleteProposal = async (proposal: IntegrationProposal) => {
     const blocked = proposalBlocked(proposal.proposalId);
     if (blocked) {
-      setCommitError(blocked);
+      setCommitError({ message: blocked, failed: false });
       return;
     }
     setDeleteProposalBusy(true);
@@ -873,7 +877,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       clearProposalIdFromLocation();
       await loadProposals();
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
     } finally {
       setDeleteProposalBusy(false);
     }
@@ -1184,7 +1188,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       try {
         result = await runCreate(false);
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        const message = formatError(error);
         if (
           !isDirtyWorktreeErrorMessage(message)
           || !(await confirmDialog({
@@ -1216,7 +1220,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       await onRefresh().catch(() => {});
       return nextState;
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
       return null;
     } finally {
       setCreateLaneBusy(false);
@@ -1227,13 +1231,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     if (!selectedProposal) return;
     const uniqueLaneIds = Array.from(new Set(laneIds.filter(Boolean)));
     if (!uniqueLaneIds.length) {
-      setCommitError("No lanes were selected for AI resolution.");
+      setCommitError({ message: "No lanes were selected for AI resolution.", failed: false });
       return;
     }
 
     const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch, selectedProposal.proposalId);
     if (!targetLaneId) {
-      setCommitError(`Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`);
+      setCommitError({ message: `Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`, failed: false });
       return;
     }
 
@@ -1253,7 +1257,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setResolutionPanelDismissed(false);
       setResolverOpen(true);
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
     } finally {
       setResolvingLaneId(null);
     }
@@ -1281,7 +1285,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       conflictLaneIds = proposalConflictSteps.map((step) => step.laneId);
     } else {
       // Nothing to resolve
-      setCommitError("No conflicts found to auto-resolve.");
+      setCommitError({ message: "No conflicts found to auto-resolve.", failed: false });
       return;
     }
 
@@ -1304,7 +1308,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         stepResolutions: { ...prev.stepResolutions, [stepLaneId]: result.resolution },
       } : prev);
       if (result.message) {
-        setCommitError(result.message);
+        setCommitError({ message: result.message, failed: true });
       }
       setResolutionPanelDismissed(false);
       if (result.allResolved) {
@@ -1312,7 +1316,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         await loadProposals();
       }
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
     }
   };
 
@@ -1434,7 +1438,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return;
     }
     if (nextPreferredIntegrationLaneId && selectedProposal.sourceLaneIds.includes(nextPreferredIntegrationLaneId)) {
-      setCommitError("Merge-into lane cannot be one of the source lanes.");
+      setCommitError({ message: "Merge-into lane cannot be one of the source lanes.", failed: false });
       return;
     }
     setMergeIntoLaneBusy(true);
@@ -1462,17 +1466,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       try {
         await window.ade.prs.deleteProposal({ proposalId: apiProposalId(oldId), deleteIntegrationLane: false }, ...pinArgs);
       } catch (cleanupError) {
-        cleanupWarning = cleanupError instanceof Error ? cleanupError.message : String(cleanupError);
+        cleanupWarning = formatError(cleanupError);
       }
       setResolutionState(null);
       await loadProposals();
       refreshProposalMachine(oldId);
       setSelectedProposalId(listProposalId(oldId, persisted.proposalId));
       if (cleanupWarning) {
-        setCommitError(`Updated merge target, but the previous proposal row could not be removed: ${cleanupWarning}`);
+        setCommitError({ message: `Updated merge target, but the previous proposal row could not be removed: ${cleanupWarning}`, failed: true });
       }
     } catch (err: unknown) {
-      setCommitError(err instanceof Error ? err.message : String(err));
+      setCommitError({ message: formatError(err), failed: true });
       await loadProposals();
     } finally {
       setMergeIntoLaneBusy(false);
@@ -1554,7 +1558,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setSimulateResult(result);
     } catch (err: unknown) {
       if (requestSeq !== simulateRequestSeqRef.current) return;
-      setSimulateError(err instanceof Error ? err.message : String(err));
+      setSimulateError(formatError(err));
     } finally {
       if (requestSeq === simulateRequestSeqRef.current) {
         setSimulateBusy(false);
@@ -1581,7 +1585,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       onSelectPr(null);
       await onRefresh();
     } catch (err: unknown) {
-      setSimulateError(err instanceof Error ? err.message : String(err));
+      setSimulateError(formatError(err));
     } finally { setDeleteBusy(false); }
   };
 
@@ -1974,18 +1978,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             </div>
           )}
 
-          {simulateError && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: "10px 12px",
-                background: "#EF444410",
-                border: "1px solid #EF444425",
+          {simulateError ? (
+            <Banner
+              layout="inline"
+              style={{ marginTop: 12 }}
+              model={{
+                id: "integration-simulate-error",
+                tone: "error",
+                title: simulateError,
+                report: { surface: "integration_simulate" },
+                dismiss: { onDismiss: () => setSimulateError(null) },
               }}
-            >
-              <span className="font-mono" style={{ fontSize: 11, color: "#EF4444" }}>{simulateError}</span>
-            </div>
-          )}
+            />
+          ) : null}
         </div>
 
         {/* ---- Conflict warning zone ---- */}
@@ -2905,7 +2910,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       };
                     });
                     if (result.status === "failed" && result.message) {
-                      setCommitError(result.message);
+                      setCommitError({ message: result.message, failed: true });
                     }
                   }
                   setActiveWorkerStepId(null);
@@ -3251,18 +3256,19 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
             </div>
           )}
 
-          {commitError && (
-            <div
-              style={{
-                marginTop: 12,
-                padding: "10px 12px",
-                background: "#EF444410",
-                border: "1px solid #EF444425",
+          {commitError ? (
+            <Banner
+              layout="inline"
+              style={{ marginTop: 12 }}
+              model={{
+                id: "integration-commit-error",
+                tone: commitError.failed ? "error" : "warning",
+                title: commitError.message,
+                report: commitError.failed ? { surface: "integration_commit" } : false,
+                dismiss: { onDismiss: () => setCommitError(null) },
               }}
-            >
-              <span className="font-mono" style={{ fontSize: 11, color: "#EF4444" }}>{commitError}</span>
-            </div>
-          )}
+            />
+          ) : null}
         </div>
 
         {/* ---- Description (if any) ---- */}

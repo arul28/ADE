@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { SettingsPageShell } from "./SettingsPageShell";
 import { SettingsRowIcon, type SettingsTone } from "./SettingsRows";
+import { InlineErrorNotice } from "../../ui/notice";
 
 /**
  * True inside a `SettingsGroup`: its cards render as rows of the group's one
@@ -140,6 +141,16 @@ export function useSavedFlash(holdMs = 1600) {
 export function SavedFlash({ state }: { state: { kind: "idle" | "saved" | "error"; message?: string } }) {
   if (state.kind === "idle") return null;
   const isError = state.kind === "error";
+  if (isError) {
+    return (
+      <InlineErrorNotice
+        id="settings-save"
+        message={state.message ?? "Couldn't save"}
+        report={{ surface: "settings_save", headline: "Couldn't save a setting" }}
+        maxWidth={260}
+      />
+    );
+  }
   return (
     <span
       role="status"

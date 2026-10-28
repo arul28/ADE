@@ -6,7 +6,6 @@ import { isWebClientMode } from "../../../lib/webClientMode";
 import { revealLaneWorktree } from "../../../lib/revealLaneWorktree";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { getLaneAccent } from "../laneColorPalette";
-import { COLORS } from "../laneDesignTokens";
 import type { LaneAgent } from "../laneAgents";
 import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanePageModel";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
@@ -417,9 +416,15 @@ export function LaneDashboard({
           ) : null}
           <LaneBuildOutputNotice laneId={laneId} pin={pin} active={active} />
           {rebaseError ? (
-            <div className="-mx-2 truncate rounded-md px-2 py-2 text-[12.5px]" style={{ color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 7%, transparent)" }} title={rebaseError}>
-              {rebaseError}
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "lane-rebase-error",
+                tone: "error",
+                title: rebaseError,
+                report: { surface: "lane_rebase" },
+              }}
+            />
           ) : null}
         </div>
 

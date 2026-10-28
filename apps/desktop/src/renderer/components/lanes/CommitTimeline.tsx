@@ -3,8 +3,10 @@ import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types
 import { CloudArrowUp, CloudCheck, CloudSlash, CloudX } from "@phosphor-icons/react";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
 import { cssZoomOf } from "../../lib/webZoom";
+import { extractError } from "../../lib/format";
 
 function formatTs(ts: string): string {
   const date = new Date(ts);
@@ -28,7 +30,7 @@ function formatRelative(ts: string): string {
 }
 
 function formatTimelineError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err);
+  const raw = extractError(err);
   const message = raw.replace(/^Error invoking remote method '[^']+':\s*/i, "").trim();
   if (/^Lane worktree is missing\./i.test(message)) return message;
   if (/git working directory not found:/i.test(message)) {
@@ -237,7 +239,16 @@ export function CommitTimeline({
       </div>
 
       {error ? (
-        <div style={{ padding: "8px 12px", fontSize: 12, color: COLORS.danger }}>{error}</div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 12px" }}
+          model={{
+            id: "commit-timeline-error",
+            tone: "error",
+            title: error,
+            report: { surface: "commit_timeline" },
+          }}
+        />
       ) : null}
 
       <div ref={scrollRef} className="flex-1 min-h-0 overflow-auto" onScroll={onScroll}>

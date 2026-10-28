@@ -26,6 +26,7 @@ import {
 import { HistoryLanePicker, type HistoryLanePickerGroup } from "./HistoryLanePicker";
 import type { HistorySurface } from "./timelineTypes";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
 import type { TimelineColumn, ViewMode, TimeRange } from "./timelineTypes";
@@ -52,6 +53,7 @@ import {
   runHistoryLaneAction,
   type HistoryLaneActionId,
 } from "./historyLaneActions";
+import { extractError } from "../../lib/format";
 
 /* ── Constants ──────────────────────────────────────────────── */
 
@@ -220,7 +222,7 @@ export function TimelineToolbar({
       window.setTimeout(() => setExportNotice(null), 5000);
     } catch (err) {
       setExportNotice(
-        `Export failed: ${err instanceof Error ? err.message : String(err)}`,
+        `Export failed: ${extractError(err)}`,
       );
       window.setTimeout(() => setExportNotice(null), 5000);
     }
@@ -659,7 +661,7 @@ function LaneGitActionsMenu({
           navigate: (path) => navigate(path),
         });
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+        const message = extractError(err);
         setError(message);
         window.setTimeout(() => setError(null), 5000);
       } finally {
@@ -738,9 +740,17 @@ function LaneGitActionsMenu({
               </div>
             ) : null}
             {error ? (
-              <div className="truncate border-t border-fg/[0.06] px-2 py-1 font-mono text-[10px] text-red-300" title={error}>
-                {error}
-              </div>
+              <Banner
+                layout="inline"
+                style={{ margin: 4 }}
+                model={{
+                  id: "timeline-toolbar-error",
+                  tone: "error",
+                  title: error,
+                  report: { surface: "history_timeline_toolbar" },
+                  dismiss: { onDismiss: () => setError(null) },
+                }}
+              />
             ) : null}
           </div>
         </Popover.Content>

@@ -7,9 +7,11 @@ import { useHomeLayoutStore } from "../homeLayout";
 import { useWidgetPreview } from "../HomeWidgetGrid";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { FitList } from "../HomeFitList";
+import { Banner } from "../../ui/notice";
 import { formatBytesShort, relativeTimeShort } from "./widgetHooks";
 import "../homeWidgets.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
+import { extractError } from "../../../lib/format";
 
 /**
  * Clipboard history. The desktop main process watches the clipboard while
@@ -40,7 +42,7 @@ function useClipboardState(paused: boolean): { state: HomeClipboardState | null;
         if (!cancelled) setState(next);
       })
       .catch((err: unknown) => {
-        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+        if (!cancelled) setError(extractError(err));
       });
     return () => {
       cancelled = true;
@@ -188,7 +190,17 @@ export default function ClipboardWidget({ item }: HomeWidgetProps) {
       </WelcomeCardHead>
       <div className="kit-card-body ade-clip-body" data-flush="true">
         {error ? (
-          <div className="ade-home-empty" role="alert"><span>Clipboard history is unavailable: {error}</span></div>
+          <Banner
+            layout="inline"
+            style={{ margin: 10 }}
+            model={{
+              id: "home-clipboard-error",
+              tone: "error",
+              title: "Clipboard history is unavailable",
+              detail: error,
+              report: { surface: "home_clipboard_widget", technicalDetail: error },
+            }}
+          />
         ) : !state ? (
           <div className="ade-home-empty"><span>Reading clipboard history…</span></div>
         ) : (

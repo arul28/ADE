@@ -12,10 +12,12 @@ import {
 import { providerDisplayName } from "../../../shared/pendingInputLabels";
 import type { UsageSnapshot } from "../../../shared/types/usage";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { Banner } from "../ui/notice";
 import { cn } from "../ui/cn";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS } from "../ui/paneMenuTokens";
 import { useAgentChatApi } from "./agentChatApi";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { extractError } from "../../lib/format";
 
 /**
  * Which login, key or endpoint a chat runs on, as one quiet row pinned to the
@@ -336,7 +338,7 @@ export function ChatAccountNote({
         setOpen(false);
         onSwitched?.();
       })
-      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .catch((cause: unknown) => setError(extractError(cause)))
       .finally(() => setPendingId(null));
   };
 
@@ -393,9 +395,21 @@ export function ChatAccountNote({
               {accountRow(target, false)}
             </DropdownMenu.Item>
           ))}
-          {busy || error ? (
-            <div className={cn("px-2 pb-1 pt-1.5 text-[10.5px] leading-4", error ? "text-red-300/90" : "text-fg/45")}>
-              {error ?? "Wait for this turn to finish."}
+          {error ? (
+            <Banner
+              layout="inline"
+              style={{ margin: "6px 4px 2px" }}
+              model={{
+                id: "chat-account-switch-error",
+                tone: "error",
+                title: error,
+                report: { surface: "chat_account_switch" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
+          ) : busy ? (
+            <div className="px-2 pb-1 pt-1.5 text-[10.5px] leading-4 text-fg/45">
+              Wait for this turn to finish.
             </div>
           ) : null}
         </DropdownMenu.Content>

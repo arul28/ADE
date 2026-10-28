@@ -158,8 +158,9 @@ export function showToast(input: ToastInput): string {
   // failure behind it (an IPC call, a render crash) already opened one, with a
   // stack; a toast only repeats it under its title. The message rides along
   // only when it is plain text (a rendered node can hold anything).
-  if (input.tone === "error") {
-    const group = toastGroupKey(input.title);
+  // `report: false` is an error the person fixes (a field left empty): not ADE's to hear about.
+  if (input.report !== false && (input.tone === "error" || input.report)) {
+    const group = input.report ? input.report.surface : toastGroupKey(input.title);
     // Toast text is UI copy plus an error message, but an error message can
     // quote what it failed on; a short prefix is enough to recognise it.
     forwardLogToSentry("warn", `toast.${group}`, {

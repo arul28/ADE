@@ -7,7 +7,6 @@ import {
   CaretDown,
   FileZip,
   FolderDashed,
-  HardDrives,
   ShieldCheck,
 } from "@phosphor-icons/react";
 import type {
@@ -22,6 +21,7 @@ import type {
 } from "../../../../shared/types/storage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { ModernSection } from "../primitives";
+import { Banner } from "../../ui/notice";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { showToast, type ToastTone } from "../../app/toast/toastStore";
 import { relativeWhen } from "../../../lib/format";
@@ -233,16 +233,17 @@ export function HealthSpace({ data }: { data: HealthData }) {
             ))}
           </div>
         ) : error && !snapshot ? (
-          <div className="ade-modern-note" data-tone="crit">
-            <HardDrives size={14} />
-            <div className="ade-modern-note-body">
-              <strong style={{ fontWeight: 600, color: "var(--color-fg)" }}>ADE couldn&apos;t measure storage right now.</strong>
-              <span>{error}</span>
-            </div>
-            <button type="button" onClick={() => void loadStorage({ force: true })} className="ade-modern-btn" data-size="sm">
-              <ArrowClockwise size={12} /> Try again
-            </button>
-          </div>
+          <Banner
+            layout="inline"
+            model={{
+              id: "health-storage-error",
+              tone: "error",
+              title: "ADE couldn't measure storage right now.",
+              actions: [{ label: "Try again", icon: <ArrowClockwise size={12} />, onClick: () => void loadStorage({ force: true }) }],
+              detail: error,
+              report: { surface: "health_storage", technicalDetail: error },
+            }}
+          />
         ) : snapshot ? (
           <>
             <div className="ade-modern-stats">

@@ -21,6 +21,7 @@ import {
 } from "../lanes/laneDesignTokens";
 import { LaneAccentDot } from "../lanes/LaneAccentDot";
 import { deriveLaneName, openWorktreeAsLane } from "./worktreeLaneFlow";
+import { Banner } from "../ui/notice";
 
 const DOCS_URL = "https://www.ade-app.dev/docs/lanes/repos-and-worktrees";
 
@@ -291,22 +292,16 @@ export function WorktreeOpenDialog() {
                   </button>
 
                   {error ? (
-                    <div
-                      role="alert"
-                      style={{
-                        fontFamily: SANS_FONT,
-                        fontSize: 12,
-                        lineHeight: 1.45,
-                        color: "#FCA5A5",
-                        background: "rgba(248,113,113,0.12)",
-                        border: "1px solid rgba(248,113,113,0.4)",
-                        borderRadius: 8,
-                        padding: "8px 10px",
-                        whiteSpace: "pre-wrap",
+                    <Banner
+                      layout="inline"
+                      model={{
+                        id: "worktree-open-error",
+                        tone: "error",
+                        title: error,
+                        report: { surface: "worktree_open" },
+                        dismiss: { onDismiss: () => setError(null) },
                       }}
-                    >
-                      {error}
-                    </div>
+                    />
                   ) : null}
 
                   <div

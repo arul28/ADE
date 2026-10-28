@@ -140,7 +140,8 @@ export function AddApiKeySheet({
   );
   const [models, setModels] = useState((existing?.models ?? []).join(", "));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // `failed: false` is a malformed endpoint URL, the person's to fix: no Report.
+  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
   const labelInputRef = useRef<HTMLInputElement | null>(null);
 
   const envVar = useMemo(() => resolveKeyEnvVar(spec, baseUrl), [spec, baseUrl]);
@@ -154,7 +155,7 @@ export function AddApiKeySheet({
     if (!canSave || busy) return;
     const endpointError = spec.endpoint ? endpointProblem(baseUrl) : null;
     if (endpointError) {
-      setError(endpointError);
+      setError({ message: endpointError, failed: false });
       return;
     }
     setBusy(true);
@@ -171,7 +172,7 @@ export function AddApiKeySheet({
           : [],
       });
     } catch (err) {
-      setError(providerActionMessage(err, "That key could not be saved."));
+      setError({ message: providerActionMessage(err, "That key could not be saved."), failed: true });
       setBusy(false);
     }
   }, [baseUrl, busy, canSave, key, label, models, onSave, protocol, providerId, spec]);
@@ -209,7 +210,12 @@ export function AddApiKeySheet({
         <Banner
           layout="inline"
           style={{ margin: "8px 20px 0" }}
-          model={{ id: "provider-api-key-error", tone: "error", title: error }}
+          model={{
+            id: "provider-api-key-error",
+            tone: error.failed ? "error" : "warning",
+            title: error.message,
+            report: error.failed ? undefined : false,
+          }}
         />
       ) : null}
 

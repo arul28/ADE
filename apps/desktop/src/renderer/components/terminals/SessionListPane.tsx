@@ -23,6 +23,7 @@ import { foreignLaneKey } from "../../state/laneMachineRouting";
 import { machineIdForBinding, machineNameForBinding } from "../../../shared/machineIdentity";
 import { useLaneNamePending } from "../../state/sessionMetadataGeneratingStore";
 import {
+  MACHINE_READ_FAILURE_NOTICE_THRESHOLD,
   requestCrossMachineLanesForMachine,
   useCrossMachineLaneUnion,
   type CrossMachineLaneMarker,
@@ -99,7 +100,6 @@ import {
 } from "../../../shared/types/chat";
 import { moveSessionOnBoard } from "./sessionBoardMoveUi";
 import { showToast } from "../app/toast/toastStore";
-import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { Banner } from "../ui/notice";
 import { findGridSetForSession } from "../../lib/workGrid";
 import { LaneEmojiGlyph } from "../lanes/LaneEmojiGlyph";
@@ -111,7 +111,7 @@ import { bindingChipLabel, fireBinding, getEffectiveBinding } from "../../lib/ke
 import { laneRailTint, laneSurfaceTint, toneText, fgTint } from "../lanes/laneDesignTokens";
 import { canBulkDeleteSession, canBulkStopSession, isChatToolType, primarySessionLabel } from "../../lib/sessions";
 import { useWorkLaneContextMenu } from "./useWorkLaneContextMenu";
-import { relativeTimeCompact } from "../../lib/format";
+import { extractError, relativeTimeCompact } from "../../lib/format";
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import {
   handoffJobLikelyMaterialized,
@@ -1341,14 +1341,34 @@ export const SessionListPane = React.memo(function SessionListPane({
   // otherwise just contribute nothing, which reads as "no chats there". Only
   // when it has nothing retained to show: a blip on a machine whose chats are
   // still listed is not worth a notice.
-  const machineReadFailures = useMemo(
+  // Machines whose failure notice the person closed. It stays closed until that
+  // machine reads cleanly again, so the next failure is news and shows.
+  const [dismissedMachineReadFailureIds, setDismissedMachineReadFailureIds] = useState<ReadonlySet<string>>(() => new Set());
+  const failingMachineReads = useMemo(
     // Only while this pane shows other machines' chats at all: entries can
-    // outlive the sync that filled them.
+    // outlive the sync that filled them. One failed read is usually a machine
+    // still waking after a reconnect; the notice waits for a second.
     () => (crossMachineSyncActive ? Object.values(crossMachineEntries) : []).flatMap((entry) =>
-      entry.machineId !== activeMachineId && entry.online && entry.error && entry.sessions.length === 0
+      entry.machineId !== activeMachineId
+        && entry.online
+        && entry.error
+        && entry.sessions.length === 0
+        && (entry.failedReads ?? 0) >= MACHINE_READ_FAILURE_NOTICE_THRESHOLD
         ? [{ machineId: entry.machineId, machineName: entry.machineName, error: entry.error }]
         : []),
     [activeMachineId, crossMachineEntries, crossMachineSyncActive],
+  );
+  useEffect(() => {
+    setDismissedMachineReadFailureIds((prev) => {
+      if (prev.size === 0) return prev;
+      const failing = new Set(failingMachineReads.map((failure) => failure.machineId));
+      const next = new Set([...prev].filter((machineId) => failing.has(machineId)));
+      return next.size === prev.size ? prev : next;
+    });
+  }, [failingMachineReads]);
+  const machineReadFailures = useMemo(
+    () => failingMachineReads.filter((failure) => !dismissedMachineReadFailureIds.has(failure.machineId)),
+    [dismissedMachineReadFailureIds, failingMachineReads],
   );
   const localMachineFilteredOut = workSessionFilters.machine.length > 0
     && !workSessionFilters.machine.includes(activeMachineId);
@@ -3131,7 +3151,7 @@ export const SessionListPane = React.memo(function SessionListPane({
       .then((result) => {
         if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
       })
-      .catch((error: unknown) => showRefusal(error instanceof Error ? error.message : String(error)));
+      .catch((error: unknown) => showRefusal(extractError(error)));
   };
 
   const renderLaneGroup = (lane: LaneSummary) => {
@@ -4153,17 +4173,15 @@ export const SessionListPane = React.memo(function SessionListPane({
               icon: <Desktop size={13} weight="bold" />,
               title: `Couldn't load chats from ${failure.machineName}`,
               detail: "That machine is connected but didn't send its chats. ADE tries again on its own.",
-              actions: [{
-                label: "Copy error",
-                variant: "link",
-                onClick: () => {
-                  void copyTextToClipboard(failure.error).then((copied) => {
-                    showToast(copied
-                      ? { title: "Error copied", tone: "success" }
-                      : { title: "Couldn't copy the error", tone: "error" });
-                  });
-                },
-              }],
+              // crossMachineLanes already logged this failure to Sentry with its count.
+              report: {
+                surface: "work_machine_read",
+                code: "machine_session_read_failed",
+                technicalDetail: failure.error,
+              },
+              dismiss: {
+                onDismiss: () => setDismissedMachineReadFailureIds((prev) => new Set(prev).add(failure.machineId)),
+              },
             }}
           />
         </div>

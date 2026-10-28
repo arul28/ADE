@@ -6,6 +6,7 @@ import { linearNotificationVerb } from "../../../shared/linearInbox";
 import { relativeTimeCompact } from "../../lib/format";
 import { LinearAssigneeAvatar } from "./LinearIssueBrowserRows";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { showToast } from "./toast/toastStore";
 
 /**
@@ -111,7 +112,16 @@ export function LinearInboxList({
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
         {error ? (
-          <div className="px-4 py-10 text-center text-[12px] text-muted-fg/60">{error}</div>
+          <Banner
+            layout="inline"
+            style={{ margin: "16px" }}
+            model={{
+              id: "linear-inbox-load-error",
+              tone: "error",
+              title: error,
+              report: { surface: "linear_inbox_load" },
+            }}
+          />
         ) : items && items.length === 0 ? (
           <div className="grid place-items-center gap-2 px-4 py-14 text-center text-[12px] text-muted-fg/55">
             <Tray size={22} className="text-muted-fg/35" />

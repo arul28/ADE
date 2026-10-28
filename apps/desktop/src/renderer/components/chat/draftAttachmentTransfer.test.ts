@@ -11,11 +11,12 @@ import type {
 } from "../../../shared/types";
 import {
   collectDraftVisualAttachmentPaths,
-  copyDraftImageAttachmentsToMachine,
+  copyDraftAttachmentsToMachine,
   partitionDraftMachineAttachments,
   shouldTransferDraftAttachments,
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
+import { rememberDraftAttachmentSource } from "./draftAttachmentSources";
 
 describe("draft attachment transfer", () => {
   const localBinding: OpenProjectBinding = {
@@ -48,7 +49,7 @@ describe("draft attachment transfer", () => {
   });
 
   it("copies pasted image bytes from the source machine into the target machine", async () => {
-    const copied = await copyDraftImageAttachmentsToMachine({
+    const copied = await copyDraftAttachmentsToMachine({
       attachments: [{
         path: `${localBinding.rootPath}/.ade/attachments/clipboard.png`,
         type: "image",
@@ -71,11 +72,13 @@ describe("draft attachment transfer", () => {
     }]);
   });
 
-  it("keeps portable URLs and pasted images while excluding linked visual context", () => {
+  it("keeps portable URLs, pasted images and pasted text while excluding linked visual context", () => {
+    rememberDraftAttachmentSource("/tmp/pasted.txt", { kind: "bytes", data: "aGk=", filename: "pasted.txt" });
     expect(partitionDraftMachineAttachments([
       { path: "https://example.com/image.png", type: "image-url", url: "https://example.com/image.png" },
       { path: "/tmp/clipboard.png", type: "image" },
       { path: "/tmp/ios.png", type: "image" },
+      { path: "/tmp/pasted.txt", type: "file", intent: "user_prompt" },
       { path: "/tmp/spec.md", type: "file" },
     ], new Set(["/tmp/ios.png"]))).toEqual({
       portableAttachments: [{
@@ -83,8 +86,11 @@ describe("draft attachment transfer", () => {
         type: "image-url",
         url: "https://example.com/image.png",
       }],
-      imageAttachments: [{ path: "/tmp/clipboard.png", type: "image" }],
-      removedAttachmentCount: 2,
+      movableAttachments: [
+        { path: "/tmp/clipboard.png", type: "image" },
+        { path: "/tmp/pasted.txt", type: "file", intent: "user_prompt" },
+      ],
+      removedAttachments: [{ path: "/tmp/spec.md", type: "file" }],
     });
   });
 

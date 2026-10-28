@@ -206,7 +206,6 @@
 .ade-spotify-client-id { width: 100%; height: 34px; font-family: var(--font-mono); }
 .ade-spotify-check { display: inline-flex; align-items: center; gap: 5px; color: var(--kit-text-3); font-size: 11.5px; }
 .ade-spotify-check.is-ok { color: var(--kit-ok); }
-.ade-spotify-check.is-error { color: var(--kit-crit); }
 
 .ade-spotify-why { color: var(--kit-text-3); font-size: 12px; }
 .ade-spotify-why summary { cursor: pointer; }

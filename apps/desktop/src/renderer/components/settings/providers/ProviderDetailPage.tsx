@@ -40,6 +40,7 @@ import { isProviderInstanceProvider } from "../../../../shared/types/providerIns
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { usePinnedToolStatus } from "../../../hooks/usePinnedToolStatus";
 import { PinnedToolStatusRow } from "./bodies/PinnedToolStatusRow";
+import { ReportIssueButton } from "../../app/ReportIssueButton";
 
 /**
  * Whether the status payload already says this provider's runtime is on the
@@ -288,7 +289,13 @@ export function ProviderDetailPage({
               </button>
             </div>
             {Diagnostics ? <Diagnostics ctx={ctx} /> : null}
-            <CopyReportButton report={diagnosticReport} label="Copy diagnostics" />
+            <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <CopyReportButton report={diagnosticReport} label="Copy diagnostics" />
+              <ReportIssueButton
+                variant="ghost"
+                context={{ surface: "provider_settings", headline: `${descriptor.label} provider`, code: `provider_${descriptor.id}`, technicalDetail: diagnosticReport }}
+              />
+            </div>
             <Link
               to={settingsRouteFor("storage.diagnostics")}
               style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.accent, textDecoration: "none" }}

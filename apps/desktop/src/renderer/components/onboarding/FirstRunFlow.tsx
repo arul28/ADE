@@ -19,7 +19,7 @@ import {
 import { ONBOARDING_CHAT_WINDOW_DAYS, ONBOARDING_CHAT_WINDOW_MS } from "../../../shared/onboardingChatWindow";
 import { basenameCrossPlatform } from "../../../shared/pathDisplay";
 import { ADE_MOBILE_TESTFLIGHT_URL } from "../../../shared/productLinks";
-import { relativeWhen } from "../../lib/format";
+import { extractError, relativeWhen } from "../../lib/format";
 import { arePathsEqual } from "../../lib/pathUtils";
 import { RECENT_PROJECTS_CHANGED_EVENT } from "../../lib/recentProjectsEvents";
 import { chatImportKey, queueChatImports } from "../../onboarding/pendingChatImports";
@@ -27,6 +27,7 @@ import { useAppStore } from "../../state/appStore";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { AdeQrCode } from "../ui/AdeQrCode";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 import { PortalContainerContext } from "../ui/portalContainer";
 import { FirstRunChatPicker, type ChatListState } from "./FirstRunChatPicker";
 import { firstRunAgents } from "./firstRunAgentModel";
@@ -217,7 +218,8 @@ export function FirstRunProjects({
   /** The gate root: the picker portals there so it keeps the gate's glass tokens and escapes the scrolling rows. */
   const [gateEl, setGateEl] = useState<HTMLElement | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // `failed: false` is the person's to fix (a folder outside git): no Report.
+  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
   const [discoveryRetry, setDiscoveryRetry] = useState(0);
 
   useEffect(() => {
@@ -353,11 +355,11 @@ export function FirstRunProjects({
     try {
       candidate = isAdeAvailable(resolve) ? await resolve(folder) : folderCandidate(folder);
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError({ message: extractError(cause), failed: true });
       return;
     }
     if (!candidate) {
-      setError(`${folderName(folder)} isn't in a git project. Choose the folder of a git checkout.`);
+      setError({ message: `${folderName(folder)} isn't in a git project. Choose the folder of a git checkout.`, failed: false });
       return;
     }
     const isCandidate = (project: OnboardingProjectCandidate) => arePathsEqual(project.rootPath, candidate.rootPath);
@@ -381,7 +383,7 @@ export function FirstRunProjects({
     try {
       onDone(await addFirstRunProjects([...chosen, ...importingInAde], importing, excluded));
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError({ message: extractError(cause), failed: true });
       setBusy(false);
     }
   }, [chosen, excluded, importing, importingInAde, onDone]);
@@ -460,7 +462,19 @@ export function FirstRunProjects({
 
       <DevicesStrip onExpandQr={openQr} />
 
-      {error ? <div className="ade-glass-error">{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 14 }}
+          model={{
+            id: "first-run-projects-error",
+            tone: error.failed ? "error" : "warning",
+            title: error.message,
+            report: error.failed ? { surface: "first_run_projects" } : false,
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
 
       <footer className="ade-fr-foot">
         <button type="button" className="ade-glass-link" onClick={onSkip} disabled={busy}>

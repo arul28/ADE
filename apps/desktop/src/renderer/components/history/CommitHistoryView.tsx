@@ -2,7 +2,8 @@ import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useSta
 import { githubRepoRefFromRemoteUrl } from "../../../shared/githubRemote";
 import { useNavigate } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowClockwise, CircleNotch, Warning } from "@phosphor-icons/react";
+import { ArrowClockwise, CircleNotch } from "@phosphor-icons/react";
+import { Banner } from "../ui/notice";
 import type {
   GitBranchSummary,
   GitCommitSummary,
@@ -793,19 +794,19 @@ export function CommitHistoryView({
         </div>
       ) : null}
       {error ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 text-center">
-          <Warning size={20} className="text-[var(--color-warning)]" />
-          <p className="max-w-[420px] text-[13px] text-fg/85">{error}</p>
-          {!worktreeMissing ? (
-            <button
-              type="button"
-              onClick={() => void reload({ keepAnchor: false })}
-              className="inline-flex h-7 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] text-fg/80 hover:bg-fg/[0.06] hover:text-fg"
-            >
-              <ArrowClockwise size={13} />
-              Try again
-            </button>
-          ) : null}
+        <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6">
+          <Banner
+            layout="inline"
+            style={{ maxWidth: 460 }}
+            model={{
+              id: "commit-history-load-error",
+              tone: worktreeMissing ? "warning" : "error",
+              title: error,
+              actions: worktreeMissing ? undefined : [{ label: "Try again", icon: <ArrowClockwise size={13} />, onClick: () => void reload({ keepAnchor: false }) }],
+              // A missing worktree is the lane's state, not a failure to report.
+              report: worktreeMissing ? false : { surface: "commit_history_load" },
+            }}
+          />
         </div>
       ) : initialLoading ? (
         <div className="flex-1 overflow-hidden" aria-busy aria-label={laneName ? `Loading ${laneName}` : "Loading commits"}>

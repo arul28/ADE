@@ -43,6 +43,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
+import { Banner } from "../ui/notice";
 
 export type CloneProjectFormProps = {
   onCancel: () => void;
@@ -491,7 +492,17 @@ function UrlTab({
 
       <PathPreview path={previewPath} exists={pathExists} />
 
-      {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "clone-project-error",
+            tone: "error",
+            title: error,
+            report: { surface: "clone_project" },
+          }}
+        />
+      ) : null}
 
       <div
         style={{
@@ -662,12 +673,13 @@ function ConnectGithubPrompt({
 }) {
   const [token, setToken] = useState("");
   const [pending, setPending] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // `failed: false` is the person's to fix (no token, GitHub refused it): no Report.
+  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
 
   const handleSave = useCallback(async () => {
     const trimmed = token.trim();
     if (!trimmed) {
-      setError("Enter a token");
+      setError({ message: "Enter a token", failed: false });
       return;
     }
     setPending(true);
@@ -676,12 +688,12 @@ function ConnectGithubPrompt({
       const result = await window.ade.github.setToken(trimmed);
       const verification = describeGithubPatVerification(result);
       if (!verification.verified) {
-        setError(verification.message);
+        setError({ message: verification.message, failed: false });
         return;
       }
       onConnected();
     } catch (err) {
-      setError(extractError(err));
+      setError({ message: extractError(err), failed: true });
     } finally {
       setPending(false);
     }
@@ -758,7 +770,15 @@ function ConnectGithubPrompt({
       </label>
 
       {error || statusError ? (
-        <InlineHint tone="danger">{error ?? statusError}</InlineHint>
+        <Banner
+          layout="inline"
+          model={{
+            id: "clone-github-connect-error",
+            tone: error && !error.failed ? "warning" : "error",
+            title: error?.message ?? statusError,
+            report: error && !error.failed ? false : { surface: "clone_github_connect" },
+          }}
+        />
       ) : null}
 
       <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
@@ -910,7 +930,17 @@ function ConnectedRepoBrowser({
         ) : null}
       </div>
 
-      {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "clone-repo-list-error",
+            tone: "error",
+            title: error,
+            report: { surface: "clone_repo_list" },
+          }}
+        />
+      ) : null}
 
       <div
         style={{
@@ -1243,7 +1273,17 @@ function RepoRow({
 
               <PathPreview path={previewPath} exists={pathExists} />
 
-              {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
+              {error ? (
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "clone-repo-row-error",
+                    tone: "error",
+                    title: error,
+                    report: { surface: "clone_repo_row" },
+                  }}
+                />
+              ) : null}
 
               <div
                 style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}

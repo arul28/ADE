@@ -28,8 +28,10 @@ import {
 import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
+import { Banner } from "../ui/notice";
 import {
   formatMachineEndpoint,
+  isMachineStateConnectError,
   relativeLastSeenPhrase,
   type AccountMachineRow as AccountMachineRowModel,
   type MachineSection,
@@ -37,7 +39,6 @@ import {
 import {
   helperTextStyle,
   inlineDetailStyle,
-  inlineErrorTextStyle,
   inlineSuccessTextStyle,
   machineRowStyle,
   nameStyle,
@@ -356,28 +357,22 @@ export function AccountMachineRow({
         ) : null}
 
         {error ? (
-          <div role="alert" style={{ display: "grid", gap: 3 }}>
-            <div style={inlineErrorTextStyle}>{error}</div>
-            {onPairNearby ? (
-              <button
-                type="button"
-                onClick={onPairNearby}
-                style={{
-                  justifySelf: "start",
-                  padding: 0,
-                  border: "none",
-                  background: "transparent",
-                  color: COLORS.accent,
-                  fontFamily: SANS_FONT,
-                  fontSize: 12,
-                  lineHeight: 1.45,
-                  cursor: "pointer",
-                }}
-              >
-                It's on your network — Pair nearby instead ›
-              </button>
-            ) : null}
-          </div>
+          <Banner
+            layout="inline"
+            model={{
+              id: `account-machine-connect-error-${row.id}`,
+              tone: isMachineStateConnectError(errorInfo?.kind) ? "warning" : "error",
+              title: error,
+              actions: onPairNearby
+                ? [{ label: "It's on your network — Pair nearby instead ›", onClick: onPairNearby, variant: "link" }]
+                : undefined,
+              report: {
+                surface: "account_machine_connect",
+                code: errorInfo ? `connect_${errorInfo.kind}` : null,
+                technicalDetail: errorInfo?.detail ?? null,
+              },
+            }}
+          />
         ) : null}
 
         {error ? (
@@ -388,7 +383,18 @@ export function AccountMachineRow({
           />
         ) : null}
 
-        {renameError ? <div role="alert" style={inlineErrorTextStyle}>{renameError}</div> : null}
+        {renameError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: `account-machine-rename-error-${row.id}`,
+              tone: "error",
+              title: renameError,
+              report: { surface: "account_machine_rename" },
+              dismiss: { onDismiss: () => setRenameError(null) },
+            }}
+          />
+        ) : null}
       </div>
 
       {canExplain && detailOpen ? (

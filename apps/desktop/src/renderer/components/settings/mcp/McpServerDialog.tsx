@@ -13,6 +13,7 @@ import {
 } from "../../../../shared/mcpRegistry";
 import { parseMcpServerSnippet, type McpServerDefinition } from "../../../../shared/mcpServerImport";
 import { Dialog } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { SettingsSegmented } from "../primitives/SettingsControls";
 import { McpSecretWarnings } from "./McpSecretWarnings";
 import type { McpSecretValue } from "./useMcpRegistry";
@@ -98,7 +99,9 @@ export function McpServerDialog({
   const [snippet, setSnippet] = useState("");
   const [snippetNote, setSnippetNote] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Only a failed save (`failed: true`) is ADE's to hear about; the rest are
+  // the form's own checks, which warn without a Report.
+  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
 
   const patch = (next: Partial<FormState>) => {
     setForm((prev) => ({ ...prev, ...next }));
@@ -147,7 +150,7 @@ export function McpServerDialog({
 
   const save = async () => {
     if (problem || saving) {
-      setError(problem);
+      setError(problem ? { message: problem, failed: false } : null);
       return;
     }
     const fields = form.fields.map((field) => ({ ...field, name: field.name.trim() })).filter((field) => field.name);
@@ -162,13 +165,13 @@ export function McpServerDialog({
       enabled: editing?.enabled ?? true,
     });
     if (!server) {
-      setError("ADE can't save that server. Check its name and its command or URL.");
+      setError({ message: "ADE can't save that server. Check its name and its command or URL.", failed: false });
       return;
     }
     setSaving(true);
     const outcome = await onSave(server, fields.map((field) => ({ field: secretField, name: field.name, value: field.value })));
     setSaving(false);
-    if (outcome) setError(outcome);
+    if (outcome) setError({ message: outcome, failed: true });
   };
 
   return (
@@ -182,7 +185,19 @@ export function McpServerDialog({
       maxHeight="min(720px, calc(100vh - 48px))"
       dismissible={!saving}
       testId="mcp-server-dialog"
-      footerStart={error ? <span role="alert" className="ade-modern-error">{error}</span> : null}
+      footerStart={error ? (
+        <Banner
+          layout="inline"
+          style={{ minWidth: 0 }}
+          model={{
+            id: "mcp-server-dialog-error",
+            tone: error.failed ? "error" : "warning",
+            title: error.message,
+            report: error.failed ? { surface: "mcp_server_save" } : false,
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
       actions={[
         { label: editing ? "Save" : "Add", onClick: () => void save(), busy: saving, disabled: saving },
         { label: "Cancel", onClick: onClose, disabled: saving },

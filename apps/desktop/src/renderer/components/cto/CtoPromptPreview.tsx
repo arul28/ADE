@@ -4,6 +4,7 @@ import type { CtoIdentity, CtoSystemPromptPreview, CtoSystemPromptPreviewSection
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { CopyButton, ctoButtonStyle } from "./ctoSettingsUi";
 import { useCtoHomeScope } from "./useCtoHome";
+import { Banner } from "../ui/notice";
 
 /**
  * Everything the CTO is sent, shown as the document it is.
@@ -83,7 +84,15 @@ export function CtoPromptPreview({
   }
   if (error) {
     return (
-      <p role="alert" style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>{error}</p>
+      <Banner
+        layout="inline"
+        model={{
+          id: "cto-prompt-preview-error",
+          tone: "error",
+          title: error,
+          report: { surface: "cto_prompt_preview" },
+        }}
+      />
     );
   }
 

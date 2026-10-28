@@ -5,6 +5,7 @@ import type { CtoMemorySnapshot } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { CopyButton, CtoCard, TextBlock, ctoButtonStyle } from "./ctoSettingsUi";
 import { useCtoHomeScope } from "./useCtoHome";
+import { Banner } from "../ui/notice";
 
 /**
  * The CTO's memory, laid out as the things it actually is.
@@ -525,9 +526,16 @@ export function CtoMemoryPanel({ accent = "#34D399" }: { accent?: string } = {})
       </CtoCard>
 
       {error ? (
-        <p role="alert" style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 12, color: COLORS.danger }}>
-          {error}
-        </p>
+        <Banner
+          layout="inline"
+          model={{
+            id: "cto-memory-error",
+            tone: "error",
+            title: error,
+            report: { surface: "cto_memory_panel" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
     </div>
   );

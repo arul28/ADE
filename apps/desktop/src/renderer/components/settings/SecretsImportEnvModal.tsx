@@ -1,6 +1,7 @@
 import type { ProjectSecretsImportPreview } from "../../../shared/types";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 
 export function SecretsImportEnvModal({
   preview,
@@ -39,7 +40,18 @@ export function SecretsImportEnvModal({
       bodyPadding={false}
       scrollBody={false}
       bodyStyle={{ display: "flex", flexDirection: "column", marginTop: 14, fontFamily: SANS_FONT }}
-      footerStart={error ? <div role="alert" style={{ color: "#dc2626", fontSize: 12 }}>{error}</div> : undefined}
+      footerStart={error ? (
+        <Banner
+          layout="inline"
+          style={{ minWidth: 0 }}
+          model={{
+            id: "secrets-import-env-error",
+            tone: "error",
+            title: error,
+            report: { surface: "secrets_import_env" },
+          }}
+        />
+      ) : undefined}
       actions={[
         { label: "Cancel", onClick: onClose, disabled: importing, variant: "secondary" },
         {

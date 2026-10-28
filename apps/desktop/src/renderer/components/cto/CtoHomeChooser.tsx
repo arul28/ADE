@@ -187,7 +187,19 @@ export function CtoHomeChooser({
           ) : null}
         </div>
 
-        {error ? <div className="mt-3 text-[11.5px] text-red-300/90">{error}</div> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            style={{ marginTop: 12 }}
+            model={{
+              id: "cto-home-save-error",
+              tone: "error",
+              title: error,
+              report: { surface: "cto_home_save" },
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
+        ) : null}
       </div>
     </div>
   );

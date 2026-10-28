@@ -14,6 +14,7 @@ import type {
   AgentChatResumeFailureKind,
 } from "../../../shared/types";
 import { useAgentChatApi } from "./agentChatApi";
+import { Banner } from "../ui/notice";
 
 /**
  * Window event the Work surface already listens for to switch the active chat
@@ -55,7 +56,13 @@ function reasonLine(reason: AgentChatNoticeDetail["reason"]): string {
 
 // Plain-language copy for an unsuccessful recoverContinuity result. Kept amber
 // and actionable — never a raw provider error.
-function failureCopy(reason: AgentChatContinuityRecoveryResult["reason"]): string {
+type RecoveryFailureReason = AgentChatContinuityRecoveryResult["reason"];
+
+function isRecoveryBreak(reason: RecoveryFailureReason): boolean {
+  return reason === "recovery_failed" || reason === undefined;
+}
+
+function failureCopy(reason: RecoveryFailureReason): string {
   switch (reason) {
     case "not_required":
       return "This chat has already been recovered.";
@@ -180,7 +187,9 @@ export function ChatContinuityRecoveryCard({
   const [pendingMode, setPendingMode] = useState<RecoverMode | null>(null);
   // The "Recover from ADE history" button reveals an inline confirm before it runs.
   const [confirmingRecover, setConfirmingRecover] = useState(false);
-  const [failure, setFailure] = useState<string | null>(null);
+  // Why the last action didn't recover the chat. A thrown error stays out of
+  // the card: its wire text is never shown here.
+  const [failure, setFailure] = useState<{ reason: RecoveryFailureReason } | null>(null);
   // Populated once an action in *this* card succeeds; drives the resolved view.
   const [result, setResult] = useState<AgentChatContinuityRecoveryResult | null>(null);
   // Without a host callback, the pane's own chat API (never the project one
@@ -198,7 +207,7 @@ export function ChatContinuityRecoveryCard({
           mode,
         });
         if (!res.ok) {
-          setFailure(failureCopy(res.reason));
+          setFailure({ reason: res.reason });
           return;
         }
         setResult(res);
@@ -207,7 +216,7 @@ export function ChatContinuityRecoveryCard({
           navigateToSession(res.newSessionId, detail.spawnedSession?.laneId ?? null);
         }
       } catch {
-        setFailure(failureCopy("recovery_failed"));
+        setFailure({ reason: "recovery_failed" });
       } finally {
         setPendingMode(null);
       }
@@ -357,12 +366,21 @@ export function ChatContinuityRecoveryCard({
           )}
 
           {failure ? (
-            <div
-              role="alert"
-              className="mt-2 text-[length:calc(var(--chat-font-size)*10/14)] leading-relaxed text-amber-200/80"
-            >
-              {failure}
-            </div>
+            <Banner
+              layout="inline"
+              style={{ marginTop: 8 }}
+              model={{
+                id: "chat-continuity-recovery-error",
+                // Only a recovery that broke is ADE's failure; the other reasons
+                // say which option is left, so they warn without a report.
+                tone: isRecoveryBreak(failure.reason) ? "error" : "warning",
+                title: failureCopy(failure.reason),
+                report: isRecoveryBreak(failure.reason)
+                  ? { surface: "chat_continuity_recovery", code: failure.reason ?? null }
+                  : false,
+                dismiss: { onDismiss: () => setFailure(null) },
+              }}
+            />
           ) : null}
         </div>
       </div>

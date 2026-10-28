@@ -32,6 +32,7 @@ import {
   type ResolvedAdeThemePalette,
 } from "../../../shared/theme";
 import { ModernRow, ModernSection, SettingsColumn, SettingsSectionAction, SettingsSelect, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
@@ -526,7 +527,18 @@ function BackgroundPicker() {
         />
       </div>
 
-      {error ? <p className="ade-ap-error">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "appearance-scene-add-error",
+            tone: "error",
+            title: error,
+            report: { surface: "appearance_scene_add" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
 
       {scenePrefs.mode === "shuffle" ? (
         <ShuffleOptions

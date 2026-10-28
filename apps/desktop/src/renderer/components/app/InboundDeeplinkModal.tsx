@@ -218,7 +218,17 @@ export function InboundDeeplinkModal({
       actions={actions}
     >
       {body}
-      {error ? <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "inbound-deeplink-error",
+            tone: "error",
+            title: error,
+            report: { surface: "inbound_deeplink" },
+          }}
+        />
+      ) : null}
     </Dialog>
   );
 

@@ -19,6 +19,7 @@ import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { Dialog } from "../ui/dialog";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { ChatCard, ChatCardRow, ChatCardSub, ChatCardTitle } from "./chatCardPrimitives";
 import { isImeComposing } from "../../lib/imeComposition";
 
@@ -620,7 +621,16 @@ export function AddProjectSecretDialog({
           />
         </div>
         {error ? (
-          <div role="alert" className="text-[12px] text-[var(--color-warning)]">{error}</div>
+          <Banner
+            layout="inline"
+            model={{
+              id: "project-secret-save-error",
+              tone: "error",
+              title: error,
+              report: { surface: "project_secret_save" },
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
         ) : null}
       </div>
     </Dialog>

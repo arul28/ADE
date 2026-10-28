@@ -47,6 +47,7 @@ import {
   laneSetupLaunchIdFromCardId,
 } from "../../../../shared/chatLaunch";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { confirmDialog } from "../../ui/dialog";
 import { LaneNamingLabel } from "../../terminals/LaneNamingLabel";
@@ -730,7 +731,17 @@ export function LaneSetupCard({
       </AnimatePresence>
 
       {actionError ? (
-        <p className={cn("mt-1.5 leading-snug text-amber-200/80", metaSize)} role="status">{actionError}</p>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{
+            id: "lane-setup-action-error",
+            tone: "error",
+            title: actionError,
+            report: { surface: "lane_setup_action" },
+            dismiss: { onDismiss: () => setActionError(null) },
+          }}
+        />
       ) : notice ? (
         <p className={cn("mt-1.5 leading-snug text-fg/55", metaSize)} role="status" data-testid="lane-setup-notice">{notice}</p>
       ) : null}

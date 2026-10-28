@@ -313,6 +313,7 @@ import {
   machineNameForBinding,
 } from "../../../shared/machineIdentity";
 import { toLayoutPx } from "../../lib/webZoom";
+import { extractError } from "../../lib/format";
 
 export {
   beginLaneGitActionRuntime,
@@ -1174,7 +1175,7 @@ export function LaneGitActionsPane({
           setBranchChanges(null);
         }
         if (isBranchDiffUnsupported(error)) setBranchSupported(false);
-        else setBranchError(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)));
+        else setBranchError(stripElectronErrorWrapper(extractError(error)));
       });
     return () => {
       cancelled = true;
@@ -1308,7 +1309,7 @@ export function LaneGitActionsPane({
         notice: null,
       });
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = extractError(err);
       if (message === "__ade_cancelled__") {
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
@@ -3172,7 +3173,16 @@ export function LaneGitActionsPane({
             {gitScope === "branch" ? (
               <div ref={changesScrollRef} onFocus={onChangeListFocus} onBlur={onChangeListBlur} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
                 {branchError ? (
-                  <div className="px-1 py-3 text-[12px] text-muted-fg">{branchError}</div>
+                  <Banner
+                    layout="inline"
+                    style={{ margin: "8px 4px" }}
+                    model={{
+                      id: "git-pane-branch-changes-error",
+                      tone: "error",
+                      title: branchError,
+                      report: { surface: "git_pane_branch_changes" },
+                    }}
+                  />
                 ) : !branchChanges ? (
                   <div className="px-1 py-3 text-[12px] text-muted-fg">Reading branch changes…</div>
                 ) : branchChanges.files.length === 0 ? (

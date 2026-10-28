@@ -33,7 +33,7 @@ import {
 import { AiFeaturesSection } from "./AiFeaturesSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
-import { Button } from "../ui/Button";
+import { Banner } from "../ui/notice";
 import "./NotificationsSection.css";
 
 /**
@@ -170,15 +170,17 @@ export function NotificationsSection() {
               </div>
             ) : null}
             {model.error ? (
-              <div role="alert" className="ade-nt-note" data-tone="error">
-                <Info size={15} />
-                {model.error}
-                {model.loadFailed ? (
-                  <Button variant="ghost" size="sm" onClick={model.retryLoad}>
-                    Try again
-                  </Button>
-                ) : null}
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "notifications-settings-error",
+                  // Signed out, the only error is "sign in first": not a failure.
+                  tone: model.signedOut ? "warning" : "error",
+                  title: model.error,
+                  actions: model.loadFailed ? [{ label: "Try again", onClick: model.retryLoad }] : undefined,
+                  report: model.signedOut ? false : { surface: "notifications_settings" },
+                }}
+              />
             ) : null}
           </div>
         ) : null}

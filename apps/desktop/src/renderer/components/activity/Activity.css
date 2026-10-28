@@ -1089,12 +1089,6 @@ button.activity-pane-freshness {
   line-height: 1.45;
 }
 
-.activity-sheet-banner[data-tone="error"] {
-  border-color: color-mix(in srgb, #f87171 30%, transparent);
-  background: color-mix(in srgb, #f87171 8%, transparent);
-  color: #f87171;
-}
-
 /* ── Empty states ───────────────────────────────────────────────────── */
 
 .activity-empty {
@@ -1424,25 +1418,6 @@ button.activity-pane-freshness {
   border-top-color: var(--color-accent);
   border-radius: 50%;
   animation: activity-spin 700ms steps(21) infinite;
-}
-
-.activity-settings-error {
-  display: flex;
-  align-items: flex-start;
-  gap: 7px;
-  margin: 5px 10px 8px;
-  padding: 8px 9px;
-  border: 1px solid color-mix(in srgb, #f87171 26%, transparent);
-  border-radius: 8px;
-  background: color-mix(in srgb, #f87171 7%, transparent);
-  color: #f87171;
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.activity-settings-error svg {
-  flex: 0 0 auto;
-  margin-top: 1px;
 }
 
 .activity-settings-popover > footer {

@@ -26,7 +26,8 @@ import { openExternalUrl } from "../../lib/openExternal";
 import { revealLabel } from "../../lib/platform";
 import { revealLaneWorktree } from "../../lib/revealLaneWorktree";
 import { Z_LAYERS } from "../ui/zLayers";
-import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "./laneDesignTokens";
+import { COLORS, SANS_FONT, fgTint } from "./laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { colorsInUse } from "./laneColorPalette";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { showToast } from "../app/toast/toastStore";
@@ -520,7 +521,17 @@ export function ColorSwatchRow({
         maxPerRow={7}
       />
       {error ? (
-        <div style={{ marginTop: 2, fontSize: 10, color: "#f87171", fontFamily: MONO_FONT }}>{error}</div>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 4 }}
+          model={{
+            id: "lane-menu-color-error",
+            tone: "error",
+            title: error,
+            report: { surface: "lane_context_menu_color" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
     </div>
   );

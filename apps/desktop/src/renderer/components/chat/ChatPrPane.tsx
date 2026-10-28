@@ -118,7 +118,16 @@ const ChatPrLinkRow = React.memo(function ChatPrLinkRow({
         className={inputBase}
       />
       {error ? (
-        <p className="px-0.5 text-[11px] leading-4 text-rose-300/90">{error}</p>
+        <Banner
+          layout="inline"
+          model={{
+            id: "chat-pr-link-error",
+            tone: "error",
+            title: error,
+            report: { surface: "chat_pr_link" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
       <div className="flex gap-1.5">
         <button

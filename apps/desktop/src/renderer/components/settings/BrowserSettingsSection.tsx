@@ -91,12 +91,16 @@ function BrowserBehaviourSection() {
       hint="Machine-wide, like the browser profile itself."
     >
       {loadStatus === "failed" ? (
-        <p className="ade-modern-error" role="alert">
-          Couldn't load browser settings.{" "}
-          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => browserSettingsActions.reload()}>
-            Retry
-          </button>
-        </p>
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-settings-load-failed",
+            tone: "error",
+            title: "Couldn't load browser settings.",
+            actions: [{ label: "Retry", onClick: () => browserSettingsActions.reload() }],
+            report: { surface: "browser_settings_load" },
+          }}
+        />
       ) : null}
       <ModernRows>
         <ModernRow
@@ -199,7 +203,17 @@ function BrowserBehaviourSection() {
           </ModernRow>
         ) : null}
       </ModernRows>
-      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-behaviour-action-error",
+            tone: "error",
+            title: error,
+            report: { surface: "browser_behaviour_settings" },
+          }}
+        />
+      ) : null}
     </ModernSection>
   );
 }
@@ -319,7 +333,17 @@ function BrowserTrustedCertificatesSection() {
           </button>
         </span>
       ) : null}
-      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-certificates-action-error",
+            tone: "error",
+            title: error,
+            report: { surface: "browser_trusted_certificates" },
+          }}
+        />
+      ) : null}
     </ModernSection>
   );
 }
@@ -385,7 +409,17 @@ export function BrowserAutoGrantSection() {
           />
         ))}
       </ModernRows>
-      {error ? <p className="ade-modern-error" role="alert">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-auto-grant-action-error",
+            tone: "error",
+            title: error,
+            report: { surface: "browser_auto_grant" },
+          }}
+        />
+      ) : null}
       {settings.autoGrant.camera || settings.autoGrant.microphone
         ? <p className="ade-modern-muted">Camera and microphone also need the operating system's permission for ADE.</p>
         : null}
