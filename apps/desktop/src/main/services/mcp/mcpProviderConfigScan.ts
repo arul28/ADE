@@ -24,7 +24,14 @@ import { mcpServerDefinitionFromConfig, type McpServerDefinition } from "../../.
 import { parseJsonc } from "../../../shared/theme/jsonc";
 import type { McpConfigProvider, McpFoundServer, McpRegistryScan } from "../../../shared/types/mcpRegistry";
 import { pathsEqual } from "../shared/pathCompare";
-import { factoryConfigHome, grokConfigHome, kimiCodeConfigHome, qwenConfigHome } from "../shared/providerConfigHomes";
+import {
+  codexConfigHome,
+  copilotConfigHome,
+  factoryConfigHome,
+  grokConfigHome,
+  kimiCodeConfigHome,
+  qwenConfigHome,
+} from "../shared/providerConfigHomes";
 
 export type ScannedMcpServer = McpServerDefinition & { providers: McpConfigProvider[] };
 
@@ -277,8 +284,35 @@ function codexEntryAsConfig(entry: Record<string, unknown>, env: NodeJS.ProcessE
 
 type RawSource = { provider: McpConfigProvider; table: unknown };
 
+/** A Codex-style TOML file's `[mcp_servers.*]` as config entries, or null when the file is missing. */
+function tomlMcpTable(filePath: string, env: NodeJS.ProcessEnv): Record<string, unknown> | null {
+  const text = readText(filePath);
+  if (text == null) return null;
+  const table: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(parseCodexMcpServers(text))) {
+    table[name] = codexEntryAsConfig(entry, env);
+  }
+  return table;
+}
+
+/**
+ * Gemini's config shape (Qwen keeps it): `url` is the SSE endpoint and
+ * `httpUrl` the streamable HTTP one, so a `url` with no `type` is SSE.
+ */
+function geminiStyleTable(table: unknown): unknown {
+  if (!isRecord(table)) return table;
+  const out: Record<string, unknown> = {};
+  for (const [name, entry] of Object.entries(table)) {
+    out[name] = isRecord(entry) && typeof entry.url === "string" && entry.type == null && entry.transport == null && entry.httpUrl == null
+      ? { ...entry, type: "sse" }
+      : entry;
+  }
+  return out;
+}
+
 function rawSources(args: Required<Pick<ProviderMcpScanArgs, "env" | "homeDir">> & { projectRoot: string | null }): RawSource[] {
   const { env, homeDir, projectRoot } = args;
+  const homes = { env, homeDir };
   const sources: RawSource[] = [];
 
   // Claude Code: one JSON file. User servers at the top, and one more table
@@ -296,39 +330,54 @@ function rawSources(args: Required<Pick<ProviderMcpScanArgs, "env" | "homeDir">>
     }
   }
 
-  const codexHome = env.CODEX_HOME?.trim() || path.join(homeDir, ".codex");
-  const codexText = readText(path.join(codexHome, "config.toml"));
-  if (codexText != null) {
-    const table: Record<string, unknown> = {};
-    for (const [name, entry] of Object.entries(parseCodexMcpServers(codexText))) {
-      table[name] = codexEntryAsConfig(entry, env);
-    }
-    sources.push({ provider: "codex", table });
-  }
+  sources.push({ provider: "codex", table: tomlMcpTable(path.join(codexConfigHome(homes), "config.toml"), env) });
+
+  // `copilot mcp add` and Copilot's `/mcp add` write here.
+  sources.push({ provider: "copilot", table: readJson(path.join(copilotConfigHome(homes), "mcp-config.json"))?.mcpServers });
 
   sources.push({ provider: "cursor", table: readJson(path.join(homeDir, ".cursor", "mcp.json"))?.mcpServers });
 
   // OpenCode follows the XDG layout on every platform, Windows included.
-  const openCodeDir = path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "opencode");
+  const xdgConfig = env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config");
   for (const file of ["opencode.json", "opencode.jsonc"]) {
-    sources.push({ provider: "opencode", table: readJson(path.join(openCodeDir, file))?.mcp });
+    sources.push({ provider: "opencode", table: readJson(path.join(xdgConfig, "opencode", file))?.mcp });
   }
 
-  sources.push({ provider: "droid", table: readJson(path.join(homeDir, ".factory", "mcp.json"))?.mcpServers });
+  sources.push({ provider: "droid", table: readJson(path.join(factoryConfigHome(homes), "mcp.json"))?.mcpServers });
 
-  // Pi: `mcp.json` in its agent directory, the one ADE's Pi chats run on. A
-  // project's `.pi/mcp.json` comes with the repository and is not read.
+  // Pi: `mcp.json` in its agent directory, the one ADE's Pi chats run on.
   const piAgentDir = env.PI_CODING_AGENT_DIR?.trim() || path.join(homeDir, ".pi", "agent");
   sources.push({ provider: "pi", table: readJson(path.join(piAgentDir, "mcp.json"))?.mcpServers });
+
+  sources.push({ provider: "muse", table: readJson(path.join(xdgConfig, "muse", "settings.json"))?.mcpServers });
+  sources.push({ provider: "qwen", table: geminiStyleTable(readJson(path.join(qwenConfigHome(homes), "settings.json"))?.mcpServers) });
+  sources.push({ provider: "kimi", table: readJson(path.join(kimiCodeConfigHome(homes), "mcp.json"))?.mcpServers });
+  sources.push({ provider: "grok", table: tomlMcpTable(path.join(grokConfigHome(homes), "config.toml"), env) });
+  for (const file of DEVIN_MCP_FILES) {
+    sources.push({ provider: "devin", table: readJson(path.join(devinUserConfigDir(homes), file))?.mcpServers });
+  }
+  sources.push({ provider: "antigravity", table: readJson(path.join(homeDir, ".gemini", "config", "mcp_config.json"))?.mcpServers });
+  // A project's own files (`.mcp.json`, `.github/mcp.json`, `.pi/mcp.json`,
+  // ...) come with the repository and are not read.
   return sources;
+}
+
+/** Devin 3000.3+ keeps servers in `mcp_config.json` per scope; older builds kept `mcpServers` in `config.json`. */
+const DEVIN_MCP_FILES = ["mcp_config.json", "mcp_config.local.json", "config.json", "config.local.json"] as const;
+
+function devinUserConfigDir(args: { env: NodeJS.ProcessEnv; homeDir: string }): string {
+  return process.platform === "win32"
+    ? path.join(args.env.APPDATA?.trim() || path.join(args.homeDir, "AppData", "Roaming"), "devin")
+    : path.join(args.env.XDG_CONFIG_HOME?.trim() || path.join(args.homeDir, ".config"), "devin");
 }
 
 /**
  * Every server the provider configs on this computer declare, one per name.
  *
  * The same name in two providers is one row: the first definition found is the
- * one kept (Claude, Codex, Cursor, OpenCode, Droid, Pi, in that order) and the rest
- * only add their provider to `providers`.
+ * one kept (in the order {@link rawSources} reads them: Claude, Codex, Copilot,
+ * Cursor, OpenCode, Droid, Pi, Muse, Qwen, Kimi, Grok, Devin, Antigravity) and
+ * the rest only add their provider to `providers`.
  */
 export function scanProviderMcpConfigs(args: ProviderMcpScanArgs = {}): ProviderMcpScan {
   const env = args.env ?? process.env;
@@ -431,13 +480,8 @@ export function providerOwnMcpServerNames(
       }
       break;
     case "devin": {
-      // 3000.3+ keeps servers in `mcp_config.json` per scope; older builds
-      // kept `mcpServers` in `config.json` (migrated at startup).
-      const userDir = process.platform === "win32"
-        ? path.join(env.APPDATA?.trim() || path.join(homeDir, "AppData", "Roaming"), "devin")
-        : path.join(env.XDG_CONFIG_HOME?.trim() || path.join(homeDir, ".config"), "devin");
-      for (const dir of [userDir, path.join(args.cwd, ".devin")]) {
-        for (const file of ["mcp_config.json", "mcp_config.local.json", "config.json", "config.local.json"]) {
+      for (const dir of [devinUserConfigDir({ env, homeDir }), path.join(args.cwd, ".devin")]) {
+        for (const file of DEVIN_MCP_FILES) {
           files.push({ file: path.join(dir, file), key: "mcpServers" });
         }
       }

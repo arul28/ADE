@@ -24,6 +24,7 @@ import {
   mcpOAuthTokenState,
   mcpOAuthVaultKey,
   mcpRegistryState,
+  sameMcpServerUrl,
   mcpSecretVaultKey,
   mcpSecretVaultKeyPrefix,
   mcpSecretVaultKeys,
@@ -83,13 +84,26 @@ const RENEW_EVERY_MS = 5 * 60 * 1000;
 const PROBE_TTL_MS = 10 * 60 * 1000;
 const renewingMcpOAuthTokens = new Map<string, Promise<McpOAuthToken>>();
 
+/**
+ * What the registry holds for a server URL a provider wants a sign-in for.
+ * `serverName` is the registry's name for it (the provider may call it
+ * something else); `off` means it is switched off here, so no token is handed over.
+ */
+export type McpRegistryAuthLookup = {
+  accessToken?: string;
+  expiresIn?: number;
+  registryConfigured: boolean;
+  serverName?: string;
+  off?: boolean;
+};
+
 export function createMcpRegistryAuthTokenResolver(args: {
   adeHome: string;
   readSecret: (key: string) => string | null | Promise<string | null>;
   writeSecret: (key: string, value: string) => boolean | Promise<boolean>;
   logger?: { warn: (event: string, meta?: Record<string, unknown>) => void } | null;
   fetch?: McpFetch;
-}): (serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }> {
+}): (serverUrl: string) => Promise<McpRegistryAuthLookup> {
   const fetchImpl = args.fetch ?? fetch;
   return async (serverUrl) => {
     const url = serverUrl.trim();
@@ -97,14 +111,14 @@ export function createMcpRegistryAuthTokenResolver(args: {
     try {
       const { cached } = readCachedMcpRegistry(args.adeHome, null);
       if (!cached) return { registryConfigured: false };
-      const server = cached.servers.find((candidate) => candidate.url === url);
+      const server = cached.servers.find((candidate) => sameMcpServerUrl(candidate.url, url));
       if (!server) return { registryConfigured: false };
       if (mcpRegistryState(server, { machine: cached.off.machine, project: cached.off.project }) !== "on") {
-        return { registryConfigured: true };
+        return { registryConfigured: true, serverName: server.name, off: true };
       }
       const key = mcpOAuthVaultKey(server.name);
       const token = parseMcpOAuthToken(await args.readSecret(key));
-      if (!token || mcpOAuthTokenState(token, server) === "none") return { registryConfigured: true };
+      if (!token || mcpOAuthTokenState(token, server) === "none") return { registryConfigured: true, serverName: server.name };
       let current = token;
       if (token.refreshToken && token.expiresAt && Date.parse(token.expiresAt) - Date.now() < REFRESH_WITHIN_MS) {
         let pending = renewingMcpOAuthTokens.get(key);
@@ -123,7 +137,7 @@ export function createMcpRegistryAuthTokenResolver(args: {
         }
         current = await pending;
       }
-      if (mcpOAuthTokenState(current, server) !== "valid") return { registryConfigured: true };
+      if (mcpOAuthTokenState(current, server) !== "valid") return { registryConfigured: true, serverName: server.name };
       const expiresIn = current.expiresAt
         ? Math.max(0, Math.ceil((Date.parse(current.expiresAt) - Date.now()) / 1000))
         : 3600;

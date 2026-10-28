@@ -460,10 +460,12 @@ import {
   mcpOAuthVaultKey,
   mcpRegistryState,
   parseMcpOAuthToken,
+  sameMcpServerUrl,
   type McpRegistryServer,
   type McpRegistryState,
 } from "../../../shared/mcpRegistry";
 import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
+import type { McpRegistryAuthLookup } from "../mcp/mcpRegistryService";
 import { createChatUserMcp } from "../mcp/chatUserMcp";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -11442,7 +11444,7 @@ export function createAgentChatService(args: {
    */
   adoptHarnessPreset?: ((preset: HarnessPreset) => string | null | void) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
-  resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
+  resolveMcpAuthToken?: ((serverUrl: string) => Promise<McpRegistryAuthLookup>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -59815,25 +59817,37 @@ export function createAgentChatService(args: {
         // mcpServers.Authorization. They need no OAuth handoff or sign-in card.
         const configuredServers = callerMcpServersForLaunch(target) ?? {};
         const alreadyAuthorized = serverUrl && Object.values(configuredServers).some((server) =>
-          server.type !== "stdio" && server.url === serverUrl
+          server.type !== "stdio" && sameMcpServerUrl(server.url, serverUrl)
           && Object.entries(server.headers ?? {}).some(([name, value]) =>
             name.toLowerCase() === "authorization" && Boolean(value.trim()),
           ),
         );
         if (alreadyAuthorized) return { kind: "cancelled" };
         if (serverUrl && args.resolveMcpAuthToken) {
-          const token = await args.resolveMcpAuthToken(serverUrl).catch((error: unknown) => {
+          const token: McpRegistryAuthLookup = await args.resolveMcpAuthToken(serverUrl).catch((error: unknown): McpRegistryAuthLookup => {
             logger.warn("agent_chat.copilot_mcp_auth_lookup_failed", {
               sessionId: chatId,
               server: serverName,
               error: error instanceof Error ? error.message : String(error),
             });
-            return { registryConfigured: false, accessToken: undefined, expiresIn: undefined };
+            return { registryConfigured: false };
           });
           if (token.accessToken) return { kind: "token", accessToken: token.accessToken, expiresIn: token.expiresIn ?? 3600 };
-          const signInMessage = token.registryConfigured
-            ? `${serverName} needs a sign-in. Sign in from Settings → MCP servers.`
-            : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers → Import) and sign in once — every agent will use it.`;
+          const registryName = token.serverName ?? serverName;
+          // Origin and path only: a query string can carry a token.
+          const shownUrl = (() => {
+            try {
+              const parsed = new URL(serverUrl);
+              return `${parsed.origin}${parsed.pathname}`;
+            } catch {
+              return "its URL";
+            }
+          })();
+          const signInMessage = token.off
+            ? `${serverName} needs a sign-in, but ${registryName} is off here in ADE's MCP servers. Turn it on in Settings → MCP servers, then start a new chat.`
+            : token.registryConfigured
+              ? `${serverName} needs a sign-in. Sign in to ${registryName} from Settings → MCP servers, then start a new chat.`
+              : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers: Import, or Add with ${shownUrl}) and sign in once — every agent will use it.`;
           const key = `${chatId}:${serverUrl || serverName}`;
           if (!copilotMcpAuthNotices.has(key)) {
             copilotMcpAuthNotices.add(key);
