@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import type { ScreenBox } from "../ui/LiquidGlassLogoReveal";
-import { useAdeWordmarkSrc } from "../ui/AdeWordmark";
+import { ADE_WORDMARK_ASPECT, useAdeWordmarkSrc } from "../ui/AdeWordmark";
 import { Z_LAYERS } from "../ui/zLayers";
 
 /**
@@ -170,8 +170,7 @@ export function WhatsNewLogoFlight({
 /** Where the logo rises in with no splash to come from: the middle of the window, splash-sized. */
 function risingStart(): ScreenBox {
   const width = Math.min(300, window.innerWidth * 0.36);
-  // The wordmark picture is 1012 x 493.
-  const height = (width * 493) / 1012;
+  const height = width / ADE_WORDMARK_ASPECT;
   return {
     left: (window.innerWidth - width) / 2,
     top: (window.innerHeight - height) / 2,

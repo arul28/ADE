@@ -172,7 +172,7 @@ html[data-motion="reduced"] .ade-whats-new-glow > span::before { animation: none
 
 /*
  * After an update (WhatsNewArrival.tsx). The logo leaves the boot splash and
- * flies into the header in 1150ms; a veil in the page colour dissolves the
+ * flies into the header in about 1.1 s; a veil in the page colour dissolves the
  * splash, the window opens around the logo from 180ms, and the page, the
  * footer and the title follow as the logo lands, so nothing sits under it. Only after an update:
  * inside a project and from Help the dialog keeps its plain 180ms fade. Reduce motion

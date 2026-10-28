@@ -8,6 +8,9 @@ import { useAppearanceStore, type ThemeId } from "../../state/appearanceStore";
  * `BASE_URL` keeps the path right on both the desktop (`./`) and the web
  * client (`/`, where routes are real paths).
  */
+/** Width over height of both wordmark pictures (1012 x 493). */
+export const ADE_WORDMARK_ASPECT = 1012 / 493;
+
 export function adeWordmarkSrc(mode: ThemeId): string {
   return `${import.meta.env.BASE_URL}${mode === "light" ? "logo-light.png" : "logo.png"}`;
 }
