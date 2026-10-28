@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppWindow, Check, Copy, Key, Plus } from "@phosphor-icons/react";
+import { useLocation, useNavigate } from "react-router-dom";
+import { AppWindow, Check, Copy, Desktop, Key, Plus, UserCircle } from "@phosphor-icons/react";
 import type {
   RemoteMcpAction,
   RemoteMcpActivityEntry,
   RemoteMcpConnectionSummary,
   RemoteMcpCreatedToken,
+  RemoteMcpMachine,
   RemoteMcpScope,
   RemoteMcpStatus,
 } from "../../../shared/types/remoteMcp";
@@ -13,15 +15,18 @@ import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { ModernPage, ModernRow, ModernRows, ModernSection, SettingsSegmented, SettingsToggle } from "./primitives";
-import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./adeMcpPage.css";
 
 /**
- * Settings → Computer → ADE MCP: this machine as an MCP server for the AI apps
- * the person picks, through ADE Relay (services/remoteMcp in the brain).
+ * Settings → You → ADE MCP: one MCP server for the person's ADE account,
+ * reached through ADE Relay (services/remoteMcp in the brain). Any included
+ * computer on the account can answer its one URL, and a call meant for
+ * another computer is forwarded there.
  *
- * A machine page: every call carries the page's pin, so it reads and changes
- * the machine shown, never the tab's project runtime.
+ * Account-wide, so every call goes to this desktop's own brain with no pin:
+ * the switch, the computer list and the connections live in the account
+ * (settings store and vault), and any brain on the account reads and writes
+ * the same values. Only Activity is this computer's own log.
  */
 
 const ACCESS_OPTIONS = [
@@ -40,7 +45,7 @@ function knownAppFor(connection: Pick<RemoteMcpConnectionSummary, "label" | "red
   if (/chatgpt|openai/.test(text)) return "codex";
   if (/cursor/.test(text)) return "cursor";
   if (/grok|x\.ai/.test(text)) return "grok";
-  if (/copilot|github/.test(text)) return "copilot";
+  if (/copilot|github|vscode|vs code/.test(text)) return "copilot";
   return null;
 }
 
@@ -110,19 +115,82 @@ const OUTCOME_LABEL: Record<RemoteMcpActivityEntry["outcome"], string> = {
   refused: "refused",
 };
 
+/** The apps the "Connect an app" helper knows how to set up. */
+type ConnectApp = "web" | "claude-code" | "cursor" | "vscode" | "token";
+
+const CONNECT_OPTIONS: readonly { value: ConnectApp; label: string }[] = [
+  { value: "web", label: "claude.ai / ChatGPT" },
+  { value: "claude-code", label: "Claude Code" },
+  { value: "cursor", label: "Cursor" },
+  { value: "vscode", label: "VS Code" },
+  { value: "token", label: "Script" },
+];
+
+/** What to paste, and one line on where, for each app. */
+function connectHowTo(app: Exclude<ConnectApp, "token">, url: string): { line: string; snippet: string; copyLabel: string } {
+  switch (app) {
+    case "web":
+      return {
+        line: "Add a custom connector with this URL in the app's connector settings. It opens ADE sign-in.",
+        snippet: url,
+        copyLabel: "Copy server URL",
+      };
+    case "claude-code":
+      return {
+        line: "Run this in a terminal, then /mcp in Claude Code to sign in.",
+        snippet: `claude mcp add --transport http ade ${url}`,
+        copyLabel: "Copy Claude Code command",
+      };
+    case "cursor":
+      return {
+        line: "Add this to ~/.cursor/mcp.json. Cursor opens ADE sign-in.",
+        snippet: JSON.stringify({ mcpServers: { ade: { url } } }),
+        copyLabel: "Copy Cursor config",
+      };
+    case "vscode":
+      return {
+        line: "Run this in a terminal. VS Code opens ADE sign-in.",
+        snippet: `code --add-mcp '${JSON.stringify({ name: "ade", type: "http", url })}'`,
+        copyLabel: "Copy VS Code command",
+      };
+  }
+}
+
+type MachineState = { dot: "ok" | "warn" | null; text: string };
+
+function machineState(machine: RemoteMcpMachine, status: RemoteMcpStatus): MachineState {
+  if (!machine.supported) return { dot: "warn", text: "Not joined yet. Open the latest ADE on it." };
+  if (!machine.included) return { dot: null, text: "Left out. Apps can't reach it." };
+  if (machine.isThisMachine) {
+    if (!status.relayConnected) return { dot: "warn", text: "ADE Relay isn't connected here." };
+    return status.thisMachineServing
+      ? { dot: "ok", text: "Online, answering." }
+      : { dot: "warn", text: "Not answering yet." };
+  }
+  if (machine.online === true) return { dot: "ok", text: "Online." };
+  if (machine.online === false) return { dot: null, text: "Offline. Apps reach it again once it's back." };
+  return { dot: null, text: "Couldn't check whether it's online." };
+}
+
+/** Whether any computer can answer the account URL right now. */
+function anyComputerAnswering(status: RemoteMcpStatus): boolean {
+  if (status.thisMachineServing && status.relayConnected) return true;
+  return status.machines.some((machine) => !machine.isThisMachine && machine.serving);
+}
+
 export function AdeMcpPage() {
-  const { pin, isThisMachine, machineName } = useSettingsMachineScope();
-  const pinKey = pin?.key ?? null;
-  const pinRef = useRef(pin);
-  pinRef.current = pin;
+  const navigate = useNavigate();
+  const location = useLocation();
   const mounted = useRef(true);
   const loadRequest = useRef(0);
+  const connectionsRef = useRef<HTMLDivElement | null>(null);
   const [status, setStatus] = useState<RemoteMcpStatus | null>(null);
   const [activity, setActivity] = useState<RemoteMcpActivityEntry[]>([]);
   const [activityError, setActivityError] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [connectApp, setConnectApp] = useState<ConnectApp>("web");
   const [tokenFormOpen, setTokenFormOpen] = useState(false);
   const [tokenLabel, setTokenLabel] = useState("");
   const [tokenScope, setTokenScope] = useState<RemoteMcpScope>("write");
@@ -136,9 +204,10 @@ export function AdeMcpPage() {
     };
   }, []);
 
-  // A null pin is this computer; the preload routes it to this machine's brain.
+  // No pin, on purpose: ADE MCP is the account's, so this desktop's own brain
+  // reads and writes it for every computer (see the note at the top).
   const call = useCallback(<T,>(action: RemoteMcpAction, args?: Record<string, unknown>): Promise<T> =>
-    window.ade.remoteMcpCall<T>(action, args, pinRef.current), []);
+    window.ade.remoteMcpCall<T>(action, args, null), []);
 
   const load = useCallback(async () => {
     const request = ++loadRequest.current;
@@ -158,19 +227,13 @@ export function AdeMcpPage() {
     } catch (error) {
       if (!mounted.current || request !== loadRequest.current) return;
       setStatus(null);
-      setLoadError(errorText(error, "Couldn't load ADE MCP for this computer."));
+      setLoadError(errorText(error, "Couldn't load ADE MCP."));
     }
   }, [call]);
 
-  // Keyed on the pin's key, not the object: a rebuilt pin for the same machine
-  // must not reset what the person is looking at.
   useEffect(() => {
-    setStatus(null);
-    setCreated(null);
-    setTokenFormOpen(false);
-    setActionError(null);
     void load();
-  }, [load, pinKey]);
+  }, [load]);
 
   const run = useCallback(async (work: () => Promise<void>, fallback: string) => {
     if (busy) return;
@@ -185,10 +248,22 @@ export function AdeMcpPage() {
     }
   }, [busy]);
 
+  // Both actions answer with the account's status.
   const setEnabled = (enabled: boolean) => void run(async () => {
     const next = await call<RemoteMcpStatus>("setEnabled", { enabled });
     if (mounted.current) setStatus(next);
   }, "ADE couldn't change that.");
+
+  const setIncluded = (machine: RemoteMcpMachine, included: boolean) => void run(async () => {
+    const next = await call<RemoteMcpStatus>("setMachineIncluded", { machineKey: machine.machineKey, included });
+    if (mounted.current) setStatus(next);
+  }, `ADE couldn't change ${machine.name}.`);
+
+  const openTokenForm = () => {
+    setCreated(null);
+    setTokenFormOpen(true);
+    connectionsRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
 
   const createToken = () => void run(async () => {
     const next = await call<RemoteMcpCreatedToken>("createToken", {
@@ -209,10 +284,11 @@ export function AdeMcpPage() {
   }, "ADE couldn't change that.");
 
   const confirmRemove = async (connection: RemoteMcpConnectionSummary) => {
+    const isToken = connection.kind === "token";
     const ok = await confirmDialog({
-      title: `Disconnect ${connection.label}?`,
-      message: "Its token stops working now. Connecting it again needs a new sign-in or token.",
-      confirmLabel: "Disconnect",
+      title: isToken ? `Revoke ${connection.label}?` : `Disconnect ${connection.label}?`,
+      message: "Its token stops working on every computer within about a minute. Connecting it again needs a new sign-in or token.",
+      confirmLabel: isToken ? "Revoke" : "Disconnect",
       destructive: true,
     });
     if (!ok) return;
@@ -223,9 +299,10 @@ export function AdeMcpPage() {
     }, "ADE couldn't disconnect that.");
   };
 
-  const enabled = status?.enabled === true;
-  const computer = isThisMachine ? "this computer" : machineName;
+  const signedIn = status?.signedIn === true;
+  const enabled = signedIn && status?.enabled === true;
   const connections = status?.connections ?? [];
+  const machines = status?.machines ?? [];
   const shownActivity = useMemo(
     () => (showAllActivity ? activity : activity.slice(0, ACTIVITY_PREVIEW)),
     [activity, showAllActivity],
@@ -249,33 +326,66 @@ export function AdeMcpPage() {
     );
   }
 
+  const serverHint = (() => {
+    if (!status || !enabled) return null;
+    if (!status.serverUrl) return { dot: "warn", text: "ADE is setting up your account's address." };
+    if (anyComputerAnswering(status)) return { dot: "ok", text: "Reachable through ADE Relay." };
+    return {
+      dot: "warn",
+      text: status.relayConnected
+        ? "None of your included computers is online, so apps can't reach it right now."
+        : "ADE Relay isn't connected here, and no other computer is answering.",
+    };
+  })();
+
   return (
     <ModernPage>
-      <ModernSection group="ADE MCP" anchor="ade-mcp" title="Server">
+      <ModernSection
+        group="ADE MCP"
+        anchor="ade-mcp"
+        title="Server"
+        hint="One address for your account. Apps reach every computer you include."
+      >
+        {status && !signedIn ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "ade-mcp-signed-out",
+              tone: "info",
+              icon: <UserCircle size={14} />,
+              title: "ADE MCP needs your ADE account",
+              detail: "Apps sign in through it, and it holds the address and connections for all your computers.",
+              actions: [{
+                label: "Sign in",
+                onClick: () => navigate({ pathname: location.pathname, search: "?tab=account", hash: "" }),
+              }],
+            }}
+          />
+        ) : null}
         <ModernRows>
           <ModernRow
-            title={`Let AI apps use ${computer}`}
-            hint={enabled ? "On. Only apps you connect can use it." : "Off. Nothing outside can reach ADE here."}
+            title="Let AI apps use ADE"
+            hint={!signedIn
+              ? "Off. Sign in to turn it on."
+              : enabled
+                ? "On for your account. Only apps you connect can use it."
+                : "Off. Nothing outside can reach ADE on any of your computers."}
             control={(
               <SettingsToggle
                 checked={enabled}
-                disabled={busy || !status}
+                disabled={busy || !status || !signedIn}
                 onChange={setEnabled}
-                label={`Let AI apps use ${computer}`}
+                label="Let AI apps use ADE"
               />
             )}
           />
-          {enabled ? (
+          {enabled && serverHint ? (
             <ModernRow
               title="Server URL"
               hint={(
                 <span className="ade-mcp-status">
-                  <span className="kit-dot" data-state={status?.serverUrl && status.relayConnected ? "ok" : "warn"} />
-                  {!status?.serverUrl
-                    ? `Sign in to your ADE account on ${computer} to get an address.`
-                    : status.relayConnected
-                      ? "Reachable through ADE Relay."
-                      : "ADE Relay isn't connected, so apps can't reach it right now."}
+                  <span className="kit-dot" data-state={serverHint.dot} />
+                  {serverHint.text}
                 </span>
               )}
               control={status?.serverUrl ? <CopyButton value={status.serverUrl} label="Copy server URL" /> : null}
@@ -283,166 +393,204 @@ export function AdeMcpPage() {
               {status?.serverUrl ? <code className="ade-mcp-url">{status.serverUrl}</code> : null}
             </ModernRow>
           ) : null}
+          {enabled && status?.serverUrl ? (
+            <ModernRow
+              title="Connect an app"
+              hint="Pick the app. You choose read only or read & write when it signs in."
+            >
+              <div className="ade-mcp-howto">
+                <SettingsSegmented
+                  value={connectApp}
+                  options={CONNECT_OPTIONS}
+                  onChange={setConnectApp}
+                  ariaLabel="App to connect"
+                />
+                {connectApp === "token" ? (
+                  <div className="ade-mcp-howto-body">
+                    <p className="ade-mcp-howto-line">
+                      For scripts and apps that send a header: make a token, then send{" "}
+                      <code>Authorization: Bearer &lt;token&gt;</code> to the server URL.
+                    </p>
+                    <div className="ade-mcp-howto-actions">
+                      <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy} onClick={openTokenForm}>
+                        <Plus size={12} />
+                        New token
+                      </button>
+                    </div>
+                  </div>
+                ) : (() => {
+                  const howTo = connectHowTo(connectApp, status.serverUrl);
+                  return (
+                    <div className="ade-mcp-howto-body">
+                      <p className="ade-mcp-howto-line">{howTo.line}</p>
+                      <div className="ade-mcp-token-value">
+                        <code className="ade-mcp-url">{howTo.snippet}</code>
+                        <CopyButton value={howTo.snippet} label={howTo.copyLabel} />
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            </ModernRow>
+          ) : null}
         </ModernRows>
       </ModernSection>
 
-      {enabled ? (
+      {enabled && status ? (
         <ModernSection
           group="ADE MCP"
-          anchor="ade-mcp-connect"
-          title="Connect an app"
-          hint="Either way, you choose read only or read & write."
+          anchor="ade-mcp-computers"
+          title="Computers"
+          hint="Apps reach the computers you include. Ask for one by name, or let ADE pick."
         >
           <ModernRows>
-            <ModernRow
-              title={(
-                <span className="ade-mcp-title">
-                  <span className="ade-mcp-logos" aria-hidden>
-                    {(["claude", "codex", "cursor"] as const).map((app) => {
-                      const Logo = usageProviderLogo(app);
-                      return <Logo key={app} size={14} />;
-                    })}
-                  </span>
-                  Sign in from the app
-                </span>
-              )}
-              hint="Add the server URL as a custom connector. The app opens ADE sign-in."
-              control={status?.serverUrl ? <CopyButton value={status.serverUrl} label="Copy server URL" children="Copy URL" /> : null}
-            />
-            <ModernRow
-              title={(
-                <span className="ade-mcp-title">
-                  <span className="ade-mcp-logos" aria-hidden>
-                    {(() => {
-                      const Logo = usageProviderLogo("grok");
-                      return <Logo size={14} />;
-                    })()}
-                    <Key size={14} />
-                  </span>
-                  Use a token
-                </span>
-              )}
-              hint="For apps and APIs that send a header, like Grok."
-              control={tokenFormOpen ? null : (
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-size="sm"
-                  disabled={busy}
-                  onClick={() => {
-                    setCreated(null);
-                    setTokenFormOpen(true);
-                  }}
-                >
-                  <Plus size={12} />
-                  New token
-                </button>
-              )}
-            >
-              {tokenFormOpen ? (
-                <form
-                  className="ade-mcp-token-form"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    createToken();
-                  }}
-                >
-                  <input
-                    className="kit-input"
-                    value={tokenLabel}
-                    maxLength={60}
-                    placeholder="Name, e.g. Grok"
-                    aria-label="Token name"
-                    autoFocus
-                    onChange={(event) => setTokenLabel(event.target.value)}
-                  />
-                  <SettingsSegmented
-                    value={tokenScope}
-                    options={ACCESS_OPTIONS}
-                    onChange={setTokenScope}
-                    ariaLabel="Token access"
-                    disabled={busy}
-                  />
-                  <button type="submit" className="ade-modern-btn" data-size="sm" data-tone="primary" disabled={busy}>
-                    Create
-                  </button>
-                  <button
-                    type="button"
-                    className="ade-modern-btn"
-                    data-size="sm"
-                    data-variant="ghost"
-                    onClick={() => setTokenFormOpen(false)}
-                  >
-                    Cancel
-                  </button>
-                </form>
-              ) : null}
-              {created ? (
-                <div className="ade-modern-note ade-mcp-token" data-tone="ok" aria-live="polite">
-                  <Key size={14} />
-                  <div className="ade-modern-note-body">
-                    <span>
-                      Token for <strong>{created.connection.label}</strong>. Copy it now; ADE won't show it again.
+            {machines.length ? machines.map((machine) => {
+              const state = machineState(machine, status);
+              return (
+                <ModernRow
+                  key={machine.machineKey}
+                  icon={<Desktop size={14} />}
+                  tone="slate"
+                  title={(
+                    <span className="ade-mcp-title">
+                      {machine.name}
+                      {machine.isThisMachine ? <span className="kit-tag">This computer</span> : null}
                     </span>
-                    <div className="ade-mcp-token-value">
-                      <code className="ade-mcp-url">{created.token}</code>
-                      <CopyButton value={created.token} label="Copy token" />
-                    </div>
-                  </div>
-                </div>
-              ) : null}
-            </ModernRow>
+                  )}
+                  hint={(
+                    <span className="ade-mcp-status">
+                      <span className="kit-dot" data-state={state.dot ?? undefined} />
+                      {state.text}
+                    </span>
+                  )}
+                  control={(
+                    <SettingsToggle
+                      checked={machine.supported && machine.included}
+                      disabled={busy || !machine.supported}
+                      onChange={(included) => setIncluded(machine, included)}
+                      label={`Include ${machine.name}`}
+                    />
+                  )}
+                />
+              );
+            }) : (
+              <ModernRow title="No computers yet" hint="Computers show here once they sign in to your account." />
+            )}
           </ModernRows>
         </ModernSection>
       ) : null}
 
-      {connections.length ? (
-        <ModernSection
-          group="ADE MCP"
-          anchor="ade-mcp-connections"
-          title={`Connected (${connections.length})`}
-          hint="Change what each one may do, or disconnect it."
-        >
-          <ModernRows>
-            {connections.map((connection) => (
-              <ModernRow
-                key={connection.id}
-                title={(
-                  <span className="ade-mcp-title">
-                    <AppMark connection={connection} />
-                    {connection.label}
+      {signedIn && (enabled || connections.length || created || tokenFormOpen) ? (
+        <div ref={connectionsRef}>
+          <ModernSection
+            group="ADE MCP"
+            anchor="ade-mcp-connections"
+            title={connections.length ? `Connections (${connections.length})` : "Connections"}
+            hint="Each one works on every computer you include."
+            actions={tokenFormOpen ? null : (
+              <button type="button" className="ade-modern-btn" data-size="sm" disabled={busy} onClick={openTokenForm}>
+                <Plus size={12} />
+                New token
+              </button>
+            )}
+          >
+            {tokenFormOpen ? (
+              <form
+                className="ade-mcp-token-form"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  createToken();
+                }}
+              >
+                <input
+                  className="kit-input"
+                  value={tokenLabel}
+                  maxLength={60}
+                  placeholder="Name, e.g. Grok or nightly script"
+                  aria-label="Token name"
+                  autoFocus
+                  onChange={(event) => setTokenLabel(event.target.value)}
+                />
+                <SettingsSegmented
+                  value={tokenScope}
+                  options={ACCESS_OPTIONS}
+                  onChange={setTokenScope}
+                  ariaLabel="Token access"
+                  disabled={busy}
+                />
+                <button type="submit" className="ade-modern-btn" data-size="sm" data-tone="primary" disabled={busy}>
+                  Create
+                </button>
+                <button
+                  type="button"
+                  className="ade-modern-btn"
+                  data-size="sm"
+                  data-variant="ghost"
+                  onClick={() => setTokenFormOpen(false)}
+                >
+                  Cancel
+                </button>
+              </form>
+            ) : null}
+            {created ? (
+              <div className="ade-modern-note ade-mcp-token" data-tone="ok" aria-live="polite">
+                <Key size={14} />
+                <div className="ade-modern-note-body">
+                  <span>
+                    Token for <strong>{created.connection.label}</strong>. Copy it now; ADE won't show it again.
                   </span>
-                )}
-                hint={[
-                  connection.kind === "token" ? `Token …${connection.tokenHint}` : connection.redirectHost ?? "App",
-                  usedText(connection.lastUsedAt),
-                ].join(" · ")}
-                control={(
-                  <>
-                    <SettingsSegmented
-                      value={connection.scope}
-                      options={ACCESS_OPTIONS}
-                      onChange={(scope) => setScope(connection, scope)}
-                      ariaLabel={`${connection.label} access`}
-                      disabled={busy}
-                    />
-                    <button
-                      type="button"
-                      className="ade-modern-btn"
-                      data-size="sm"
-                      data-variant="ghost"
-                      disabled={busy}
-                      aria-label={`Disconnect ${connection.label}`}
-                      onClick={() => void confirmRemove(connection)}
-                    >
-                      Disconnect
-                    </button>
-                  </>
-                )}
-              />
-            ))}
-          </ModernRows>
-        </ModernSection>
+                  <div className="ade-mcp-token-value">
+                    <code className="ade-mcp-url">{created.token}</code>
+                    <CopyButton value={created.token} label="Copy token" />
+                  </div>
+                </div>
+              </div>
+            ) : null}
+            <ModernRows>
+              {connections.length ? connections.map((connection) => (
+                <ModernRow
+                  key={connection.id}
+                  title={(
+                    <span className="ade-mcp-title">
+                      <AppMark connection={connection} />
+                      {connection.label}
+                    </span>
+                  )}
+                  hint={[
+                    connection.kind === "token" ? `Token …${connection.tokenHint}` : connection.redirectHost ?? "App",
+                    // Made for one computer before ADE MCP covered the account.
+                    connection.onlyMachine ? `${connection.onlyMachine.name} only. Reconnect to reach every computer` : null,
+                    usedText(connection.lastUsedAt),
+                  ].filter(Boolean).join(" · ")}
+                  control={(
+                    <>
+                      <SettingsSegmented
+                        value={connection.scope}
+                        options={ACCESS_OPTIONS}
+                        onChange={(scope) => setScope(connection, scope)}
+                        ariaLabel={`${connection.label} access`}
+                        disabled={busy}
+                      />
+                      <button
+                        type="button"
+                        className="ade-modern-btn ade-mcp-remove"
+                        data-size="sm"
+                        data-variant="ghost"
+                        disabled={busy}
+                        aria-label={`${connection.kind === "token" ? "Revoke" : "Disconnect"} ${connection.label}`}
+                        onClick={() => void confirmRemove(connection)}
+                      >
+                        {connection.kind === "token" ? "Revoke" : "Disconnect"}
+                      </button>
+                    </>
+                  )}
+                />
+              )) : (
+                <ModernRow title="No apps connected yet" hint="Apps you connect, and tokens you make, show here." />
+              )}
+            </ModernRows>
+          </ModernSection>
+        </div>
       ) : null}
 
       {actionError ? (
@@ -474,8 +622,8 @@ export function AdeMcpPage() {
         <ModernSection
           group="ADE MCP"
           anchor="ade-mcp-activity"
-          title="Activity"
-          hint="What connected apps ran here, newest first."
+          title="Activity on this computer"
+          hint={`What connected apps ran on ${status?.machineName || "this computer"}, newest first.`}
         >
           <div className="kit-card">
             <div className="kit-card-body" data-flush="true" role="list">
@@ -486,6 +634,9 @@ export function AdeMcpPage() {
                   </span>
                   <span className="ade-mcp-activity-app">{entry.label}</span>
                   <code className="ade-mcp-activity-cmd" title={entry.detail ?? `ade ${entry.command}`}>ade {entry.command}</code>
+                  <span className="ade-mcp-activity-hop" title={entry.via ? `${entry.via} took the call and sent it here` : entry.forwardedTo ? `Sent on to ${entry.forwardedTo}` : undefined}>
+                    {entry.via ? `via ${entry.via}` : entry.forwardedTo ? `→ ${entry.forwardedTo}` : null}
+                  </span>
                   <span className="kit-tag" data-tone={OUTCOME_TONE[entry.outcome]}>{OUTCOME_LABEL[entry.outcome]}</span>
                 </div>
               ))}

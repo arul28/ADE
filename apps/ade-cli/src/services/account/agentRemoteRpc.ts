@@ -44,6 +44,7 @@ export const AGENT_REMOTE_MACHINE_METHODS: ReadonlySet<string> = new Set([
   "ping",
   "runtime/info",
   "projects.list",
+  "chats.locate",
   "personalChats.call",
   "machines.deliverWake",
   "machines.cloneForAgent",

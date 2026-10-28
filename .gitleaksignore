@@ -70,3 +70,6 @@ b5f4ebe0754ef03976f93946f0bba465d6aa0471:apps/desktop/src/shared/sentry/eventFil
 b5f4ebe0754ef03976f93946f0bba465d6aa0471:apps/desktop/src/shared/sentry/eventFilter.test.ts:generic-api-key:209
 # Low-entropy sk- fixture moved into an it.each table for the sk- redaction rows (PR #1905); later built at runtime.
 b5af93bc65f924f6a6bc4a563577335bb19cba7d:apps/desktop/src/main/services/shared/utils.test.ts:generic-api-key:629
+# Fake ADE MCP account secrets in the relay account test (PR #1945); later built at runtime.
+6962c5f0d290369ee26f14c0678a55d92758afef:apps/tunnel-relay/test/relay.workerd.test.ts:generic-api-key:536
+6962c5f0d290369ee26f14c0678a55d92758afef:apps/tunnel-relay/test/relay.workerd.test.ts:generic-api-key:537

@@ -52,6 +52,7 @@ import {
   type SettingsTab,
   SETTINGS_GROUPS,
   groupScopeHint,
+  isAccountOnlyTab,
   isMachineSelectableSettingsTab,
   isMachineSettingsTab,
   isProjectSettingsTab,
@@ -445,8 +446,11 @@ export function SettingsPage({
     });
     // A group whose cards all filtered out would otherwise leave a heading
     // hanging over nothing.
+    // A `ModernSection` is both a group and a card: when it matched itself,
+    // it stays.
     groups.forEach((group) => {
-      const hasVisibleCard = [...group.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
+      const matchedItself = group.hasAttribute("data-settings-anchor") && group.style.display !== "none";
+      const hasVisibleCard = matchedItself || [...group.querySelectorAll<HTMLElement>("[data-settings-anchor]")]
         .some((card) => card.style.display !== "none");
       group.style.display = hasVisibleCard ? "" : "none";
     });
@@ -672,8 +676,9 @@ export function SettingsPage({
             own scope, so web gets the per-section lines instead. */}
         {FLASH_STYLES}
         {/* Computer pages name their own machine below; the remote banner is
-            for You and Project pages, which follow the tab's binding. */}
-        {isWebClientMode() || machinePageScope ? null : <RemoteSettingsBanner />}
+            for You and Project pages, which follow the tab's binding. Account-
+            only pages follow no binding, so they get none. */}
+        {isWebClientMode() || machinePageScope || isAccountOnlyTab(section) ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
         {/* Pages built on the centred settings column get a page wrapper of the

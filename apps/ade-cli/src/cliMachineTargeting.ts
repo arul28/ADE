@@ -64,7 +64,7 @@ const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "mach
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
-const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
+export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
 
 /**
  * The flag names in `args`, skipping each value-carrying flag's value: in
@@ -431,10 +431,11 @@ function isAppControlCaptureProof(params: JsonObject | undefined): boolean {
 export const MACHINE_ROW_KEY = "machine";
 const MACHINE_PROJECT_ROW_KEY = "machineProject";
 
-export type MachineListKind = "chats" | "projects" | "lanes" | "usageLimits";
+export type MachineListKind = "chats" | "inbox" | "projects" | "lanes" | "usageLimits";
 
 function rowsOfListValue(kind: MachineListKind, value: unknown): JsonObject[] {
   if (kind === "chats") return firstArray(value, ["sessions", "chats", "items"]);
+  if (kind === "inbox") return firstArray(value, ["items"]);
   if (kind === "usageLimits") return firstArray(value, ["accounts"]);
   if (kind === "projects") return firstArray(value, ["projects", "items"]);
   return firstArray(value, ["lanes", "items", "result"]);
@@ -473,13 +474,14 @@ async function executePlanOnAllMachines(
   const kind = plan.machineList ?? null;
   if (!kind) {
     throw new CliUsageError(
-      "--all-machines works with `chat list`, `lanes list`, `projects list` and `usage limits`. Use --machine <name> for one machine.",
+      "--all-machines works with `chat list`, `chat inbox`, `lanes list`, `projects list` and `usage limits`. Use --machine <name> for one machine.",
     );
   }
   const single: GlobalOptions = { ...options, allMachines: false, machine: null };
+  const perProject = kind === "chats" || kind === "inbox" || kind === "lanes";
   const [roster, localProjects] = await withMachineBrain(options, async (client) => [
-    await client.request("machines.list", { includeProjects: kind === "chats" || kind === "lanes" }),
-    kind === "chats" || kind === "lanes" ? await client.request("projects.list", {}).catch(() => []) : [],
+    await client.request("machines.list", { includeProjects: perProject }),
+    perProject ? await client.request("projects.list", {}).catch(() => []) : [],
   ] as const);
   const machines = isRecord(roster) && Array.isArray(roster.machines) ? roster.machines.filter(isRecord) : [];
   if (isRecord(roster) && roster.state !== "ok") {
@@ -514,8 +516,18 @@ async function executePlanOnAllMachines(
       })));
     return match?.name ?? null;
   };
-  const tag = (rows: JsonObject[], machineName: string, project: string | null): JsonObject[] =>
-    rows.map((row) => ({ [MACHINE_ROW_KEY]: machineName, [MACHINE_PROJECT_ROW_KEY]: project, ...row }));
+  // `machineSelector` is what `--machine` gets: the key, which two computers
+  // with one display name cannot share. The name stays the label.
+  const tag = (rows: JsonObject[], machineName: string, project: string | null, remote = false, machineSelector = machineName): JsonObject[] =>
+    rows.map((row) => ({
+      [MACHINE_ROW_KEY]: machineName,
+      [MACHINE_PROJECT_ROW_KEY]: project,
+      ...row,
+      // An inbox row's answer commands must reach the machine the chat is on.
+      ...(remote && kind === "inbox" && Array.isArray(row.respond)
+        ? { respond: row.respond.map((command) => `${String(command)} --machine ${JSON.stringify(machineSelector)}`) }
+        : {}),
+    }));
   // A usage report's provider-wide notes and the asking chat's account ride
   // beside its rows; keep them, naming the machine a note came from.
   const notes: string[] = [];
@@ -550,7 +562,7 @@ async function executePlanOnAllMachines(
         try {
           const value = await executePlan(plan, { ...single, machine: asString(machine.machineKey) ?? name });
           keepReportExtras(value, name, false);
-          return tag(rowsOfListValue(kind, value), name, projectNameOn(machine));
+          return tag(rowsOfListValue(kind, value), name, projectNameOn(machine), true, asString(machine.machineKey) ?? name);
         } catch (error) {
           return [{ [MACHINE_ROW_KEY]: name, unavailable: failureCause(error) }];
         }
@@ -558,6 +570,7 @@ async function executePlanOnAllMachines(
   ]);
   const rows = results.flat();
   if (kind === "usageLimits") return { readAt: null, chat, accounts: rows, notes };
+  if (kind === "inbox") return { items: rows };
   return kind === "chats" ? { sessions: rows } : kind === "projects" ? { projects: rows } : { lanes: rows };
 }
 

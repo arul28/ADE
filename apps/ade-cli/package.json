@@ -24,8 +24,10 @@
     "tools:manifest:check": "node ./scripts/generate-tools-manifest.mjs --check",
     "tools:muse-pin": "node ./scripts/pin-muse-release.mjs",
     "tools:pin": "node ./scripts/pin-tool.mjs",
+    "mcp-app:build": "node ./scripts/generate-remote-mcp-app.mjs",
+    "mcp-app:check": "node ./scripts/generate-remote-mcp-app.mjs --check",
     "typecheck": "node --max-old-space-size=8192 ./node_modules/typescript/bin/tsc -p tsconfig.json --noEmit",
-    "pretest": "npm run tools:manifest:check",
+    "pretest": "npm run tools:manifest:check && npm run mcp-app:check",
     "test": "vitest run"
   },
   "dependencies": {
@@ -63,6 +65,7 @@
     "@types/pngjs": "^6.0.5",
     "@types/react": "^19.2.17",
     "@types/ws": "^8.18.1",
+    "esbuild": "0.27.3",
     "ink-testing-library": "^4.0.0",
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0",

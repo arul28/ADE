@@ -147,6 +147,8 @@ const ITEM_KINDS = new Set([
   "provider_api_key",
   "linear_refresh_token",
   "project_secret",
+  // ADE MCP's account secret and its connections (token hashes, never tokens).
+  "ade_mcp",
 ]);
 
 export type AccountVaultRow = {

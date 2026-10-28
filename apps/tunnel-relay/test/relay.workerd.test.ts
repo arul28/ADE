@@ -1,10 +1,17 @@
 import { env } from "cloudflare:workers";
-import { evictDurableObject, runInDurableObject } from "cloudflare:test";
+import {
+  createExecutionContext,
+  evictDurableObject,
+  runDurableObjectAlarm,
+  runInDurableObject,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import worker from "../src";
 import {
   buildHostSignatureBase,
   buildPipeSignatureBase,
+  handleRequest,
   hmacSha256Hex,
 } from "../src/relay";
 import {
@@ -529,5 +536,161 @@ describe("TunnelDurableObject in workerd", () => {
     const failed = await pending;
     expect(failed.status).toBe(503);
     expect(await failed.json()).toMatchObject({ error: "offline" });
+  });
+
+  it("serves an ADE MCP account from whichever of its computers is online, and lets a computer leave", async () => {
+    // Built at runtime: fake 43-character base64url account secrets.
+    const secretOne = `${"A1b2C3d4".repeat(5)}u_-`;
+    const secretTwo = `${"Zz9Yy8Xx".repeat(5)}m_-`;
+    const accountOne = (await hmacSha256Hex(secretOne, "ade-mcp-account")).slice(0, 40);
+    const accountTwo = (await hmacSha256Hex(secretTwo, "ade-mcp-account")).slice(0, 40);
+    const [keyF, keyG] = [machineKey("7"), machineKey("8")];
+    const accountState = async (accountKey: string): Promise<{ members: string[]; front: string | null }> => (
+      (await stubFor(`mcp-account:${accountKey}`).fetch("https://relay.internal/__mcp-account")).json()
+    );
+    // Membership changes travel to another object; wait on the account's own answer.
+    const accountReaches = async (accountKey: string, members: string[]): Promise<void> => {
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (JSON.stringify((await accountState(accountKey)).members) === JSON.stringify(members)) return;
+      }
+      expect((await accountState(accountKey)).members).toEqual(members);
+    };
+    const online = async (key: string): Promise<WebSocket> => {
+      const stub = stubFor(key);
+      await claim(stub, key);
+      return openControl({ stub, key, epoch: CONTROL_EPOCH });
+    };
+    const mcpState = (control: WebSocket, state: Record<string, unknown>): void => {
+      control.send(JSON.stringify({ t: "mcp_state", ...state }));
+    };
+    const accountCall = async (accountKey: string, headers: Record<string, string> = {}) => {
+      // The Worker's own router without Sentry's wrapper, so the execution
+      // context holds only the relay's own work (recording the front).
+      const ctx = createExecutionContext();
+      const response = handleRequest(new Request(`https://relay.test/a/${accountKey}/mcp`, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer t", ...headers },
+        body: "{\"jsonrpc\":\"2.0\",\"id\":1}",
+      }), env, ctx);
+      return { response, settled: async () => { await response; await waitOnExecutionContext(ctx); } };
+    };
+    type HttpFrame = { t: string; rid: string; path: string; headers: Record<string, string>; mount?: unknown };
+    const answer = async (control: WebSocket, frame: Promise<string | ArrayBuffer>, text: string): Promise<HttpFrame> => {
+      const parsed = JSON.parse(String(await frame)) as HttpFrame;
+      control.send(JSON.stringify({ t: "http_res", rid: parsed.rid, status: 200, headers: {}, body: text }));
+      return parsed;
+    };
+
+    try {
+      const controlF = await online(keyF);
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretOne } });
+      await accountReaches(accountOne, [keyF]);
+      const controlG = await online(keyG);
+      mcpState(controlG, { enabled: true, endpointKey: "6".repeat(40), account: { secret: secretOne } });
+      await accountReaches(accountOne, [keyF, keyG]);
+
+      // No front yet: the newest computer answers, with the account as its mount
+      // and no internal header, whatever the client sent.
+      const first = await accountCall(accountOne, { "x-ade-mcp-mount": `a/${accountTwo}` });
+      const toG = await answer(controlG, nextMessage(controlG), "from G");
+      expect(toG).toMatchObject({ t: "http", path: "/mcp", mount: { kind: "account", key: accountOne } });
+      expect(Object.keys(toG.headers)).not.toContain("x-ade-mcp-mount");
+      expect(await (await first.response).text()).toBe("from G");
+      await first.settled();
+      expect(await accountState(accountOne)).toEqual({ members: [keyF, keyG], front: keyG });
+
+      // The per-machine address never carries a mount, even when a client asks.
+      const direct = worker.fetch(new Request(`https://relay.test/m/${"5".repeat(40)}/mcp`, {
+        method: "POST",
+        headers: { "x-ade-mcp-mount": `a/${accountOne}` },
+        body: "{}",
+      }), env);
+      const toFDirect = await answer(controlF, nextMessage(controlF), "direct");
+      expect(toFDirect).not.toHaveProperty("mount");
+      expect((await direct).status).toBe(200);
+
+      // The front goes offline: the request goes to the next computer instead,
+      // and that one becomes the front.
+      controlG.close(1000, "brain stopped");
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (!((await prewarm(stubFor(keyG), keyG)) as { control: boolean }).control) break;
+      }
+      expect(await prewarm(stubFor(keyG), keyG)).toEqual({ ok: true, control: false });
+      const second = await accountCall(accountOne);
+      await answer(controlF, nextMessage(controlF), "from F");
+      expect(await (await second.response).text()).toBe("from F");
+      await second.settled();
+      expect(await accountState(accountOne)).toEqual({ members: [keyF, keyG], front: keyF });
+
+      // F moves to another account: it leaves the first and joins the second.
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretTwo } });
+      await accountReaches(accountTwo, [keyF]);
+      expect(await accountState(accountOne)).toEqual({ members: [keyG], front: null });
+      const viaTwo = await accountCall(accountTwo);
+      expect(await answer(controlF, nextMessage(controlF), "two")).toMatchObject({ mount: { kind: "account", key: accountTwo } });
+      expect((await viaTwo.response).status).toBe(200);
+      await viaTwo.settled();
+
+      // Even listed on the first account again, F does not answer for it.
+      await stubFor(`mcp-account:${accountOne}`).fetch("https://relay.internal/__mcp-account", {
+        method: "PUT",
+        body: JSON.stringify({ machineKey: keyF, op: "add" }),
+      });
+      const stale = await accountCall(accountOne);
+      const staleResponse = await stale.response;
+      expect(staleResponse.status).toBe(503);
+      expect(staleResponse.headers.get("retry-after")).toBe("30");
+      expect(await staleResponse.json()).toMatchObject({ error: "offline" });
+      await stale.settled();
+      const pong = nextMessage(controlF);
+      controlF.send(JSON.stringify({ t: "ping" }));
+      expect(await pong).toBe(JSON.stringify({ t: "pong" }));
+      // Being sent a request for an account it is not on, F leaves that account.
+      await accountReaches(accountOne, [keyG]);
+
+      // Turning ADE MCP off leaves the account, even with the secret still sent;
+      // nobody is left to answer.
+      mcpState(controlF, { enabled: false, endpointKey: "5".repeat(40), account: { secret: secretTwo } });
+      await accountReaches(accountTwo, []);
+      const offCall = await accountCall(accountTwo);
+      const off = await offCall.response;
+      await offCall.settled();
+      expect(off.status).toBe(404);
+      expect(await off.json()).toMatchObject({ error: "ade_mcp_off" });
+
+      // A join or leave the account object fails is retried while F's control
+      // socket stays open, without the brain sending mcp_state again.
+      const accountStorage = (accountKey: string, run: (storage: DurableObjectStorage) => Promise<void>) => (
+        runInDurableObject(stubFor(`mcp-account:${accountKey}`), (_instance, state) => run(state.storage))
+      );
+      const breakAccount = (accountKey: string) => accountStorage(accountKey, (storage) => storage.put("members", 1));
+      const retryPending = async (): Promise<void> => {
+        const alarmOfF = () => runInDurableObject(stubFor(keyF), (_instance, state) => state.storage.getAlarm());
+        for (let attempt = 0; attempt < 200; attempt += 1) if ((await alarmOfF()) !== null) return;
+        expect(await alarmOfF()).not.toBeNull();
+      };
+      await breakAccount(accountOne);
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretOne } });
+      await retryPending();
+      await accountStorage(accountOne, (storage) => storage.put("members", [keyG]));
+      expect(await runDurableObjectAlarm(stubFor(keyF))).toBe(true);
+      expect((await accountState(accountOne)).members).toEqual([keyG, keyF]);
+
+      await breakAccount(accountOne);
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretTwo } });
+      await accountReaches(accountTwo, [keyF]);
+      await retryPending();
+      await accountStorage(accountOne, (storage) => storage.put("members", [keyG, keyF]));
+      expect(await runDurableObjectAlarm(stubFor(keyF))).toBe(true);
+      expect((await accountState(accountOne)).members).toEqual([keyG]);
+      expect((await accountState(accountTwo)).members).toEqual([keyF]);
+    } finally {
+      // A control socket left idle at the end keeps workerd from shutting down.
+      for (const key of [keyF, keyG]) {
+        await runInDurableObject<TunnelDurableObject, void>(stubFor(key), (_instance, state) => {
+          for (const socket of state.getWebSockets()) socket.close(1000, "test complete");
+        });
+      }
+    }
   });
 });

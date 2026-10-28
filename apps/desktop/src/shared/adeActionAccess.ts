@@ -57,7 +57,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   remote_mcp: {
     read: ["getStatus", "listActivity"],
-    write: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
+    write: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
   },
   lane: {
     live: [

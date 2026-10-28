@@ -58,6 +58,7 @@ const LIST_PER_MACHINE_BUDGET_MS = 15_000;
 const FORWARDABLE_METHODS: ReadonlySet<string> = new Set([
   "ade/actions/call",
   "projects.list",
+  "chats.locate",
   "personalChats.call",
 ]);
 

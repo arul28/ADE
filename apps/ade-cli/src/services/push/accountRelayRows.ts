@@ -80,7 +80,9 @@ export type AccountVaultItemKind =
   | "integration"
   | "provider_api_key"
   | "linear_refresh_token"
-  | "project_secret";
+  | "project_secret"
+  /** ADE MCP: the account secret and the connections (token hashes only). */
+  | "ade_mcp";
 
 export type AccountVaultItem = {
   scope: string;
@@ -100,14 +102,26 @@ export type AccountVaultItem = {
   deleted?: boolean;
 };
 
-const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set([
+const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set<AccountVaultItemKind>([
   "secret",
   "provider_key",
   "integration",
   "provider_api_key",
   "linear_refresh_token",
   "project_secret",
+  "ade_mcp",
 ]);
+
+export function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
+  return typeof value === "string" && ACCOUNT_VAULT_ITEM_KINDS.has(value);
+}
+
+/**
+ * Kinds that some deployed push relays do not know yet. The vault uploads
+ * them in their own batch, because a Worker refuses a whole batch for one
+ * unknown kind.
+ */
+export const NEWER_VAULT_KINDS: ReadonlySet<AccountVaultItemKind> = new Set<AccountVaultItemKind>(["ade_mcp"]);
 
 /** Validate one vault row before callers can mistake corrupt data for a secret. */
 export function decodeAccountVaultItem(value: unknown): AccountVaultItem | null {
