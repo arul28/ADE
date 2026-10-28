@@ -354,7 +354,7 @@ const cachedBundledSkillNames = createSlashCommandListingCache<Set<string>>();
 /** Skill folder names under the bundled plugin roots, on discovery's own TTL. */
 function bundledSkillNames(pluginRoots: readonly string[]): Set<string> {
   if (!pluginRoots.length) return new Set();
-  return cachedBundledSkillNames(pluginRoots.map(pathKey).join("\n"), () => {
+  return cachedBundledSkillNames(pluginRoots.map((root) => pathKey(root)).join("\n"), () => {
     const names = new Set<string>();
     for (const root of pluginRoots) {
       let entries: fs.Dirent[];

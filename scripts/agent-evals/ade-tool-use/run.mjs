@@ -19,6 +19,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { CASES } from "./cases.mjs";
 
+if (process.platform === "win32") {
+  // The stand-ins are POSIX shell scripts on a POSIX PATH.
+  console.error("The ADE tool-use eval runs on macOS and Linux only.");
+  process.exit(1);
+}
+
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(here, "../../..");
 const skillRoot = path.join(repoRoot, "apps/desktop/resources/agent-skills");
