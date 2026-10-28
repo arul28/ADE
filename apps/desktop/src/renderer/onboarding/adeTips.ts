@@ -44,7 +44,6 @@ import {
   SquaresFour,
   StackSimple,
   SteeringWheel,
-  Stethoscope,
   TerminalWindow,
   Toolbox,
   UserSwitch,
@@ -199,6 +198,10 @@ const inAChat = (rowLabel: string, emptyLabel: string, ...openChatSpots: Spotlig
 
 const FIRST_CHAT = "Start a chat first; it shows here.";
 
+/** The composer of a chat that already has a conversation; a new chat's composer does not count. */
+const inChatComposer = (label: string): SpotlightSpot =>
+  at(`body:has([data-chat-user-message-card]) ${anchorSelector("composer")}`, label);
+
 /**
  * For tips that live on a message: open a chat, then ring `messageSpot` in
  * it, or the chat itself with `noMessageLabel` when it has no such message.
@@ -276,19 +279,17 @@ const TIP_LIST = [
   {
     id: "side-chats", group: "agents", icon: ChatsCircle, title: "Side chats", size: "wide",
     sentence: "Type /side to ask a quick question in a read-only side chat that already knows the conversation.",
-    action: inAChat(
-      "Open a chat, then type /side and your question in its composer.",
-      FIRST_CHAT,
-      spot("composer", "Type /side and your question. The side chat knows this conversation and changes nothing."),
+    action: inOpenChat(
+      inChatComposer("Type /side and your question. The side chat knows this conversation and changes nothing."),
+      "Once this chat has a conversation, type /side and your question here.",
     ),
   },
   {
     id: "steer", group: "agents", icon: SteeringWheel, title: "Steer a running turn", size: "small",
     sentence: "Type while an agent works to steer it, or change its effort mid-turn.",
-    action: inAChat(
-      "Open a chat while its agent works, then type in its composer to steer it.",
-      FIRST_CHAT,
-      spot("composer", "While the agent works, type here to steer it. The effort chip changes its effort mid-turn."),
+    action: inOpenChat(
+      inChatComposer("While the agent works, type here to steer it. The effort chip changes its effort mid-turn."),
+      "Once this chat's agent is working, type here to steer it.",
     ),
   },
   {
@@ -297,12 +298,12 @@ const TIP_LIST = [
     action: draft(spot("composer", "Ask the agent to watch a terminal, like your dev server. It wakes up when something new prints.")),
   },
   {
-    id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "wide",
+    id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "small",
     sentence: "When one account hits its limit, continue the same chat on another.",
     action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
   },
   {
-    id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "wide",
+    id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "small",
     sentence: "Run your iOS app in a simulator inside ADE, including iPhone Duo with its hinge.",
     action: inAChat(
       "Open a chat, then Tools and Apple Development to run your app in the simulator.",
@@ -310,6 +311,11 @@ const TIP_LIST = [
       spot("tools-pane", "Open Apple Development here to run your app in the simulator."),
       spot("tools-toggle", "Open Tools, then Apple Development, to run your app in the simulator."),
     ),
+  },
+  {
+    id: "simulator-on-phone", group: "agents", icon: Screencast, title: "Simulator on your phone", size: "wide",
+    sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
+    action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
   },
 
   // Project brain
@@ -366,16 +372,6 @@ const TIP_LIST = [
     id: "notifications", group: "machines", icon: Bell, title: "Notifications", size: "small",
     sentence: "Hear when an agent needs you, here or on your phone.",
     action: setting("notifications.events", "Pick what reaches you, here and on your phone."),
-  },
-  {
-    id: "simulator-on-phone", group: "machines", icon: Screencast, title: "Simulator on your phone", size: "wide",
-    sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
-    action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
-  },
-  {
-    id: "connection-doctor", group: "machines", icon: Stethoscope, title: "Connection doctor", size: "wide",
-    sentence: "When a machine won't connect, ADE tells you why and how to fix it.",
-    action: connections("machines", "Pick Test on a computer. The connection doctor says why it won't connect."),
   },
 
   // Integrations
