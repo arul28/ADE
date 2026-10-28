@@ -20,8 +20,8 @@ export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) 
       media={{
         video,
         still,
-        width: 1100,
-        height: 1054,
+        width: 1600,
+        height: 1060,
         alt: "An app on iPhone Duo in ADE's simulator, turning in 3D and folding as the hinge slider moves",
       }}
     />

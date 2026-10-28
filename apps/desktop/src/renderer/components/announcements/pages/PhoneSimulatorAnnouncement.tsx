@@ -19,8 +19,8 @@ export default function PhoneSimulatorAnnouncement({ close }: AnnouncementPagePr
       media={{
         video,
         still,
-        width: 840,
-        height: 1000,
+        width: 1920,
+        height: 1080,
         alt: "The simulator on a Mac beside a real iPhone showing the same screen, where a finger taps to open an app",
       }}
       action={{ tipId: "phone", label: "Pair your iPhone" }}

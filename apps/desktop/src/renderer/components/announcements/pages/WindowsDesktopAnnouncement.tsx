@@ -20,8 +20,8 @@ export default function WindowsDesktopAnnouncement({ close }: AnnouncementPagePr
       media={{
         video,
         still,
-        width: 1440,
-        height: 1000,
+        width: 1600,
+        height: 1004,
         alt: "From a Mac, an agent takes a screenshot of its private Windows desktop and posts it in the chat",
       }}
     />
