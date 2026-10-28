@@ -209,7 +209,6 @@ import { ChatLifecyclePill, shouldRenderChatLifecyclePill } from "./ChatLifecycl
 import { ChatSubagentTakeoverBanner } from "./ChatSubagentTakeoverBanner";
 import { resolveModelDescriptorWithRuntimeCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
-import { ClaudeUsageSheet } from "./usage/ClaudeUsageSheet";
 import { CompactFirstChip } from "./CompactFirstChip";
 import { resolveContextCompactControl } from "../../../shared/contextCompaction";
 import {
@@ -279,7 +278,6 @@ import {
 } from "../../lib/chatSessionEvents";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { confirmDialog } from "../ui/dialog/confirm";
-import { ImportSessionBrowser } from "../terminals/importSessions/ImportSessionBrowser";
 import { ImportFloatingBadge } from "../terminals/importSessions/ImportFloatingBadge";
 import {
   readImportedFrom,
@@ -296,13 +294,11 @@ import { IosSimulatorRunningPill } from "../work/IosSimulatorRunningPill";
 import { openAppleMiniPlayer } from "../apple/appleMiniPlayerStore";
 import { useChatPaneShowRequests } from "./useChatPaneShowRequests";
 import { appleEventAddresses } from "../apple/appleDeviceState";
-import { ChatAppControlPanel } from "./ChatAppControlPanel";
 import { ChatSubagentsPanel } from "./ChatSubagentsPanel";
 import { useChatTerminalWatches } from "./ChatTerminalWatches";
-import { RewindFilesConfirmDialog, type RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
+import type { RewindFilesConfirmDialogState } from "./RewindFilesConfirmDialog";
 import { buildRewindPreviewFiles, deriveRewindDiffSummaries } from "./rewindFilesPreview";
 import { getLaneAccent } from "../lanes/laneColorPalette";
-import { ChatTerminalDrawer } from "./ChatTerminalDrawer";
 import { readWorkflowScriptPlan, type ChatWorkflowScriptPlan } from "../../../shared/chatWorkflowScript";
 import { attachedShellNestParentId } from "../../../shared/sessionSpawnNesting";
 import { deriveChatSubagentSnapshotsIncremental, deriveTurnDiffSummaries, mergeManagedScheduledWorkSnapshots, sameTurnDiffSummaries, type ChatSubagentDerivation } from "./chatExecutionSummary";
@@ -322,7 +318,6 @@ import { LaneDesktopHeaderButton } from "../terminals/LaneMacDesktopMarker";
 import { hasAttachedTerminalShell, useAttachedTerminalShells } from "../terminals/useAttachedTerminalShells";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { deriveMissionSnapshot, missionHasContent } from "./chatMission";
-import { MissionControlPanel } from "./MissionControlPanel";
 import { resolvePendingInputs, type DerivedPendingInput } from "./pendingInput";
 import { deriveRuntimeState, userMessageVisibleText, type PendingSteerEntry } from "./chatRuntimeState";
 export { deriveRuntimeState, type PendingSteerEntry } from "./chatRuntimeState";
@@ -339,7 +334,6 @@ import { ChatHandoffDialogs } from "./ChatHandoffDialogs";
 import { CursorRuntimeNotice } from "./CursorRuntimeNotice";
 import { ChatSourcesPanel } from "./ChatSourcesPanel";
 import { deriveChatSources } from "../../../shared/chatSources";
-import { CrossMachineHandoffModal } from "./CrossMachineHandoffModal";
 import {
   CrossMachineArrivalBanner,
   CrossMachineBatchApprovalBanner,
@@ -361,7 +355,7 @@ import {
 } from "./chatSessionRetention";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { ClaudeLoginPromptButton } from "../work/ClaudeLoginPromptButton";
-import { ComposerClaudeSignIn, type ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
+import type { ComposerClaudeSignInTarget } from "./ComposerClaudeSignIn";
 import { CHAT_AUTH_RECOVERED_EVENT, CHAT_AUTH_RETRY_REJECTED_EVENT, CHAT_RETRY_AUTH_TURN_EVENT } from "./AgentCliAuthCard";
 import { rootAppStoreApi, selectActiveProjectRoot, selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import { useWorkDraftLaneRequest } from "./useWorkDraftLaneRequest";
@@ -1142,6 +1136,44 @@ function streamsLink(
  */
 const ChatIosSimulatorPanel = lazy(() => import("./ChatIosSimulatorPanel")
   .then((module) => ({ default: module.ChatIosSimulatorPanel })));
+
+/**
+ * Panels and dialogs that only render after a user action or a state change.
+ * Each loads on first use, so opening a chat does not pay for them: App
+ * Control's capture/trace stack, the terminal drawer and the sign-in modal
+ * (both pull xterm), the rewind preview (the diff viewer), the cross-machine
+ * handoff flow, the import browser, the Claude usage sheet, and Droid's
+ * mission panel. Each render site wraps its panel in its own Suspense with a
+ * null fallback.
+ */
+const ChatAppControlPanel = lazy(() => import("./ChatAppControlPanel")
+  .then((module) => ({ default: module.ChatAppControlPanel })));
+const ChatTerminalDrawer = lazy(() => import("./ChatTerminalDrawer")
+  .then((module) => ({ default: module.ChatTerminalDrawer })));
+const ComposerClaudeSignIn = lazy(() => import("./ComposerClaudeSignIn")
+  .then((module) => ({ default: module.ComposerClaudeSignIn })));
+const RewindFilesConfirmDialog = lazy(() => import("./RewindFilesConfirmDialog")
+  .then((module) => ({ default: module.RewindFilesConfirmDialog })));
+const CrossMachineHandoffModal = lazy(() => import("./CrossMachineHandoffModal")
+  .then((module) => ({ default: module.CrossMachineHandoffModal })));
+const ImportSessionBrowser = lazy(() => import("../terminals/importSessions/ImportSessionBrowser")
+  .then((module) => ({ default: module.ImportSessionBrowser })));
+const ClaudeUsageSheet = lazy(() => import("./usage/ClaudeUsageSheet")
+  .then((module) => ({ default: module.ClaudeUsageSheet })));
+const MissionControlPanel = lazy(() => import("./MissionControlPanel")
+  .then((module) => ({ default: module.MissionControlPanel })));
+
+/**
+ * True from the first render where `open` is true, and from then on. The
+ * lazily loaded dialogs above mount on first open and then stay mounted, as
+ * they did when they were static, so their close animations and any state
+ * they keep between opens behave the same.
+ */
+function useOpenedOnce(open: boolean): boolean {
+  const [opened, setOpened] = useState(open);
+  if (open && !opened) setOpened(true);
+  return opened || open;
+}
 
 /**
  * Longest the pane's own state trails a streaming reply that links somewhere. The transcript shows
@@ -4984,6 +5016,10 @@ export function AgentChatPane({
   // longer preselects one; defaulted to the source session model on tab open.
   const [remoteHandoffModelId, setRemoteHandoffModelId] = useState("");
   const [crossMachineHandoffOpen, setCrossMachineHandoffOpen] = useState(false);
+  const crossMachineHandoffMounted = useOpenedOnce(crossMachineHandoffOpen);
+  const importBrowserMounted = useOpenedOnce(importBrowserOpen);
+  const claudeUsageSheetMounted = useOpenedOnce(claudeUsageSheetOpen);
+  const rewindConfirmDialogMounted = useOpenedOnce(rewindConfirmDialog != null);
   /** Machine the session menu's "Choose in full setup…" picked, if any. */
   const [crossMachinePreselectedMachine, setCrossMachinePreselectedMachine] = useState<string | null>(null);
   const [localHandoffOpen, setLocalHandoffOpen] = useState(false);
@@ -17237,11 +17273,13 @@ export function AgentChatPane({
         selectedMission && missionHasContent(selectedMission) && {
           key: "mission",
           content: (
-            <MissionControlPanel
-              mission={selectedMission}
-              onKillWorker={killDroidWorker}
-              killingWorkerIds={killingWorkerIds}
-            />
+            <Suspense fallback={null}>
+              <MissionControlPanel
+                mission={selectedMission}
+                onKillWorker={killDroidWorker}
+                killingWorkerIds={killingWorkerIds}
+              />
+            </Suspense>
           ),
         },
         selectedChatHasSources && {
@@ -17259,15 +17297,17 @@ export function AgentChatPane({
   );
   // A personal chat's terminal is the page's own panel; this drawer is lane-scoped.
   const terminalPanelContent = chatTerminalVisible && laneId ? (
-    <ChatTerminalDrawer
-      open={terminalDrawerOpen}
-      onToggle={() => setTerminalDrawerOpen((current) => !current)}
-      laneId={laneId}
-      chatSessionId={selectedSessionId}
-      revealRequest={terminalRevealRequest}
-      runtimePin={chatRuntimePin}
-      runtimeScopeKey={workRuntimeScopeKey(chatRuntimePin, projectBinding)}
-    />
+    <Suspense fallback={null}>
+      <ChatTerminalDrawer
+        open={terminalDrawerOpen}
+        onToggle={() => setTerminalDrawerOpen((current) => !current)}
+        laneId={laneId}
+        chatSessionId={selectedSessionId}
+        revealRequest={terminalRevealRequest}
+        runtimePin={chatRuntimePin}
+        runtimeScopeKey={workRuntimeScopeKey(chatRuntimePin, projectBinding)}
+      />
+    </Suspense>
   ) : null;
   const iosSimulatorPanelContent = (
     <>
@@ -17328,6 +17368,7 @@ export function AgentChatPane({
             layout="inline"
           />
         ) : (
+          <Suspense fallback={null}>
           <ChatAppControlPanel
             // Keyed by lane too: a late reply for the old lane must never land
             // in the new lane's pane.
@@ -17343,6 +17384,7 @@ export function AgentChatPane({
             }}
             onAddContext={addAppControlContext}
           />
+          </Suspense>
         )}
       </div>
     </>
@@ -19468,13 +19510,17 @@ export function AgentChatPane({
         </div>
       </ChatSurfaceShell>
       </div>
-      <RewindFilesConfirmDialog
-        state={rewindConfirmDialog}
-        sessionId={selectedSessionId}
-        runtimePin={renderedChatRuntimePin}
-        onCancel={closeRewindConfirmDialog}
-        onConfirm={confirmRewindDialog}
-      />
+      {rewindConfirmDialogMounted ? (
+        <Suspense fallback={null}>
+          <RewindFilesConfirmDialog
+            state={rewindConfirmDialog}
+            sessionId={selectedSessionId}
+            runtimePin={renderedChatRuntimePin}
+            onCancel={closeRewindConfirmDialog}
+            onConfirm={confirmRewindDialog}
+          />
+        </Suspense>
+      ) : null}
       {/* The lane picker's "+": configure a new lane now; it is created when
           the chat is sent, exactly like "Auto-create lane". */}
       <CreateLaneDialogHost
@@ -19488,7 +19534,8 @@ export function AgentChatPane({
         localContent={localHandoffOpen && canShowHandoff ? handoffLocalView : null}
         onCloseLocal={closeLocalHandoff}
       />
-      {selectedSessionId && !personalScope && (selectedSession?.laneId ?? laneId) ? (
+      {crossMachineHandoffMounted && selectedSessionId && !personalScope && (selectedSession?.laneId ?? laneId) ? (
+        <Suspense fallback={null}>
         <CrossMachineHandoffModal
           open={crossMachineHandoffOpen}
           sourceSessionId={selectedSessionId}
@@ -19522,21 +19569,27 @@ export function AgentChatPane({
             applyCrossMachineHandoffRecord(selectedSessionId, record);
           }}
         />
+        </Suspense>
       ) : null}
-      {selectedSessionId && claudeUsageAvailable ? (
-        <ClaudeUsageSheet
-          open={claudeUsageSheetOpen}
-          onOpenChange={setClaudeUsageSheetOpen}
-          sessionId={selectedSessionId}
-          pin={chatRuntimePin}
-          turnActive={turnActive}
-          onApplyEffort={handleReasoningEffortChange}
-        />
+      {claudeUsageSheetMounted && selectedSessionId && claudeUsageAvailable ? (
+        <Suspense fallback={null}>
+          <ClaudeUsageSheet
+            open={claudeUsageSheetOpen}
+            onOpenChange={setClaudeUsageSheetOpen}
+            sessionId={selectedSessionId}
+            pin={chatRuntimePin}
+            turnActive={turnActive}
+            onApplyEffort={handleReasoningEffortChange}
+          />
+        </Suspense>
       ) : null}
       {claudeSignInTarget ? (
-        <ComposerClaudeSignIn key={claudeSignInTarget.openId} target={claudeSignInTarget} onClose={closeClaudeSignIn} />
+        <Suspense fallback={null}>
+          <ComposerClaudeSignIn key={claudeSignInTarget.openId} target={claudeSignInTarget} onClose={closeClaudeSignIn} />
+        </Suspense>
       ) : null}
-      {onImportedSession && importTargetLane ? (
+      {importBrowserMounted && onImportedSession && importTargetLane ? (
+        <Suspense fallback={null}>
         <ImportSessionBrowser
           open={importBrowserOpen}
           onOpenChange={setImportBrowserOpen}
@@ -19547,6 +19600,7 @@ export function AgentChatPane({
           onImported={onImportedSession}
           onOpenExisting={onOpenExistingImportedSession}
         />
+        </Suspense>
       ) : null}
     </>
     </ChatWorkspacePathProvider>

@@ -97,3 +97,27 @@ export function assertWebRuntimePinRoutable(
     + " cross-machine web routing is not implemented.",
   );
 }
+
+/**
+ * Wrap the members of a namespace that take a trailing runtime pin, so each
+ * one refuses a pin this adapter cannot serve (see
+ * `assertWebRuntimePinRoutable`) before it runs. `pinArgIndex` maps a member
+ * to the position of its pin in the desktop contract (`preload/global.d.ts`).
+ */
+export function guardPinnedMembers<T extends object>(
+  namespace: T,
+  operationPrefix: string,
+  pinArgIndex: Record<string, number>,
+  scope: RuntimePinScope,
+): T {
+  const members = namespace as Record<string, unknown>;
+  for (const [name, index] of Object.entries(pinArgIndex)) {
+    const member = members[name];
+    if (typeof member !== "function") continue;
+    members[name] = (...args: unknown[]) => {
+      assertWebRuntimePinRoutable(`${operationPrefix}.${name}`, args[index] as RuntimePinArg, scope);
+      return (member as (...values: unknown[]) => unknown)(...args);
+    };
+  }
+  return namespace;
+}

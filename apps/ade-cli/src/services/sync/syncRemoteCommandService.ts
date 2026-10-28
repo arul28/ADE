@@ -7956,10 +7956,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // change made from the web client resolved to its fallback and persisted
   // nothing while the UI reported success.
   //
-  // `ai.storeApiKey` is deliberately NOT registered: the web adapter redacts
-  // the key before sending (`webclient/adapter/misc.ts`), so a handler here
-  // would persist the literal placeholder as the provider's key. Adding a key
-  // stays a desktop-only operation, and the web control says so.
+  // `ai.storeApiKey` is deliberately NOT registered: a secret never leaves
+  // the browser, so the web adapter rejects the save itself
+  // (`webclient/adapter/misc.ts`). Adding a key stays a desktop-only
+  // operation, and the web control says so.
   // Jev answers like the desktop action: null is "use your own logic", never an error.
   register("ai.jevDecide", { viewerAllowed: true }, async (payload) =>
     args.jevService ? args.jevService.decide(payload as unknown as Parameters<JevService["decide"]>[0]) : null);

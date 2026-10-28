@@ -2,6 +2,7 @@ import React from "react";
 import { FileX, ArrowSquareOut } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import type { ViewerProps } from "./types";
+import { isWebClientMode } from "../../../../lib/webClientMode";
 
 function formatBytes(n: number): string {
   if (n < 1024) return `${n} B`;
@@ -23,14 +24,17 @@ export function BinaryViewer({ rootPath, tab, content }: ViewerProps) {
       <div className="text-xs" style={{ color: COLORS.textDim }}>
         {formatBytes(content.size)} · {content.mimeType ?? "binary"}
       </div>
-      <button
-        type="button"
-        onClick={openExternally}
-        className="mt-1 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-        style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-      >
-        <ArrowSquareOut size={14} /> Open externally
-      </button>
+      {/* The web client has no Finder/Explorer to reveal the file in, so it hides this instead of no-oping. */}
+      {isWebClientMode() ? null : (
+        <button
+          type="button"
+          onClick={openExternally}
+          className="mt-1 inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
+          style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
+        >
+          <ArrowSquareOut size={14} /> Open externally
+        </button>
+      )}
     </div>
   );
 }

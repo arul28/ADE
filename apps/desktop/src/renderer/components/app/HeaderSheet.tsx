@@ -5,6 +5,7 @@ import { X } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
 import { useDialogFocusTrap } from "../ui/dialogFocus";
 import { Z_LAYERS } from "../ui/zLayers";
+import { zoomCompensatedSizeStyle } from "../../lib/webZoom";
 
 /**
  * The one top-bar dropdown shell (Connections, usage, activity): a click-away
@@ -67,7 +68,7 @@ export function HeaderSheet({
     // length again; dividing by the zoom keeps the sheet inside the window.
     "absolute right-3 top-10 max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_72px)]",
     !bare && "overflow-y-auto",
-    width ?? "w-[min(620px,calc(100vw-24px))]",
+    width ?? "w-[min(620px,calc(100vw_/_var(--ade-web-zoom-factor,1)_-_24px))]",
   );
 
   if (!open || typeof document === "undefined") return null;
@@ -81,7 +82,8 @@ export function HeaderSheet({
       <div
         ref={panelRef}
         className={cn(panelPositionClassName, surfaceClassName)}
-        style={panelStyle}
+        // A caller's viewport-based size gets the same zoom compensation.
+        style={zoomCompensatedSizeStyle(panelStyle)}
         role="dialog"
         aria-modal="true"
         aria-labelledby={bare ? undefined : ariaLabelledBy}

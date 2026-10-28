@@ -43,16 +43,19 @@ const HOST_WEBHOOK_COMMANDS = join(
   "../../../../../../ade-cli/src/services/sync/webhookRemoteCommands.ts",
 );
 
+// Auto-handoff rule commands (`automations.list/saveDraft/deleteRule`) are
+// registered from the `AUTOMATION_RULE_REMOTE_COMMAND_ACTIONS` table too.
+const HOST_AUTOMATION_RULE_COMMANDS = join(
+  __dirname,
+  "../../../../../../ade-cli/src/services/sync/automationRuleRemoteCommands.ts",
+);
+
 /**
  * Actions the adapter calls that the host deliberately does not serve. Adding
  * to this list is a decision, not a formality: state why the host cannot or
  * should not implement it.
  */
 const KNOWN_UNSUPPORTED: Record<string, string> = {
-  // The adapter redacts the key before sending (a web client must not put
-  // provider credentials on the wire), so a host handler would persist the
-  // placeholder. Adding a key stays a desktop-only operation.
-  "ai.storeApiKey": "web redacts the key; storing it remotely would persist a placeholder",
   // Conflict resolution drives local worktree state through a resolver session
   // that has no remote contract yet.
   "conflicts.applyProposal": "no remote contract for resolver sessions",
@@ -129,6 +132,12 @@ function actionsRegisteredByHost(): Set<string> {
     webhookCommands.indexOf("] as const"),
   );
   for (const match of webhookTable.matchAll(/"([\w.]+)"/g)) registered.add(match[1]!);
+  const ruleCommands = readFileSync(HOST_AUTOMATION_RULE_COMMANDS, "utf8");
+  const ruleTable = ruleCommands.slice(
+    ruleCommands.indexOf("AUTOMATION_RULE_REMOTE_COMMAND_ACTIONS = ["),
+    ruleCommands.indexOf("] as const"),
+  );
+  for (const match of ruleTable.matchAll(/"([\w.]+)"/g)) registered.add(match[1]!);
   return registered;
 }
 

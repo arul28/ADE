@@ -368,7 +368,7 @@ export function HeaderActivityControl({
         panelRef={panelRef}
         title="Activity"
         bare
-        width="w-[min(440px,calc(100vw-24px))]"
+        width="w-[min(440px,calc(100vw_/_var(--ade-web-zoom-factor,1)_-_24px))]"
         panelStyle={{
           right: 12,
           top: 40,

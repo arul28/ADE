@@ -3,6 +3,7 @@ import { ArrowSquareOut, CaretDown, CaretRight, Check, TextAa } from "@phosphor-
 import { showToast } from "../../../app/toast/toastStore";
 import { COLORS, fgTint } from "../../../lanes/laneDesignTokens";
 import { formatBytes } from "../../../../../shared/formatting";
+import { isWebClientMode } from "../../../../lib/webClientMode";
 import { Banner } from "../../../ui/notice";
 import { streamFileBytes } from "../streamBytes";
 import { DocumentSurface } from "./DocumentSurface";
@@ -128,15 +129,18 @@ function FontHeader({
         <span className="min-w-0 flex-1 truncate text-xs" style={{ color: COLORS.textMuted }}>
           {info.format} font · {formatBytes(size)}
         </span>
-        <button
-          type="button"
-          onClick={openExternally}
-          title="Open externally"
-          className="rounded p-1 hover:bg-fg/5"
-          style={{ color: COLORS.textMuted }}
-        >
-          <ArrowSquareOut size={14} />
-        </button>
+        {/* The web client has no OS to open the file in, so it hides this instead of no-oping. */}
+        {isWebClientMode() ? null : (
+          <button
+            type="button"
+            onClick={openExternally}
+            title="Open externally"
+            className="rounded p-1 hover:bg-fg/5"
+            style={{ color: COLORS.textMuted }}
+          >
+            <ArrowSquareOut size={14} />
+          </button>
+        )}
       </div>
       <div className="flex flex-wrap items-start justify-between gap-2 pt-4">
         <div className="min-w-0">

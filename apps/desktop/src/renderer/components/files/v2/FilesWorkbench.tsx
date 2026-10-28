@@ -79,6 +79,7 @@ import {
 } from "../../terminals/workToolChrome";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { revealLabel } from "../../../lib/platform";
+import { isWebClientMode } from "../../../lib/webClientMode";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 import { ArrowLeft, CaretRight, MagnifyingGlass } from "@phosphor-icons/react";
@@ -235,7 +236,8 @@ export function FilesWorkbench({
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
-  const canRevealInFinder = workspace != null && (workspace.kind === "external" || !isRemoteProject);
+  // The web client has no Finder/Explorer of its own to reveal a path in.
+  const canRevealInFinder = !isWebClientMode() && workspace != null && (workspace.kind === "external" || !isRemoteProject);
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
   const theme: EditorThemeMode = "dark";
   const sessionKey = filesProjectSessionKey(projectRootPath);
@@ -423,7 +425,7 @@ export function FilesWorkbench({
         workspaceId: tab.workspaceId,
         rootPath: wsRoot,
         laneId: tab.laneId,
-        canRevealInFinder: ws != null && (ws.kind === "external" || !isRemoteProject),
+        canRevealInFinder: !isWebClientMode() && ws != null && (ws.kind === "external" || !isRemoteProject),
       };
     },
     [isRemoteProject, projectRootPath, workspaces],
@@ -1568,7 +1570,10 @@ export function FilesWorkbench({
     (event: React.DragEvent<HTMLDivElement>) => {
       if (draggingTab || !Array.from(event.dataTransfer.types).includes("Files")) return;
       event.preventDefault();
-      event.dataTransfer.dropEffect = "copy";
+      // The web client cannot resolve a dropped file to a path on the connected
+      // machine, so it refuses the drop (no-drop cursor) instead of accepting it
+      // and doing nothing. Still cancelled so the browser does not open the file.
+      event.dataTransfer.dropEffect = isWebClientMode() ? "none" : "copy";
     },
     [draggingTab],
   );
@@ -1577,6 +1582,7 @@ export function FilesWorkbench({
     (event: React.DragEvent<HTMLDivElement>) => {
       if (draggingTab || event.dataTransfer.files.length === 0) return;
       event.preventDefault();
+      if (isWebClientMode()) return;
       const firstFile = event.dataTransfer.files.item(0);
       const droppedPath = firstFile ? window.ade.project.getDroppedPath(firstFile) : null;
       if (!droppedPath) return;

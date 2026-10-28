@@ -16,7 +16,7 @@ import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
-import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, guardPinnedMembers, type RuntimePinArg } from "./runtimePinGuard";
 
 const READ_CACHE_TTL_MS = 3_000;
 
@@ -25,7 +25,7 @@ const READ_CACHE_TTL_MS = 3_000;
 // machine and project, so it can serve a matching pin as-is and must reject a
 // different target rather than silently using its bound project. Keep this in
 // sync with the pin-bearing methods in preload/global.d.ts.
-const PINNED_METHOD_ARG_INDEX: Record<string, 0 | 1> = {
+const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
   preflightCreateLaneFromPrBranch: 1,
   createLaneFromPrBranch: 1,
   getForLane: 1,
@@ -588,16 +588,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     cleanupBranch: (args: unknown) => call("prs.cleanupBranch", args, { ok: false, error: "unsupported" }, false),
   };
 
-  for (const [methodName, pinIndex] of Object.entries(PINNED_METHOD_ARG_INDEX)) {
-    const method = prs[methodName];
-    if (typeof method !== "function") continue;
-    prs[methodName] = (...args: unknown[]) => {
-      assertWebRuntimePinRoutable(`prs.${methodName}`, args[pinIndex] as RuntimePinArg, infra);
-      return (method as (...values: unknown[]) => unknown)(...args);
-    };
-  }
-
-  return prs as AdeNamespace<"prs">;
+  return guardPinnedMembers(prs, "prs", PINNED_METHOD_ARG_INDEX, infra) as AdeNamespace<"prs">;
 }
 
 function asRecord(args: unknown): Record<string, unknown> {

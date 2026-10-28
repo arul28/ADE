@@ -154,14 +154,14 @@ export function MediaLightbox({
             playsInline
             onError={onMediaError}
             aria-label={title}
-            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] bg-black object-contain"
+            className="block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] bg-black object-contain"
           />
         ) : (
           <img
             src={src}
             alt={title}
             onError={onMediaError}
-            className="block h-auto max-h-[calc(100vh-32px)] w-auto max-w-[calc(100vw-32px)] object-contain"
+            className="block h-auto max-h-[calc(100vh_/_var(--ade-web-zoom-factor,1)_-_32px)] w-auto max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_32px)] object-contain"
           />
         )}
         {kind === "video" && !failureText && chapters && chapters.length >= 2 ? (

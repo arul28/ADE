@@ -98,23 +98,6 @@ export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null
   return message || "Git action failed.";
 }
 
-type LaneGitActionRuntimeState = {
-  version: number;
-  busyAction: string | null;
-  notice: string | null;
-  error: string | null;
-};
-
-const EMPTY_LANE_GIT_ACTION_RUNTIME_STATE: LaneGitActionRuntimeState = {
-  version: 0,
-  busyAction: null,
-  notice: null,
-  error: null,
-};
-
-const laneGitActionRuntimeByScope = new Map<string, LaneGitActionRuntimeState>();
-const laneGitActionRuntimeListeners = new Set<() => void>();
-
 type LaneGitActionsCachedState = {
   changes?: DiffChanges;
   stashes: GitStashSummary[];
@@ -215,82 +198,6 @@ function invalidateLaneGitCaches(projectKey: string | null | undefined, laneId: 
   }
 }
 
-function emitLaneGitActionRuntimeChange(): void {
-  for (const listener of laneGitActionRuntimeListeners) {
-    listener();
-  }
-}
-
-function readLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRuntimeState {
-  if (!scopeKey) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
-  return laneGitActionRuntimeByScope.get(scopeKey) ?? EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
-}
-
-function writeLaneGitActionRuntimeState(
-  scopeKey: string | null,
-  next: LaneGitActionRuntimeState,
-): LaneGitActionRuntimeState {
-  if (!scopeKey) return EMPTY_LANE_GIT_ACTION_RUNTIME_STATE;
-  if (!next.busyAction && !next.notice && !next.error) {
-    laneGitActionRuntimeByScope.delete(scopeKey);
-  } else {
-    laneGitActionRuntimeByScope.set(scopeKey, next);
-  }
-  emitLaneGitActionRuntimeChange();
-  return next;
-}
-
-function patchLaneGitActionRuntimeState(
-  scopeKey: string | null,
-  patch: Partial<LaneGitActionRuntimeState>,
-): LaneGitActionRuntimeState {
-  const prev = readLaneGitActionRuntimeState(scopeKey);
-  return writeLaneGitActionRuntimeState(scopeKey, { ...prev, ...patch });
-}
-
-function beginLaneGitActionRuntime(
-  scopeKey: string | null,
-  patch: Pick<LaneGitActionRuntimeState, "busyAction" | "notice" | "error">,
-): number {
-  const nextVersion = readLaneGitActionRuntimeState(scopeKey).version + 1;
-  writeLaneGitActionRuntimeState(scopeKey, { ...patch, version: nextVersion });
-  return nextVersion;
-}
-
-function patchLaneGitActionRuntimeStateIfCurrent(
-  scopeKey: string | null,
-  version: number,
-  patch: Partial<LaneGitActionRuntimeState>,
-): LaneGitActionRuntimeState {
-  const current = readLaneGitActionRuntimeState(scopeKey);
-  if (current.version !== version) return current;
-  return writeLaneGitActionRuntimeState(scopeKey, { ...current, ...patch, version });
-}
-
-function scheduleLaneGitActionRuntimeClear(
-  scopeKey: string | null,
-  version: number,
-  delayMs: number,
-  patch: Partial<LaneGitActionRuntimeState>,
-): void {
-  window.setTimeout(() => {
-    patchLaneGitActionRuntimeStateIfCurrent(scopeKey, version, patch);
-  }, delayMs);
-}
-
-function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRuntimeState {
-  return React.useSyncExternalStore(
-    (listener) => {
-      laneGitActionRuntimeListeners.add(listener);
-      return () => {
-        laneGitActionRuntimeListeners.delete(listener);
-      };
-    },
-    () => readLaneGitActionRuntimeState(scopeKey),
-    () => EMPTY_LANE_GIT_ACTION_RUNTIME_STATE,
-  );
-}
-
 // ---------------------------------------------------------------------------
 // Cross-machine branch state (push divergence guard)
 // ---------------------------------------------------------------------------
@@ -312,6 +219,14 @@ import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
   machineNameForBinding,
 } from "../../../shared/machineIdentity";
+import {
+  beginLaneGitActionRuntime,
+  clearLaneGitActionRuntimeState,
+  patchLaneGitActionRuntimeState,
+  patchLaneGitActionRuntimeStateIfCurrent,
+  scheduleLaneGitActionRuntimeClear,
+  useLaneGitActionRuntimeState,
+} from "./laneGitActionRuntime";
 import { toLayoutPx } from "../../lib/webZoom";
 
 export {
@@ -322,10 +237,9 @@ export {
 };
 
 export function __resetLaneGitActionRuntimeForTests(): void {
-  laneGitActionRuntimeByScope.clear();
   laneGitActionsStateByScope.clear();
   __resetLaneGitListCacheForTests();
-  emitLaneGitActionRuntimeChange();
+  clearLaneGitActionRuntimeState();
 }
 
 function confirmForcePushWithLease(): Promise<boolean> {

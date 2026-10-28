@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { ArrowSquareOut, MusicNotes, VideoCamera } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { revealLabel } from "../../../../lib/platform";
+import { isWebClientMode } from "../../../../lib/webClientMode";
 import { playableVideoMime } from "../../../../lib/playableMedia";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
@@ -59,9 +60,12 @@ export function MediaViewer({ files, workspaceId, rootPath, tab, content, kind }
         <Icon size={15} color={COLORS.accent} />
         <span className="truncate" style={{ color: COLORS.textMuted }}>{mimeType}</span>
         <span className="ml-auto" style={{ color: COLORS.textDim }}>{formatBytes(content.size)}</span>
-        <button type="button" onClick={openExternally} title={revealLabel} className="rounded p-1 hover:bg-fg/5" style={{ color: COLORS.textMuted }}>
-          <ArrowSquareOut size={14} />
-        </button>
+        {/* The web client has no Finder/Explorer to reveal the file in, so it hides this instead of no-oping. */}
+        {isWebClientMode() ? null : (
+          <button type="button" onClick={openExternally} title={revealLabel} className="rounded p-1 hover:bg-fg/5" style={{ color: COLORS.textMuted }}>
+            <ArrowSquareOut size={14} />
+          </button>
+        )}
       </div>
       <div className="flex min-h-0 flex-1 items-center justify-center p-6">
         {error ? (

@@ -3,6 +3,7 @@ import { ArrowSquareOut, Copy, FileText } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
 import { joinDisplayPath } from "../pathDisplay";
 import { formatBytes } from "../../../../../shared/formatting";
+import { isWebClientMode } from "../../../../lib/webClientMode";
 
 /**
  * The honest "no in-app preview" card, shared by every viewer that cannot (or
@@ -68,14 +69,17 @@ export function DocumentSurface({
         >
           <Copy size={14} /> Copy full path
         </button>
-        <button
-          type="button"
-          onClick={openExternally}
-          className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
-          style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
-        >
-          <ArrowSquareOut size={14} /> Open externally
-        </button>
+        {/* The web client has no OS to open the file in, so it hides this instead of no-oping. */}
+        {isWebClientMode() ? null : (
+          <button
+            type="button"
+            onClick={openExternally}
+            className="inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs"
+            style={{ border: `1px solid ${COLORS.border}`, color: COLORS.textPrimary }}
+          >
+            <ArrowSquareOut size={14} /> Open externally
+          </button>
+        )}
       </div>
     </div>
   );

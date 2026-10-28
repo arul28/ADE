@@ -508,7 +508,7 @@ function HeaderStatusMenu({
         panelRef={menuRef}
         title="Connections and usage"
         bare
-        width="w-max min-w-[220px] max-w-[calc(100vw-16px)]"
+        width="w-max min-w-[220px] max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_16px)]"
         panelStyle={menuPos ? {
           top: menuPos.top,
           right: menuPos.right,
@@ -2721,7 +2721,7 @@ export function TopBar({
         bare
         panelRef={connectionsPanelRef}
         title="Connections"
-        width="w-[min(560px,calc(100vw-24px))]"
+        width="w-[min(560px,calc(100vw_/_var(--ade-web-zoom-factor,1)_-_24px))]"
         onClose={closeConnections}
       >
         <ConnectionsPanel

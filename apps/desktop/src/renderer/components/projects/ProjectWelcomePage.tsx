@@ -745,13 +745,18 @@ export function ProjectWelcomePage() {
         // Only a folder from outside; a widget being moved in edit mode is not one.
         if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
+        // The web client cannot turn a dropped folder into a path on the
+        // connected machine, so it shows no drop target.
+        if (isWebClientMode()) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
+        // Cancelled on web too so the browser does not open the file in the
+        // tab; "none" refuses the drop there.
         event.preventDefault();
-        event.dataTransfer.dropEffect = "copy";
+        event.dataTransfer.dropEffect = isWebClientMode() ? "none" : "copy";
       }}
       onDragLeave={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;

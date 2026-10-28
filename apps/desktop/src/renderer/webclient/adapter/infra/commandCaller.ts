@@ -24,6 +24,12 @@ export type CommandCallOptions<T> = {
   requireProject?: boolean;
   timeoutMs?: number;
   cacheTtlMs?: number;
+  /**
+   * `false` for large one-off reads (history pages, image data): their answer
+   * is not kept as the reconnect fallback, which holds up to 500 entries and
+   * would otherwise pin hundreds of MB of transcript and image bytes.
+   */
+  retainLastRead?: false;
 };
 
 /**
@@ -185,13 +191,14 @@ export class CommandCaller {
     const readKey = options.idempotent !== false
       ? `${projectId ?? "runtime"}\u0000${action}\u0000${stableCacheKey(args)}`
       : null;
+    const retainLastRead = readKey !== null && !("retainLastRead" in options && options.retainLastRead === false);
     const send = async (): Promise<T> => {
       const epoch = this.invalidationEpoch;
       const value = (await this.client.sendCommand(action, args, {
         projectId,
         timeoutMs: options.timeoutMs,
       })) as T;
-      if (readKey && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
+      if (readKey && retainLastRead && epoch === this.invalidationEpoch) this.rememberSuccessfulRead(readKey, value);
       return value;
     };
 
