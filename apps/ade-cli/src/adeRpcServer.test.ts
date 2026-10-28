@@ -5350,6 +5350,8 @@ describe("adeRpcServer", () => {
 
   it("scopes PTY and terminal ADE actions to the caller's lane or chat", async () => {
     const fixture = createRuntime();
+    const clearAsk = vi.fn((sessionId: string) => ({ cleared: sessionId === "chat-2" }));
+    (fixture.runtime.agentChatService as any).clearAsk = clearAsk;
     const getChatEventHistory = vi.fn(async (sessionId: string) => ({
       sessionId,
       events: [],
@@ -5415,6 +5417,22 @@ describe("adeRpcServer", () => {
       role: "agent",
       chatSessionId: "chat-1",
     });
+
+    const clearDescendantAsk = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "clearAsk",
+      args: { sessionId: "chat-2" },
+    });
+    expect(clearDescendantAsk?.isError).toBeUndefined();
+    expect(clearAsk).toHaveBeenCalledTimes(1);
+    expect(clearAsk).toHaveBeenCalledWith("chat-2");
+    const denyUnrelatedAsk = await callTool(handler, "run_ade_action", {
+      domain: "chat",
+      action: "clearAsk",
+      args: { sessionId: "chat-3" },
+    });
+    expect(denyUnrelatedAsk?.isError).toBe(true);
+    expect(clearAsk).toHaveBeenCalledTimes(1);
 
     const listed = await callTool(handler, "run_ade_action", {
       domain: "pty",
