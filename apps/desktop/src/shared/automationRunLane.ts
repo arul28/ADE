@@ -35,6 +35,7 @@ export function automationRunLaneNeed(rule: RuleExecution): "none" | "lane" | "l
   if (execution.kind === "built-in" && !execution.targetLaneId?.trim()) {
     const createsLane = createsLaneForRun(rule);
     for (const action of execution.builtIn?.actions ?? []) {
+      if ((action.condition ?? "").trim() === "false") continue;
       if (action.type === "create-lane") break;
       if (createsLane && LANE_RESOLVING_ACTIONS.has(action.type) && !action.targetLaneId?.trim()) break;
       if (action.type === "delete-lane" && !action.targetLaneId?.trim()) return "lane-to-delete";

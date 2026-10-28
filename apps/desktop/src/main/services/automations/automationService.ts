@@ -5856,6 +5856,7 @@ export function createAutomationService({
       previousReviewStatus?: PrSummary["reviewStatus"] | null;
       /** The poller announced this PR's head red: confirmed on that head, once. */
       checksFailureAnnounced?: boolean;
+      prChanged?: boolean;
     }) {
       const stateTransition =
         args.previousState && args.previousState !== args.pr.state
@@ -5892,6 +5893,7 @@ export function createAutomationService({
       // never on its first look at a PR, so failures present at startup stay
       // quiet. The per-commit claim keeps a second brain on the project from firing it too.
       if (args.checksFailureAnnounced) notifyPrChecksFailed(args.pr, baseContext);
+      if (args.prChanged === false) return;
       if (args.pr.state === "merged" && args.previousState !== "merged") {
         void dispatchTrigger({
           triggerType: "git.pr_merged",

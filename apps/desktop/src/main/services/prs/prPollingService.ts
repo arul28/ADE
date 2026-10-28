@@ -190,6 +190,7 @@ export function createPrPollingService({
       previousBehindBaseBy: number | null;
       /** This poll announced the PR's head red (the "checks failing" toast's rule). */
       checksFailureAnnounced: boolean;
+      prChanged: boolean;
     }>;
     polledAt: string;
   }) => void | Promise<void>;
@@ -425,6 +426,7 @@ export function createPrPollingService({
         previousMergeConflicts: boolean | null;
         previousBehindBaseBy: number | null;
         checksFailureAnnounced: boolean;
+        prChanged: boolean;
       }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
@@ -439,14 +441,13 @@ export function createPrPollingService({
         );
         // An announced failure is a change even when no field moved: a new
         // head is only announced on the poll after it appeared, still red.
-        const changed =
+        const prChanged =
           !prev
           || prevFingerprint !== nextFingerprint
           || prev.checksStatus !== pr.checksStatus
           || prev.reviewStatus !== pr.reviewStatus
-          || prev.state !== pr.state
-          || failure.announce;
-        if (changed) {
+          || prev.state !== pr.state;
+        if (prChanged || failure.announce) {
           changedPrs.push(pr);
           changes.push({
             pr,
@@ -456,6 +457,7 @@ export function createPrPollingService({
             previousMergeConflicts: prev?.mergeConflicts ?? null,
             previousBehindBaseBy: prev?.behindBaseBy ?? null,
             checksFailureAnnounced: failure.announce,
+            prChanged,
           });
         }
         const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {

@@ -5324,7 +5324,7 @@ const EventRow = React.memo(function EventRow({
         "min-w-0 max-w-full space-y-3 transition-colors duration-700",
         // Interim assistant hover actions extend below their text row; keep
         // horizontal overflow contained without clipping that vertical footer.
-        interimText ? "overflow-x-clip" : "overflow-hidden",
+        interimText || turnEndText ? "overflow-x-clip" : "overflow-hidden",
         anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
       )}
     >

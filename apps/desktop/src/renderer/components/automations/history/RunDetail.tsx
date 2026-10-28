@@ -132,7 +132,6 @@ export function RunDetail({
   const laneName = laneId === triggerLaneId ? readString(metadata, "laneName") : null;
   const prUrl = readString(pr, "url") ?? readString(metadata, "prUrl");
   const title = detail.rule?.name ?? ruleName;
-  const queueStatus = detail.rule?.queueStatus ? detail.rule.queueStatus.replace(/-/g, " ") : null;
   // What this run was held to, not the rule's current setting.
   const verifyBeforePublish = run.verificationRequired === true;
   const state = runState(run.status);
@@ -175,9 +174,8 @@ export function RunDetail({
             {message ? (
               <p className={cn("mt-4 text-sm leading-relaxed", messageTone(state))}>{message}</p>
             ) : null}
-            {(laneId || prUrl || queueStatus || verifyBeforePublish) ? (
+            {(laneId || prUrl || verifyBeforePublish) ? (
               <div className="mt-4 flex flex-wrap items-center gap-2">
-                {queueStatus ? <span className="kit-tag">{queueStatus}</span> : null}
                 {verifyBeforePublish ? <span className="kit-tag" data-tone="warn">Verify before publish</span> : null}
                 {laneId ? (
                   <span className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/70">
@@ -279,7 +277,7 @@ export function RunDetail({
             <DetailRow label="Started">{formatDate(run.startedAt)}</DetailRow>
             <DetailRow label="Finished">{run.endedAt ? formatDate(run.endedAt) : `Not yet (${statusWord(run.status).toLowerCase()})`}</DetailRow>
             <DetailRow label="Spend">${(run.spendUsd ?? 0).toFixed(2)}</DetailRow>
-            <DetailRow label="Billing code"><span className="font-mono">{run.billingCode ?? detail.rule?.billingCode ?? "None"}</span></DetailRow>
+            <DetailRow label="Billing code"><span className="font-mono">{run.billingCode ?? "None"}</span></DetailRow>
             {run.chatSessionId ? <DetailRow label="Chat"><span className="font-mono">{run.chatSessionId}</span></DetailRow> : null}
             {detail.ingressEvent ? (
               <DetailRow label="Event">

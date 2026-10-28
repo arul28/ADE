@@ -4535,6 +4535,7 @@ app.whenReady().then(async () => {
               previousChecksStatus,
               previousReviewStatus,
               checksFailureAnnounced,
+              prChanged,
             }) => {
               automationService?.onPullRequestChanged?.({
                 pr,
@@ -4542,6 +4543,7 @@ app.whenReady().then(async () => {
                 previousChecksStatus,
                 previousReviewStatus,
                 checksFailureAnnounced,
+                prChanged,
               });
               return Promise.resolve();
             },
