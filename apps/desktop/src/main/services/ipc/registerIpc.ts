@@ -10588,6 +10588,7 @@ export function registerIpc({
     ensureIosSimulator().recordingsTotalBytes(arg));
 
   ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
+  ipcMain.handle(IPC.iosSimulatorLongPress, async (_event, arg) => ensureIosSimulator().longPress(arg));
 
   ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 

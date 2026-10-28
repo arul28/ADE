@@ -58,6 +58,15 @@ function appOwnedFix(
   return `Repair it${where} first: they pick up where they left off and keep going after you quit.`;
 }
 
+/** What this quit does with a waiting update, as one sentence; empty when none waits. */
+function updateOnQuitSentence(request: QuitPromptRequest): string {
+  const update = request.relaunch ? null : request.updateOnQuit;
+  if (!update) return "";
+  return update.installs
+    ? ` ADE ${update.version} installs as ADE quits, and the background service restarts on it.`
+    : ` ADE ${update.version} is downloaded. It installs later, when no agent is running, so quitting doesn't stop them.`;
+}
+
 /**
  * The quit confirmation: words and buttons, shared by ADE's dialog and the
  * native box main falls back to. The one difference is `canRepair`: false for
@@ -82,7 +91,7 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
     return {
       title: "ADE's background service isn't running",
       // Unknown is treated as "something is running": the fix that keeps agents is the safe advice.
-      description: `${stops} ${appOwnedFix(owned.repair, count ?? 1, options.canRepair)}`,
+      description: `${stops} ${appOwnedFix(owned.repair, count ?? 1, options.canRepair)}${updateOnQuitSentence(request)}`,
       tone: "warning",
       dontAskAgainLabel: null,
       actions: [
@@ -97,7 +106,7 @@ export function quitPromptModel(request: QuitPromptRequest, options: { canRepair
   else if (request.relaunch) description = "Your agents keep running in the background while ADE restarts.";
   return {
     title: `${verb} ADE?`,
-    description,
+    description: `${description}${updateOnQuitSentence(request)}`,
     tone: "accent",
     dontAskAgainLabel: "Don't ask again",
     actions: [

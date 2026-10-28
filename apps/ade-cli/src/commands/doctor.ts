@@ -43,6 +43,10 @@ import type {
   SyncListenerPortDiagnosis,
 } from "../services/sync/sharedSyncListener";
 import { powerShellSingleQuotedLiteral, resolveRuntimeServiceName } from "../serviceManager/common";
+import {
+  installedDesktopAppNames,
+  readInstalledDesktopApp,
+} from "../../../desktop/src/main/services/native/nativeHelperPaths";
 import { windowsPowerShellCommand } from "../serviceManager/windowsSupervisor";
 import {
   resolveWindowsServiceLauncherPath,
@@ -438,112 +442,18 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
   }
 }
 
+/** The app name this ADE home's channel installs as: `ADE`, `ADE Beta`, `ADE Alpha`. */
 export function resolveDefaultDesktopAppName(env: NodeJS.ProcessEnv = process.env): string {
-  const explicit = env.ADE_DESKTOP_APP_NAME?.trim();
-  if (explicit) return explicit;
-  const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  if (channel === "alpha") return "ADE Alpha";
-  if (channel === "beta") return "ADE Beta";
-  return "ADE";
+  return installedDesktopAppNames(env)[0] ?? "ADE";
 }
 
-export function readInstalledDesktopVersion(
-  appPaths?: string[],
-): { version: string | null; path: string | null } {
-  if (process.platform === "win32" && !appPaths) {
-    return readInstalledWindowsDesktopVersion();
-  }
-  if (process.platform !== "darwin" && !appPaths) {
-    return { version: null, path: null };
-  }
-  const explicitPath = process.env.ADE_DESKTOP_APP_PATH?.trim();
-  const preferredName = resolveDefaultDesktopAppName();
-  const candidates = appPaths ?? [
-    ...(explicitPath ? [explicitPath] : []),
-    `/Applications/${preferredName}.app`,
-    "/Applications/ADE.app",
-    "/Applications/ADE Beta.app",
-    "/Applications/ADE Alpha.app",
-  ];
-  for (const appPath of Array.from(new Set(candidates))) {
-    const infoPlist = path.join(appPath, "Contents", "Info.plist");
-    if (!fs.existsSync(infoPlist)) continue;
-    try {
-      const raw = fs.readFileSync(infoPlist, "utf8");
-      const xmlMatch = /<key>\s*CFBundleShortVersionString\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i.exec(raw);
-      if (xmlMatch?.[1]?.trim()) {
-        return { version: xmlMatch[1].trim(), path: appPath };
-      }
-    } catch {
-      // Binary plists are handled by plutil below.
-    }
-    const result = spawnSync(
-      "/usr/bin/plutil",
-      ["-extract", "CFBundleShortVersionString", "raw", "-o", "-", infoPlist],
-      { encoding: "utf8", timeout: 500 },
-    );
-    const version = typeof result.stdout === "string" ? result.stdout.trim() : "";
-    if (result.status === 0 && version) {
-      return { version, path: appPath };
-    }
-  }
-  return { version: null, path: null };
-}
-
-export function parseWindowsDesktopInstallProbe(
-  output: string | Buffer | null | undefined,
-): { version: string | null; path: string | null } {
-  const text = Buffer.isBuffer(output) ? output.toString("utf8").trim() : String(output ?? "").trim();
-  if (!text) return { version: null, path: null };
-  try {
-    const parsed = JSON.parse(text) as Record<string, unknown>;
-    const version = asString(parsed.version);
-    const executablePath = asString(parsed.path);
-    return version && executablePath
-      ? { version, path: executablePath }
-      : { version: null, path: null };
-  } catch {
-    return { version: null, path: null };
-  }
-}
-
-export function readInstalledWindowsDesktopVersion(args: {
-  env?: NodeJS.ProcessEnv;
-  run?: typeof spawnSync;
-} = {}): { version: string | null; path: string | null } {
-  const env = args.env ?? process.env;
-  const run = args.run ?? spawnSync;
-  const preferredName = resolveDefaultDesktopAppName(env);
-  const script = [
-    "$ErrorActionPreference='Stop'",
-    "$preferred=$env:ADE_DOCTOR_DESKTOP_NAME",
-    "$explicit=$env:ADE_DOCTOR_DESKTOP_PATH",
-    "$names=@($preferred,'ADE','ADE Beta','ADE Alpha') | Select-Object -Unique",
-    "$entries=@(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $names -contains $_.DisplayName })",
-    "$entry=$entries | Sort-Object @{Expression={if ($_.DisplayName -eq $preferred) {0} else {1}}},DisplayName | Select-Object -First 1",
-    "$candidate=$null",
-    "if ($entry -and $entry.InstallLocation) { $candidate=Join-Path ([string]$entry.InstallLocation) (([string]$entry.DisplayName)+'.exe') }",
-    "if (-not $candidate -and $explicit) { $candidate=$explicit }",
-    "if (-not $candidate -and $env:LOCALAPPDATA) { $candidate=Join-Path $env:LOCALAPPDATA ('Programs\\'+$preferred+'\\'+$preferred+'.exe') }",
-    "$version=if ($entry -and $entry.DisplayVersion) {[string]$entry.DisplayVersion} elseif ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {(Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion} else {$null}",
-    "if ($version -and $candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { @{version=$version;path=[IO.Path]::GetFullPath($candidate)} | ConvertTo-Json -Compress }",
-  ].join("; ");
-  const result = run(
-    "powershell.exe",
-    ["-NoProfile", "-NonInteractive", "-Command", script],
-    {
-      encoding: "utf8",
-      timeout: 5_000,
-      windowsHide: true,
-      env: {
-        ...env,
-        ADE_DOCTOR_DESKTOP_NAME: preferredName,
-        ADE_DOCTOR_DESKTOP_PATH: env.ADE_DESKTOP_APP_PATH?.trim() ?? "",
-      },
-    },
-  );
-  if (result.status !== 0) return { version: null, path: null };
-  return parseWindowsDesktopInstallProbe(result.stdout);
+/**
+ * The installed ADE app's version and location (the `.app` on macOS, the
+ * `.exe` on Windows), as the brain reports it (`readInstalledDesktopApp`).
+ */
+export function readInstalledDesktopVersion(): { version: string | null; path: string | null } {
+  const app = readInstalledDesktopApp();
+  return { version: app?.version ?? null, path: app?.path ?? null };
 }
 
 /**

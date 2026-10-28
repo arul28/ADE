@@ -70,6 +70,7 @@ enum WorkSettingsCatalog {
     "appearance.apple-realistic-body": Setting(path: "Computer › Apple devices › Realistic body", locked: false),
     "appearance.apple-tap-rings": Setting(path: "Computer › Apple devices › Tap rings in recordings", locked: false),
     "appearance.apple-typed-badges": Setting(path: "Computer › Apple devices › Typed text in recordings", locked: false),
+    "apple.auto-record": Setting(path: "Computer › Apple devices › Record agent input", locked: false),
     "appearance.apple-remote-bitrate": Setting(path: "Computer › Apple devices › Remote viewer bitrate cap", locked: false),
     "appearance.apple-recordings-warn": Setting(path: "Computer › Apple devices › Recordings storage warning", locked: false),
     "agents.providers": Setting(path: "Computer › Providers › AI connections", locked: true),

@@ -289,7 +289,7 @@ function machineItems(
       id: "machines-behind",
       severity: "note",
       title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
-      detail: behind.map((machine) => `${machine.name}: ${machine.version ?? "unknown"}`).join(", "),
+      detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
       where: behind.length === 1 ? behind[0]!.name : "Your computers",
       route: settingsRouteFor("general.update-other-machines"),
     });

@@ -125,6 +125,11 @@ export type RemoteRuntimeConnectResult = {
   target: RemoteRuntimeTarget;
   arch: string;
   version: string | null;
+  /**
+   * The machine's installed desktop app version, beside its brain's `version`.
+   * Null with no app (a headless server); absent from brains before v1.2.126.
+   */
+  appVersion?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];
@@ -314,6 +319,8 @@ export type RemoteRuntimeConnectionStatus = {
   state: RemoteRuntimeConnectionState;
   arch: string | null;
   version: string | null;
+  /** See `RemoteRuntimeConnectResult.appVersion`. Live while connected; not persisted. */
+  appVersion?: string | null;
   route?: RemoteRuntimeConnectionRoute;
   capabilities?: RemoteRuntimeCapabilities;
   compatibilityWarnings?: string[];

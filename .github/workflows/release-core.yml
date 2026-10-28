@@ -834,6 +834,40 @@ jobs:
           echo "$reply"
           grep -q '"linux"' <<< "$reply"
 
+      # The standalone brain (`ade brain update` -> ~/.ade/bin/ade serve) has no
+      # ADE.app resources, so the darwin native archive carries the two helpers
+      # it spawns itself: the simulator helper and the demo engine (see
+      # package-native-deps.mjs copyDarwinNativeHelpers). The universal builds
+      # from warm-release-caches.yml are reused when their attestation checks
+      # out; a miss compiles only this target's architecture.
+      - name: Resolve release cache keys
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        id: cache-keys
+        uses: ./.github/actions/release-cache-keys
+      - name: Restore native helpers
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-keys.outputs.native-helper-paths }}
+          key: ${{ steps.cache-keys.outputs.native-helpers }}
+      - name: Verify cached native helpers
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELPER_PATHS: ${{ steps.cache-keys.outputs.native-helper-paths }}
+        run: |
+          # shellcheck disable=SC2086
+          scripts/verify-cached-release-builds.sh ADE_NATIVE_HELPERS_CACHED $HELPER_PATHS
+      - name: Build the brain's macOS helpers
+        if: ${{ startsWith(matrix.target, 'darwin-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          arch=$([ "${{ matrix.target }}" = "darwin-arm64" ] && echo arm64 || echo x86_64)
+          ADE_SIM_HELPER_ARCHS="$arch" node apps/desktop/scripts/build-sim-helper.mjs
+          ADE_MEDIA_ARCHS="$arch" node apps/desktop/scripts/build-ade-media.mjs
+          echo "ADE_REQUIRE_DARWIN_NATIVE_HELPERS=1" >> "$GITHUB_ENV"
+
       - name: Build ADE runtime binary
         env:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
@@ -936,6 +970,10 @@ jobs:
           node apps/ade-cli/scripts/probe-runtime-crsqlite.mjs --archive "$archive" --target "${{ matrix.target }}"
           if [[ "$RUNNER_OS" == "Linux" ]]; then
             grep -q '^\./native/ade-desktop-driver$' "$archive_listing"
+          fi
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            grep -q '^\./native/ade-sim-helper$' "$archive_listing"
+            grep -q '^\./native/ade-media$' "$archive_listing"
           fi
 
       - name: Assemble signed Windows standalone runtime bundle

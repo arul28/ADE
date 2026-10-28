@@ -3,6 +3,7 @@
 // Adapted: the pointer-capture gesture shape and the
 // normalise-against-the-drawn-frame rule.
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AppleDeviceInput } from "./AppleDeviceFlatView";
 
@@ -24,6 +25,7 @@ import type { AppleDeviceInput } from "./AppleDeviceFlatView";
  *
  * The gesture is recognised here, where the pointer stream already is, and
  * leaves as exactly one action: `tap` for a press that did not travel,
+ * `longPress` for one that did not travel and was held (a context menu),
  * `drag` for one that did (the service replays it as begin → moves → end on
  * the helper, with the real duration, which is what makes iOS read it as a
  * drag rather than a flick). A wheel is a drag too — iOS has no scroll event.
@@ -34,6 +36,14 @@ export const APPLE_TAP_SLOP_POINTS = 10;
 
 /** A wheel notch is ~120; this is how far the finger travels per unit. */
 const WHEEL_TO_POINTS = 1;
+
+/**
+ * A press that stays put this long is a long press, replayed for as long as
+ * it was held: iOS opens a context menu at about half a second, and a zero-hold
+ * tap could never reach one from the pane.
+ */
+export const APPLE_LONG_PRESS_THRESHOLD_MS = 500;
+const MAX_LONG_PRESS_MS = 5_000;
 
 /** Below this a drag is a flick; iOS ignores flicks on most scrollers. */
 const MIN_DRAG_MS = 60;
@@ -81,6 +91,13 @@ export function appleKeyText(event: {
   // helper's `type` command needs: it types text and cannot press keys.
   if (event.key.length === 1) return event.key;
   return null;
+}
+
+/** The host predates long press: its action is unknown, or its `apple.input` has no `long-press` kind. */
+function isLongPressUnsupportedError(error: unknown): boolean {
+  if (isUnsupportedAdeActionError(error)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /does not support 'long-press'/u.test(message);
 }
 
 export function useAppleDeviceInput({
@@ -135,6 +152,20 @@ export function useAppleDeviceInput({
     gestureRef.current = null;
     const pin = runtimePinRef.current;
     if (gesture.travel <= APPLE_TAP_SLOP_POINTS) {
+      const heldMs = Date.now() - gesture.startedAt;
+      if (heldMs >= APPLE_LONG_PRESS_THRESHOLD_MS) {
+        const point = { deviceUdid, x: gesture.startX, y: gesture.startY, ...scope };
+        void window.ade.iosSimulator
+          .longPress({ ...point, durationMs: Math.min(MAX_LONG_PRESS_MS, heldMs) }, pin)
+          .catch((error: unknown) => {
+            // A host from before long press (no `longPress` action, or an
+            // `apple.input` without `long-press`): the press still lands, as a tap.
+            if (!isLongPressUnsupportedError(error)) throw error;
+            return window.ade.iosSimulator.tap(point, pin);
+          })
+          .catch(fail);
+        return;
+      }
       void window.ade.iosSimulator
         .tap({ deviceUdid, x, y, ...scope }, pin)
         .catch(fail);

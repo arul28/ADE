@@ -56,6 +56,16 @@ export type AppleDeviceRemoteService = {
     text: string;
     source?: "user" | "agent";
   }): Promise<unknown>;
+  /** A press held at one point. Absent from runtimes that predate it. */
+  longPress?(args: {
+    deviceUdid?: string | null;
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    x: number;
+    y: number;
+    durationMs?: number | null;
+    source?: "user" | "agent";
+  }): Promise<unknown>;
   /** A live finger's phase. Absent from runtimes that predate live touch. */
   touch?(args: {
     laneId?: string | null;
@@ -141,6 +151,7 @@ export const APPLE_NO_LANE_DEVICE_CODE = "APPLE_NO_LANE_DEVICE" as const;
  */
 const APPLE_INVOKE_INPUT_METHODS: ReadonlySet<string> = new Set([
   "tap",
+  "longPress",
   "typeText",
   "drag",
   "swipe",
@@ -514,6 +525,23 @@ export function createAppleRemoteCommandHandlers(deps: {
               y: requireFiniteNumber(payload.y, "y"),
             });
             return { ok: true };
+          case "long-press": {
+            // The web pane's held press (a viewer with live touch holds the
+            // finger itself and never sends this).
+            if (typeof service.longPress !== "function") {
+              throw new Error("apple.input long-press is not available in this runtime.");
+            }
+            await service.longPress({
+              laneId,
+              deviceUdid,
+              chatSessionId,
+              source: "user",
+              x: requireFiniteNumber(payload.x, "x"),
+              y: requireFiniteNumber(payload.y, "y"),
+              durationMs: asNumber(payload.durationMs),
+            });
+            return { ok: true };
+          }
           case "touch": {
             if (typeof service.touch !== "function") {
               throw new Error("apple.input touch is not available in this runtime.");

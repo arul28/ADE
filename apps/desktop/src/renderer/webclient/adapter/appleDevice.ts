@@ -253,6 +253,19 @@ export function createAppleDeviceNamespace(
       unavailable(NO_HOST),
       false,
     )) as never,
+    longPress: (async (args: { x: number; y: number; durationMs?: number | null }) => call(
+      "apple.input",
+      {
+        kind: "long-press",
+        laneId: laneOf(args),
+        chatSessionId: chatOf(args),
+        x: args.x,
+        y: args.y,
+        durationMs: args.durationMs ?? null,
+      },
+      unavailable(NO_HOST),
+      false,
+    )) as never,
     typeText: (async (args: { text: string }) => call(
       "apple.input",
       { kind: "type", laneId: laneOf(args), chatSessionId: chatOf(args), text: args.text },

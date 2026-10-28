@@ -933,6 +933,7 @@ import type {
   ComputerUseOwnerSnapshotArgs,
   IosSimulatorDevice,
   IosSimulatorDragArgs,
+  IosSimulatorLongPressArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
   IosSimulatorEnsurePreviewWorkspaceArgs,
@@ -3273,6 +3274,11 @@ declare global {
           args: { deviceUdid?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        /** A press held at one point (a context menu). */
+        longPress: (
+          args: IosSimulatorLongPressArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true; action: "long-press"; durationMs: number }>;
         pressButton: (
           args: ApplePressButtonArgs,
           pin?: OpenProjectBinding | null,

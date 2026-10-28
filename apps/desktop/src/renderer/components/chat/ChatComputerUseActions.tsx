@@ -279,6 +279,7 @@ function actionGlyph(summary: ComputerUseActionSummary): Icon {
     case "hover":
       return CursorClick;
     case "tap":
+    case "long-press":
       return HandTap;
     case "type":
     case "fill":

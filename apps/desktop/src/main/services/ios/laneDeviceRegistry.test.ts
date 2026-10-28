@@ -327,9 +327,21 @@ describe("laneDeviceRegistry device lifecycle", () => {
     fs.writeFileSync(path.join(foreignProject, ".ade", "ade.db"), "");
     const heldUdid = "00000000-0000-4000-8000-000000000001";
     const goneUdid = "00000000-0000-4000-8000-000000000002";
+    // A marker the project move did not rewrite: its folder is gone, but the
+    // machine's move journal says the project went to `foreignProject`,
+    // whose lane still holds the device.
+    const movedUdid = "00000000-0000-4000-8000-000000000003";
     placeMarker(heldUdid, marker(foreignProject, "foreign-lane"));
     placeMarker(goneUdid, marker(path.join(root, "gone"), "old-lane"));
-    const devices = [heldUdid, goneUdid].map((udid) =>
+    placeMarker(movedUdid, marker(path.join(root, "moved-away"), "foreign-lane"));
+    const adeHome = path.join(root, "ade-home");
+    fs.mkdirSync(path.join(adeHome, "project-moves"), { recursive: true });
+    fs.writeFileSync(path.join(adeHome, "project-moves", "move_1.json"), JSON.stringify({
+      moveId: "move_1", state: "done", finishedAt: Date.now(), sourceRoot: path.join(root, "moved-away"), destinationRoot: foreignProject,
+    }));
+    const previousAdeHome = process.env.ADE_HOME;
+    process.env.ADE_HOME = adeHome;
+    const devices = [heldUdid, goneUdid, movedUdid].map((udid) =>
       simulator({ udid, name: `ADE · ${udid}` }),
     );
     const listJson = JSON.stringify({
@@ -358,7 +370,10 @@ describe("laneDeviceRegistry device lifecycle", () => {
       expect(result.deleted.map((entry) => entry.udid)).toEqual([goneUdid]);
       expect(run.mock.calls.some((call) => call[1].join(" ").includes(`delete ${heldUdid}`))).toBe(false);
       expect(run.mock.calls.some((call) => call[1].join(" ").includes(`delete ${goneUdid}`))).toBe(true);
+      expect(run.mock.calls.some((call) => call[1].join(" ").includes(`delete ${movedUdid}`))).toBe(false);
     } finally {
+      if (previousAdeHome === undefined) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
       fs.rmSync(root, { recursive: true, force: true });
     }
   });
@@ -435,6 +450,70 @@ describe("laneDeviceRegistry device lifecycle", () => {
     expect(store.rows["lane-1"]).toBeUndefined();
     expect(run).not.toHaveBeenCalled();
     await expect(registry.deviceDetach({ laneId: "lane-1" })).resolves.toBeNull();
+  });
+
+  it("deletes a released ADE device after its grace, but never one the person kept, and never hands a kept one back", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-kept-"));
+    const dataRoot = path.join(root, "devices");
+    const KEPT = "00000000-0000-4000-8000-000000000001";
+    const RELEASED = "00000000-0000-4000-8000-000000000002";
+    const listed: AppleInstalledSimulator[] = [];
+    let clock = Date.parse("2026-10-27T10:00:00Z");
+    const run = vi.fn(async (_command: string, args: string[]) => {
+      const joined = args.join(" ");
+      if (joined.startsWith("simctl create ")) {
+        // Device folders are named by udid; the cleanup pass reads only those.
+        const udid = `00000000-0000-4000-8000-00000000000${listed.length + 1}`;
+        // CoreSimulator makes the device's folder; the marker goes in it.
+        fs.mkdirSync(path.join(dataRoot, udid), { recursive: true });
+        listed.push(simulator({ udid, name: args[2] ?? "" }));
+        return { stdout: `${udid}\n`, stderr: "" };
+      }
+      if (joined === "simctl list devices --json") {
+        return { stdout: JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-26-3": listed } }), stderr: "" };
+      }
+      return { stdout: "", stderr: "" };
+    });
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => listed,
+      listInstalledRuntimes: async () => RUNTIMES,
+      projectRoot: path.join(root, "project"),
+      deviceDataRoot: dataRoot,
+      store: memoryStore(),
+      now: () => new Date(clock),
+      logger: noopLogger,
+    });
+    const deleted = () => run.mock.calls.map((call) => call[1].join(" ")).filter((call) => call.startsWith("simctl delete "));
+
+    try {
+      await registry.deviceCreate({ laneId: "lane-1" });
+      await registry.deviceCreate({ laneId: "lane-2" });
+      await expect(registry.deviceDetach({ laneId: "lane-1", keep: true })).resolves.toMatchObject({ udid: KEPT, kept: true });
+      const released = await registry.deviceDetach({ laneId: "lane-2" });
+      expect(released?.deletesAfter).toBe(new Date(clock + 5 * 60_000).toISOString());
+
+      // The picker sees which is which.
+      const { ownership } = await registry.deviceList({ laneId: "lane-3", disk: true, installed: true });
+      expect(ownership?.find((entry) => entry.udid === KEPT)).toMatchObject({ ownership: "ade-kept" });
+      expect(ownership?.find((entry) => entry.udid === RELEASED)).toMatchObject({ ownership: "ade-orphan", deletesAfter: released?.deletesAfter });
+
+      // Past the grace: the released one goes; the kept one stays, and its
+      // still-live lane does not get it back as if it had only lost its row.
+      clock += 10 * 60_000;
+      await registry.reconcile();
+      expect(deleted()).toEqual([`simctl delete ${RELEASED}`]);
+      expect(registry.get("lane-1")).toBeNull();
+
+      // A lane that takes it again owns it as an ADE device, no longer kept.
+      await registry.deviceAttach({ laneId: "lane-4", simulator: KEPT });
+      const marker = JSON.parse(fs.readFileSync(path.join(dataRoot, KEPT, "ade-lane-device.json"), "utf8")) as Record<string, unknown>;
+      expect(marker.keptAt).toBeUndefined();
+      expect(registry.get("lane-4")).toMatchObject({ udid: KEPT, origin: "created" });
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("shuts a clone down before deleting it", async () => {

@@ -115,6 +115,12 @@ public enum SimHelperCommand: Equatable, Sendable {
     /// The hinge angle, physical orientation and which display is active.
     case postureGet(id: String, udid: String)
     case axDescribe(id: String, udid: String)
+    /// The one element at a point (screen space, the tree's own points) and
+    /// its children: a cheap re-read of a field after typing, no tree walk and
+    /// no grid probe.
+    case axHit(id: String, udid: String, x: Double, y: Double)
+    /// The element with keyboard focus in the frontmost app, or none.
+    case axFocused(id: String, udid: String)
     case axFrontmost(id: String, udid: String)
     case screenshot(id: String, udid: String, path: String)
     case recordStart(
@@ -152,6 +158,8 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .posture(id, _, _, _): return id
         case let .postureGet(id, _): return id
         case let .axDescribe(id, _): return id
+        case let .axHit(id, _, _, _): return id
+        case let .axFocused(id, _): return id
         case let .axFrontmost(id, _): return id
         case let .screenshot(id, _, _): return id
         case let .recordStart(id, _, _, _, _, _, _): return id
@@ -179,6 +187,8 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .posture(_, udid, _, _): return udid
         case let .postureGet(_, udid): return udid
         case let .axDescribe(_, udid): return udid
+        case let .axHit(_, udid, _, _): return udid
+        case let .axFocused(_, udid): return udid
         case let .axFrontmost(_, udid): return udid
         case let .screenshot(_, udid, _): return udid
         case let .recordStart(_, udid, _, _, _, _, _): return udid
@@ -379,6 +389,13 @@ public enum SimHelperCommandParser {
 
             case "ax-describe":
                 return .success(.axDescribe(id: id, udid: try requireUdid()))
+
+            case "ax-hit":
+                let udid = try requireUdid()
+                return .success(.axHit(id: id, udid: udid, x: try requireNumber("x"), y: try requireNumber("y")))
+
+            case "ax-focused":
+                return .success(.axFocused(id: id, udid: try requireUdid()))
 
             case "ax-frontmost":
                 return .success(.axFrontmost(id: id, udid: try requireUdid()))

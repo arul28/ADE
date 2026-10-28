@@ -144,42 +144,71 @@ export function parseCompactLogLine(
 }
 
 /**
+ * A process name `log stream` can be asked for: an app's `CFBundleExecutable`
+ * ("Versic", "My App", "app-dev"). Anything else is refused rather than
+ * escaped, the same rule as the quote and backslash below.
+ */
+const PROCESS_NAME = /^[\p{L}\p{N} ._+-]{1,128}$/u;
+
+function predicateLiteral(value: string, what: string): string {
+  if (PREDICATE_UNSAFE.test(value) || /[\r\n]/.test(value)) {
+    throw new Error(
+      `Refusing to build a log predicate from ${what} ${JSON.stringify(value)}: a quote or a backslash (or a line break) can add predicate clauses.`,
+    );
+  }
+  return `"${value}"`;
+}
+
+/**
  * Builds the `--predicate` value for an app, or null when there is nothing to
  * filter by.
  *
- * An explicit predicate wins and returns unchanged. The caller who writes a
- * predicate by hand knows more about the app than this function does.
+ * Two clauses, either of which keeps a row:
  *
- * A bundle id produces `subsystem BEGINSWITH "<bundleId>"` and nothing else.
- * The obvious filter also matches `process == "<name>"`, but a bundle id does
- * not carry the process name: the executable name comes from the build
- * settings and is frequently not the last component of the bundle id. A guess
- * there would drop real rows. IMPORTANT: the app must log with its bundle id as
- * the `os_log` subsystem, or this filter catches nothing. `BEGINSWITH` rather
- * than `==` so that a subsystem such as `com.acme.app.networking` still
- * matches.
+ * - `subsystem BEGINSWITH "<prefix>"`: the app's `os_log`/`Logger` rows. The
+ *   prefix is the bundle id unless `subsystem` names another, because an app
+ *   often logs under a name that is not its bundle id (`com.acme.app` for the
+ *   `com.acme.app.dev` build), and then this clause alone caught nothing.
+ *   `BEGINSWITH` so that `com.acme.app.networking` still matches.
+ * - `process == "<name>"`: everything the app's own process logs (`NSLog`, a
+ *   `Logger` under any subsystem, the frameworks it calls). The name is the
+ *   installed app's `CFBundleExecutable`, read by the caller, or `process`.
+ *   A bundle id does not carry it, so with neither it is left out.
+ *
+ * `print` never reaches the unified log, so no predicate catches it.
  *
  * There is deliberately no raw-predicate escape hatch. `log stream` reads the
  * WHOLE device, so an arbitrary predicate returns every other app's rows and
- * the system's besides — and nothing in the product ever asked for that. An
- * agent that genuinely needs a device-wide log can run `simctl spawn` itself.
+ * the system's besides. An agent that genuinely needs a device-wide log can
+ * run `simctl spawn` itself.
  *
- * @throws Error when the bundle id contains a double quote or a backslash.
+ * @throws Error when a value contains a quote, a backslash or a line break, or
+ *   a process name has characters no executable name has.
  */
 export function buildLogPredicate(args: {
   bundleId?: string | null;
+  subsystem?: string | null;
+  process?: string | null;
 }): string | null {
-  const bundleId = (args.bundleId ?? "").trim();
-  if (bundleId.length === 0) {
-    return null;
+  const subsystem = (args.subsystem ?? "").trim() || (args.bundleId ?? "").trim();
+  const processName = (args.process ?? "").trim();
+  const clauses: string[] = [];
+  if (subsystem) clauses.push(`subsystem BEGINSWITH ${predicateLiteral(subsystem, args.subsystem?.trim() ? "subsystem" : "bundle id")}`);
+  if (processName) {
+    if (!PROCESS_NAME.test(processName)) {
+      throw new Error(`Refusing to build a log predicate from process ${JSON.stringify(processName)}: that is not an executable name.`);
+    }
+    clauses.push(`process == ${predicateLiteral(processName, "process")}`);
   }
-  if (PREDICATE_UNSAFE.test(bundleId)) {
-    throw new Error(
-      `Refusing to build a log predicate from bundle id ${JSON.stringify(bundleId)}: a quote or a backslash can add predicate clauses.`,
-    );
-  }
-  return `subsystem BEGINSWITH "${bundleId}"`;
+  if (!clauses.length) return null;
+  return clauses.length === 1 ? clauses[0]! : `(${clauses.join(" OR ")})`;
 }
+
+/**
+ * After this long with no app row, a page says what the filter keeps and how
+ * to widen it: a quiet log and a filter that matches nothing read the same.
+ */
+export const EVENT_LOG_QUIET_HINT_MS = 8_000;
 
 export type IosEventLogDeps = {
   /** Spawns the log stream. Mirrors `child_process.spawn`'s shape, injected for tests. */
@@ -233,8 +262,20 @@ function clampReadLimit(limit: number | null | undefined): number {
   return Math.min(MAX_READ_LIMIT, Math.max(1, Math.floor(limit)));
 }
 
+/** A row belongs to a device when it names it, or names none (an ADE row about the lane). */
+function rowIsFor(row: IosSimulatorLogRow, deviceUdid: string): boolean {
+  return !row.deviceUdid || row.deviceUdid === deviceUdid;
+}
+
+function quietHint(predicate: string | null): string {
+  return `No app log line has arrived. The stream keeps ${predicate ?? "nothing"}. `
+    + "print() never reaches the device log; use Logger or NSLog. "
+    + "If the app logs under another subsystem, run log-start again with --subsystem <prefix>; "
+    + "to follow another process, --process <name>.";
+}
+
 export function createIosEventLog(deps: IosEventLogDeps): {
-  start(args: { deviceUdid: string; bundleId?: string | null }): void;
+  start(args: { deviceUdid: string; bundleId?: string | null; subsystem?: string | null; process?: string | null }): void;
   stop(): void;
   isRunning(): boolean;
   activeDeviceUdid(): string | null;
@@ -243,8 +284,14 @@ export function createIosEventLog(deps: IosEventLogDeps): {
     message: string;
     command?: string | null;
     level?: IosSimulatorLogRow["level"];
+    /** The device the action drove, so a read for another device leaves it out. */
+    deviceUdid?: string | null;
   }): IosSimulatorLogRow;
-  read(args: { sinceId?: number | null; limit?: number | null }): IosSimulatorEventLogPage;
+  /**
+   * `deviceUdid` keeps only that device's rows: the followed device's app
+   * rows and the ADE rows about it (or about no device in particular).
+   */
+  read(args: { sinceId?: number | null; limit?: number | null; deviceUdid?: string | null }): IosSimulatorEventLogPage;
   /**
    * The newest rows, with no page and no side effect.
    *
@@ -253,7 +300,7 @@ export function createIosEventLog(deps: IosEventLogDeps): {
    * dropped-row counter the drawer's poll needs, so the drawer's next page
    * reported no gap for rows it never saw.
    */
-  snapshotRows(limit?: number | null): IosSimulatorLogRow[];
+  snapshotRows(limit?: number | null, deviceUdid?: string | null): IosSimulatorLogRow[];
   dispose(): void;
 } {
   const capacity = Math.max(1, Math.floor(deps.capacity ?? DEFAULT_CAPACITY));
@@ -273,6 +320,9 @@ export function createIosEventLog(deps: IosEventLogDeps): {
    */
   let bufferPredicate: string | null = null;
   let lastError: string | null = null;
+  /** When the running stream started, and how many app rows it has given. */
+  let streamStartedAtMs: number | null = null;
+  let deviceRowsSinceStart = 0;
   /** Highest id ever handed out. It never resets, so `sinceId` never repeats. */
   let lastId = 0;
   /** Rows dropped from the head since the previous `read`. */
@@ -342,7 +392,7 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       if (requested.length === 0) {
         throw new Error("Cannot start the iOS event log without a device udid.");
       }
-      const predicate = buildLogPredicate({ bundleId: args.bundleId });
+      const predicate = buildLogPredicate({ bundleId: args.bundleId, subsystem: args.subsystem, process: args.process });
       // The same device AND the same app is the drawer re-mounting, which must
       // not restart the stream. The same device with another app is a real
       // change: the caller moved to another bundle id and its rows have to
@@ -365,6 +415,8 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       bufferPredicate = predicate;
       deviceUdid = requested;
       lastError = null;
+      streamStartedAtMs = clock().getTime();
+      deviceRowsSinceStart = 0;
 
       const active: EventLogSession = {
         deviceUdid: requested,
@@ -377,7 +429,11 @@ export function createIosEventLog(deps: IosEventLogDeps): {
         if (!active.live) {
           return;
         }
-        push(parseCompactLogLine(line, nextId(), nowIso()));
+        const row = parseCompactLogLine(line, nextId(), nowIso());
+        // `log stream`'s own header ("Filtering the log data using …") is no
+        // app row, so it does not silence the quiet hint.
+        if (row.process) deviceRowsSinceStart += 1;
+        push({ ...row, deviceUdid: requested });
       });
       active.process.onError((error) => {
         if (!active.live) {
@@ -444,15 +500,17 @@ export function createIosEventLog(deps: IosEventLogDeps): {
         category: null,
         message: row.message,
         command: row.command ?? null,
+        deviceUdid: row.deviceUdid ?? null,
       };
       push(entry);
       return entry;
     },
 
     /** The newest rows, with no page and no side effect. */
-    snapshotRows(limit) {
+    snapshotRows(limit, forDevice) {
       const count = clampReadLimit(limit);
-      return rows.slice(Math.max(0, rows.length - count));
+      const kept = forDevice ? rows.filter((row) => rowIsFor(row, forDevice)) : rows;
+      return kept.slice(Math.max(0, kept.length - count));
     },
 
     /**
@@ -471,20 +529,33 @@ export function createIosEventLog(deps: IosEventLogDeps): {
     read(args) {
       const limit = clampReadLimit(args.limit);
       const sinceId = typeof args.sinceId === "number" ? args.sinceId : null;
+      const forDevice = args.deviceUdid?.trim() || null;
+      const kept = forDevice ? rows.filter((row) => rowIsFor(row, forDevice)) : rows;
       const page =
         sinceId === null
-          ? rows.slice(Math.max(0, rows.length - limit))
-          : rows.filter((row) => row.id > sinceId).slice(0, limit);
-      const cursor = page.length > 0 ? page[page.length - 1].id : (sinceId ?? lastId);
+          ? kept.slice(Math.max(0, kept.length - limit))
+          : kept.filter((row) => row.id > sinceId).slice(0, limit);
+      // The cursor moves past rows the device filter left out, so the next
+      // poll does not walk them again.
+      const cursor = page.length > 0
+        ? page[page.length - 1].id
+        : sinceId === null ? lastId : forDevice ? Math.max(sinceId, lastId) : sinceId;
       const dropped = droppedSinceRead;
       droppedSinceRead = 0;
+      const running = session?.live === true;
+      const quiet = running
+        && deviceRowsSinceStart === 0
+        && streamStartedAtMs !== null
+        && clock().getTime() - streamStartedAtMs >= EVENT_LOG_QUIET_HINT_MS;
       return {
         deviceUdid,
-        running: session?.live === true,
+        running,
         rows: page,
         cursor,
         dropped,
         lastError,
+        predicate: bufferPredicate,
+        hint: quiet ? quietHint(bufferPredicate) : null,
       };
     },
 
@@ -503,6 +574,8 @@ export function createIosEventLog(deps: IosEventLogDeps): {
       bufferPredicate = null;
       droppedSinceRead = 0;
       lastError = null;
+      streamStartedAtMs = null;
+      deviceRowsSinceStart = 0;
     },
   };
 }

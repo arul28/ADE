@@ -53,6 +53,7 @@ import {
 import { AppleRuntimeInstallProgress, AppleRuntimesSection, AppleXcodeNote } from "./AppleRuntimesSection";
 import { appleRuntimeInstallActive } from "../../../shared/appleRuntimeVersions";
 import { AppleSpinner } from "./AppleSpinner";
+import { useTicker } from "../../lib/ticker";
 
 /**
  * The pane's front door: an "Available" heading with one glyph per installed
@@ -472,6 +473,17 @@ function DeviceCard({
               <span className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-accent">
                 Yours
               </span>
+            ) : ownership?.ownership === "ade-orphan" && ownership.deletesAfter ? (
+              <ReleasedDeviceTag deletesAfter={ownership.deletesAfter} />
+            ) : ownership?.ownership === "ade-kept" ? (
+              <PaneTooltip label="ADE made this device, and it was released and kept as a free simulator. ADE does not delete it; start it to give it to this lane, or delete it from its menu." side="bottom">
+                <span
+                  data-apple-device-kept=""
+                  className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-muted-fg"
+                >
+                  Kept
+                </span>
+              </PaneTooltip>
             ) : ownership?.ownership === "ade-orphan" ? (
               <PaneTooltip label="ADE made this device and no lane holds it. Clean up deletes it." side="bottom">
                 <span
@@ -510,6 +522,32 @@ function DeviceCard({
         />
       ) : null}
     </div>
+  );
+}
+
+/**
+ * A device a lane released that ADE made: the cleanup pass deletes it once
+ * the grace runs out (at its next run, so "soon" after that). Starting the
+ * card takes it back for this lane before then, which the tag says. One
+ * shared 30-second tick counts it down, and only while such a card is shown.
+ */
+function ReleasedDeviceTag({ deletesAfter }: { deletesAfter: string }) {
+  const now = useTicker(30_000);
+  const leftMs = Date.parse(deletesAfter) - now;
+  const minutes = Math.ceil(leftMs / 60_000);
+  const when = Number.isFinite(leftMs) && minutes > 0 ? `in ${minutes} min` : "soon";
+  return (
+    <PaneTooltip
+      label={`ADE made this device and a lane released it. ADE deletes it ${when === "soon" ? "at its next cleanup" : when}, with its apps and data. Start it to take it back for this lane.`}
+      side="bottom"
+    >
+      <span
+        data-apple-device-pending-delete={deletesAfter}
+        className="shrink-0 font-sans text-[10px] font-medium uppercase tracking-[0.08em] text-warning"
+      >
+        {`Deletes ${when}`}
+      </span>
+    </PaneTooltip>
   );
 }
 

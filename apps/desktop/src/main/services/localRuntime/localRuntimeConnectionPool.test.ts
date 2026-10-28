@@ -914,7 +914,8 @@ describe("local runtime connection pool", () => {
         versionSkew: {
           state: "none",
           appVersion: "1.0.0",
-          runtimeVersion: null,
+          // No skew, but the brain's real version is kept for About.
+          runtimeVersion: "2.0.0",
         },
         serviceInstall: {
           state: "skipped",
@@ -3429,7 +3430,8 @@ setInterval(() => {}, 1000);
         versionSkew: {
           state: "none",
           appVersion: "1.0.0",
-          runtimeVersion: null,
+          // No skew, but About shows the newer brain's real version.
+          runtimeVersion: "2.0.0",
         },
       });
       expect(() => process.kill(daemonPid, 0)).not.toThrow();

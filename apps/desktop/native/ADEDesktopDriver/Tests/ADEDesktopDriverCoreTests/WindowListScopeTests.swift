@@ -45,4 +45,32 @@ final class WindowListScopeTests: XCTestCase {
         XCTAssertTrue(scope.isUnscoped)
         XCTAssertTrue(scope.admits(windowId: 1, ownerPid: 400, ownedBy: nil, displayId: mainDisplay, laneDisplayId: nil))
     }
+
+    /// A "Replace?" sheet on a Save panel is no Accessibility window of its
+    /// own, and was dropped with every way to see or answer it.
+    func testPanelAdmission() {
+        let cases: [(layer: Int, axKnown: Bool, isAXWindow: Bool, sheetParent: UInt32?, laneApp: Bool, expected: WindowLayerPolicy.PanelAdmission)] = [
+            (8, true, true, nil, true, .window),
+            (8, true, false, 77, true, .sheet(parent: 77)),
+            (3, true, false, 77, false, .sheet(parent: 77)),
+            // Not a window and not a sheet: a tooltip, popover chrome.
+            (8, true, false, nil, true, .none),
+            (3, false, false, nil, true, .none),
+            // An unreadable lane app's modal panel still shows it is blocked.
+            (8, false, false, nil, true, .window),
+            (8, false, false, nil, false, .none),
+        ]
+        for row in cases {
+            XCTAssertEqual(
+                WindowLayerPolicy.panelAdmission(
+                    layer: row.layer,
+                    axKnown: row.axKnown,
+                    isAXWindow: row.isAXWindow,
+                    sheetParent: row.sheetParent,
+                    ownerIsLaneApp: row.laneApp
+                ),
+                row.expected
+            )
+        }
+    }
 }

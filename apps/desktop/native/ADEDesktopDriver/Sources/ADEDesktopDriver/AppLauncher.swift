@@ -17,13 +17,16 @@ extension WindowControl {
         let bundleId: String?
         let windows: [DesktopWindow]
         let watching: Bool
+        /// One sentence the caller must read: the document went to the
+        /// lane's running copy, or a second copy of the user's app opened.
+        var message: String? = nil
     }
 
     /// `ade desktop open <app|path|url>`.
     ///
     /// The window the app opens usually does not exist yet when this returns,
     /// which is why the pid is watched rather than the result being awaited.
-    func launch(laneId: String, target: String, arguments: [String]) throws -> LaunchResult {
+    func launch(laneId: String, target: String, arguments: [String], newInstance: Bool = false) throws -> LaunchResult {
         if let refusal = stopGate.refusal(laneId: laneId, action: "open an app") { throw refusal }
         guard placement(forLane: laneId) != nil else {
             throw DriverError(
@@ -53,6 +56,23 @@ extension WindowControl {
         // running instance, which `OwnershipRegistry` then refuses for the
         // second lane by name.
         configuration.createsNewApplicationInstance = true
+        // A document is different: it belongs in the copy this lane already
+        // runs. A second Ableton Live for one .als fought the first over its
+        // Remote Script port. See `documentInstance`.
+        var reusingPid: pid_t? = nil
+        var otherCopies: [NSRunningApplication] = []
+        if let documents, let bundleId = Bundle(url: documents.app)?.bundleIdentifier {
+            let plan = try documentInstance(
+                laneId: laneId,
+                bundleId: bundleId,
+                appName: Self.bundleName(documents.app) ?? target,
+                newInstance: newInstance,
+                workspace: workspace
+            )
+            reusingPid = plan.reusePid
+            otherCopies = plan.others
+            if plan.reusePid != nil { configuration.createsNewApplicationInstance = false }
+        }
 
         // Boxed rather than captured: the completion arrives on AppKit's
         // thread and is read on this one, and a plain captured `var` read
@@ -110,6 +130,15 @@ extension WindowControl {
 
         let pid = launched.processIdentifier
         let isNewInstance = !runningBefore.contains(pid)
+        var message: String?
+        if let reusingPid {
+            message = pid == reusingPid
+                ? "Opened the document in \(launched.localizedName ?? target) (pid \(pid)), which this lane already runs."
+                : "macOS opened the document in \(launched.localizedName ?? target) pid \(pid), not in this lane's copy (pid \(reusingPid))."
+        } else if isNewInstance, !otherCopies.isEmpty {
+            let pids = otherCopies.map { String($0.processIdentifier) }.joined(separator: ", ")
+            message = "\(launched.localizedName ?? target) was already running outside this lane (pid \(pids)), so this lane got its own second copy (pid \(pid)) with the document. An app that holds a fixed port or a lock (Ableton Live's Remote Scripts, FL Studio) can misbehave with two copies: if it does, quit this one (ade mac-desktop quit \(pid)) and open the file from the copy that was already running."
+        }
         // The wait above pumped the run loop, and the lane's stop can have run
         // inside it: its apps were collected to quit before this one existed,
         // so nothing would ever quit it. A new instance goes now.
@@ -144,10 +173,15 @@ extension WindowControl {
             throw OwnershipError.appOwnedByOtherLane(bundleId: bundleId, holderLaneId: holder).driverError
         }
 
+        // The app's own name, not the target: a document open's target is the
+        // file's path, and `quit <name>` matched that path against the name.
+        let recordedName = launched.localizedName
+            ?? launched.bundleURL.flatMap(Self.bundleName)
+            ?? target
         let isLanes = launchedApps.record(
             pid: pid,
             laneId: laneId,
-            appName: launched.localizedName ?? target,
+            appName: recordedName,
             bundleId: launched.bundleIdentifier,
             wasRunningBefore: !isNewInstance
         )
@@ -192,8 +226,51 @@ extension WindowControl {
             appName: launched.localizedName,
             bundleId: launched.bundleIdentifier,
             windows: parked,
-            watching: true
+            watching: true,
+            message: message
         )
+    }
+
+    /// Which copy of an app a document open goes to.
+    ///
+    /// * This lane runs the app, and no other copy runs: the document goes to
+    ///   the lane's copy (`reusePid`). That is the only case macOS can be told
+    ///   "this copy" in: with one copy running, a non-new-instance open goes to
+    ///   it.
+    /// * This lane runs it and so does someone else (the user, another lane):
+    ///   refused. macOS picks which running copy gets the file, and that may be
+    ///   the user's. `--new-instance` asks for a separate copy instead.
+    /// * Only someone else runs it: a new copy for the lane, as a blank launch
+    ///   gets, and the caller is told (`others`).
+    /// * `newInstance`: always a new copy.
+    private func documentInstance(
+        laneId: String,
+        bundleId: String,
+        appName: String,
+        newInstance: Bool,
+        workspace: NSWorkspace
+    ) throws -> (reusePid: pid_t?, others: [NSRunningApplication]) {
+        let running = workspace.runningApplications.filter { $0.bundleIdentifier == bundleId && !$0.isTerminated }
+        let lanePids = Set(launchedApps.apps(forLane: laneId).filter { app in
+            running.contains { $0.processIdentifier == app.pid && app.isStillRunning(currentBundleId: $0.bundleIdentifier, isTerminated: $0.isTerminated, hasProcess: true) }
+        }.map(\.pid))
+        let others = running.filter { !lanePids.contains($0.processIdentifier) }
+        if newInstance || lanePids.isEmpty { return (nil, others) }
+        if others.isEmpty { return (lanePids.sorted().first, []) }
+        let mine = lanePids.sorted().map(String.init).joined(separator: ", ")
+        let theirs = others.map { String($0.processIdentifier) }.joined(separator: ", ")
+        throw DriverError(
+            code: DriverErrorCode.invalidArgument,
+            message: "\(appName) runs on this lane (pid \(mine)) and outside it too (pid \(theirs)). macOS chooses which running copy opens a document, and it may be the user's, so ADE did not open it. Open the file from the lane's copy (its File menu), or pass --new-instance for a separate copy."
+        )
+    }
+
+    /// The bundle's display name, for messages about an app not yet running.
+    static func bundleName(_ appURL: URL) -> String? {
+        guard let bundle = Bundle(url: appURL) else { return nil }
+        return (bundle.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
+            ?? (bundle.object(forInfoDictionaryKey: "CFBundleName") as? String)
+            ?? appURL.deletingPathExtension().lastPathComponent
     }
 
     /// The files a launch opens as documents, and the app that opens them, or
@@ -236,22 +313,47 @@ extension WindowControl {
     /// the user's screen, so a save dialog is where the user can answer it.
     ///
     /// `match` is an app name, a bundle id or a pid; nil quits every one.
+    /// It resolves against the same apps `windows` lists as `ade_launched`:
+    /// the registry, plus any instance whose lane window still carries that
+    /// origin, by every name the app goes by (see `LaneAppMatch`).
     func quitApps(laneId: String, match: String?) throws -> [(app: LaunchedAppRegistry.App, released: Bool)] {
-        let needle = match?.trimmingCharacters(in: .whitespaces).lowercased()
-        let candidates = launchedApps.apps(forLane: laneId).map { (app: $0, released: false) }
+        let laneWindows = listWindows(laneId: laneId).filter { $0.laneId == laneId }
+        var candidates = launchedApps.apps(forLane: laneId).map { (app: $0, released: false) }
             + launchedApps.releasedApps(forLane: laneId).map { (app: $0, released: true) }
-        let wanted = candidates.filter { candidate in
-            guard let needle, !needle.isEmpty else { return true }
-            return candidate.app.appName.lowercased() == needle
-                || candidate.app.bundleId?.lowercased() == needle
-                || String(candidate.app.pid) == needle
+        // A window this lane parked as `ade_launched` is an instance the lane
+        // started, even when the registry lost it. The window still exists
+        // under that pid, and a window id dies with its process, so this is
+        // the same process and not one that reused the pid.
+        let known = Set(candidates.map(\.app.pid))
+        for pid in Set(laneWindows.filter { $0.origin == "ade_launched" }.map(\.pid)).sorted() where !known.contains(pid) {
+            guard let running = NSRunningApplication(processIdentifier: pid), !running.isTerminated else { continue }
+            let name = running.localizedName ?? laneWindows.first { $0.pid == pid }?.appName ?? "pid \(pid)"
+            let app = LaunchedAppRegistry.App(pid: pid, laneId: laneId, appName: name, bundleId: running.bundleIdentifier)
+            log("lane \(laneId) holds \(name) (pid \(pid)) as its own app, but the launch record was gone; quit takes it from its windows")
+            candidates.append((app: app, released: false))
         }
-        guard !wanted.isEmpty else {
+        let entries = candidates.map { candidate in
+            LaneAppMatch.Candidate(
+                pid: candidate.app.pid,
+                names: Self.namesForQuit(app: candidate.app, windows: laneWindows),
+                bundleId: candidate.app.bundleId
+            )
+        }
+        let outcome = LaneAppMatch.match(match, in: entries)
+        let wanted: [(app: LaunchedAppRegistry.App, released: Bool)]
+        switch outcome {
+        case .matched(let indices):
+            wanted = indices.map { candidates[$0] }
+        case .ambiguous(let indices):
+            let names = indices.map { "\(candidates[$0].app.appName) (pid \(candidates[$0].app.pid))" }
             throw DriverError(
                 code: DriverErrorCode.invalidArgument,
-                message: match == nil
-                    ? "Lane \(laneId) has no open app that it opened."
-                    : "Lane \(laneId) did not open \"\(match!)\". It quits only apps it opened with `open`."
+                message: "\"\(match ?? "")\" could mean \(names.joined(separator: " or ")). Name one of them, or give its pid."
+            )
+        case .none:
+            throw DriverError(
+                code: DriverErrorCode.invalidArgument,
+                message: quitRefusal(laneId: laneId, match: match, opened: candidates.map(\.app), laneWindows: laneWindows)
             )
         }
         var quit: [(app: LaunchedAppRegistry.App, released: Bool)] = []
@@ -279,6 +381,59 @@ extension WindowControl {
         }
         emitWindowsChanged(laneId: laneId)
         return quit
+    }
+
+    /// Every name `quit` accepts for one of the lane's apps: the launch's own
+    /// (which can be a document path), the running app's localized name, its
+    /// bundle's name and file name, and its windows' owner name.
+    static func namesForQuit(app: LaunchedAppRegistry.App, windows: [DesktopWindow]) -> [String] {
+        var names = [app.appName, (app.appName as NSString).lastPathComponent]
+        // Only while the pid still runs this app: a reused pid's names must
+        // not make `quit Safari` match an entry that was FL Studio.
+        if let running = NSRunningApplication(processIdentifier: app.pid),
+           !running.isTerminated,
+           running.bundleIdentifier == app.bundleId {
+            if let localized = running.localizedName { names.append(localized) }
+            if let url = running.bundleURL {
+                names.append(url.deletingPathExtension().lastPathComponent)
+                if let bundle = Bundle(url: url) {
+                    for key in ["CFBundleDisplayName", "CFBundleName"] {
+                        if let value = bundle.object(forInfoDictionaryKey: key) as? String { names.append(value) }
+                    }
+                }
+            }
+        }
+        names.append(contentsOf: windows.filter { $0.pid == app.pid }.map(\.appName))
+        var seen = Set<String>()
+        return names.filter { !$0.isEmpty && seen.insert($0).inserted }
+    }
+
+    /// The refusal for a `quit` that matched nothing, naming what the lane
+    /// does hold, so the next call can name it right.
+    private func quitRefusal(
+        laneId: String,
+        match: String?,
+        opened: [LaunchedAppRegistry.App],
+        laneWindows: [DesktopWindow]
+    ) -> String {
+        let openedNames = opened.map { "\($0.appName) (pid \($0.pid))" }
+        let openedPids = Set(opened.map(\.pid))
+        var borrowed: [String] = []
+        for window in laneWindows where !openedPids.contains(window.pid) && !borrowed.contains(window.appName) {
+            borrowed.append(window.appName)
+        }
+        var parts: [String] = [
+            match == nil
+                ? "Lane \(laneId) has no open app that it opened."
+                : "Lane \(laneId) did not open \"\(match!)\". It quits only apps it opened with `open`.",
+        ]
+        if !openedNames.isEmpty {
+            parts.append("It opened: \(openedNames.joined(separator: ", ")).")
+        }
+        if !borrowed.isEmpty {
+            parts.append("It holds windows of apps the user started (\(borrowed.joined(separator: ", "))); release those instead: ade mac-desktop release --window <id>.")
+        }
+        return parts.joined(separator: " ")
     }
 
     /// One window a driver exit took off a lane, and where it sat: the frame

@@ -367,6 +367,7 @@ import {
 } from "./attachmentUploadService";
 import { tryRouteAppleStreamSocket } from "./appleStreamListenerRoute";
 import { MAX_CHAT_ATTACHMENT_BYTES } from "../../../../desktop/src/shared/chatAttachmentLimits";
+import { readInstalledDesktopAppVersion } from "../../../../desktop/src/main/services/native/nativeHelperPaths";
 export { selectChangesetBatchChunk } from "./changesetPump";
 // Existing importers of the wire adapters keep this path.
 export { compactChatEventEnvelopeForMobileSync, compactChatEventEnvelopeForSync } from "./syncChatWire";
@@ -4484,6 +4485,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       version: "1",
       runtimeKind: args.runtimeKind ?? "desktop-embedded",
       runtimeVersion: args.runtimeVersion ?? "",
+      // The installed desktop app's version beside the brain's, so a phone
+      // can show both when they drift. Empty with no app.
+      appVersion: readInstalledDesktopAppVersion() ?? "",
       projects: bonjourProjectTxt.projects,
       projectNames: bonjourProjectTxt.projectNames,
       projectCount: bonjourProjectTxt.projectCount,

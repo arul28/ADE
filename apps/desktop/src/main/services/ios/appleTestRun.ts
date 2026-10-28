@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { spawn } from "node:child_process";
-import type { AppleRunTestsArgs, AppleRunTestsResult } from "../../../shared/types/iosSimulator";
+import type { AppleRunTestsArgs, AppleRunTestsResult, AppleTestFailure } from "../../../shared/types/iosSimulator";
 import { signalChildProcessTree } from "../shared/utils";
 
 /**
@@ -58,14 +58,28 @@ function buildXcodebuildTestArgs(spec: AppleTestRunSpec): string[] {
   return argv;
 }
 
-/** Counts and the lines that matter, from the whole `xcodebuild` output. */
+/** Counts, failing tests and the lines that matter, from the whole `xcodebuild` output. */
 function summarizeXcodebuildTestLog(
   output: string,
   run: { timedOut: boolean; timeoutMs: number },
-): { testsExecuted: number | null; testsFailed: number | null; testsSkipped: number | null; summary: string } {
-  const executed = xcodebuildTestTotal(output);
+): {
+  testsExecuted: number | null;
+  testsFailed: number | null;
+  testsSkipped: number | null;
+  summary: string;
+  failures: AppleTestFailure[];
+} {
+  const xctest = xcodebuildTestTotal(output);
+  const swiftTesting = swiftTestingTotal(output);
+  const total = xctest || swiftTesting
+    ? {
+      executed: (xctest?.executed ?? 0) + (swiftTesting?.executed ?? 0),
+      failed: (xctest?.failed ?? 0) + (swiftTesting?.failed ?? 0),
+      skipped: (xctest?.skipped ?? 0) + (swiftTesting?.skipped ?? 0),
+    }
+    : null;
   const failingLines = output.split(/\r?\n/).filter((line) => (
-    /Test Case .* failed|: error:|\*\* TEST (FAILED|BUILD FAILED)|\*\* BUILD FAILED/.test(line)
+    /Test Case .* failed|Test case '.*' failed|: error:|\*\* TEST (FAILED|BUILD FAILED)|\*\* BUILD FAILED|Test .* recorded an issue|Test (?!run with).* failed after/.test(line)
   ));
   const summary = [
     run.timedOut ? `Timed out after ${Math.round(run.timeoutMs / 60_000)} min.` : null,
@@ -73,10 +87,11 @@ function summarizeXcodebuildTestLog(
     failingLines.length ? null : output.trimEnd().split(/\r?\n/).slice(-15).join("\n"),
   ].filter(Boolean).join("\n");
   return {
-    testsExecuted: executed?.executed ?? null,
-    testsFailed: executed?.failed ?? null,
-    testsSkipped: executed?.skipped ?? null,
+    testsExecuted: total?.executed ?? null,
+    testsFailed: total?.failed ?? null,
+    testsSkipped: total?.skipped ?? null,
     summary,
+    failures: xcodebuildTestFailures(output),
   };
 }
 
@@ -107,6 +122,99 @@ function xcodebuildTestTotal(output: string): { executed: number; failed: number
   }
   const largest = lines.reduce((best, line) => (line.executed > best.executed ? line : best));
   return { executed: largest.executed, failed: largest.failed, skipped: largest.skipped };
+}
+
+const MAX_FAILURES = 200;
+
+/**
+ * One entry per failing test, in log order, from both frameworks:
+ *
+ * - XCTest: `File.swift:11: error: -[Mod.Class testX] : message`, then
+ *   `Test Case '-[Mod.Class testX]' failed (…)`. The name becomes
+ *   `Mod/Class/testX`, the form `-only-testing` takes.
+ * - Swift Testing: `✘ Test name() recorded an issue at File.swift:6:40: message`,
+ *   then `✘ Test name() failed after …`.
+ * - xcodebuild's own `Test case 'Class/testX()' failed on '…'` line.
+ *
+ * A test with several issues keeps the first one's place and message and
+ * joins the rest; a test that failed with no issue line (a crash) still gets
+ * an entry.
+ */
+function xcodebuildTestFailures(output: string): AppleTestFailure[] {
+  const byTest = new Map<string, AppleTestFailure>();
+  const add = (test: string, entry: Omit<AppleTestFailure, "test">) => {
+    const existing = byTest.get(test);
+    if (!existing) {
+      if (byTest.size >= MAX_FAILURES) return;
+      byTest.set(test, { test, ...entry });
+      return;
+    }
+    if (!existing.file && entry.file) {
+      existing.file = entry.file;
+      existing.line = entry.line;
+    }
+    if (entry.message && entry.message !== "failed" && !existing.message.includes(entry.message)) {
+      existing.message = existing.message === "failed" ? entry.message : `${existing.message}\n${entry.message}`;
+    }
+  };
+  const xctestName = (objc: string) => {
+    // `-[LibTests.OldTests testBad]` -> `LibTests/OldTests/testBad`.
+    const match = /^-\[([^\s\]]+) ([^\s\]]+)\]$/u.exec(objc.trim());
+    return match ? `${match[1]!.replace(/\./gu, "/")}/${match[2]}` : objc.trim();
+  };
+  const unquote = (name: string) => name.trim().replace(/^"(.*)"$/u, "$1");
+  for (const raw of output.split(/\r?\n/)) {
+    const line = raw.trim();
+    let match = /^(.+?):(\d+): error: (-\[[^\]]+\]) : (.*)$/u.exec(line);
+    if (match) {
+      add(xctestName(match[3]!), { file: match[1]!, line: Number(match[2]), message: match[4]!.trim() });
+      continue;
+    }
+    match = /Test Case '(-\[[^\]]+\])' failed/u.exec(line);
+    if (match) {
+      add(xctestName(match[1]!), { file: null, line: null, message: "failed" });
+      continue;
+    }
+    match = /Test (?!run with)(.+?) recorded an issue at (.+?):(\d+)(?::\d+)?: (.*)$/u.exec(line);
+    if (match) {
+      add(unquote(match[1]!), { file: match[2]!, line: Number(match[3]), message: match[4]!.trim() });
+      continue;
+    }
+    match = /Test (?!run with)(?!Case )(?!case ')(.+?) failed after [\d.]+ seconds?/u.exec(line);
+    if (match) {
+      add(unquote(match[1]!), { file: null, line: null, message: "failed" });
+      continue;
+    }
+    match = /Test case '(.+?)' failed on /u.exec(line);
+    if (match) {
+      // xcodebuild's Swift name for an XCTest (`Class/testX()`) or a Swift
+      // Testing test; skip it when the framework's own line named it already.
+      const name = match[1]!;
+      const known = [...byTest.keys()].some((key) => key.endsWith(name.replace(/\(\)$/u, "")) || key === name);
+      if (!known) add(name, { file: null, line: null, message: "failed" });
+    }
+  }
+  return [...byTest.values()];
+}
+
+/**
+ * Swift Testing's totals: `✘ Test run with 3 tests in 1 suite failed after
+ * 0.001 seconds with 1 issue.` One per test process, so a run with several
+ * test bundles prints several; they add up. The count includes skipped tests,
+ * as XCTest's does; failures are the tests that printed `failed after`.
+ */
+function swiftTestingTotal(output: string): { executed: number; failed: number; skipped: number } | null {
+  const runs = [...output.matchAll(/Test run with (\d+) tests?(?: in \d+ suites?)? (?:passed|failed) after/gu)];
+  if (!runs.length) return null;
+  const failed = new Set<string>();
+  const skipped = new Set<string>();
+  for (const match of output.matchAll(/Test (?!run with)(?!Case )(?!case ')(.+?) failed after [\d.]+ seconds?/gu)) failed.add(match[1]!);
+  for (const match of output.matchAll(/Test (?!run with)(?!Case )(?!case ')(.+?) skipped(?:[:.]|$)/gmu)) skipped.add(match[1]!);
+  return {
+    executed: runs.reduce((sum, match) => sum + Number(match[1]), 0),
+    failed: failed.size,
+    skipped: skipped.size,
+  };
 }
 
 /** Keep the newest `keep` entries of a cache directory, delete the rest. Best effort. */

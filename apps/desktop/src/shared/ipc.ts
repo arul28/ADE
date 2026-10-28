@@ -577,6 +577,7 @@ export const IPC = {
   iosSimulatorRecordDelete: "ade.iosSimulator.recordDelete",
   iosSimulatorRecordingsTotalBytes: "ade.iosSimulator.recordingsTotalBytes",
   iosSimulatorTap: "ade.iosSimulator.tap",
+  iosSimulatorLongPress: "ade.iosSimulator.longPress",
   iosSimulatorPressButton: "ade.iosSimulator.pressButton",
   iosSimulatorRotate: "ade.iosSimulator.rotate",
   iosSimulatorSetPosture: "ade.iosSimulator.setPosture",

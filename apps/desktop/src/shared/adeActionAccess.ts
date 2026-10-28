@@ -16,11 +16,18 @@
  * `ai.getCursorAgentUsage` records billed usage, so all four are writes.
  * When unsure, declare `write`: a read declared as a write only fails during a
  * switch, but a write declared as a read can land on the wrong project.
+ *
+ * `live` marks what only the running brain can answer (`isLiveOnlyAdeAction`):
+ * `"all"` for a whole domain, or the named actions.
  */
 export type AdeActionAccess = "read" | "write";
 
 type AdeActionAccessTable = Readonly<
-  Record<string, { readonly read: readonly string[]; readonly write: readonly string[] }>
+  Record<string, {
+    readonly read: readonly string[];
+    readonly write: readonly string[];
+    readonly live?: "all" | readonly string[];
+  }>
 >;
 
 export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
@@ -34,6 +41,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   attention: {
+    live: "all",
     read: [
       "getSnapshot", "getPreferences",
     ],
@@ -43,6 +51,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   keep_awake: {
+    live: "all",
     read: ["getSnapshot"],
     write: ["setLevel", "migrateLegacyPreference", "fixSystemSleep"],
   },
@@ -51,6 +60,10 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     write: ["setEnabled", "createToken", "updateConnection", "removeConnection"],
   },
   lane: {
+    live: [
+      "proxyAddRoute", "proxyRemoveRoute", "proxyStart", "proxyStop",
+      "portAcquire", "portGetLease", "portRecoverOrphans", "portRelease",
+    ],
     read: [
       "diagnosticsGetLaneHealth", "diagnosticsGetStatus", "getBranchDrift", "getChildren",
       "getDefaultTemplate", "getDeleteRisk", "getDependencyStatus", "getLeftoverWorktree", "getReclaimRisk",
@@ -81,6 +94,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   proxy: {
+    live: "all",
     read: [],
     write: [
       "ensureRunning", "setDisabled", "signIn", "signOut", "stop", "status",
@@ -156,6 +170,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   tests: {
+    live: ["run", "stop"],
     read: [
       "getLogTail", "listRuns", "listSuites",
     ],
@@ -164,6 +179,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   chat: {
+    live: "all",
     read: [
       "getAvailableModels", "getLaunchDefaults", "getClaudeSessionInfo",
       "getClaudeSessionMessages", "getChatEventHistory", "getChatEventHistoryPage",
@@ -260,6 +276,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   cto_state: {
+    live: "all",
     read: [
       "getAttention", "getIdentity", "getOnboardingState", "getSessionLogs", "getSnapshot",
       "getThreadHealth", "previewSystemPrompt",
@@ -277,6 +294,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   session: {
+    live: "all",
     read: [
       "get", "getDelta", "getLifecycleSettings", "getSettleResidue", "list",
       "readTranscriptTail",
@@ -356,6 +374,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   linear_agent: {
+    live: "all",
     read: [
       "getInstallSession", "getOverview",
     ],
@@ -475,6 +494,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   pty: {
+    live: "all",
     read: [
       "list", "getShellSettings",
     ],
@@ -483,6 +503,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   terminal: {
+    live: "all",
     read: [
       "list", "read", "preview", "activeForChat", "listWatches",
     ],
@@ -507,6 +528,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   work_tools: {
+    live: "all",
     read: [
       "getLaneState", "readObservationPreview", "listDevServers", "probePort",
     ],
@@ -525,18 +547,19 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   ios_simulator: {
+    live: "all",
     read: [
       "getStatus", "listDevices", "listLaunchTargets", "deviceList", "getStreamStatus",
       "getAppState", "getForegroundApp", "getScreenSnapshot", "getInspectorSnapshot",
       "getDeviceSettings", "getEventLog", "recordList", "recordingsTotalBytes",
       "getPreviewCapability", "listPreviewTargets", "resolvePreviewMatch", "getDeviceSession",
-      "runtimeList", "getPosture", "getDuoModel", "deviceLeaseStatus",
+      "runtimeList", "getPosture", "getDuoModel", "deviceLeaseStatus", "getAutoRecord",
     ],
     write: [
       "claim", "attachToChatSession", "deviceLease", "deviceLeaseRelease", "deviceCreate", "deviceAttach", "deviceStart",
       "deviceStop", "deviceDetach", "devicePromote", "deviceDelete", "deviceCleanup", "runTests", "startStream",
       "stopStream", "frame", "launch", "relaunchApp", "terminateApp", "uninstallApp", "openUrl",
-      "tap", "typeText", "pressKey", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
+      "tap", "longPress", "typeText", "pressKey", "drag", "swipe", "scroll", "pressButton", "rotate", "setPosture", "duoAppStoreScreenshots", "addDuoSkill", "attachRenderProof", "requestRender", "renderAck", "renderComplete", "selectPoint",
       "inspectPoint", "findElement", "tapElement", "fillElement", "waitForElement",
       "assertVisible", "setAppearance", "setContentSize", "setAccessibilityOption",
       "setLocation", "clearLocation", "setPermission", "sendPushNotification", "setStatusBar",
@@ -544,10 +567,11 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "recordStart", "recordStop", "recordDelete", "ensurePreviewWorkspace",
       "renderCurrentPreview", "renderPreview", "openPreviewWorkspace", "shutdown", "openDevice",
       "closeDevice", "deviceDeleteInstalled", "runtimeInstall", "runtimeInstallCancel",
-      "runtimeDelete", "runtimePrune", "xcodeRunFirstLaunch",
+      "runtimeDelete", "runtimePrune", "xcodeRunFirstLaunch", "installApp", "setAutoRecord", "windowLayout",
     ],
   },
   mac_desktop: {
+    live: "all",
     read: [
       "getStatus", "listWindows", "getStreamStatus",
     ],
@@ -561,6 +585,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   app_control: {
+    live: "all",
     read: [
       "getStatus", "getSnapshot", "listTargets", "readTerminal", "listDrivers", "getTrace",
       "getRecordingStatus", "getLatestFrame",
@@ -574,6 +599,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   built_in_browser: {
+    live: "all",
     read: [
       "getStatus", "getDevServers", "listSessions", "getTrace", "readText", "getNetworkLog",
       "listDownloads", "waitForDownload", "readClipboard",
@@ -590,6 +616,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
   },
   automations: {
+    live: [
+      "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest", "cleanUpTestRun",
+      "startIngress", "cancelScheduledCleanup", "linearIngressSetup", "linearIngressTeardown",
+      "linearIngressPollNow", "webhookCreateEndpoint", "webhookRotateEndpoint", "webhookReplayDelivery",
+      "webhookSendTest", "webhookCreateAutomation", "webhookRetire",
+    ],
     read: [
       "list", "get", "getHistory", "listRuns", "getRunDetail", "getIngressStatus",
       "listIngressEvents", "listScheduledCleanups", "linearIngressGetStatus",
@@ -643,14 +675,34 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
 };
 
 const accessByAction = new Map<string, AdeActionAccess>();
+const liveDomains = new Set<string>();
+const liveActions = new Set<string>();
 for (const [domain, declared] of Object.entries(ADE_ACTION_ACCESS)) {
   for (const action of declared.read) accessByAction.set(`${domain}.${action}`, "read");
   for (const action of declared.write) accessByAction.set(`${domain}.${action}`, "write");
+  if (declared.live === "all") liveDomains.add(domain);
+  else for (const action of declared.live ?? []) liveActions.add(`${domain}.${action}`);
 }
 
 /** The declared access, or null for an action this table does not know. */
 export function adeActionAccess(domain: string, action: string): AdeActionAccess | null {
   return accessByAction.get(`${domain}.${action}`) ?? null;
+}
+
+/**
+ * Whether only the running brain can answer this action.
+ *
+ * A runtime that is not the brain (the CLI's in-process runtime when no brain
+ * answers) is right for project state on disk: lanes, git, PRs, settings. It
+ * is wrong for state the brain holds. Its chat service is a stub that mints
+ * ids and never runs a turn; its terminals, devices, browsers and schedules
+ * die with the command. So whole domains are live (chats, sessions,
+ * terminals, devices), and in domains whose reads work from disk the actions
+ * that change brain-held state are: scheduled automations and their ingress,
+ * test runs, lane proxies and port leases.
+ */
+export function isLiveOnlyAdeAction(domain: string, action: string): boolean {
+  return liveDomains.has(domain) || liveActions.has(`${domain}.${action}`);
 }
 
 // Writes that are idempotent, so a call whose answer was lost to a dropped

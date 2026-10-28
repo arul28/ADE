@@ -169,6 +169,7 @@ function fakeSimHelper(overrides: {
     isReady: () => true,
     pid: overrides.pid ?? (() => 4321),
     protocolVersion: () => 1,
+    refusedProtocol: () => null,
     exists: () => true,
     dispose: () => { listeners.clear(); },
   };

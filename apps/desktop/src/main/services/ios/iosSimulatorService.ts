@@ -22,6 +22,10 @@ import type {
   AppleDeviceListArgs,
   AppleRunTestsArgs,
   AppleRunTestsResult,
+  AppleInstallAppArgs,
+  AppleInstallAppResult,
+  AppleWindowLayoutArgs,
+  AppleWindowLayoutResult,
   AppleDeviceListResult,
   AppleDeviceOrientation,
   AppleFrameArgs,
@@ -121,6 +125,7 @@ import {
   APPLE_AGENT_ACTIONS,
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_IS_EXTRA_CODE,
+  APPLE_DEVICE_NOT_LANE_OWNED_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
@@ -139,16 +144,22 @@ import {
   APPLE_KEY_MODIFIER_USAGES,
   APPLE_NAMED_KEY_USAGES,
   appleKeyUsage,
+  APPLE_LONG_PRESS_DEFAULT_MS,
+  APPLE_LONG_PRESS_MAX_MS,
+  APPLE_LONG_PRESS_MIN_MS,
+  type IosSimulatorLongPressArgs,
   type IosSimulatorPressKeyArgs,
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
+import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../shared/appleDeviceSettings";
+import { createAppleWindowControl } from "./appleWindowControl";
 import { commandExistsCached } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, isRecord, resolvePathWithinRoot, signalChildProcessTree } from "../shared/utils";
 import { createIosDeviceHub, type IosDeviceHub } from "./iosDeviceHub";
-import { buildElementRef } from "./iosSemanticActions";
+import { buildElementRef, describeElement } from "./iosSemanticActions";
 import { AppleDeviceExistsError, AppleDeviceNotLaneOwnedError, AppleLaneDeviceReleasedError } from "./appleDeviceErrors";
 import { createLaneDeviceRegistry, type AppleLaneDeviceRelease } from "./laneDeviceRegistry";
 import {
@@ -163,7 +174,7 @@ import { appleRuntimeScore } from "../../../shared/appleRuntimeVersions";
 import { APPLE_RELEASES_FEED_URL, createAppleRuntimeManager, type AppleRuntimeManager } from "./appleRuntimeManager";
 import { readAppleDeviceMarker } from "./appleDeviceMarker";
 
-import { appleAppOnDevice, appleLaneDerivedDataPath } from "./laneDeviceRelease";
+import { appleAppOnDevice, appleLaneDerivedDataPath, healMovedDerivedData } from "./laneDeviceRelease";
 import { runXcodebuildTests } from "./appleTestRun";
 import type { LaneDeviceStore } from "./laneDeviceRows";
 import {
@@ -175,6 +186,8 @@ import {
 import {
   createSimHelperClient,
   resolveSimHelperExecutablePath,
+  simHelperProtocolMessage,
+  simHelperSearchSummary,
   SIM_HELPER_EXITED_EVENT,
   SimHelperError,
   type SimHelperClient,
@@ -192,7 +205,7 @@ import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createAppleDeviceLeases } from "./appleDeviceLease";
 import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
-import { appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
+import { appleDeviceTypeSupportsDuo, appleOrientationFamily, isAppleDeviceOrientation } from "../../../shared/appleOrientation";
 import { createSimulatorPower } from "./simulatorPower";
 import type { AppleRemoteViewerProbe } from "./appleStreamRelay";
 import { SIMCTL_MISSING } from "../../../shared/xcodeToolchain";
@@ -223,7 +236,7 @@ const DEFAULT_SWIPE_DURATION_MS = 180;
  */
 const DRAG_STEP_MS = 16;
 const INSTALL_HINT_XCODE = "Install Xcode from the App Store, then run xcode-select --install.";
-const INSTALL_HINT_SIM_HELPER = "Rebuild the vendored simulator helper: run `npm run build:sim-helper` in apps/desktop.";
+const INSTALL_HINT_SIM_HELPER = "Install or update ADE.app on this Mac (or run `ade brain update`), then restart the ADE brain. In a source checkout: run `npm run build:sim-helper` in apps/desktop.";
 const INSTALL_HINT_XCODE_CLI = "Run xcode-select --install to install the Xcode command line tools.";
 const XCODE_MCP_SESSION_ID = "906026e2-d248-4770-8654-032d0e1fbb54";
 const XCODE_MCP_APPROVAL_TIMEOUT_MS = 90_000;
@@ -555,6 +568,14 @@ type InferredSwiftUITabItem = {
   sourceFile: string;
   sourceLine: number;
   snippet: string | null;
+  /** `Tab(…, role: .search)`: iOS draws it apart from the others, at the end. */
+  searchRole: boolean;
+};
+
+/** The tabs of ONE `TabView` in the source, in source order. */
+type InferredSwiftUITabGroup = {
+  sourceFile: string;
+  items: InferredSwiftUITabItem[];
 };
 
 type RawIosInspectorSnapshot = {
@@ -1242,12 +1263,27 @@ function previewSuggestionForSource(
   };
 }
 
-function inferSwiftUITabItems(projectRoot: string | null | undefined): InferredSwiftUITabItem[] {
+const SWIFT_STRING_LABEL = /\b(?:Label|Text)\s*\(\s*"((?:\\.|[^"\\])+)"/;
+const SWIFT_TAB_CALL = /\bTab\s*\(\s*"((?:\\.|[^"\\])+)"/;
+const SWIFT_TAB_VIEW = /\bTabView\s*[({]/;
+
+function unescapeSwiftString(raw: string): string {
+  return raw.replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
+}
+
+/**
+ * The tabs each SwiftUI `TabView` in the lane declares, one group per
+ * `TabView`, so a label is never borrowed from an unrelated file or another
+ * tab view. Two spellings: `.tabItem { Label("Library", …) }` (the label is
+ * read inside the `.tabItem` closure, never from the tab's content before it,
+ * which named a tab "Settings page" after its `Text`) and iOS 18's
+ * `Tab("Search", systemImage: …, role: .search)`.
+ */
+function inferSwiftUITabGroups(projectRoot: string | null | undefined): InferredSwiftUITabGroup[] {
   if (!projectRoot) return [];
   const root = path.resolve(projectRoot);
   if (!fs.existsSync(root)) return [];
-  const items: InferredSwiftUITabItem[] = [];
-  const seen = new Set<string>();
+  const groups: InferredSwiftUITabGroup[] = [];
   for (const filePath of collectSwiftFiles(root)) {
     let text = "";
     try {
@@ -1255,30 +1291,57 @@ function inferSwiftUITabItems(projectRoot: string | null | undefined): InferredS
     } catch {
       continue;
     }
+    if (!text.includes(".tabItem") && !SWIFT_TAB_CALL.test(text)) continue;
+    const sourceFile = relativeToRoot(root, filePath);
     const lines = text.split(/\r?\n/);
+    // Keyed by the line of the `TabView` the tab sits under (-1: none seen).
+    const byTabView = new Map<number, InferredSwiftUITabGroup>();
+    const seenByTabView = new Map<number, Set<string>>();
+    let tabViewLine = -1;
+    const add = (label: string, line: number, searchRole: boolean) => {
+      const seen = seenByTabView.get(tabViewLine) ?? new Set<string>();
+      seenByTabView.set(tabViewLine, seen);
+      if (!label || seen.has(label.toLowerCase())) return;
+      seen.add(label.toLowerCase());
+      let group = byTabView.get(tabViewLine);
+      if (!group) {
+        group = { sourceFile, items: [] };
+        byTabView.set(tabViewLine, group);
+      }
+      group.items.push({
+        label,
+        sourceFile,
+        sourceLine: line + 1,
+        snippet: readSourceSnippet(root, sourceFile, line + 1),
+        searchRole,
+      });
+    };
     for (let index = 0; index < lines.length; index += 1) {
-      if (!lines[index]?.includes(".tabItem")) continue;
+      const line = lines[index] ?? "";
+      if (SWIFT_TAB_VIEW.test(line)) tabViewLine = index;
+      const tabCall = SWIFT_TAB_CALL.exec(line);
+      if (tabCall?.[1]) {
+        add(unescapeSwiftString(tabCall[1]), index, /role\s*:\s*\.search\b/.test(line));
+        continue;
+      }
+      const tabItemAt = line.indexOf(".tabItem");
+      if (tabItemAt < 0) continue;
       const searchEnd = Math.min(lines.length, index + 10);
       for (let cursor = index; cursor < searchEnd; cursor += 1) {
-        const line = lines[cursor] ?? "";
-        const match = /\b(?:Label|Text)\s*\(\s*"((?:\\.|[^"\\])+)"/.exec(line);
+        const candidate = cursor === index ? line.slice(tabItemAt) : (lines[cursor] ?? "");
+        // A second `.tabItem` before a label: this one had none.
+        if (cursor > index && candidate.includes(".tabItem")) break;
+        const match = SWIFT_STRING_LABEL.exec(candidate);
         if (!match?.[1]) continue;
-        const label = match[1].replace(/\\"/g, "\"").replace(/\\\\/g, "\\").trim();
-        if (!label || seen.has(label.toLowerCase())) continue;
-        const sourceFile = relativeToRoot(root, filePath);
-        const sourceLine = cursor + 1;
-        seen.add(label.toLowerCase());
-        items.push({
-          label,
-          sourceFile,
-          sourceLine,
-          snippet: readSourceSnippet(root, sourceFile, sourceLine),
-        });
+        add(unescapeSwiftString(match[1]), cursor, false);
         break;
       }
     }
+    for (const group of byTabView.values()) {
+      if (group.items.length) groups.push({ ...group, items: group.items.slice(0, 12) });
+    }
   }
-  return items.slice(0, 12);
+  return groups;
 }
 
 function sourceTermsForElement(element: IosScreenElement): string[] {
@@ -1691,6 +1754,21 @@ function accessibilityElementSignature(element: IosScreenElement): string {
   ].join(":");
 }
 
+/** A number written as text that is not a number at all ("nan", "inf"). */
+const NON_FINITE_VALUE = /^[+-]?(?:nan|inf(?:inity)?)$/i;
+
+/**
+ * An element's value as a person would read it. The app's own description
+ * ("0:29 of 0:49", "50%") comes first: a SwiftUI adjustable element's raw
+ * value is a number, NaN when the app set only a description, which read as
+ * "nan". A value that is not a finite number is no value (an older helper
+ * still writes "nan").
+ */
+function accessibilityValueOf(record: Record<string, unknown>): string | null {
+  const value = readString(record, ["value", "AXValueDescription", "placeholderValue", "placeholder", "text", "AXValue"]);
+  return value !== null && NON_FINITE_VALUE.test(value) ? null : value;
+}
+
 function collectAccessibilityElements(raw: unknown): IosScreenElement[] {
   const elements: IosScreenElement[] = [];
   const visit = (value: unknown, indexPath: number[]) => {
@@ -1711,7 +1789,7 @@ function collectAccessibilityElements(raw: unknown): IosScreenElement[] {
         source: "accessibility",
         layer: "accessibility",
         label,
-        value: readString(value, ["value", "placeholderValue", "placeholder", "text", "AXValue"]),
+        value: accessibilityValueOf(value),
         role,
         elementType: readString(value, ["type", "className", "class"]),
         identifier,
@@ -1853,30 +1931,112 @@ function mergeScreenElements(inspectorElements: IosScreenElement[], accessibilit
   });
 }
 
-function synthesizeSwiftUITabBarElements(projectRoot: string | null | undefined, elements: IosScreenElement[]): IosScreenElement[] {
-  const inferredTabs = inferSwiftUITabItems(projectRoot);
-  if (!inferredTabs.length) return [];
-  const tabBars = elements.filter((element) => {
-    const label = element.label?.toLowerCase() ?? "";
-    const role = element.role?.toLowerCase() ?? "";
-    const type = element.elementType?.toLowerCase() ?? "";
-    return label === "tab bar" || (label.includes("tab") && (role.includes("group") || type.includes("group")));
-  });
+/** A tab bar ever shows at most this many tabs on an iPhone; more are behind "More". */
+const MAX_COMPACT_TAB_SLOTS = 5;
+/** The narrowest tab iOS draws; a bar too narrow for that many is minimised or not a bar. */
+const MIN_TAB_SLOT_POINTS = 44;
+
+function isTabBarElement(element: IosScreenElement): boolean {
+  if (element.metadata?.synthetic === true) return false;
+  const label = element.label?.toLowerCase() ?? "";
+  const role = element.role?.toLowerCase() ?? "";
+  const type = element.elementType?.toLowerCase() ?? "";
+  return label === "tab bar" || (label.includes("tab") && (role.includes("group") || type.includes("group")));
+}
+
+function frameCenterInside(inner: IosInspectableFrame, outer: IosInspectableFrame): boolean {
+  const x = inner.x + inner.width / 2;
+  const y = inner.y + inner.height / 2;
+  return x >= outer.x && x <= outer.x + outer.width && y >= outer.y && y <= outer.y + outer.height;
+}
+
+/** The tab items the accessibility tree itself shows inside a Tab Bar. */
+function realTabItemsIn(bar: IosScreenElement, elements: IosScreenElement[]): IosScreenElement[] {
+  const barArea = bar.frame.width * bar.frame.height;
+  return elements.filter((element) => element !== bar
+    && element.metadata?.synthetic !== true
+    && Boolean(element.label?.trim())
+    && element.frame.width > 0
+    && element.frame.height > 0
+    && element.frame.width * element.frame.height < barArea * 0.8
+    && frameCenterInside(element.frame, bar.frame));
+}
+
+function tabLabelMatches(elementLabel: string, tabLabel: string): boolean {
+  const left = elementLabel.trim().toLowerCase();
+  const right = tabLabel.trim().toLowerCase();
+  if (!right || !left.startsWith(right)) return false;
+  return !/[\p{L}\p{N}]/u.test(left.charAt(right.length));
+}
+
+/**
+ * SwiftUI tab items, from the source, matched to the Tab Bar on screen.
+ *
+ * When the bar exposes its own tab items (the usual case), nothing is
+ * invented: each real item whose label a `TabView` declares gets that
+ * declaration's file and line. Before this, ADE added equal slices of the bar
+ * in source order next to the real items, so a tab label matched twice and a
+ * tap could land on a slice that was not where the tab is drawn (ledger #4,
+ * #35: a search-role tab is drawn last, out of source order).
+ *
+ * Only when the bar exposes no items at all are slices made, and only when
+ * they can be right: the labels come from one `TabView`, no tab has the
+ * search role (drawn apart, so the slices would be out of order), there are
+ * no more of them than an iPhone bar shows, and each slice is at least a
+ * tab's width (a minimised bar is narrower). The slices say they are
+ * inferred (`metadata.synthetic`), sort after every element read from the
+ * screen, and `tap-element` refuses one (it names the point to tap instead).
+ *
+ * The lane's sources are read only when the screen has a Tab Bar.
+ */
+function applySwiftUITabBarSource(projectRoot: string | null | undefined, elements: IosScreenElement[]): IosScreenElement[] {
+  const tabBars = elements.filter(isTabBarElement);
+  if (!tabBars.length) return elements;
+  const groups = inferSwiftUITabGroups(projectRoot);
+  if (!groups.length) return elements;
+  // A label names a source line only when one TabView declares it.
+  const byLabel = new Map<string, InferredSwiftUITabItem | null>();
+  for (const group of groups) {
+    for (const item of group.items) {
+      const key = item.label.toLowerCase();
+      const known = byLabel.get(key);
+      byLabel.set(key, known === undefined ? item : null);
+    }
+  }
+  const sourced = new Map<IosScreenElement, InferredSwiftUITabItem>();
   const synthesized: IosScreenElement[] = [];
   for (const tabBar of tabBars) {
     if (tabBar.frame.width <= 0 || tabBar.pixelFrame.width <= 0) continue;
-    const frameWidth = tabBar.frame.width / inferredTabs.length;
-    const pixelWidth = tabBar.pixelFrame.width / inferredTabs.length;
-    inferredTabs.forEach((tab, index) => {
+    const realItems = realTabItemsIn(tabBar, elements);
+    if (realItems.length) {
+      for (const element of realItems) {
+        if (element.sourceFile) continue;
+        const label = element.label ?? "";
+        const item = byLabel.get(label.trim().toLowerCase())
+          ?? [...byLabel.values()].find((candidate) => candidate && tabLabelMatches(label, candidate.label))
+          ?? null;
+        if (item) sourced.set(element, item);
+      }
+      continue;
+    }
+    if (groups.length !== 1) continue;
+    const tabs = groups[0]!.items;
+    if (tabs.length < 2 || tabs.some((tab) => tab.searchRole)) continue;
+    const maxSlots = tabBar.frame.width >= 600 ? Math.floor(tabBar.frame.width / 80) : MAX_COMPACT_TAB_SLOTS;
+    if (tabs.length > maxSlots) continue;
+    const frameWidth = tabBar.frame.width / tabs.length;
+    if (frameWidth < MIN_TAB_SLOT_POINTS) continue;
+    const pixelWidth = tabBar.pixelFrame.width / tabs.length;
+    tabs.forEach((tab, index) => {
       synthesized.push({
         id: `accessibility:synthetic-tab:${tab.label}:${index}`,
         source: "accessibility",
         layer: "accessibility",
         label: tab.label,
         value: null,
-        role: "AXButton",
+        role: "Button",
         elementType: "TabItem",
-        identifier: `SwiftUI.TabItem.${tab.label}`,
+        identifier: null,
         frame: {
           x: tabBar.frame.x + (frameWidth * index),
           y: tabBar.frame.y,
@@ -1894,14 +2054,29 @@ function synthesizeSwiftUITabBarElements(projectRoot: string | null | undefined,
         sourceLine: tab.sourceLine,
         metadata: {
           synthetic: true,
-          generatedFrom: "SwiftUI .tabItem source labels and the accessibility Tab Bar frame",
+          inferred: "The Tab Bar exposed no tab items, so ADE placed this tab at an equal slice of the bar, in source order. Its frame is a guess.",
+          generatedFrom: "SwiftUI tab labels in source and the accessibility Tab Bar frame",
           tabBarElementId: tabBar.id,
           sourceSnippet: tab.snippet,
         },
       });
     });
   }
-  return synthesized;
+  if (!sourced.size && !synthesized.length) return elements;
+  const enriched = sourced.size
+    ? elements.map((element) => {
+      const item = sourced.get(element);
+      if (!item) return element;
+      return {
+        ...element,
+        sourceFile: item.sourceFile,
+        sourceLine: item.sourceLine,
+        metadata: { ...element.metadata, sourceFrom: "SwiftUI tab label in source", sourceSnippet: item.snippet },
+      };
+    })
+    : elements;
+  // After every element read from the screen: a guess never outranks one.
+  return synthesized.length ? [...enriched, ...synthesized] : enriched;
 }
 
 async function findAppBundles(root: string): Promise<string[]> {
@@ -2193,16 +2368,16 @@ const AGENT_NO_LANE_DEVICE_MESSAGE =
  */
 const AGENT_DEVICE_DRIVING_ACTIONS = [
   "launch", "openDevice", "screenshot", "getScreenSnapshot", "getInspectorSnapshot", "inspectPoint",
-  "startStream", "frame", "tap", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "pressKey", "drag", "swipe", "scroll", "selectPoint",
+  "startStream", "frame", "tap", "longPress", "pressButton", "rotate", "setPosture", "getPosture", "duoAppStoreScreenshots", "typeText", "pressKey", "drag", "swipe", "scroll", "selectPoint",
   "recordStart", "getDeviceSettings", "setAppearance", "setContentSize", "setAccessibilityOption", "setLocation",
   "clearLocation", "setPermission", "sendPushNotification", "openUrl", "relaunchApp", "terminateApp",
   "uninstallApp", "setStatusBar", "clearStatusBar", "getAppState", "getForegroundApp", "startEventLog",
   "findElement", "tapElement", "fillElement", "waitForElement", "assertVisible", "captureProofBundle",
-  "runTests",
+  "runTests", "installApp", "windowLayout",
 ] as const;
 
 /** Driving actions that give a lane with no device its own device first, instead of refusing. */
-const AGENT_DEVICE_CREATING_ACTIONS = new Set<string>(["launch", "openDevice", "runTests"]);
+const AGENT_DEVICE_CREATING_ACTIONS = new Set<string>(["launch", "openDevice", "runTests", "installApp"]);
 
 /**
  * Actions that may name a device but need none: an agent's explicit udid must
@@ -2229,6 +2404,23 @@ function isPlainResultObject(value: unknown): value is Record<string, unknown> {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const proto = Object.getPrototypeOf(value);
   return proto === Object.prototype || proto === null;
+}
+
+/** `installApp` met another xcodebuild in the lane's DerivedData (or a launch or test met an install). */
+const APPLE_BUILD_BUSY_CODE = "APPLE_BUILD_BUSY";
+
+/** The lane setting (`ade apple auto-record off`), in the project's KV. */
+function appleAutoRecordKey(laneKey: string): string {
+  return `apple.autoRecord.lane.${laneKey}`;
+}
+
+/**
+ * The lease of one of a lane's devices: the lane's own device under the
+ * lane's key (it follows whichever device the lane holds), an extra under its
+ * udid. Each device takes turns on its own.
+ */
+function appleDeviceLeaseKey(laneKey: string, extraUdid: string | null): string {
+  return extraUdid ? `${laneKey}\u0000${extraUdid}` : laneKey;
 }
 
 /**
@@ -2552,7 +2744,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         // drawer for one capture.
         screenshot: (shotArgs) => screenshot({ ...shotArgs, laneId: shotArgs.laneId ?? runtime.laneId, proof: false }),
         tap: (tapArgs) => tap({ ...tapArgs, laneId: runtime.laneId }),
-        typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }),
+        longPress: (pressArgs) => longPress({ ...pressArgs, laneId: runtime.laneId }),
+        // `fill-element` reads its field back itself, a better check than focus.
+        typeText: (textArgs) => typeText({ ...textArgs, laneId: runtime.laneId }, { checkFocus: false }),
+        readElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
         bootDevice: (device) => power.bootDevice(device),
         powerOffDevice: (deviceUdid) => power.powerOffDevice(deviceUdid, "hub-power"),
         resolveBuildRoot: (scope) => resolveScopedRootForSession(scope, runtime),
@@ -2711,6 +2906,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const udid = typeof event.udid === "string" ? event.udid : null;
     if (!udid) return;
     const posture = parseHelperPosture(event);
+    duo.notePosture(udid, posture);
     const runtime = runtimeStreamingUdid(udid);
     const transport = runtime?.streamStatus.transport;
     if (runtime && transport) {
@@ -2816,6 +3012,22 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return read;
   };
 
+  /**
+   * Whether a device's CoreSimulator type folds, by its type identifier. A
+   * device never changes type, so an answer is kept per udid; a device not
+   * listed yet is asked again (null).
+   */
+  const deviceFoldsByUdid = new Map<string, boolean>();
+  const deviceSupportsDuo = async (deviceUdid: string): Promise<boolean | null> => {
+    const known = deviceFoldsByUdid.get(deviceUdid);
+    if (known !== undefined) return known;
+    const device = (await listInstalledSimulators()).find((entry) => entry.udid === deviceUdid);
+    if (!device?.deviceTypeIdentifier) return null;
+    const folds = appleDeviceTypeSupportsDuo(device.deviceTypeIdentifier);
+    deviceFoldsByUdid.set(deviceUdid, folds);
+    return folds;
+  };
+
   const laneDevices = createLaneDeviceRegistry({
     run: (command, commandArgs, options) => run(command, commandArgs, options),
     powerOffDevice: (udid) => power.powerOffDevice(udid, "delete"),
@@ -2871,6 +3083,31 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   });
 
   /**
+   * Which lease a `lease --device` call is about: the lane's own device
+   * (no device, or its udid or name), or one of its extras. Anything else is
+   * not this lane's to take turns on.
+   */
+  const leaseTarget = (
+    runtime: LaneRuntime,
+    wanted: string | null | undefined,
+  ): { key: string; device: { udid: string | null; name: string | null; extra: boolean } } => {
+    const own = runtime.key ? laneDevices.get(runtime.key) : null;
+    const value = wanted?.trim() || null;
+    if (!value || (own && (own.udid === value || own.name === value))) {
+      return { key: appleDeviceLeaseKey(runtime.key, null), device: { udid: own?.udid ?? null, name: own?.name ?? null, extra: false } };
+    }
+    const extra = runtime.key ? laneDevices.findExtra(runtime.key, value) : null;
+    if (!extra) {
+      throw new AdeExpectedError(
+        `${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: ${value} is neither this lane's device nor one of its extra devices, so there is no lease to take on it. `
+          + "Run ade apple device-list to see the lane's devices.",
+        "user",
+      );
+    }
+    return { key: appleDeviceLeaseKey(runtime.key, extra.udid), device: { udid: extra.udid, name: extra.name, extra: true } };
+  };
+
+  /**
    * Run `install`, and record the app as ADE's on an attached lane device only
    * when it was certainly absent before and is present after. An app the user
    * already had is theirs, even after ADE installs a new build over it; a check
@@ -2885,6 +3122,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       laneDevices.noteAppInstalled({ udid, bundleId });
     }
     return result;
+  };
+
+  /** Who holds a device's lease, unless it is the asking chat (under any --holder name). */
+  const otherLeaseHolder = (leaseKey: string, chatSessionId: string | null): string | null => {
+    const lease = deviceLeases.status(leaseKey);
+    if (!lease.held || !lease.current) return null;
+    if (chatSessionId && deviceLeases.heldByChat(leaseKey, chatSessionId)) return null;
+    return lease.current.holder;
   };
 
   /** Detach, delete, takeover and the picker's delete, over the registry above. */
@@ -2909,12 +3154,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (recordings.active({ laneId: runtime.key })) return "recording";
       if (activeTestUdids.has(device.udid)) return "running tests";
       if (runtime.activeLaunchId) return "launching a build";
-      const lease = deviceLeases.status(runtime.key);
-      if (lease.held && lease.current && lease.current.holder !== (chatSessionId ?? "")) {
-        return `leased to ${lease.current.holder}`;
-      }
-      return null;
+      const holder = otherLeaseHolder(appleDeviceLeaseKey(runtime.key, null), chatSessionId);
+      return holder ? `leased to ${holder}` : null;
     },
+    extraLeaseHolder: (runtime, extra, chatSessionId) => otherLeaseHolder(appleDeviceLeaseKey(runtime.key, extra.udid), chatSessionId),
     emit: (payload) => emit(payload),
     logger: args.logger,
   });
@@ -2950,6 +3193,40 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
   });
 
+  /** The lane's switch and the machine's, as `auto-record status` reports them. */
+  const autoRecordState = (laneKey: string) => {
+    const machine = (() => {
+      try {
+        return args.recordingDeps?.readOverlaySetting?.(APPLE_AUTO_RECORD_SETTING_KEY) !== false;
+      } catch (error) {
+        // Unreadable reads as on, the default.
+        args.logger.warn("apple.auto_record_read_failed", {
+          setting: "machine",
+          error: error instanceof Error ? error.message : String(error),
+        });
+        return true;
+      }
+    })();
+    const lane = laneAutoRecord(laneKey);
+    return { laneId: laneKey || null, lane, machine, enabled: lane && machine };
+  };
+
+  /** The lane's auto-record switch; on unless `auto-record off` was set for it. */
+  const laneAutoRecord = (laneKey: string): boolean => {
+    if (!laneKey || !args.laneDeviceStore) return true;
+    try {
+      return args.laneDeviceStore.getJson<{ enabled?: unknown }>(appleAutoRecordKey(laneKey))?.enabled !== false;
+    } catch (error) {
+      // Unreadable reads as on, the default.
+      args.logger.warn("apple.auto_record_read_failed", {
+        setting: "lane",
+        laneId: laneKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return true;
+    }
+  };
+
   /**
    * Announce an injected input to the recording service.
    *
@@ -2974,9 +3251,16 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
        * pane's calls precisely so this default stays safe.
        */
       source?: AppleInputSource;
+      /** The call said `noRecord` (`--no-record`). */
+      noRecord?: boolean | null;
     },
   ): void => {
+    // Opted out for this call (`--no-record`) or for the lane (`auto-record
+    // off`): the input is still overlaid on a recording that already runs,
+    // it just never starts one.
+    const autoStart = input.noRecord !== true && laneAutoRecord(runtime.key);
     void Promise.resolve(recordings.noteInput({
+      autoStart,
       laneId: runtime.key,
       udid: input.udid,
       chatSessionId: runtime.activeSession?.chatSessionId ?? null,
@@ -3657,11 +3941,13 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       },
       {
         name: "helper",
-        available: helperInfo.present,
-        detail: helperInfo.present
+        available: helperInfo.present && helperClient?.refusedProtocol() == null,
+        detail: helperClient?.refusedProtocol() != null
+          ? simHelperProtocolMessage(helperInfo.path, helperClient.refusedProtocol() as number)
+          : helperInfo.present
           ? `Vendored simulator helper at ${helperInfo.path}${helperInfo.version == null ? "" : ` (protocol ${helperInfo.version})`}. Provides the live view, touch, typing, and the accessibility tree.`
           : isDarwin
-            ? `The vendored simulator helper is missing at ${helperInfo.path}.`
+            ? [`The simulator helper is not installed on this Mac (expected at ${helperInfo.path}).`, simHelperSearchSummary()].filter(Boolean).join(" ")
             : "The vendored simulator helper only runs on macOS.",
         installHint: isDarwin ? INSTALL_HINT_SIM_HELPER : "Apple device control requires macOS.",
       },
@@ -4439,6 +4725,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (target.shouldBuild) {
       const relativeProjectPath = relativeToRoot(projectRoot, target.projectPath);
       await fs.promises.mkdir(derivedDataPath, { recursive: true });
+      // A DerivedData copied from another folder (an older project move)
+      // names the old paths; drop that package state so the build resolves.
+      healMovedDerivedData(derivedDataPath, projectRoot, args.logger);
       args.logger.info("ios_simulator.build.start", {
         projectRoot,
         projectPath: relativeProjectPath,
@@ -4619,6 +4908,12 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     // to finish wins `runtime.activeSession`, so the caller is told about an app the
     // other launch installed. Reject the second launch instead.
     if (runtime.activeLaunchId) throw new IosSimulatorLaunchInProgressError(runtime.activeLaunchId);
+    if (laneAppInstalls.has(runtime.key)) {
+      throw new AdeExpectedError(
+        `${APPLE_BUILD_BUSY_CODE}: an \`ade apple install\` is building in this lane's DerivedData. Wait for it, then launch again.`,
+        "user",
+      );
+    }
     // The caller's own inputs, refused before a boot or a build costs anything.
     const buildConfiguration = normalizeBuildConfiguration(launchArgs.configuration);
     const launchArguments = normalizeLaunchArguments(launchArgs.arguments);
@@ -5179,13 +5474,55 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * downstream (`scaleAccessibilityElementsToScreenshot`) finds the scale, so
    * nothing here converts.
    */
-  const readAccessibilityElements = async (deviceUdid: string): Promise<IosScreenElement[]> => {
+  const readAccessibilityElements = async (deviceUdid: string): Promise<{
+    elements: IosScreenElement[];
+    /** The helper's walk stopped at a cap (`truncatedBy` names which), so elements may be missing. */
+    truncatedBy: string[] | null;
+    /** The helper's caps (`elements`, `depth`, `probe-points`), when it reports them. */
+    limits: Record<string, number> | null;
+    /** An iPadOS window could not be placed on the screen; its elements say `ADEUnplaced`. */
+    unplaced: boolean;
+  }> => {
     const payload = await helper().send({ type: "ax-describe", udid: deviceUdid });
     const tree = payload.tree;
     if (typeof tree !== "string" || !tree.trim()) {
       throw new Error("The simulator helper returned no accessibility tree. Is an app in the foreground?");
     }
-    return collectAccessibilityElements(JSON.parse(tree) as unknown);
+    const truncatedBy = payload.truncated === true
+      ? (Array.isArray(payload.truncatedBy) ? payload.truncatedBy.filter((entry): entry is string => typeof entry === "string") : [])
+      : null;
+    const limits = payload.limits && typeof payload.limits === "object" && !Array.isArray(payload.limits)
+      ? Object.fromEntries(Object.entries(payload.limits).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+      : null;
+    return { elements: collectAccessibilityElements(JSON.parse(tree) as unknown), truncatedBy, limits, unplaced: payload.unplaced === true };
+  };
+
+  /**
+   * The element under one point and its children, in device points, with no
+   * tree walk and no grid probe: how `fill-element` reads a field back after
+   * typing. Null when nothing answers there, or when this helper predates the
+   * point read (then the caller reports "unknown" rather than pay for a full
+   * snapshot).
+   */
+  const readAccessibilityElementAt = async (deviceUdid: string, x: number, y: number): Promise<IosScreenElement[] | null> => {
+    const payload = await helper().send({ type: "ax-hit", udid: deviceUdid, x, y }).catch((error: unknown) => {
+      if (error instanceof SimHelperError && error.code === "unknown-command") return null;
+      throw error;
+    });
+    if (!payload || payload.hit !== true || typeof payload.tree !== "string" || !payload.tree.trim()) return null;
+    return collectAccessibilityElements(JSON.parse(payload.tree) as unknown);
+  };
+
+  /**
+   * The element with keyboard focus in the front app: `null` when none has
+   * it, `undefined` when that cannot be told (an older helper, a runtime whose
+   * accessibility does not answer, a read that failed).
+   */
+  const readFocusedElement = async (deviceUdid: string): Promise<IosScreenElement | null | undefined> => {
+    const payload = await helper().send({ type: "ax-focused", udid: deviceUdid }).catch(() => null);
+    if (!payload || payload.supported !== true) return undefined;
+    if (!isRecord(payload.element)) return null;
+    return collectAccessibilityElements([payload.element])[0] ?? null;
   };
 
   /**
@@ -5242,7 +5579,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     let accessibilityElements: IosScreenElement[] = [];
     let accessibilityScreen: IosInspectableScreen | null = null;
     try {
-      const rawAccessibilityElements = await readAccessibilityElements(shot.deviceUdid);
+      const accessibilityRead = await readAccessibilityElements(shot.deviceUdid);
+      const rawAccessibilityElements = accessibilityRead.elements;
       // The live stream knows the point size of the screen on show; with no
       // stream the device type's profile gives the scale.
       const transport = shot.deviceUdid ? runtimeStreamingUdid(shot.deviceUdid)?.streamStatus.transport ?? null : null;
@@ -5253,7 +5591,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         rawAccessibilityElements,
         shot,
         pointSize,
-        pointSize || !shot.deviceUdid ? null : await deviceScreenScale(shot.deviceUdid),
+        // Also with a stream running: held landscape, its point size can still
+        // be the portrait one, which no landscape shot agrees with, and then
+        // the device type's scale must win over the element-frame guess.
+        shot.deviceUdid ? await deviceScreenScale(shot.deviceUdid) : null,
       );
       accessibilityElements = scaledAccessibility.elements;
       accessibilityScreen = scaledAccessibility.screen;
@@ -5261,6 +5602,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         source: "accessibility",
         available: true,
         elementCount: accessibilityElements.length,
+        ...(accessibilityRead.truncatedBy
+          ? {
+            truncated: true,
+            truncatedBy: accessibilityRead.truncatedBy,
+            ...(accessibilityRead.limits ? { limits: accessibilityRead.limits } : {}),
+          }
+          : {}),
+        ...(accessibilityRead.unplaced ? { unplaced: true } : {}),
       });
     } catch (error) {
       providers.push({
@@ -5271,11 +5620,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       });
     }
 
-    const baseElements = mergeScreenElements(inspectorElements, accessibilityElements);
-    const syntheticElements = synthesizeSwiftUITabBarElements(projectRoot, baseElements);
-    const elements = syntheticElements.length
-      ? mergeScreenElements(baseElements, syntheticElements)
-      : baseElements;
+    const elements = applySwiftUITabBarSource(projectRoot, mergeScreenElements(inspectorElements, accessibilityElements));
     // The app's inspector names the screen only when it described this one: a
     // snapshot it published before a turn or a fold (the iPhone Duo's inner
     // display held upright read 669x835 against a 669x951 picture) is stale.
@@ -5638,6 +5983,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    // Its device leases (any holder name its agents gave) pass to the next in
+    // line now, not when their TTL runs out.
+    const leasesEnded = deviceLeases.endChat(trimmed);
+    if (leasesEnded > 0) args.logger.info("apple.device_leases_ended_with_chat", { chatSessionId: trimmed, count: leasesEnded });
     let result: IosSimulatorShutdownResult = { released: false, previousSession: null };
     for (const runtime of [...runtimes.values()]) {
       // A chat can hold a device session without holding an app session, so the
@@ -6086,7 +6435,51 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
+  /** A finger held down at one point for `durationMs`, then lifted, as one gesture. */
+  const helperHold = async (deviceUdid: string, x: number, y: number, durationMs: number, space: HelperPointSpace): Promise<void> => {
+    await helperGesture(async (send) => {
+      await send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
+      try {
+        await delay(durationMs);
+      } finally {
+        // The finger always comes up, even if the wait was cut short.
+        await send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
+      }
+    });
+  };
+
+  /* ───────────────────────── iPad windows ───────────────────────── */
+
+  const windowControl = createAppleWindowControl({
+    readAccessibilityElements: (deviceUdid) => readAccessibilityElements(deviceUdid),
+    readAccessibilityElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
+    enqueueControl: (action, runControl, timeoutMs) => enqueueControl(action, runControl, timeoutMs),
+    helperGesture: (gesture) => helperGesture(gesture),
+    helperTap: (deviceUdid, x, y, space) => helperTap(deviceUdid, x, y, space),
+    helperSwipe: (deviceUdid, input, space) => helperSwipe(deviceUdid, input, space),
+    helperHold: (deviceUdid, x, y, durationMs, space) => helperHold(deviceUdid, x, y, durationMs, space),
+    getScreenSnapshot: (snapshotArgs) => getScreenSnapshot(snapshotArgs),
+    touchDevice: (deviceUdid) => maintenance?.touch(deviceUdid),
+    logger: args.logger,
+  });
+
+  /** Lay out the front app's window on an iPad (`ade apple window`); see `appleWindowControl.ts`. */
+  const windowLayout = async (layoutArgs: AppleWindowLayoutArgs = {}): Promise<AppleWindowLayoutResult> => {
+    assertDarwin();
+    const runtime = resolveRuntime(layoutArgs);
+    const deviceUdid = await resolveControlDeviceUdid(layoutArgs.deviceUdid, runtime);
+    return windowControl.windowLayout(deviceUdid, runtime.key, layoutArgs);
+  };
+
+  const tap = async (point: {
+    deviceUdid?: string | null;
+    x: number;
+    y: number;
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    source?: AppleInputSource;
+    noRecord?: boolean | null;
+  }): Promise<{ ok: true }> => {
     assertDarwin();
     const runtime = resolveRuntime(point);
     const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid, runtime);
@@ -6097,8 +6490,33 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord });
       return { ok: true };
+    });
+  };
+
+  /**
+   * A press held at one point: begin, hold, end, as one helper gesture so
+   * nothing else lands while the finger is down (`sendGesture`). What opens a
+   * context menu or starts a drag-to-reorder; `tap` holds for no time at all.
+   * The hold is clamped to 100 ms–5 s, inside the control slot's timeout.
+   */
+  const longPress = async (input: IosSimulatorLongPressArgs): Promise<{ ok: true; action: "long-press"; durationMs: number }> => {
+    assertDarwin();
+    const runtime = resolveRuntime(input);
+    const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
+    const x = normalizeCoordinate(input.x, "x");
+    const y = normalizeCoordinate(input.y, "y");
+    const requested = input.durationMs ?? APPLE_LONG_PRESS_DEFAULT_MS;
+    if (!Number.isFinite(requested) || requested <= 0) throw new Error("durationMs must be a positive number of milliseconds.");
+    const durationMs = Math.round(Math.min(APPLE_LONG_PRESS_MAX_MS, Math.max(APPLE_LONG_PRESS_MIN_MS, requested)));
+    const space = inputPointSpace(input.source);
+    return enqueueControl("tap", async () => {
+      await liftLiveTouch(runtime.key, "long-press", runtime.laneId);
+      await helperHold(deviceUdid, x, y, durationMs, space);
+      runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord });
+      return { ok: true, action: "long-press", durationMs };
     });
   };
 
@@ -6180,6 +6598,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     readPngSize,
     nowIso,
     screenshotSegments: SCREENSHOT_CACHE_SEGMENTS,
+    deviceSupportsDuo,
   });
 
   /**
@@ -6333,20 +6752,43 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // what is on screen, and a video that skips it shows a jump cut. The
       // source is carried through so a person scrolling the pane does not look
       // like an agent and start a recording.
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord });
       return { ok: true as const, action: "scroll" as const, direction, deltaX, deltaY };
     });
   };
 
-  const typeText = async (input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
+  /**
+   * Text through the helper's keyboard, to whatever has focus.
+   *
+   * For an agent (not a person typing in a viewer, where every key is a
+   * call) it first asks which element has keyboard focus. Nothing focused is
+   * said (`focus: "none"`, with a message), because the text then most
+   * likely went nowhere and `ok` alone read as success. Where the runtime
+   * cannot tell, nothing is claimed (`focus` is left out).
+   */
+  const typeText = async (
+    input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource; noRecord?: boolean | null },
+    options: { checkFocus?: boolean } = {},
+  ): Promise<{ ok: true; focus?: "field" | "none"; focused?: string | null; message?: string | null }> => {
     assertDarwin();
     const runtime = resolveRuntime(input);
     const deviceUdid = await resolveControlDeviceUdid(input.deviceUdid, runtime);
+    const checkFocus = options.checkFocus !== false && input.source !== "user";
     return enqueueControl("text", async () => {
+      const focused = checkFocus ? await readFocusedElement(deviceUdid).catch(() => undefined) : undefined;
       await helperType(deviceUdid, input.text);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source });
-      return { ok: true };
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source, noRecord: input.noRecord });
+      if (focused === undefined) return { ok: true };
+      if (focused === null) {
+        return {
+          ok: true,
+          focus: "none",
+          focused: null,
+          message: "No element had keyboard focus, so the text most likely went nowhere. Tap the field first, or use fill-element, which taps it and reads it back.",
+        };
+      }
+      return { ok: true, focus: "field", focused: describeElement(focused) };
     });
   };
 
@@ -6396,7 +6838,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
       }
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord });
       return { ok: true, key: label };
     });
   };
@@ -6420,7 +6862,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord });
       // Named, so the answer does not read as a tap.
       return { ok: true, action };
     });
@@ -6501,6 +6943,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     x: number;
     y: number;
     source?: AppleInputSource;
+    noRecord?: boolean | null;
   }): Promise<{ ok: true }> => {
     assertDarwin();
     const phase: unknown = input.phase;
@@ -6539,7 +6982,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       liveTouches.delete(laneKey);
       await sendTouch(held.udid, "end", x, y);
       const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
-      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source });
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord });
       return { ok: true };
     });
   };
@@ -6565,7 +7008,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       ? contextItemFromScreenElement(element, screenSnapshot, runtime, screenSnapshot.screenshot.dataUrl, sourceRoot)
       : coordinateFallbackItem({ x, y }, screenSnapshot.deviceUdid, runtime, screenSnapshot.screenshot.dataUrl);
     lastSelectedItem = item;
-    noteInput(runtime, { udid: screenSnapshot.deviceUdid, kind: "select", x, y });
+    noteInput(runtime, { udid: screenSnapshot.deviceUdid, kind: "select", x, y, noRecord: point.noRecord });
     // Selecting exists to show the user what they picked, so reveal the drawer
     // whichever host answered.
     requestDrawerOpen("selectPoint", "inspect", {
@@ -6991,8 +7434,128 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── tests ───────────────────────── */
 
-  /** The one test run this service allows at a time: the lane and scheme, for the busy message. */
-  let testRunInFlight: string | null = null;
+  /** Lanes with an `installApp` build in their DerivedData right now. */
+  const laneAppInstalls = new Set<string>();
+
+  /**
+   * Put the lane's app on one of its devices (usually an extra) and, with
+   * `launch`, start it. Nothing of the lane device's session, stream, claim or
+   * launch state is touched: this is the build-once, install-on-N path that
+   * `launch` (which owns the lane device's session) cannot be.
+   *
+   * The build goes into the lane's DerivedData, as `launch` does, so a build
+   * the lane already has is reused incrementally; `build: false` installs the
+   * product the lane last built without running xcodebuild. One build at a
+   * time per DerivedData: a launch, a test run or another install on the lane
+   * is refused rather than run over.
+   */
+  const installApp = async (installArgs: AppleInstallAppArgs = {}): Promise<AppleInstallAppResult> => {
+    assertDarwin();
+    const runtime = requireLaneScope(installArgs);
+    const laneDevice = laneDevices.get(runtime.key);
+    const wanted = installArgs.deviceUdid?.trim() || null;
+    const extra = wanted && wanted !== laneDevice?.udid && wanted !== laneDevice?.name
+      ? laneDevices.findExtra(runtime.key, wanted)
+      : null;
+    if (wanted && !extra && wanted !== laneDevice?.udid && wanted !== laneDevice?.name) {
+      throw new AdeExpectedError(
+        `${APPLE_DEVICE_NOT_LANE_OWNED_CODE}: ${wanted} is neither this lane's device nor one of its extra devices. `
+          + "Run ade apple device-list to see them; device-create --extra adds one.",
+        "user",
+      );
+    }
+    const targetUdid = extra?.udid ?? laneDevice?.udid ?? null;
+    if (!targetUdid) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
+    const projectRoot = await resolveScopedRoot(installArgs);
+    const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
+    const busy = laneAppInstalls.has(runtime.key)
+      ? "another install"
+      : runtime.activeLaunchId
+        ? "a launch"
+        : testRunInFlight?.laneKey === runtime.key
+          ? "a test run"
+          : activeBuildDataPaths.has(path.resolve(derivedDataPath))
+            ? "a build or test run"
+            : null;
+    if (busy) {
+      throw new AdeExpectedError(
+        `${APPLE_BUILD_BUSY_CODE}: ${busy} is building in this lane's DerivedData. Two xcodebuilds in one DerivedData break each other; wait for it, then run install again.`,
+        "user",
+      );
+    }
+    const configuration = normalizeBuildConfiguration(installArgs.configuration);
+    const launchArguments = normalizeLaunchArguments(installArgs.arguments);
+    laneAppInstalls.add(runtime.key);
+    try {
+      if (extra) await bootExtraDevice(extra);
+      const device = await resolveDevice(targetUdid, runtime);
+      if (!extra) await ensureDeviceBooted(device);
+      invalidateDeviceList();
+      const target = await resolveLaunchTarget({
+        projectRoot,
+        laneId: runtime.key,
+        targetId: installArgs.targetId ?? null,
+        bundleId: installArgs.bundleId ?? null,
+        appBundlePath: installArgs.appBundlePath ?? null,
+        ...(installArgs.build === false ? { build: false } : {}),
+      }, device.udid, projectRoot);
+      if (target.target.kind === "installed") {
+        throw new AdeExpectedError(
+          `${target.target.name} is an installed app, not one this lane builds, so there is nothing to install. Name the lane's app with --target (ade apple apps lists them).`,
+          "user",
+        );
+      }
+      const configurationNamed = Boolean(installArgs.configuration?.trim());
+      const appBundle = await buildProjectApp(target, device, projectRoot, configuration, configurationNamed || installArgs.build === false);
+      if (!appBundle) {
+        throw new AdeExpectedError(
+          installArgs.build === false
+            ? `This lane has no ${configuration} build of ${target.target.name}. Run install without --no-build to build it.`
+            : `Could not find ${target.target.name}.app after building.`,
+          "user",
+        );
+      }
+      const bundleId = target.bundleId ?? await readPlistValue(path.join(appBundle, "Info.plist"), "CFBundleIdentifier");
+      if (!bundleId) throw new Error(`Could not read the bundle identifier of ${appBundle}.`);
+      await installTracked(device.udid, bundleId, () => installAppOnSimulator(device, appBundle));
+      maintenance?.touch(device.udid);
+      let pid: number | null = null;
+      if (installArgs.launch) {
+        const state = await hub(runtime).relaunchApp({
+          deviceUdid: device.udid,
+          bundleId,
+          arguments: launchArguments,
+          laneId: runtime.key,
+        });
+        pid = state.pid;
+      }
+      args.logger.info("apple.app_installed_on_device", {
+        laneId: runtime.key,
+        udid: device.udid,
+        extra: Boolean(extra),
+        bundleId,
+        built: target.shouldBuild,
+        launched: Boolean(installArgs.launch),
+      });
+      return {
+        deviceUdid: device.udid,
+        deviceName: device.name,
+        extra: Boolean(extra),
+        bundleId,
+        appBundlePath: appBundle,
+        configuration,
+        built: target.shouldBuild,
+        installed: true,
+        launched: Boolean(installArgs.launch),
+        ...(installArgs.launch ? { pid } : {}),
+      };
+    } finally {
+      laneAppInstalls.delete(runtime.key);
+    }
+  };
+
+  /** The one test run this service allows at a time: its lane, and the lane and scheme for the busy message. */
+  let testRunInFlight: { laneKey: string; label: string } | null = null;
 
   /**
    * `xcodebuild test` on the lane's own device (`appleTestRun.ts` runs it).
@@ -7006,14 +7569,20 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = requireLaneScope(testArgs);
     if (testRunInFlight) {
       throw new Error(
-        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight}). `
+        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight.label}). `
           + "xcodebuild test runs one at a time; wait for it to finish, then run again.",
       );
     }
     // Claimed before the first await. A device boot takes tens of seconds, and
     // a second run that slipped in behind it ran a second xcodebuild into the
     // same DerivedData, which broke package resolution for both.
-    testRunInFlight = `lane ${runtime.key}`;
+    if (laneAppInstalls.has(runtime.key)) {
+      throw new AdeExpectedError(
+        `${APPLE_BUILD_BUSY_CODE}: an \`ade apple install\` is building in this lane's DerivedData. Wait for it, then run the tests again.`,
+        "user",
+      );
+    }
+    testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}` };
     try {
       return await runTestsClaimed(testArgs, runtime);
     } finally {
@@ -7065,30 +7634,38 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
-    const laneDevice = await ensureLaneDevice(runtime);
-    if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
-    const device = await resolveDevice(laneDevice.udid, runtime);
-    await ensureDeviceBooted(device);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
-    testRunInFlight = `lane ${runtime.key}, scheme ${scheme}`;
-    activeTestUdids.add(device.udid);
+    testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}, scheme ${scheme}` };
+    // The DerivedData is the run's from here, before the device boot, which
+    // takes tens of seconds: an install or a cleaner during the boot sees it.
     const releaseBuildPath = claimBuildDataPath(derivedDataPath);
-    args.logger.info("apple.tests.start", { laneId: runtime.key, udid: device.udid, projectPath, scheme, derivedDataPath });
+    let device: IosSimulatorDevice | null = null;
     let result: AppleRunTestsResult;
     try {
+      const laneDevice = await ensureLaneDevice(runtime);
+      if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
+      const target = await resolveDevice(laneDevice.udid, runtime);
+      device = target;
+      await ensureDeviceBooted(target);
+      activeTestUdids.add(target.udid);
+      args.logger.info("apple.tests.start", { laneId: runtime.key, udid: target.udid, projectPath, scheme, derivedDataPath });
+      // Same guard as a launch build: package state that names another folder goes first.
+      healMovedDerivedData(derivedDataPath, projectRoot, args.logger);
       // xcodebuild installs the app under test; on an attached device it is
       // ADE's to remove later only when it was not there before.
-      result = await installTracked(device.udid, bundleId, () => (
-        runXcodebuildTests({ projectRoot, projectPath, scheme, device, derivedDataPath, testArgs, spawnProcess })
+      result = await installTracked(target.udid, bundleId, () => (
+        runXcodebuildTests({ projectRoot, projectPath, scheme, device: target, derivedDataPath, testArgs, spawnProcess })
       ));
     } finally {
-      activeTestUdids.delete(device.udid);
       releaseBuildPath();
-      maintenance?.touch(device.udid);
+      if (device) {
+        activeTestUdids.delete(device.udid);
+        maintenance?.touch(device.udid);
+      }
     }
     args.logger.info("apple.tests.complete", {
       laneId: runtime.key,
-      udid: device.udid,
+      udid: result.deviceUdid,
       passed: result.passed,
       exitCode: result.exitCode,
       timedOut: result.timedOut,
@@ -7308,6 +7885,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
               `${APPLE_DEVICE_IS_EXTRA_CODE}: ios_simulator.${action} runs on the lane's own device (its live view, claim, `
               + `recordings and builds), not on the extra device ${extra.name}. On an extra, use screenshot, snapshot, tap, `
               + "rotate, relaunch and the other per-device commands with --device; delete it with device-delete --device <udid>. "
+              + (action === "launch"
+                ? `To build and install the lane's app on ${extra.name} (and start it), run: ade apple install --device ${extra.udid} --launch. `
+                : "")
               + `To make ${extra.name} the lane's device, run: ade apple device-promote --device ${extra.udid}`,
               "user",
             );
@@ -7391,6 +7971,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     capLiveStream,
     frame,
     tap,
+    /** A press held at one point: context menus (`ade apple long-press`). */
+    longPress,
     /** A live finger's begin/move/end, for a person driving from a viewer. */
     touch,
     pressButton,
@@ -7481,7 +8063,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
@@ -7531,24 +8113,102 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
 
     /*
-     * Turns on the lane's device for the agents that share it (advisory: see
-     * `appleDeviceLease.ts`). Keyed by lane, as the device is.
+     * Turns on one of the lane's devices for the agents that share it
+     * (advisory: see `appleDeviceLease.ts`). One lease per device: the lane's
+     * own device, and each extra (`deviceUdid`) on its own, so a build on the
+     * iPhone never waits on a screenshot of the iPad beside it.
      */
-    deviceLease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; holder?: string | null; ttlMs?: number | null; waitMs?: number | null } = {}) => {
+    deviceLease: async (leaseArgs: {
+      laneId?: string | null;
+      chatSessionId?: string | null;
+      holder?: string | null;
+      ttlMs?: number | null;
+      waitMs?: number | null;
+      deviceUdid?: string | null;
+      token?: string | null;
+      distinct?: boolean | null;
+      /** Set by the RPC server: aborted when the caller's connection closes. */
+      connectionSignal?: AbortSignal | null;
+    } = {}) => {
       const runtime = resolveRuntime(leaseArgs);
+      const target = leaseTarget(runtime, leaseArgs.deviceUdid);
       const holder = leaseArgs.holder?.trim() || leaseArgs.chatSessionId?.trim() || "agent";
-      const result = await deviceLeases.acquire({ key: runtime.key, holder, ttlMs: leaseArgs.ttlMs, waitMs: leaseArgs.waitMs });
+      const signal = leaseArgs.connectionSignal instanceof AbortSignal ? leaseArgs.connectionSignal : null;
+      const result = await deviceLeases.acquire({
+        key: target.key,
+        holder,
+        chat: leaseArgs.chatSessionId,
+        ttlMs: leaseArgs.ttlMs,
+        waitMs: leaseArgs.waitMs,
+        token: leaseArgs.token,
+        distinct: leaseArgs.distinct === true,
+        signal,
+      });
+      if (signal?.aborted && result.acquired && !result.renewed && result.token) {
+        // Granted as the caller went away: nobody will ever see this token,
+        // so the next in line gets the device now instead of after the TTL.
+        deviceLeases.release({ key: target.key, token: result.token });
+        return { acquired: false as const, current: null, queued: 0, device: target.device };
+      }
       // A new turn, not a renewal or a busy answer: agents taking turns.
       if (result.acquired && !result.renewed) args.captureAnalytics?.("device_leased");
-      return result;
+      return { ...result, device: target.device };
     },
-    deviceLeaseRelease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; token?: string | null } = {}) => {
+    /*
+     * The token is the turn: it is released on whichever of this lane's
+     * devices holds it, even one that has since left the lane, so a stale
+     * `--device` (or none, from an older CLI) never strands a lease.
+     */
+    deviceLeaseRelease: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; token?: string | null; deviceUdid?: string | null } = {}) => {
       const token = leaseArgs.token?.trim();
-      if (!token) throw new Error("A lease release needs the token `apple lease` printed.");
-      return deviceLeases.release({ key: resolveRuntime(leaseArgs).key, token });
+      if (!token) throw new AdeExpectedError("A lease release needs the token `apple lease` printed: ade apple lease release --token <t>.", "user");
+      const runtime = resolveRuntime(leaseArgs);
+      const ownKey = appleDeviceLeaseKey(runtime.key, null);
+      const key = deviceLeases.keyOfToken(token, (candidate) => candidate === ownKey || candidate.startsWith(`${ownKey}\u0000`));
+      if (!key) {
+        return {
+          released: false,
+          device: null,
+          reason: "This token holds no lease on this lane's devices. It was released already, it lapsed (a lease lasts its --ttl unless renewed), "
+            + "or it is from another lane. Run ade apple lease status to see who has the device.",
+        };
+      }
+      deviceLeases.release({ key, token });
+      if (key === ownKey) {
+        const own = runtime.key ? laneDevices.get(runtime.key) : null;
+        return { released: true, device: { udid: own?.udid ?? null, name: own?.name ?? null, extra: false } };
+      }
+      const udid = key.slice(ownKey.length + 1);
+      const extra = laneDevices.findExtra(runtime.key, udid);
+      return { released: true, device: { udid, name: extra?.name ?? null, extra: true } };
     },
-    deviceLeaseStatus: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null } = {}) =>
-      deviceLeases.status(resolveRuntime(leaseArgs).key),
+    deviceLeaseStatus: async (leaseArgs: { laneId?: string | null; chatSessionId?: string | null; deviceUdid?: string | null } = {}) => {
+      const runtime = resolveRuntime(leaseArgs);
+      const target = leaseTarget(runtime, leaseArgs.deviceUdid);
+      return { ...deviceLeases.status(target.key), device: target.device };
+    },
+
+    /*
+     * Whether agent input on this lane starts an automatic recording. On by
+     * default; `ade apple auto-record off` turns it off for the lane, in the
+     * project's KV, so it outlasts a restart. The machine-wide switch is the
+     * "Record agent input" setting (Settings ▸ Apple Development).
+     */
+    installApp,
+    windowLayout,
+    getAutoRecord: async (recordArgs: { laneId?: string | null; chatSessionId?: string | null } = {}) => {
+      const runtime = resolveRuntime(recordArgs);
+      return autoRecordState(runtime.key);
+    },
+    setAutoRecord: async (recordArgs: { laneId?: string | null; chatSessionId?: string | null; enabled?: boolean | null } = {}) => {
+      const runtime = resolveRuntime(recordArgs);
+      if (!runtime.key) throw new AdeExpectedError("auto-record is a lane setting: run it from a lane worktree, or pass --lane <lane-id>.", "user");
+      if (typeof recordArgs.enabled !== "boolean") throw new AdeExpectedError("auto-record needs on or off.", "user");
+      if (!args.laneDeviceStore) throw new AdeExpectedError("This runtime has no project database, so it cannot keep a lane setting.", "environment");
+      args.laneDeviceStore.setJson(appleAutoRecordKey(runtime.key), { enabled: recordArgs.enabled, at: nowIso() });
+      args.logger.info("apple.auto_record_set", { laneId: runtime.key, enabled: recordArgs.enabled });
+      return autoRecordState(runtime.key);
+    },
 
     /* Device hub: the app's own log, interleaved with what ADE did. */
     startEventLog: async (logArgs: IosSimulatorStartEventLogArgs) => darwinHub(logArgs).startEventLog(logArgs),
@@ -7642,5 +8302,5 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         disposeXcodeMcpBridge(bridge, new Error("iOS simulator service disposed."));
       }
     },
-   });
+  });
 }

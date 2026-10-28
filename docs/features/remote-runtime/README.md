@@ -449,7 +449,21 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   only (`ade.machineColors.v1`). Beside it sit a presence dot, a version chip
   that reads `from → to` when the machine is behind, and a detail line naming
   the winning route ("Local network", "Tailscale", "ADE relay", "SSH") and its
-  latency. The **Update** button appears on a connected machine that is behind.
+  latency. A machine runs two versions: its brain and its desktop app. The
+  brain reports the installed app's version beside its own
+  (`runtimeInfo.desktopAppVersion` on `ade/initialize` and `runtime/info`, and
+  `appVersion` in the Bonjour TXT; null on a machine with no app, absent from
+  older brains). One reader (`readInstalledDesktopApp`) answers: macOS reads
+  the app's Info.plist (`plutil` for a binary one), so an app updated while the
+  brain kept running still reads right; Windows finds the app the desktop
+  recorded in `runtime/desktop-app.json` (or the usual install folders) and
+  reads the `.exe`'s version resource, so a closed app the brain updated reads
+  right too. When the two agree the chip shows
+  one version; when they differ it shows both ("1.2.123 · brain 1.2.125"), and
+  the older of the two decides "behind" (`machineVersionFacts`,
+  `shared/machineVersions.ts`), so a machine whose app is behind is never "Up
+  to date". `ade brain status` adds a `desktop app` row only when it differs.
+  The **Update** button appears on a connected machine that is behind.
   "Behind" is measured against the newest ADE *this* computer knows about — what
   it runs, or a newer build it has already seen published — using the shared
   `compareUpdateVersions`; a machine level with us gets no button. The click
@@ -1576,6 +1590,37 @@ ade brain update status --text
 ```
 
 The update command stages the next release under `$ADE_HOME/runtime/updates/`, verifies the staged binary with the staged native deps, promotes the binary/native deps into place, and restarts the per-user brain service. A connected mobile or desktop controller should expect the sync/RPC connection to drop briefly while the brain restarts.
+
+### What a standalone brain finds without an app
+
+A standalone brain (`$ADE_HOME/bin/ade serve`, a Node SEA) has no app
+`resources` folder. It finds what an app brain gets from its resources here:
+
+- **Native helpers** (`nativeHelperPaths.ts`, `simHelperClient.ts`). After the
+  usual places (beside its own binary in `bin/resources/native`, where SSH
+  bootstrap uploads them), it looks in its runtime archive
+  (`$ADE_RUNTIME_ROOT/native/`), then in the installed ADE app's
+  `Contents/Resources/native` (Windows: `resources\native`). The app is the one
+  the desktop recorded in `$ADE_HOME/runtime/desktop-app.json`, then the
+  channel's app (`ADE`, `ADE Beta`, `ADE Alpha`, or `ADE_DESKTOP_APP_NAME`) in
+  `/Applications` and `~/Applications`, skipping a bundle whose id is another
+  channel's, and last the app Spotlight finds by the channel's bundle id (a miss is asked again after five minutes).
+  A Spotlight hit counts only when `codesign --verify --strict` passes and its
+  team is the installed app's (ADE's own team when none is installed), so a
+  copy in a disk image, the Trash or Downloads is never run. Unsigned dev
+  builds keep their explicit paths. The
+  darwin runtime archive ships `ade-sim-helper` and `ade-media`, so the brain
+  prefers its own build of those. The Mac Desktop driver is not in the archive
+  and the app's signed copy comes first: Screen Recording and Accessibility
+  grants belong to that binary. A sim helper that speaks another protocol is
+  stopped at its `ready` line and named in the error, not used. "Missing"
+  messages list every folder that was searched.
+- **The agent `ade`** (`bootstrap.ts`). In a SEA, `argv[1]` is the literal
+  `cli.cjs`, so the brain uses its own executable as the CLI entry: chats and
+  terminals get `ADE_CLI_PATH`, the shim folder first on `PATH`, and
+  `ADE_AGENT_SKILLS_DIRS`. Skills come from `$ADE_RUNTIME_ROOT/agent-skills`
+  (shipped in every runtime archive), then `$ADE_HOME/agent-skills` (SSH
+  bootstrap), then the installed app's.
 
 ## What works remotely
 

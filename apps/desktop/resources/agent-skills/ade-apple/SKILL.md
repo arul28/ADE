@@ -51,12 +51,16 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 | Open an installed app | `"$A" apple relaunch --bundle-id com.apple.mobilesafari --text` |
 | Open a web page or deep link | `"$A" apple open-url "https://www.google.com" --text` |
 | Tap a control by its label | `"$A" apple tap-element --label "Address" --text` |
+| Long press (a context menu) | `"$A" apple long-press 120 420 --duration-ms 1000 --text`, or `tap-element --label "Everything" --hold-ms 1000` |
 | Type, then press Return | `"$A" apple type "reddit" --submit --text` |
 | Press one key | `"$A" apple key return --text` (also `escape`, `delete`, `space`, arrows `up`/`down`/`left`/`right`, letters; hold `--cmd`/`--shift`/`--alt`/`--ctrl`: `apple key f --cmd`) |
 | Wait for something to appear | `"$A" apple wait-for-element --label "Cancel" --timeout-ms 8000 --text` |
 | Which app is in front | `"$A" apple foreground --text` (`--wait 10` right after a launch) |
 | Open an app with launch arguments | `"$A" apple relaunch --bundle-id com.ade.ios --text -- -adePreviewScreen duo-home` |
-| Take turns with other agents on this device | `"$A" apple lease --wait 300 --text`, later `"$A" apple lease release --token <t> --text` |
+| Take turns with other agents on this device | `"$A" apple lease --wait 300 --text`, later `"$A" apple lease release --token <t> --text` (`--device <udid>` for an extra) |
+| Put the lane's app on an extra device | `"$A" apple install --device <udid> --launch --text` |
+| Lay out an iPad window | `"$A" apple window --left --text` (also `--right`, `--top`, `--bottom`, `--fill`, `--split`, `--thirds`, `--quarters`, `--slide-over`, `--size 600x800`; bare `window` reads it) |
+| Input without a recording | add `--no-record` to `tap`, `type`, `swipe`, `tap-element`, … |
 | What is on screen | `"$A" apple snapshot --text` |
 | Go home / app switcher | `"$A" apple button home --text` / `"$A" apple button app-switcher --text` |
 | Close an app (no gesture) | `"$A" apple terminate --bundle-id com.apple.mobilesafari --text` |
@@ -72,9 +76,22 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
   configurations differ in more than speed (ADE's own iOS app signs into a
   test backend in Debug); the summary names the configuration it built.
   Arguments after `--` reach the app, for `launch` and `relaunch`.
+- One agent should drive the device. Let it do the taps, screenshots and
+  recordings; other agents hand it work, or wait for its results. That is
+  simpler and faster than several agents taking turns. Use leases only when
+  agents truly must drive the same device in parallel.
 - Several agents on one lane share one device. Before a run of builds,
   rotates and shots, take a `lease` (it queues behind whoever has it) and
   release it after. It is advisory, so it only works if every agent uses it.
+  Device commands do not renew it: renew with the token before `--ttl` ends.
+  It also ends when its chat is archived or deleted.
+  Each device has its own lease: the lane's device, and each extra with
+  `--device <udid>`. The token is your turn: keep it, renew with
+  `lease --token <t>`, release with `lease release --token <t>`. A `lease`
+  without the token is a new turn and queues, even from your own chat, so
+  subagents of one chat take turns instead of sharing one lease. Give each
+  subagent a `--holder <name>` (say `--holder ui-agent`) so `lease status`
+  shows who has it.
 - A simulator signed in to an Apple Account can show an "Apple Account
   Verification" alert over every app. Dismiss it with
   `tap-element --label "Not Now"`, then continue.
@@ -137,9 +154,13 @@ another lane, an `xcodebuild test` run, or the user.
   own device. ADE deletes it with the lane; `device-delete --device <udid>`
   deletes it now. `boot --device <udid>` boots an extra that is off and
   answers only once `simctl` lists it Booted.
-- An extra cannot stream, record, launch a build or run tests. To make it the
-  lane's own device (say it already has the build and the sign-in), run
-  `device-promote --device <udid|name>`. The old lane device becomes an extra,
+- An extra cannot stream, record, `launch` or run tests. To put the lane's
+  app on it, run `install --device <udid|name>`: it builds once into the
+  lane's DerivedData (incremental, so the lane's last build is reused;
+  `--no-build` installs it as is), installs, and with `--launch` starts it.
+  The lane's own device, its stream and its session are not touched. To make
+  an extra the lane's own device (say it already has the build and the
+  sign-in), run `device-promote --device <udid|name>`. The old lane device becomes an extra,
   so nothing installed on it is lost. It is refused while the lane device is
   streaming, recording, running tests or held by another chat: stop that
   first.
@@ -165,7 +186,11 @@ testing off and DerivedData in the lane's cache
 (`.ade/cache/ios-simulator/DerivedData`), which ADE deletes with the lane. One
 test run goes at a time on the Mac (`APPLE_TEST_RUN_BUSY`: wait, then run
 again). A failing test comes back as `passed: false` with the failures and the
-log path; it is not an error.
+log path; it is not an error. `--text` prints the counts (XCTest and Swift
+Testing together), each failing test with its file, line and message, then
+xcodebuild's own failure lines, the log and the result bundle; `--json` has
+the same as `failures: [{test, file, line, message}]`. An XCTest name there
+(`ADETests/SyncTests/testX`) is what `--only` takes.
 
 Do not run `xcodebuild test` by hand against a simulator you made. If you must
 run `xcodebuild` yourself, pass `-derivedDataPath .ade/cache/ios-simulator/DerivedData`
@@ -225,6 +250,12 @@ A new device has no sign-ins, so the app starts at its first-run state.
 - `device-create` and `device-attach` never boot (`device-create --extra` does). `device-delete` removes the
   lane's ADE device and refuses an attached device unless `--force`, which only
   detaches. Like `stop`, it is refused while another chat is driving the device.
+- `device-detach` gives the device up without deleting it now. A simulator
+  the user attached stays installed. A device ADE made becomes a leftover,
+  and the cleanup pass deletes it 5 to 20 minutes later; the answer prints
+  the time. To keep it, `device-attach --simulator <udid>` before then.
+  When the user wants it kept as a free simulator, `device-detach --keep`:
+  nothing deletes it then, and the user deletes it from the picker.
 - ADE deletes the lane's own device, with all its data and the lane's build
   cache, when the lane is archived or deleted. An attached device is powered
   off and loses only the apps ADE installed. ADE never deletes a simulator it
@@ -232,12 +263,58 @@ A new device has no sign-ins, so the app starts at its first-run state.
 - An ADE device that nothing uses for 30 minutes is powered off, extras too
   (`ADE_APPLE_IDLE_POWER_OFF_MINUTES` in ADE's environment changes the
   minutes; `0` turns it off). Every command that names a device counts as
-  use. `status` and `device-list` then say so, for example `note: ADE powered
+  use, and so do a boot or an app install outside ADE (a raw `simctl boot` or
+  `simctl install`) and a device still booting. Prefer `apple install
+  --device` and `boot --device` anyway. `status` and `device-list` then say so, for example `note: ADE powered
   iPad Air 11 off after 31 min idle at 10:12; the next --device command boots
   it again.` `start` boots the lane's device again, and the next `--device`
   command boots an extra. Do not `simctl boot` it yourself.
 - Deleting an installed simulator from the list is the user's call, made in
   the desktop picker. ADE refuses it from an agent; do not try.
+- `runtimes` names a missing runtime by what its models need: on Xcode 27.1
+  with only iOS 27.1 installed (it runs only the iPhone Duo), every other
+  iPhone needs iOS 27.0, so it says `iOS 27.0`. `runtimes install --version
+  <x>` for a runtime the Mac already has is refused with
+  `APPLE_RUNTIME_ALREADY_INSTALLED` and the version to install instead.
+
+## iPad windows
+
+On an iPad in windowed mode (iPadOS 26+, the default), `apple window` lays
+out the app in front and reads the frame back:
+
+```bash
+"$ADE_CLI_PATH" apple window --text                 # where the window is
+"$ADE_CLI_PATH" apple window --size 600x800 --text  # resize
+"$ADE_CLI_PATH" apple window --move 0,0 --text      # top-left corner to 0,0
+"$ADE_CLI_PATH" apple window --left --text          # also --right, --top, --bottom
+"$ADE_CLI_PATH" apple window --split --text         # also --thirds, --quarters
+"$ADE_CLI_PATH" apple window --fill --text          # full screen
+"$ADE_CLI_PATH" apple window --slide-over --text
+```
+
+- `--size` drags the window's resize grabber, correcting until it is within
+  3 points. The layouts are the window's own menu (a long press on its green
+  button). Either way the answer says `applied` and exits 1 when the window
+  did not land; read the `reason`.
+- The frame is the real one, off-screen parts included: `window` says when
+  the window hangs past an edge, and a layout never counts as landed while
+  part of it is off the screen. A layout first drags such a window back on.
+- A size that does not fit from the window's top-left corner is refused:
+  move it first (`--move 0,0`, `--left`, `--top`).
+- `--move` says where iPadOS left the window: it snaps a window near a
+  screen edge to that edge and keeps its bottom above the Dock, so a few
+  points off is iPadOS, not a failed drag. A layout whose window is larger
+  than its slot (the app's minimum size) lands with a `note`; it may then run
+  past one screen edge.
+- A window pushed past the right edge is stashed by iPadOS; when `window`
+  says it cannot find the window, `relaunch --bundle-id <id>` brings it back.
+- `APPLE_WINDOWING_UNAVAILABLE`: the app in front is not in a window (an
+  iPhone, or an iPad set to Full Screen Apps in Settings ▸ Multitasking &
+  Gestures), or ADE cannot find the window. Portrait and landscape both
+  work.
+- `snapshot`, `find` and `tap-element` give screen points wherever the
+  window is. If a read could not place a window (one still opening), its rows
+  say `(unplaced)` and `tap-element` refuses them: run it again.
 
 ## Drive the app
 
@@ -262,9 +339,28 @@ Name elements, not pixels.
 - A `ref` names its own tier. `id:` and `component:` survive a re-render;
   `pos:` survives nothing, so ask for an accessibility identifier instead.
 - `wait-for-element` replaces a sleep. Add `--gone` to wait for a disappearance.
+- When several elements match, the answer says which one it used and why,
+  lists the others with their points, and names the `--index` that picks the
+  next. A control that holds the matching text wins over the text inside it.
+- `fill-element` reads the field back and prints `typed: verified`,
+  `not-seen` (the field does not hold the text: focus never arrived, or the
+  app dropped it; check a screenshot) or `unknown` (a secure field, or the
+  field moved). `type` prints `focus none` when no element had keyboard
+  focus, so the text most likely went nowhere: tap the field first.
+- A row marked `(inferred)` is a SwiftUI tab ADE placed from source because
+  the Tab Bar showed no tab items. Its frame is a guess, so `tap-element`
+  refuses it and prints the point to `tap` instead. A real tab item carries
+  its source file and line.
+- `snapshot` says `truncated` when the accessibility walk hit its cap
+  (500 elements, depth 80, 600 probe points). Elements past it are missing
+  from `find` and `tap-element` too; scroll or open the part you need, then
+  snapshot again.
 - Fall back to coordinates only when no query matches: `tap`, `drag`, `swipe`,
   `scroll`, `select`.
 - `type` and `key` act on the focused field, so tap the field first.
+  `type " "` sends a space; whitespace passed on purpose is text.
+- `long-press x y` holds the finger down (default 1000 ms, 100–5000) and
+  lifts it: what opens a context menu. Do not fake it with a one-point swipe.
 - `foreground` reports which app the device has in front, read from the device
   rather than from what ADE last launched.
 - Hardware buttons: `button home` (also `lock`, `volume-up`, `volume-down`,
@@ -349,8 +445,9 @@ opens nothing. Use the App Switcher instead.
 ```
 
 - Coordinates are points. Read the screen size from `apple stream-status`
-  (`screen points` in `--text`, `pointWidth` × `pointHeight` in `--json`; both
-  are empty while no stream runs, so `apple start` first). The example is an
+  (`screen points` in `--text`, `pointWidth` × `pointHeight` in `--json`).
+  Both are empty while no stream runs; then read `screen` from `apple
+  snapshot` (`402x874 @3x`), which needs no stream. The example is an
   iPhone 16 Pro (402 × 874).
 - The front app's card sits in the middle of the switcher. Swipe it up from
   about (W/2, 0.55 H) to (W/2, 0.09 H), fast: 150 ms. A slow drag only lifts
@@ -448,7 +545,11 @@ not a detail.
 1. **Your input starts a recording; the user's never does.** Any input from
    the CLI, an agent action or a semantic action counts as evidence and starts
    one automatically, tagged `auto`. Input from the desktop pane is stamped as
-   the user's and starts nothing.
+   the user's and starts nothing. When the user asked for no recordings, opt
+   out: `--no-record` on one command, `apple auto-record off` for the lane
+   (`auto-record on` and `auto-record` to check), or the user's "Record agent
+   input" switch in Settings ▸ Apple Development for the whole Mac. A
+   recording that is already running still sees the input.
 2. It stops at the end of your turn, or after five minutes, whichever is
    first. `record-start` during an auto recording converts it to manual with
    no gap. A manual recording stops itself after five minutes of real time
@@ -465,7 +566,8 @@ not a detail.
    and `idleCutMs`. Pass `--plain` only when the user asks for the recording
    as it was recorded.
 3. It files itself as proof on stop. There is **no auto-delete**; recordings
-   accumulate until the user clears them.
+   accumulate until the user clears them (the user may have watched one you
+   never cited). Opt out up front instead of making ones nobody wants.
 4. You may delete a recording you own. Anything else is
    `APPLE_RECORDING_PINNED`.
 5. A second chat gets `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
@@ -496,9 +598,16 @@ of `running: true` means the capture is alive, not that a picture is arriving.
 "$ADE_CLI_PATH" apple location 37.7749 -122.4194 --text
 "$ADE_CLI_PATH" apple permission grant photos --bundle-id <id> --text
 "$ADE_CLI_PATH" apple push --bundle-id <id> --title Hi --body "You have mail" --text
-"$ADE_CLI_PATH" apple log-start --bundle-id <id> --text
+"$ADE_CLI_PATH" apple log-start --bundle-id <id> --text   # then: apple log --text
 "$ADE_CLI_PATH" apple preview-current --text
 ```
+
+`log-start` keeps the app's own process (its installed executable) and the
+bundle id's `os_log` subsystem. If the app logs under another subsystem, add
+`--subsystem <prefix>`; `--process <name>` follows another process. `print()`
+never reaches the device log. When no app line has arrived after a few
+seconds, `apple log` says so with a hint. ADE's own rows name the device they
+drove, so the log of one device leaves out taps on the lane's other devices.
 
 Also `content-size`, `status-bar`, `open-url`, `relaunch`, `terminate`,
 `uninstall`, `app-state`, `log`, `log-stop`, `preview-status`, `previews`,
@@ -530,7 +639,7 @@ One chat owns a simulator session at a time. A second launch fails with
 
 - `APPLE_NO_INSTALLED_SIMULATORS` — no installed runtime. Point at Xcode ▸
   Settings ▸ Components. Never try to download one.
-- `APPLE_HELPER_UNAVAILABLE` — the helper binary is missing from this install.
+- `APPLE_HELPER_UNAVAILABLE` — no usable helper on that Mac: missing (the message lists where ADE looked) or from another ADE version. Tell the user; updating ADE.app or the brain fixes it.
   `status` → `tools.helper.present` is the check.
 - `APPLE_STREAM_NOT_RUNNING` — `frame` needs a live stream; use `screenshot`.
 - `APPLE_DEVICE_OFF` — the lane's device is powered off, and watching never
@@ -548,8 +657,9 @@ One chat owns a simulator session at a time. A second launch fails with
 - `APPLE_EXTRA_DEVICE_LIMIT` — the lane already has 2 extra devices. Delete
   one with `device-delete --device <udid>`.
 - `APPLE_DEVICE_IS_EXTRA` — that command needs the lane's own device and you
-  named an extra. Use the lane's device, or run the `device-promote --device
-  <udid>` the message prints to make the extra the lane's device.
+  named an extra. For a build on the extra, `install --device <udid>
+  --launch`; or run the `device-promote --device <udid>` the message prints
+  to make the extra the lane's device.
 - `APPLE_LANE_DEVICE_BUSY` — `device-promote` found the lane's device
   streaming, recording, testing, launching or leased. Finish or stop that, then
   promote again.
@@ -558,6 +668,12 @@ One chat owns a simulator session at a time. A second launch fails with
   `ade apple start` to get the lane's own, or attach it first if the user named it.
 - `APPLE_RUNTIME_NOT_INSTALLED` — the runtime or model you named is not on
   this Mac. The message lists what is; ADE never downloads one.
+- `APPLE_RUNTIME_ALREADY_INSTALLED` — `runtimes install --version` named a
+  runtime the Mac has. The message names the version the missing models need.
+- `APPLE_BUILD_BUSY` — a launch, a test run or an `install` is already
+  building in the lane's DerivedData. Wait for it, then run again.
+- `APPLE_WINDOWING_UNAVAILABLE` — `window` found no resizable window; see
+  "iPad windows".
 - `APPLE_TEST_RUN_BUSY` — another `apple test` is running. Wait and run again.
 - `IOS_SIMULATOR_TARGET_ROOT_MISMATCH` — re-run `"$ADE_CLI_PATH" apple apps --text`.
 - `IOS_SIMULATOR_NO_BUILDABLE_TARGET` — pass `--target-id` or `--bundle-id`

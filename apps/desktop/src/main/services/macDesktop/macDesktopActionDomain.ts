@@ -148,11 +148,13 @@ function targetOf(source: unknown): MacDesktopTarget {
   const x = optionalNumber(source, "x");
   const y = optionalNumber(source, "y");
   const windowId = optionalNumber(source, "windowId");
+  const local = optionalBoolean(source, "local");
   return {
     ...(handle ? { handle } : {}),
     ...(text ? { text } : {}),
     ...(x == null ? {} : { x }),
     ...(y == null ? {} : { y }),
+    ...(local && x != null && y != null ? { local: true } : {}),
     ...(windowId == null ? {} : { windowId }),
   };
 }
@@ -301,6 +303,7 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
         laneId: requiredLaneId(args, "open"),
         target: requiredString(args, "target", "open"),
         args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
+        ...(optionalBoolean(args, "newInstance") ? { newInstance: true } : {}),
         ...chatSessionId(args),
         ...trustedHolderId(args),
       });
@@ -464,6 +467,10 @@ export function buildMacDesktopDomainService(runtime: MacDesktopActionRuntime): 
       laneId: requiredLaneId(args, "startRecording"),
       caption: optionalString(args, "caption"),
       fps: optionalNumber(args, "fps"),
+      // `plain` is what `record start --plain` sends; `keepIdle` is its old
+      // name. Forwarding only `keepIdle` dropped `--plain`, and the recorder
+      // then cut every still stretch the caller had asked to keep.
+      plain: optionalBoolean(args, "plain"),
       keepIdle: optionalBoolean(args, "keepIdle"),
       maxSeconds: optionalNumber(args, "maxSeconds"),
       ...chatSessionId(args),

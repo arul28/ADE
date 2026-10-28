@@ -239,6 +239,9 @@ final class AccessibilityDriver {
         var records: [ObservedElement] = []
         var elements: [AXUIElement] = []
         var total = 0
+        // A sheet listed as its own window is walked as a root; its parent's
+        // walk then skips it, or every one of its elements would appear twice.
+        var walkedSheets: [AXUIElement] = []
 
         windowLoop: for window in windows {
             if budget.remaining(now: Date()) <= 0 {
@@ -257,6 +260,7 @@ final class AccessibilityDriver {
                 }
                 continue
             }
+            if window.sheetOf != nil { walkedSheets.append(root) }
             var queue: [(element: AXUIElement, parentIndex: Int?, depth: Int, pid: pid_t)] = [
                 (root, nil, 0, window.pid),
             ]
@@ -305,6 +309,8 @@ final class AccessibilityDriver {
                     elements.append(node.element)
                 }
                 for child in children {
+                    if !walkedSheets.isEmpty, node.depth == 0,
+                       walkedSheets.contains(where: { CFEqual($0, child) }) { continue }
                     var childPid: pid_t = node.pid
                     AXUIElementGetPid(child, &childPid)
                     guard budget.admitChild(pid: childPid, windowPid: window.pid) else { continue }

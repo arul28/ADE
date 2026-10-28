@@ -1,4 +1,8 @@
+import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../desktop/src/shared/types/iosSimulator";
 import { ADE_BANNER } from "./banner";
+
+const GRACE_MINUTES = Math.round(APPLE_RELEASED_DEVICE_GRACE_MS / 60_000);
+const CLEANUP_MINUTES = Math.round(APPLE_DEVICE_CLEANUP_INTERVAL_MS / 60_000);
 
 /** Help for each `ade apple` subcommand, by name. */
 export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
@@ -376,6 +380,21 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     --x <n> --y <n>        Required point coordinates.
     --device, --udid <id>  Simulator device.
 `,
+  "long-press": `${ADE_BANNER}
+  iOS Simulator: long-press
+
+  Holds a press at one point, then lifts it: what opens a context menu or
+  starts a drag to reorder. A tap holds for no time at all. Aliases:
+  longpress, press-and-hold.
+
+    $ ade --socket apple long-press 120 420 --text
+    $ ade --socket apple long-press --x 120 --y 420 --duration-ms 1500 --text
+
+  Flags:
+    --x <n> --y <n>        Required point coordinates (device points).
+    --duration-ms <n>      How long to hold. Default 1000, from 100 to 5000.
+    --device, --udid <id>  Simulator device.
+`,
   drag: `${ADE_BANNER}
   iOS Simulator: drag / swipe
 
@@ -712,8 +731,17 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
   Flags:
     --device, --udid <id>  Simulator device.
-    --bundle-id <id>       Required. Keep only rows from this app.
+    --bundle-id <id>       Required. Keep only rows from this app: its own
+                           process (the installed executable) and its
+                           bundle-id os_log subsystem.
+    --subsystem <prefix>   Keep this os_log subsystem instead of the bundle id
+                           (an app that logs as com.acme.app while its bundle
+                           id is com.acme.app.dev).
+    --process <name>       Keep this process instead of the app's executable.
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
+
+  print() never reaches the device log; use Logger or NSLog. When no app line
+  arrives, "apple log" says so and names the filter.
     --force, -f            Start it anyway: skips both checks and takes over a
                            log another chat started.
 `,
@@ -787,15 +815,24 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade --socket apple tap-element --label Continue --text
     $ ade --socket apple tap-element --identifier signup-submit --text
+    $ ade --socket apple tap-element --text-match Everything --hold-ms 1000 --text
+
+  When several elements match, the answer says which it used and why, lists
+  the others with their points, and names the --index for the next. A tab ADE
+  inferred from source (marked "(inferred)" in the snapshot) is refused, with
+  the point to tap instead.
 
   Flags:
+    --hold-ms <n>          Hold the press this long: a long press (100-5000).
     Same element query as "find-element": --ref, --identifier, --label, --text,
     --role, --index, --device, --lane, --project.
 `,
   "fill-element": `${ADE_BANNER}
   iOS Simulator: fill-element
 
-  Taps a text field and types into it. Alias: fill.
+  Taps a text field, types into it, then reads the field back and prints
+  typed: verified, not-seen (the text is not in the field: check the screen)
+  or unknown (a secure field, or the field moved). Alias: fill.
 
     $ ade --socket apple fill-element --identifier email-field --value ada@example.com --text
     $ ade --socket apple fill --label Email "ada@example.com" --text
@@ -889,7 +926,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-cleanup": `${ADE_BANNER}
   Apple device: device-cleanup
 
-  Runs the cleanup pass now (ADE also runs it every 15 minutes):
+  Runs the cleanup pass now (ADE also runs it every ${CLEANUP_MINUTES} minutes):
   deletes ADE devices that no live lane holds, releases the devices of lanes
   that were archived or deleted, and drops lane records whose simulator is
   gone. It only deletes a device ADE made (one with ADE's marker). The
@@ -911,6 +948,12 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   time on this Mac (APPLE_TEST_RUN_BUSY). A failing test is a result, not an
   error: the output says passed: false with the failures and the log path.
   Use this instead of running xcodebuild or "simctl create" by hand. Alias: tests.
+
+  --text prints the counts (XCTest and Swift Testing added together), each
+  failing test with its file, line and message, xcodebuild's own failure lines
+  as it printed them, then the log and result bundle paths. --json carries the
+  same list as failures: [{test, file, line, message}]; an XCTest name there
+  (ADETests/SyncTests/testX) is what --only takes.
 
     $ ade --socket apple test --scheme ADE --text
     $ ade --socket apple test --target <id> --only ADETests/SyncTests --text
@@ -1000,9 +1043,20 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-detach": `${ADE_BANNER}
   Apple device: device-detach
 
-  The lane gives up its device. The simulator stays installed, keeps its power
-  state, and shows as a free device in the picker. Nothing is deleted. Use
-  "device-delete" to remove the lane's ADE device. Alias: detach.
+  The lane gives up its device. Nothing is deleted now. What happens next
+  depends on who made the device:
+
+  - A simulator the user attached stays installed, keeps its power state, and
+    shows as a free device in the picker. ADE uninstalls only the apps it put
+    on it.
+  - A device ADE made becomes a leftover. The cleanup pass deletes it after a
+    ${GRACE_MINUTES}-minute grace, at its next run (every ${CLEANUP_MINUTES} minutes), so it is gone within
+    about ${GRACE_MINUTES + CLEANUP_MINUTES} minutes. To keep it, attach it again before then:
+    "device-attach --simulator <udid>". The answer prints the time.
+    --keep (only when the user asks to keep it) leaves it as a free
+    simulator that nothing deletes; the user deletes it from the picker.
+
+  Use "device-delete" to remove the lane's ADE device now. Alias: detach.
 
   Refused while another chat is driving the device, like stop.
 
@@ -1011,6 +1065,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --force, -f            Detach a device another chat is driving as well.
     --ignore-ownership     Detach without the owner check. Ask first.
+    --keep                 An ADE-made device stays as a free simulator (the user asked).
     --chat-session <id>    Caller chat session; defaults to $ADE_CHAT_SESSION_ID.
     --lane, --lane-id <id> Lane whose device to detach.
 `,
@@ -1267,28 +1322,43 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   lease: `${ADE_BANNER}
   Apple device: lease
 
-  Takes a turn on the lane's device when several agents share it, so their
-  builds, rotates and screenshots do not land on each other. Run it before a
-  run of device work, and release it after; the next agent waiting gets the
-  device. It is advisory: commands work without one, and the pane is never
-  blocked. The same holder asking again renews its lease. A lease nobody
-  renews lapses after --ttl (default 10 minutes).
+  Takes a turn on one of the lane's devices when several agents share it, so
+  their builds, rotates and screenshots do not land on each other. Run it
+  before a run of device work, and release it after; the next agent waiting
+  gets the device. It is advisory: commands work without one, and the pane is
+  never blocked. A lease nobody renews lapses after --ttl (default 10 minutes).
 
-    $ ade apple lease --wait 300 --text          Wait up to 5 min; prints the token
+  Each device has its own lease: the lane's device, and each extra device
+  with --device <udid|name>. The token is the turn. Only the token renews it
+  (lease --token <t>) and releases it; a lease call without it is a new turn
+  and queues, even from the same chat. So subagents of one chat take turns
+  instead of sharing one lease, and one subagent's release never frees
+  another's. Give each subagent its own --holder (e.g. --holder ui-agent)
+  so status shows who has it.
+
+    $ ade apple lease --wait 300 --holder ui-agent --text   Wait up to 5 min; prints the token
+    $ ade apple lease --token <t> --text                    Renew your turn
     $ ade apple lease release --token <t> --text
+    $ ade apple lease --device <udid> --wait 300 --text     An extra device's own lease
     $ ade apple lease status --text
 
   acquired no means another holder has it (named, with when it lapses), and
   the command exits 1, so "lease --wait 300 && <device work>" never runs the
-  work without the lease.
+  work without the lease. release with a token that holds nothing (released
+  already, lapsed, another lane's) also exits 1.
+
+  Device commands do not renew a lease: renew with --token before --ttl runs
+  out. A lease ends early when its chat is archived or deleted, and a waiting
+  call that is killed leaves the line. Leases live in the brain's memory: a
+  brain restart ends them all.
 
   Flags:
     --wait <seconds>       How long to wait in line; default 0 (answer at once). Max 540.
     --ttl <seconds>        How long the lease lasts unless renewed; default 600.
-    --holder <name>        Who is asking; defaults to this chat (or, with no chat, this shell:
-                           a caller that runs each command in a new shell passes the same
-                           --holder every time, or its renewals queue behind itself).
-    --token <t>            For release: the token the lease printed.
+    --holder <name>        Who is asking, as status shows it; defaults to this chat (or, with
+                           no chat, this shell). Subagents of one chat each pass their own.
+    --token <t>            The token the lease printed: renews it, or with release, ends it.
+    --device <udid|name>   One of the lane's extra devices; default the lane's own device.
     --lane, --lane-id <id> Lane whose device.
 `,
   posture: `${ADE_BANNER}
@@ -1324,6 +1394,83 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   Flags:
     --lane, --lane-id <id> Lane to add the skill to.
 `,
+  install: `${ADE_BANNER}
+  Apple device: install
+
+  Builds the lane's app once into the lane's DerivedData and installs it on
+  one of the lane's devices, usually an extra (device-create --extra), where
+  "launch" is refused. The lane's own device, its stream, session and claim
+  are not touched. The build is incremental, so the lane's last build is
+  reused; --no-build installs that build as it is. One build runs at a time
+  in a lane's DerivedData (APPLE_BUILD_BUSY). Alias: install-app.
+
+    $ ade apple install --device <udid|name> --launch --text
+    $ ade apple install --device <udid> --configuration Release --text
+    $ ade apple install --device <udid> --no-build --launch --text -- -someArg 1
+
+  Flags:
+    --device <udid|name>   The extra (or the lane's own device). Default: the lane's device.
+    --target <id>          Launch target id from "apps"; default the lane's first app.
+    --configuration <name> Default Debug.
+    --no-build             Install the lane's last build; never run xcodebuild.
+    --launch               Start the app after the install (arguments after --).
+    --lane, --lane-id <id> Lane whose worktree and devices to use.
+`,
+  window: `${ADE_BANNER}
+  Apple device: window (iPad)
+
+  Lays out the window of the app in front on an iPad in windowed mode
+  (iPadOS 26+), then reads its frame back (off-screen parts included).
+  --size drags the window's resize grabber, correcting until it is within 3
+  points. --move X,Y drags its top strip and says where iPadOS left it: it
+  snaps a window near a screen edge to that edge and keeps its bottom above
+  the Dock. A window whose controls are off the screen is dragged back onto
+  it before a layout. Portrait and landscape both work; a layout is checked
+  against that orientation's slots, and a window larger than its slot (the
+  app's minimum size) lands with a note.
+  The layouts are the window's own Move & Resize and Fill & Arrange
+  menu (a long press on its green button). The answer says applied, with the
+  frame before and after, and exits 1 when the window did not land.
+  APPLE_WINDOWING_UNAVAILABLE: no resizable window (an iPhone, or an iPad set
+  to Full Screen Apps in Settings > Multitasking & Gestures).
+
+    $ ade apple window --text                    Where the window is
+    $ ade apple window --size 600x800 --text
+    $ ade apple window --move 0,0 --text         Top-left corner to 0,0
+    $ ade apple window --left --text             Also --right, --top, --bottom
+    $ ade apple window --split --text            Also --thirds, --quarters
+    $ ade apple window --fill --text
+    $ ade apple window --slide-over --text
+
+  snapshot and tap-element give screen points wherever the window is. A
+  window a read could not place (one still opening) shows its rows as
+  (unplaced), and tap-element refuses them: run it again.
+
+  Flags:
+    --size <W>x<H>         Points.
+    --move <X>,<Y>         Points: the window's new top-left corner.
+    --fill, --left, --right, --top, --bottom, --split, --thirds, --quarters, --slide-over
+    --device <udid|name>   One of the lane's extra devices.
+    --lane, --lane-id <id> Lane whose device to use.
+`,
+  "auto-record": `${ADE_BANNER}
+  Apple device: auto-record
+
+  Whether agent input on this lane starts a recording by itself (filed as
+  proof when it stops). On by default. "off" keeps for the lane until "on".
+  --no-record on any input command (tap, type, swipe, tap-element, ...) skips
+  it for that one command. The user's "Record agent input" switch in
+  Settings > Apple Development turns it off for the whole Mac. A recording
+  already running still sees the input.
+
+    $ ade apple auto-record --text               Lane and machine switch
+    $ ade apple auto-record off --text
+    $ ade apple auto-record on --text
+    $ ade apple tap 120 420 --no-record --text
+
+  Flags:
+    --lane, --lane-id <id> Lane to set.
+`,
   runtimes: `${ADE_BANNER}
   Apple runtimes
 
@@ -1335,11 +1482,17 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
 
     $ ade apple runtimes --text
     $ ade apple runtimes install --text
-    $ ade apple runtimes install --version 27.1 --text
+    $ ade apple runtimes install --version 27.0 --text
     $ ade apple runtimes cancel --text
 
   install returns at once; the download runs on the machine that owns the
   lane. Re-run \`ade apple runtimes\` to see its progress.
+
+  "missing" names each runtime by what its models need, not by the SDK: on
+  Xcode 27.1 with iOS 27.1 installed (it runs only the iPhone Duo), every
+  other iPhone needs iOS 27.0. A --version that is already installed is
+  refused with APPLE_RUNTIME_ALREADY_INSTALLED, naming the version to install
+  instead.
 
   Flags:
     --version <x.y>        A specific runtime (pins xcodebuild -buildVersion).
@@ -1362,6 +1515,9 @@ export const IOS_SIMULATOR_HELP_ALIASES: Record<string, string> = {
   "power-off": "stop",
   poweroff: "stop",
   detach: "device-detach",
+  "install-app": "install",
+  windows: "window",
+  autorecord: "auto-record",
   cleanup: "device-cleanup",
   tests: "test",
   capture: "screenshot",

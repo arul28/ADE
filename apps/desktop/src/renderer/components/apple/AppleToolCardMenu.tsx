@@ -7,6 +7,7 @@ import { showToast } from "../app/toast/toastStore";
 import { Button } from "../ui/Button";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../ui/paneMenuTokens";
 import { DangerConfirmMenuItem } from "./DangerConfirmMenuItem";
+import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 
 /**
@@ -23,10 +24,12 @@ import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
  *
  * - **Boot** (or, while it is already up, **Open in Apple Development**) — the
  *   one click that turns the device on, then shows it.
- * - **Release device** — the lane gives up the claim; the simulator stays
- *   installed with everything on it. This is what "how do I unclaim?" was
- *   missing. While a session is live it confirms first: releasing ends that
- *   session, which the pane's own running path also gates behind a confirm.
+ * - **Release device** — the lane gives up the claim. A simulator the user
+ *   attached stays installed with everything on it; while a session is live
+ *   it confirms inline first (releasing ends that session). A device ADE MADE
+ *   would be deleted by the cleanup pass a few minutes later, so releasing one
+ *   always opens `confirmAppleDeviceRelease`, which says so and offers to
+ *   keep it as a free simulator instead.
  * - **Delete device…** — only ever offered for a device ADE MADE. It is the one
  *   action that frees disk and destroys data, so it lives behind the same
  *   two-step inline confirmation the device picker uses. An attached simulator
@@ -93,13 +96,17 @@ export function AppleToolCardMenu({
   }, [chatSessionId, device.udid, laneId, onOpenTool, run, runtimePin]);
 
   const release = useCallback(() => {
-    run("Release device", () => window.ade.iosSimulator.deviceDetach({
-      laneId,
-      udid: device.udid,
-      chatSessionId,
-      ignoreOwnership: true,
-    }, runtimePin));
-  }, [chatSessionId, device.udid, laneId, run, runtimePin]);
+    void confirmAppleDeviceRelease({ name: device.name, origin: device.origin, endsSession: comingUp }).then((choice) => {
+      if (!choice) return;
+      run("Release device", () => window.ade.iosSimulator.deviceDetach({
+        laneId,
+        udid: device.udid,
+        chatSessionId,
+        ignoreOwnership: true,
+        ...(choice.keep ? { keep: true } : {}),
+      }, runtimePin));
+    });
+  }, [chatSessionId, comingUp, device.name, device.origin, device.udid, laneId, run, runtimePin]);
 
   const remove = useCallback(() => {
     run("Delete device", () => window.ade.iosSimulator.deviceDelete({
@@ -153,7 +160,7 @@ export function AppleToolCardMenu({
               Boot device
             </DropdownMenu.Item>
           )}
-          {comingUp ? (
+          {comingUp && !isAdeDevice ? (
             <DangerConfirmMenuItem
               danger={false}
               icon={Eject}
@@ -172,7 +179,7 @@ export function AppleToolCardMenu({
               onSelect={release}
             >
               <Eject size={14} />
-              Release device
+              {isAdeDevice ? "Release device…" : "Release device"}
             </DropdownMenu.Item>
           )}
           {isAdeDevice ? (

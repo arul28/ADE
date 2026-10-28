@@ -35,12 +35,20 @@ import type {
   TerminalSessionSummary,
 } from "../../shared/types";
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../shared/machineIdentity";
+import { formatMachineVersions } from "../../shared/machineVersions";
 import {
   useAppStore,
   useRootAppStore,
   type CrossMachineMachineLanes,
 } from "./appStore";
 import { useCrossMachineLaneSync } from "./crossMachineLanes";
+
+/** One version, or both when the machine's app and brain drift ("1.2.123 · brain 1.2.125"). */
+function connectionVersionLabel(
+  connection: { version: string | null; appVersion?: string | null } | null | undefined,
+): string | null {
+  return connection?.version ? formatMachineVersions({ brainVersion: connection.version, appVersion: connection.appVersion }) : null;
+}
 
 /** One machine that holds (or could hold) the active project's repo. */
 export type LaneMachine = {
@@ -231,7 +239,7 @@ export function buildAllMachineLanes(input: {
     hostname: activeBinding?.kind === "remote"
       ? activeConnection?.target.hostname ?? activeBinding.hostname ?? null
       : null,
-    version: activeConnection?.version ?? null,
+    version: connectionVersionLabel(activeConnection),
   };
   const machines: LaneMachine[] = [activeMachine];
   const lanes: MachineLane[] = [];
@@ -270,7 +278,7 @@ export function buildAllMachineLanes(input: {
       hasRepo: true,
       deviceId: isThisMachine ? thisDeviceId : connectionDeviceId(connection),
       hostname: connection?.target.hostname ?? (binding?.kind === "remote" ? binding.hostname ?? null : null),
-      version: connection?.version ?? null,
+      version: connectionVersionLabel(connection),
     };
     machines.push(machine);
     prsByMachineId.set(entry.machineId, entry.prs);
@@ -320,7 +328,7 @@ export function buildAllMachineLanes(input: {
         isThisMachine: false,
         deviceId: connectionDeviceId(connection),
         hostname: connection.target.hostname ?? null,
-        version: connection.version ?? null,
+        version: connectionVersionLabel(connection),
       }));
     }
   }

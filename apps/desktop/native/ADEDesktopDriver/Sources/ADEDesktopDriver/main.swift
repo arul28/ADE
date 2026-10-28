@@ -807,10 +807,11 @@ final class DriverRuntime: NSObject {
         let result = try windows.launch(
             laneId: laneId,
             target: target,
-            arguments: request.stringArray("args") ?? []
+            arguments: request.stringArray("args") ?? [],
+            newInstance: request.bool("newInstance") ?? false
         )
         touch(laneId)
-        return [
+        var reply: [String: JSONValue] = [
             "laneId": .string(laneId),
             "pid": result.pid.map { JSONValue.int(Int($0)) } ?? .null,
             "appName": result.appName.map(JSONValue.string) ?? .null,
@@ -818,6 +819,8 @@ final class DriverRuntime: NSObject {
             "windows": .array(result.windows.map { .object($0.asJSON()) }),
             "watching": .bool(result.watching),
         ]
+        if let message = result.message { reply["message"] = .string(message) }
+        return reply
     }
 
     private func quitApp(_ request: DriverRequest) throws -> [String: JSONValue] {
@@ -927,8 +930,13 @@ final class DriverRuntime: NSObject {
         // A modal panel blocks its app, so it is what the agent has to read
         // first: panels walk before ordinary windows, and the element cap
         // never cuts the alert off behind a long document window.
+        // A sheet before the window it hangs from: it is what blocks that
+        // window, and its buttons must not sit behind the window's own tree.
         let walkOrder = parked.enumerated()
-            .sorted { ($0.element.layer, -$0.offset) > ($1.element.layer, -$1.offset) }
+            .sorted {
+                ($0.element.layer, $0.element.sheetOf == nil ? 0 : 1, -$0.offset)
+                    > ($1.element.layer, $1.element.sheetOf == nil ? 0 : 1, -$1.offset)
+            }
             .map(\.element)
         let observation = accessibility.observe(
             windows: walkOrder,
@@ -972,6 +980,19 @@ final class DriverRuntime: NSObject {
                 "width": .int(size.width > 0 ? size.width : Int(handle.placement.width)),
                 "height": .int(size.height > 0 ? size.height : Int(handle.placement.height)),
                 "scale": .double(Double(handle.placement.scale)),
+                // Where the display sits on the global plane, in points. Every
+                // point an agent sends is global, so the picture's (0,0) is
+                // this origin, and `width`/`height` above are image pixels.
+                "origin": .object([
+                    "x": .double(Double(handle.placement.origin.x)),
+                    "y": .double(Double(handle.placement.origin.y)),
+                ]),
+                "bounds": .object([
+                    "x": .double(Double(handle.placement.origin.x)),
+                    "y": .double(Double(handle.placement.origin.y)),
+                    "width": .double(Double(handle.placement.width)),
+                    "height": .double(Double(handle.placement.height)),
+                ]),
             ]),
             "windows": .array(parked.map { .object($0.asJSON()) }),
             "elements": .array(observation.elements.map { .object($0.asJSON()) }),

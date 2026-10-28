@@ -2,8 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import { writeJsonAtomic } from "./atomicJson";
-import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
-import { isAdeRuntimeNamedPipePath } from "../../../../desktop/src/shared/adeRuntimeIpc";
+import { isMachineEndpointName } from "../projects/machineLayout";
 
 // Re-exported from its old home so existing importers keep working.
 export { writeJsonAtomic };
@@ -42,13 +41,12 @@ export const BRAIN_HEARTBEAT_FILE = "heartbeat.json";
  * endpoint is the machine brain whatever its flags, and a brain on its own
  * socket is not, whatever its flags.
  */
-export function servesMachineRuntimeEndpoint(requestedSocketPath: string, machineSocketPath: string): boolean {
-  if (isAdeRuntimeNamedPipePath(requestedSocketPath)) {
-    // Named pipes have no filesystem path to resolve, and Windows treats their
-    // names case-insensitively.
-    return requestedSocketPath.toLowerCase() === machineSocketPath.toLowerCase();
-  }
-  return pathsEqual(path.resolve(requestedSocketPath), path.resolve(machineSocketPath));
+export function servesMachineRuntimeEndpoint(
+  requestedSocketPath: string,
+  /** Every name the machine endpoint answers on (`resolveMachineEndpointNames().runtime`). */
+  machineEndpointNames: readonly string[],
+): boolean {
+  return isMachineEndpointName(requestedSocketPath, machineEndpointNames);
 }
 
 /** How often the brain refreshes the heartbeat. */

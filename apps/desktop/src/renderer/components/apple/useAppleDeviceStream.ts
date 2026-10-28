@@ -277,6 +277,9 @@ export function useAppleDeviceStream({
     if (recoverTimerRef.current != null) return;
     if (recoverTriesRef.current >= APPLE_STREAM_RECOVER_MAX_TRIES) {
       setGaveUp(true);
+      // Out of tries: say so. Left `idle` with its old address, the column
+      // would call the frozen picture live and offer no Reconnect.
+      setState((current) => (current === "error" || current === "paused" ? current : "stalled"));
       return;
     }
     recoverTriesRef.current += 1;

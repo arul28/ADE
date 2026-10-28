@@ -177,7 +177,8 @@ another provider, so it works where a native subagent would: in your lane,
 under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
 set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
 Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
-asks.
+asks. Children in one lane share its Apple device: let one agent drive it and
+hand that agent the device work (see ade-apple).
 
 To wait on a terminal (a dev server, a long build, a log), watch it instead of
 polling `ade terminal read`: `ade terminal watch <terminal-id> [--match error |
@@ -276,12 +277,14 @@ a chat you do not own:
   REPORT_END
   ```
 
-  On Windows, never pass multi-line text as an argument: `ade.cmd` runs
-  through cmd.exe, which cuts the command at the first line break, so the
-  other agent gets only the first line. In PowerShell, write the text to a
-  file (`$f = New-TemporaryFile; Set-Content -LiteralPath $f -Value $text
-  -Encoding utf8`) and pass `--text-file $f`. In Git Bash, call `ade` (not
-  `ade.cmd`) and use a here-doc as above.
+  On Windows, never pass multi-line text to `ade.cmd`: it runs through
+  cmd.exe, which cuts the command at the first line break, so the other agent
+  gets only the first line (the CLI then prints a note on stderr). In
+  PowerShell, write the text to a file (`$f = New-TemporaryFile;
+  Set-Content -LiteralPath $f -Value $text -Encoding utf8`) and pass
+  `--text-file $f`, or call `& $env:ADE_CLI_PATH`, which is a real `.exe` and
+  keeps every line. In Git Bash, call `ade` (not `ade.cmd`) and use a here-doc
+  as above.
 - If you need to stop or redirect a running chat, use
   `ade chat message <session> --kind interrupt-replace --text ...` or, when
   you need manual control, `ade chat interrupt <session>` first, then
@@ -798,7 +801,9 @@ them yourself.
 If `command -v ade` fails (PowerShell: `Get-Command ade`):
 
 1. Try `${ADE_CLI_PATH:-}` if set (PowerShell: `& $env:ADE_CLI_PATH ...`).
-   On Windows it is `ade.cmd`; from Git Bash prefer step 2.
+   On Windows it is an `.exe` (ADE's CLI launcher, or the standalone
+   `ade.exe`), so multi-line arguments arrive whole. An older ADE may still
+   set it to `ade.cmd`; from Git Bash prefer step 2 then.
 2. Try `${ADE_CLI_BIN_DIR:-}/ade` if set (PowerShell: `& "$env:ADE_CLI_BIN_DIR\ade.cmd" ...`).
    On Windows that folder holds `ade.cmd` for PowerShell and cmd.exe and an
    `ade` script for Git Bash.
@@ -809,6 +814,9 @@ The normal reason to skip ADE CLI is that it is truly unreachable after these fa
 ## Do not repair ADE from a task
 
 - Use the `ade` your shell was given. It names the brain that started you.
+  An `ade` of another version still works with the running brain and may
+  print a one-line note saying so; that note is not an error. If it says the
+  brain speaks another protocol, use the `ade` it names.
   Another `ade` (for example `~/.ade/bin/ade.exe`) can belong to another
   channel and reach a different brain, or none.
 - Never start, stop, restart, install or update a brain or service

@@ -440,6 +440,7 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.iosSimulatorShutdown:
     case IPC.iosSimulatorGetStreamStatus:
     case IPC.iosSimulatorTap:
+    case IPC.iosSimulatorLongPress:
     case IPC.iosSimulatorPressButton:
     case IPC.iosSimulatorRotate:
     case IPC.iosSimulatorTypeText:

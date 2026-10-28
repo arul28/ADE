@@ -126,6 +126,8 @@ const OPTIONAL_MACHINE_PROJECT_CAPABILITIES = [
 
 type RemoteRuntimeInitializeInfo = {
   version: string | null;
+  /** The machine's installed desktop app version; null with no app or from an older brain. */
+  desktopAppVersion: string | null;
   packageChannel: string | null;
   capabilities: RemoteRuntimeCapabilities;
   compatibilityWarnings: string[];
@@ -176,8 +178,12 @@ export function validateRemoteRuntimeInitializeResult(args: {
       `Connected to ADE ${packageChannel} runtime from ADE ${expectedChannel}; compatible RPC features remain available.`,
     );
   }
+  const desktopAppVersion = typeof runtimeInfo.desktopAppVersion === "string" && runtimeInfo.desktopAppVersion.trim()
+    ? runtimeInfo.desktopAppVersion.trim()
+    : null;
   return {
     version,
+    desktopAppVersion,
     packageChannel,
     capabilities: {
       projects: true,
@@ -318,6 +324,9 @@ type RemoteRuntimeLayout = {
   /** The demo-video engine, beside the driver for the same reason. */
   adeMediaExpr: string;
   adeMediaSha256Expr: string;
+  /** The simulator helper (iOS simulators, the phone viewer), beside the driver too. */
+  simHelperExpr: string;
+  simHelperSha256Expr: string;
 };
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
@@ -357,6 +366,8 @@ export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env)
     macDesktopDriverSha256Expr: `${binDirExpr}/resources/native/ade-desktop-driver.sha256`,
     adeMediaExpr: `${binDirExpr}/resources/native/ade-media`,
     adeMediaSha256Expr: `${binDirExpr}/resources/native/ade-media.sha256`,
+    simHelperExpr: `${binDirExpr}/resources/native/ade-sim-helper`,
+    simHelperSha256Expr: `${binDirExpr}/resources/native/ade-sim-helper.sha256`,
   };
 }
 
@@ -526,7 +537,8 @@ function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string
 }
 
 /**
- * A native macOS helper this app ships (`ade-desktop-driver`, `ade-media`),
+ * A native macOS helper this app ships (`ade-desktop-driver`, `ade-media`,
+ * `ade-sim-helper`),
  * from the same resources directory as the runtime binary it uploads
  * (`<resources>/runtime/<binary>` beside `<resources>/native/<name>`). Both are
  * universal macOS binaries, so one file serves an arm64 or x64 Mac.
@@ -854,12 +866,15 @@ async function readRemoteRuntimeSupportStatus(args: {
   localMacDesktopDriverSha256?: string | null;
   /** Only for a macOS remote; null skips the check. */
   localAdeMediaSha256?: string | null;
+  /** Only for a macOS remote; null skips the check. */
+  localSimHelperSha256?: string | null;
 }): Promise<{
   nativeDepsReady: boolean;
   nodePath: string | null;
   ptyHostWorkerReady: boolean;
   macDesktopDriverReady: boolean;
   adeMediaReady: boolean;
+  simHelperReady: boolean;
 }> {
   const sections = [
     remotePreflightSection("node_path", "command -v node || true"),
@@ -892,6 +907,13 @@ async function readRemoteRuntimeSupportStatus(args: {
       "echo ok",
     ].join(" && ") + " || true"));
   }
+  if (args.localSimHelperSha256) {
+    sections.push(remotePreflightSection("sim_helper_ready", [
+      `test -x ${args.layout.simHelperExpr}`,
+      `test "$(cat ${args.layout.simHelperSha256Expr} 2>/dev/null)" = ${shellQuote(args.localSimHelperSha256)}`,
+      "echo ok",
+    ].join(" && ") + " || true"));
+  }
   const result = await execSsh(args.client, sections.join("; "));
   const parsed = parseRemotePreflightSections(result.stdout);
   const nodePath = parsed.node_path?.split(/\r?\n/u)[0]?.trim() || null;
@@ -901,6 +923,7 @@ async function readRemoteRuntimeSupportStatus(args: {
     ptyHostWorkerReady: parsed.pty_host_worker_ready === "ok",
     macDesktopDriverReady: parsed.mac_desktop_driver_ready === "ok",
     adeMediaReady: parsed.ade_media_ready === "ok",
+    simHelperReady: parsed.sim_helper_ready === "ok",
   };
 }
 
@@ -1617,7 +1640,7 @@ async function uploadPtyHostWorker(
 
 /**
  * Installs a native macOS helper beside the remote brain: the Mac Desktop
- * driver or the `ade-media` demo engine.
+ * driver, the `ade-media` demo engine or the simulator helper.
  *
  * Uploaded only when its checksum differs from what is there. For the driver
  * that is not an optimisation: macOS ties Screen Recording and Accessibility
@@ -2413,6 +2436,7 @@ async function bootstrapWindowsRemoteRuntime(args: {
       target: updated,
       arch: platform.label,
       version: opened.initializeInfo.version ?? runtimeVersion,
+      appVersion: opened.initializeInfo.desktopAppVersion,
       route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },
       capabilities: opened.initializeInfo.capabilities,
       compatibilityWarnings,
@@ -2465,6 +2489,10 @@ export async function bootstrapRemoteRuntime(args: {
       ? bundledNativeHelperPath(args.resourcesPath, bundledBinary, "ade-media")
       : null;
     const localAdeMediaSha256 = localAdeMedia ? hashLocalFile(localAdeMedia) : null;
+    const localSimHelper = arch.platform === "darwin"
+      ? bundledNativeHelperPath(args.resourcesPath, bundledBinary, "ade-sim-helper")
+      : null;
+    const localSimHelperSha256 = localSimHelper ? hashLocalFile(localSimHelper) : null;
     const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, bundledBinary);
     let remoteBinaryMatchesLocal: boolean | null = null;
 
@@ -2539,6 +2567,7 @@ export async function bootstrapRemoteRuntime(args: {
       localPtyHostWorkerSha256,
       localMacDesktopDriverSha256,
       localAdeMediaSha256,
+      localSimHelperSha256,
     });
     const shouldUploadNativeDeps = Boolean(
       nativeDepsBundle &&
@@ -2640,6 +2669,23 @@ export async function bootstrapRemoteRuntime(args: {
         });
       } catch (error) {
         adeMediaWarning = `Demo videos recorded on this machine will be filed without edits: ADE could not install its demo engine (${runtimeErrorMessage(error)}).`;
+      }
+    }
+
+    // And the simulator helper: without it this Mac cannot drive or stream
+    // its iOS simulators, which costs those features, not the connection.
+    let simHelperWarning: string | null = null;
+    if (localSimHelper && localSimHelperSha256 && !supportStatus.simHelperReady) {
+      try {
+        await uploadNativeHelper(ssh, args.target, connectedRoute, uploadConnectionConfig, layout, {
+          label: "simulator helper",
+          remoteExpr: layout.simHelperExpr,
+          remoteSha256Expr: layout.simHelperSha256Expr,
+          localPath: localSimHelper,
+          localSha256: localSimHelperSha256,
+        });
+      } catch (error) {
+        simHelperWarning = `iOS simulators on this machine are not available: ADE could not install its simulator helper (${runtimeErrorMessage(error)}).`;
       }
     }
 
@@ -2783,6 +2829,7 @@ export async function bootstrapRemoteRuntime(args: {
     const compatibilityWarnings = [...initializeInfo.compatibilityWarnings];
     if (macDesktopDriverWarning) compatibilityWarnings.push(macDesktopDriverWarning);
     if (adeMediaWarning) compatibilityWarnings.push(adeMediaWarning);
+    if (simHelperWarning) compatibilityWarnings.push(simHelperWarning);
     if (runtimeLayoutFallbackReason) {
       compatibilityWarnings.push(runtimeLayoutFallbackReason);
     } else if (layout.homeDirName !== preferredLayout.homeDirName) {
@@ -2837,6 +2884,7 @@ export async function bootstrapRemoteRuntime(args: {
         target: updated,
         arch: arch.label,
         version: initializeInfo.version ?? runtimeVersion,
+        appVersion: initializeInfo.desktopAppVersion,
         route: {
           kind: "ssh",
           endpoint: (() => {

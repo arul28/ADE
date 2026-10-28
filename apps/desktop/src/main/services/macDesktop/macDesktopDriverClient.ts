@@ -25,6 +25,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { Logger } from "../logging/logger";
+import { describeNativeHelperSearch } from "../native/nativeHelperPaths";
 
 /** Helper lines that mean ScreenCaptureKit stopped answering this process. */
 const CAPTURE_STALL_PATTERN = /ScreenCaptureKit did not answer|SCStreamErrorDomain Code=-3805/;
@@ -341,6 +342,23 @@ export const MAC_DESKTOP_DRIVER_RETIRE_EXIT_CODE = 75;
 /** The `onDriverLost` reason for a driver that retired itself. */
 export const MAC_DESKTOP_DRIVER_RETIRED_REASON = "retired";
 
+
+/**
+ * "The native desktop driver is missing…", naming where ADE looked: a
+ * standalone brain has no resources of its own and searches its runtime
+ * archive and the installed ADE app, so "this installation" alone did not
+ * say which one was missing it.
+ */
+function missingDriverMessage(binary: string | null, recovery: string | null): string {
+  return [
+    binary
+      ? `The native desktop driver is missing from this ADE installation (expected at ${binary}).`
+      : "The native desktop driver is missing from this ADE installation.",
+    describeNativeHelperSearch(binary),
+    recovery,
+  ].filter(Boolean).join(" ");
+}
+
 export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
   const platform = deps.platform ?? process.platform;
   const supportedPlatforms = deps.supportedPlatforms ?? (["darwin"] as const);
@@ -397,7 +415,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
       return {
         state: "missing",
         title: `${driverLabel} needs reinstalling`,
-        message: "The native desktop driver is missing from this ADE installation. Reinstall or update ADE, then restart it.",
+        message: missingDriverMessage(binary, "Reinstall or update ADE, then restart it."),
         recovery: "reinstall_or_update",
         version: null,
       };
@@ -724,7 +742,7 @@ export function createMacDesktopDriverClient(deps: MacDesktopDriverClientDeps) {
         publishHealth();
         reject(new MacDesktopDriverError(
           "MAC_DESKTOP_DRIVER_UNAVAILABLE",
-          "The native desktop driver is missing from this ADE installation.",
+          missingDriverMessage(binary, null),
         ));
         return;
       }

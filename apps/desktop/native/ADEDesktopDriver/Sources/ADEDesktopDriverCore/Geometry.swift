@@ -83,6 +83,27 @@ public enum Geometry {
         return CGPoint(x: local.x * display.scale, y: local.y * display.scale)
     }
 
+    /// The refusal for a background point off the lane's display.
+    ///
+    /// Points are global, and a lane's display usually sits far from (0,0),
+    /// so a point read off the screenshot is off the display. The refusal
+    /// names the display's global range, and the global point a display-local
+    /// one most likely meant, so the caller can fix the call without guessing.
+    public static func offDisplayRefusal(point: CGPoint, display: DisplayPlacement) -> String {
+        let frame = display.frame
+        let left = Int(frame.minX.rounded()), right = Int(frame.maxX.rounded())
+        let top = Int(frame.minY.rounded()), bottom = Int(frame.maxY.rounded())
+        var message = "(\(Int(point.x)), \(Int(point.y))) is not on this lane's display, which is x \(left)..\(right), y \(top)..\(bottom) in global points; background input only reaches the lane's own windows."
+        let looksLocal = point.x >= 0 && point.y >= 0
+            && point.x < display.width && point.y < display.height
+            && (left != 0 || top != 0)
+        if looksLocal {
+            let global = toGlobal(point: point, display: display)
+            message += " Points are global, not screenshot pixels: (\(Int(point.x)), \(Int(point.y))) on this display is (\(Int(global.x)), \(Int(global.y))); or pass --local."
+        }
+        return message
+    }
+
     /// The nearest point inside `frame`, for a real event that must not land
     /// on a display this lane does not own.
     ///

@@ -97,8 +97,18 @@ held, idle power-off turns them off like any ADE device, and the lane's end
 <udid>` deletes one now. The picker lists them with the held devices, never as
 free, and `device-attach` refuses one (`APPLE_DEVICE_IS_EXTRA`).
 
-An extra never streams, records, launches a build or runs tests: those are the
-lane's device. `ade apple device-promote --device <udid|name>`
+An extra never streams, records, `launch`es or runs tests: those are the
+lane's device. To put the lane's app on an extra, `ade apple install --device
+<udid|name> [--launch] [--configuration X] [--target id] [--no-build]`
+(`ios_simulator.installApp`) builds once into the lane's DerivedData (an
+incremental build, so the lane's last build is reused; `--no-build` installs it
+as is), installs with `simctl install`, and with `--launch` starts it. Nothing of
+the lane device's session, stream, claim or launch state is touched. One
+xcodebuild runs at a time in a lane's DerivedData: an install is refused while a
+launch, a test run or another install builds there (`APPLE_BUILD_BUSY`), and a
+launch or test run is refused while an install builds. It is an action of the
+`ios_simulator` domain with the lane's pin, so it runs on the lane's machine.
+`ade apple device-promote --device <udid|name>`
 (`ios_simulator.devicePromote`) makes an extra the lane's own device, keeping
 what is installed and signed in on it, for the case where the extra already has
 the build. The swap runs in the lane's lifecycle queue and is refused with
@@ -106,7 +116,34 @@ the build. The swap runs in the lane's lifecycle queue and is refused with
 tests or a launch, or while another chat holds the lane's lease. The old device
 is kept: an ADE device becomes an extra in the promoted one's slot, and an
 attached simulator is detached back to the user. Every path that refuses an
-extra prints the promote verb it should have used.
+extra prints the promote verb, and a refused `launch` also prints the
+`install --device … --launch` that does the build.
+
+### Device leases
+
+One agent should drive a device: it does the taps, screenshots and
+recordings, and other agents hand it work or wait for its results. When agents
+truly must drive one device in parallel, they take turns with
+`ade apple lease` (`ios_simulator.deviceLease`, `appleDeviceLease.ts`).
+
+- Each device has its own line: the lane's device, and each extra with
+  `--device`. A lease waits up to `--wait` seconds (max 540) and lasts `--ttl`
+  (default 10 minutes) unless renewed.
+- The token is the turn. Only it renews (`lease --token`) or releases
+  (`lease release --token`); a call without it queues, even from the same
+  chat. Status and busy answers name the holder, never the token. A release
+  finds the token on any of the lane's devices; one that holds nothing exits 1.
+- It is advisory. Device commands neither check nor renew it, and the pane is
+  never blocked. Another chat's lease on the lane's device does refuse
+  `device-promote` (`APPLE_LANE_DEVICE_BUSY`).
+- A lease ends early when its chat is archived or deleted. A waiting call whose
+  connection closes (the CLI was killed) leaves the line. Leases live in the
+  brain's memory, so a restart ends them.
+- A current CLI talking to an older brain (one lease per lane, renewal by
+  holder name) never reports a shared or wrong-device lease as a turn: it
+  exits 1 and says to update the brain.
+- `--machine` sends the call to the lane's machine; the token is that
+  machine's.
 
 ### Runtimes and Xcode
 
@@ -125,13 +162,21 @@ that runs that model.
   simulators uses. Retired models (their max runtime is below this Xcode's SDK)
   never keep a runtime around. Point releases can be narrow: iOS 27.1 runs only
   the iPhone Duo, so iOS 27.0 stays the newest runtime for every other iPhone.
-  `missing` lists current iPhone and iPad models no installed runtime runs, and
-  the Create control offers them as `iOS <sdk> · Not installed` with
-  **Install & create**.
+  `missing` lists current iPhone and iPad models no installed runtime runs,
+  grouped by the runtime they need (`missing.runtimes`, `name` joins them):
+  a model new in the SDK's release (the Duo) needs the SDK's version; a model
+  that an installed point release of the SDK's major does not run (iOS 27.1
+  runs only the Duo) needs the major's base release, iOS 27.0, pinned
+  (`installVersion`); anything else is named by the SDK version and left to
+  Xcode. The Create control offers them as `<name> · Not installed` with
+  **Install & create**, which pins the version the picked model needs.
 - `runtimeInstall`: `xcodebuild -downloadPlatform iOS` as a background job
   (checks ~10 GB free first, cancellable, `apple.runtime.install` progress
   events). Without a version Xcode fetches every runtime it needs; `--version`
-  pins `-buildVersion`.
+  pins `-buildVersion`. A pinned iOS version that is already installed is
+  refused up front (`APPLE_RUNTIME_ALREADY_INSTALLED`, before any install
+  state changes), naming what it runs and the version the missing models need;
+  xcodebuild alone answered "already downloaded" and nothing else.
 - `runtimeDelete` / `runtimePrune` (user-only): lane devices move to the newest
   runtime that runs their model (`simctl upgrade`); the person's own simulators
   move or are erased as they choose in the confirmation; then
@@ -215,10 +260,44 @@ anything when `simctl list` cannot be read.
   project (or its database) is gone, it is a stale leftover and is deleted
   like one of ours. Devices start empty, so a project that was only moved
   loses nothing that matters: its lane gets a new device on its next ask.
+- A project that moved is followed first. A move rewrites the markers, but
+  one it missed still names the old folder. Before such a device counts as
+  "project gone", the pass follows the old folder's `.ade/moved-to.json`, or
+  the machine's move journal (`<ADE_HOME>/project-moves/`), to where the
+  project went, up to five moves, and asks that project's database. When the
+  move ends at this project, the device is this project's, as if the marker
+  named it. The current project's own rows are read before every delete.
 
 `device-detach` of an ADE device stamps the marker `detachedAt`. The device is
-then a leftover: it is never re-adopted, and the pass deletes it five minutes
-after the detach unless a lane picks it again. Attaching this project's marked
+then a leftover: it is never re-adopted, and the first pass after the 5-minute
+grace deletes it (so within about 20 minutes) unless a lane attaches it again.
+The detach answer carries `deletesAfter` (detach time plus the grace), and
+`device-detach --text` says when, and how to keep it.
+
+A detach with `keep` (`device-detach --keep`, or the box in the desktop's
+release confirmation) stamps the marker `keptAt` instead of `detachedAt`. The
+pass skips a kept device entirely: it is never deleted and never re-adopted.
+Leaving the marker unstamped would not do, because the pass gives an
+unstamped marker of a live lane back to that lane as a lost row. A kept device
+is `ade-kept` in the picker's ownership read ("Kept"), not a leftover, so
+Clean up does not count it. Attaching it again rewrites the marker without
+`keptAt`, and it is an ADE device of that lane again. It stays until a lane
+takes it or the person deletes it from the picker. Agents pass `--keep` only
+when the user asked.
+
+Every desktop path that gives up an ADE-made device says so first (one
+helper, `confirmAppleDeviceRelease`, a `checkboxConfirmDialog`): the tools
+card's Release device… and the pane's "Choose another device" on an off
+device. The confirm says ADE deletes it, with its apps and data, in about
+5 minutes unless a lane picks it again, and offers "Keep it as a free
+simulator instead". A simulator the user attached is released in one click,
+as before, since it stays installed. The rail's "Switch device…" deletes an
+ADE device at once; its confirm now says so ("Delete <name> and pick
+another?"). The picker shows a released ADE device as "Deletes in N min"
+(from `ownership.deletesAfter`, counted down on the shared 30-second ticker),
+and starting it takes it back for the lane. The web client runs the same
+components through its adapter, with the lane's pin. The phone has no release
+or delete path for Apple devices (it reads status, streams, and sends input). Attaching this project's marked
 device (the picker, or an agent for a leftover) makes it that lane's ADE device
 again (`origin: created`) and rewrites the marker. Another project's ADE device
 follows the same check: while that project uses it, nobody here may attach it
@@ -239,7 +318,12 @@ tells the user.
 A booted ADE device that nothing touched for 30 minutes is powered off through
 `deviceStop` (`ADE_APPLE_IDLE_POWER_OFF_MINUTES`, `0` turns it off). A booted
 simulator holds several gigabytes of memory; on a Mac that is short of it, swap
-grows on the same disk the devices use. "Touched" is the mtime of
+grows on the same disk the devices use. The device is idle since the latest of
+these, so use outside ADE counts too: a device `simctl` lists as `Booting` is
+never idle (its clock restarts), CoreSimulator's own last-boot time
+(`lastBootedAt`, `lastUsedAt` on Xcode 27) covers a raw `simctl boot`, and the
+mtime of the device's `data/Containers/Bundle/Application` folder covers a raw
+`simctl install`. "Touched" is the mtime of
 `<device dir>/ade-last-activity`, written (at most once a minute) whenever a call
 resolves the lane, including the pane's status poll while it is on screen, and on
 every tick while this process streams, records, tests or launches on the device.
@@ -273,14 +357,39 @@ at most 2 hours. `testsExecuted`, `testsFailed` and `testsSkipped` come from the
 run-wide `Executed N tests, with K tests skipped and M failures` line — the one
 under `Test Suite 'All tests'`/`'Selected tests'`, not the last per-suite line,
 which is why a 1,273-test run no longer reported the 48 of its last suite.
+Swift Testing's `Test run with N tests … passed|failed` lines are added to that
+(one per test process; a bundle with both frameworks prints both), with its
+`Test X failed after` and `Test X skipped` lines as the failed and skipped
+counts. `failures` lists each failing test once, in log order, as `{test,
+file, line, message}`: XCTest's `file:line: error: -[Mod.Class testX] : msg`
+becomes `Mod/Class/testX` (what `-only-testing` takes), Swift Testing's
+`Test name() recorded an issue at File.swift:6:40: msg` keeps the test's name,
+and a test with several issues joins their messages. `ade apple test --text`
+prints the counts, that list, xcodebuild's failure lines verbatim, and the log
+and result bundle paths (it used to squash them into one 96-character cell).
+
+Before xcodebuild runs (tests and `launch` builds alike), package state in the
+lane's DerivedData that names another folder is dropped
+(`healMovedDerivedData`): `SourcePackages/workspace-state.json` when a path in
+it points into another DerivedData's `SourcePackages` or outside this
+DerivedData and the worktree and no longer exists, and `info.plist` when its
+`WorkspacePath` is outside the worktree. Paths compare as real paths (`/tmp`
+is `/private/tmp`). Checkouts, artifacts and build products stay, so the build
+re-resolves without fetching everything. A project move no longer copies
+`.ade/cache/ios-simulator/DerivedData` at all (the main checkout's and each
+lane's; the size check leaves it out too), so this is for DerivedData copied
+before that, or by hand.
 
 The verbs that end a lane's hold on its device live in
 `laneDeviceLifecycle.ts`. Each one tears down the recording, the stream, the
 chat claim and the hub session in the same order.
 
-- `device-detach` (`deviceDetach`) gives up the lane's device and leaves the
-  simulator installed, with its power state unchanged. The device then shows
-  as free in the picker. Agents may call it.
+- `device-detach` (`deviceDetach`) gives up the lane's device. Nothing is
+  deleted now, and the power state is unchanged. A simulator the user
+  attached stays installed and shows as free in the picker. A device ADE made
+  is a leftover the cleanup pass deletes after its grace (see the marker
+  section) unless a lane attaches it again; the answer's `deletesAfter` and
+  the `--text` sentence say so. Agents may call it.
 - `device-delete` (`deviceDelete`) removes an ADE device. The registry powers the
   device off first. An attached device is refused unless `--force`, and
   `--force` only detaches it. ADE never deletes a simulator it did not create.
@@ -524,7 +633,14 @@ which sends the turn again) or a slider release on Closed, Laptop or Open. ⌥[ 
 fold to closed or open reports its posture once the guest has switched panels.
 The floating player reads the posture too, so it draws the inner panel upright
 and follows folds. Screenshots of a foldable (more than one integrated panel in
-`simctl io enumerate`) capture the live panel with `--display`.
+`simctl io enumerate`) capture the live panel with `--display`. A device whose
+type folds (`appleDeviceTypeSupportsDuo`, shared with the renderer) is never
+cached as rigid: a posture read that fails or names no panel right after a
+fold is read again (3 times, 250 ms apart), then answered from the last panel
+the device or the posture watcher named, or the panel the fold aimed at.
+`frame` follows a panel switch the watcher has not applied yet and waits up
+to 4 s for the first frame, so a frame right after a fold no longer fails at
+one second.
 
 **Apple's Duo skill.** The Duo menu's **Add Apple's Duo skill to this lane**
 (`addDuoSkill`, `ade apple duo-skill`) exports Xcode's agent skills
@@ -710,9 +826,12 @@ ade --socket apple foreground [--wait <seconds>] --text
 ade --socket apple screenshot [--out <path>] [--no-proof] --text
 ade --socket apple launch [--configuration <name>] [--launch-arg=<v>] [-- <app args>] --text
 ade --socket apple relaunch --bundle-id <id> [-- <app args>] --text
-ade --socket apple lease [--wait <s>] [--ttl <s>] [--holder <name>] --text
+ade --socket apple lease [--device <id>] [--wait <s>] [--ttl <s>] [--holder <name>] [--token <t>] --text
 ade --socket apple lease release --token <t> --text
-ade --socket apple lease status --text
+ade --socket apple lease status [--device <id>] --text
+ade --socket apple install [--device <id>] [--launch] [--configuration <c>] [--target <id>] [--no-build] --text [-- <app args>]
+ade --socket apple window [--size WxH|--fill|--left|--right|--top|--bottom|--split|--thirds|--quarters|--slide-over] [--device <id>] --text
+ade --socket apple auto-record [on|off] --text
 
 ade --socket apple frame [--out <path>] --text
 ade --socket apple button home --text
@@ -756,15 +875,36 @@ time; the `=` lets a value start with a dash).
 max 30) until an app is in front: right after a launch the accessibility tree
 still names none.
 
-`lease` is a turn on the lane's device for agents that share it (a
-coordinator and its subagents). It queues: `--wait` stands in line, `release`
-hands the device to the next holder, and a lease nobody renews lapses after
-`--ttl`. It is advisory: no command checks it, so the pane and an agent that
+`lease` is a turn on one of the lane's devices for agents that share it (a
+coordinator and its subagents). Each device has its own: the lane's device
+under the lane's key (it follows the device the lane holds), each extra under
+its udid (`--device`). It queues: `--wait` stands in line, `release` hands the
+device to the next holder, and a lease nobody renews lapses after `--ttl`. The
+token is the turn. Subagents of one chat share `ADE_CHAT_SESSION_ID`, so the
+holder name cannot tell them apart: the CLI sends `distinct: true`, and then
+only the token renews (`lease --token <t>`) or releases a turn, while a lease
+call without it is a new turn that queues, even under the same name (a busy
+answer says `sameHolder`). One subagent's release can therefore never free
+another's turn. An older CLI sends no `distinct`, and the same holder name
+renews as before. `--holder <name>` names a subagent for `status`. A release
+that names no device (an older CLI) is matched by its token across the lane's
+devices. It is advisory: no command checks it, so the pane and an agent that
 never asked are not blocked. `status` and a busy answer name the holder but
 never its token. The lane's device hint (`laneAppleDeviceDirective.ts`) tells every
 agent in the lane to take one before a run of builds, folds and shots. A lease
 that was not granted (`acquired no`) exits 1, so `lease --wait N && <work>`
 never runs the work without it.
+
+`long-press x y` is a real hold: the helper's touch begins, stays down for
+`--duration-ms` and ends, as one `sendGesture` so nothing lands while the
+finger is down. `tap-element --hold-ms` does the same on an element. The
+desktop pane sends a press held still for half a second as a long press of
+the length it was held; the phone's live finger holds by itself.
+
+`type " "` types a space: only an empty value is refused. For an agent,
+`type` first asks the helper which element has keyboard focus (`ax-focused`,
+about 10 ms warm) and answers `focus: "none"` with a message when none has,
+since the text then went nowhere.
 
 `type --submit` presses Return after the text, so a search or form submits.
 With `--submit` and no text, it presses Return alone. `key` presses one real key
@@ -815,7 +955,15 @@ verified from its posture instead (see Foldable mode).
 1. An agent's first injected input (`tap`, `tap-element`, `type`,
    `fill-element`, `drag`, `select`, `open-url`) against a device with no
    running recording starts one automatically, tagged `auto`, owned by that
-   chat, overlays per Settings.
+   chat, overlays per Settings. Three opt-outs, all "never start one" (a
+   recording already running still overlays the input): `--no-record` on
+   the command (the CLI sends `noRecord: true`; the service runs the call in
+   a no-record async scope, so every input path inside it is covered), `ade
+   apple auto-record off` for the lane (`setAutoRecord`/`getAutoRecord`, kept
+   in the project's KV as `apple.autoRecord.lane.<laneId>`), and the
+   machine's "Record agent input" switch in Settings ▸ Apple Development
+   (`apple.autoRecordAgentInput`, an account setting per device, read by the
+   brain). The default stays on.
 2. It stops at the end of the chat's turn, or after 5 minutes, whichever
    comes first. `record-start` while an auto recording is running converts it
    to manual (no restart, no gap) and swaps the auto cap for the manual one.
@@ -843,7 +991,10 @@ verified from its posture instead (see Foldable mode).
    add the machine, device, elements and log alongside the picture, not to
    make a recording count as proof.
 5. There is no auto-delete. Recordings live under
-   `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/`.
+   `<projectRoot>/.ade/artifacts/apple-recordings/<laneId>/`. Pruning auto
+   recordings an agent never cited was considered and left out: each one is
+   already a proof row the user may have opened, and nothing tells ADE that
+   they did not. The opt-outs above stop the ones nobody wants.
 6. A second chat sees `APPLE_OWNED_BY_OTHER_SESSION` with the owning chat,
    lane, and age.
 7. The helper keeps one recording per **device**; the service keeps one per
@@ -900,11 +1051,12 @@ forwarded.
 | `uninstall` | `uninstallApp` | `--bundle-id`, `--device`, `--force` |
 | `status-bar` | `setStatusBar`, or `clearStatusBar` with `--clear` | `--time`, `--data-network`, `--wifi-bars`, `--cellular-bars`, `--battery-level`, `--battery-state`, `--clear`, `--device` |
 | `app-state` | `getAppState` | `--bundle-id`, `--device` |
-| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` (required), `--force` |
+| `log-start` (`logs-start`) | `startEventLog` | `--device`, `--bundle-id` (required), `--subsystem`, `--process`, `--force` |
 | `log-stop` (`logs-stop`) | `stopEventLog` | `--force` |
 | `log` (`logs`) | `getEventLog` | `--device`, `--since`, `--limit` |
 | `find-element` (`find`) | `findElement` | `--ref`, `--identifier`, `--label`, `--text`, `--role`, `--index`, `--device`, `--lane`, `--project` |
-| `tap-element` | `tapElement` | the same element query |
+| `tap-element` | `tapElement` | the same element query, plus `--hold-ms` (a long press) |
+| `long-press` (`longpress`, `press-and-hold`) | `longPress` | positionals `<x> <y>` or `--x`/`--y`, `--duration-ms` (default 1000, 100–5000), `--device` |
 | `fill-element` (`fill`) | `fillElement` | the same element query, plus `--value` or a positional, plus `--no-focus` |
 | `wait-for-element` (`wait-for`) | `waitForElement` | the same element query, plus `--timeout-ms`, `--gone` |
 | `assert-visible` (`assert`) | `assertVisible` | the same element query |
@@ -935,6 +1087,126 @@ ade --socket apple wait-for-element --label "Welcome" --timeout-ms 8000 --text
 ade --socket apple assert-visible --label "Welcome" --text
 ade --socket apple proof-bundle --caption "Sign-in succeeds" --text
 ```
+
+### iPad windows
+
+`ade apple window` (`ios_simulator.windowLayout`) lays out the front app's
+window on an iPad in windowed mode (iPadOS 26+). No simctl or CoreSimulator
+call sets a window's frame or the multitasking mode, so it works the way a
+person does, through the accessibility tree and the helper's touches, and
+checks the result:
+
+- The window's frame is the app's Application element, which the helper
+  places in screen points (`WindowPlacement`), off-screen parts included
+  (`x` below 0 for a window hanging off the left edge). When the helper could
+  not place it (`ADEUnplaced`, often for an app with few elements), the frame
+  is read from SpringBoard's own elements, which are always screen points: a
+  `Window Controls, <app>` button (`window-controls:<bundle id>`) about 21
+  points in from the window's top left (43 under the status bar), and a
+  `Resize <app>` grabber (`resize-grabber`, value `Bottom Right`, or `Bottom
+  Left` on a Slide Over window) on a bottom corner. The grid walk often
+  misses them, so ADE hit-tests (`ax-hit`) where they can be: near the last
+  frame it saw or the place it just sent the window, on the slots a window
+  that size tiles into, the corners 20 points apart, and last the whole
+  screen for the controls, 30 by 18 points apart. All point reads for one
+  window read stop after 30 seconds (while the helper cannot place a window,
+  each point read searches too). The answer says `frameSource: placed |
+  inferred`; `status` adds `offScreen` (points past each edge).
+- `--size WxH` drags the grabber, correcting until it is within 3 points.
+  A free window keeps its top-left corner and follows about 92% of a drag; a
+  window iPadOS centred (out of Fill) grows on both sides and follows about
+  200%, so each drag is scaled by what the last one did. A filled window is
+  first taken out of Fill by a drag of its own (that drag only restores its
+  last size). A size that does not fit is refused.
+- `--move X,Y` drags the window's top strip (14 points under its top edge,
+  clear of the controls), which moves a free window point for point; a drag on
+  the controls or the content does not move it. iPadOS stashes a window
+  pushed past the right edge (a sliver at the edge): `window` then says it
+  cannot find it, and `relaunch` brings it back on screen.
+- `--fill`, `--left`, `--right`, `--top`, `--bottom`, `--split` (Left and
+  Right), `--thirds`, `--quarters` and `--slide-over` are the window's own
+  menu: a long press on Zoom opens Move & Resize, Fill & Arrange and Enter
+  Slide Over, and ADE taps the item by its label. A filled window has no
+  controls, so ADE first takes it out of Fill; a window partly off the screen
+  (its controls can be off it) is first dragged wholly onto it. A menu
+  without the item answers with what it offers and closes with Escape.
+- `applied` is `judgeAppleWindowLayout` (`appleWindowLayout.ts`): the frame
+  read afterwards against the layout's slots for THIS orientation's screen
+  (halves, thirds or quarters with a 10-point gap; a full-height slot stops
+  above the 123-point Dock when it shows, so only "most of the height" is
+  checked), 24 points of slack. Measured on an iPad Pro 11-inch (M5),
+  iPadOS 27.0:
+
+  | layout | portrait 834x1210 | landscape 1210x834 |
+  |---|---|---|
+  | left / right | 412x1087 at 0,0 / 422,0 | 600x711 at 0,0 / 610,0 |
+  | top / bottom | 834x600 at 0,0 / 0,610 | 1210x486 at 0,0 / 0,385 |
+  | split | 412x1210 at 0,0 | 600x834 at 0,0 |
+  | thirds | 375x1210 at 0,0 | 396x834 at 0,0 |
+  | quarters | 412x600 at 0,0 | 600x486 at 0,0 |
+  | slide over | 375x1031 at 439,44 | 375x655 at 815,44 |
+
+  A window cannot shrink below its app's minimum size. Along an axis where it
+  outgrows its slot, iPadOS centres it on the slot (landscape bottom: 486 on
+  a 412-point slot lands at 385, running 37 points past the bottom edge) or
+  keeps it flush with the screen edge the slot touches; that lands, with a
+  `note` saying so, and only there may the window run off the screen. A
+  window off the screen anywhere else never lands: the reason names the edge
+  and the points past it. The CLI exits 1 when it did not land.
+- `--move` reports where iPadOS left the window. It snaps a window within
+  about 10 points of a screen edge to that edge (700,300 became 710,300,
+  flush right), keeps a window's bottom above the Dock (100,100 became
+  100,111 for a 600-point window in landscape), and a tiled or filled window
+  leaves its tile and takes back its old size on the first drag. The reason
+  says which; one more drag is made when the first lands short.
+- Before a menu layout, a window is dragged back onto the screen only when
+  its controls (its top-left 62x65 points) are off it; a window that outgrew
+  a bottom or right slot keeps its controls, and dragging it would untile it.
+- `APPLE_WINDOWING_UNAVAILABLE`: no window (an iPhone, or an iPad set to Full
+  Screen Apps), or a window ADE cannot find. Held landscape works too: the
+  helper turns SpringBoard's elements, which come back in the portrait
+  framebuffer's points, onto the screen (see below).
+- Measured both ways up on that iPad: `status`, `--size`, `--move`
+  (including a window 150 points off the left edge), `--fill`, `--left`,
+  `--right`, `--top`, `--bottom`, `--split`, `--thirds`, `--quarters` and
+  `--slide-over` landed, most in 9–15 s; a window found only by the last
+  sweep takes up to about 30 s more.
+- Element frames are screen points for any window. The accessibility
+  translator reports an app's own elements relative to their window, while
+  hit-tests take screen points and SpringBoard's elements (status bar,
+  window controls, grabbers) are already screen points. The helper's
+  `WindowPlacement` finds each window context's origin (`_windowContextId`):
+  a remembered or zero offset is confirmed by the window's edges or most of
+  its small leaves; otherwise an element found on a coarse lattice is
+  binary-searched on each side (the middle of the span it answers over, so
+  touch padding cancels), a side the screen cuts off is decided by the leaves
+  or by a second element that agrees within 5 points, and a window within
+  3 points of a screen edge is snapped to it. A window hanging off the
+  screen's edge hit-tests in a shifted space, so where the app's own resize
+  grabber is in the tree its corner wins and the grid is sampled again. The
+  offset is kept per device and context; an app that fills the display, an
+  iPhone and the Duo's turned inner panel skip all of it. A window that
+  cannot be placed leaves its elements marked `ADEUnplaced` (the provider
+  says `unplaced`, the snapshot prints `(unplaced)`) and `tap-element`
+  refuses them. A sparse window answers hit-tests only on its few elements
+  (its empty background answers nothing), so the app's window is found by
+  its own largest elements, first at the snapped layouts' origins, then
+  sampled finer than the element over every place the window can be; and its
+  own resize grabber (SpringBoard's, in screen points, its centre the
+  window's corner) makes the answer exact wherever it shows. A point read
+  (`ax-hit`, the focused element) never searches: it uses the remembered
+  offset, so a sweep of point reads stays fast. Held sideways, a rigid
+  device's hit-tests take the framebuffer's portrait points and SpringBoard's
+  frames come back in them (the battery at 10,15, 13x29 on a landscape
+  iPad), while the app's frames are the landscape picture's: the helper turns
+  each screen point onto the framebuffer with the touch path's turn
+  (`ScreenTurn`, from CoreDevice's display list) and SpringBoard's frames
+  back onto the screen, and samples the grid in screen points. A foldable's
+  panels keep their own path. Measured on an iPad Air 11-inch (M4), iPadOS 27.0:
+  `tap-element` opened its tile with the window at 415,0, 415,595, 0,595,
+  0,0 (left, top, split) and hanging off the left edge at −55,0; a warm
+  snapshot cost the same as before or less (the grid samples only the
+  window).
 
 ## Live view
 
@@ -1000,6 +1272,30 @@ that never acks (an older client) is forwarded every record. The measured effect
 [the performance baseline](../../perf/macos-baseline.md#brain-and-services)
 (`scripts/perf/service/apple-stream-pacing.bench.mts`): on a 1 Mb/s link a
 paced viewer stays about 50 ms behind, an unpaced one tens of seconds.
+
+**Over the tunnel relay the Mac speaks first.** The stream's loopback socket
+sends its config and keyframe as soon as it opens, so those bytes can reach
+the relay on the pipe socket before the brain's `{t:"ready"}` reaches it on
+the control socket. The relay holds them (in order, up to 4 MiB a pipe) and sends them
+right after the viewer's ready. Before that Worker change it closed the pair
+with `4510` "relay bridge not ready". A viewer still redials a transient drop
+by itself, with a fresh single-use ticket each time:
+
+- The phone tries up to three times (0.5 s, 1.5 s, 3 s) on `4510`, `4509`,
+  `4506`, `1001`, `1006`, a lost connection, or a first frame that never comes
+  (unless the Mac reported a capture error). It shows "Reconnecting…", not an
+  error. The first frame refills the budget. It never redials an expired pass
+  (`4401`), a stream it cannot decode, the Mac's own error, a hidden viewer or
+  a closed one. After the last try it shows the reason and Reconnect.
+- The web client and a desktop bound to another Mac treat every close but
+  `4401`, and a socket error, as the stream ending: `useAppleDeviceStream`
+  asks for a new stream up to three times, then shows "Video stopped." with
+  Reconnect.
+
+When the Mac's ADE cannot find its simulator helper, the phone says the
+helper is missing on the Mac and that reinstalling or updating ADE there
+restores it. "Update ADE on your Mac" is kept for a Mac that lacks the
+commands, or whose ticket has no point size.
 
 ### The phone: watch and control
 
@@ -1084,6 +1380,38 @@ result reports `matchCount`.
 
 Read a `pos:` ref as a warning. Ask for an accessibility identifier.
 
+With several matches the order is: elements read from the screen before ones
+ADE inferred, the app layer before the accessibility layer, a control (a
+Button, cell, link) before text or an image inside it, then the snapshot's own
+order (smallest first). `find` and `tap-element` say which match they used,
+why, list the others with their points, and name the `--index` for the next.
+
+`fill-element` taps, types, then reads the field back with one point read at
+its centre (the helper's `ax-hit`: one hit-test, no tree walk, no grid probe,
+150 ms after typing and once more 350 ms later if the text is not there yet).
+It answers `typed`: `verified` (the field holds the text, compared without
+case, so autocapitalisation passes), `not-seen` (with a warning and what the
+field reads) or `unknown` (a secure field, the field is gone from its place,
+an older helper).
+
+**SwiftUI tabs.** When the screen has a Tab Bar, the lane's Swift sources are
+read for each `TabView`'s tabs (`.tabItem { Label("…") }`, read inside the
+closure, and `Tab("…", role:)`). Real tab items in the bar get the declaring
+file and line. Only a bar that exposes no items gets slices, and only when
+they can be right: one `TabView`, no search-role tab (drawn apart), no more
+than an iPhone bar shows, each slice at least 44 pt (a minimised bar is
+narrower). Slices carry `metadata.synthetic`, show as `(inferred)` in the
+snapshot, sort last, and `tap-element` and `fill-element` refuse them with
+the point to tap.
+
+**Caps.** The helper's walk stops at 500 elements, depth 80 and 600 grid
+probe points. The accessibility provider then carries `truncated: true` and
+`truncatedBy`, and `snapshot --text` prints a `truncated` row and a note.
+
+**Values.** The helper emits `AXValueDescription` beside `AXValue`, and a
+non-finite number is no value. The element's `value` prefers the
+description, so a SwiftUI slider reads "0:29 of 0:49", not "nan".
+
 The snapshot's label column prints a real label bare; an element without one
 shows `#name` for its accessibility identifier, `component:name`, or
 `value:text`, and a line above the table says so when any row uses one. A
@@ -1098,7 +1426,15 @@ DEBUG ADE Inspector kit as a source overlay. See [inspector.md](./inspector.md).
 ## Event log and proof bundles
 
 `startEventLog` runs `xcrun simctl spawn <udid> log stream` scoped to a
-required `bundleId`. `captureProofBundle` writes `screen.png`,
+required `bundleId`. The predicate is `(subsystem BEGINSWITH "<bundle id or
+--subsystem>" OR process == "<executable>")`: the executable is the installed
+app's `CFBundleExecutable` (`simctl get_app_container … app`), or `--process`.
+Each value is refused, not escaped, when it holds a quote, a backslash or a
+line break, and a process name must look like one. Every row carries
+`deviceUdid` (an ADE row names the device it drove), and `getEventLog` keeps
+the named device's rows, else the followed device's. After 8 s with no app
+row the page carries a `hint` that names the predicate and the flags to widen
+it; `print()` never reaches the log. `captureProofBundle` writes `screen.png`,
 `metadata.json`, `elements.json`, and `log.json`, and pins the active
 recording. With no `outDir` the bundle lands in
 `<buildRoot>/.ade/proof/ios-sim-<stamp>/`. `screenshot --out` and
@@ -1113,7 +1449,7 @@ recording. With no `outDir` the bundle lands in
 | `APPLE_RUNTIME_NOT_INSTALLED` | The runtime or model named is not on this Mac; the message lists what is. |
 | `APPLE_TEST_RUN_BUSY` | Another `apple test` is running. Wait, then run again. |
 | Disk full of simulators | Open Apple Development's picker and press **Clean up**, or run `ade apple device-cleanup --power-off-idle`. Delete an "Old ADE?" device from its own menu. |
-| `APPLE_HELPER_UNAVAILABLE` | The vendored helper binary is missing from `resources/native/ade-sim-helper`. |
+| `APPLE_HELPER_UNAVAILABLE` | No usable helper: missing everywhere ADE looked (the message lists the folders: the app's `resources/native`, a standalone brain's `$ADE_RUNTIME_ROOT/native`, the installed ADE app), or one that speaks another helper protocol. |
 | `APPLE_STREAM_NOT_RUNNING` | `frame` needs a live stream. Use `screenshot`, or `stream-start` first. |
 | `APPLE_DEVICE_OFF` | A viewer asked to watch a device that is off. Watching never boots; `apple start` does. |
 | `APPLE_BUTTON_UNSUPPORTED` | That button is not a helper `button` name, and this Xcode's `simctl` has no equivalent (today: `shake`). |
