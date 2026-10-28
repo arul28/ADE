@@ -17835,8 +17835,11 @@ export function AgentChatPane({
   // (applying it restarts the agent process, which would stop that work), and
   // an effort the running work has not taken yet ("High now · Medium next
   // turn"). Both read off the session summary and clear when the change applies.
-  const pendingSettingsAfterBackground = settingsHeldBesideEffortChange(renderedSession?.pendingSettingsAfterBackground);
   const reasoningEffortChange = renderedSession?.reasoningEffortChange ?? null;
+  const pendingSettingsAfterBackground = settingsHeldBesideEffortChange(
+    renderedSession?.pendingSettingsAfterBackground,
+    reasoningEffortChange,
+  );
   const reasoningEffortChangeModelId = renderedSession?.modelId ?? renderedSession?.model ?? null;
   const pendingSettingsChip = composerSessionId && (pendingSettingsAfterBackground.length || reasoningEffortChange) ? (
     <>

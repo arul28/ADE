@@ -1574,16 +1574,21 @@ since the next query is built from the current settings.
 (`{ current, next, appliesAfter: "turn" | "background" }`,
 `managedReasoningEffortChange`) names an effort the running work has not taken
 yet. Providers other than Claude take effort per turn: `setSessionActive`
-records the effort a turn starts with (`turnReasoningEffort`), and a change
-mid-turn, a steer included, reaches the next turn. Claude reports one only
-while a deferred effort reset holds (`pendingResetRunningEffort`). It is gone
+records the effort a turn starts with (`turnReasoningEffort`; a turn marked
+active before its send applied the effort is corrected by
+`recordTurnReasoningEffort`), and a change mid-turn, a steer included,
+reaches the next turn. Claude applies a send's or steer's effort to the live
+query (`applyClaudeReasoningEffortChange`, which drops a result a reset, a new
+runtime or a newer change overtook) and reports one only while a deferred
+effort reset holds (`pendingResetRunningEffort`). It is gone
 once the turn ends (stopped or interrupted turns too), unless Claude
 background work still holds the reset, and once a live change lands. Desktop
 and the TUI show "High now · Medium next turn" (or "after background work"),
 iOS shows "High → Medium", and `ade chat status` prints an `effort` row.
-Surfaces drop `reasoningEffort` from `pendingSettingsAfterBackground`
-(`settingsHeldBesideEffortChange`); the host still sends it for older
-clients.
+The host lists `reasoningEffort` in `pendingSettingsAfterBackground` only
+while `reasoningEffortChange` names it, so older clients keep their "Effort
+pending" chip; newer clients drop it then (`settingsHeldBesideEffortChange`)
+and keep it from a host that predates the field.
 
 **Told when it is lost anyway.** For Claude, every path that ends the process —
 `teardownRuntime` (model switch, caller-MCP replacement, account move,

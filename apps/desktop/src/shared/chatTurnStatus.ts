@@ -228,7 +228,7 @@ export function formatChatTurnStatus(
   if (status.reasoningEffortChange) {
     lines.push(chatTurnStatusRow("effort", reasoningEffortChangeLabel(status.reasoningEffortChange)));
   }
-  const heldSettings = settingsHeldBesideEffortChange(status.pendingSettingsAfterBackground);
+  const heldSettings = settingsHeldBesideEffortChange(status.pendingSettingsAfterBackground, status.reasoningEffortChange);
   if (heldSettings.length) {
     lines.push(chatTurnStatusRow("pending", pendingSettingsAfterBackgroundLabel(heldSettings)));
   }
@@ -311,15 +311,15 @@ export function pendingSettingsAfterBackgroundLabel(
 }
 
 /**
- * The held settings a surface still names on its own. Effort has its own
- * chip (`reasoningEffortChange`), which also knows when a held effort no
- * longer differs, so it is dropped here; the host keeps sending it for
- * older clients.
+ * The held settings a surface still names on its own. When the host sends
+ * `reasoningEffortChange`, effort has its own chip and is dropped here; a host
+ * that predates that field only lists it, so it stays.
  */
 export function settingsHeldBesideEffortChange(
   settings: readonly AgentChatPendingSettingAfterBackground[] | null | undefined,
+  effortChange: AgentChatReasoningEffortChange | null | undefined,
 ): AgentChatPendingSettingAfterBackground[] {
-  return (settings ?? []).filter((setting) => setting !== "reasoningEffort");
+  return (settings ?? []).filter((setting) => setting !== "reasoningEffort" || effortChange == null);
 }
 
 /** The picker's name for an effort: the named GPT models call `low` "Light". */

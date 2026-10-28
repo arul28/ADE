@@ -5910,7 +5910,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const activeEffortChange = activeSession?.reasoningEffortChange;
   const activeEffortModelId = activeSession?.modelId ?? activeSession?.model ?? null;
   const footerPendingSettingsLabel = useMemo(() => {
-    const held = settingsHeldBesideEffortChange(activePendingSettings);
+    const held = settingsHeldBesideEffortChange(activePendingSettings, activeEffortChange);
     const parts = [
       activeEffortChange ? reasoningEffortChangeLabel(activeEffortChange, activeEffortModelId) : null,
       held.length ? pendingSettingsAfterBackgroundShortLabel(held) : null,
