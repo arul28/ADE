@@ -151,7 +151,7 @@ export function GlassIconReveal({
         engineRef.current?.setLogo(data);
       },
       (err) => {
-        captureError(err, { tags: { area: "logo_reveal", step: "load_logo" } });
+        captureError(err, { tags: { area: "logo_reveal", step: "load_logo" }, fingerprint: ["logo_reveal", "load_logo"] });
         if (!cancelled) live.current.onFinished?.();
       },
     );
@@ -224,7 +224,7 @@ function startEngine(wrap: HTMLDivElement, live: React.MutableRefObject<LiveStat
     renderer = createRenderer(canvas);
   } catch (err) {
     // A shader that will not compile; no WebGL at all is not an error and returns null.
-    captureError(err, { tags: { area: "logo_reveal", step: "create_renderer" } });
+    captureError(err, { tags: { area: "logo_reveal", step: "create_renderer" }, fingerprint: ["logo_reveal", "create_renderer"] });
   }
   if (!renderer) {
     canvas.remove();
@@ -328,7 +328,7 @@ function startEngine(wrap: HTMLDivElement, live: React.MutableRefObject<LiveStat
       renderer = createRenderer(canvas);
       if (renderer && logo) renderer.setLogo(logo);
     } catch (err) {
-      captureError(err, { tags: { area: "logo_reveal", step: "restore_context" } });
+      captureError(err, { tags: { area: "logo_reveal", step: "restore_context" }, fingerprint: ["logo_reveal", "restore_context"] });
     }
     dirty = true;
     kick();
