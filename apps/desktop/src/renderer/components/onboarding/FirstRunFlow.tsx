@@ -36,6 +36,7 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import "./firstRunWelcome.css";
 import "./firstRunProjects.css";
 import "./firstRunDevices.css";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /**
  * ADE's first run on a computer, after (or around) sign-in:
@@ -61,7 +62,7 @@ export function FirstRunWelcome({ onStart, onSkip }: { onStart: () => void; onSk
   return (
     <div className="ade-glass-card ade-fr-welcome" data-testid="first-run-welcome">
       <span className="ade-glass-mark">
-        <img src="./logo.png" alt="ADE" draggable={false} />
+        <AdeWordmark alt="ADE" draggable={false} />
       </span>
       <h1 className="ade-fr-headline">
         <em>Every</em> AI coding tool.

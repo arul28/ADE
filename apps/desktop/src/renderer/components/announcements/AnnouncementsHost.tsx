@@ -22,6 +22,7 @@ import {
 import { releaseNotesDigest, type ReleaseNotesDigest } from "./releaseNotesDigest";
 import { ReleaseNotesPage } from "./ReleaseNotesPage";
 import "./announcements.css";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /**
  * The "What's new" modal. It opens three ways:
@@ -264,7 +265,7 @@ function AnnouncementsModal({
         <span />
       </div>
       <p className="ade-whats-new-brand">
-        <img src="./logo.png" alt="" draggable={false} />
+        <AdeWordmark alt="" draggable={false} />
         What's new in ADE
       </p>
       <button type="button" className="kit-icon-btn ade-whats-new-close" aria-label="Close" onClick={onClose}>

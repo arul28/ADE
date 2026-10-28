@@ -402,6 +402,7 @@ import {
   useDraftMachineRouting,
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
+import { AdeWordmark } from "../ui/AdeWordmark";
 import { DraftMachinePicker, type DraftMachineOption } from "./DraftMachinePicker";
 import { useNewLaneDraftConfig } from "./useNewLaneDraftConfig";
 import { CursorCloudAdvancedMenu } from "./CursorCloudAdvancedMenu";
@@ -19309,8 +19310,7 @@ export function AgentChatPane({
                           style={{ aspectRatio: "560 / 300" }}
                           exit={{ opacity: 0, scale: 0.8, transition: { duration: 0.3, ease: "easeOut" } }}
                         >
-                          {emptyStateHero ?? <img
-                            src="./logo.png"
+                          {emptyStateHero ?? <AdeWordmark
                             alt="ADE"
                             className="relative z-10 h-full w-full object-contain"
                           />}

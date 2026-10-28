@@ -194,6 +194,12 @@ async function ensureDevIcon() {
   }
 }
 
+function ensureDevElectronSigned() {
+  const signer = path.join(__dirname, "sign-dev-electron.cjs");
+  if (!fs.existsSync(signer)) return;
+  cp.spawnSync(process.execPath, [signer], { cwd: projectRoot, stdio: "inherit" });
+}
+
 async function ensureAdeCliBuild() {
   const builder = path.join(__dirname, "ensure-ade-cli-build.cjs");
   if (!fs.existsSync(builder)) return;
@@ -212,6 +218,7 @@ async function ensureAdeCliBuild() {
 async function main() {
   await ensureAdeCliBuild();
   await ensureDevIcon();
+  ensureDevElectronSigned();
   const devPort = await choosePort(5173, 32);
   const devServerUrl = `http://localhost:${devPort}`;
   const remoteDebugPortRaw =

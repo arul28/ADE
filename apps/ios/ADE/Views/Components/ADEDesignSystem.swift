@@ -32,6 +32,17 @@ enum ADEColorSchemeChoice: String, CaseIterable, Identifiable {
     case .dark: return "moon.fill"
     }
   }
+
+  static let storageKey = "ade.colorScheme"
+
+  /// A new install starts in dark. An install that ran before this default
+  /// existed keeps following the system, as it always did. Call once at launch,
+  /// before anything writes `ade.sync.deviceId` (the first launch writes it).
+  static func seedDefaultIfNeeded(_ defaults: UserDefaults = .standard) {
+    guard defaults.string(forKey: storageKey) == nil else { return }
+    let ranBefore = defaults.string(forKey: "ade.sync.deviceId") != nil
+    defaults.set((ranBefore ? ADEColorSchemeChoice.system : .dark).rawValue, forKey: storageKey)
+  }
 }
 
 private func adaptiveColor(light: UIColor, dark: UIColor) -> Color {

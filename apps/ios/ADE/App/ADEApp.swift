@@ -29,6 +29,8 @@ struct ADEApp: App {
   init() {
     // First, so a crash later in launch is still captured.
     CrashReporting.start()
+    // Before `SyncService` writes its device id, which marks an install as one that ran before.
+    ADEColorSchemeChoice.seedDefaultIfNeeded()
     ADEIntentCommandRegistry.register(ADESyncIntentBridge.shared)
     // Nothing from a previous launch can still be on screen, so this is the one
     // moment the whole preview cache is provably unreferenced. Previews are
