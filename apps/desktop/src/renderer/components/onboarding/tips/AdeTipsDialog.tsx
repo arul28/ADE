@@ -262,7 +262,7 @@ function TipTile({
       Try it
     </button>
   ) : null;
-  if (shot) {
+  if (shot && tip.size === "screen") {
     return (
       <article
         className="ade-tips-tile"
@@ -288,6 +288,7 @@ function TipTile({
     <article
       className="ade-tips-tile"
       data-size={tip.size}
+      data-shot={shot ? "side" : undefined}
       data-tip-id={tip.id}
       data-focused={focused || undefined}
       data-can-try={canTry || undefined}
@@ -301,6 +302,11 @@ function TipTile({
         <h4 className="ade-tips-tile-title">{tip.title}</h4>
         <p className="ade-tips-tile-line">{tip.sentence}</p>
       </div>
+      {shot ? (
+        <div className="ade-tips-side-shot" aria-hidden>
+          <img src={shot.src} alt="" loading="lazy" decoding="async" draggable={false} />
+        </div>
+      ) : null}
     </article>
   );
 }
