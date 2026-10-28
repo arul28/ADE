@@ -1151,6 +1151,28 @@ function backdropColor(el: HTMLElement, fallbackVar: string): string {
 /** How long the ADE logo reveal plays, in seconds. */
 export const ADE_LOGO_REVEAL_SECONDS = endOf(LOOKS.dark);
 
+/** A box on screen, in CSS pixels. */
+export type ScreenBox = { left: number; top: number; width: number; height: number };
+
+// Measured on the final frame: the letters span 0.985 of the tile. In the wordmark
+// picture they fill 87.35% of its width, centred 3.16% right and 6.49% down of its middle.
+const LETTERS_PER_TILE = 0.985;
+const WORDMARK_LETTERS = { width: 0.8735, dx: 0.0316, dy: 0.0649, aspect: 1012 / 493 };
+
+/**
+ * Where the wordmark picture (`logo.png`, `logo-light.png`) sits when the reveal in
+ * `canvasBox` holds its last frame, so an `<img>` of it there covers the drawn
+ * logo exactly. `tileSize` is the reveal's own prop.
+ */
+export function adeLogoRevealWordmarkBox(canvasBox: ScreenBox, tileSize: number): ScreenBox {
+  const tile = Math.min(tileSize, Math.min(canvasBox.width, canvasBox.height) / 1.75);
+  const width = (tile * LETTERS_PER_TILE) / WORDMARK_LETTERS.width;
+  const height = width / WORDMARK_LETTERS.aspect;
+  const centerX = canvasBox.left + canvasBox.width / 2 - WORDMARK_LETTERS.dx * width;
+  const centerY = canvasBox.top + canvasBox.height / 2 - WORDMARK_LETTERS.dy * height;
+  return { left: centerX - width / 2, top: centerY - height / 2, width, height };
+}
+
 export type AdeLogoRevealProps = Omit<GlassIconRevealProps, "logo" | "background" | "look"> & {
   /** CSS colour variable the reveal sits on; the canvas paints it as its backdrop */
   backgroundVar?: string;
