@@ -2839,6 +2839,11 @@ function renderEvent(
      * lines reads as one passage rather than three lines apart.
      */
     interimText?: boolean;
+    /**
+     * The last reply of a turn whose turn-end line is drawn. That line shows the
+     * time and copies the turn, so the reply reserves no hover strip of its own.
+     */
+    turnEndText?: boolean;
     /** Interrupt-receipt identities whose queued messages already ran → collapse. */
     staleInterruptReceipts?: Set<string>;
     /** True when a host is listening for `ade:chat:open-info` (see the registry). */
@@ -3289,7 +3294,7 @@ function renderEvent(
           {/* Hover actions sit in their own line under the prose, never on it:
               pinned over the text's top-right corner they covered the end of a
               short line (interim narration) and the first line of a long one. */}
-          <div
+          {options?.turnEndText ? null : <div
             data-testid="assistant-text-hover-footer"
             className={cn(
               "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
@@ -3302,7 +3307,7 @@ function renderEvent(
               ? <RowHoverTimestamp iso={event.originTimestamp ?? envelope.timestamp} className="mr-0.5" />
               : null}
             <MessageCopyButton value={shownText} iconOnly />
-          </div>
+          </div>}
         </div>
       </motion.div>
     );
@@ -4927,7 +4932,7 @@ function DoneTurnDivider({
   ) : null;
 
   return (
-    <div className="group/turnend my-4 min-w-0">
+    <div className="group/turnend my-2 min-w-0">
       <ChatTurnWorkSummary
         toolEntries={workSummaryInFold ? EMPTY_WORK_LOG_ENTRIES : toolEntries}
         fileEntries={hasCheckpointDiffSummary || workSummaryInFold
@@ -5198,6 +5203,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopyText?: string | null;
   interimText?: boolean;
+  turnEndText?: boolean;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
@@ -5282,6 +5288,7 @@ const EventRow = React.memo(function EventRow({
   onScrollToRowKey,
   assistantTurnCopyText,
   interimText,
+  turnEndText,
   staleInterruptReceipts,
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
@@ -5404,6 +5411,7 @@ const EventRow = React.memo(function EventRow({
             turnDiffSummaries,
             onScrollToRowKey,
             interimText,
+            turnEndText,
             staleInterruptReceipts,
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
@@ -6702,7 +6710,7 @@ function AgentChatMessageListMain({
   // turn fold is omitted. Per-message copy remains available on any text row
   // that the reader reveals by opening the fold.
   const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
-  const { assistantTurnCopyByTurnId, interimTextRowKeys } = useMemo(() => {
+  const { assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys } = useMemo(() => {
     const previous = previousAssistantTurnCopyRef.current;
     const hiddenTextRowKeys = new Set<string>();
     for (const fold of turnFolds) {
@@ -6719,15 +6727,25 @@ function AgentChatMessageListMain({
     }
     previousAssistantTurnCopyRef.current = byTurnId;
     // Every text row of a turn except its last visible one is interim narration.
+    // The last one of a turn that drew its turn-end line needs no hover strip:
+    // that line carries the time and Copy for the whole turn.
+    const endedTurnIds = new Set<string>();
+    for (const row of rows) {
+      if (row.event.type !== "done") continue;
+      const turnId = getEventTurnId(row.event);
+      if (turnId && !(compactOnlyTurnIds.has(turnId) && row.event.status === "completed")) endedTurnIds.add(turnId);
+    }
     const interim = new Set<string>();
+    const turnEnd = new Set<string>();
     for (const row of rows) {
       if (row.event.type !== "text") continue;
       const turnId = getEventTurnId(row.event);
       const last = turnId ? allText.get(turnId)?.lastTextEventKey : null;
       if (last && last !== row.key) interim.add(row.key);
+      else if (last && turnId && endedTurnIds.has(turnId)) turnEnd.add(row.key);
     }
-    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim };
-  }, [rows, turnFolds]);
+    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim, turnEndTextRowKeys: turnEnd };
+  }, [compactOnlyTurnIds, rows, turnFolds]);
   // Unfolded row keys: the logical order jumps, the fork divider, the "N new"
   // count, and the measured-height cache work in. Stable across pure content
   // deltas, like `groupedRowKeys` below.
@@ -8655,6 +8673,7 @@ function AgentChatMessageListMain({
       ? assistantTurnCopyByTurnId.get(envelope.event.turnId)?.text ?? null
       : null;
     const interimText = interimTextRowKeys.has(envelope.key);
+    const turnEndText = turnEndTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
     if (virtualized) {
@@ -8721,6 +8740,7 @@ function AgentChatMessageListMain({
           onScrollToRowKey={rowScrollToRowKey}
           assistantTurnCopyText={assistantTurnCopyText}
           interimText={interimText}
+          turnEndText={turnEndText}
           staleInterruptReceipts={staleInterruptReceipts}
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -8797,6 +8817,7 @@ function AgentChatMessageListMain({
         onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopyText={assistantTurnCopyText}
         interimText={interimText}
+        turnEndText={turnEndText}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -8810,7 +8831,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {
