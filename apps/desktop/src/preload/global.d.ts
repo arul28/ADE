@@ -1705,6 +1705,14 @@ declare global {
          * Optional: an older preload predates it, so callers guard.
          */
         pinnedToolStatus?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
+        /**
+         * What a provider's agent receives when a lane chat starts on the
+         * machine `pin` names. Optional: an older preload predates it.
+         */
+        getProviderContextInventory?: (
+          args: import("../shared/types/providerContext").GetProviderContextInventoryArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<import("../shared/types/providerContext").ProviderContextInventory | null>;
         /** Start (or join) that copy's download there and return at once; poll `pinnedToolStatus`. */
         pinnedToolDownload?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
         /**
@@ -2160,7 +2168,8 @@ declare global {
         ) => () => void;
       };
       usage: {
-        getAdeStats: (args?: GetAdeUsageStatsArgs) => Promise<AdeUsageStats | null>;
+        /** `pin` reads that machine's usage; without it the tab's own binding answers. */
+        getAdeStats: (args?: GetAdeUsageStatsArgs, pin?: OpenProjectBinding | null) => Promise<AdeUsageStats | null>;
         getSnapshot: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refresh: (pin?: OpenProjectBinding | null) => Promise<UsageSnapshot | null>;
         refreshHistory: () => Promise<UsageSnapshot | null>;

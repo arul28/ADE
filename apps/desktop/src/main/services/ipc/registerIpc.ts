@@ -5705,6 +5705,22 @@ export function registerIpc({
     return getPinnedProviderToolStatus(arg.provider);
   });
 
+  // The unpinned route for Settings > Providers > Context when this window has
+  // no runtime; a pinned call goes to the owning machine's
+  // `ai.getProviderContextInventory`.
+  ipcMain.handle(IPC.aiGetProviderContextInventory, async (_event, arg: unknown) => {
+    const ctx = getCtx();
+    const { getProviderContextInventory, parseGetProviderContextInventoryArgs } = await import("../ai/providerContextInventory");
+    return getProviderContextInventory(
+      {
+        projectRoot: ctx.project.rootPath,
+        agentChatService: ctx.agentChatService ?? null,
+        logger: ctx.logger,
+      },
+      parseGetProviderContextInventoryArgs(arg),
+    );
+  });
+
   ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
     const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
     return startPinnedProviderToolDownload(arg.provider);

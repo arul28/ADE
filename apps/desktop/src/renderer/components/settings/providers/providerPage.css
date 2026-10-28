@@ -1,0 +1,477 @@
+/*
+ * One provider's page: a banner in the maker's colors with the logo standing
+ * on it, then the page's cards. The page's root sets `--provider-accent` and
+ * overrides `--color-accent` (see providerBrand.ts), so every card below wears
+ * the provider's color.
+ */
+.ade-pv-provider {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  min-width: 0;
+  container: providerpage / inline-size;
+}
+
+/* ── Banner ── */
+.ade-pv-hero {
+  position: relative;
+  min-height: 200px;
+  border-radius: var(--radius-lg, 14px);
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--provider-brand) 30%, transparent),
+    0 24px 48px -28px color-mix(in srgb, var(--provider-brand) 70%, transparent);
+}
+.ade-pv-hero[data-light="true"] { color: #141414; }
+
+/* A soft shade under the text, so it reads on any picture. */
+.ade-pv-hero-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.55) 0%, rgba(0, 0, 0, 0.22) 46%, rgba(0, 0, 0, 0.30) 100%),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.35), transparent 55%);
+}
+.ade-pv-hero[data-shade="soft"] .ade-pv-hero-shade {
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.16), transparent 55%), linear-gradient(0deg, rgba(0, 0, 0, 0.12), transparent 60%);
+}
+.ade-pv-hero[data-light="true"] .ade-pv-hero-shade {
+  background:
+    linear-gradient(90deg, rgba(255, 255, 255, 0.80) 0%, rgba(255, 255, 255, 0.55) 34%, rgba(255, 255, 255, 0.08) 62%, rgba(255, 255, 255, 0.30) 100%);
+}
+
+/* Just left of the usage panel (its width is min(380px, 40%), 30px in). */
+.ade-pv-hero-art {
+  position: absolute;
+  z-index: 0;
+  right: calc(min(380px, 40%) + 58px);
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  user-select: none;
+}
+
+.ade-pv-hero-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 30px 30px 28px 34px;
+  min-height: 200px;
+  box-sizing: border-box;
+}
+
+.ade-pv-hero-id { display: flex; flex-direction: column; gap: 8px; min-width: 0; flex: 1 1 auto; }
+.ade-pv-hero-name {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.25);
+}
+.ade-pv-hero[data-light="true"] .ade-pv-hero-name { text-shadow: none; }
+.ade-pv-hero-tagline { font-size: 13px; opacity: 0.86; line-height: 1.4; max-width: 40ch; }
+.ade-pv-hero-chips { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+.ade-pv-hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  background: rgba(255, 255, 255, 0.16);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  white-space: nowrap;
+}
+.ade-pv-hero[data-light="true"] .ade-pv-hero-chip {
+  background: rgba(255, 255, 255, 0.55);
+  border-color: rgba(0, 0, 0, 0.10);
+}
+.ade-pv-hero-chip i { width: 7px; height: 7px; border-radius: 999px; display: inline-block; }
+
+/* ── The 3D logo ── */
+.ade-pv-logo3d {
+  flex: 0 0 auto;
+  width: 112px;
+  height: 112px;
+  perspective: 640px;
+}
+.ade-pv-logo3d-face {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 28px;
+  display: grid;
+  place-items: center;
+  transform: rotateX(12deg) rotateY(-18deg) rotateZ(1deg);
+  transform-origin: 50% 60%;
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  /* The stacked shadows draw the tile's side, so it reads as a solid block. */
+  box-shadow:
+    inset 0 1.5px 0 rgba(255, 255, 255, 0.65),
+    inset 0 -2px 0 rgba(0, 0, 0, 0.18),
+    1px 1px 0 color-mix(in srgb, var(--provider-brand) 55%, #000),
+    2px 2px 0 color-mix(in srgb, var(--provider-brand) 52%, #000),
+    3px 3px 0 color-mix(in srgb, var(--provider-brand) 49%, #000),
+    4px 4px 0 color-mix(in srgb, var(--provider-brand) 46%, #000),
+    5px 5px 0 color-mix(in srgb, var(--provider-brand) 43%, #000),
+    6px 6px 0 color-mix(in srgb, var(--provider-brand) 40%, #000),
+    7px 7px 0 color-mix(in srgb, var(--provider-brand) 37%, #000),
+    8px 8px 0 color-mix(in srgb, var(--provider-brand) 34%, #000),
+    14px 22px 30px rgba(0, 0, 0, 0.45),
+    4px 8px 12px rgba(0, 0, 0, 0.25);
+}
+/* A glossy light across the top-left of the face. */
+.ade-pv-logo3d-face::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  background:
+    linear-gradient(140deg, rgba(255, 255, 255, 0.55) 0%, rgba(255, 255, 255, 0.10) 34%, transparent 52%),
+    radial-gradient(120% 80% at 50% 120%, rgba(0, 0, 0, 0.16), transparent 60%);
+  mix-blend-mode: soft-light;
+}
+.ade-pv-logo3d-face > * {
+  filter: drop-shadow(0 2px 1.5px rgba(0, 0, 0, 0.28)) drop-shadow(0 0 0.5px rgba(0, 0, 0, 0.2));
+}
+.ade-pv-logo3d:hover .ade-pv-logo3d-face { transform: rotateX(4deg) rotateY(-6deg) rotateZ(0deg) translateY(-2px); }
+@media (prefers-reduced-motion: reduce) {
+  .ade-pv-logo3d-face { transition: none; }
+}
+
+/* ── A free-standing 3D logo: the mark stacked in depth (see SolidLogo) ── */
+.ade-pv-mark3d {
+  position: relative;
+  flex: 0 0 auto;
+  width: 112px;
+  height: 112px;
+  perspective: 520px;
+  display: grid;
+  place-items: center;
+}
+.ade-pv-mark3d-body {
+  position: relative;
+  display: grid;
+  place-items: center;
+  transform: rotateX(14deg) rotateY(-20deg);
+  transform-style: preserve-3d;
+  transition: transform 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  filter: drop-shadow(10px 16px 14px rgba(0, 0, 0, 0.38));
+}
+.ade-pv-mark3d-layer {
+  grid-area: 1 / 1;
+  display: inline-flex;
+  line-height: 0;
+}
+.ade-pv-mark3d-layer[data-face="true"] {
+  filter: drop-shadow(0 0 0.6px rgba(0, 0, 0, 0.35));
+}
+/* A white copy over the top-left of the face: the light catching its edge. */
+.ade-pv-mark3d-layer[data-gloss="true"] {
+  filter: brightness(0) invert(1);
+  opacity: 0.38;
+  mix-blend-mode: soft-light;
+  clip-path: polygon(0 0, 100% 0, 0 78%);
+}
+.ade-pv-mark3d-floor {
+  position: absolute;
+  left: 18%;
+  right: 6%;
+  bottom: 2px;
+  height: 16px;
+  border-radius: 50%;
+  background: radial-gradient(closest-side, rgba(0, 0, 0, 0.42), transparent);
+  filter: blur(3px);
+}
+.ade-pv-hero[data-light="true"] .ade-pv-mark3d-floor { background: radial-gradient(closest-side, rgba(0, 0, 0, 0.22), transparent); }
+.ade-pv-mark3d:hover .ade-pv-mark3d-body { transform: rotateX(6deg) rotateY(-8deg) translateY(-3px); }
+@media (prefers-reduced-motion: reduce) {
+  .ade-pv-mark3d-body { transition: none; }
+}
+
+/* ── Stats on the banner ── */
+.ade-pv-hero-stats {
+  flex: 0 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  width: min(380px, 40%);
+  padding: 14px 16px;
+  border-radius: 14px;
+  background: rgba(10, 10, 12, 0.34);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(14px) saturate(1.2);
+  -webkit-backdrop-filter: blur(14px) saturate(1.2);
+}
+.ade-pv-hero[data-light="true"] .ade-pv-hero-stats {
+  background: rgba(255, 255, 255, 0.50);
+  border-color: rgba(0, 0, 0, 0.08);
+}
+.ade-pv-hero-stats-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.75;
+}
+.ade-pv-hero-figures { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.ade-pv-hero-figure b {
+  display: block;
+  font-size: 19px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.15;
+}
+.ade-pv-hero-figure span { font-size: 10.5px; opacity: 0.72; }
+.ade-pv-hero-models { display: flex; flex-direction: column; gap: 6px; }
+.ade-pv-hero-model { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; font-size: 11px; align-items: center; }
+.ade-pv-hero-model > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pv-hero-model > span:nth-child(2) { font-variant-numeric: tabular-nums; opacity: 0.75; }
+.ade-pv-hero-model-bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.16);
+  overflow: hidden;
+}
+.ade-pv-hero[data-light="true"] .ade-pv-hero-model-bar { background: rgba(0, 0, 0, 0.10); }
+.ade-pv-hero-model-bar > i {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: currentColor;
+  opacity: 0.85;
+}
+.ade-pv-hero-empty { font-size: 11.5px; opacity: 0.78; line-height: 1.45; }
+
+/* ── Body ── */
+.ade-pv-provider-body {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 18px;
+  align-items: start;
+}
+.ade-pv-provider-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+
+/* A wide piece of art needs more room beside the name before it fits. */
+@container providerpage (max-width: 1180px) {
+  .ade-pv-hero-art[data-wide="true"] { display: none; }
+}
+
+@container providerpage (max-width: 1080px) {
+  .ade-pv-hero-art { display: none; }
+}
+
+@container providerpage (max-width: 860px) {
+  .ade-pv-provider-body { grid-template-columns: minmax(0, 1fr); }
+  .ade-pv-hero-row { flex-wrap: wrap; }
+  .ade-pv-hero-stats { width: 100%; }
+  .ade-pv-hero-art { display: none; }
+}
+
+/* ── Context ── */
+.ade-pv-ctx-total {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.ade-pv-ctx-total b {
+  font-size: 26px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.02em;
+  line-height: 1;
+}
+.ade-pv-ctx-total small { display: block; margin-top: 6px; font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-pv-ctx-bar {
+  display: flex;
+  height: 10px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--kit-track, color-mix(in srgb, var(--color-fg) 8%, transparent));
+  margin: 14px 0 10px;
+}
+.ade-pv-ctx-bar > i {
+  display: block;
+  height: 100%;
+  min-width: 2px;
+  background: linear-gradient(180deg, color-mix(in srgb, var(--owner) 78%, #fff), var(--owner));
+}
+.ade-pv-ctx-bar > i + i { box-shadow: -1px 0 0 var(--color-bg); }
+.ade-pv-ctx-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-pv-ctx-legend span { display: inline-flex; align-items: center; gap: 6px; }
+.ade-pv-ctx-legend i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; background: var(--owner); }
+.ade-pv-ctx-legend b { font-weight: 600; font-variant-numeric: tabular-nums; color: var(--color-fg); }
+.ade-pv-ctx-legend em { font-style: normal; font-size: 10px; font-variant-numeric: tabular-nums; color: var(--kit-text-3, var(--color-muted-fg)); }
+
+.ade-pv-ctx-group + .ade-pv-ctx-group { border-top: 1px solid var(--kit-rule, var(--color-border)); }
+.ade-pv-ctx-group-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px 6px;
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--kit-text-3, var(--color-muted-fg));
+}
+.ade-pv-ctx-group-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--owner);
+  background: color-mix(in srgb, var(--owner) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--owner) 26%, transparent);
+}
+.ade-pv-ctx-group-head { color: color-mix(in srgb, var(--owner) 55%, var(--color-fg)); }
+.ade-pv-ctx-group-count {
+  font-size: 10px;
+  letter-spacing: 0;
+  padding: 1px 6px;
+  border-radius: 999px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-pv-ctx-group-head b { margin-left: auto; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--kit-text-2, var(--color-secondary-fg)); }
+
+.ade-pv-ctx-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto auto 52px;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 7px 16px;
+  font-size: 12px;
+  min-width: 0;
+}
+.ade-pv-ctx-row[data-child="true"] { padding-left: 44px; font-size: 11.5px; }
+.ade-pv-ctx-row:hover { background: color-mix(in srgb, var(--owner) 6%, transparent); }
+.ade-pv-ctx-row-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  display: inline-grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--owner) 80%, var(--color-fg));
+  background: color-mix(in srgb, var(--owner) 10%, transparent);
+}
+.ade-pv-ctx-row[data-child="true"] .ade-pv-ctx-row-icon { background: transparent; }
+.ade-pv-ctx-row-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-pv-ctx-row-label { display: flex; align-items: center; gap: 6px; min-width: 0; color: var(--color-fg); }
+.ade-pv-ctx-row-label > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pv-ctx-row-source {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 10.5px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-pv-ctx-row-detail { font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-pv-ctx-timing {
+  font-size: 10px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-pv-ctx-timing[data-timing="chat-start"] {
+  color: color-mix(in srgb, var(--provider-accent) 75%, var(--color-fg));
+  background: color-mix(in srgb, var(--provider-accent) 13%, transparent);
+}
+.ade-pv-ctx-timing[data-timing="on-demand"] { opacity: 0.7; }
+.ade-pv-ctx-tokens {
+  min-width: 64px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 11.5px;
+  color: var(--color-fg);
+}
+.ade-pv-ctx-tokens[data-kind="unknown"] { color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-pv-ctx-toggle {
+  border: none;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+}
+.ade-pv-ctx-foot {
+  padding: 10px 16px 14px;
+  font-size: 11px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+  border-top: 1px solid var(--kit-rule, var(--color-border));
+}
+.ade-pv-ctx-skeleton {
+  height: 12px;
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  margin: 10px 16px;
+}
+
+/* Card heads on a provider page: the icon sits on a chip of the provider's color. */
+.ade-pv-provider .kit-card-head > svg:first-child {
+  box-sizing: content-box;
+  padding: 4px;
+  border-radius: 7px;
+  color: var(--provider-accent);
+  background: color-mix(in srgb, var(--provider-accent) 15%, transparent);
+}
+.ade-pv-provider .kit-card {
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--provider-accent) 14%, transparent);
+}
+
+/* Where an item is switched on, under its path. */
+.ade-pv-ctx-row-setin {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  font-size: 10.5px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+}
+.ade-pv-ctx-row-setin > svg { flex: none; color: color-mix(in srgb, var(--owner) 70%, var(--color-fg)); }
+.ade-pv-ctx-row-setin > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-pv-ctx-row-setin b { font-weight: 500; font-family: var(--font-mono, ui-monospace, monospace); color: var(--kit-text-2, var(--color-secondary-fg)); }
+
+/* Open-file and open-settings buttons: quiet until the row is hovered or focused. */
+.ade-pv-ctx-actions { display: inline-flex; justify-content: flex-end; gap: 2px; opacity: 0.35; transition: opacity 120ms ease; }
+.ade-pv-ctx-row:hover .ade-pv-ctx-actions,
+.ade-pv-ctx-actions:focus-within { opacity: 1; }
+.ade-pv-ctx-action {
+  width: 22px;
+  height: 22px;
+  display: inline-grid;
+  place-items: center;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  cursor: pointer;
+}
+.ade-pv-ctx-action:hover { color: var(--owner); background: color-mix(in srgb, var(--owner) 14%, transparent); }
+.ade-pv-ctx-action:focus-visible { outline: 2px solid var(--provider-accent); outline-offset: 1px; }

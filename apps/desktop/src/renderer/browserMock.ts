@@ -1,4 +1,6 @@
 import { createBrowserMockMusic } from "./browserMockMusic";
+import { browserMockProviderContextInventory } from "./browserMockProviderContext";
+import type { GetProviderContextInventoryArgs } from "../shared/types/providerContext";
 import type { TerminalShellSettings } from "../shared/types/terminalShells";
 import { playDemoReply, startManualDemoClock, type DemoChildChat } from "./browserMockDemoReplies";
 import { getAppearanceState } from "./state/appearanceStore";
@@ -1258,6 +1260,17 @@ const mockProviderInstances: Array<{
     isDefault: false,
     createdAt: new Date(0).toISOString(),
     account: { email: "jo.martin@example.com", plan: "Claude Pro" },
+    signedIn: true,
+  },
+  {
+    id: "claude-side",
+    provider: "claude",
+    label: "ada@example.com",
+    accentColor: "#c08bf0",
+    configHome: "/mock/.ade/provider-homes/claude/side",
+    isDefault: false,
+    createdAt: new Date(0).toISOString(),
+    account: { email: "ada@example.com", plan: "Claude Max 5x" },
     signedIn: true,
   },
   {
@@ -6577,6 +6590,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         verifiedAt: now,
       } as any),
       updateConfig: resolvedArg(undefined),
+      getProviderContextInventory: async (args: GetProviderContextInventoryArgs) => browserMockProviderContextInventory(args),
       opencodeAuthMethods: resolved({ methods: {} }),
       opencodeOAuthStart: resolvedArg({ url: "", method: "auto", instructions: "" } as any),
       opencodeOAuthCancel: resolvedArg(undefined),
