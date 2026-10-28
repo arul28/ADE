@@ -4,11 +4,23 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  isChannelRuntimePipeName,
   isMachineAdeHome,
   isSyncCapableAdeHome,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
 } from "./machineLayout";
+
+describe("isChannelRuntimePipeName", () => {
+  it.each([
+    ["machine pipe", "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef", "win32", true],
+    ["isolated desktop brain", "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef-1.2.3-42", "win32", false],
+    ["other channel", "\\\\.\\pipe\\ade-runtime-beta-0123456789abcdef", "win32", false],
+    ["non-Windows", "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef", "linux", false],
+  ] as const)("recognizes %s", (_label, name, platform, expected) => {
+    expect(isChannelRuntimePipeName(name, {}, platform)).toBe(expected);
+  });
+});
 
 describe("isMachineAdeHome", () => {
   it("accepts only the default machine state root", () => {
