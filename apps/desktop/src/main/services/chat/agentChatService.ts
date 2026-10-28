@@ -34698,6 +34698,10 @@ export function createAgentChatService(args: {
     const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
       cwd: managed.laneWorktreePath,
       pluginRoots,
+      bundledSkills: {
+        pluginRoots,
+        copyRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+      },
     });
     const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
     const slashCommandsSection = (injectionPlan.commands.length || renderedSkills.lines.length)
@@ -46116,6 +46120,10 @@ export function createAgentChatService(args: {
       const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
         cwd: managed.laneWorktreePath,
         pluginRoots: pluginPaths,
+        bundledSkills: {
+          pluginRoots: adeSkillCatalogFor(managed.session) === "none" ? [] : bundledPluginPaths,
+          copyRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        },
       });
       const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
       const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
@@ -60129,8 +60137,8 @@ export function createAgentChatService(args: {
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
           sessionActivityGuidance: droidActivityGuidance,
         });
-    // Droid reads only `.factory/skills`, so the project's and the user's own
-    // skills (`.claude/skills`, `.agents/skills`) are listed for it, as they
+    // Droid reads `.factory`, `.agents` and `.agent` skills itself, so only
+    // the project's and the user's `.claude/skills` are listed for it, as they
     // are for Claude. A personal chat has no project to list.
     const droidSkillListing = isPersonalSession(managed.session)
       ? []

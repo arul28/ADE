@@ -315,13 +315,61 @@ export type SlashCommandInjectionPlan = {
  */
 export function planClaudeSlashCommandInjection(
   commands: readonly DiscoveredClaudeSlashCommand[],
-  options: { cwd: string; pluginRoots?: readonly string[]; home?: string },
+  options: {
+    cwd: string;
+    pluginRoots?: readonly string[];
+    home?: string;
+    /**
+     * The bundled ADE skills plugin, and every root that holds another copy of
+     * those skills (ADE's own repo keeps their source in
+     * `apps/desktop/resources/agent-skills`). A copy is a different folder, so
+     * the path match misses it and the model saw each ADE skill twice: once as
+     * `ade:<name>` and once by path.
+     */
+    bundledSkills?: { pluginRoots: readonly string[]; copyRoots: readonly string[] };
+  },
 ): SlashCommandInjectionPlan {
-  return planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
+  const plan = planSlashCommandInjection(commands, claudeNativeSlashCommandRoots(
     options.cwd,
     options.pluginRoots ?? [],
     options.home ?? os.homedir(),
   ));
+  const copyRoots = options.bundledSkills?.copyRoots ?? [];
+  if (!copyRoots.length) return plan;
+  const bundledNames = bundledSkillNames(options.bundledSkills?.pluginRoots ?? []);
+  if (!bundledNames.size) return plan;
+  // Matched by folder name, and only inside ADE's own skill roots: a user
+  // skill that shares a name with an ADE skill is a different skill and stays.
+  // The plugin's copy is the one to keep, because it matches the installed
+  // `ade` CLI the agent runs; a repo copy can describe unreleased commands.
+  const isCopy = (entry: DiscoveredClaudeSlashCommand) =>
+    bundledNames.has(path.basename(path.dirname(entry.filePath)))
+    && copyRoots.some((root) => isPathInside(entry.filePath, root));
+  const skills = plan.skills.filter((entry) => !isCopy(entry));
+  return { ...plan, skills, nativeCount: plan.nativeCount + plan.skills.length - skills.length };
+}
+
+const cachedBundledSkillNames = createSlashCommandListingCache<Set<string>>();
+
+/** Skill folder names under the bundled plugin roots, on discovery's own TTL. */
+function bundledSkillNames(pluginRoots: readonly string[]): Set<string> {
+  if (!pluginRoots.length) return new Set();
+  return cachedBundledSkillNames(pluginRoots.map(pathKey).join("\n"), () => {
+    const names = new Set<string>();
+    for (const root of pluginRoots) {
+      let entries: fs.Dirent[];
+      try {
+        entries = fs.readdirSync(root, { withFileTypes: true });
+      } catch {
+        continue;
+      }
+      for (const entry of entries.slice(0, MAX_SKILL_DIRS_PER_ROOT)) {
+        if (entry.name.startsWith(".")) continue;
+        if (fs.existsSync(path.join(root, entry.name, "SKILL.md"))) names.add(entry.name);
+      }
+    }
+    return names;
+  });
 }
 
 /** Drops everything under the roots a harness already reads for itself. */

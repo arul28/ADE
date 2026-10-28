@@ -1,6 +1,6 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, or spawn a child lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
+description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, send a message to a chat later, or spawn a child lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
 ---
 
 # ADE CLI control plane
@@ -596,6 +596,10 @@ re-points the lane's branch and renames the lane only when its name was literall
 advertising the old branch. Actions: `lane.getBranchDrift`, `lane.resolveBranchDrift`.
 
 ### Scheduled work
+
+To make a message arrive in a chat later as if the user sent it, use
+`ade drafts` (see "Composer drafts" below), not scheduled work. Scheduled work
+is for waking *yourself* to do work later.
 
 Persistent ADE chats and tracked provider CLI sessions can schedule their own
 durable wakeups. Use the typed `ade chat scheduled-work create|list|cancel`
