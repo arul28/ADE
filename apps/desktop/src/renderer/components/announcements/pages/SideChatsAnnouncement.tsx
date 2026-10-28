@@ -17,6 +17,7 @@ export default function SideChatsAnnouncement({ close }: AnnouncementPageProps) 
         { icon: <Eye size={13} weight="bold" />, label: "Read-only" },
         { icon: <PaperPlaneTilt size={13} weight="fill" />, label: "Sends notes back" },
       ]}
+      action={{ tipId: "side-chats", label: "Try /side" }}
       media={{
         gif,
         still,
