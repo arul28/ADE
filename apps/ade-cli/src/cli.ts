@@ -2293,6 +2293,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
+    $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
 `,
