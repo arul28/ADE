@@ -348,6 +348,31 @@ export function findListeningWindowsPipe(names: readonly string[]): string | nul
 }
 
 /**
+ * Whether `name` has the shape of a machine brain pipe of this ADE home's
+ * channel, under any user identity: `\\.\pipe\ade-runtime-<channel>-<16 hex>`
+ * and nothing after it. The desktop's isolated brain appends
+ * `-<version>-<build>` to the machine name, so it never matches: it is a
+ * second brain on purpose, not the machine brain on a name this process does
+ * not derive. False off Windows, where there are no pipe names.
+ */
+export function isChannelRuntimePipeName(
+  name: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (platform !== "win32") return false;
+  const { label } = windowsPipeIdentityBase(env.ADE_HOME?.trim() || resolveMachineAdeDir(env), env).channel;
+  const prefix = windowsPipeKey(`\\\\.\\pipe\\ade-runtime-${label}-`);
+  const key = windowsPipeKey(name);
+  return key.startsWith(prefix) && /^[0-9a-f]{16}$/.test(key.slice(prefix.length));
+}
+
+function resolveReachableMachineEndpoint(names: readonly string[]): string {
+  if (names.length < 2) return names[0]!;
+  return findListeningWindowsPipe(names) ?? names[0]!;
+}
+
+/**
  * The brain endpoint a client should dial: the current name, or an older name
  * when only an older brain is listening (see `resolveMachineEndpointNames`).
  * Anything that connects to the machine brain without an explicit socket goes
@@ -358,9 +383,7 @@ export function resolveReachableMachineRuntimeSocketPath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const names = resolveMachineEndpointNames(env, platform).runtime;
-  if (names.length < 2) return names[0]!;
-  return findListeningWindowsPipe(names) ?? names[0]!;
+  return resolveReachableMachineEndpoint(resolveMachineEndpointNames(env, platform).runtime);
 }
 
 /** `resolveReachableMachineRuntimeSocketPath` for the desktop app's bridge. */
@@ -368,9 +391,7 @@ export function resolveReachableMachineDesktopBridgeSocketPath(
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): string {
-  const names = resolveMachineEndpointNames(env, platform).desktopBridge;
-  if (names.length < 2) return names[0]!;
-  return findListeningWindowsPipe(names) ?? names[0]!;
+  return resolveReachableMachineEndpoint(resolveMachineEndpointNames(env, platform).desktopBridge);
 }
 
 /** The brain's machine log: every brain on this ADE home writes it, and error reports read its tail. */

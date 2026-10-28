@@ -221,8 +221,15 @@ no feed; their app is left alone and the status says it is behind. With no app
 installed (servers, Linux) only the brain is updated, as before.
 
 `brain update --dry-run` names the app it would update (`desktopApp`).
-"Update & restart" counts the app's version too (`installedAppVersion`), so a
-brain already on the target beside an older closed app is still updated.
+"Update & restart" counts the app's version too (`installedApp`), on every
+platform, so a brain already on the target beside an older closed app is still
+updated. It reads the app through the same `readInstalledDesktopApp`
+(`nativeHelperPaths.ts`) the brain reports, `ade doctor` shows and the macOS
+app update swaps, so a machine is judged on the version it reports. A Beta or
+Alpha app behind its brain is reported as such ("has no update feed … rebuild
+it"), not offered an update that would change nothing. The macOS swap restores
+the old app only when it moved it, and checks again that ADE is still closed
+after the service stops.
 `ade setup` never swaps an app that is open, and an older app it does not
 replace is reported as kept, not as "not installed".
 
@@ -713,15 +720,27 @@ Busy, an isolated brain, or a probe that timed out defers: the quit is a plain
 quit and the update waits for the automatic install of a later launch. The quit
 prompt says which ("installs as ADE quits" or "installs later, when no agent is
 running"), and the log has `autoUpdate.quit_install_start` or
-`autoUpdate.quit_install_deferred`. The work is read before the prompt and again
-after it, since the prompt can stay up while an agent starts.
+`autoUpdate.quit_install_deferred`. The work is read before the prompt, again
+after it, and once more right before the background service stops (after the
+feed re-check), since an agent can start meanwhile. That last look turns the
+install back into a plain quit (`InstallOnQuitDeferredError`); the update stays
+downloaded.
 
-The install relaunches ADE, as every install does. That launch
-(`landedQuitInstall`) starts with a hidden window and no Dock icon, runs the
-post-update transaction, and closes once it passes, leaving the brain on the
-new build. It opens no projects and keeps the saved workspace for the next
-launch. It shows its window when the transaction fails, or when the person
-opens ADE meanwhile. A quit-install shows no Windows progress window. With
+The install relaunches ADE, as every install does. Only the updater's own
+relaunch (`isQuitInstallRelaunch`) starts with a hidden window and no Dock
+icon: on Windows it carries the installer's `--updated`, on Linux the AppImage
+updater's `APPIMAGE_SILENT_INSTALL`, and it must come within 10 minutes of the
+quit. Squirrel.Mac relaunches with no marker, so macOS has only a 3-minute
+window. Any other launch that lands the install (the installer's relaunch lost
+the single-instance lock and the person opened ADE) runs the transaction in
+the open. The hidden launch runs the post-update transaction and closes once it
+passes, leaving the brain on the new build. It opens no projects and keeps the
+saved workspace for the next launch. It shows its window when the transaction
+fails, or when the person opens ADE meanwhile (Dock, second launch, a deep link
+or a file). On Windows the "Updating ADE" window shows for a quit-install too:
+its heartbeat is what makes a copy opened by hand mid-install step aside. In
+that mode it closes once the new ADE.exe starts after the installer. The
+controller is `createInstallOnQuitController`; `main.ts` only wires it. With
 automatic install off, a quit never installs.
 
 `installing` remains a sticky status throughout: the service ignores

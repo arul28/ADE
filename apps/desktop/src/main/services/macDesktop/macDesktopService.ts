@@ -1061,7 +1061,12 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       windowsDesktop: windowsOps.withOperation(await readWindowsDesktopStatus()),
       ...(isLinuxSeat ? { linuxDesktop: linuxDesktopStatusFacts() } : {}),
     };
-    return { ...base, seat: describeDesktopSeat(base), capabilities: [...MAC_DESKTOP_BRAIN_CAPABILITIES] };
+    // `open.newInstance` is the Mac driver's alone: the Windows and Linux
+    // seats would drop `--new-instance` without a word.
+    const capabilities = MAC_DESKTOP_BRAIN_CAPABILITIES.filter(
+      (capability) => capability !== "open.newInstance" || (isMacSeat && seatSupported),
+    );
+    return { ...base, seat: describeDesktopSeat(base), capabilities };
   };
 
   /**

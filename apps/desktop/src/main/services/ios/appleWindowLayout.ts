@@ -60,6 +60,26 @@ export function appleWindowSlots(action: AppleWindowLayoutAction, screen: { widt
   }
 }
 
+/** How far a window runs past each screen edge, in points: all 0 when it is wholly on the screen. */
+export type AppleWindowOffScreen = { left: number; top: number; right: number; bottom: number };
+
+export function appleWindowOffScreen(frame: AppleWindowFrame, screen: { width: number; height: number }): AppleWindowOffScreen {
+  return {
+    left: Math.max(0, -frame.x),
+    top: Math.max(0, -frame.y),
+    right: Math.max(0, frame.x + frame.width - screen.width),
+    bottom: Math.max(0, frame.y + frame.height - screen.height),
+  };
+}
+
+/** "52 pt past the left edge, 37 pt past the bottom edge": the sides more than `minimum` points off, or "" when none is. */
+export function describeAppleWindowOffScreen(off: AppleWindowOffScreen, minimum = 0): string {
+  return (Object.entries(off) as Array<[keyof AppleWindowOffScreen, number]>)
+    .filter(([, value]) => value > minimum)
+    .map(([side, value]) => `${Math.round(value)} pt past the ${side} edge`)
+    .join(", ");
+}
+
 type AxisVerdict = { ok: boolean; oversized: boolean };
 
 /** One axis of a window against one axis of its slot. */
@@ -97,12 +117,7 @@ export function judgeAppleWindowLayout(
   screen: { width: number; height: number },
   before: AppleWindowFrame | null,
 ): AppleWindowVerdict {
-  const off = {
-    left: Math.max(0, -frame.x),
-    top: Math.max(0, -frame.y),
-    right: Math.max(0, frame.x + frame.width - screen.width),
-    bottom: Math.max(0, frame.y + frame.height - screen.height),
-  };
+  const off = appleWindowOffScreen(frame, screen);
   const offX = off.left > 1 || off.right > 1;
   const offY = off.top > 1 || off.bottom > 1;
   if (action === "slide-over") {
@@ -124,11 +139,11 @@ export function judgeAppleWindowLayout(
       x.oversized ? `its width (${Math.round(frame.width)}) is larger than the ${Math.round(slot.width)}-point slot` : null,
       y.oversized ? `its height (${Math.round(frame.height)}) is larger than the ${Math.round(slot.height)}-point slot` : null,
     ].filter(Boolean);
-    const past = Object.entries(off).filter(([, value]) => value > 1).map(([side, value]) => `${Math.round(value)} pt past the ${side} edge`);
+    const past = describeAppleWindowOffScreen(off, 1);
     return {
       landed: true,
       note: grown.length
-        ? `The app's minimum size: ${grown.join(" and ")}${past.length ? `, so it runs ${past.join(", ")}` : ""}.`
+        ? `The app's minimum size: ${grown.join(" and ")}${past ? `, so it runs ${past}` : ""}.`
         : null,
       strayOffScreen: false,
     };

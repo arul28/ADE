@@ -1139,11 +1139,14 @@ export type MacDesktopStatus = {
  *
  * - `open.newInstance`: `open --new-instance` (an older brain drops it, and a
  *   document goes to the lane's running copy instead of a separate one).
+ *   Advertised only by a brain whose seat is the Mac driver: the Windows and
+ *   Linux seats have no separate-instance launch.
  * - `proof.plain`: `ade proof record --plain` (an older brain cuts still
- *   stretches anyway).
- * - `target.local`: display-local `x/y` (`local: true`). The CLI converts
- *   `--local` to global points itself, so it never depends on this; other
- *   callers may.
+ *   stretches anyway). Every seat.
+ * - `target.local`: display-local `x/y` (`local: true`), converted to global
+ *   points by the brain from the lane display's origin. Every seat. The CLI
+ *   sends `local: true` when the brain says this, and converts `--local`
+ *   itself only for a brain that does not.
  */
 export const MAC_DESKTOP_BRAIN_CAPABILITIES = ["open.newInstance", "proof.plain", "target.local"] as const;
 export type MacDesktopBrainCapability = (typeof MAC_DESKTOP_BRAIN_CAPABILITIES)[number];

@@ -12,6 +12,7 @@ import {
   APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_EXTRA_DEVICE_LIMIT_CODE,
   APPLE_LANE_EXTRA_DEVICE_LIMIT,
+  APPLE_RELEASED_DEVICE_GRACE_MS,
   isAdeOwnedLaneDevice,
 } from "../../../shared/types/iosSimulator";
 import {
@@ -23,7 +24,6 @@ import {
   type AppleDeviceNotLaneOwnedReason,
 } from "./appleDeviceErrors";
 import {
-  APPLE_DEVICE_MARKER_GRACE_MS,
   appleMarkerIsProject,
   appleMarkerMovedToProject,
   appleSimulatorOwnership,
@@ -1042,7 +1042,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       // Released and kept by the person: a free simulator, not a leftover.
       if (marker.keptAt) continue;
       const since = Date.parse(marker.detachedAt || marker.createdAt);
-      if (Number.isFinite(since) && nowMs - since < APPLE_DEVICE_MARKER_GRACE_MS) continue;
+      if (Number.isFinite(since) && nowMs - since < APPLE_RELEASED_DEVICE_GRACE_MS) continue;
       // A marker that still names the folder this project moved from is ours:
       // "that folder is gone" must not delete a device this project made.
       const ours = appleMarkerIsProject(marker, projectRoot!) || appleMarkerMovedToProject(marker, projectRoot!);
@@ -1190,7 +1190,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
           detachedAt: kept ? null : at.toISOString(),
           ...(kept ? { keptAt: at.toISOString() } : {}),
         });
-        if (!kept) deletesAfter = new Date(at.getTime() + APPLE_DEVICE_MARKER_GRACE_MS).toISOString();
+        if (!kept) deletesAfter = new Date(at.getTime() + APPLE_RELEASED_DEVICE_GRACE_MS).toISOString();
       }
       const by = args.by ?? "user";
       releasedByLane.set(laneId, {

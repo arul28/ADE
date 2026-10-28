@@ -72,7 +72,9 @@ describe("runXcodebuildTests log cleanup", () => {
       const child = new EventEmitter() as EventEmitter & { stdout: PassThrough; stderr: PassThrough };
       child.stdout = new PassThrough();
       child.stderr = new PassThrough();
-      child.stdout.end(log, () => setTimeout(() => child.emit("close", 65), 20));
+      // As a real child: "close" comes once its output has all been read.
+      child.stdout.once("end", () => child.emit("close", 65));
+      child.stdout.end(log);
       return child;
     }) as never;
 

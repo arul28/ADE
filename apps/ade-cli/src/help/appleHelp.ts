@@ -1,4 +1,8 @@
+import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../desktop/src/shared/types/iosSimulator";
 import { ADE_BANNER } from "./banner";
+
+const GRACE_MINUTES = Math.round(APPLE_RELEASED_DEVICE_GRACE_MS / 60_000);
+const CLEANUP_MINUTES = Math.round(APPLE_DEVICE_CLEANUP_INTERVAL_MS / 60_000);
 
 /** Help for each `ade apple` subcommand, by name. */
 export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
@@ -922,7 +926,7 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
   "device-cleanup": `${ADE_BANNER}
   Apple device: device-cleanup
 
-  Runs the cleanup pass now (ADE also runs it every 15 minutes):
+  Runs the cleanup pass now (ADE also runs it every ${CLEANUP_MINUTES} minutes):
   deletes ADE devices that no live lane holds, releases the devices of lanes
   that were archived or deleted, and drops lane records whose simulator is
   gone. It only deletes a device ADE made (one with ADE's marker). The
@@ -1046,8 +1050,8 @@ export const IOS_SIMULATOR_SUBCOMMAND_HELP: Record<string, string> = {
     shows as a free device in the picker. ADE uninstalls only the apps it put
     on it.
   - A device ADE made becomes a leftover. The cleanup pass deletes it after a
-    5-minute grace, at its next run (every 15 minutes), so it is gone within
-    about 20 minutes. To keep it, attach it again before then:
+    ${GRACE_MINUTES}-minute grace, at its next run (every ${CLEANUP_MINUTES} minutes), so it is gone within
+    about ${GRACE_MINUTES + CLEANUP_MINUTES} minutes. To keep it, attach it again before then:
     "device-attach --simulator <udid>". The answer prints the time.
     --keep (only when the user asks to keep it) leaves it as a free
     simulator that nothing deletes; the user deletes it from the picker.

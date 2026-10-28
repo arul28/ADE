@@ -6,9 +6,13 @@ import os from "node:os";
 import path from "node:path";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
 import { manifestNameForPlatform, releaseAssetUrl, sha512Base64 } from "../lib/releaseAssets";
-import { packagedCliNodeModulePaths } from "../serviceManager/common";
+import { packagedCliNodeModulePaths, shellQuote } from "../serviceManager/common";
 import type { DesktopAppUpdateRouting } from "../services/runtime/desktopAppUpdateBridge";
-import { resolveDefaultDesktopAppName } from "./doctor";
+import {
+  defaultMacApplicationsDirs,
+  readInstalledDesktopApp,
+  readMacAppBundleInfo,
+} from "../../../desktop/src/main/services/native/nativeHelperPaths";
 import { parseDesktopManifest } from "./setupDesktop";
 import { withoutHelperEnv } from "./windowsDesktopRescue";
 
@@ -60,7 +64,7 @@ export const defaultMacCommandRunner: MacCommandRunner = (command, args, options
 
 /** How long `brain start` may take: a service install plus the wait for the brain to answer. */
 const APP_SERVICE_START_TIMEOUT_MS = 120_000;
-const PLIST_READ_TIMEOUT_MS = 5_000;
+const PS_TIMEOUT_MS = 5_000;
 const CODESIGN_TIMEOUT_MS = 180_000;
 const EXTRACT_TIMEOUT_MS = 10 * 60_000;
 
@@ -76,30 +80,21 @@ export type MacDesktopApp = {
 };
 
 export function defaultApplicationsDirs(): string[] {
-  return ["/Applications", path.join(os.homedir(), "Applications")];
+  return defaultMacApplicationsDirs(os.homedir());
 }
 
-function readPlistString(run: MacCommandRunner, appPath: string, key: string): string | null {
-  const result = run(
-    "/usr/bin/plutil",
-    ["-extract", key, "raw", "-o", "-", path.join(appPath, "Contents", "Info.plist")],
-    { timeout: PLIST_READ_TIMEOUT_MS },
-  );
-  const value = result.stdout.trim();
-  return result.status === 0 && value ? value : null;
-}
-
-function describeApp(run: MacCommandRunner, appPath: string): MacDesktopApp | null {
-  const version = readPlistString(run, appPath, "CFBundleShortVersionString");
-  if (!version) return null;
-  const executable = readPlistString(run, appPath, "CFBundleExecutable") ?? path.basename(appPath, ".app");
+/** The bundle at `appPath`, read the way every installed-app check reads it (`readMacAppBundleInfo`). */
+function describeApp(appPath: string): MacDesktopApp | null {
+  const info = readMacAppBundleInfo(appPath);
+  if (!info?.version) return null;
+  const executable = info.executable ?? path.basename(appPath, ".app");
   return {
     appPath,
     bundleName: path.basename(appPath),
     executablePath: path.join(appPath, "Contents", "MacOS", executable),
     cliPath: path.join(appPath, "Contents", "Resources", "ade-cli", "cli.cjs"),
-    version,
-    bundleId: readPlistString(run, appPath, "CFBundleIdentifier"),
+    version: info.version,
+    bundleId: info.id,
   };
 }
 
@@ -110,24 +105,20 @@ export type MacDesktopAppLookup =
   | { state: "found"; app: MacDesktopApp };
 
 /**
- * The ADE app for this ADE home. Only the stable product is updated: Beta and
- * Alpha have no update feed of their own and must never receive a stable
- * build.
+ * The ADE app for this ADE home: the one `readInstalledDesktopApp` reports, so
+ * the update moves the app the machine says it has. Only the stable product is
+ * updated: Beta and Alpha have no update feed of their own and must never
+ * receive a stable build.
  */
 export function findMacDesktopApp(args: {
   env: NodeJS.ProcessEnv;
   applicationsDirs: readonly string[];
-  run: MacCommandRunner;
 }): MacDesktopAppLookup {
-  const appName = resolveDefaultDesktopAppName(args.env);
-  for (const dir of args.applicationsDirs) {
-    const appPath = path.join(dir, `${appName}.app`);
-    if (!fs.existsSync(path.join(appPath, "Contents", "Info.plist"))) continue;
-    if (appName !== "ADE") return { state: "channel", appName };
-    const app = describeApp(args.run, appPath);
-    return app ? { state: "found", app } : { state: "unreadable", appPath };
-  }
-  return { state: "none" };
+  const installed = readInstalledDesktopApp({ platform: "darwin", env: args.env, applicationsDirs: args.applicationsDirs });
+  if (!installed) return { state: "none" };
+  if (!installed.updatable) return { state: "channel", appName: installed.name };
+  const app = describeApp(installed.path);
+  return app ? { state: "found", app } : { state: "unreadable", appPath: installed.path };
 }
 
 /**
@@ -136,7 +127,7 @@ export function findMacDesktopApp(args: {
  * line naming `cli.cjs` is not the app. Its helpers live in other bundles.
  */
 export function isMacDesktopAppRunning(app: MacDesktopApp, run: MacCommandRunner): boolean {
-  const result = run("/bin/ps", ["-axww", "-o", "command="], { timeout: PLIST_READ_TIMEOUT_MS });
+  const result = run("/bin/ps", ["-axww", "-o", "command="], { timeout: PS_TIMEOUT_MS });
   if (result.status !== 0) return true; // Unknown is treated as open: never swap a bundle that may be running.
   return result.stdout.split(/\r?\n/).some((line) => {
     const command = line.trim();
@@ -147,12 +138,8 @@ export function isMacDesktopAppRunning(app: MacDesktopApp, run: MacCommandRunner
 
 /** `isMacDesktopAppRunning` for an app known only by its path, as `ade setup` has it. */
 export function isMacDesktopAppRunningAt(appPath: string, run: MacCommandRunner = defaultMacCommandRunner): boolean {
-  const app = describeApp(run, appPath);
+  const app = describeApp(appPath);
   return app ? isMacDesktopAppRunning(app, run) : false;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -213,7 +200,7 @@ function verifyStagedApp(args: {
   if (stagedTeam !== installedTeam) {
     throw new Error(`The downloaded app is signed by team ${stagedTeam ?? "none"}, not by the installed app's team ${installedTeam}.`);
   }
-  const staged = describeApp(run, stagedAppPath);
+  const staged = describeApp(stagedAppPath);
   if (!staged) throw new Error("The downloaded app's version can't be read.");
   if (installed.bundleId && staged.bundleId !== installed.bundleId) {
     throw new Error(`The downloaded app is ${staged.bundleId ?? "an unknown app"}, not ${installed.bundleId}.`);
@@ -351,11 +338,16 @@ async function installOverClosedApp(args: {
   // From here the service is down, so nothing may throw past this function:
   // a status write that fails must not turn into "nothing was changed".
   const step = (message: string) => args.onStep(message).catch(() => undefined);
+  // What the swap has done so far. Only these say what to undo: a leftover
+  // `.previous-<pid>` from another run is not this run's old app, and the live
+  // app is deleted only when this run moved the new one in over it.
+  let movedOld = false;
+  let movedNew = false;
   const restoreOldApp = async (): Promise<string> => {
     const errors: string[] = [];
-    if (fs.existsSync(backupPath)) {
+    if (movedOld) {
       try {
-        await fsp.rm(app.appPath, { recursive: true, force: true });
+        if (movedNew) await fsp.rm(app.appPath, { recursive: true, force: true });
         await fsp.rename(backupPath, app.appPath);
       } catch (error) {
         errors.push(`restoring the previous app failed (${error instanceof Error ? error.message : String(error)}; it is at ${backupPath})`);
@@ -370,11 +362,27 @@ async function installOverClosedApp(args: {
       : `Putting ADE ${app.version} back was incomplete: ${errors.join("; ")}.`;
   };
 
+  // The stop takes seconds, and ADE can be opened meanwhile. Its service goes
+  // back up and nothing is swapped under it.
+  if (isMacDesktopAppRunning(app, run)) {
+    const restarted = startMacAppService(app, args.env, run);
+    await cleanupExpanded();
+    return {
+      ok: false,
+      applied: false,
+      message: `ADE was opened while its background service stopped, so nothing was installed. ${restarted.ok
+        ? "Its background service was started again."
+        : `Starting its background service again failed (${restarted.detail}); open ADE to start it.`} Use Restart and install in ADE, or quit it and update again.`,
+    };
+  }
+
   await step(`Installing ADE ${targetVersion} over ${app.version}.`);
   try {
     await fsp.rm(backupPath, { recursive: true, force: true });
     await fsp.rename(app.appPath, backupPath);
+    movedOld = true;
     await fsp.rename(stagedAppPath, app.appPath);
+    movedNew = true;
   } catch (error) {
     const restored = await restoreOldApp();
     return { ok: false, applied: false, message: `Installing ADE ${targetVersion} failed (${error instanceof Error ? error.message : String(error)}). ${restored}` };
@@ -387,9 +395,16 @@ async function installOverClosedApp(args: {
     const restored = await restoreOldApp();
     return { ok: false, applied: false, message: `ADE ${targetVersion} installed, but its background service did not start (${started.detail}). ${restored}` };
   }
-  await fsp.rm(backupPath, { recursive: true, force: true }).catch(() => undefined);
+  const leftBehind = await fsp.rm(backupPath, { recursive: true, force: true }).then(
+    () => null,
+    (error: unknown) => `The previous app could not be removed (${error instanceof Error ? error.message : String(error)}); delete ${backupPath} to free its space.`,
+  );
   await cleanupExpanded();
-  return { ok: true, applied: true, message: `Installed ADE ${targetVersion} and started its background service on it.` };
+  return {
+    ok: true,
+    applied: true,
+    message: `Installed ADE ${targetVersion} and started its background service on it.${leftBehind ? ` ${leftBehind}` : ""}`,
+  };
 }
 
 function bridgeOutcome(

@@ -11,6 +11,13 @@ import {
   resolveNowPlayingHelperBinary,
 } from "./nativeHelperPaths";
 
+// Spotlight, codesign and plutil answer for whatever this machine has
+// installed; no case here may depend on that.
+vi.mock("node:child_process", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("node:child_process")>()),
+  spawnSync: vi.fn(() => ({ status: 1, stdout: "", stderr: "" })),
+}));
+
 /** Where the native helpers are, and nothing else. */
 describe("native helper paths", () => {
   it("resolves the Mac Desktop driver in resources/native, and nowhere off macOS", () => {

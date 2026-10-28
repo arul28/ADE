@@ -124,6 +124,20 @@ public enum WindowLayerPolicy {
         return .none
     }
 
+    /// Whether an entry could be a sheet, before its app is asked: a sheet
+    /// hangs from another of its app's windows, centred across it with its
+    /// top edge inside it. A tooltip or popover elsewhere on the screen fails
+    /// this and costs no Accessibility read. Frames are the window server's
+    /// (origin top left, y down).
+    public static func couldBeSheet(frame: CGRect, otherWindowFrames: [CGRect]) -> Bool {
+        guard frame.width > 0, frame.height > 0 else { return false }
+        return otherWindowFrames.contains { parent in
+            parent.width > 0 && parent.height > 0
+                && frame.midX >= parent.minX && frame.midX <= parent.maxX
+                && frame.minY >= parent.minY - 1 && frame.minY < parent.maxY
+        }
+    }
+
     /// The process macOS runs an app's Open and Save panels in, when the app
     /// is sandboxed or asks for the remote panel. On macOS 27 the panel window
     /// on screen belongs to the app, which shows the service's content in it;

@@ -4,9 +4,9 @@ import path from "node:path";
 import { isAdeRuntimeNamedPipePath } from "../../../../desktop/src/shared/adeRuntimeIpc";
 import {
   ADE_CLI_VIA_CMD_ENV,
+  electronCliLaunchSpec,
   installWindowsCliLauncher,
   resolveWindowsCliLauncherSource,
-  windowsCliCompileCacheDefault,
 } from "../../../../desktop/src/main/services/cli/windowsCliLauncher";
 import { packagedCliNodeModulePaths, shellQuote } from "../../serviceManager/common";
 import { resolveMachineAdeDir } from "../projects/machineLayout";
@@ -220,6 +220,21 @@ export function isNativeAdeCliEntry(entryPath: string): boolean {
   return !/\.(?:cjs|mjs|js|ts)$/i.test(entryPath);
 }
 
+let launcherFallbackWarned = false;
+
+/**
+ * Says once per process why agents get `ade.cmd` as ADE_CLI_PATH. A Node
+ * warning: the brain's stderr is its log, and this module has no logger.
+ */
+function warnLauncherFallbackOnce(reason: string, cmdPath: string): void {
+  if (launcherFallbackWarned) return;
+  launcherFallbackWarned = true;
+  process.emitWarning(
+    `ADE_CLI_PATH falls back to ${cmdPath} because ${reason}; cmd.exe cuts a multi-line argument at its first line.`,
+    { code: "ADE_CLI_LAUNCHER_FALLBACK" },
+  );
+}
+
 export type InstalledAdeCliShim = {
   /** The per-brain shim directory (ADE_CLI_BIN_DIR). */
   dir: string;
@@ -256,8 +271,6 @@ export function installAdeCliShim(args: {
   /** Electron's resources directory, to find the Windows launcher. */
   resourcesPath?: string | null;
   nodeModulePaths?: readonly string[];
-  /** Test seam for the Windows launcher lookup. */
-  launcherSource?: string | null;
 }): InstalledAdeCliShim | null {
   const platform = args.platform ?? process.platform;
   const dir = path.join(args.shimsRoot, adeCliShimDirName(args.entryPath, args.execPath, args.brain));
@@ -285,30 +298,22 @@ export function installAdeCliShim(args: {
     }
     const cmdPath = path.join(dir, "ade.cmd");
     writeIfChanged(cmdPath, renderAdeCliShim({ ...args, platform, nodeModulePaths }));
-    const launcherSource = args.launcherSource !== undefined
-      ? args.launcherSource
-      : resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath, cliEntry: args.entryPath });
-    const defaults = [
-      ["ADE_HOME", args.brain.adeHome],
-      ["ADE_RUNTIME_SOCKET_PATH", args.brain.socketPath],
-    ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0);
-    const launcher = launcherSource
-      ? installWindowsCliLauncher({
-          launcherSource,
-          dir: path.join(dir, "launcher"),
-          spec: {
-            exe: args.execPath,
-            args: [args.entryPath],
-            env: [["ELECTRON_RUN_AS_NODE", "1"]],
-            brainDefaults: defaults,
-            prepend: nodeModulePaths.length ? [["NODE_PATH", nodeModulePaths.join(";")]] : [],
-            unset: [ADE_CLI_VIA_CMD_ENV],
-            ifNone: [windowsCliCompileCacheDefault(args.brain.adeHome ?? resolveMachineAdeDir())],
-            ttyNode: true,
-          },
-        })
-      : null;
-    return { dir, commandPath: launcher ?? cmdPath, pathDirs: [dir] };
+    const launcher = installWindowsCliLauncher({
+      launcherSource: resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath, cliEntry: args.entryPath }),
+      dir: path.join(dir, "launcher"),
+      spec: electronCliLaunchSpec({
+        execPath: args.execPath,
+        entryPath: args.entryPath,
+        nodeModulePaths,
+        brainDefaults: [
+          ["ADE_HOME", args.brain.adeHome],
+          ["ADE_RUNTIME_SOCKET_PATH", args.brain.socketPath],
+        ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1].length > 0),
+        adeHome: args.brain.adeHome ?? resolveMachineAdeDir(),
+      }),
+    });
+    if (launcher.reason) warnLauncherFallbackOnce(launcher.reason, cmdPath);
+    return { dir, commandPath: launcher.exePath ?? cmdPath, pathDirs: [dir] };
   } catch {
     return null;
   }

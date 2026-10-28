@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AppleInstalledSimulator, AppleSimulatorOwnershipInfo } from "../../../shared/types/iosSimulator";
+import { APPLE_RELEASED_DEVICE_GRACE_MS } from "../../../shared/types/iosSimulator";
 import { pathsEqual } from "../shared/pathCompare";
 
 /**
@@ -17,13 +18,13 @@ import { pathsEqual } from "../shared/pathCompare";
 
 const APPLE_DEVICE_MARKER_FILE = "ade-lane-device.json" as const;
 
-/**
- * A marked device younger than this is never deleted by the cleanup pass.
- * Create writes the marker before the lane row, so a create in flight has a
- * marker and no row for a moment. A detach restarts the clock, so the user
- * can still pick the device again before it goes.
+/*
+ * A marked device younger than `APPLE_RELEASED_DEVICE_GRACE_MS` is never
+ * deleted by the cleanup pass. Create writes the marker before the lane row,
+ * so a create in flight has a marker and no row for a moment. A detach
+ * restarts the clock, so the user can still pick the device again before it
+ * goes.
  */
-export const APPLE_DEVICE_MARKER_GRACE_MS = 5 * 60_000;
 
 export type AppleDeviceMarker = {
   version: 1;
@@ -133,7 +134,7 @@ export function appleSimulatorOwnership(input: {
       ownership,
       markerLaneId: marker?.laneId ?? null,
       looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
-      ...(Number.isFinite(detachedMs) ? { deletesAfter: new Date(detachedMs + APPLE_DEVICE_MARKER_GRACE_MS).toISOString() } : {}),
+      ...(Number.isFinite(detachedMs) ? { deletesAfter: new Date(detachedMs + APPLE_RELEASED_DEVICE_GRACE_MS).toISOString() } : {}),
     };
   });
 }

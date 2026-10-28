@@ -13,6 +13,8 @@ describe("liveOnlyCallLabel", () => {
     [action("terminal", "read"), "terminal.read"],
     [action("automations", "saveRule"), "automations.saveRule"],
     [{ name: "start_cli_session", arguments: {} }, "start_cli_session"],
+    [{ name: "run_tests", arguments: { laneId: "l", suiteId: "s", waitForCompletion: false } }, "run_tests"],
+    [{ name: "run_tests", arguments: { laneId: "l", suiteId: "s", waitForCompletion: true } }, null],
     [action("lane", "list"), null],
     [action("automations", "list"), null],
     [action("git", "status"), null],

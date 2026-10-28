@@ -18,6 +18,7 @@ import {
 import { promisify } from "node:util";
 import type { Logger } from "../logging/logger";
 import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+import { isMachineEndpointName } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AppControlScreencastRecorderBackend } from "../appControl/appControlRecording";
 import {
   APP_CONTROL_RECORDER_BRIDGE_PREFIX,
@@ -262,7 +263,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   const aliasServers: net.Server[] = [];
   if (isNamedPipe) {
     for (const aliasPath of args.aliasSocketPaths ?? []) {
-      if (!aliasPath.startsWith("\\\\") || aliasPath.toLowerCase() === socketPath.toLowerCase()) continue;
+      if (!aliasPath.startsWith("\\\\") || isMachineEndpointName(aliasPath, [socketPath])) continue;
       const aliasServer = net.createServer(handleConnection);
       aliasServer.on("error", (error) => {
         logger.info("built_in_browser_bridge.alias_not_served", {

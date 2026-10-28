@@ -114,6 +114,8 @@ export function startWindowsInstallProgress(args: {
   installerPath: string | null;
   resourcesPath: string;
   adeHome: string;
+  /** The person quit: the ADE the installer opens has no window and closes again. */
+  quitInstall: boolean;
   log: (event: string, data?: Record<string, unknown>) => void;
 }): (() => void) | null {
   const files = progressFiles(args.channel);
@@ -141,6 +143,7 @@ export function startWindowsInstallProgress(args: {
       parentPid: process.pid,
       logPath: files.log,
       installerPath: args.installerPath ?? "",
+      quitInstall: args.quitInstall,
     }));
     for (const stale of [files.heartbeat, files.focus, files.cancel, files.log]) fs.rmSync(stale, { force: true });
   } catch (error) {
@@ -174,7 +177,7 @@ export function startWindowsInstallProgress(args: {
   } catch (error) {
     return unavailable("spawn_failed", error);
   }
-  args.log("autoUpdate.install_progress_started", { targetVersion: args.targetVersion });
+  args.log("autoUpdate.install_progress_started", { targetVersion: args.targetVersion, quitInstall: args.quitInstall });
   // The window watches for this file and closes itself: ADE is staying open
   // because the install unwound. It also gives up on its own if ADE never
   // quits, so a cancel that cannot be written still ends it.

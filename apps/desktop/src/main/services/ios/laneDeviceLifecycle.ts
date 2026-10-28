@@ -69,6 +69,13 @@ export type LaneDeviceLifecycleDeps<R extends LifecycleLaneRuntime> = {
    * without it only the stream is checked.
    */
   laneDeviceBusyReason?: (runtime: R, device: AppleLaneDevice, chatSessionId: string | null) => string | null;
+  /**
+   * Who holds the lease on one of the lane's extra devices, or null when
+   * nobody does or the caller (`chatSessionId`) does. A promote moves the
+   * lane's own lease key onto the promoted device, so a lease taken on the
+   * extra would be left pointing at nothing.
+   */
+  extraLeaseHolder?: (runtime: R, extra: AppleLaneDevice, chatSessionId: string | null) => string | null;
   emit: (payload: IosSimulatorEventPayload) => void;
   logger: {
     info: (event: string, data?: Record<string, unknown>) => void;
@@ -267,6 +274,14 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
           "user",
         );
       }
+      const extraHolder = deps.extraLeaseHolder?.(runtime, extra, promoteArgs.chatSessionId ?? null) ?? null;
+      if (extraHolder) {
+        throw new AdeExpectedError(
+          `${APPLE_LANE_DEVICE_BUSY_CODE}: ${extra.name} is leased to ${extraHolder}, so it cannot become the lane's device now. `
+          + `Wait for that turn to end, or have ${extraHolder} run ade apple lease release --token <t>; then run device-promote again.`,
+          "user",
+        );
+      }
       if (current) {
         const busy = deps.laneDeviceBusyReason
           ? deps.laneDeviceBusyReason(runtime, current, promoteArgs.chatSessionId ?? null)
@@ -276,8 +291,8 @@ export function createLaneDeviceLifecycle<R extends LifecycleLaneRuntime>(deps: 
         if (busy) {
           throw new AdeExpectedError(
             `${APPLE_LANE_DEVICE_BUSY_CODE}: the lane's device ${current.name} is ${busy}, so it cannot hand over to `
-            + `${extra.name} now. Finish or stop that first (stream-stop, record-stop, or wait for the test or the lease), `
-            + "then run device-promote again.",
+            + `${extra.name} now. Finish or stop that first (stream-stop, record-stop, wait for the test, or have the lease's `
+            + "holder run ade apple lease release --token <t>), then run device-promote again.",
             "user",
           );
         }

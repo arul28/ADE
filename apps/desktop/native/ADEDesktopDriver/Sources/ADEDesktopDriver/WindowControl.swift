@@ -177,6 +177,9 @@ final class WindowControl {
     private var placementGenerations: [String: UInt64] = [:]
     private var nextPlacementGeneration: UInt64 = 1
     let lock = NSRecursiveLock()
+    /// Each app's sheet map, kept until the app's window set changes. See
+    /// `sheetParents(pid:windowIds:candidate:)`.
+    private var sheetMaps: [pid_t: SheetMap] = [:]
 
     /// Apps that stopped answering the Accessibility API recently. Shared with
     /// the observation walk, so a stall one of them sees is skipped by the
@@ -301,8 +304,12 @@ final class WindowControl {
         // window server says is not on screen. See `axWindowMinimizedState`.
         var axStateByPid: [pid_t: [CGWindowID: Bool]?] = [:]
         // Sheets per app, read only when a panel-layer entry is not one of the
-        // app's windows: that is what a sheet looks like, and it is rare.
+        // app's windows and sits where a sheet would: that is rare.
         var sheetParentsByPid: [pid_t: [CGWindowID: CGWindowID]] = [:]
+        // Each app's entries below the menu band, built on the first panel
+        // entry that might be a sheet: its window set (the sheet map's cache
+        // key) and the frames a sheet could hang from.
+        var appEntries: [pid_t: [(id: CGWindowID, frame: CGRect, onScreen: Bool)]]?
         // One icon per app per reply: the renderer joins it across the app's
         // other rows, so forty windows of eight apps cost eight PNGs.
         var iconSentFor: Set<String> = []
@@ -381,10 +388,19 @@ final class WindowControl {
                 let isAXWindow = state?[windowId] != nil
                 var sheetParent: CGWindowID?
                 if !isAXWindow, state != nil {
-                    if sheetParentsByPid[ownerPid] == nil {
-                        sheetParentsByPid[ownerPid] = axSheetParents(pid: ownerPid)
+                    if appEntries == nil { appEntries = Self.entriesByPid(raw) }
+                    let entries = appEntries?[ownerPid] ?? []
+                    let others = entries.filter { $0.id != windowId && $0.onScreen }.map(\.frame)
+                    if WindowLayerPolicy.couldBeSheet(frame: frame, otherWindowFrames: others) {
+                        if sheetParentsByPid[ownerPid] == nil {
+                            sheetParentsByPid[ownerPid] = sheetParents(
+                                pid: ownerPid,
+                                windowIds: Set(entries.map(\.id)),
+                                candidate: windowId
+                            )
+                        }
+                        sheetParent = sheetParentsByPid[ownerPid]?[windowId]
                     }
-                    sheetParent = sheetParentsByPid[ownerPid]?[windowId]
                 }
                 switch WindowLayerPolicy.panelAdmission(
                     layer: layer,
@@ -543,14 +559,75 @@ final class WindowControl {
         return state.isEmpty ? nil : state
     }
 
+    /// Each app's entries below the menu band in one window-server listing.
+    private static func entriesByPid(
+        _ raw: [[String: Any]]
+    ) -> [pid_t: [(id: CGWindowID, frame: CGRect, onScreen: Bool)]] {
+        var entries: [pid_t: [(id: CGWindowID, frame: CGRect, onScreen: Bool)]] = [:]
+        for entry in raw {
+            guard let layer = entry[kCGWindowLayer as String] as? Int, layer >= 0, layer < WindowLayerPolicy.menuBand,
+                  let windowNumber = entry[kCGWindowNumber as String] as? UInt32,
+                  let ownerPid = entry[kCGWindowOwnerPID as String] as? Int32 else { continue }
+            let boundsDict = entry[kCGWindowBounds as String] as? [String: Any]
+            let frame = boundsDict.flatMap { CGRect(dictionaryRepresentation: $0 as CFDictionary) } ?? .zero
+            let onScreen = (entry[kCGWindowIsOnscreen as String] as? Bool) ?? false
+            entries[ownerPid, default: []].append((CGWindowID(windowNumber), frame, onScreen))
+        }
+        return entries
+    }
+
+    /// One app's sheet map as of a window set.
+    private struct SheetMap {
+        let windowIds: Set<CGWindowID>
+        let parents: [CGWindowID: CGWindowID]
+        /// When this window set was first seen.
+        let since: Date
+    }
+
+    /// How long an entry that is not (yet) one of the app's sheets is asked
+    /// about again: an app publishes a new sheet to Accessibility a moment
+    /// after the window server lists it.
+    private static let sheetPublishGrace: TimeInterval = 3
+
+    /// `axSheetParents`, cached per app until its window set changes, so the
+    /// watcher's sweep every second does not re-read the children and roles
+    /// of every window of an app that keeps a popover open. A `candidate`
+    /// missing from the cached map is asked about again only while the window
+    /// set is new (`sheetPublishGrace`); after that the map is trusted.
+    private func sheetParents(
+        pid: pid_t,
+        windowIds: Set<CGWindowID>,
+        candidate: CGWindowID
+    ) -> [CGWindowID: CGWindowID] {
+        let now = Date()
+        lock.lock()
+        let cached = sheetMaps[pid].flatMap { $0.windowIds == windowIds ? $0 : nil }
+        lock.unlock()
+        if let cached,
+           cached.parents[candidate] != nil || now.timeIntervalSince(cached.since) >= Self.sheetPublishGrace {
+            return cached.parents
+        }
+        // An app that could not be read is asked again next time.
+        guard let parents = axSheetParents(pid: pid) else { return cached?.parents ?? [:] }
+        lock.lock()
+        sheetMaps[pid] = SheetMap(windowIds: windowIds, parents: parents, since: cached?.since ?? now)
+        // Apps that quit leave their map behind; sweep them out now and then.
+        if sheetMaps.count > 32 {
+            sheetMaps = sheetMaps.filter { kill($0.key, 0) == 0 }
+        }
+        lock.unlock()
+        return parents
+    }
+
     /// The sheets attached to one app's windows: sheet window id → the id of
-    /// the window it hangs from. Empty when the app has none or cannot be read.
+    /// the window it hangs from. Empty when the app has none; nil when it
+    /// cannot be read.
     ///
     /// A sheet (`AXSheet`) is a child of its window in the Accessibility tree,
     /// not one of the app's `AXWindows`, though the window server lists it as
     /// a window of its own.
-    private func axSheetParents(pid: pid_t) -> [CGWindowID: CGWindowID] {
-        guard AXWindowBridge.isAvailable, let elements = axWindowElements(pid: pid) else { return [:] }
+    private func axSheetParents(pid: pid_t) -> [CGWindowID: CGWindowID]? {
+        guard AXWindowBridge.isAvailable, let elements = axWindowElements(pid: pid) else { return nil }
         var parents: [CGWindowID: CGWindowID] = [:]
         for element in elements {
             guard let parentId = AXWindowBridge.windowId(of: element) else { continue }

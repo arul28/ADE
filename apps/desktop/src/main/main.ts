@@ -494,7 +494,8 @@ import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
-import { decideInstallOnQuit, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
+import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
+import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -1663,6 +1664,15 @@ app.whenReady().then(async () => {
   })) {
     return;
   }
+  // A standalone brain (`ade brain update`) has no app resources: this record
+  // is how it finds this app, its version and its signed native helpers.
+  recordInstalledDesktopApp({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    executablePath: process.execPath,
+    version: app.getVersion(),
+    logger: getMachineMainLogger(),
+  });
 
   /** Canonical artifacts dir for the active project; ade-artifact:// and the media server only serve under this path. */
   let adeArtifactAllowedDir: string | null = null;
@@ -3288,10 +3298,12 @@ app.whenReady().then(async () => {
   };
   const prepareAutoUpdateInstall = async (
     resumeRequested: boolean,
+    { closeAfterInstall }: { closeAfterInstall: boolean },
   ): Promise<UpdateInterruptedChat[]> => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
       resumeRequested,
+      closeAfterInstall,
     });
     // Windows are still open here. The quit that follows closes them, and each
     // closed handler would otherwise save an empty tab list over this snapshot.
@@ -3310,6 +3322,13 @@ app.whenReady().then(async () => {
     const interruptedChats = resumeRequested
       ? (await updateImpactProbe.liveChats()).filter((chat) => chat.resumable !== false)
       : [];
+    // An install the person quit into stops nothing. The feed re-check before
+    // this took seconds, and a chat can have started meanwhile; this throws
+    // (and the quit stays a plain quit) when one did.
+    if (closeAfterInstall) {
+      const version = autoUpdateService.getSnapshot().version;
+      if (version) await installOnQuit.confirmBeforeServiceStop(version);
+    }
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -3365,7 +3384,7 @@ app.whenReady().then(async () => {
     stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     onInstallHandoff: process.platform === "win32" && app.isPackaged
-      ? ({ version, installerPath }) => startWindowsInstallProgress({
+      ? ({ version, installerPath, closeAfterInstall }) => startWindowsInstallProgress({
           channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
           productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
           currentVersion: app.getVersion(),
@@ -3374,6 +3393,7 @@ app.whenReady().then(async () => {
           installerPath,
           resourcesPath: process.resourcesPath,
           adeHome: resolveMachineAdeDir(),
+          quitInstall: closeAfterInstall,
           log: (event, data) => updateLogger.info(event, data),
         })
       : undefined,
@@ -3393,6 +3413,22 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  // Installing a waiting update as ADE quits, and the hidden launch that lands
+  // it (`installOnQuit.ts`). The probe and pool are read only once a quit asks.
+  const installOnQuit = createInstallOnQuitController({
+    logger: updateLogger,
+    updates: autoUpdateService,
+    readRuntimeMode: () => localRuntimePool.getStatus().runtimeMode,
+    collectImpact: (timeoutMs) => updateImpactProbe.collect(timeoutMs),
+    hideWindows: () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.hide();
+      }
+    },
+    dock: process.platform === "darwin"
+      ? { hide: () => app.dock?.hide(), show: () => void app.dock?.show() }
+      : null,
   });
   if (process.platform === "win32" && app.isPackaged) {
     // The update window keeps running until this launch's window is on screen,
@@ -3631,15 +3667,23 @@ app.whenReady().then(async () => {
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
     && autoUpdateService.getSnapshot().recentlyInstalled != null;
-  // The person quit ADE and the quit installed this update (`installOnQuit.ts`).
-  // This launch only finishes the install: the transaction below restarts the
-  // background service on the new build and checks it, with no window and no
-  // Dock icon, and then ADE closes again. It shows itself only when the
-  // transaction fails or the person opens ADE meanwhile.
-  let quitInstallLaunchHidden = shouldRefreshRuntimeServiceAfterUpdate && autoUpdateService.landedQuitInstall();
-  if (quitInstallLaunchHidden) {
-    updateLogger.info("autoUpdate.quit_install_launch", { version: app.getVersion() });
-    if (process.platform === "darwin") app.dock?.hide();
+  // The person quit ADE and the quit installed this update. When this is the
+  // updater's own relaunch, it only finishes the install: the transaction below
+  // moves the background service to the new build with no window and no Dock
+  // icon, and then ADE closes again (`installOnQuit.ts`). Anything the person
+  // does meanwhile shows it.
+  if (installOnQuit.beginLaunch({
+    refreshingAfterUpdate: shouldRefreshRuntimeServiceAfterUpdate,
+    landed: autoUpdateService.landedQuitInstall(),
+    platform: process.platform,
+    argv: process.argv,
+    env: process.env,
+    version: app.getVersion(),
+  })) {
+    app.on("activate", () => installOnQuit.reveal("activate"));
+    app.on("second-instance", () => installOnQuit.reveal("second_instance"));
+    app.on("open-url", () => installOnQuit.reveal("open_url"));
+    app.on("open-file", () => installOnQuit.reveal("open_file"));
   }
   if (shouldRefreshRuntimeServiceAfterUpdate) {
     // Applying an update is ONE transaction — app swap, background service
@@ -9017,47 +9061,6 @@ app.whenReady().then(async () => {
     return true;
   };
 
-  /**
-   * What a quit would do with a waiting update (`installOnQuit.ts`), or null
-   * when none waits or automatic install is off. Never rejects: a failed read
-   * is "could not check", which defers.
-   */
-  const readInstallOnQuit = async (): Promise<InstallOnQuitDecision | null> => {
-    const version = autoUpdateService.installOnQuitVersion();
-    if (!version) return null;
-    const runtimeMode = localRuntimePool.getStatus().runtimeMode;
-    const impact = runtimeMode === "primary" ? await updateImpactProbe.collect(3_000).catch(() => null) : null;
-    return decideInstallOnQuit({ version, runtimeMode, impact });
-  };
-
-  /**
-   * Installs the waiting update as ADE quits, through the same install as
-   * "Restart and install" (the service handoff, the pending-install record,
-   * the post-update transaction). Read again here: the prompt can sit on
-   * screen while an agent starts. True when the install took over the quit.
-   */
-  const installUpdateOnQuit = async (planned: InstallOnQuitDecision | null): Promise<boolean> => {
-    if (!planned) return false;
-    const decision = planned.action === "install" ? await readInstallOnQuit() : planned;
-    if (!decision) return false;
-    if (decision.action !== "install") {
-      updateLogger.info("autoUpdate.quit_install_deferred", { version: decision.version, reason: decision.reason });
-      return false;
-    }
-    updateLogger.info("autoUpdate.quit_install_start", { version: decision.version });
-    // The install takes a few seconds before ADE goes (a feed re-check, the
-    // service handoff). The windows go now, as a quit's would.
-    for (const win of BrowserWindow.getAllWindows()) {
-      if (!win.isDestroyed()) win.hide();
-    }
-    const started = await autoUpdateService.quitAndInstall(false, { closeAfterInstall: true });
-    if (!started) {
-      // Unwound; the caller quits as usual and the update stays downloaded.
-      updateLogger.warn("autoUpdate.quit_install_not_started", { version: decision.version });
-    }
-    return started;
-  };
-
   const confirmCloseWindowWarning = (ownerWindow: BrowserWindow): boolean => {
     if (shutdownRequested) return true;
     const response = dialog.showMessageBoxSync(ownerWindow, {
@@ -9086,12 +9089,12 @@ app.whenReady().then(async () => {
     return (async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
-        const plannedInstall = reason === "relaunch" ? null : await readInstallOnQuit();
+        const plannedInstall = reason === "relaunch" ? null : await installOnQuit.plan();
         if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch", plannedInstall))) return false;
         // Registered only once the user has agreed, so a cancelled restart
         // cannot turn a later plain quit into a relaunch. app.exit honors it.
         if (reason === "relaunch") app.relaunch();
-        else if (await installUpdateOnQuit(plannedInstall)) return true;
+        else if (await installOnQuit.install(plannedInstall)) return true;
         requestAppShutdown({ reason, exitCode: 0 });
         return true;
       } finally {
@@ -10375,9 +10378,10 @@ app.whenReady().then(async () => {
 
   await projectMoveRecovery;
   const savedUpdateState = readGlobalState(globalStatePath);
-  // A quit-install launch opens no project: it closes once the service is on
-  // the new build. The saved workspace stays for the next launch the person makes.
-  const quitInstallLaunch = quitInstallLaunchHidden;
+  // A hidden quit-install launch opens no project: it closes once the service
+  // is on the new build. The saved workspace stays for the next launch the
+  // person makes. Revealed before this point, it opens as any launch does.
+  const quitInstallLaunch = installOnQuit.isLaunchHidden();
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
     restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true && !quitInstallLaunch,
     explicitLaunch: shouldOpenStartupProject,
@@ -10513,25 +10517,14 @@ app.whenReady().then(async () => {
   });
   if (quitInstallLaunch) {
     // Shown by anything (the person reopening ADE, a deep link, a notification),
-    // this launch stays open as an ordinary one.
-    initialWindow.once("show", () => {
-      if (!quitInstallLaunchHidden) return;
-      quitInstallLaunchHidden = false;
-      updateLogger.info("autoUpdate.quit_install_launch_shown", { reason: "window_shown" });
-      if (process.platform === "darwin") void app.dock?.show();
-    });
-    void (postUpdateTransactionDone ?? Promise.resolve()).then(() => {
-      if (!quitInstallLaunchHidden || shutdownRequested || initialWindow.isDestroyed()) return;
-      const transaction = autoUpdateService.getSnapshot().updateTransaction;
-      if (transaction?.ok) {
-        updateLogger.info("autoUpdate.quit_install_launch_closing", { version: transaction.version });
-        requestAppShutdown({ reason: "update_installed_on_quit", exitCode: 0 });
-        return;
-      }
-      // A half-applied update is shown, not closed over: the window carries the
-      // transaction's failure and the step that failed.
-      updateLogger.warn("autoUpdate.quit_install_launch_shown", { reason: "transaction_failed" });
-      initialWindow.show();
+    // a hidden quit-install launch stays open as an ordinary one.
+    installOnQuit.finishLaunch({
+      window: initialWindow,
+      transactionDone: postUpdateTransactionDone ?? Promise.resolve(),
+      readTransaction: () => autoUpdateService.getSnapshot().updateTransaction,
+      anyWindowVisible: () => BrowserWindow.getAllWindows().some((win) => !win.isDestroyed() && win.isVisible()),
+      isShuttingDown: () => shutdownRequested,
+      requestShutdown: () => requestAppShutdown({ reason: "update_installed_on_quit", exitCode: 0 }),
     });
   }
   // Binds the first window to what the launch opened, as it was bound when it
@@ -10607,12 +10600,7 @@ app.whenReady().then(async () => {
   }
 
   app.on("activate", async () => {
-    // Reopening ADE while a quit-install finishes: show the window it has.
-    if (quitInstallLaunchHidden && !initialWindow.isDestroyed()) {
-      initialWindow.show();
-      initialWindow.focus();
-      return;
-    }
+    // A hidden quit-install launch is revealed by its own listener above.
     if (BrowserWindow.getAllWindows().length === 0) {
       await openAdeWindow();
     }

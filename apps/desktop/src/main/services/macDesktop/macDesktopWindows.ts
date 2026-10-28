@@ -219,18 +219,21 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
   /**
    * An app another lane runs under App Control is that lane's. Claiming one of
    * its windows would move it onto this lane's screen and hand this lane its
-   * frames and input, which App Control's own lane rule forbids.
+   * frames and input, which App Control's own lane rule forbids. Answers the
+   * pid it checked, or null when the window is not in the listing (a sheet:
+   * the whole-Mac listing leaves out other lanes' layer>0 windows).
    */
   const assertNotOtherLanesAppControlApp = async (
     seat: DesktopSeatProvider,
     laneId: string,
     windowId: number,
-  ): Promise<void> => {
-    if (!deps.appControlLaneForProcess) return;
+  ): Promise<number | null> => {
+    if (!deps.appControlLaneForProcess) return null;
     const window = (await seat.listWindows({ laneId: null })).find((entry) => entry.id === windowId);
-    if (!window?.pid) return;
+    if (!window?.pid) return null;
     const holder = await appControlHolder(window.pid, laneId);
     if (holder) throw otherLanesAppControlAppError(holder, window.appName);
+    return window.pid;
   };
 
   const claimWindow = async (args: MacDesktopClaimArgs): Promise<MacDesktopWindow> => {
@@ -238,7 +241,7 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
     deps.requireDisplay(laneId);
     const seat = await deps.ensureProvider();
     deps.assertPermission("accessibility");
-    await assertNotOtherLanesAppControlApp(seat, laneId, args.windowId);
+    const checkedPid = await assertNotOtherLanesAppControlApp(seat, laneId, args.windowId);
     const existing = ownership.getWindow(args.windowId);
     if (existing && existing.laneId !== laneId && existing.singleInstance && existing.bundleId) {
       ownership.assertSingleInstanceAvailable({
@@ -249,6 +252,16 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       });
     }
     const window = await seat.park({ laneId, windowId: args.windowId });
+    // A sheet was not in the listing checked above, and the driver parks the
+    // window it hangs from: check that window's app now, and hand it back if
+    // it is another lane's App Control app.
+    if (window.pid && window.pid !== checkedPid) {
+      const holder = await appControlHolder(window.pid, laneId);
+      if (holder) {
+        await seat.unpark({ windowId: window.id ?? args.windowId, laneId }).catch(() => undefined);
+        throw otherLanesAppControlAppError(holder, window.appName);
+      }
+    }
     ownership.claimWindow({
       laneId,
       windowId: window.id ?? args.windowId,

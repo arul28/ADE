@@ -46,7 +46,7 @@ import {
   type ValueCarrierFlags,
 } from "./cli";
 import { recordingStopLeftNoFile } from "./cliMacDesktopFormat";
-import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
+import { localRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 
 /* ──────────────────────────────────────────────────────────────────────────
    MAC DESKTOP — `ade desktop`.
@@ -159,15 +159,20 @@ export function requireMacDesktopBrainCapability(
 }
 
 /**
- * Turns `--local` (display-local) points in a payload into global points,
- * with the display origin from a `getStatus` read, and drops the marker.
+ * Readies a payload with `--local` (display-local) points for the brain that
+ * answered the `getStatus` read.
  *
- * Done here, not by the brain, so a newer CLI never depends on an older brain
- * knowing `local`: one that does not would read the point as global and act
- * somewhere else — with `--real`, on the user's own screen.
+ * The brain is the converter: one that lists `target.local` gets the payload
+ * as it is, `local: true` and all, and adds its lane display's origin itself.
+ * An older brain does not know `local` and would read the point as global and
+ * act somewhere else (with `--real`, on the user's own screen), so for it the
+ * points are moved to global here, with the origin from that status, and the
+ * marker is dropped.
  */
 export function globalizeMacDesktopLocalPoints(payload: JsonObject, statusValue: unknown): JsonObject {
-  const display = macDesktopStatusOf(statusValue).display;
+  const status = macDesktopStatusOf(statusValue);
+  if (Array.isArray(status.capabilities) && status.capabilities.includes("target.local")) return payload;
+  const display = status.display;
   const origin = isRecord(display) && isRecord(display.origin) ? display.origin : null;
   const ox = typeof origin?.x === "number" ? origin.x : null;
   const oy = typeof origin?.y === "number" ? origin.y : null;
@@ -224,7 +229,7 @@ export function macDesktopSocketPlacementWarning(args: string[]): string | null 
  * (granted, declined, or withdrawn unanswered) before the client gives up.
  */
 export function macDesktopInteractiveClientFloorMs(action: "requestInputLease" | "requestSharedDesktop"): number {
-  return (longRunningLocalRuntimeActionTimeoutMs(`mac_desktop.${action}`) ?? 180_000) + 15_000;
+  return localRuntimeActionTimeoutMs("mac_desktop", action) + 15_000;
 }
 
 /** Whether a `requestInputLease` result is a grant (or a screen that needs none). */
@@ -278,7 +283,8 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     return windowIdValue;
   };
   // `--local`: the point is display-local (0,0 is the lane display's top-left,
-  // as in the screenshot), not global. The brain adds the display's origin.
+  // as in the screenshot), not global. The brain adds the display's origin;
+  // for a brain too old to, `globalizeMacDesktopLocalPoints` does it here.
   const localPoints = (): boolean => readFlag(args, ["--local", "--display-local"]);
   const realMode = (): JsonObject =>
     readFlag(args, ["--real", "--cg-event", "--pointer"]) ? { mode: "real" } : {};

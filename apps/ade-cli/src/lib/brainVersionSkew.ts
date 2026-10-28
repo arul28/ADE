@@ -4,11 +4,10 @@
  * Two installs can serve one machine: ADE.app's CLI and the standalone brain
  * `ade brain update` installs at `~/.ade/bin/ade`. They update separately, so
  * the `ade` on PATH is often older or newer than the running brain, and that
- * window is normal. Before this, an `ade` treated any other build as its own
- * stale brain: it shut it down and reinstalled the service (from a normal
- * terminal), or, refused that inside an agent shell, fell back to an
- * in-process runtime whose chat service is a stub and reported `ade new chat`
- * as a success for a chat that never existed (ledger #48, #49).
+ * window is normal. An `ade` therefore never treats another build as its own
+ * stale brain: it does not shut it down or reinstall the service over it, and
+ * it never answers in its place from an in-process runtime (whose chat service
+ * is a stub that reports success for a chat that never runs).
  *
  * The rule (the desktop's `isCompatibleNewerRuntime` applies the same idea):
  * - The brain runs this very CLI (same entry file): a stale build of itself,
@@ -23,10 +22,14 @@
  *   `cliEntryPath`) counts as this CLI's own only when its process command
  *   line names this CLI's entry; otherwise it is used if compatible.
  */
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
 import { isRuntimeProtocolCompatible } from "../../../desktop/src/shared/adeRuntimeProtocol";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { isNativeAdeCliEntry } from "../services/runtime/adeCliShim";
+import { resolveCurrentCliEntry } from "./cliDelegation";
 
 export type BrainSkewDecision =
   /** This CLI's own stale build: repair as before. `compatible` says whether it may be used instead. */
@@ -95,7 +98,7 @@ export function matchingBrainCliHint(input: Pick<BrainSkewInput, "brain" | "adeH
   const api = platform === "win32" ? path.win32 : path.posix;
   const entry = input.brain.cliEntryPath?.trim() || null;
   if (entry) {
-    if (!/\.(?:cjs|mjs|js|ts)$/i.test(entry)) return entry;
+    if (isNativeAdeCliEntry(entry)) return entry;
     const wrapper = api.join(api.dirname(entry), "bin", platform === "win32" ? "ade.cmd" : "ade");
     return exists(wrapper) ? wrapper : null;
   }
@@ -158,4 +161,88 @@ function incompatibleMessage(input: BrainSkewInput): string {
     + `and the ADE brain on ${input.socketPath} is ${brainVersion} (${brainWhat}), which speaks a runtime protocol this ade does not. `
     + "This ade did not start that brain, so it leaves it running. "
     + `Use the ade that matches the brain${hint ? `: ${hint}` : ""}, or update ADE.app and the brain (\`ade brain update\`) to the same release.`;
+}
+
+/** What a reached machine brain reports about itself, as far as a skew needs. */
+export type MachineBrainSkewFacts = Pick<BrainSkewInput["brain"], "version" | "cliEntryPath" | "pid" | "minCompatibleProtocol" | "protocolVersion">;
+
+/**
+ * What to do with a brain whose version or build did not match this CLI:
+ * `ours` (a stale build of this very CLI that this run may repair), `use` (any
+ * other protocol-compatible brain, used as it is and never stopped, replaced
+ * or uninstalled), or `refuse` (protocol-incompatible and not ours).
+ *
+ * `canRepair` is false when this run could not replace the brain anyway
+ * (inside an agent shell of that brain, a `--socket`/TCP connect, or a
+ * service-managed socket with manual spawns disabled). Then even our own stale
+ * build is used when it is compatible, so "Refusing to repair/restart ADE
+ * runtime from a command running inside that runtime" is never the answer for
+ * a brain that could simply have been used.
+ *
+ * A `use` across different versions writes one note to stderr per process.
+ */
+export async function settleMachineBrainSkew(args: {
+  brain: MachineBrainSkewFacts;
+  socketPath: string;
+  canRepair: boolean;
+  cliVersion: string;
+  placeholderVersion: string;
+  /** The file this CLI's `serve` command would run; null when it cannot be resolved. */
+  cliServeFile: string | null;
+}): Promise<{ kind: "ours" | "use" } | { kind: "refuse"; message: string }> {
+  const decision = decideBrainSkew({
+    cliVersion: args.cliVersion,
+    placeholderVersion: args.placeholderVersion,
+    cliEntry: resolveCurrentCliEntry(),
+    cliServeFile: args.cliServeFile,
+    brain: {
+      ...args.brain,
+      // An older brain does not say what it runs; its command line does.
+      commandLine: args.brain.cliEntryPath ? null : await readBrainCommandLine(args.brain.pid),
+    },
+    socketPath: args.socketPath,
+    adeHome: resolveMachineAdeLayout().adeDir,
+  });
+  if (decision.kind === "refuse") return decision;
+  if (decision.kind === "ours") return { kind: decision.compatible && !args.canRepair ? "use" : "ours" };
+  if (decision.note) noteBrainVersionSkewOnce(decision.note);
+  return { kind: "use" };
+}
+
+let brainVersionSkewNoted = false;
+
+/** The skew note, on stderr only and once per process: stdout may be --json. */
+function noteBrainVersionSkewOnce(note: string): void {
+  if (brainVersionSkewNoted) return;
+  brainVersionSkewNoted = true;
+  try {
+    process.stderr.write(`ade: note: ${note}\n`);
+  } catch {
+    // A note must never fail the command.
+  }
+}
+
+/**
+ * A local brain pid's command line, or null: `ps` on macOS and Linux, the
+ * Win32_Process query (`readWindowsProcessFacts`) on Windows, so an older
+ * Windows brain that does not report `cliEntryPath` is still recognised as
+ * this install's own stale build and repaired after an in-place update.
+ */
+async function readBrainCommandLine(pid: number | null): Promise<string | null> {
+  if (!pid) return null;
+  if (process.platform === "win32") {
+    try {
+      const { readWindowsProcessFacts } = await import("../serviceManager/common");
+      const read = await readWindowsProcessFacts(pid);
+      return read.state === "found" ? read.facts.commandLine.trim() || read.facts.executablePath : null;
+    } catch {
+      return null;
+    }
+  }
+  try {
+    const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000 });
+    return result.status === 0 ? String(result.stdout ?? "").trim() || null : null;
+  } catch {
+    return null;
+  }
 }

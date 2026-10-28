@@ -158,10 +158,11 @@ export type IosDeviceHubDeps = {
   resolveControlDeviceUdid: (deviceUdid?: string | null) => Promise<string>;
   getScreenSnapshot: (args: { deviceUdid?: string | null; projectRoot?: string | null; laneId?: string | null }) => Promise<IosScreenSnapshot>;
   screenshot: (args: { deviceUdid?: string | null; projectRoot?: string | null; laneId?: string | null; outPath?: string | null }) => Promise<IosSimulatorScreenshot>;
-  tap: (args: { deviceUdid?: string | null; x: number; y: number }) => Promise<unknown>;
+  /** `noRecord` is the semantic action's own (`tap-element --no-record`): its input starts no recording. */
+  tap: (args: { deviceUdid?: string | null; x: number; y: number; noRecord?: boolean | null }) => Promise<unknown>;
   /** A press held at one point (`tap-element --hold-ms`). */
-  longPress: (args: { deviceUdid?: string | null; x: number; y: number; durationMs: number }) => Promise<unknown>;
-  typeText: (args: { deviceUdid?: string | null; text: string }) => Promise<unknown>;
+  longPress: (args: { deviceUdid?: string | null; x: number; y: number; durationMs: number; noRecord?: boolean | null }) => Promise<unknown>;
+  typeText: (args: { deviceUdid?: string | null; text: string; noRecord?: boolean | null }) => Promise<unknown>;
   /**
    * The element at one point and its children (device points), with no tree
    * walk: `fill-element` reads its field back with it. Null when nothing
@@ -1004,9 +1005,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         };
       }
       if (holdMs !== null) {
-        await deps.longPress({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, durationMs: holdMs });
+        await deps.longPress({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, durationMs: holdMs, noRecord: args.noRecord });
       } else {
-        await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
+        await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, noRecord: args.noRecord });
       }
       recordAction(
         `${holdMs !== null ? `Long-pressed (${Math.round(holdMs)} ms)` : "Tapped"} ${describeElement(match.element)}.`,
@@ -1044,9 +1045,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
             effect: NOTHING_SENT_EFFECT,
           };
         }
-        await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
+        await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, noRecord: args.noRecord });
       }
-      await deps.typeText({ deviceUdid: args.deviceUdid ?? null, text: args.text });
+      await deps.typeText({ deviceUdid: args.deviceUdid ?? null, text: args.text, noRecord: args.noRecord });
       const check = await checkTyped(match.element, args.text, snapshot.deviceUdid);
       recordAction(
         `Typed into ${describeElement(match.element)} (${check.typed}).`,

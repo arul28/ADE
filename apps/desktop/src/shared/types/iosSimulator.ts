@@ -816,6 +816,8 @@ export type IosSimulatorPoint = {
   laneId?: string | null;
   x: number;
   y: number;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorDragArgs = {
@@ -829,6 +831,8 @@ export type IosSimulatorDragArgs = {
   durationMs?: number | null;
   delta?: number | null;
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /**
@@ -928,6 +932,8 @@ export type IosScreenSnapshotProvider = {
    */
   truncated?: boolean;
   truncatedBy?: string[];
+  /** The caps the walk ran under, by the names `truncatedBy` uses. */
+  limits?: Record<string, number>;
   /**
    * An iPadOS window could not be placed on the screen, so its elements'
    * frames are still relative to it (each says `metadata.ADEUnplaced`), and
@@ -1455,6 +1461,8 @@ export type IosSimulatorOpenUrlArgs = IosSimulatorDeviceArgs & {
   url: string;
   /** A deeplink a person opened from a viewer never starts an auto-recording. */
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorAppLifecycleArgs = IosSimulatorDeviceArgs & {
@@ -1660,6 +1668,8 @@ export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
 export type IosSimulatorTapElementArgs = IosSimulatorFindElementArgs & {
   /** Hold the finger down this long: a long press on the element (context menus). */
   holdMs?: number | null;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /** A press held at one point: what opens a context menu or starts a drag-to-reorder. */
@@ -1672,6 +1682,8 @@ export type IosSimulatorLongPressArgs = {
   /** How long the finger stays down. Defaults to 1000 ms, clamped to 100–5000. */
   durationMs?: number | null;
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /** How long a long press holds when the caller names no duration, and its bounds. */
@@ -1683,6 +1695,8 @@ export type IosSimulatorFillElementArgs = IosSimulatorFindElementArgs & {
   text: string;
   /** Tap the element first so the keyboard targets it. Defaults to true. */
   focusFirst?: boolean | null;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorWaitForElementArgs = IosSimulatorFindElementArgs & {
@@ -2477,9 +2491,18 @@ export type AppleDeviceDeleteArgs = {
 };
 
 /**
+ * How long a device ADE made and a lane let go of is safe from the cleanup
+ * pass (its marker's grace): a lane can still pick it again until then.
+ */
+export const APPLE_RELEASED_DEVICE_GRACE_MS = 5 * 60_000;
+
+/** How often the cleanup pass runs, so a released device is gone within the grace plus this. */
+export const APPLE_DEVICE_CLEANUP_INTERVAL_MS = 15 * 60_000;
+
+/**
  * `deviceDetach`: the lane gives up its device. A device the user attached
  * stays installed. A device ADE made becomes a leftover that the cleanup pass
- * deletes after a 5-minute grace unless a lane attaches it again
+ * deletes after the grace (`APPLE_RELEASED_DEVICE_GRACE_MS`) unless a lane attaches it again
  * (`deletesAfter` on the answer). Same single-owner rule as `deviceStop`: refused while another chat owns the
  * lane's session, unless `force` or `ignoreOwnership` is passed.
  */
@@ -2593,6 +2616,8 @@ export type IosSimulatorPressKeyArgs = {
   /** Held while the key is pressed: cmd, shift, alt, ctrl. */
   modifiers?: string[] | null;
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /** `devicePromote` refused: the lane's current device is in use. */
@@ -2707,6 +2732,8 @@ export type AppleScrollArgs = {
    * human scroll would look like agent input and start an auto-recording.
    */
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type AppleScrollResult = {

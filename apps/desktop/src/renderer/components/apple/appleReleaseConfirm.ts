@@ -1,9 +1,6 @@
 import type { AppleLaneDeviceOrigin } from "../../../shared/types/iosSimulator";
-import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
+import { APPLE_RELEASED_DEVICE_GRACE_MS, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
-
-/** How long a released ADE device waits before the cleanup pass may delete it (the marker's grace). */
-export const APPLE_RELEASED_DEVICE_GRACE_MINUTES = 5;
 
 /**
  * Ask before a UI path gives up a lane's device.
@@ -29,7 +26,7 @@ export async function confirmAppleDeviceRelease(device: {
     title: `Release ${device.name}?`,
     tone: "warning",
     size: "md",
-    message: `ADE made this simulator. Once no lane holds it, ADE deletes it, with its apps and data, in about ${APPLE_RELEASED_DEVICE_GRACE_MINUTES} minutes unless a lane picks it again from the device picker.`
+    message: `ADE made this simulator. Once no lane holds it, ADE deletes it, with its apps and data, in about ${Math.round(APPLE_RELEASED_DEVICE_GRACE_MS / 60_000)} minutes unless a lane picks it again from the device picker.`
       + (device.endsSession ? " Releasing also ends the live session." : ""),
     checkboxes: [{
       key: "keep",

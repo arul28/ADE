@@ -42,13 +42,19 @@ export const BRAIN_HEARTBEAT_FILE = "heartbeat.json";
  * endpoint is the machine brain whatever its flags, and a brain on its own
  * socket is not, whatever its flags.
  */
-export function servesMachineRuntimeEndpoint(requestedSocketPath: string, machineSocketPath: string): boolean {
+export function servesMachineRuntimeEndpoint(
+  requestedSocketPath: string,
+  /** Every name the machine endpoint answers on (`resolveMachineEndpointNames().runtime`). */
+  machineEndpointNames: readonly string[],
+): boolean {
   if (isAdeRuntimeNamedPipePath(requestedSocketPath)) {
-    // Named pipes have no filesystem path to resolve, and Windows treats their
-    // names case-insensitively.
-    return requestedSocketPath.toLowerCase() === machineSocketPath.toLowerCase();
+    // Named pipes have no filesystem path to resolve; Windows treats their
+    // names case-insensitively and `/` as `\`.
+    const pipeKey = (name: string) => name.trim().replace(/\//g, "\\").toLowerCase();
+    return machineEndpointNames.some((name) => pipeKey(name) === pipeKey(requestedSocketPath));
   }
-  return pathsEqual(path.resolve(requestedSocketPath), path.resolve(machineSocketPath));
+  const resolved = path.resolve(requestedSocketPath);
+  return machineEndpointNames.some((name) => pathsEqual(resolved, path.resolve(name)));
 }
 
 /** How often the brain refreshes the heartbeat. */

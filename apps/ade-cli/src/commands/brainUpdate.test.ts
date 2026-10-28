@@ -693,10 +693,11 @@ describe("brain update command", () => {
   });
 });
 
-// A Mac with the ADE app in an Applications folder. The process boundary is
-// faked: plutil reads a marker the bundle carries ("old" or "new"), ditto
-// expands the archive into a bundle marked "new", codesign answers by marker,
-// ps lists what runs, and the service commands are recorded.
+// A Mac with the ADE app in an Applications folder. Each bundle carries a real
+// Info.plist with its version and a marker ("old" or "new"). The process
+// boundary is faked: ditto expands the archive into a bundle marked "new",
+// codesign answers by marker, ps lists what runs, and the service commands are
+// recorded.
 describe("brain update on a Mac with the ADE app installed", () => {
   type MacScenario = {
     label: string;
@@ -776,7 +777,14 @@ describe("brain update on a Mac with the ADE app installed", () => {
     const makeBundle = (bundlePath: string, marker: "old" | "new") => {
       fs.mkdirSync(path.join(bundlePath, "Contents", "MacOS"), { recursive: true });
       fs.mkdirSync(path.join(bundlePath, "Contents", "Resources", "ade-cli"), { recursive: true });
-      fs.writeFileSync(path.join(bundlePath, "Contents", "Info.plist"), "<plist/>");
+      const version = marker === "new" ? "1.2.13" : scenario.installedVersion;
+      fs.writeFileSync(path.join(bundlePath, "Contents", "Info.plist"), [
+        "<plist><dict>",
+        "<key>CFBundleExecutable</key><string>ADE</string>",
+        "<key>CFBundleIdentifier</key><string>com.ade.desktop</string>",
+        `<key>CFBundleShortVersionString</key><string>${version}</string>`,
+        "</dict></plist>",
+      ].join(""));
       fs.writeFileSync(path.join(bundlePath, "marker"), marker);
     };
     makeBundle(appPath, "old");
@@ -817,13 +825,6 @@ describe("brain update on a Mac with the ADE app installed", () => {
       runCommand: (command, args) => {
         const ok = (stdout = "", stderr = "") => ({ status: 0, stdout, stderr });
         if (isTarCommand(command)) return extractRuntimeFixture(command, args);
-        if (command === "/usr/bin/plutil") {
-          const bundlePath = path.dirname(path.dirname(args[args.length - 1] ?? ""));
-          const key = args[1];
-          if (key === "CFBundleExecutable") return ok("ADE");
-          if (key === "CFBundleIdentifier") return ok("com.ade.desktop");
-          return ok(markerOf(bundlePath) === "new" ? "1.2.13" : scenario.installedVersion);
-        }
         if (command === "/bin/ps") {
           return ok(`${appExe} ${appCli} serve\n${scenario.appOpen ? `${appExe}\n` : ""}`);
         }

@@ -65,6 +65,7 @@ describe("simHelperClient binary resolution", () => {
       searchRoots: [],
       env: {},
       exists: () => false,
+      spotlight: () => null,
     });
 
     expect(resolved).toBe("/res/native/ade-sim-helper");

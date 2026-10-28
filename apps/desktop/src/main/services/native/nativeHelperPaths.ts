@@ -108,7 +108,11 @@ function resolveDesktopDriverBinary(input: DesktopDriverResolution): string | nu
     ...(input.fallbackCandidates ?? []),
   ]);
   const searched = input.spotlight
-    ? withSpotlightFallback(input.binaryName, candidates, input.accept, env, input.platform ?? process.platform)
+    ? withSpotlightFallback(
+      candidates,
+      input.accept,
+      () => spotlightNativeHelperCandidate(input.binaryName, env, input.platform ?? process.platform),
+    )
     : candidates;
   return pickNativeHelper(input.binaryName, searched, input.accept) ?? searched[0] ?? null;
 }
@@ -169,6 +173,8 @@ type DesktopAppRecord = {
   appPath: string;
   /** The app's resources directory (`Contents/Resources`, `resources`). */
   resourcesPath: string;
+  /** The app's executable (`ADE.exe` on Windows); absent in older records. */
+  executablePath?: string | null;
   version: string | null;
 };
 
@@ -178,44 +184,41 @@ function desktopAppRecordPath(env: NodeJS.ProcessEnv): string {
 
 let desktopAppRecordWritten = false;
 
-/** This app's version, read from Electron when running inside it; null in the brain and the CLI. */
-function runningElectronAppVersion(): string | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const electron = require("electron") as { app?: { getVersion?: () => string } };
-    const version = electron.app?.getVersion?.();
-    return typeof version === "string" && version.trim() ? version.trim() : null;
-  } catch {
-    return null;
-  }
-}
-
 /**
  * Record where this packaged app lives, once per process, in the channel's
  * ADE home (`runtime/desktop-app.json`). A standalone brain (`~/.ade/bin/ade
  * serve`, installed by `ade brain update`) has no app resources of its own,
- * so this is how it finds the app's signed helpers wherever the app was
- * installed. Rewritten only when it changed; never throws.
+ * so this is how it finds the app's signed helpers and the app itself
+ * wherever it was installed. Rewritten only when it changed; never throws: a
+ * failed write is logged, and the brain still searches the usual install
+ * locations.
  */
 export function recordInstalledDesktopApp(input: {
   isPackaged: boolean;
   resourcesPath: string | null | undefined;
-  version?: string | null;
+  /** The running app's executable (`process.execPath` in Electron main). */
+  executablePath: string | null | undefined;
+  version: string | null;
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
+  logger?: { warn: (event: string, detail?: Record<string, unknown>) => void } | null;
 }): void {
-  // Never from a test run: it would write the developer's real ADE home.
-  if (desktopAppRecordWritten || !input.isPackaged || !input.resourcesPath || process.env.VITEST) return;
+  if (desktopAppRecordWritten || !input.isPackaged || !input.resourcesPath) return;
   desktopAppRecordWritten = true;
   const platform = input.platform ?? process.platform;
   const resourcesPath = path.resolve(input.resourcesPath);
   // macOS: <App>.app/Contents/Resources. Windows: <install dir>/resources.
   const appPath = platform === "darwin" ? path.dirname(path.dirname(resourcesPath)) : path.dirname(resourcesPath);
-  const version = input.version === undefined ? runningElectronAppVersion() : input.version;
-  const record: DesktopAppRecord = { platform, appPath, resourcesPath, version: version?.trim() || null };
+  const record: DesktopAppRecord = {
+    platform,
+    appPath,
+    resourcesPath,
+    executablePath: input.executablePath ? path.resolve(input.executablePath) : null,
+    version: input.version?.trim() || null,
+  };
   const body = `${JSON.stringify(record, null, 2)}\n`;
+  const target = desktopAppRecordPath(input.env ?? process.env);
   try {
-    const target = desktopAppRecordPath(input.env ?? process.env);
     try {
       if (fs.readFileSync(target, "utf8") === body) return;
     } catch {
@@ -225,8 +228,11 @@ export function recordInstalledDesktopApp(input: {
     const temporary = `${target}.${process.pid}.tmp`;
     fs.writeFileSync(temporary, body, "utf8");
     fs.renameSync(temporary, target);
-  } catch {
-    // Best effort: the brain still searches the usual install locations.
+  } catch (error) {
+    input.logger?.warn("desktop_app_record.write_failed", {
+      path: target,
+      error: error instanceof Error ? error.message : String(error),
+    });
   }
 }
 
@@ -238,6 +244,7 @@ function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform)
       platform,
       appPath: typeof parsed.appPath === "string" ? parsed.appPath : path.dirname(parsed.resourcesPath),
       resourcesPath: parsed.resourcesPath,
+      executablePath: typeof parsed.executablePath === "string" && parsed.executablePath ? parsed.executablePath : null,
       version: typeof parsed.version === "string" ? parsed.version : null,
     };
   } catch {
@@ -245,7 +252,10 @@ function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform)
   }
 }
 
-/** The app names this channel installs as: `ADE`, `ADE Beta`, `ADE Alpha`. */
+/**
+ * The app names this channel installs as, the channel's own first: `ADE`,
+ * `ADE Beta`, `ADE Alpha`, with `ADE_DESKTOP_APP_NAME` ahead of them.
+ */
 export function installedDesktopAppNames(env: NodeJS.ProcessEnv = process.env): string[] {
   const names: string[] = [];
   const explicit = env.ADE_DESKTOP_APP_NAME?.trim();
@@ -255,90 +265,195 @@ export function installedDesktopAppNames(env: NodeJS.ProcessEnv = process.env): 
   return dedupePaths(names);
 }
 
-type BundleInfo = { id: string | null; version: string | null };
+/** Bundle facts of a macOS app, from its Info.plist. */
+export type MacAppBundleInfo = {
+  id: string | null;
+  version: string | null;
+  /** `CFBundleExecutable`: the file in `Contents/MacOS`. */
+  executable: string | null;
+};
 
-/** Bundle facts already read, by Info.plist path and mtime: status polls resolve helpers often. */
-const bundleInfoCache = new Map<string, { mtimeMs: number; info: BundleInfo }>();
+/** Bundle facts already read, by Info.plist path and file identity: status polls resolve helpers often. */
+const bundleInfoCache = new Map<string, { stamp: string; info: MacAppBundleInfo }>();
 
 function plistString(raw: string, key: string): string | null {
   const match = new RegExp(`<key>\\s*${key}\\s*</key>\\s*<string>\\s*([^<]+?)\\s*</string>`, "i").exec(raw);
   return match?.[1]?.trim() || null;
 }
 
-/** The bundle id and short version of an app bundle, when its Info.plist is XML. Null when it has none. */
-function readBundleInfo(appPath: string): BundleInfo | null {
+function bundleInfoFromXml(raw: string): MacAppBundleInfo {
+  return {
+    id: plistString(raw, "CFBundleIdentifier"),
+    version: plistString(raw, "CFBundleShortVersionString"),
+    executable: plistString(raw, "CFBundleExecutable"),
+  };
+}
+
+/**
+ * The bundle id, short version and executable of a macOS app bundle. XML
+ * Info.plists are read directly; a binary one goes through `plutil`. Null when
+ * the bundle has no Info.plist.
+ */
+export function readMacAppBundleInfo(appPath: string): MacAppBundleInfo | null {
   const plist = path.join(appPath, "Contents", "Info.plist");
   try {
-    const { mtimeMs } = fs.statSync(plist);
+    const stat = fs.statSync(plist);
+    // The inode matters: an update swaps a new bundle in at the same path, and
+    // its Info.plist can carry the same mtime.
+    const stamp = `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
     const cached = bundleInfoCache.get(plist);
-    if (cached && cached.mtimeMs === mtimeMs) return cached.info;
-    const raw = fs.readFileSync(plist, "utf8");
-    const info = { id: plistString(raw, "CFBundleIdentifier"), version: plistString(raw, "CFBundleShortVersionString") };
-    bundleInfoCache.set(plist, { mtimeMs, info });
+    if (cached && cached.stamp === stamp) return cached.info;
+    const raw = fs.readFileSync(plist);
+    let info: MacAppBundleInfo;
+    if (raw.subarray(0, 6).toString("latin1") === "bplist" && process.platform === "darwin") {
+      const converted = spawnSync("/usr/bin/plutil", ["-convert", "xml1", "-o", "-", plist], {
+        encoding: "utf8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+      });
+      info = bundleInfoFromXml(converted.status === 0 ? String(converted.stdout ?? "") : "");
+    } else {
+      info = bundleInfoFromXml(raw.toString("utf8"));
+    }
+    bundleInfoCache.set(plist, { stamp, info });
     return info;
   } catch {
     return null;
   }
 }
 
-/** The CFBundleIdentifier of an app bundle, when its Info.plist is XML. */
+/** The CFBundleIdentifier of an app bundle. */
 function readBundleIdentifier(appPath: string): string | null {
-  return readBundleInfo(appPath)?.id ?? null;
+  return readMacAppBundleInfo(appPath)?.id ?? null;
 }
 
 /**
- * Spotlight's answer for the channel's bundle id. A found app is kept for the
- * process; "not found" expires after a few minutes, so an ADE.app installed
- * after the brain started is found without restarting it.
+ * The version in a Windows executable's version resource (`VS_FIXEDFILEINFO`'s
+ * product version, as `1.2.125`). Read straight from the file's `.rsrc`
+ * section: no PowerShell on a path the brain answers often. Null when the file
+ * is not a PE image or carries no version.
  */
-const spotlightAppByBundleId = new Map<string, { path: string | null; at: number }>();
-const SPOTLIGHT_MISS_TTL_MS = 5 * 60_000;
-
-function spotlightAppPath(bundleId: string): string | null {
-  const cached = spotlightAppByBundleId.get(bundleId);
-  if (cached && (cached.path !== null || Date.now() - cached.at < SPOTLIGHT_MISS_TTL_MS)) return cached.path;
-  let found: string | null = null;
+function readWindowsExecutableVersion(executablePath: string): string | null {
+  let fd: number | null = null;
   try {
-    const result = spawnSync("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${bundleId}'`], {
-      encoding: "utf8",
-      timeout: 1_500,
-      stdio: ["ignore", "pipe", "ignore"],
-    });
-    found = String(result.stdout ?? "")
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .find((line) => line.endsWith(".app") && readBundleIdentifier(line) === bundleId) ?? null;
+    fd = fs.openSync(executablePath, "r");
+    const header = Buffer.alloc(4096);
+    const headerBytes = fs.readSync(fd, header, 0, header.length, 0);
+    if (headerBytes < 64 || header.toString("latin1", 0, 2) !== "MZ") return null;
+    const peOffset = header.readUInt32LE(0x3c);
+    if (peOffset + 24 > headerBytes || header.toString("latin1", peOffset, peOffset + 4) !== "PE\0\0") return null;
+    const sectionCount = header.readUInt16LE(peOffset + 6);
+    const optionalHeaderSize = header.readUInt16LE(peOffset + 20);
+    const sectionTable = peOffset + 24 + optionalHeaderSize;
+    for (let index = 0; index < sectionCount; index += 1) {
+      const entry = sectionTable + index * 40;
+      if (entry + 40 > headerBytes) return null;
+      if (header.toString("latin1", entry, entry + 8).replace(/\0+$/, "") !== ".rsrc") continue;
+      const rawSize = header.readUInt32LE(entry + 16);
+      const rawOffset = header.readUInt32LE(entry + 20);
+      // Icons make most of it; anything past this is not a resource section.
+      if (rawSize === 0 || rawSize > 64 * 1024 * 1024) return null;
+      const section = Buffer.alloc(rawSize);
+      const read = fs.readSync(fd, section, 0, rawSize, rawOffset);
+      // VS_FIXEDFILEINFO starts with this signature, DWORD-aligned.
+      for (let at = section.indexOf(VS_FIXEDFILEINFO_SIGNATURE); at >= 0 && at + 24 <= read; at = section.indexOf(VS_FIXEDFILEINFO_SIGNATURE, at + 4)) {
+        if (at % 4 !== 0) continue;
+        const productMs = section.readUInt32LE(at + 16);
+        const productLs = section.readUInt32LE(at + 20);
+        return `${productMs >>> 16}.${productMs & 0xffff}.${productLs >>> 16}`;
+      }
+      return null;
+    }
+    return null;
   } catch {
-    found = null;
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs.closeSync(fd);
+      } catch {
+        // Read-only handle.
+      }
+    }
   }
-  spotlightAppByBundleId.set(bundleId, { path: found, at: Date.now() });
-  return found;
+}
+
+const VS_FIXEDFILEINFO_SIGNATURE = Buffer.from([0xbd, 0x04, 0xef, 0xfe]);
+
+/** Versions already read from an executable, by its path and file identity. */
+const executableVersionCache = new Map<string, { stamp: string; version: string | null }>();
+
+function cachedWindowsExecutableVersion(executablePath: string): string | null {
+  try {
+    const stat = fs.statSync(executablePath);
+    if (!stat.isFile()) return null;
+    const stamp = `${stat.size}:${stat.mtimeMs}`;
+    const cached = executableVersionCache.get(executablePath);
+    if (cached && cached.stamp === stamp) return cached.version;
+    const version = readWindowsExecutableVersion(executablePath);
+    executableVersionCache.set(executablePath, { stamp, version });
+    return version;
+  } catch {
+    return null;
+  }
+}
+
+/** Where a running app is not installed: a mounted disk image, or macOS's App Translocation copy. */
+function isTransientMacAppPath(appPath: string): boolean {
+  return appPath.startsWith("/Volumes/") || appPath.includes("/AppTranslocation/");
 }
 
 /**
  * The channel's app bundles on this Mac, best first: the one the desktop
- * recorded, then /Applications and ~/Applications. A bundle whose XML
- * Info.plist names another channel's bundle id is skipped.
+ * recorded (unless it ran from a disk image or a translocated copy), then
+ * /Applications and ~/Applications. A bundle whose Info.plist names another
+ * channel's bundle id is skipped.
  */
-function macDesktopAppPaths(env: NodeJS.ProcessEnv, homeDir: string, record: DesktopAppRecord | null): string[] {
+function macDesktopAppPaths(
+  env: NodeJS.ProcessEnv,
+  applicationsDirs: readonly string[],
+  record: DesktopAppRecord | null,
+): string[] {
   const bundleId = resolveAssociatedAppBundleId(env);
   return dedupePaths([
-    ...(record ? [record.appPath] : []),
-    ...installedDesktopAppNames(env).flatMap((name) => [
-      path.join("/Applications", `${name}.app`),
-      path.join(homeDir, "Applications", `${name}.app`),
-    ]),
+    ...(record && !isTransientMacAppPath(record.appPath) ? [record.appPath] : []),
+    ...installedDesktopAppNames(env).flatMap((name) => applicationsDirs.map((dir) => path.join(dir, `${name}.app`))),
   ]).filter((appPath) => {
     const id = readBundleIdentifier(appPath);
     return id === null || id === bundleId;
   });
 }
 
+/** `/Applications` and `~/Applications`, where the app installs on a Mac. */
+export function defaultMacApplicationsDirs(homeDir: string = os.homedir()): string[] {
+  return ["/Applications", path.join(homeDir, "Applications")];
+}
+
+/**
+ * The `.exe`s this channel's app installs as on Windows, best first: the one
+ * the desktop recorded, then `%LOCALAPPDATA%\Programs` and `%ProgramFiles%`.
+ */
+function windowsDesktopAppExecutables(env: NodeJS.ProcessEnv, record: DesktopAppRecord | null): string[] {
+  const win = path.win32;
+  const names = installedDesktopAppNames(env);
+  const executables: string[] = [];
+  if (record) {
+    if (record.executablePath) executables.push(record.executablePath);
+    for (const name of names) executables.push(win.join(record.appPath, `${name}.exe`));
+  }
+  const programFiles = (env.ProgramFiles ?? env.PROGRAMFILES ?? "").trim();
+  for (const name of names) {
+    if (env.LOCALAPPDATA?.trim()) executables.push(win.join(env.LOCALAPPDATA.trim(), "Programs", name, `${name}.exe`));
+    if (programFiles) executables.push(win.join(programFiles, name, `${name}.exe`));
+  }
+  return dedupePaths(executables);
+}
+
 /**
  * The `native` directories of the ADE app installed on this machine, best
  * first. On macOS: the app the desktop recorded (`recordInstalledDesktopApp`),
  * then the channel's app in /Applications and ~/Applications. A bundle whose
- * XML Info.plist names a different bundle id than this channel's
+ * Info.plist names a different bundle id than this channel's
  * (`resolveAssociatedAppBundleId`, the id the service plist associates) is
  * skipped. On Windows: the recorded install, then `%LOCALAPPDATA%\Programs`
  * and `%ProgramFiles%`. Linux has no desktop app.
@@ -350,62 +465,98 @@ export function installedDesktopAppNativeDirs(input: {
 } = {}): string[] {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
-  const homeDir = input.homeDir ?? os.homedir();
   const record = readDesktopAppRecord(env, platform);
   if (platform === "darwin") {
-    return macDesktopAppPaths(env, homeDir, record)
+    return macDesktopAppPaths(env, defaultMacApplicationsDirs(input.homeDir), record)
       .map((appPath) => path.join(appPath, "Contents", "Resources", "native"));
   }
   if (platform === "win32") {
     const win = path.win32;
     const roots: string[] = record ? [record.resourcesPath] : [];
-    for (const name of installedDesktopAppNames(env)) {
-      if (env.LOCALAPPDATA?.trim()) roots.push(win.join(env.LOCALAPPDATA.trim(), "Programs", name, "resources"));
-      if (env.ProgramFiles?.trim() || env.PROGRAMFILES?.trim()) {
-        roots.push(win.join((env.ProgramFiles ?? env.PROGRAMFILES ?? "").trim(), name, "resources"));
-      }
+    for (const executable of windowsDesktopAppExecutables(env, null)) {
+      roots.push(win.join(win.dirname(executable), "resources"));
     }
     return dedupePaths(roots).map((root) => win.join(root, "native"));
   }
   return [];
 }
 
+/** The ADE desktop app installed on this machine, as one reader reports it. */
+export type InstalledDesktopApp = {
+  platform: NodeJS.Platform;
+  /** `.../ADE.app` on macOS; the app's `.exe` on Windows. */
+  path: string;
+  /** `ADE`, `ADE Beta`, `ADE Alpha`. */
+  name: string;
+  /** Null when the app is there but its version cannot be read. */
+  version: string | null;
+  /**
+   * Whether an update can move it: only the stable app has an update feed.
+   * Beta and Alpha are rebuilt by hand.
+   */
+  updatable: boolean;
+};
+
 /**
- * The version of the ADE app installed on this machine, so a brain can report
- * it beside its own: after `ade brain update` the brain runs a newer version
- * than the app, and other devices must not read the brain's as the app's.
- * macOS reads the bundle's Info.plist (the recorded app first, then the
- * channel's app in /Applications and ~/Applications), so an app updated since
- * it last ran still reads right, app running or not. Windows uses the version
- * the app recorded, while that install is still there. Null when no app is
- * installed (Linux, a headless server) or its version cannot be read.
+ * The ADE app installed on this machine, for everything that compares it with
+ * the brain: the version a brain reports beside its own (after `ade brain
+ * update` the brain can run a newer version than the app), the "is this
+ * machine up to date" check of Update & restart, `ade doctor`, and the macOS
+ * app update. One reader, so the machine is judged on the version it reports.
+ *
+ * macOS: the app the desktop recorded, then the channel's app in
+ * /Applications and ~/Applications, read from its Info.plist, so an app
+ * updated since it last ran still reads right, running or not. Windows: the
+ * recorded install, then the per-user and machine-wide install folders, read
+ * from the `.exe`'s version resource (a closed app updated by the brain never
+ * rewrote its record). Null when no app is installed (Linux, a headless
+ * server).
  */
+export function readInstalledDesktopApp(input: {
+  platform?: NodeJS.Platform;
+  env?: NodeJS.ProcessEnv;
+  homeDir?: string;
+  /** Where macOS looks besides the recorded app; `defaultMacApplicationsDirs` by default. */
+  applicationsDirs?: readonly string[];
+} = {}): InstalledDesktopApp | null {
+  const platform = input.platform ?? process.platform;
+  const env = input.env ?? process.env;
+  const record = readDesktopAppRecord(env, platform);
+  const stableChannel = !["alpha", "beta"].includes(env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() ?? "");
+  if (platform === "darwin") {
+    const applicationsDirs = input.applicationsDirs ?? defaultMacApplicationsDirs(input.homeDir);
+    for (const appPath of macDesktopAppPaths(env, applicationsDirs, record)) {
+      const info = readMacAppBundleInfo(appPath);
+      if (!info) continue;
+      const name = path.basename(appPath, ".app");
+      return { platform, path: appPath, name, version: info.version, updatable: stableChannel && name === "ADE" };
+    }
+    return null;
+  }
+  if (platform === "win32") {
+    for (const executable of windowsDesktopAppExecutables(env, record)) {
+      if (!existsOnDisk(executable)) continue;
+      const name = path.win32.basename(executable, path.win32.extname(executable));
+      return {
+        platform,
+        path: executable,
+        name,
+        version: cachedWindowsExecutableVersion(executable),
+        updatable: stableChannel && name === "ADE",
+      };
+    }
+    return null;
+  }
+  return null;
+}
+
+/** `readInstalledDesktopApp`'s version: what a brain reports as `desktopAppVersion`. */
 export function readInstalledDesktopAppVersion(input: {
   platform?: NodeJS.Platform;
   env?: NodeJS.ProcessEnv;
   homeDir?: string;
 } = {}): string | null {
-  const platform = input.platform ?? process.platform;
-  const env = input.env ?? process.env;
-  const record = readDesktopAppRecord(env, platform);
-  if (platform === "darwin") {
-    for (const appPath of macDesktopAppPaths(env, input.homeDir ?? os.homedir(), record)) {
-      const info = readBundleInfo(appPath);
-      if (!info) continue;
-      const recorded = record && path.resolve(record.appPath) === path.resolve(appPath) ? record.version : null;
-      return info.version ?? recorded?.trim() ?? null;
-    }
-    return null;
-  }
-  if (platform === "win32") {
-    if (!record?.version?.trim()) return null;
-    try {
-      return fs.statSync(record.resourcesPath).isDirectory() ? record.version.trim() : null;
-    } catch {
-      return null;
-    }
-  }
-  return null;
+  return readInstalledDesktopApp(input)?.version ?? null;
 }
 
 /**
@@ -420,8 +571,8 @@ export function readInstalledDesktopAppVersion(input: {
  * - `runtime` for the rest (sim helper, `ade-media`): the archive ships the
  *   brain's own build, so its protocol matches the brain's.
  *
- * `spotlight` adds the app Spotlight finds by bundle id when nothing in the
- * usual places has the helper (macOS only; a miss is asked again after five minutes).
+ * The app Spotlight finds by bundle id is not here: it is asked only when
+ * nothing in these places has the helper (`withSpotlightFallback`).
  */
 export function standaloneNativeHelperCandidates(input: {
   binaryName: string;
@@ -443,28 +594,94 @@ export function standaloneNativeHelperCandidates(input: {
   return dedupePaths(input.prefer === "app" ? [...app, ...runtime] : [...runtime, ...app]);
 }
 
-/** The Spotlight fallback for `standaloneNativeHelperCandidates`, macOS only. */
-function spotlightNativeHelperCandidate(binaryName: string, env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
-  if (platform !== "darwin" || env.VITEST) return null;
-  const appPath = spotlightAppPath(resolveAssociatedAppBundleId(env));
+/** ADE's Developer ID team, for a Spotlight hit when no installed app names one. */
+const ADE_DEVELOPER_TEAM_ID = "VQ372F39G6";
+const CODESIGN_TIMEOUT_MS = 60_000;
+
+/** `TeamIdentifier` from `codesign -dv`, which prints to stderr. Null when unsigned or ad hoc. */
+function readCodeSigningTeam(appPath: string): string | null {
+  const result = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=2", appPath], {
+    encoding: "utf8",
+    timeout: CODESIGN_TIMEOUT_MS,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  const team = /^TeamIdentifier=(.+)$/m.exec(`${result.stderr ?? ""}\n${result.stdout ?? ""}`)?.[1]?.trim() ?? "";
+  return result.status === 0 && team && team !== "not set" ? team : null;
+}
+
+/**
+ * Spotlight's answer for the channel's bundle id. A found app is kept for the
+ * process; "not found" expires after a few minutes, so an ADE.app installed
+ * after the brain started is found without restarting it.
+ */
+const spotlightAppByBundleId = new Map<string, { path: string | null; at: number }>();
+const SPOTLIGHT_MISS_TTL_MS = 5 * 60_000;
+
+/**
+ * An app Spotlight finds by bundle id can be any copy on the disk: a mounted
+ * disk image, the Trash, Downloads. ADE spawns its helpers, so a hit counts
+ * only when its signature verifies and its team is the installed ADE app's
+ * (ADE's own team when no app is installed). An unsigned dev build never
+ * passes: it keeps its explicit paths.
+ */
+function spotlightAppPath(bundleId: string, env: NodeJS.ProcessEnv): string | null {
+  const cached = spotlightAppByBundleId.get(bundleId);
+  if (cached && (cached.path !== null || Date.now() - cached.at < SPOTLIGHT_MISS_TTL_MS)) return cached.path;
+  let found: string | null = null;
+  try {
+    const result = spawnSync("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == '${bundleId}'`], {
+      encoding: "utf8",
+      timeout: 1_500,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const hits = String(result.stdout ?? "")
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.endsWith(".app") && readBundleIdentifier(line) === bundleId);
+    if (hits.length > 0) {
+      const installed = readInstalledDesktopApp({ platform: "darwin", env });
+      const expectedTeam = (installed ? readCodeSigningTeam(installed.path) : null) ?? ADE_DEVELOPER_TEAM_ID;
+      found = hits.find((hit) => {
+        const verify = spawnSync("/usr/bin/codesign", ["--verify", "--strict", hit], {
+          timeout: CODESIGN_TIMEOUT_MS,
+          stdio: "ignore",
+        });
+        return verify.status === 0 && readCodeSigningTeam(hit) === expectedTeam;
+      }) ?? null;
+    }
+  } catch {
+    found = null;
+  }
+  spotlightAppByBundleId.set(bundleId, { path: found, at: Date.now() });
+  return found;
+}
+
+/**
+ * The helper inside the app Spotlight finds by the channel's bundle id
+ * (macOS only), or null. The default Spotlight lookup of every resolver here.
+ */
+export function spotlightNativeHelperCandidate(
+  binaryName: string,
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  if (platform !== "darwin") return null;
+  const appPath = spotlightAppPath(resolveAssociatedAppBundleId(env), env);
   return appPath ? path.join(appPath, "Contents", "Resources", "native", binaryName) : null;
 }
 
 /**
- * `candidates`, then (only when none is usable) the app Spotlight finds by
- * the channel's bundle id. Keeps the Spotlight query off every lookup that
- * already succeeds.
+ * `candidates`, then (only when none is usable) what `spotlight` finds. Keeps
+ * the Spotlight query off every lookup that already succeeds.
  */
 export function withSpotlightFallback(
-  binaryName: string,
   candidates: readonly string[],
   accept: (candidate: string) => boolean,
-  env: NodeJS.ProcessEnv = process.env,
-  platform: NodeJS.Platform = process.platform,
+  spotlight: () => string | null,
 ): string[] {
   if (candidates.some((candidate) => accept(candidate))) return [...candidates];
-  const spotlight = spotlightNativeHelperCandidate(binaryName, env, platform);
-  return spotlight ? dedupePaths([...candidates, spotlight]) : [...candidates];
+  const found = spotlight();
+  return found ? dedupePaths([...candidates, found]) : [...candidates];
 }
 
 /**
@@ -611,7 +828,11 @@ export function resolveAdeMediaBinary(input: {
     ...daemonNativeCandidates(ADE_MEDIA_BINARY),
     ...standaloneNativeHelperCandidates({ binaryName: ADE_MEDIA_BINARY, prefer: "runtime" }),
   ]);
-  return pickNativeHelper(ADE_MEDIA_BINARY, withSpotlightFallback(ADE_MEDIA_BINARY, candidates, isExecutableFile), isExecutableFile);
+  return pickNativeHelper(
+    ADE_MEDIA_BINARY,
+    withSpotlightFallback(candidates, isExecutableFile, () => spotlightNativeHelperCandidate(ADE_MEDIA_BINARY)),
+    isExecutableFile,
+  );
 }
 
 /**

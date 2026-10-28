@@ -527,24 +527,54 @@ struct AppleStreamSocketFailure: Equatable {
 /// When the viewer redials by itself instead of showing the failure.
 ///
 /// Kept pure so the budget and the guards are tested rather than observed.
-/// A few quick tries, each with a fresh single-use ticket; the first decoded
-/// frame refills the budget, so a stream that recovers can recover again.
+/// A few quick tries, each with a fresh single-use ticket. The budget refills
+/// only once a stream has stayed up for `steadyAfter` seconds, so a stream
+/// that decodes one keyframe and drops does not redial forever; and a viewer
+/// session redials by itself at most `sessionCeiling` times before it offers
+/// Reconnect. `reset()` (Reconnect, or the viewer closing) clears both.
 struct AppleStreamRetryPolicy: Equatable {
   /// The pause before each automatic try. Its length is the budget.
   static let delays: [TimeInterval] = [0.5, 1.5, 3]
+  /// How long a stream must keep decoding after it opens before the budget
+  /// refills.
+  static let steadyAfter: TimeInterval = 5
+  /// Automatic redials per viewer session, however steady the stream was
+  /// between them.
+  static let sessionCeiling = 10
 
   private(set) var attempts = 0
+  private(set) var sessionRedials = 0
+  private var openedAt: Date?
 
   /// The pause before the next try, or nil when the viewer must show the
   /// failure instead: a refusal, a hidden or closed viewer, a spent budget.
   mutating func nextDelay(transient: Bool, started: Bool, visible: Bool) -> TimeInterval? {
-    guard transient, started, visible, attempts < Self.delays.count else { return nil }
-    defer { attempts += 1 }
+    guard transient, started, visible,
+          attempts < Self.delays.count, sessionRedials < Self.sessionCeiling else { return nil }
+    defer {
+      attempts += 1
+      sessionRedials += 1
+      openedAt = nil
+    }
     return Self.delays[attempts]
+  }
+
+  /// The socket opened: the steady clock starts.
+  mutating func streamOpened(at now: Date) {
+    openedAt = now
+  }
+
+  /// A frame decoded: once the stream has been up `steadyAfter` seconds, the
+  /// budget refills.
+  mutating func frameDecoded(at now: Date) {
+    guard attempts > 0, let openedAt, now.timeIntervalSince(openedAt) >= Self.steadyAfter else { return }
+    attempts = 0
   }
 
   mutating func reset() {
     attempts = 0
+    sessionRedials = 0
+    openedAt = nil
   }
 }
 

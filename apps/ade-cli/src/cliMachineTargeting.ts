@@ -683,6 +683,9 @@ const CHAT_LOOKUP_BUDGET_MS = 6_000;
  * up after a few seconds, so a dark or slow machine only costs the generic
  * hint. Null when no machine answered with the chat, or the roster is
  * unavailable (signed out, offline).
+ *
+ * Never asked under ADE MCP (`ADE_REMOTE_MCP_SCOPE`): its connection reaches
+ * only this computer, and another machine's owner may have ADE MCP off.
  */
 export async function locateChatOnOtherMachines(
   sessionId: string,
@@ -690,6 +693,7 @@ export async function locateChatOnOtherMachines(
   options: GlobalOptions,
   budgetMs = CHAT_LOOKUP_BUDGET_MS,
 ): Promise<{ machineName: string; machineKey: string } | null> {
+  if (process.env.ADE_REMOTE_MCP_SCOPE?.trim()) return null;
   const single: GlobalOptions = { ...options, allMachines: false, machine: null };
   let timer: NodeJS.Timeout | null = null;
   const deadline = new Promise<null>((resolve) => {

@@ -12,9 +12,9 @@
  * on verbatim. `ade.cmd` stays on PATH for people typing `ade` in cmd or
  * PowerShell; only ADE_CLI_PATH changes.
  *
- * Everything here is a no-op off Windows, and every failure returns null so
- * the caller keeps `ade.cmd`: a missing launcher costs multi-line arguments,
- * never the CLI.
+ * Everything here is a no-op off Windows, and every failure names its reason
+ * so the caller keeps `ade.cmd` and says why: a missing launcher costs
+ * multi-line arguments, never the CLI.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -58,6 +58,37 @@ export type WindowsCliLaunchSpec = {
    */
   ttyNode?: boolean;
 };
+
+/**
+ * The launch spec for a CLI the Electron app runs as Node: `ADE.exe <cli.cjs>`
+ * with ELECTRON_RUN_AS_NODE, the app's module dirs on NODE_PATH, and the
+ * brain defaults, as `ade.cmd` runs it. Also what `ade.cmd` did besides: a
+ * warm compile cache for every call, and real Node for `ade code` (Electron
+ * run as Node has no TTY on Windows).
+ */
+export function electronCliLaunchSpec(input: {
+  /** The app's `ADE.exe`. */
+  execPath: string;
+  /** The CLI entry, `<resources>\ade-cli\cli.cjs`. */
+  entryPath: string;
+  /** Put in front of the caller's NODE_PATH. */
+  nodeModulePaths: readonly string[];
+  /** Set only when the caller's env names no brain. */
+  brainDefaults: ReadonlyArray<readonly [string, string]>;
+  /** The ADE home whose compile cache the CLI warms. */
+  adeHome: string;
+}): WindowsCliLaunchSpec {
+  return {
+    exe: input.execPath,
+    args: [input.entryPath],
+    env: [["ELECTRON_RUN_AS_NODE", "1"]],
+    brainDefaults: input.brainDefaults,
+    prepend: input.nodeModulePaths.length ? [["NODE_PATH", input.nodeModulePaths.join(";")]] : [],
+    unset: [ADE_CLI_VIA_CMD_ENV],
+    ifNone: [windowsCliCompileCacheDefault(input.adeHome)],
+    ttyNode: true,
+  };
+}
 
 /** A value one `ade.launch` line can carry: no line break or NUL. */
 function launchSafe(value: string): boolean {
@@ -137,9 +168,15 @@ function sameFileContents(a: string, b: string): boolean {
   }
 }
 
+export type WindowsCliLauncherInstall =
+  | { exePath: string; reason: null }
+  | { exePath: null; reason: string };
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
 /**
  * Put the launcher in `dir` as `ade.exe` with its `ade.launch`, and return the
- * `ade.exe` path, or null on any failure (the caller keeps `ade.cmd`).
+ * `ade.exe` path, or why it could not (the caller keeps `ade.cmd`).
  *
  * The exe is copied only when its bytes differ: a running copy is locked on
  * Windows, and an agent mid-command must not break the next brain start. When
@@ -147,12 +184,16 @@ function sameFileContents(a: string, b: string): boolean {
  * `ade.launch` format is versioned and read on every run.
  */
 export function installWindowsCliLauncher(input: {
-  launcherSource: string;
+  /** `resolveWindowsCliLauncherSource`'s answer; null when the app ships none. */
+  launcherSource: string | null;
   dir: string;
   spec: WindowsCliLaunchSpec;
-}): string | null {
+}): WindowsCliLauncherInstall {
+  if (!input.launcherSource) {
+    return { exePath: null, reason: `${WINDOWS_CLI_LAUNCHER_BINARY} is not in this build's resources\\native` };
+  }
   const body = renderWindowsCliLaunchFile(input.spec);
-  if (!body) return null;
+  if (!body) return { exePath: null, reason: "a path in the CLI command holds a line break, which ade.launch cannot carry" };
   const exePath = path.join(input.dir, "ade.exe");
   const launchPath = path.join(input.dir, "ade.launch");
   try {
@@ -162,9 +203,9 @@ export function installWindowsCliLauncher(input: {
       try {
         fs.copyFileSync(input.launcherSource, temporary);
         fs.renameSync(temporary, exePath);
-      } catch {
+      } catch (error) {
         fs.rmSync(temporary, { force: true });
-        if (!fs.existsSync(exePath)) return null;
+        if (!fs.existsSync(exePath)) return { exePath: null, reason: `copying the launcher to ${exePath} failed: ${errorText(error)}` };
       }
     }
     let current: string | null = null;
@@ -178,9 +219,9 @@ export function installWindowsCliLauncher(input: {
       fs.writeFileSync(temporary, body, "utf8");
       fs.renameSync(temporary, launchPath);
     }
-    return exePath;
-  } catch {
-    return null;
+    return { exePath, reason: null };
+  } catch (error) {
+    return { exePath: null, reason: `writing the launcher in ${input.dir} failed: ${errorText(error)}` };
   }
 }
 

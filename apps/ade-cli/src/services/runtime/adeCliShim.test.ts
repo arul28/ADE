@@ -146,31 +146,35 @@ describe("installAdeCliShim on Windows", () => {
   const shimsRoot = () => fs.mkdtempSync(path.join(os.tmpdir(), "ade-shims-"));
 
   it.each([
-    ["the standalone ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", null, /ade\.exe$/],
-    ["the app's cli.cjs with the launcher shipped", "C:\\ADE\\resources\\ade-cli\\cli.cjs", "C:\\ADE\\ADE.exe", "launcher", /launcher[\\/]ade\.exe$/],
-    ["the app's cli.cjs without the launcher", "C:\\ADE\\resources\\ade-cli\\cli.cjs", "C:\\ADE\\ADE.exe", "none", /ade\.cmd$/],
-  ] as const)("names a runnable command for %s", (_label, entryPath, execPath, launcher, commandPattern) => {
-    const root = shimsRoot();
-    let launcherSource: string | null = null;
-    if (launcher === "launcher") {
-      launcherSource = path.join(root, "ade-cli-launcher.exe");
-      fs.writeFileSync(launcherSource, "MZ launcher");
-    }
-    const shim = installAdeCliShim({ entryPath, execPath, brain, shimsRoot: root, platform: "win32", launcherSource });
+    ["the standalone ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", /ade\.exe$/],
+    ["the app's cli.cjs without the launcher", "C:\\ADE\\resources\\ade-cli\\cli.cjs", "C:\\ADE\\ADE.exe", /ade\.cmd$/],
+  ] as const)("names a runnable command for %s", (_label, entryPath, execPath, commandPattern) => {
+    const shim = installAdeCliShim({ entryPath, execPath, brain, shimsRoot: shimsRoot(), platform: "win32" });
     expect(shim).not.toBeNull();
     expect(shim!.commandPath).toMatch(commandPattern);
     // Git Bash's extensionless `ade` is always there.
     expect(fs.existsSync(path.join(shim!.dir, "ade"))).toBe(true);
-    if (launcher === "launcher") {
-      const launch = fs.readFileSync(path.join(shim!.dir, "launcher", "ade.launch"), "utf8").split("\r\n");
-      expect(launch[0]).toBe("ade-launch 1");
-      expect(launch).toContain(`exe ${execPath}`);
-      expect(launch).toContain(`arg ${entryPath}`);
-      expect(launch).toContain("env ELECTRON_RUN_AS_NODE=1");
-      expect(launch).toContain(`default ADE_HOME=${brain.adeHome}`);
-      // What ade.cmd also did: a warm compile cache, and real Node for `ade code`.
-      expect(launch).toContain(`ifnone NODE_COMPILE_CACHE,NODE_DISABLE_COMPILE_CACHE NODE_COMPILE_CACHE=${brain.adeHome}\\cache\\node-compile`);
-      expect(launch).toContain("ttynode 1");
-    }
+  });
+
+  // The launcher is found through the resources directory with Windows paths,
+  // so only a Windows host can stand one up.
+  it.skipIf(process.platform !== "win32")("names the shipped launcher for the app's cli.cjs", () => {
+    const root = shimsRoot();
+    const resourcesPath = path.join(root, "resources");
+    fs.mkdirSync(path.join(resourcesPath, "native"), { recursive: true });
+    fs.writeFileSync(path.join(resourcesPath, "native", "ade-cli-launcher.exe"), "MZ launcher");
+    const entryPath = "C:\\ADE\\resources\\ade-cli\\cli.cjs";
+    const execPath = "C:\\ADE\\ADE.exe";
+    const shim = installAdeCliShim({ entryPath, execPath, brain, shimsRoot: root, platform: "win32", resourcesPath });
+    expect(shim!.commandPath).toMatch(/launcher[\\/]ade\.exe$/);
+    const launch = fs.readFileSync(path.join(shim!.dir, "launcher", "ade.launch"), "utf8").split("\r\n");
+    expect(launch[0]).toBe("ade-launch 1");
+    expect(launch).toContain(`exe ${execPath}`);
+    expect(launch).toContain(`arg ${entryPath}`);
+    expect(launch).toContain("env ELECTRON_RUN_AS_NODE=1");
+    expect(launch).toContain(`default ADE_HOME=${brain.adeHome}`);
+    // What ade.cmd also did: a warm compile cache, and real Node for `ade code`.
+    expect(launch).toContain(`ifnone NODE_COMPILE_CACHE,NODE_DISABLE_COMPILE_CACHE NODE_COMPILE_CACHE=${brain.adeHome}\\cache\\node-compile`);
+    expect(launch).toContain("ttynode 1");
   });
 });

@@ -3,6 +3,7 @@
 // Adapted: the pointer-capture gesture shape and the
 // normalise-against-the-drawn-frame rule.
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
+import { isUnsupportedAdeActionError } from "../../../shared/codedError";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { AppleDeviceInput } from "./AppleDeviceFlatView";
 
@@ -92,6 +93,13 @@ export function appleKeyText(event: {
   return null;
 }
 
+/** The host predates long press: its action is unknown, or its `apple.input` has no `long-press` kind. */
+function isLongPressUnsupportedError(error: unknown): boolean {
+  if (isUnsupportedAdeActionError(error)) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return /does not support 'long-press'/u.test(message);
+}
+
 export function useAppleDeviceInput({
   deviceUdid,
   laneId,
@@ -146,11 +154,15 @@ export function useAppleDeviceInput({
     if (gesture.travel <= APPLE_TAP_SLOP_POINTS) {
       const heldMs = Date.now() - gesture.startedAt;
       if (heldMs >= APPLE_LONG_PRESS_THRESHOLD_MS) {
+        const point = { deviceUdid, x: gesture.startX, y: gesture.startY, ...scope };
         void window.ade.iosSimulator
-          .longPress(
-            { deviceUdid, x: gesture.startX, y: gesture.startY, durationMs: Math.min(MAX_LONG_PRESS_MS, heldMs), ...scope },
-            pin,
-          )
+          .longPress({ ...point, durationMs: Math.min(MAX_LONG_PRESS_MS, heldMs) }, pin)
+          .catch((error: unknown) => {
+            // A host from before long press (no `longPress` action, or an
+            // `apple.input` without `long-press`): the press still lands, as a tap.
+            if (!isLongPressUnsupportedError(error)) throw error;
+            return window.ade.iosSimulator.tap(point, pin);
+          })
           .catch(fail);
         return;
       }

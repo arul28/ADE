@@ -883,7 +883,6 @@ async function describeMacDesktopAppForPlan(
   const lookup = findMacDesktopApp({
     env,
     applicationsDirs: deps.applicationsDirs ?? defaultApplicationsDirs(),
-    run: deps.runCommand ?? runCommand,
   });
   switch (lookup.state) {
     case "found":

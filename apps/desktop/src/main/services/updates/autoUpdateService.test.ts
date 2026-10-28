@@ -375,8 +375,9 @@ describe("createAutoUpdateService", () => {
 
     await expect(service.quitAndInstall(false, { closeAfterInstall })).resolves.toBe(true);
     expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
-    // Nothing goes on screen for an install the person quit into.
-    expect(onInstallHandoff).toHaveBeenCalledTimes(closeAfterInstall ? 0 : 1);
+    // The install surface runs for both: on Windows it is the guard against a
+    // copy of ADE opened by hand mid-install.
+    expect(onInstallHandoff).toHaveBeenCalledWith(expect.objectContaining({ closeAfterInstall }));
     service.dispose();
 
     const relaunch = () => createAutoUpdateService({
@@ -387,10 +388,10 @@ describe("createAutoUpdateService", () => {
       autoCheckEnabled: false,
     });
     const landing = relaunch();
-    expect(landing.landedQuitInstall()).toBe(landed);
+    expect(landing.landedQuitInstall() != null).toBe(landed);
     landing.dispose();
     const later = relaunch();
-    expect(later.landedQuitInstall()).toBe(false);
+    expect(later.landedQuitInstall()).toBeNull();
     later.dispose();
   });
 

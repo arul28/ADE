@@ -1,7 +1,6 @@
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { externalChatContext } from "../chat/externalChats";
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
 import { execFile as execFileCallback, spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -25,8 +24,6 @@ import type {
   AppleRunTestsResult,
   AppleInstallAppArgs,
   AppleInstallAppResult,
-  AppleWindowFrame,
-  AppleWindowLayoutAction,
   AppleWindowLayoutArgs,
   AppleWindowLayoutResult,
   AppleDeviceListResult,
@@ -129,8 +126,6 @@ import {
   APPLE_BUTTON_UNSUPPORTED_CODE,
   APPLE_DEVICE_IS_EXTRA_CODE,
   APPLE_DEVICE_NOT_LANE_OWNED_CODE,
-  APPLE_WINDOW_LAYOUT_ACTIONS,
-  APPLE_WINDOWING_UNAVAILABLE_CODE,
   APPLE_DEVICE_OFF_CODE,
   APPLE_DEVICE_ORIENTATIONS,
   APPLE_ROTATE_NOT_ADOPTED_CODE,
@@ -157,7 +152,7 @@ import {
 } from "../../../shared/types/iosSimulator";
 import { abbreviatePathTail } from "../../../shared/pathDisplay";
 import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../shared/appleDeviceSettings";
-import { appleWindowSlots, judgeAppleWindowLayout } from "./appleWindowLayout";
+import { createAppleWindowControl } from "./appleWindowControl";
 import { commandExistsCached } from "../ai/utils";
 import type { Logger } from "../logging/logger";
 import { pngDimensions } from "../shared/imageDimensions";
@@ -2411,34 +2406,8 @@ function isPlainResultObject(value: unknown): value is Record<string, unknown> {
   return proto === Object.prototype || proto === null;
 }
 
-/** The iPad Dock's height in points (iPad Pro 11-inch, iPadOS 27, both orientations): a full-height tile and a moved window stop above it. */
-const APPLE_IPAD_DOCK_HEIGHT = 123;
-
 /** `installApp` met another xcodebuild in the lane's DerivedData (or a launch or test met an install). */
 const APPLE_BUILD_BUSY_CODE = "APPLE_BUILD_BUSY";
-
-/**
- * A call made with `noRecord` (`ade apple tap … --no-record`): its input never
- * STARTS an automatic recording. Carried through the call's async work, so the
- * input paths need no extra argument; a recording that is already running
- * still sees the input.
- */
-const inputRecordingScope = new AsyncLocalStorage<{ noRecord: true }>();
-
-/** Every action, run in a no-record scope when its args say `noRecord: true`. */
-function withInputRecordingScope<T extends Record<string, unknown>>(service: T): T {
-  const scoped: Record<string, unknown> = {};
-  for (const [name, value] of Object.entries(service)) {
-    scoped[name] = typeof value === "function"
-      ? (first: unknown, ...rest: unknown[]) => (
-        first && typeof first === "object" && (first as { noRecord?: unknown }).noRecord === true
-          ? inputRecordingScope.run({ noRecord: true }, () => (value as (...params: unknown[]) => unknown)(first, ...rest))
-          : (value as (...params: unknown[]) => unknown)(first, ...rest)
-      )
-      : value;
-  }
-  return scoped as T;
-}
 
 /** The lane setting (`ade apple auto-record off`), in the project's KV. */
 function appleAutoRecordKey(laneKey: string): string {
@@ -3155,6 +3124,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return result;
   };
 
+  /** Who holds a device's lease, unless it is the asking chat (under any --holder name). */
+  const otherLeaseHolder = (leaseKey: string, chatSessionId: string | null): string | null => {
+    const lease = deviceLeases.status(leaseKey);
+    if (!lease.held || !lease.current) return null;
+    if (chatSessionId && deviceLeases.heldByChat(leaseKey, chatSessionId)) return null;
+    return lease.current.holder;
+  };
+
   /** Detach, delete, takeover and the picker's delete, over the registry above. */
   const lifecycle = createLaneDeviceLifecycle<LaneRuntime>({
     laneDevices,
@@ -3177,14 +3154,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (recordings.active({ laneId: runtime.key })) return "recording";
       if (activeTestUdids.has(device.udid)) return "running tests";
       if (runtime.activeLaunchId) return "launching a build";
-      // The asking chat's own lease (under any --holder name) is no reason to refuse it.
-      const leaseKey = appleDeviceLeaseKey(runtime.key, null);
-      const lease = deviceLeases.status(leaseKey);
-      if (lease.held && lease.current && !(chatSessionId && deviceLeases.heldByChat(leaseKey, chatSessionId))) {
-        return `leased to ${lease.current.holder}`;
-      }
-      return null;
+      const holder = otherLeaseHolder(appleDeviceLeaseKey(runtime.key, null), chatSessionId);
+      return holder ? `leased to ${holder}` : null;
     },
+    extraLeaseHolder: (runtime, extra, chatSessionId) => otherLeaseHolder(appleDeviceLeaseKey(runtime.key, extra.udid), chatSessionId),
     emit: (payload) => emit(payload),
     logger: args.logger,
   });
@@ -3220,19 +3193,17 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     },
   });
 
-  /**
-   * Announce an injected input to the recording service.
-   *
-   * Never awaited on the input path and never allowed to throw: auto-recording
-   * is verification sugar, and a tap that failed because a recording could not
-   * start would be a strictly worse product than a tap with no recording.
-   */
   /** The lane's switch and the machine's, as `auto-record status` reports them. */
   const autoRecordState = (laneKey: string) => {
     const machine = (() => {
       try {
         return args.recordingDeps?.readOverlaySetting?.(APPLE_AUTO_RECORD_SETTING_KEY) !== false;
-      } catch {
+      } catch (error) {
+        // Unreadable reads as on, the default.
+        args.logger.warn("apple.auto_record_read_failed", {
+          setting: "machine",
+          error: error instanceof Error ? error.message : String(error),
+        });
         return true;
       }
     })();
@@ -3245,11 +3216,24 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     if (!laneKey || !args.laneDeviceStore) return true;
     try {
       return args.laneDeviceStore.getJson<{ enabled?: unknown }>(appleAutoRecordKey(laneKey))?.enabled !== false;
-    } catch {
+    } catch (error) {
+      // Unreadable reads as on, the default.
+      args.logger.warn("apple.auto_record_read_failed", {
+        setting: "lane",
+        laneId: laneKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return true;
     }
   };
 
+  /**
+   * Announce an injected input to the recording service.
+   *
+   * Never awaited on the input path and never allowed to throw: auto-recording
+   * is verification sugar, and a tap that failed because a recording could not
+   * start would be a strictly worse product than a tap with no recording.
+   */
   const noteInput = (
     runtime: LaneRuntime,
     input: {
@@ -3267,12 +3251,14 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
        * pane's calls precisely so this default stays safe.
        */
       source?: AppleInputSource;
+      /** The call said `noRecord` (`--no-record`). */
+      noRecord?: boolean | null;
     },
   ): void => {
     // Opted out for this call (`--no-record`) or for the lane (`auto-record
     // off`): the input is still overlaid on a recording that already runs,
     // it just never starts one.
-    const autoStart = inputRecordingScope.getStore()?.noRecord !== true && laneAutoRecord(runtime.key);
+    const autoStart = input.noRecord !== true && laneAutoRecord(runtime.key);
     void Promise.resolve(recordings.noteInput({
       autoStart,
       laneId: runtime.key,
@@ -5492,6 +5478,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     elements: IosScreenElement[];
     /** The helper's walk stopped at a cap (`truncatedBy` names which), so elements may be missing. */
     truncatedBy: string[] | null;
+    /** The helper's caps (`elements`, `depth`, `probe-points`), when it reports them. */
+    limits: Record<string, number> | null;
     /** An iPadOS window could not be placed on the screen; its elements say `ADEUnplaced`. */
     unplaced: boolean;
   }> => {
@@ -5503,7 +5491,10 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const truncatedBy = payload.truncated === true
       ? (Array.isArray(payload.truncatedBy) ? payload.truncatedBy.filter((entry): entry is string => typeof entry === "string") : [])
       : null;
-    return { elements: collectAccessibilityElements(JSON.parse(tree) as unknown), truncatedBy, unplaced: payload.unplaced === true };
+    const limits = payload.limits && typeof payload.limits === "object" && !Array.isArray(payload.limits)
+      ? Object.fromEntries(Object.entries(payload.limits).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+      : null;
+    return { elements: collectAccessibilityElements(JSON.parse(tree) as unknown), truncatedBy, limits, unplaced: payload.unplaced === true };
   };
 
   /**
@@ -5612,7 +5603,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         available: true,
         elementCount: accessibilityElements.length,
         ...(accessibilityRead.truncatedBy
-          ? { truncated: true, truncatedBy: accessibilityRead.truncatedBy }
+          ? {
+            truncated: true,
+            truncatedBy: accessibilityRead.truncatedBy,
+            ...(accessibilityRead.limits ? { limits: accessibilityRead.limits } : {}),
+          }
           : {}),
         ...(accessibilityRead.unplaced ? { unplaced: true } : {}),
       });
@@ -6440,640 +6435,51 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
+  /** A finger held down at one point for `durationMs`, then lifted, as one gesture. */
+  const helperHold = async (deviceUdid: string, x: number, y: number, durationMs: number, space: HelperPointSpace): Promise<void> => {
+    await helperGesture(async (send) => {
+      await send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
+      try {
+        await delay(durationMs);
+      } finally {
+        // The finger always comes up, even if the wait was cut short.
+        await send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
+      }
+    });
+  };
+
   /* ───────────────────────── iPad windows ───────────────────────── */
 
-  /**
-   * The front app's window, read from the accessibility tree.
-   *
-   * The helper places a windowed app on the screen (`WindowPlacement.swift`):
-   * its Application element's frame IS the window's screen frame, off-screen
-   * parts included (x below 0 for a window hanging off the left edge). That
-   * frame is the answer whenever the helper placed it. When it could not
-   * (the element carries `ADEUnplaced`: a sparse app gives the search too
-   * little to hit), the frame is inferred from SpringBoard's own elements,
-   * which are always in screen points: the "Window Controls, <app>" button
-   * (`window-controls:<bundle id>`) about 21 points in from the window's top
-   * left, and the "Resize <app>" grabber (`resize-grabber`, its value naming
-   * the corner, "Bottom Right" or "Bottom Left") on a bottom corner. The grid
-   * walk misses those small elements easily, so they are hit-tested where
-   * they can be. `placed` says which way the frame was read.
-   */
-  /** The front window each device had at the last read: where to look first next time. */
-  const lastWindowFrames = new Map<string, AppleWindowFrame>();
-
-  const readAppWindow = async (
-    deviceUdid: string,
-    screen: { width: number; height: number } | null = null,
-    hints: Array<{ x: number; y: number }> = [],
-  ): Promise<{
-    windowed: boolean;
-    placed: boolean;
-    /** The app is in a window ADE could not find (the helper could not place it, and its grabber and controls did not answer). */
-    lost?: boolean;
-    bundleId: string | null;
-    appName: string | null;
-    frame: AppleWindowFrame | null;
-    zoom: IosScreenElement | null;
-    controls: IosScreenElement | null;
-  }> => {
-    const { elements } = await readAccessibilityElements(deviceUdid);
-    let controls = elements.find((element) => element.identifier?.startsWith("window-controls:")) ?? null;
-    const app = elements.find((element) => (element.elementType ?? element.role) === "Application") ?? null;
-    const zoom = elements.find((element) => element.identifier === "Zoom-button") ?? null;
-    const appLabel = app?.label ?? null;
-    const appName = appLabel ?? (controls?.label?.replace(/^Window Controls,\s*/u, "") || null);
-    // Another window's grabber ("Resize Safari" beside "Resize VLD") is not this one.
-    const isOurGrabber = (element: IosScreenElement) => element.identifier === "resize-grabber"
-      && (!appLabel || !element.label || element.label === `Resize ${appLabel}`);
-    const tried = new Set<string>();
-    // Every point read is bounded as a whole: while the helper cannot place
-    // a window, each of its point reads searches too, and can take seconds.
-    const readDeadline = Date.now() + 30_000;
-    const hitFind = async (x: number, y: number, match: (element: IosScreenElement) => boolean): Promise<IosScreenElement | null> => {
-      const key = `${Math.round(x)},${Math.round(y)}`;
-      if (Date.now() > readDeadline) return null;
-      if (tried.has(key) || x < 0 || y < 0 || (screen && (x > screen.width || y > screen.height))) return null;
-      tried.add(key);
-      const hit = await readAccessibilityElementAt(deviceUdid, Math.round(x), Math.round(y)).catch(() => null);
-      return hit?.find(match) ?? null;
-    };
-    const findControls = async (frame: AppleWindowFrame): Promise<IosScreenElement | null> => {
-      for (const y of [frame.y + 32, frame.y + 54]) {
-        const found = await hitFind(frame.x + 41, y, (element) => Boolean(element.identifier?.startsWith("window-controls:")));
-        if (found) return found;
-      }
-      return null;
-    };
-    const finish = (frame: AppleWindowFrame | null, windowed: boolean, placed: boolean) => {
-      if (frame) lastWindowFrames.set(deviceUdid, frame);
-      return {
-        windowed,
-        placed,
-        bundleId: controls?.identifier?.slice("window-controls:".length) || null,
-        appName,
-        frame,
-        zoom,
-        controls,
-      };
-    };
-    if (!app) return finish(null, false, false);
-
-    const placed = app.metadata.ADEUnplaced !== true;
-    if (placed) {
-      const frame = { x: app.frame.x, y: app.frame.y, width: app.frame.width, height: app.frame.height };
-      // Placed, the frame is known; windowed mode is what the window's own
-      // controls or grabber say (a filled window shows only the grabber).
-      let grabber = elements.find(isOurGrabber) ?? null;
-      if (!controls) controls = await findControls(frame);
-      if (!controls && !grabber) {
-        grabber = await hitFind(frame.x + frame.width - 8, frame.y + frame.height - 8, isOurGrabber)
-          ?? await hitFind(frame.x + 8, frame.y + frame.height - 8, isOurGrabber);
-      }
-      // A placed frame that does not fill the screen is a window even when its
-      // controls and grabber are off the screen.
-      const fills = Boolean(screen && Math.abs(frame.x) <= 2 && Math.abs(frame.y) <= 2
-        && Math.abs(frame.width - screen.width) <= 2 && Math.abs(frame.height - screen.height) <= 2);
-      return finish(frame, Boolean(controls || grabber || (screen && !fills)), true);
-    }
-
-    // Not placed: infer the frame from SpringBoard's elements.
-    let grabber = elements.find(isOurGrabber) ?? null;
-    const width = app.frame.width;
-    const height = app.frame.height;
-    if (!grabber) {
-      const origins: Array<{ x: number; y: number }> = [];
-      if (controls) for (const inset of [21, 43]) origins.push({ x: controls.frame.x - 21, y: controls.frame.y - inset });
-      const known = lastWindowFrames.get(deviceUdid);
-      if (known && known.width === width && known.height === height) origins.push({ x: known.x, y: known.y });
-      origins.push(...hints);
-      if (screen) {
-        const slots = (span: number, size: number) => {
-          const values = new Set<number>([0, Math.max(0, span - size), Math.max(0, (span - size) / 2)]);
-          for (let step = size; step + size <= span + 2; step += size) values.add(step);
-          return [...values];
-        };
-        for (const y of slots(screen.height, height)) for (const x of slots(screen.width, width)) origins.push({ x, y });
-      }
-      for (const origin of origins) {
-        // The grabber answers a little inside its corner, not on it.
-        grabber = await hitFind(origin.x + width - 8, origin.y + height - 8, isOurGrabber)
-          ?? await hitFind(origin.x + 8, origin.y + height - 8, isOurGrabber);
-        if (grabber) break;
-      }
-      // Last: sweep every place a bottom corner can be, 20 points apart (the
-      // grabber answers over about 20 points inside its corner).
-      if (!grabber && screen) {
-        sweep: for (let y = Math.min(screen.height, height) - 6; y <= screen.height; y += 20) {
-          for (let x = 6; x <= screen.width; x += 20) {
-            grabber = await hitFind(x, y, isOurGrabber);
-            if (grabber) break sweep;
-          }
-        }
-      }
-    }
-    if (!grabber && !controls) {
-      // A window whose grabber is off the screen (hanging past the right or
-      // bottom edge) is found by its controls: look near where it was last
-      // seen or sent, 16 points apart.
-      const near = [...hints, ...(lastWindowFrames.get(deviceUdid) ? [lastWindowFrames.get(deviceUdid)!] : [])];
-      search: for (const origin of near) {
-        for (let dy = -48; dy <= 48; dy += 16) {
-          for (let dx = -48; dx <= 48; dx += 16) {
-            for (const inset of [32, 54]) {
-              controls = await hitFind(origin.x + 41 + dx, origin.y + inset + dy, (element) => Boolean(element.identifier?.startsWith("window-controls:")));
-              if (controls) break search;
-            }
-          }
-        }
-      }
-    }
-    if (!grabber && !controls && screen && (width < screen.width - 2 || height < screen.height - 2)) {
-      // Last: the app is in a window ADE has not seen yet (moved by hand, or
-      // tiled off an edge). Sweep the screen for its controls, 30 by 18
-      // points apart (the button is 41 by 22), for at most 25 seconds.
-      const deadline = Date.now() + 25_000;
-      sweep: for (let y = 30; y <= screen.height - 20; y += 18) {
-        for (let x = 20; x <= screen.width - 10; x += 30) {
-          if (Date.now() > deadline) break sweep;
-          controls = await hitFind(x, y, (element) => Boolean(element.identifier?.startsWith("window-controls:")));
-          if (controls) break sweep;
-        }
-      }
-    }
-    if (!grabber) {
-      // The controls alone still place it: 21 points in from the top left,
-      // 43 from the top when the window starts under the status bar.
-      if (!controls) {
-        // The app's own frame is smaller than the screen: it IS in a window,
-        // just not one ADE could find.
-        const lost = Boolean(screen && (width < screen.width - 2 || height < screen.height - 2));
-        return { ...finish(null, false, false), ...(lost ? { lost: true } : {}) };
-      }
-      const top = controls.frame.y - 43 >= -2 && controls.frame.y - 43 <= 2 ? 0 : controls.frame.y - 21;
-      return finish({ x: controls.frame.x - 21, y: top, width, height }, true, false);
-    }
-    const corner = (grabber.value ?? "").toLowerCase();
-    const cx = grabber.frame.x + grabber.frame.width / 2;
-    const cy = grabber.frame.y + grabber.frame.height / 2;
-    const frame = {
-      x: corner.includes("left") ? cx : cx - width,
-      y: corner.includes("top") ? cy : cy - height,
-      width,
-      height,
-    };
-    if (!controls) controls = await findControls(frame);
-    return finish(frame, true, false);
-  };
-
-  /** The part of a window that is off the screen, in points, per side; all 0 when it is wholly on it. */
-  const windowOffScreen = (frame: AppleWindowFrame, screen: { width: number; height: number }) => ({
-    left: Math.max(0, -frame.x),
-    top: Math.max(0, -frame.y),
-    right: Math.max(0, frame.x + frame.width - screen.width),
-    bottom: Math.max(0, frame.y + frame.height - screen.height),
+  const windowControl = createAppleWindowControl({
+    readAccessibilityElements: (deviceUdid) => readAccessibilityElements(deviceUdid),
+    readAccessibilityElementAt: (deviceUdid, x, y) => readAccessibilityElementAt(deviceUdid, x, y),
+    enqueueControl: (action, runControl, timeoutMs) => enqueueControl(action, runControl, timeoutMs),
+    helperGesture: (gesture) => helperGesture(gesture),
+    helperTap: (deviceUdid, x, y, space) => helperTap(deviceUdid, x, y, space),
+    helperSwipe: (deviceUdid, input, space) => helperSwipe(deviceUdid, input, space),
+    helperHold: (deviceUdid, x, y, durationMs, space) => helperHold(deviceUdid, x, y, durationMs, space),
+    getScreenSnapshot: (snapshotArgs) => getScreenSnapshot(snapshotArgs),
+    touchDevice: (deviceUdid) => maintenance?.touch(deviceUdid),
+    logger: args.logger,
   });
 
-  /**
-   * Move the window by dragging its top strip (14 points under its top edge,
-   * clear of the controls at its left): what a person does. Measured on
-   * iPadOS 27: a drag there moves a free window point for point; a drag on
-   * the controls or the content does not. Returns the frame read afterwards.
-   */
-  const moveAppWindow = async (
-    deviceUdid: string,
-    screen: { width: number; height: number },
-    frame: AppleWindowFrame,
-    to: { x: number; y: number },
-  ): Promise<AppleWindowFrame | null> => {
-    // Grab the visible middle of the top strip: part of the window may be off screen.
-    const left = Math.max(frame.x + 80, 8);
-    const right = Math.min(frame.x + frame.width - 16, screen.width - 8);
-    const grabX = left <= right ? (left + right) / 2 : Math.min(Math.max(frame.x + frame.width / 2, 8), screen.width - 8);
-    const grabY = Math.max(frame.y, 0) + 14;
-    await enqueueControl("window-move", () => helperGesture(async (send) => {
-      await send({ type: "touch", udid: deviceUdid, phase: "begin", x: grabX, y: grabY, space: "screen" });
-      try {
-        await delay(300);
-        const steps = 16;
-        for (let step = 1; step <= steps; step += 1) {
-          await send({
-            type: "touch",
-            udid: deviceUdid,
-            phase: "move",
-            x: grabX + ((to.x - frame.x) * step) / steps,
-            y: grabY + ((to.y - frame.y) * step) / steps,
-            space: "screen",
-          });
-          await delay(30);
-        }
-        await delay(150);
-      } finally {
-        await send({ type: "touch", udid: deviceUdid, phase: "end", x: grabX + (to.x - frame.x), y: grabY + (to.y - frame.y), space: "screen" });
-      }
-    }), 30_000);
-    await delay(1_000);
-    const first = (await readAppWindow(deviceUdid, screen, [to])).frame;
-    if (first) return first;
-    // A window that just left a tile can still be settling (and the helper
-    // placing it): read once more.
-    await delay(1_000);
-    return (await readAppWindow(deviceUdid, screen, [to])).frame;
-  };
-
-  /**
-   * The window's green Zoom button. It shows only while the window controls
-   * are open (a tap on "Window Controls" opens them), and the grid walk can
-   * miss all three buttons, so they are hit-tested where they sit: the
-   * controls at the window's top left, Zoom about 71 points right of Close.
-   */
-  const findWindowZoomButton = async (
-    deviceUdid: string,
-    frame: AppleWindowFrame,
-    controls: IosScreenElement | null,
-  ): Promise<IosScreenElement | null> => {
-    const at = async (x: number, y: number) => (await readAccessibilityElementAt(deviceUdid, Math.round(x), Math.round(y)).catch(() => null)) ?? [];
-    const zoomBesideClose = async (close: IosScreenElement) => {
-      const hit = await at(close.frame.x + close.frame.width / 2 + 71, close.frame.y + close.frame.height / 2);
-      return hit.find((element) => element.identifier === "Zoom-button") ?? null;
-    };
-    let opener = controls;
-    for (const y of [frame.y + 32, frame.y + 54]) {
-      if (opener) break;
-      const hit = await at(frame.x + 41, y);
-      const zoom = hit.find((element) => element.identifier === "Zoom-button");
-      if (zoom) return zoom;
-      const close = hit.find((element) => element.identifier === "Close-button");
-      // Already open.
-      if (close) return zoomBesideClose(close);
-      opener = hit.find((element) => element.identifier?.startsWith("window-controls:")) ?? null;
-    }
-    if (!opener) return null;
-    const openerX = opener.frame.x + opener.frame.width / 2;
-    const openerY = opener.frame.y + opener.frame.height / 2;
-    await enqueueControl("window-controls", () => helperTap(deviceUdid, openerX, openerY, "screen"), 30_000);
-    await delay(600);
-    const { elements } = await readAccessibilityElements(deviceUdid);
-    const zoom = elements.find((element) => element.identifier === "Zoom-button");
-    if (zoom) return zoom;
-    const close = elements.find((element) => element.identifier === "Close-button")
-      ?? (await at(opener.frame.x + 13, openerY)).find((element) => element.identifier === "Close-button");
-    return close ? zoomBesideClose(close) : null;
-  };
-
-  /** Labels of the window menu's items, per action (iPadOS 26/27). */
-  const WINDOW_MENU_LABELS: Record<Exclude<AppleWindowLayoutAction, "status" | "size" | "move">, string[]> = {
-    fill: ["Fill"],
-    left: ["Left"],
-    right: ["Right"],
-    top: ["Top"],
-    bottom: ["Bottom"],
-    split: ["Left and Right"],
-    thirds: ["Arrange thirds", "Thirds"],
-    quarters: ["Quarters"],
-    "slide-over": ["Enter Slide Over"],
-  };
-
-  /** Where a layout puts the window's top left, to look there first (this orientation's first slot). */
-  const layoutOrigin = (action: AppleWindowLayoutAction, screen: { width: number; height: number }): { x: number; y: number } | null => {
-    const slot = appleWindowSlots(action, screen)[0];
-    return slot ? { x: slot.x, y: slot.y } : null;
-  };
-
-  const windowMatches = (frame: AppleWindowFrame | null, expected: Partial<AppleWindowFrame> | null, tolerance: number): boolean => {
-    if (!frame || !expected) return false;
-    return (Object.keys(expected) as Array<keyof AppleWindowFrame>)
-      .every((key) => Math.abs(frame[key] - (expected[key] as number)) <= tolerance);
-  };
-
-  const describeFrame = (frame: AppleWindowFrame | null): string => (frame
-    ? `${Math.round(frame.width)}x${Math.round(frame.height)} at ${Math.round(frame.x)},${Math.round(frame.y)}`
-    : "no window");
-
-  /**
-   * Lay out the front app's window on an iPad (`ade apple window`). Every
-   * action ends with a read of the frame; `applied` says whether it landed.
-   */
+  /** Lay out the front app's window on an iPad (`ade apple window`); see `appleWindowControl.ts`. */
   const windowLayout = async (layoutArgs: AppleWindowLayoutArgs = {}): Promise<AppleWindowLayoutResult> => {
     assertDarwin();
     const runtime = resolveRuntime(layoutArgs);
     const deviceUdid = await resolveControlDeviceUdid(layoutArgs.deviceUdid, runtime);
-    const action: AppleWindowLayoutAction = layoutArgs.action && APPLE_WINDOW_LAYOUT_ACTIONS.includes(layoutArgs.action)
-      ? layoutArgs.action
-      : layoutArgs.width != null || layoutArgs.height != null ? "size" : "status";
-    const snapshot = await getScreenSnapshot({ deviceUdid, ...(runtime.key ? { laneId: runtime.key } : {}) });
-    const screen = { width: snapshot.screen.width, height: snapshot.screen.height };
-    const start = await readAppWindow(deviceUdid, screen);
-    const base = {
-      deviceUdid,
-      action,
-      bundleId: start.bundleId,
-      appName: start.appName,
-      screen,
-      before: start.frame,
-      frameSource: start.placed ? "placed" as const : "inferred" as const,
-    };
-    const offScreenOf = (frame: AppleWindowFrame | null) => {
-      if (!frame) return null;
-      const off = windowOffScreen(frame, screen);
-      return off.left || off.top || off.right || off.bottom ? off : null;
-    };
-    if (start.lost) {
-      throw new AdeExpectedError(
-        `${APPLE_WINDOWING_UNAVAILABLE_CODE}: ${start.appName ?? "The app"} is in a window ADE cannot find: the helper could not place it, and its resize grabber and window controls did not answer (the window may hang off the screen's right or bottom edge). `
-          + "Drag it back on screen, or bring it back with ade apple relaunch, then try again.",
-        "user",
-      );
-    }
-    if (action === "status") {
-      const off = offScreenOf(start.frame);
-      return { ...base, after: start.frame, applied: true, tolerance: 0, ...(off ? { offScreen: off } : {}) };
-    }
-    if (!start.windowed || !start.frame) {
-      throw new AdeExpectedError(
-        `${APPLE_WINDOWING_UNAVAILABLE_CODE}: the app in front is not in a resizable window, so there is nothing to lay out. `
-          + "Window layouts need an iPad in windowed mode (iPadOS 26+): in the simulator's Settings › Multitasking & Gestures, choose Windowed Apps. "
-          + "An iPhone has no windows. Bring the app to the front first (ade apple relaunch --bundle-id <id>).",
-        "user",
-      );
-    }
-    maintenance?.touch(deviceUdid);
-    const tolerance = action === "size" || action === "move" ? 3 : 24;
-    /**
-     * A window partly off the screen (a thirds arrangement can leave one
-     * hanging off an edge) hides its controls or its grabber: bring it wholly
-     * on screen first, by its top strip, as a person would.
-     */
-    const bringOnScreen = async (frame: AppleWindowFrame): Promise<AppleWindowFrame> => {
-      // A tiled window untiles on the first drag and takes its old size, so
-      // the target is worked out again from each read (three drags at most).
-      let moved: AppleWindowFrame | null = frame;
-      for (let attempt = 0; attempt < 3 && moved && offScreenOf(moved); attempt += 1) {
-        const current: AppleWindowFrame = moved;
-        const to = {
-          x: Math.min(Math.max(current.x, 0), Math.max(0, screen.width - current.width)),
-          y: Math.min(Math.max(current.y, 0), Math.max(0, screen.height - current.height)),
-        };
-        moved = await moveAppWindow(deviceUdid, screen, current, to);
-      }
-      if (!moved || offScreenOf(moved)) {
-        throw new AdeExpectedError(
-          `${APPLE_WINDOWING_UNAVAILABLE_CODE}: the window is partly off the screen (${describeFrame(moved ?? frame)}) and dragging it back did not bring it on. `
-            + "Try window --fill.",
-          "user",
-        );
-      }
-      return moved;
-    };
-    const filled = (frame: AppleWindowFrame | null) => Boolean(frame
-      && Math.abs(frame.width - screen.width) <= 2 && Math.abs(frame.height - screen.height) <= 2);
-    /**
-     * A filled window shows no controls, and its first grabber drag only
-     * takes it out of Fill (back to its last window size, centred), whatever
-     * the drag asked. So that drag is made on its own and the window read
-     * again before anything is measured against it.
-     */
-    const unfill = async (frame: AppleWindowFrame) => {
-      const corner = { x: frame.x + frame.width - 8, y: frame.y + frame.height - 8 };
-      await enqueueControl("window-unfill", () => helperSwipe(deviceUdid, {
-        startX: corner.x,
-        startY: corner.y,
-        endX: corner.x - 160,
-        endY: corner.y - 160,
-        durationMs: 700,
-      }, "screen"), 30_000);
-      await delay(1_000);
-      const unfilled = await readAppWindow(deviceUdid, screen);
-      if (!unfilled.frame) {
-        throw new AdeExpectedError(`${APPLE_WINDOWING_UNAVAILABLE_CODE}: the window left Fill but ADE could not find it again. Run window status.`, "user");
-      }
-      return unfilled;
-    };
-    /**
-     * Why a move stopped short, from where iPadOS left the window. Measured:
-     * a window brought within about 10 points of a screen edge is snapped to
-     * it (700,300 became 710,300 on a 1210-wide screen, flush right), a
-     * filled or tiled window first leaves its tile, and a window pushed past
-     * the right edge is stashed there.
-     */
-    const describeMoveMiss = (after: AppleWindowFrame, to: { x: number; y: number }): string => {
-      const snapped = [
-        Math.abs(after.x) <= 1 && to.x !== 0 ? "the left edge" : null,
-        Math.abs(after.x + after.width - screen.width) <= 1 ? "the right edge" : null,
-        Math.abs(after.y) <= 1 && to.y !== 0 ? "the top" : null,
-        Math.abs(after.y + after.height - screen.height) <= 1 ? "the bottom edge" : null,
-        // The Dock is 123 points tall on an iPad Pro 11-inch, both ways up:
-        // 100,100 for a 600-point window became 100,111 on an 834-point screen.
-        Math.abs(after.y + after.height - (screen.height - APPLE_IPAD_DOCK_HEIGHT)) <= 2 ? "the top of the Dock" : null,
-      ].filter(Boolean);
-      const off = Math.round(Math.hypot(after.x - to.x, after.y - to.y));
-      return `iPadOS left the window at ${describeFrame(after)}, ${off} pt from ${Math.round(to.x)},${Math.round(to.y)}`
-        + (snapped.length ? `: it snapped it to ${snapped.join(" and ")}.` : ": it keeps a window where it can reach it, and a filled or tiled window leaves its tile (and takes back its old size) on the first drag.");
-    };
-    if (action === "move") {
-      const to = { x: Number(layoutArgs.x), y: Number(layoutArgs.y) };
-      if (!Number.isFinite(to.x) || !Number.isFinite(to.y)) {
-        throw new AdeExpectedError("window --move needs X,Y in points: where the window's top-left corner goes.", "user");
-      }
-      let after = await moveAppWindow(deviceUdid, screen, start.frame, to);
-      const near = (frame: AppleWindowFrame | null) => Boolean(frame && Math.abs(frame.x - to.x) <= tolerance && Math.abs(frame.y - to.y) <= tolerance);
-      // A tiled window leaves its slot on the first drag and can land a few
-      // points short: one more drag of what is left.
-      if (after && !near(after) && Math.hypot(after.x - to.x, after.y - to.y) < 200) {
-        after = (await moveAppWindow(deviceUdid, screen, after, to)) ?? after;
-      }
-      const applied = near(after);
-      return {
-        ...base,
-        after,
-        applied,
-        tolerance,
-        ...(applied ? {} : {
-          reason: after ? describeMoveMiss(after, to) : "After the drag the front app has no window ADE can read.",
-        }),
-      };
-    }
-    if (action === "size") {
-      const width = Number(layoutArgs.width ?? start.frame.width);
-      const height = Number(layoutArgs.height ?? start.frame.height);
-      if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-        throw new AdeExpectedError("window --size needs WIDTHxHEIGHT in points, both above 0.", "user");
-      }
-      const onScreen = await bringOnScreen(filled(start.frame) ? (await unfill(start.frame)).frame! : start.frame);
-      if (onScreen.x + width > screen.width + 1 || onScreen.y + height > screen.height + 1) {
-        throw new AdeExpectedError(
-          `A ${Math.round(width)}x${Math.round(height)} window does not fit from where this one starts (${describeFrame(onScreen)}, screen ${screen.width}x${screen.height}). `
-            + "The size keeps the top-left corner: move it first (window --move 0,0, --left, --top), or ask for a smaller size.",
-          "user",
-        );
-      }
-      const wanted = { width, height };
-      let current = onScreen;
-      let attempts = 0;
-      // Each drag corrects what the one before left over, scaled by how much
-      // of the last drag the window followed.
-      let gain = { x: 1, y: 1 };
-      while (attempts < 4 && !windowMatches(current, { width, height }, tolerance)) {
-        attempts += 1;
-        const dx = (wanted.width - current.width) * gain.x;
-        const dy = (wanted.height - current.height) * gain.y;
-        const corner = { x: current.x + current.width, y: current.y + current.height };
-        // Inside the 40-point grabber, never past a screen edge.
-        await enqueueControl("window-resize", () => helperSwipe(deviceUdid, {
-          startX: corner.x - 8,
-          startY: corner.y - 8,
-          endX: corner.x - 8 + dx,
-          endY: corner.y - 8 + dy,
-          durationMs: 700,
-        }, "screen"), 30_000);
-        await delay(900);
-        const next = (await readAppWindow(deviceUdid, screen, [{ x: current.x, y: current.y }])).frame;
-        args.logger.debug("apple.window_resize_step", { deviceUdid, attempt: attempts, from: current, dx, dy, to: next });
-        if (!next) break;
-        const movedX = next.width - current.width;
-        const movedY = next.height - current.height;
-        // The share of the drag the window followed sets the next aim. A free
-        // window follows about 92% of it (the grab eats the rest); a window
-        // iPadOS centred (out of Fill) grows on both sides, so it follows
-        // about 200% of it.
-        const clampGain = (value: number) => Math.min(1.5, Math.max(0.3, Number.isFinite(value) ? value : 1));
-        if (Math.abs(dx) > 8 && Math.abs(movedX) > 4) gain = { ...gain, x: clampGain(dx / movedX) };
-        if (Math.abs(dy) > 8 && Math.abs(movedY) > 4) gain = { ...gain, y: clampGain(dy / movedY) };
-        // Nothing moved: the window is at its limit (a minimum or maximum size).
-        if (Math.abs(movedX) < 1 && Math.abs(movedY) < 1) {
-          current = next;
-          break;
-        }
-        current = next;
-      }
-      const applied = windowMatches(current, { width, height }, tolerance);
-      return {
-        ...base,
-        after: current,
-        applied,
-        tolerance,
-        attempts,
-        ...(applied ? {} : {
-          reason: `The window stopped at ${describeFrame(current)}; ${Math.round(width)}x${Math.round(height)} may be under the app's minimum or past what the screen allows from that corner.`,
-        }),
-      };
-    }
-    if (action === "fill" && filled(start.frame)) {
-      return { ...base, after: start.frame, applied: true, tolerance };
-    }
-    // A filled window shows no window controls. Any drag of its grabber
-    // takes it out of Fill (back to its last window size), and then the
-    // controls are there.
-    let window: { frame: AppleWindowFrame | null; zoom: IosScreenElement | null; controls: IosScreenElement | null } = {
-      frame: start.frame,
-      zoom: start.zoom,
-      controls: start.controls,
-    };
-    if (filled(start.frame)) {
-      const unfilled = await unfill(start.frame);
-      window = { frame: unfilled.frame, zoom: unfilled.zoom, controls: unfilled.controls };
-    }
-    // The controls sit at the window's top left: bring the window back only
-    // when they would be off the screen (a window that outgrew a bottom or
-    // right slot keeps them, and dragging it would untile it for nothing).
-    const controlsHidden = (frame: AppleWindowFrame) => frame.x < 0 || frame.y < 0 || frame.x + 62 > screen.width || frame.y + 65 > screen.height;
-    if (window.frame && controlsHidden(window.frame)) {
-      const moved = await bringOnScreen(window.frame);
-      const reread = await readAppWindow(deviceUdid, screen, [{ x: moved.x, y: moved.y }]);
-      window = { frame: reread.frame ?? moved, zoom: reread.zoom, controls: reread.controls };
-    }
-    // The window menu: a long press on the green Zoom button.
-    const zoom = window.zoom ?? await findWindowZoomButton(deviceUdid, window.frame!, window.controls);
-    if (!zoom) {
-      throw new AdeExpectedError(
-        `${APPLE_WINDOWING_UNAVAILABLE_CODE}: the window's green Zoom button did not show, so its layout menu cannot open. Run window status, then try again.`,
-        "user",
-      );
-    }
-    const zoomX = zoom.frame.x + zoom.frame.width / 2;
-    const zoomY = zoom.frame.y + zoom.frame.height / 2;
-    await enqueueControl("window-menu", () => helperGesture(async (send) => {
-      await send({ type: "touch", udid: deviceUdid, phase: "begin", x: zoomX, y: zoomY, space: "screen" });
-      try {
-        await delay(1_300);
-      } finally {
-        await send({ type: "touch", udid: deviceUdid, phase: "end", x: zoomX, y: zoomY, space: "screen" });
-      }
-    }), 30_000);
-    await delay(700);
-    const labels = WINDOW_MENU_LABELS[action as keyof typeof WINDOW_MENU_LABELS];
-    const allLabels = Object.values(WINDOW_MENU_LABELS).flat();
-    const isMenuButton = (element: IosScreenElement) => (element.elementType ?? element.role) === "Button"
-      && element.label !== null && allLabels.includes(element.label);
-    // The menu opens beside the Zoom button; an app's own "Left" button
-    // elsewhere on screen is not one of its items.
-    const nearZoom = (element: IosScreenElement) => Math.hypot(
-      element.frame.x + element.frame.width / 2 - zoomX,
-      element.frame.y + element.frame.height / 2 - zoomY,
-    ) < 420;
-    let menu = (await readAccessibilityElements(deviceUdid)).elements.filter((element) => isMenuButton(element) && nearZoom(element));
-    if (!menu.some((element) => labels.includes(element.label!))) {
-      // The grid walk misses menu items as easily as the grabber: ask the
-      // points around the button, 24 apart, where the menu can open.
-      const seen = new Set(menu.map((element) => element.label));
-      sweep: for (let dy = -260; dy <= 260; dy += 24) {
-        for (let dx = -240; dx <= 260; dx += 24) {
-          const x = zoomX + dx;
-          const y = zoomY + dy;
-          if (x < 0 || y < 0 || x > screen.width || y > screen.height || Math.abs(dy) < 16) continue;
-          const hit = await readAccessibilityElementAt(deviceUdid, Math.round(x), Math.round(y)).catch(() => null);
-          for (const element of hit ?? []) {
-            if (!isMenuButton(element) || seen.has(element.label)) continue;
-            seen.add(element.label);
-            menu.push(element);
-          }
-          if (menu.some((element) => labels.includes(element.label!))) break sweep;
-        }
-      }
-    }
-    const item = menu.find((element) => labels.includes(element.label!)) ?? null;
-    if (!item) {
-      const offered = menu.map((element) => element.label);
-      // Close the menu with Escape (a tap on Zoom would Fill the window).
-      await helper().send({ type: "key", udid: deviceUdid, phase: "down", usage: 0x29 })
-        .then(() => helper().send({ type: "key", udid: deviceUdid, phase: "up", usage: 0x29 }))
-        .catch(() => undefined);
-      throw new AdeExpectedError(
-        `The window menu has no "${labels[0]}" item${offered.length ? ` (it offers: ${offered.join(", ")})` : " (it did not open)"}. `
-          + "This iPadOS may not offer that layout.",
-        "user",
-      );
-    }
-    await enqueueControl("window-menu-item", () => helperTap(
-      deviceUdid,
-      item.frame.x + item.frame.width / 2,
-      item.frame.y + item.frame.height / 2,
-      "screen",
-    ), 30_000);
-    await delay(1_200);
-    const hint = layoutOrigin(action, screen);
-    const after = (await readAppWindow(deviceUdid, screen, [...(hint ? [hint] : []), { x: window.frame!.x, y: window.frame!.y }])).frame;
-    const offAfter = offScreenOf(after);
-    // Orientation-aware: the slots come from this screen's size, and a window
-    // may run off the screen only where its app's minimum size outgrew its slot.
-    const verdict = after ? judgeAppleWindowLayout(action, after, screen, window.frame) : null;
-    const applied = verdict?.landed === true;
-    return {
-      ...base,
-      after,
-      applied,
-      tolerance,
-      ...(verdict?.note ? { note: verdict.note } : {}),
-      ...(applied ? {} : {
-        reason: after
-          ? offAfter && verdict?.strayOffScreen
-            ? `The window is ${describeFrame(after)} after "${item.label}": partly off the screen (${Object.entries(offAfter).filter(([, value]) => value > 0).map(([side, value]) => `${Math.round(value)} pt past the ${side} edge`).join(", ")}). The app's minimum width may not fit that slot on a ${screen.width}x${screen.height} screen.`
-            : `The window is ${describeFrame(after)} after "${item.label}"; that does not look like the ${action} layout of a ${screen.width}x${screen.height} screen.`
-          : `After "${item.label}" the front app has no window ADE can read (another app may be in front now).`,
-      }),
-    };
+    return windowControl.windowLayout(deviceUdid, runtime.key, layoutArgs);
   };
 
-  const tap = async (point: { deviceUdid?: string | null; x: number; y: number; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource }): Promise<{ ok: true }> => {
+  const tap = async (point: {
+    deviceUdid?: string | null;
+    x: number;
+    y: number;
+    laneId?: string | null;
+    chatSessionId?: string | null;
+    source?: AppleInputSource;
+    noRecord?: boolean | null;
+  }): Promise<{ ok: true }> => {
     assertDarwin();
     const runtime = resolveRuntime(point);
     const deviceUdid = await resolveControlDeviceUdid(point.deviceUdid, runtime);
@@ -7084,7 +6490,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       await liftLiveTouch(runtime.key, "tap", runtime.laneId);
       await helperTap(deviceUdid, x, y, inputPointSpace(point.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: point.source, noRecord: point.noRecord });
       return { ok: true };
     });
   };
@@ -7107,17 +6513,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const space = inputPointSpace(input.source);
     return enqueueControl("tap", async () => {
       await liftLiveTouch(runtime.key, "long-press", runtime.laneId);
-      await helperGesture(async (send) => {
-        await send({ type: "touch", udid: deviceUdid, phase: "begin", x, y, space });
-        try {
-          await delay(durationMs);
-        } finally {
-          // The finger always comes up, even if the wait was cut short.
-          await send({ type: "touch", udid: deviceUdid, phase: "end", x, y, space });
-        }
-      });
+      await helperHold(deviceUdid, x, y, durationMs, space);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "tap", x, y, source: input.source, noRecord: input.noRecord });
       return { ok: true, action: "long-press", durationMs };
     });
   };
@@ -7354,7 +6752,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // what is on screen, and a video that skips it shows a jump cut. The
       // source is carried through so a person scrolling the pane does not look
       // like an agent and start a recording.
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", source: scrollArgs.source, noRecord: scrollArgs.noRecord });
       return { ok: true as const, action: "scroll" as const, direction, deltaX, deltaY };
     });
   };
@@ -7369,7 +6767,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * cannot tell, nothing is claimed (`focus` is left out).
    */
   const typeText = async (
-    input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource },
+    input: { deviceUdid?: string | null; text: string; laneId?: string | null; chatSessionId?: string | null; source?: AppleInputSource; noRecord?: boolean | null },
     options: { checkFocus?: boolean } = {},
   ): Promise<{ ok: true; focus?: "field" | "none"; focused?: string | null; message?: string | null }> => {
     assertDarwin();
@@ -7380,7 +6778,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       const focused = checkFocus ? await readFocusedElement(deviceUdid).catch(() => undefined) : undefined;
       await helperType(deviceUdid, input.text);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source, noRecord: input.noRecord });
       if (focused === undefined) return { ok: true };
       if (focused === null) {
         return {
@@ -7440,7 +6838,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         }
       }
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "type", text: `[${label}]`, source: input.source, noRecord: input.noRecord });
       return { ok: true, key: label };
     });
   };
@@ -7464,7 +6862,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       if (deltaValue != null && (!Number.isFinite(deltaValue) || deltaValue <= 0)) throw new Error("delta must be a positive number.");
       await helperSwipe(deviceUdid, { startX, startY, endX, endY, durationMs }, inputPointSpace(input.source));
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source });
+      noteInput(runtime, { udid: deviceUdid, kind: "drag", x: endX, y: endY, source: input.source, noRecord: input.noRecord });
       // Named, so the answer does not read as a tap.
       return { ok: true, action };
     });
@@ -7545,6 +6943,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     x: number;
     y: number;
     source?: AppleInputSource;
+    noRecord?: boolean | null;
   }): Promise<{ ok: true }> => {
     assertDarwin();
     const phase: unknown = input.phase;
@@ -7583,7 +6982,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       liveTouches.delete(laneKey);
       await sendTouch(held.udid, "end", x, y);
       const moved = Math.hypot(x - held.startX, y - held.startY) > 10;
-      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source });
+      noteInput(runtime, { udid: held.udid, kind: moved ? "drag" : "tap", x, y, source: input.source, noRecord: input.noRecord });
       return { ok: true };
     });
   };
@@ -7609,7 +7008,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       ? contextItemFromScreenElement(element, screenSnapshot, runtime, screenSnapshot.screenshot.dataUrl, sourceRoot)
       : coordinateFallbackItem({ x, y }, screenSnapshot.deviceUdid, runtime, screenSnapshot.screenshot.dataUrl);
     lastSelectedItem = item;
-    noteInput(runtime, { udid: screenSnapshot.deviceUdid, kind: "select", x, y });
+    noteInput(runtime, { udid: screenSnapshot.deviceUdid, kind: "select", x, y, noRecord: point.noRecord });
     // Selecting exists to show the user what they picked, so reveal the drawer
     // whichever host answered.
     requestDrawerOpen("selectPoint", "inspect", {
@@ -8035,7 +7434,6 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── tests ───────────────────────── */
 
-  /** The one test run this service allows at a time: the lane and scheme, for the busy message. */
   /** Lanes with an `installApp` build in their DerivedData right now. */
   const laneAppInstalls = new Set<string>();
 
@@ -8074,9 +7472,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       ? "another install"
       : runtime.activeLaunchId
         ? "a launch"
-        : activeBuildDataPaths.has(path.resolve(derivedDataPath))
-          ? "a build or test run"
-          : null;
+        : testRunInFlight?.laneKey === runtime.key
+          ? "a test run"
+          : activeBuildDataPaths.has(path.resolve(derivedDataPath))
+            ? "a build or test run"
+            : null;
     if (busy) {
       throw new AdeExpectedError(
         `${APPLE_BUILD_BUSY_CODE}: ${busy} is building in this lane's DerivedData. Two xcodebuilds in one DerivedData break each other; wait for it, then run install again.`,
@@ -8154,7 +7554,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     }
   };
 
-  let testRunInFlight: string | null = null;
+  /** The one test run this service allows at a time: its lane, and the lane and scheme for the busy message. */
+  let testRunInFlight: { laneKey: string; label: string } | null = null;
 
   /**
    * `xcodebuild test` on the lane's own device (`appleTestRun.ts` runs it).
@@ -8168,7 +7569,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const runtime = requireLaneScope(testArgs);
     if (testRunInFlight) {
       throw new Error(
-        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight}). `
+        `${APPLE_TEST_RUN_BUSY_CODE}: a test run is already going in this ADE runtime (${testRunInFlight.label}). `
           + "xcodebuild test runs one at a time; wait for it to finish, then run again.",
       );
     }
@@ -8181,7 +7582,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         "user",
       );
     }
-    testRunInFlight = `lane ${runtime.key}`;
+    testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}` };
     try {
       return await runTestsClaimed(testArgs, runtime);
     } finally {
@@ -8233,32 +7634,38 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const runTestsClaimed = async (testArgs: AppleRunTestsArgs, runtime: LaneRuntime): Promise<AppleRunTestsResult> => {
     const projectRoot = await resolveScopedRootForSession(testArgs, runtime);
     const { projectPath, scheme, bundleId } = await resolveTestTarget(testArgs, projectRoot);
-    const laneDevice = await ensureLaneDevice(runtime);
-    if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
-    const device = await resolveDevice(laneDevice.udid, runtime);
-    await ensureDeviceBooted(device);
     const derivedDataPath = appleLaneDerivedDataPath(projectRoot);
-    testRunInFlight = `lane ${runtime.key}, scheme ${scheme}`;
-    activeTestUdids.add(device.udid);
+    testRunInFlight = { laneKey: runtime.key, label: `lane ${runtime.key}, scheme ${scheme}` };
+    // The DerivedData is the run's from here, before the device boot, which
+    // takes tens of seconds: an install or a cleaner during the boot sees it.
     const releaseBuildPath = claimBuildDataPath(derivedDataPath);
-    args.logger.info("apple.tests.start", { laneId: runtime.key, udid: device.udid, projectPath, scheme, derivedDataPath });
-    // Same guard as a launch build: package state that names another folder goes first.
-    healMovedDerivedData(derivedDataPath, projectRoot, args.logger);
+    let device: IosSimulatorDevice | null = null;
     let result: AppleRunTestsResult;
     try {
+      const laneDevice = await ensureLaneDevice(runtime);
+      if (!laneDevice) throw new AdeExpectedError(AGENT_NO_LANE_DEVICE_MESSAGE, "user");
+      const target = await resolveDevice(laneDevice.udid, runtime);
+      device = target;
+      await ensureDeviceBooted(target);
+      activeTestUdids.add(target.udid);
+      args.logger.info("apple.tests.start", { laneId: runtime.key, udid: target.udid, projectPath, scheme, derivedDataPath });
+      // Same guard as a launch build: package state that names another folder goes first.
+      healMovedDerivedData(derivedDataPath, projectRoot, args.logger);
       // xcodebuild installs the app under test; on an attached device it is
       // ADE's to remove later only when it was not there before.
-      result = await installTracked(device.udid, bundleId, () => (
-        runXcodebuildTests({ projectRoot, projectPath, scheme, device, derivedDataPath, testArgs, spawnProcess })
+      result = await installTracked(target.udid, bundleId, () => (
+        runXcodebuildTests({ projectRoot, projectPath, scheme, device: target, derivedDataPath, testArgs, spawnProcess })
       ));
     } finally {
-      activeTestUdids.delete(device.udid);
       releaseBuildPath();
-      maintenance?.touch(device.udid);
+      if (device) {
+        activeTestUdids.delete(device.udid);
+        maintenance?.touch(device.udid);
+      }
     }
     args.logger.info("apple.tests.complete", {
       laneId: runtime.key,
-      udid: device.udid,
+      udid: result.deviceUdid,
       passed: result.passed,
       exitCode: result.exitCode,
       timedOut: result.timedOut,
@@ -8531,7 +7938,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     return guarded as T;
   };
 
-  return withInputRecordingScope(guardAgentDeviceActions({
+  return guardAgentDeviceActions({
     getStatus,
     getControlOwner,
     getClaimedDevice,
@@ -8656,7 +8063,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       // `open-url` is an injected input under the auto-record contract: it is
       // how an agent drives a deeplink, and the video has to show it.
       const udid = await resolveControlDeviceUdid(toolArgs.deviceUdid, runtime).catch(() => null);
-      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source });
+      if (udid) noteInput(runtime, { udid, kind: "open-url", text: toolArgs.url, source: toolArgs.source, noRecord: toolArgs.noRecord });
       return result;
     },
     relaunchApp: async (toolArgs: IosSimulatorRelaunchArgs) => darwinHub(toolArgs).relaunchApp(toolArgs),
@@ -8895,5 +8302,5 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
         disposeXcodeMcpBridge(bridge, new Error("iOS simulator service disposed."));
       }
     },
-   }));
+  });
 }

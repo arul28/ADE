@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { signalProcessGroup, isRecord } from "../shared/utils";
 import {
   formatNativeHelperSearch,
+  spotlightNativeHelperCandidate,
   standaloneNativeHelperCandidates,
   withSpotlightFallback,
 } from "../native/nativeHelperPaths";
@@ -207,6 +208,11 @@ export function resolveSimHelperExecutablePath(input: {
   exists?: (candidate: string) => boolean;
   /** Defaults to the standalone brain's runtime archive and installed app. */
   fallbackCandidates?: readonly string[];
+  /**
+   * Asked only when no candidate exists: the helper in the app Spotlight finds
+   * by the channel's bundle id (`spotlightNativeHelperCandidate`).
+   */
+  spotlight?: () => string | null;
 } = {}): string {
   const exists = input.exists ?? fileIsUsable;
   const env = input.env ?? process.env;
@@ -222,9 +228,11 @@ export function resolveSimHelperExecutablePath(input: {
     fallbackCandidates: input.fallbackCandidates
       ?? standaloneNativeHelperCandidates({ binaryName: HELPER_EXECUTABLE_NAME, prefer: "runtime", env }),
   });
-  const searched = input.fallbackCandidates || input.exists
-    ? candidates
-    : withSpotlightFallback(HELPER_EXECUTABLE_NAME, candidates, exists, env);
+  const searched = withSpotlightFallback(
+    candidates,
+    exists,
+    input.spotlight ?? (() => spotlightNativeHelperCandidate(HELPER_EXECUTABLE_NAME, env)),
+  );
   lastSimHelperSearch = searched;
   return searched.find((candidate) => exists(candidate)) ?? searched[0] ?? "";
 }

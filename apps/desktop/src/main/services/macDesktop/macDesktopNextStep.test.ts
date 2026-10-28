@@ -299,11 +299,14 @@ describe("macDesktopRefusedNextStep", () => {
 describe("macDesktopOffDisplayRefusalMessage", () => {
   const lane = { x: -2560, y: 1440, width: 2560, height: 1440 };
   const oldDriver = "(300, 200) is not on this lane's display; background input only reaches the lane's own windows.";
+  /** The `(x, y)` points a message offers, in order. */
+  const points = (message: string) => [...message.matchAll(/\((-?\d+), (-?\d+)\)/g)].map((m) => `${m[1]},${m[2]}`);
 
   it("adds the display's global range and the global point a local one meant, for an older driver", () => {
     const message = macDesktopOffDisplayRefusalMessage(oldDriver, lane)!;
-    expect(message).toContain("x -2560..0, y 1440..2880 in global points");
-    expect(message).toContain("is (-2260, 1640)");
+    // The range's four edges, left to right then top to bottom.
+    expect(message).toMatch(/-2560\D+0\D+1440\D+2880/);
+    expect(points(message)).toContain("-2260,1640");
   });
 
   it.each([
@@ -313,11 +316,12 @@ describe("macDesktopOffDisplayRefusalMessage", () => {
   ] as const)("does not guess for %s", (_label, input, bounds, expected) => {
     const message = macDesktopOffDisplayRefusalMessage(input, bounds);
     if (expected === null) expect(message).toBeNull();
-    else expect(message).not.toContain("Points are global");
+    // No point is offered beyond the one the driver refused.
+    else expect(points(message!)).toEqual(points(input));
   });
 
   it("does not repeat what a current driver already said", () => {
-    const current = "(300, 200) is not on this lane's display, which is x -2560..0, y 1440..2880 in global points; background input only reaches the lane's own windows. Points are global, not screenshot pixels: (300, 200) on this display is (-2260, 1640); or pass --local.";
+    const current = macDesktopOffDisplayRefusalMessage(oldDriver, lane)!;
     expect(macDesktopOffDisplayRefusalMessage(current, lane)).toBe(current);
   });
 });

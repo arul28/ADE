@@ -97,6 +97,7 @@ import {
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
+import { quoteShellArg } from "../../desktop/src/shared/shell";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
@@ -270,8 +271,11 @@ import {
   APPLE_DEVICE_POSES,
   APPLE_RENDER_ANGLE_IDS,
   APPLE_RENDER_LIGHTINGS,
+  isAdeOwnedLaneDevice,
+  isAppleLaneDeviceOrigin,
 } from "../../desktop/src/shared/types/iosSimulator";
 import type { AppleDeviceOrientation, AppleDevicePosture } from "../../desktop/src/shared/types/iosSimulator";
+import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, APPLE_RELEASED_DEVICE_GRACE_MS } from "../../desktop/src/shared/types/iosSimulator";
 import {
   appleDuoHeldOrientation,
   appleDuoPictureShape,
@@ -334,6 +338,7 @@ import type {
 } from "../../desktop/src/shared/types/core";
 import {
   findListeningWindowsPipe,
+  isChannelRuntimePipeName,
   isMachineEndpointName,
   resolveMachineAdeDir,
   resolveMachineAdeLayout,
@@ -433,6 +438,15 @@ import {
   macDesktopRecordingDurationMs,
   recordingStopLeftNoFile,
 } from "./cliMacDesktopFormat";
+import {
+  appleLeaseAnswer,
+  appleLeaseNotAcquired,
+  formatAppleInstall,
+  formatAppleLease,
+  formatAppleTests,
+  formatAppleWindow,
+  shapeAppleLeaseAnswer,
+} from "./cliAppleFormat";
 import {
   REMOTE_MCP_HELP,
   buildRemoteMcpPlan,
@@ -14604,6 +14618,10 @@ function chatOtherMachineHint(argv: string[]): string | null {
   if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
+  // ADE MCP refuses --machine and --all-machines: it reaches only this computer.
+  if (process.env.ADE_REMOTE_MCP_SCOPE?.trim()) {
+    return "If this chat lives on another machine, connect to that computer's own ADE MCP server to work with it.";
+  }
   return "If this chat lives on another machine, find it with: ade chat list --all-machines --text, then re-run with --machine <name>";
 }
 
@@ -14638,15 +14656,10 @@ async function chatNotFoundHintNamingMachine(
     if (plan.kind !== "execute") return generic;
     const found = await locateChatOnOtherMachines(sessionId, plan, parsed.options);
     if (!found) return generic;
-    return `Chat ${sessionId} lives on the machine "${found.machineName}". Re-run the command with --machine ${shellQuoteHintValue(found.machineName)}.`;
+    return `Chat ${sessionId} lives on the machine "${found.machineName}". Re-run the command with --machine ${quoteShellArg(found.machineName, { platform: process.platform })}.`;
   } catch {
     return generic;
   }
-}
-
-/** A machine name as it should be typed after `--machine`. */
-function shellQuoteHintValue(value: string): string {
-  return /^[A-Za-z0-9._:@%+=,/-]+$/.test(value) ? value : `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
 /**
@@ -15042,8 +15055,7 @@ function buildIosSimulatorPlan(
     const bundleId = readValue(args, ["--bundle-id", "--bundle"]);
     const configuration = readValue(args, ["--configuration", "--config"]);
     const device = readIosSimulatorDevice(args) ?? firstPositional(args);
-    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.installApp")
-      ?? longRunningLocalRuntimeActionTimeoutMs("ios_simulator.launch");
+    const minTimeoutMs = longRunningLocalRuntimeActionTimeoutMs("ios_simulator.installApp");
     return {
       kind: "execute",
       label: "Apple app install",
@@ -24894,8 +24906,18 @@ async function createConnection(
   const autoRegisterProject = args.autoRegisterProject ?? true;
   /** Why the machine brain was not used, for a live-only call that then has nowhere to go. */
   let machineConnectError: unknown = null;
+  /** The refusal for a live-only `feature` that reached no brain, with the reason when one is known. */
+  const liveRuntimeRequiredError = async (feature: string): Promise<CliToolError> => {
+    const machineSocketPath = options.headless
+      ? null
+      : explicitEndpoint ?? await resolveMachineRuntimeSocketPath(null).catch(() => null);
+    const detail = machineConnectError
+      ? ` (${machineConnectError instanceof Error ? machineConnectError.message : String(machineConnectError)})`
+      : "";
+    return new CliToolError(`${liveRuntimeRequiredMessage(feature, machineSocketPath)}${detail}`, undefined);
+  };
   if (args.needsLiveRuntime && options.headless) {
-    throw new CliToolError(liveRuntimeRequiredMessage(args.needsLiveRuntime, null), undefined);
+    throw await liveRuntimeRequiredError(args.needsLiveRuntime);
   }
 
   if (!options.headless) {
@@ -25004,10 +25026,7 @@ async function createConnection(
     throw new Error(`ADE endpoint is not available at ${legacySocketPath}.`);
   }
   if (args.needsLiveRuntime) {
-    const machineSocketPath = explicitEndpoint
-      ?? await resolveMachineRuntimeSocketPath(null).catch(() => null);
-    const detail = machineConnectError ? ` (${machineConnectError instanceof Error ? machineConnectError.message : String(machineConnectError)})` : "";
-    throw new CliToolError(`${liveRuntimeRequiredMessage(args.needsLiveRuntime, machineSocketPath)}${detail}`, undefined);
+    throw await liveRuntimeRequiredError(args.needsLiveRuntime);
   }
 
   const previousRole = process.env.ADE_DEFAULT_ROLE;
@@ -25070,13 +25089,7 @@ async function createConnection(
       // the brain was not used (lib/liveRuntimeActions.ts).
       request: async (method, params) => {
         const liveCall = liveOnlyCallLabel(method, params);
-        if (liveCall) {
-          const machineSocketPath = options.headless
-            ? null
-            : explicitEndpoint ?? await resolveMachineRuntimeSocketPath(null).catch(() => null);
-          const detail = machineConnectError ? ` (${machineConnectError instanceof Error ? machineConnectError.message : String(machineConnectError)})` : "";
-          throw new CliToolError(`${liveRuntimeRequiredMessage(liveCall, machineSocketPath)}${detail}`, undefined);
-        }
+        if (liveCall) throw await liveRuntimeRequiredError(liveCall);
         return inProcess.request(method, params);
       },
       close: () => {
@@ -25389,7 +25402,6 @@ export function shouldEnforceMachineRuntimeBuildCompatibility(
   return isMachineDefaultRuntimeSocket(socketPath);
 }
 
-/** A live brain on a socket this CLI does not manage did not match it; it stays up. */
 /**
  * A live machine brain this CLI must not stop, replace or use: a newer
  * release, or another install's build (lib/brainVersionSkew.ts). A
@@ -25403,113 +25415,7 @@ class RuntimeVersionSkewError extends CliToolError {
   }
 }
 
-/**
- * What to do with a brain on the machine socket whose version or build did
- * not match (lib/brainVersionSkew.ts): `ours` (a stale build of this very CLI
- * that this run may repair) or `use` (any other protocol-compatible brain,
- * used as it is and never stopped, replaced or uninstalled). A
- * protocol-incompatible brain that is not ours throws RuntimeVersionSkewError.
- *
- * `canRepair` is false when this run could not replace the brain anyway (inside
- * an agent shell of that brain, a `--socket`/TCP connect, or a service-managed
- * socket with manual spawns disabled). Then even our own stale build is used
- * when it is compatible, so "Refusing to repair/restart ADE runtime from a
- * command running inside that runtime" is never the answer for a brain that
- * could simply have been used.
- */
-async function decideMachineBrainSkew(
-  runtimeInfo: MachineRuntimeInfo,
-  socketPath: string,
-  canRepair: boolean,
-): Promise<"ours" | "use"> {
-  const [{ decideBrainSkew }, { resolveCurrentCliEntry }, { resolveAdeServeCommand }] = await Promise.all([
-    import("./lib/brainVersionSkew"),
-    import("./lib/cliDelegation"),
-    import("./serviceManager/common"),
-  ]);
-  let cliServeFile: string | null = null;
-  try {
-    cliServeFile = prepareMachineRuntimeDaemonCommand(resolveAdeServeCommand()).filePath;
-  } catch {
-    cliServeFile = null;
-  }
-  const decision = decideBrainSkew({
-    cliVersion: VERSION,
-    placeholderVersion: PLACEHOLDER_VERSION,
-    cliEntry: resolveCurrentCliEntry(),
-    cliServeFile,
-    brain: {
-      version: runtimeInfo.version,
-      cliEntryPath: runtimeInfo.cliEntryPath ?? null,
-      pid: runtimeInfo.pid,
-      minCompatibleProtocol: runtimeInfo.minCompatibleProtocol ?? null,
-      protocolVersion: runtimeInfo.protocolVersion ?? null,
-      // An older brain does not say what it runs; its command line does.
-      commandLine: runtimeInfo.cliEntryPath ? null : await readBrainCommandLine(runtimeInfo.pid),
-    },
-    socketPath,
-    adeHome: resolveMachineAdeLayout().adeDir,
-  });
-  if (decision.kind === "refuse") throw new RuntimeVersionSkewError(decision.message);
-  if (decision.kind === "ours") return decision.compatible && !canRepair ? "use" : "ours";
-  if (decision.note) noteBrainVersionSkewOnce(decision.note);
-  return "use";
-}
-
-let brainVersionSkewNoted = false;
-
-/** The skew note, on stderr only and once per process: stdout may be --json. */
-function noteBrainVersionSkewOnce(note: string): void {
-  if (brainVersionSkewNoted) return;
-  brainVersionSkewNoted = true;
-  try {
-    process.stderr.write(`ade: note: ${note}\n`);
-  } catch {
-    // A note must never fail the command.
-  }
-}
-
-/**
- * A local brain pid's command line, or null: `ps` on macOS and Linux, the
- * Win32_Process query (`readWindowsProcessFacts`) on Windows, so an older
- * Windows brain that does not report `cliEntryPath` is still recognised as
- * this install's own stale build and repaired after an in-place update.
- */
-async function readBrainCommandLine(pid: number | null): Promise<string | null> {
-  if (!pid) return null;
-  if (process.platform === "win32") {
-    try {
-      const { readWindowsProcessFacts } = await import("./serviceManager/common");
-      const read = await readWindowsProcessFacts(pid);
-      return read.state === "found" ? read.facts.commandLine.trim() || read.facts.executablePath : null;
-    } catch {
-      return null;
-    }
-  }
-  try {
-    const result = spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8", timeout: 2_000 });
-    return result.status === 0 ? String(result.stdout ?? "").trim() || null : null;
-  } catch {
-    return null;
-  }
-}
-
-/** Whether this run could replace the brain it reached (see `decideMachineBrainSkew`). */
-function canRepairMachineBrain(runtimeInfo: MachineRuntimeInfo, socketPath: string, allowSpawn: boolean): boolean {
-  if (!allowSpawn || socketPath.startsWith("tcp://")) return false;
-  if (shouldBlockManualMachineRuntimeSpawn(socketPath)) return false;
-  return !runtimeSelfShutdownBlock(runtimeInfo, "repair", { localRuntime: isLocalRuntimeSocketPath(socketPath) });
-}
-
-/** The version and build half of `machineRuntimeMismatchReason`, without the role check. */
-function machineRuntimeBuildMismatch(
-  runtimeInfo: MachineRuntimeInfo,
-  expectedBuildHash: string | null,
-  enforceBuildCompatibility: boolean,
-): string | null {
-  return machineRuntimeMismatchReason(runtimeInfo, expectedBuildHash, "external", { enforceBuildCompatibility });
-}
-
+/** A live brain on a socket this CLI does not manage did not match it; it stays up. */
 class UnmanagedRuntimeMismatchError extends Error {
   constructor(socketPath: string, mismatch: string) {
     super(
@@ -25517,6 +25423,75 @@ class UnmanagedRuntimeMismatchError extends Error {
     );
     this.name = "UnmanagedRuntimeMismatchError";
   }
+}
+
+/** Whether this run could replace the brain it reached (see `settleMachineBrainSkew`). */
+function canRepairMachineBrain(runtimeInfo: MachineRuntimeInfo, socketPath: string, allowSpawn: boolean): boolean {
+  if (!allowSpawn || socketPath.startsWith("tcp://")) return false;
+  if (shouldBlockManualMachineRuntimeSpawn(socketPath)) return false;
+  return !runtimeSelfShutdownBlock(runtimeInfo, "repair", { localRuntime: isLocalRuntimeSocketPath(socketPath) });
+}
+
+/**
+ * Settles a brain whose version or build did not match this CLI
+ * (lib/brainVersionSkew.ts). Returns `client` when that brain is to be used as
+ * it is, and null when there is no version or build mismatch or the brain is
+ * this CLI's own stale build, so the caller's own repair path decides.
+ *
+ * A brain that is not ours is never stopped, replaced or uninstalled. So this
+ * throws, after closing `client`, a RuntimeVersionSkewError when it speaks a
+ * protocol this CLI does not, and an UnmanagedRuntimeMismatchError when it
+ * would be used but its default role cannot serve `role`.
+ */
+async function useSkewedBrainOrNull(args: {
+  client: SocketJsonRpcClient;
+  runtimeInfo: MachineRuntimeInfo;
+  socketPath: string;
+  expectedBuildHash: string | null;
+  enforceBuildCompatibility: boolean;
+  canRepair: boolean;
+  role: GlobalOptions["role"];
+}): Promise<SocketJsonRpcClient | null> {
+  const { client, runtimeInfo, socketPath } = args;
+  if (!machineRuntimeMismatchReason(runtimeInfo, args.expectedBuildHash, "external", {
+    enforceBuildCompatibility: args.enforceBuildCompatibility,
+  })) return null;
+  let roleMismatch: string | null;
+  try {
+    const [{ settleMachineBrainSkew }, { resolveAdeServeCommand }] = await Promise.all([
+      import("./lib/brainVersionSkew"),
+      import("./serviceManager/common"),
+    ]);
+    let cliServeFile: string | null = null;
+    try {
+      cliServeFile = prepareMachineRuntimeDaemonCommand(resolveAdeServeCommand()).filePath;
+    } catch {
+      cliServeFile = null;
+    }
+    const verdict = await settleMachineBrainSkew({
+      brain: {
+        version: runtimeInfo.version,
+        cliEntryPath: runtimeInfo.cliEntryPath ?? null,
+        pid: runtimeInfo.pid,
+        minCompatibleProtocol: runtimeInfo.minCompatibleProtocol ?? null,
+        protocolVersion: runtimeInfo.protocolVersion ?? null,
+      },
+      socketPath,
+      canRepair: args.canRepair,
+      cliVersion: VERSION,
+      placeholderVersion: PLACEHOLDER_VERSION,
+      cliServeFile,
+    });
+    if (verdict.kind === "refuse") throw new RuntimeVersionSkewError(verdict.message);
+    if (verdict.kind === "ours") return null;
+    roleMismatch = machineRuntimeMismatchReason(runtimeInfo, null, args.role, { enforceBuildCompatibility: false });
+  } catch (error) {
+    client.close();
+    throw error;
+  }
+  if (!roleMismatch) return client;
+  client.close();
+  throw new UnmanagedRuntimeMismatchError(socketPath, roleMismatch);
 }
 
 function isMachineDefaultRuntimeSocket(socketPath: string): boolean {
@@ -25680,32 +25655,19 @@ function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
 }
 
 /**
- * Whether a silent socket earns the `brain_starting` probe.
- *
- * Two vetoes, both about not making a bad situation worse:
- *
- * - Supervisor and handover probes run `ade runtime status` as a CHILD process
- *   with `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`. Probing the service manager
- *   from inside such a child is recursive on Windows: the status probe asks the
- *   service manager, which spawns another `ade runtime status`, which fails on
- *   the same silent pipe and probes again. Windows has no process groups, so
- *   the spawn timeout kills only the leader and leaks every descendant.
- * - A `--socket` override points at a different runtime entirely. The default
- *   machine service's youth says nothing about it, and "still starting, nothing
- *   to repair" would bury that runtime's real connect error.
- */
-/**
  * A live brain of this ADE home and channel on a pipe name this process does
  * not derive. Every brain records its endpoint under `<home>/brains` (ADE has
  * done so since before the pipe name changed), so this finds a brain an older
- * ADE named from a session env outside `resolveMachineEndpointNames`. Windows
- * only; reads a few small files and the pipe listing, and spawns nothing.
+ * ADE named from a session env outside `resolveMachineEndpointNames`. Only a
+ * machine-shaped name counts (`isChannelRuntimePipeName`): the desktop's
+ * isolated brain shares this home on a longer name and is not the machine
+ * brain. Windows only; reads a few small files and the pipe listing, and
+ * spawns nothing.
  */
 function findMachineBrainOnOtherPipeName(
   layout: Pick<ReturnType<typeof resolveMachineAdeLayout>, "adeDir" | "socketPath">,
 ): { pid: number; endpoint: string } | null {
   if (process.platform !== "win32" || !isAdeRuntimeNamedPipePath(layout.socketPath)) return null;
-  const channelPipePrefix = layout.socketPath.replace(/[0-9a-f]{16}$/i, "").toLowerCase();
   const knownNames = resolveMachineEndpointNames().runtime;
   try {
     return createBrainHomeRegistry({
@@ -25714,7 +25676,7 @@ function findMachineBrainOnOtherPipeName(
       isPidAlive,
     }).listOthers(process.pid).find((record) =>
       typeof record.endpoint === "string"
-      && record.endpoint.toLowerCase().startsWith(channelPipePrefix)
+      && isChannelRuntimePipeName(record.endpoint)
       && !isMachineEndpointName(record.endpoint, knownNames)
       && findListeningWindowsPipe([record.endpoint]) !== null
     ) ?? null;
@@ -25768,6 +25730,21 @@ function describeMachineEndpointName(args: {
   };
 }
 
+/**
+ * Whether a silent socket earns the `brain_starting` probe.
+ *
+ * Two vetoes, both about not making a bad situation worse:
+ *
+ * - Supervisor and handover probes run `ade runtime status` as a CHILD process
+ *   with `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1`. Probing the service manager
+ *   from inside such a child is recursive on Windows: the status probe asks the
+ *   service manager, which spawns another `ade runtime status`, which fails on
+ *   the same silent pipe and probes again. Windows has no process groups, so
+ *   the spawn timeout kills only the leader and leaks every descendant.
+ * - A `--socket` override points at a different runtime entirely. The default
+ *   machine service's youth says nothing about it, and "still starting, nothing
+ *   to repair" would bury that runtime's real connect error.
+ */
 export function shouldProbeBrainStartupState(args: {
   socketOverride: string | null;
   socketPath: string;
@@ -25843,13 +25820,18 @@ async function repairMachineRuntimeServiceConnection(args: {
     if (mismatch) {
       // The service answered with a brain this CLI does not own (a newer one,
       // or another install's): leave it, never uninstall it.
-      if (machineRuntimeBuildMismatch(runtimeInfo, args.expectedBuildHash, args.enforceBuildCompatibility)) {
-        const skew = await decideMachineBrainSkew(runtimeInfo, args.socketPath, canRepairMachineBrain(runtimeInfo, args.socketPath, true));
-        if (skew === "use" && !machineRuntimeMismatchReason(runtimeInfo, null, args.options.role, { enforceBuildCompatibility: false })) {
-          const used = client;
-          client = null;
-          return used;
-        }
+      const used = await useSkewedBrainOrNull({
+        client,
+        runtimeInfo,
+        socketPath: args.socketPath,
+        expectedBuildHash: args.expectedBuildHash,
+        enforceBuildCompatibility: args.enforceBuildCompatibility,
+        canRepair: canRepairMachineBrain(runtimeInfo, args.socketPath, true),
+        role: args.options.role,
+      });
+      if (used) {
+        client = null;
+        return used;
       }
       const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
         localRuntime: isLocalRuntimeSocketPath(args.socketPath),
@@ -25867,6 +25849,7 @@ async function repairMachineRuntimeServiceConnection(args: {
       error instanceof RuntimeSelfShutdownBlockedError
       || error instanceof RuntimeServiceStillStartingError
       || error instanceof RuntimeVersionSkewError
+      || error instanceof UnmanagedRuntimeMismatchError
     ) throw error;
     return null;
   } finally {
@@ -25995,21 +25978,16 @@ async function connectMachineRuntimeDaemon(
       // A version or build mismatch on a brain this CLI does not own is never
       // repaired: a protocol-compatible one is used as it is (with a note when
       // the versions differ), an incompatible one is refused with one line.
-      if (enforceBuildCompatibility && machineRuntimeBuildMismatch(runtimeInfo, expectedBuildHash, enforceBuildCompatibility)) {
-        let skew: Awaited<ReturnType<typeof decideMachineBrainSkew>>;
-        try {
-          skew = await decideMachineBrainSkew(runtimeInfo, socketPath, canRepairMachineBrain(runtimeInfo, socketPath, allowSpawn));
-        } catch (error) {
-          client.close();
-          throw error;
-        }
-        if (skew === "use") {
-          const roleMismatch = machineRuntimeMismatchReason(runtimeInfo, null, options.role, { enforceBuildCompatibility: false });
-          if (!roleMismatch) return client;
-          client.close();
-          throw new UnmanagedRuntimeMismatchError(socketPath, roleMismatch);
-        }
-      }
+      const used = await useSkewedBrainOrNull({
+        client,
+        runtimeInfo,
+        socketPath,
+        expectedBuildHash,
+        enforceBuildCompatibility,
+        canRepair: canRepairMachineBrain(runtimeInfo, socketPath, allowSpawn),
+        role: options.role,
+      });
+      if (used) return used;
       if (!allowSpawn || isTcpSocket) {
         client.close();
         throw new Error(
@@ -26075,18 +26053,18 @@ async function connectMachineRuntimeDaemon(
         { enforceBuildCompatibility },
       );
       if (restartedMismatch) {
-        if (machineRuntimeBuildMismatch(restartedInfo, expectedBuildHash, enforceBuildCompatibility)) {
-          let skew: Awaited<ReturnType<typeof decideMachineBrainSkew>>;
-          try {
-            skew = await decideMachineBrainSkew(restartedInfo, socketPath, canRepairMachineBrain(restartedInfo, socketPath, true));
-          } catch (error) {
-            restarted.close();
-            throw error;
-          }
-          if (skew === "use" && !machineRuntimeMismatchReason(restartedInfo, null, options.role, { enforceBuildCompatibility: false })) {
-            return restarted;
-          }
-        }
+        // What answered may be another install's brain, started in the
+        // meantime: it is refused or used, never shut down.
+        const used = await useSkewedBrainOrNull({
+          client: restarted,
+          runtimeInfo: restartedInfo,
+          socketPath,
+          expectedBuildHash,
+          enforceBuildCompatibility,
+          canRepair: canRepairMachineBrain(restartedInfo, socketPath, true),
+          role: options.role,
+        });
+        if (used) return used;
         const selfShutdownBlock = runtimeSelfShutdownBlockedError(restartedInfo, "repair", {
           localRuntime: isLocalRuntime,
         });
@@ -26134,18 +26112,16 @@ async function connectMachineRuntimeDaemon(
       if (mismatch) {
         // The brain that answered may be another install's, started in the
         // meantime: it is refused or used, never shut down.
-        if (enforceBuildCompatibility && machineRuntimeBuildMismatch(runtimeInfo, expectedBuildHash, enforceBuildCompatibility)) {
-          let skew: Awaited<ReturnType<typeof decideMachineBrainSkew>>;
-          try {
-            skew = await decideMachineBrainSkew(runtimeInfo, socketPath, canRepairMachineBrain(runtimeInfo, socketPath, true));
-          } catch (error) {
-            client.close();
-            throw error;
-          }
-          if (skew === "use" && !machineRuntimeMismatchReason(runtimeInfo, null, options.role, { enforceBuildCompatibility: false })) {
-            return client;
-          }
-        }
+        const used = await useSkewedBrainOrNull({
+          client,
+          runtimeInfo,
+          socketPath,
+          expectedBuildHash,
+          enforceBuildCompatibility,
+          canRepair: canRepairMachineBrain(runtimeInfo, socketPath, true),
+          role: options.role,
+        });
+        if (used) return used;
         const selfShutdownBlock = runtimeSelfShutdownBlockedError(runtimeInfo, "repair", {
           localRuntime: isLocalRuntime,
         });
@@ -26162,6 +26138,7 @@ async function connectMachineRuntimeDaemon(
     } catch (secondError) {
       if (secondError instanceof RuntimeSelfShutdownBlockedError) throw secondError;
       if (secondError instanceof RuntimeVersionSkewError) throw secondError;
+      if (secondError instanceof UnmanagedRuntimeMismatchError) throw secondError;
       const firstMessage =
         firstError instanceof Error ? firstError.message : String(firstError);
       const secondMessage =
@@ -27456,8 +27433,7 @@ async function runServe(
   // the socket it serves so the `ade` shim it hands its agents names it.
   publishServedRuntimeSocket(socketPath);
   // Only the machine brain publishes the machine heartbeat; see the helper.
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, layout.socketPath)
-    || serveSocketAliases.length > 0;
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(rawSocketPath, machineRuntimeNames);
   if (servesMachineEndpoint) {
     stopBrainHeartbeat = startBrainHeartbeat({
       runtimeDir: layout.runtimeDir,
@@ -28467,17 +28443,12 @@ async function runServe(
             logger: headlessProjectLogger,
             requestRestart: requestBrainServiceRestartFromServe,
             requestDesktopAppUpdate: requestDesktopAppUpdateFromServe,
-            installedAppVersion: async () => {
-              if (process.platform !== "darwin") return null;
-              const { defaultApplicationsDirs, defaultMacCommandRunner, findMacDesktopApp } = await import(
-                "./commands/macDesktopUpdate"
+            // The app this brain reports as `desktopAppVersion`, on every platform.
+            installedApp: async () => {
+              const { readInstalledDesktopApp } = await import(
+                "../../desktop/src/main/services/native/nativeHelperPaths"
               );
-              const lookup = findMacDesktopApp({
-                env: process.env,
-                applicationsDirs: defaultApplicationsDirs(),
-                run: defaultMacCommandRunner,
-              });
-              return lookup.state === "found" ? lookup.app.version : null;
+              return readInstalledDesktopApp();
             },
           }),
           reportMachinePowerTransition: reportDesktopMachinePowerTransition,
@@ -29899,63 +29870,6 @@ function unwrapToolResult(result: unknown): unknown {
     return result.structuredContent;
   }
   return result;
-}
-
-/** The answer inside an `ade apple lease` result, however it was wrapped. */
-function appleLeaseAnswer(result: unknown): unknown {
-  let value = unwrapActionEnvelope(result);
-  if (
-    isRecord(value)
-    && !["acquired", "released", "held"].some((key) => Object.prototype.hasOwnProperty.call(value, key))
-    && isRecord(value.result)
-  ) {
-    value = unwrapActionEnvelope(value.result);
-  }
-  return value;
-}
-
-/** True when an `ade apple lease` answer says the lease was not granted. */
-function appleLeaseNotAcquired(result: unknown): boolean {
-  const value = appleLeaseAnswer(result);
-  return isRecord(value) && value.acquired === false;
-}
-
-/**
- * An `ade apple lease` answer, checked against an older brain (before
- * per-device, token-only turns; every current brain names the `device`).
- * Such a brain ignores `--device` and leases the lane's own device, and it
- * renews by holder name, so a second agent of one chat would be told "renewed"
- * and handed the first one's token. Neither is ever shown as a turn: the
- * shared one hides that token and exits 1.
- */
-function shapeAppleLeaseAnswer(result: unknown, sent: { askedDevice: boolean; tokenSent: boolean }): unknown {
-  const value = appleLeaseAnswer(result);
-  if (!isRecord(value) || Object.prototype.hasOwnProperty.call(value, "device")) return value;
-  const upgrade = "Update the ADE brain on that machine (ade brain update, or update ADE.app) for per-device leases.";
-  if (value.acquired === true && value.renewed === true && !sent.tokenSent) {
-    const { token: _othersToken, ...rest } = value;
-    return {
-      ...rest,
-      acquired: false,
-      olderBrain: true,
-      message: `This ADE brain is older: it renews a lease by holder name, so this call matched the turn of ${asString(value.holder) ?? "another agent"} `
-        + "(another agent of this chat, or your own earlier call) instead of queueing. That turn is not yours; its token is not shown. "
-        + `Pass a distinct --holder <name>, or renew your own with --token <t>. ${upgrade}`,
-    };
-  }
-  if (sent.askedDevice) {
-    return {
-      ...value,
-      ...(value.acquired === true ? { acquired: false } : {}),
-      olderBrain: true,
-      message: "This ADE brain is older and has one lease per lane: it ignored --device and answered for the lane's own device. "
-        + (value.acquired === true && asString(value.token)
-          ? `It gave you that lease; release it with ade apple lease release --token ${asString(value.token)}. `
-          : "")
-        + upgrade,
-    };
-  }
-  return value;
 }
 
 export function unwrapActionEnvelope(value: unknown): unknown {
@@ -33380,16 +33294,18 @@ function formatAppleDeviceDetach(value: unknown): string {
   const deletesAfter = asString(value.deletesAfter);
   const deletesAfterMs = deletesAfter ? Date.parse(deletesAfter) : Number.NaN;
   // Only a simulator the user attached stays. One ADE made is a leftover the
-  // cleanup pass deletes after a 5-minute grace (an older brain sends no
+  // cleanup pass deletes after the grace (an older brain sends no
   // deletesAfter, so the origin decides).
-  const adeMade = Boolean(deletesAfter) || (asString(value.origin) !== null && value.origin !== "attached");
+  const graceMinutes = Math.round(APPLE_RELEASED_DEVICE_GRACE_MS / 60_000);
+  const latestMinutes = Math.round((APPLE_RELEASED_DEVICE_GRACE_MS + APPLE_DEVICE_CLEANUP_INTERVAL_MS) / 60_000);
+  const adeMade = Boolean(deletesAfter) || (isAppleLaneDeviceOrigin(value.origin) && isAdeOwnedLaneDevice(value.origin));
   const fate = value.kept === true
     ? "ADE made this device, and it is kept as a free simulator: nothing deletes it. Delete it from the Apple Development picker when you are done, or attach it to a lane again."
     : adeMade
     ? `ADE made this device, so it is now a leftover: the cleanup pass deletes it ${
       Number.isFinite(deletesAfterMs)
-        ? `at its first run after ${new Date(deletesAfterMs).toLocaleTimeString()} (within about 20 minutes)`
-        : "5 to 20 minutes from now"
+        ? `at its first run after ${new Date(deletesAfterMs).toLocaleTimeString()} (within about ${latestMinutes} minutes)`
+        : `${graceMinutes} to ${latestMinutes} minutes from now`
     }. To keep it, attach it again before then: ade apple device-attach --simulator ${udid} (or detach with --keep next time, when the user wants it kept)`
     : "The simulator stays installed and keeps its power state; ADE uninstalls only the apps it put on it.";
   return [
@@ -33403,203 +33319,6 @@ function formatAppleDeviceDetach(value: unknown): string {
       ["deletes after", deletesAfter],
     ]),
   ].join("\n");
-}
-
-/** `apple window`: where the front app's window is, and whether the layout landed. */
-function formatAppleWindow(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const frame = (raw: unknown) => {
-    if (!isRecord(raw)) return null;
-    const n = (field: unknown) => (typeof field === "number" ? Math.round(field) : "?");
-    return `${n(raw.width)}x${n(raw.height)} at ${n(raw.x)},${n(raw.y)}`;
-  };
-  const screen = isRecord(result.screen) ? `${result.screen.width}x${result.screen.height}` : "?";
-  const app = asString(result.appName) ?? asString(result.bundleId) ?? "the front app";
-  const action = asString(result.action) ?? "status";
-  const lines: string[] = [];
-  if (action === "status") {
-    const off = isRecord(result.offScreen) ? result.offScreen : null;
-    const offText = off
-      ? Object.entries(off).filter(([, value]) => typeof value === "number" && value > 0)
-        .map(([side, value]) => `${Math.round(value as number)} pt past the ${side} edge`).join(", ")
-      : "";
-    lines.push(result.before
-      ? `${app}'s window is ${frame(result.before)} on a ${screen} screen${offText ? `, partly off it (${offText})` : ""}.`
-      : `${app} is not in a resizable window (an iPhone, or an iPad set to Full Screen Apps).`);
-  } else if (result.applied === true) {
-    lines.push(`${action}: ${app}'s window is now ${frame(result.after)} (was ${frame(result.before) ?? "?"}) on a ${screen} screen.`);
-    if (asString(result.note)) lines.push(asString(result.note)!);
-  } else {
-    lines.push(`${action} did not land: ${asString(result.reason) ?? `the window is ${frame(result.after) ?? "unreadable"}`}`);
-  }
-  lines.push("", renderKeyValues("ADE Apple window", [
-    ["action", action],
-    ["applied", result.applied === true ? "yes" : "no"],
-    ["app", result.bundleId],
-    ["before", frame(result.before)],
-    ["after", frame(result.after)],
-    ["screen", screen],
-    ["tolerance pt", result.tolerance],
-    ["attempts", result.attempts],
-    ["frame from", result.frameSource],
-    ["device", result.deviceUdid],
-  ]));
-  return lines.join("\n");
-}
-
-/** `apple install`: which device has the app now, and whether it was built, installed and started. */
-function formatAppleInstall(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const name = asString(result.deviceName) ?? asString(result.deviceUdid) ?? "the device";
-  const where = result.extra === true ? `${name} (an extra device)` : `${name} (the lane's device)`;
-  const verb = result.built === true ? `Built (${asString(result.configuration) ?? "Debug"}) and installed` : "Installed the lane's last build of";
-  const lines = [
-    `${verb} ${asString(result.bundleId) ?? "the app"} on ${where}.`,
-    result.launched === true
-      ? `Started it${typeof result.pid === "number" ? ` (pid ${result.pid})` : ""}. Check it with: ade apple foreground --device ${asString(result.deviceUdid) ?? "<udid>"} --text`
-      : `Start it with: ade apple relaunch --bundle-id ${asString(result.bundleId) ?? "<id>"} --device ${asString(result.deviceUdid) ?? "<udid>"} --text`,
-    "",
-    renderKeyValues("ADE Apple app install", [
-      ["device", result.deviceName],
-      ["udid", result.deviceUdid],
-      ["extra", result.extra === true ? "yes" : "no"],
-      ["bundle id", result.bundleId],
-      ["configuration", result.configuration],
-      ["built", result.built === true ? "yes" : "no"],
-      ["launched", result.launched === true ? "yes" : "no"],
-      ["app", result.appBundlePath],
-    ]),
-  ];
-  return lines.join("\n");
-}
-
-/**
- * `apple lease`: the token to keep (it alone renews and releases), or who has
- * the device. "Held under your own name" is another agent of this chat, or a
- * turn of yours whose token was lost: the token, not the chat, is the turn.
- */
-function formatAppleLease(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const device = isRecord(result.device) ? result.device : {};
-  const deviceName = asString(device.name) ?? (device.extra === true ? "the extra device" : "the lane's device");
-  // At the start of a sentence; a device's own name is kept as it is.
-  const DeviceName = asString(device.name) ?? (device.extra === true ? "The extra device" : "The lane's device");
-  const deviceFlag = device.extra === true && asString(device.udid) ? ` --device ${asString(device.udid)}` : "";
-  if (result.olderBrain === true) {
-    return [asString(result.message) ?? "This ADE brain is older and does not support per-device lease turns.", "", renderKeyValues("ADE Apple device lease", [
-      ["acquired", "no"],
-      ["holder", result.holder ?? (isRecord(result.current) ? result.current.holder : null)],
-    ])].join("\n");
-  }
-  if (typeof result.released === "boolean") {
-    // `lease release`: which device was let go, or why nothing was.
-    return result.released
-      ? `Released the lease on ${deviceName}. The next agent in line, if any, has it now.`
-      : asString(result.reason) ?? "Nothing was released: this token holds no lease (released already, lapsed, or not this lane's).";
-  }
-  if (typeof result.held === "boolean") {
-    // `lease status`: who has it, never their token.
-    const current = isRecord(result.current) ? result.current : {};
-    return [
-      result.held
-        ? `${DeviceName} is leased to ${asString(current.holder) ?? "another holder"} until ${asString(current.expiresAt) ?? "?"}; ${String(result.queued ?? 0)} waiting.`
-        : `${DeviceName} is free: nobody holds its lease.`,
-      "",
-      renderKeyValues("ADE Apple device lease", [
-        ["held", result.held ? "yes" : "no"],
-        ["holder", current.holder],
-        ["since", current.acquiredAt],
-        ["expires", current.expiresAt],
-        ["queued", result.queued],
-        ["device", device.udid],
-      ]),
-    ].join("\n");
-  }
-  if (result.acquired === true && result.renewed === true && !asString(result.token)) {
-    // Renewed by holder name (an older CLI's call): the token stays with the turn's holder.
-    return `Renewed the lease on ${deviceName} until ${asString(result.expiresAt) ?? "?"}, by holder name. Use the token your lease first printed to release it.`;
-  }
-  if (result.acquired === true) {
-    const token = asString(result.token) ?? "<token>";
-    return [
-      `${result.renewed === true ? "Renewed" : "Got"} the lease on ${deviceName} until ${asString(result.expiresAt) ?? "?"}.`,
-      `token: ${token}`,
-      `Keep the token. Renew: ade apple lease${deviceFlag} --token ${token}. Release: ade apple lease release${deviceFlag} --token ${token}.`,
-      "",
-      renderKeyValues("ADE Apple device lease", [
-        ["acquired", "yes"],
-        ["renewed", result.renewed === true ? "yes" : "no"],
-        ["holder", result.holder],
-        ["token", token],
-        ["expires", result.expiresAt],
-        ["waited ms", result.waitedMs],
-        ["device", device.udid],
-      ]),
-    ].join("\n");
-  }
-  const current = isRecord(result.current) ? result.current : {};
-  const lines = [
-    `${DeviceName} is leased to ${asString(current.holder) ?? "another holder"} until ${asString(current.expiresAt) ?? "?"}; ${
-      typeof result.queued === "number" ? `${result.queued} waiting` : "others may be waiting"
-    }.`,
-  ];
-  if (result.sameHolder === true) {
-    lines.push("It is held under your own holder name: another agent of this chat has it, or it is your own turn and this call had no token. "
-      + "Renew your own with --token <t>; otherwise wait for it (lease --wait <seconds>).");
-  }
-  lines.push("", renderKeyValues("ADE Apple device lease", [
-    ["acquired", "no"],
-    ["holder", current.holder],
-    ["expires", current.expiresAt],
-    ["queued", result.queued],
-    ["device", device.udid],
-  ]));
-  return lines.join("\n");
-}
-
-/**
- * `apple test`: the counts, each failing test on its own line, then
- * xcodebuild's own summary lines as it printed them, and where the log and the
- * result bundle are. The default renderer squashed the summary into one line
- * cut at 96 characters.
- */
-function formatAppleTests(value: unknown): string {
-  const result = isRecord(value) ? value : {};
-  const count = (field: unknown) => (typeof field === "number" ? String(field) : "?");
-  const passed = result.passed === true;
-  const executed = typeof result.testsExecuted === "number" ? result.testsExecuted : null;
-  const head = result.timedOut === true
-    ? "Tests timed out."
-    : passed
-      ? "Tests passed."
-      : executed === null ? "Tests failed (the build may not have finished)." : "Tests failed.";
-  const counts = executed === null
-    ? "No test totals in the log."
-    : `${count(result.testsExecuted)} run, ${count(result.testsFailed)} failed, ${count(result.testsSkipped ?? 0)} skipped`
-      + (typeof result.durationMs === "number" ? ` in ${Math.round(result.durationMs / 1000)} s` : "")
-      + ".";
-  const lines: string[] = [
-    `${head} ${counts}`,
-    `${asString(result.scheme) ?? "?"} on ${asString(result.deviceName) ?? "the lane's device"} (${asString(result.deviceUdid) ?? "?"}).`,
-  ];
-  const failures = Array.isArray(result.failures) ? result.failures.filter(isRecord) : [];
-  if (failures.length) {
-    lines.push("", `Failing tests (${failures.length}):`);
-    for (const failure of failures) {
-      const where = asString(failure.file)
-        ? ` (${asString(failure.file)}${typeof failure.line === "number" ? `:${failure.line}` : ""})`
-        : "";
-      const message = (asString(failure.message) ?? "").split(/\r?\n/).filter(Boolean);
-      lines.push(`- ${asString(failure.test) ?? "?"}${where}`);
-      for (const each of message) if (each !== "failed") lines.push(`    ${each}`);
-    }
-  }
-  const summary = asString(result.summary);
-  if (summary?.trim()) lines.push("", "Summary:", summary.trimEnd());
-  lines.push("");
-  if (asString(result.logPath)) lines.push(`log: ${asString(result.logPath)}`);
-  if (asString(result.resultBundlePath)) lines.push(`result bundle: ${asString(result.resultBundlePath)}`);
-  return lines.join("\n");
 }
 
 /** `device-promote`: which device the lane has now, and what became of the old one. */
@@ -33697,6 +33416,13 @@ function formatIosSimSnapshot(value: unknown): string {
   const truncatedBy = Array.isArray(truncatedProvider?.truncatedBy)
     ? truncatedProvider.truncatedBy.filter((entry): entry is string => typeof entry === "string")
     : [];
+  // The caps as the helper reports them; an older helper sends none.
+  const reportedLimits = isRecord(truncatedProvider?.limits) ? truncatedProvider.limits : {};
+  const walkLimit = (key: string, fallback: number) => {
+    const reported = reportedLimits[key];
+    return typeof reported === "number" ? reported : fallback;
+  };
+  const walkLimits = `${walkLimit("elements", 500)} elements, depth ${walkLimit("depth", 80)}, ${walkLimit("probe-points", 600)} probe points`;
   return [
     renderKeyValues("ADE iOS simulator snapshot", [
       ["device", snapshot.deviceUdid],
@@ -33731,7 +33457,7 @@ function formatIosSimSnapshot(value: unknown): string {
       ? "label: #name is an accessibility identifier, not a label; query it with --identifier name."
       : "",
     truncatedProvider
-      ? `note: the accessibility walk stopped at its cap (${truncatedBy.join(", ") || "a cap"}; limits: 500 elements, depth 80, 600 probe points), so some elements are missing here and from find and tap-element. Scroll or open the part you need, then snapshot again.`
+      ? `note: the accessibility walk stopped at its cap (${truncatedBy.join(", ") || "a cap"}; limits: ${walkLimits}), so some elements are missing here and from find and tap-element. Scroll or open the part you need, then snapshot again.`
       : "",
     providers.some((provider) => provider.unplaced === true)
       ? "note: an iPadOS window could not be placed on the screen this time, so rows marked (unplaced) have frames relative to their window; snapshot again, or run ade apple window --fill."

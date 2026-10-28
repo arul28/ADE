@@ -2,56 +2,21 @@
  * Which ADE calls only the running brain can answer.
  *
  * When no brain answers, the CLI runs a command on an in-process runtime. That
- * is right for project state on disk (lanes, git, PRs, settings), and wrong for
- * anything whose state lives in the brain: its chat service there is a stub
- * that mints `chat-<uuid>` ids and never runs a turn, and its terminals,
- * devices, browsers and schedules die with the command. So `ade new chat`
- * reported success for a chat that never existed, and `chat list` was empty
- * (ledger #48, #49). Every such call now fails with the reason no brain was
- * used, instead of reaching the stub.
+ * is right for project state on disk and wrong for state the brain holds, so
+ * every such call fails with the reason no brain was used instead of reaching
+ * a stand-in (a stub chat service reports success for a chat that never runs).
  *
- * Decided per call (domain and action), not per command: one rule covers every
- * command, including those whose steps pick their domain at run time.
+ * Actions declare it on the action policy (`live` in shared/adeActionAccess.ts),
+ * so a new action cannot drift from this check. Decided per call (domain and
+ * action), not per command: one rule covers every command, including those
+ * whose steps pick their domain at run time.
  */
-
-/** Domains whose every action needs the live brain. */
-const LIVE_ONLY_DOMAINS: ReadonlySet<string> = new Set([
-  "chat",
-  "session",
-  "pty",
-  "terminal",
-  "work_tools",
-  "ios_simulator",
-  "mac_desktop",
-  "app_control",
-  "built_in_browser",
-  "linear_agent",
-  "keep_awake",
-  "attention",
-  "cto_state",
-  "proxy",
-]);
+import { isLiveOnlyAdeAction } from "../../../desktop/src/shared/adeActionAccess";
 
 /**
- * Actions that change brain-held state in a domain whose reads work from
- * disk: scheduled automations and their ingress, test runs, lane proxies and
- * port leases.
+ * ADE tools (not `run_ade_action`) that start or drive brain-held work. Tools
+ * are not actions, so the action policy cannot declare them.
  */
-const LIVE_ONLY_ACTIONS: Readonly<Record<string, ReadonlySet<string>>> = {
-  automations: new Set([
-    "saveRule", "deleteRule", "toggleRule", "triggerManually", "planTest", "runTest", "cleanUpTestRun",
-    "startIngress", "cancelScheduledCleanup", "linearIngressSetup", "linearIngressTeardown",
-    "linearIngressPollNow", "webhookCreateEndpoint", "webhookRotateEndpoint", "webhookReplayDelivery",
-    "webhookSendTest", "webhookCreateAutomation", "webhookRetire",
-  ]),
-  tests: new Set(["run", "stop"]),
-  lane: new Set([
-    "proxyAddRoute", "proxyRemoveRoute", "proxyStart", "proxyStop",
-    "portAcquire", "portGetLease", "portRecoverOrphans", "portRelease",
-  ]),
-};
-
-/** ADE tools (not `run_ade_action`) that start or drive brain-held work. */
 const LIVE_ONLY_TOOLS: ReadonlySet<string> = new Set([
   "start_cli_session",
   "preview_scene",
@@ -71,12 +36,16 @@ export function liveOnlyCallLabel(method: string, params: unknown): string | nul
   const call = asRecord(params);
   const name = typeof call?.name === "string" ? call.name : "";
   if (LIVE_ONLY_TOOLS.has(name)) return name;
-  if (name !== "run_ade_action") return null;
   const args = asRecord(call?.arguments);
+  // A test run that returns before it finishes keeps running in the runtime
+  // that started it; an in-process one dies with the command. A waited run
+  // (the tool's default) ends before the command does.
+  if (name === "run_tests") return args?.waitForCompletion === false ? name : null;
+  if (name !== "run_ade_action") return null;
   const domain = typeof args?.domain === "string" ? args.domain : "";
   const action = typeof args?.action === "string" ? args.action : "";
   if (!domain) return null;
-  if (LIVE_ONLY_DOMAINS.has(domain) || LIVE_ONLY_ACTIONS[domain]?.has(action)) {
+  if (isLiveOnlyAdeAction(domain, action)) {
     return action ? `${domain}.${action}` : domain;
   }
   return null;

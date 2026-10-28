@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AppleDeviceCleanupResult, AppleLaneDevice } from "../../../shared/types/iosSimulator";
-import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
+import { APPLE_DEVICE_CLEANUP_INTERVAL_MS, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { appleDeviceDataRoot, parseSimctlDevices } from "./appleSimulatorCatalog";
 import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
 
@@ -42,7 +42,7 @@ export const APPLE_DEVICE_POWER_OFF_FILE = "ade-powered-off" as const;
 const DEFAULT_IDLE_MS = 30 * 60_000;
 const IDLE_TICK_MS = 5 * 60_000;
 const CLEANUP_FIRST_MS = 60_000;
-const CLEANUP_TICK_MS = 15 * 60_000;
+const CLEANUP_TICK_MS = APPLE_DEVICE_CLEANUP_INTERVAL_MS;
 const TOUCH_THROTTLE_MS = 60_000;
 
 type RunCommand = (

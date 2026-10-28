@@ -50,6 +50,7 @@ import {
   switchUpdaterToNodeTransport,
 } from "./updaterNetRecovery";
 import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
+import { InstallOnQuitDeferredError } from "./installOnQuit";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
 // A download that received nothing for this long is cancelled, and the next
@@ -154,9 +155,14 @@ type CreateAutoUpdateServiceArgs = {
    * Runs immediately before the native install handoff. `resumeChats` is the
    * user's install-dialog choice. Returning the chats it armed for post-restart
    * resume lets the service persist them alongside the pending install, so the
-   * launch that lands the update can name what came back.
+   * launch that lands the update can name what came back. With
+   * `closeAfterInstall` (a quit installs it), throwing
+   * `InstallOnQuitDeferredError` turns the install back into a plain quit.
    */
-  beforeQuitAndInstall?: (resumeChats: boolean) => void | Promise<UpdateInterruptedChat[] | void>;
+  beforeQuitAndInstall?: (
+    resumeChats: boolean,
+    options: { closeAfterInstall: boolean },
+  ) => void | Promise<UpdateInterruptedChat[] | void>;
   /** Asks this desktop's owned runtime child to shut down before the app quits. */
   stopOwnedRuntimeCooperatively?: (options?: { closeAdmission?: boolean }) => Promise<void>;
   rollbackQuitAndInstall?: (reason: string) => void | Promise<void>;
@@ -164,10 +170,12 @@ type CreateAutoUpdateServiceArgs = {
    * Runs right before the native installer takes over, so something can be on
    * screen while ADE is gone (a Windows install is silent). Returns a cancel
    * that runs when the install unwinds and ADE stays open.
+   * `closeAfterInstall`: the person quit, and the relaunch closes again.
    */
   onInstallHandoff?: (args: {
     version: string;
     installerPath: string | null;
+    closeAfterInstall: boolean;
   }) => (() => void) | null;
   /** Quits and reopens ADE, after the usual quit warnings. */
   /** Resolves true once the person agreed to restart; false when they kept ADE open. */
@@ -390,12 +398,12 @@ function reconcilePersistedUpdateState(args: {
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
   failedInstall: { targetVersion: string; attempt: number } | null;
-  /** This launch landed an install that a quit started (`closeAfterInstall`). */
-  landedQuitInstall: boolean;
+  /** The install a quit started (`closeAfterInstall`) that this launch landed. */
+  landedQuitInstall: { requestedAt: string } | null;
 } {
   const nextState: GlobalState = { ...args.state };
   let changed = false;
-  let landedQuitInstall = false;
+  let landedQuitInstall: { requestedAt: string } | null = null;
   let cacheCleanupReason: string | null = null;
   let failedInstall: { targetVersion: string; attempt: number } | null = null;
 
@@ -454,7 +462,9 @@ function reconcilePersistedUpdateState(args: {
       failedInstall = null;
       // Read once, here: the pending record is cleared below, so a crash and
       // relaunch of this same version opens normally.
-      landedQuitInstall = pendingInstall.closeAfterInstall === true;
+      landedQuitInstall = pendingInstall.closeAfterInstall === true
+        ? { requestedAt: pendingInstall.requestedAt }
+        : null;
     } else {
       const previous = nextState.failedInstallAttempts;
       const attempt = previous?.targetVersion === pendingInstall.targetVersion
@@ -2175,7 +2185,7 @@ export function createAutoUpdateService({
       let resumedChats: UpdateInterruptedChat[] = [];
       try {
         const prepareResult = await waitForInstallStep(
-          Promise.resolve(beforeQuitAndInstall?.(resumeChats)),
+          Promise.resolve(beforeQuitAndInstall?.(resumeChats, { closeAfterInstall: options.closeAfterInstall === true })),
           "install",
           "ADE could not prepare to quit for the update. Try again.",
         );
@@ -2184,6 +2194,14 @@ export function createAutoUpdateService({
         }
         resumedChats = Array.isArray(prepareResult.value) ? prepareResult.value : [];
       } catch (error) {
+        if (error instanceof InstallOnQuitDeferredError) {
+          // Work started on the brain while the quit-install got ready. Not a
+          // failed install: the update stays ready, untouched, and the quit
+          // goes ahead as a plain one.
+          await unwindArmedInstall("quit_install_deferred");
+          installReadySnapshot = null;
+          return false;
+        }
         const message = formatErrorMessage(error);
         logger.warn("autoUpdate.prepare_quit_and_install_failed", {
           version: installVersion,
@@ -2236,14 +2254,13 @@ export function createAutoUpdateService({
         // costs is not counted as quitting.
         runInstallHandoffCancel();
         try {
-          // A quit-install has nothing to show: the person asked ADE to go,
-          // and the launch that lands it opens no window either.
-          cancelInstallHandoff = options.closeAfterInstall
-            ? null
-            : onInstallHandoff?.({
-              version: snapshot.version ?? installVersion,
-              installerPath: downloadedFilePath,
-            }) ?? null;
+          // A quit-install gets it too: on Windows it is also what keeps a copy
+          // of ADE opened by hand mid-install from starting and being killed.
+          cancelInstallHandoff = onInstallHandoff?.({
+            version: snapshot.version ?? installVersion,
+            installerPath: downloadedFilePath,
+            closeAfterInstall: options.closeAfterInstall === true,
+          }) ?? null;
         } catch (error) {
           // The window is a courtesy; the install goes ahead without it.
           logger.warn("autoUpdate.install_handoff_surface_failed", {
@@ -2414,8 +2431,12 @@ export function createAutoUpdateService({
       }
       return snapshot.version;
     },
-    /** This launch landed an install a quit started; see `PendingInstallUpdate.closeAfterInstall`. */
-    landedQuitInstall(): boolean {
+    /**
+     * The install a quit started that this launch landed, or null; see
+     * `PendingInstallUpdate.closeAfterInstall`. Whether this launch is the
+     * updater's relaunch of it is `installOnQuit.ts`'s call.
+     */
+    landedQuitInstall(): { requestedAt: string } | null {
       return initialState.landedQuitInstall;
     },
     cancelAutoApply(): boolean {

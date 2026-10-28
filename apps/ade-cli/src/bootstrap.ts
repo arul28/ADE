@@ -274,7 +274,6 @@ import {
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
 import {
   brainLogPath,
-  isMachineEndpointName,
   resolveMachineAdeLayout,
   resolveMachineEndpointNames,
   resolveReachableMachineDesktopBridgeSocketPath,
@@ -601,11 +600,10 @@ function automationsEnabledForHeadlessRuntime(): boolean {
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
-  // The standalone runtime is one Node SEA executable, so the binary IS the
-  // CLI. Its argv[1] is rewritten to a bare "cli.cjs" that names no real file:
-  // without this the brain found no CLI, wrote no shim, and its agents ran
-  // whatever `ade` PATH had (2026-10-28: an older ADE.app CLI whose chat reads
-  // came back empty), and ADE MCP could not find its own `ade` at all.
+  // A Node SEA (the standalone `ade`, `ade.exe`) has no script beside it: its
+  // banner rewrites argv[1] to the bare word "cli.cjs". The executable itself
+  // is the CLI, and every chat of a brain it serves needs it as ADE_CLI_PATH
+  // for `ade` on PATH and the ADE skills.
   if (isEmbeddedAdeRuntime()) return process.execPath;
   const fromArgv = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
   const fromEnv = process.env.ADE_CLI_PATH?.trim();
@@ -978,8 +976,7 @@ export async function createAdeRuntime(args: {
     : paths.socketPath;
   const machineRuntimeLayout = resolveMachineAdeLayout();
   // On Windows a machine brain also answers on its endpoint's older pipe names.
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeLayout.socketPath)
-    || isMachineEndpointName(runtimeSocketPath, resolveMachineEndpointNames().runtime);
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({

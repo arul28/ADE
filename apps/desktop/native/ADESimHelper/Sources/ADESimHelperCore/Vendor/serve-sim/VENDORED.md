@@ -127,12 +127,22 @@ ADE's own code on top of it lives outside `Vendor/`: `DevicePosture.swift` and t
 - `AccessibilityBridge.swift` (no longer byte-for-byte; the SHA-256 above is upstream's): `describeUI(udid:displayId:displayOrientation:)` sends the frontmost-app read and every grid hit-test to the live panel's display (the Duo's inner display is 3; display 0 finds nothing there), and `probeToFrame` turns a grid point by that panel's picture turn before the coverage check, since probes are in the app frame and element frames in the picture. Upstream's display 0 and identity turn are the defaults, which is every non-foldable device.
 - `CoreDeviceShim/CoreDeviceTrampolines.S` and `CoreDeviceShim/CoreDeviceShim.m` (no longer byte-for-byte; the SHA-256s above are upstream's): on x86_64 the four cross-file async descriptors are zero (x86_64 Mach-O cannot encode that relative pointer) and `SSCoreDeviceInitialize` returns false. ADE's helper is universal; the Duo needs Xcode 27.1, which runs only on Apple silicon.
 
+### Where ADE's accessibility code lives
+
+ADE's additions to `AccessibilityBridge` are an `extension AccessibilityBridge` in `ADESimHelperCore/AccessibilityPlacement.swift`, outside `Vendor/`: `Description` and `limits`, `placeTree`, `cover`, `alignToGrabber`, `placeLater`, `contextId`, `isSystemElement`, `makePlacement`, `describeElement`, `focusedElement`, `frameToProbe` and the value-description role sets. The vendored file keeps only what an extension cannot hold or what must sit inside upstream's functions:
+
+- the `currentTurn` and `systemPids` stored properties;
+- the calls into the extension inside `describeUI`, `discoverByGrid` and `serialize` (the bullets below);
+- `private` dropped from the members the extension uses (`lock`, `translator`, `ensureLoaded`, the token registry, `serialize`, `stringValue`, `bundleIdForPid` and the two caps), since Swift's `private` does not reach another file.
+
+When re-vendoring, reapply those hooks and access changes; the extension file needs no change unless upstream renames what it calls.
+
 ### ADE patches for reading values and caps (2026-10-27)
 
 - `AccessibilityBridge.swift`: a number that is not finite is no value. A SwiftUI adjustable element with no numeric value answers NaN, which `String(describing:)` wrote as `"nan"`; `stringValue` now answers nil for it and writes a finite number with `stringValue`.
 - `AccessibilityBridge.swift`: each element also emits `AXValueDescription`, read only where the element responds to `accessibilityValueDescription` (the app's own words for a value, "0:29 of 0:49"). ADE prefers it over `AXValue`.
 - `AccessibilityBridge.swift`: `describeUI` returns which caps cut the walk short (`elements` 500, `depth` 80, `probe-points` 600) instead of stopping silently; the helper's `ax-describe` reply carries `truncated`, `truncatedBy` and `limits`.
-- `AccessibilityBridge.swift`: `describeElement(udid:x:y:…)` answers the one element at a point and its children (one hit-test, turned back into the probe space by `frameToProbe`, the inverse of `probeToFrame`), and `focusedElement` the element with keyboard focus (`accessibilityFocusedUIElement`, else the `AXFocusedUIElement` attribute, which is what this runtime's translation answers). They back the helper's `ax-hit` and `ax-focused` commands, which `fill-element` and `type` use to read a field back cheaply.
+- `AccessibilityBridge.swift`: `describeElement(udid:x:y:…)` answers the one element at a point and its children (one hit-test, turned back into the probe space by `frameToProbe`, the inverse of `probeToFrame`), and `focusedElement` the element with keyboard focus (`accessibilityFocusedUIElement`, else the `AXFocusedUIElement` attribute, which is what this runtime's translation answers). Both live in `AccessibilityPlacement.swift`. They back the helper's `ax-hit` and `ax-focused` commands, which `fill-element` and `type` use to read a field back cheaply.
 
 ### ADE patch for iPadOS windows (2026-10-27)
 

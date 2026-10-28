@@ -17,12 +17,10 @@ import {
   getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
-import { recordInstalledDesktopApp } from "../native/nativeHelperPaths";
 import {
-  ADE_CLI_VIA_CMD_ENV,
+  electronCliLaunchSpec,
   installWindowsCliLauncher,
   resolveWindowsCliLauncherSource,
-  windowsCliCompileCacheDefault,
 } from "./windowsCliLauncher";
 
 type CreateAdeCliServiceArgs = {
@@ -605,13 +603,16 @@ function statusMessage(args: {
   };
 }
 
+/** Why ADE_CLI_PATH stays `ade.cmd` is logged once per process, not per project. */
+let windowsLauncherFallbackLogged = false;
+
 /**
  * The packaged Windows app's `ade.exe` launcher for ADE_CLI_PATH
- * (windowsCliLauncher.ts), installed under userData once per process. It runs
- * what `bin\ade.cmd` runs (`ADE.exe …\ade-cli\cli.cjs` as Node, with the
- * app's module dirs on NODE_PATH and this channel's ADE_HOME as the default
- * brain) without cmd.exe. Null off Windows, in a dev build, or when the
- * launcher is missing; the caller keeps `ade.cmd`.
+ * (windowsCliLauncher.ts), installed under userData. It runs what
+ * `bin\ade.cmd` runs (`ADE.exe …\ade-cli\cli.cjs` as Node, with the app's
+ * module dirs on NODE_PATH and this channel's ADE_HOME as the default brain)
+ * without cmd.exe. Null off Windows, in a dev build, or when the launcher
+ * cannot be installed (logged once); the caller keeps `ade.cmd`.
  */
 function resolvePackagedWindowsCliLauncher(
   args: CreateAdeCliServiceArgs,
@@ -621,35 +622,34 @@ function resolvePackagedWindowsCliLauncher(
   if (process.platform !== "win32" || resolved.source !== "packaged" || !resolved.cliJsPath || !args.resourcesPath) {
     return null;
   }
-  const launcherSource = resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath });
-  if (!launcherSource) return null;
   const resourcesPath = path.resolve(args.resourcesPath);
   const adeHome = env.ADE_HOME?.trim();
-  return installWindowsCliLauncher({
-    launcherSource,
+  const installed = installWindowsCliLauncher({
+    launcherSource: resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath }),
     dir: path.join(args.userDataPath, "ade-cli-launcher"),
-    spec: {
-      exe: args.appExecutablePath,
-      args: [resolved.cliJsPath],
-      env: [["ELECTRON_RUN_AS_NODE", "1"]],
+    spec: electronCliLaunchSpec({
+      execPath: args.appExecutablePath,
+      entryPath: resolved.cliJsPath,
+      nodeModulePaths: [
+        path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
+        path.join(resourcesPath, "app.asar", "node_modules"),
+      ],
       brainDefaults: adeHome ? [["ADE_HOME", adeHome]] : [],
-      prepend: [[
-        "NODE_PATH",
-        [path.join(resourcesPath, "app.asar.unpacked", "node_modules"), path.join(resourcesPath, "app.asar", "node_modules")].join(";"),
-      ]],
-      unset: [ADE_CLI_VIA_CMD_ENV],
-      // What `ade.cmd` also did: a warm compile cache for every call, and real
-      // Node for `ade code` (Electron run as Node has no TTY on Windows).
-      ifNone: [windowsCliCompileCacheDefault(adeHome || path.win32.join(env.USERPROFILE?.trim() || os.homedir(), ".ade"))],
-      ttyNode: true,
-    },
+      adeHome: adeHome || path.win32.join(env.USERPROFILE?.trim() || os.homedir(), ".ade"),
+    }),
   });
+  if (installed.reason && !windowsLauncherFallbackLogged) {
+    windowsLauncherFallbackLogged = true;
+    args.logger.warn("ade_cli.windows_launcher_unavailable", {
+      reason: installed.reason,
+      fallback: resolved.commandPath,
+      effect: "ADE_CLI_PATH names ade.cmd, which cuts a multi-line argument at its first line",
+    });
+  }
+  return installed.exePath;
 }
 
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
-  // A standalone brain (`ade brain update`) has no app resources; this record
-  // is how it finds the app's signed native helpers. Once per process.
-  recordInstalledDesktopApp({ isPackaged: Boolean(args.isPackaged), resourcesPath: args.resourcesPath });
   const commandName = resolveCommandName(args);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);

@@ -453,9 +453,12 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   brain reports the installed app's version beside its own
   (`runtimeInfo.desktopAppVersion` on `ade/initialize` and `runtime/info`, and
   `appVersion` in the Bonjour TXT; null on a machine with no app, absent from
-  older brains). The macOS brain reads the app's Info.plist, so an app updated
-  while the brain kept running still reads right; Windows uses the version the
-  app recorded in `runtime/desktop-app.json`. When the two agree the chip shows
+  older brains). One reader (`readInstalledDesktopApp`) answers: macOS reads
+  the app's Info.plist (`plutil` for a binary one), so an app updated while the
+  brain kept running still reads right; Windows finds the app the desktop
+  recorded in `runtime/desktop-app.json` (or the usual install folders) and
+  reads the `.exe`'s version resource, so a closed app the brain updated reads
+  right too. When the two agree the chip shows
   one version; when they differ it shows both ("1.2.123 · brain 1.2.125"), and
   the older of the two decides "behind" (`machineVersionFacts`,
   `shared/machineVersions.ts`), so a machine whose app is behind is never "Up
@@ -1601,7 +1604,11 @@ A standalone brain (`$ADE_HOME/bin/ade serve`, a Node SEA) has no app
   the desktop recorded in `$ADE_HOME/runtime/desktop-app.json`, then the
   channel's app (`ADE`, `ADE Beta`, `ADE Alpha`, or `ADE_DESKTOP_APP_NAME`) in
   `/Applications` and `~/Applications`, skipping a bundle whose id is another
-  channel's, and last the app Spotlight finds by the channel's bundle id (a miss is asked again after five minutes). The
+  channel's, and last the app Spotlight finds by the channel's bundle id (a miss is asked again after five minutes).
+  A Spotlight hit counts only when `codesign --verify --strict` passes and its
+  team is the installed app's (ADE's own team when none is installed), so a
+  copy in a disk image, the Trash or Downloads is never run. Unsigned dev
+  builds keep their explicit paths. The
   darwin runtime archive ships `ade-sim-helper` and `ade-media`, so the brain
   prefers its own build of those. The Mac Desktop driver is not in the archive
   and the app's signed copy comes first: Screen Recording and Accessibility

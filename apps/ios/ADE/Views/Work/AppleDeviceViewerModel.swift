@@ -84,7 +84,9 @@ final class AppleDeviceViewerModel: ObservableObject {
       contentPixelSize = size
     }
     socket.onOpen = { [weak self] in
-      self?.health.socketOpened(at: Date())
+      let now = Date()
+      self?.health.socketOpened(at: now)
+      self?.retryPolicy.streamOpened(at: now)
     }
     socket.onRecord = { [weak self] record in
       self?.handle(record)
@@ -427,7 +429,7 @@ final class AppleDeviceViewerModel: ObservableObject {
       rateMeter.record(bytes: bytes.count, at: now)
       guard decoder.decode(accessUnit: bytes, keyframe: keyframe) else { return }
       health.frameDecoded(at: now)
-      retryPolicy.reset()
+      retryPolicy.frameDecoded(at: now)
       if let size = decoder.presentedSize, size != contentPixelSize, size.width > 0, size.height > 0 {
         contentPixelSize = size
       }
