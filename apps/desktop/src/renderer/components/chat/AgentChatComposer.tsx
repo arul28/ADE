@@ -289,6 +289,7 @@ import {
 import {
   CLAUDE_MODE_OPTIONS,
   codexPermissionPickerOption,
+  COPILOT_PERMISSION_OPTIONS,
   cursorPermissionPickerOption,
   DROID_PERMISSION_OPTIONS,
   MUSE_PERMISSION_OPTIONS,
@@ -6088,14 +6089,7 @@ function AgentChatComposerImpl({
     }
 
     if (sp === "copilot") {
-      const options: PermissionModePickerOption<"plan" | "ask" | "assisted" | "auto-edit" | "full-auto">[] = [
-        { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
-        { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
-        { value: "assisted", label: "Assisted", detail: "Approves safe calls; asks you for the rest.", tone: "purple", icon: "agent" },
-        { value: "auto-edit", label: "Auto-edit", detail: "Approves file changes in the workspace.", tone: "amber", icon: "edit" },
-        { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
-      ];
-      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={options} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
+      return <PermissionModePicker ariaLabel="Copilot permission mode" selectedValue={copilotPermissionMode} options={COPILOT_PERMISSION_OPTIONS} disabled={nativeControlsDisabled || !onCopilotPermissionModeChange} onSelect={(mode) => onCopilotPermissionModeChange?.(mode)} />;
     }
 
     if (sp === "muse") {

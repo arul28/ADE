@@ -22,6 +22,7 @@ import { PermissionModePicker, type PermissionModePickerOption } from "./Permiss
 import {
   CLAUDE_MODE_OPTIONS,
   codexPermissionPickerOption,
+  COPILOT_PERMISSION_OPTIONS,
   cursorPermissionPickerOption,
   DROID_PERMISSION_OPTIONS,
   MUSE_PERMISSION_OPTIONS,
@@ -177,6 +178,20 @@ function LaunchNativePermissionControls({
     );
   }
 
+  if (provider === "copilot") {
+    return (
+      <PermissionModePicker
+        ariaLabel="Copilot permission mode"
+        selectedValue={nativeControls.copilotPermissionMode ?? "ask"}
+        options={COPILOT_PERMISSION_OPTIONS}
+        disabled={disabled}
+        onSelect={(mode) => onNativeControlsChange({ ...nativeControls, copilotPermissionMode: mode })}
+      />
+    );
+  }
+
+  // OpenCode, and the ACP providers, whose launch mode is carried in the
+  // OpenCode field (see `applyUnifiedPermissionToNativeControls`).
   return (
     <PermissionModePicker
       ariaLabel="OpenCode permission mode"

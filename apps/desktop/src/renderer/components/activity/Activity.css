@@ -278,6 +278,15 @@ button.activity-pane-freshness {
   color: var(--color-accent);
 }
 
+/* The portalled menus render outside `.activity-pane` / `.activity-panel`, so
+   they carry the type and hairline tokens their rows read. */
+.activity-filter-menu,
+.activity-settings-popover {
+  --activity-fs-xs: 11px;
+  --activity-fs-sm: 12px;
+  --activity-hairline: color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
 /* Placed by AnchoredMenu (position, offset and stacking). */
 .activity-filter-menu {
   display: flex;

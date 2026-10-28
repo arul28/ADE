@@ -1,10 +1,8 @@
 import React from "react";
-import { createPortal } from "react-dom";
 import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
 import type { DigestPushTick } from "./prDigestTimelineModel";
-import { useTooltipPlacement } from "../../ui/useTooltipPlacement";
-import { Z_LAYERS } from "../../ui/zLayers";
+import { AnchoredTooltip } from "../../ui/AnchoredTooltip";
 
 /**
  * A thin rail of ticks on the Overview's right edge — one per push. A click
@@ -24,8 +22,6 @@ export function PrPushTickRail({
 }) {
   const [hover, setHover] = React.useState<{ tick: DigestPushTick } | null>(null);
   const tickRef = React.useRef<HTMLElement | null>(null);
-  const tooltipRef = React.useRef<HTMLDivElement | null>(null);
-  const placement = useTooltipPlacement({ open: Boolean(hover), triggerRef: tickRef, tooltipRef, side: "left", remeasureKey: hover?.tick.id });
   const place = (target: HTMLElement, tick: DigestPushTick) => {
     tickRef.current = target;
     setHover({ tick });
@@ -83,17 +79,16 @@ export function PrPushTickRail({
         );
       })}
     </nav>
-      {hover && typeof document !== "undefined" ? createPortal(
-        <div
-          ref={tooltipRef}
-          role="tooltip"
-          data-testid="pr-push-tick-preview"
-          className="pointer-events-none fixed w-[240px] rounded-lg px-3 py-2"
+      {hover ? (
+        <AnchoredTooltip
+          open
+          triggerRef={tickRef}
+          side="left"
+          remeasureKey={hover.tick.id}
+          onDismiss={() => setHover(null)}
+          testId="pr-push-tick-preview"
+          className="pointer-events-none w-[240px] rounded-lg px-3 py-2"
           style={{
-            left: placement?.x ?? 0,
-            top: placement?.y ?? 0,
-            visibility: placement ? "visible" : "hidden",
-            zIndex: Z_LAYERS.tooltip,
             background: "var(--color-popup-bg, var(--color-card))",
             boxShadow: `0 16px 40px -16px rgba(0,0,0,0.8), inset 0 0 0 1px ${fgTint(8)}`,
             fontFamily: SANS_FONT,
@@ -112,8 +107,7 @@ export function PrPushTickRail({
               ? "No comments"
               : `${hover.tick.commentCount} comment${hover.tick.commentCount === 1 ? "" : "s"}${hover.tick.openCount > 0 ? ` · ${hover.tick.openCount} open` : ""}`}
           </div>
-        </div>,
-        document.body,
+        </AnchoredTooltip>
       ) : null}
     </div>
   );

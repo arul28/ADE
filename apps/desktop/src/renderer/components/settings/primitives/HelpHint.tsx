@@ -1,8 +1,6 @@
 import React, { useId, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
-import { useTooltipPlacement } from "../../ui/useTooltipPlacement";
-import { Z_LAYERS } from "../../ui/zLayers";
+import { AnchoredTooltip } from "../../ui/AnchoredTooltip";
 
 /**
  * A "?" beside a title, with one short sentence behind it.
@@ -20,8 +18,6 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
   const id = useId();
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const tooltipRef = useRef<HTMLSpanElement | null>(null);
-  const placement = useTooltipPlacement({ open, triggerRef, tooltipRef, side: "bottom", remeasureKey: text });
 
   return (
     <span style={{ display: "inline-flex" }}>
@@ -59,18 +55,16 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
       >
         ?
       </button>
-      {open && typeof document !== "undefined" ? createPortal(
-        <span
-          ref={tooltipRef}
+      {open ? (
+        <AnchoredTooltip
+          open
+          triggerRef={triggerRef}
+          side="bottom"
+          remeasureKey={text}
+          onDismiss={() => setOpen(false)}
           id={id}
-          role="tooltip"
           style={{
-            position: "fixed",
-            left: placement?.x ?? 0,
-            top: placement?.y ?? 0,
-            visibility: placement ? "visible" : "hidden",
             pointerEvents: "none",
-            zIndex: Z_LAYERS.tooltip,
             width: 248,
             padding: "7px 9px",
             borderRadius: 8,
@@ -84,8 +78,7 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
           }}
         >
           {text}
-        </span>,
-        document.body,
+        </AnchoredTooltip>
       ) : null}
     </span>
   );

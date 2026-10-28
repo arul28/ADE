@@ -1,5 +1,6 @@
 import type {
   AgentChatClaudePermissionMode,
+  AgentChatCopilotPermissionMode,
   AgentChatPermissionMode,
   AgentChatDroidPermissionMode,
   AgentChatMusePermissionMode,
@@ -70,6 +71,14 @@ export function cursorPermissionPickerOption(value: string, label: string): Perm
   }
   return { value, label, triggerLabel: label, detail: "Cursor Agent's normal approval flow.", tone: "green", icon: "agent" };
 }
+
+export const COPILOT_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatCopilotPermissionMode>> = [
+  { value: "plan", label: "Plan", detail: "Read-only planning mode.", tone: "slate", icon: "plan" },
+  { value: "ask", label: "Ask", detail: "Ask before each action.", tone: "slate", icon: "manual" },
+  { value: "assisted", label: "Assisted", detail: "Approves safe calls; asks you for the rest.", tone: "purple", icon: "agent" },
+  { value: "auto-edit", label: "Auto-edit", detail: "Approves file changes in the workspace.", tone: "amber", icon: "edit" },
+  { value: "full-auto", label: "Full-auto", detail: "Allow all actions for this session.", tone: "red", icon: "full" },
+];
 
 export const OPENCODE_PERMISSION_OPTIONS: Array<PermissionModePickerOption<AgentChatOpenCodePermissionMode>> = [
   { value: "plan", label: "Plan", detail: "Read-only plan agent.", tone: "purple", icon: "plan" },

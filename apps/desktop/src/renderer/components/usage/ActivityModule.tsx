@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import {
   CaretDown,
   DeviceMobile,
@@ -19,9 +18,7 @@ import { formatCompact, formatDayShort, formatTokens } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { cn } from "../ui/cn";
-import { usePortalContainer } from "../ui/portalContainer";
-import { useTooltipPlacement } from "../ui/useTooltipPlacement";
-import { Z_LAYERS } from "../ui/zLayers";
+import { AnchoredTooltip } from "../ui/AnchoredTooltip";
 import {
   type ActivityInsight,
   dayHasActivity,
@@ -233,30 +230,26 @@ function DayTooltip({
   tip,
   targetRef,
   palette,
+  onDismiss,
 }: {
   tip: TooltipState;
   targetRef: React.RefObject<HTMLElement | null>;
   palette: Record<SeriesKey, string>;
+  onDismiss: () => void;
 }) {
   const { point } = tip;
   const code = point.insertions + point.deletions;
-  const portalContainer = usePortalContainer();
-  const tooltipRef = useRef<HTMLDivElement | null>(null);
-  // Portalled and placed against the window: inside the card, a tall bar's
-  // tooltip grew up past the card's top edge and was cut off.
-  const placement = useTooltipPlacement({ open: true, triggerRef: targetRef, tooltipRef, side: "top", remeasureKey: point.date });
-  return createPortal(
-    <div
-      ref={tooltipRef}
-      role="tooltip"
-      className={cn("pointer-events-none fixed px-2.5 py-2 text-left", USAGE_OVERLAY_CLASS)}
-      style={{
-        left: placement?.x ?? 0,
-        top: placement?.y ?? 0,
-        visibility: placement ? "visible" : "hidden",
-        zIndex: Z_LAYERS.tooltip,
-        minWidth: 150,
-      }}
+  // Placed against the window: inside the card, a tall bar's tooltip grew up
+  // past the card's top edge and was cut off.
+  return (
+    <AnchoredTooltip
+      open
+      triggerRef={targetRef}
+      side="top"
+      remeasureKey={point.date}
+      onDismiss={onDismiss}
+      className={cn("pointer-events-none px-2.5 py-2 text-left", USAGE_OVERLAY_CLASS)}
+      style={{ minWidth: 150 }}
     >
       <div className="kit-eyebrow">{formatDayShort(point.date)}</div>
       <div className="kit-num mt-1 flex flex-col gap-0.5 text-[11px] text-muted-fg">
@@ -275,8 +268,7 @@ function DayTooltip({
           </span>
         ) : null}
       </div>
-    </div>,
-    portalContainer ?? document.body,
+    </AnchoredTooltip>
   );
 }
 
@@ -984,7 +976,7 @@ export function ActivityModule({
           }`}
         >
           {chart}
-          {tooltip.tip ? <DayTooltip tip={tooltip.tip} targetRef={tooltip.targetRef} palette={palette} /> : null}
+          {tooltip.tip ? <DayTooltip tip={tooltip.tip} targetRef={tooltip.targetRef} palette={palette} onDismiss={tooltip.hide} /> : null}
         </div>
 
         <div className="usage-activity-foot">

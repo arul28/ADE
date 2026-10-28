@@ -20,15 +20,13 @@
  * as a promise.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { ArrowsClockwise, Plus, Question } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, outlineButton } from "../../../lanes/laneDesignTokens";
 import { ProviderPanel } from "../../providerSectionPrimitives";
 import { SettingsToggle } from "../../primitives/SettingsControls";
 import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
-import { useTooltipPlacement } from "../../../ui/useTooltipPlacement";
-import { Z_LAYERS } from "../../../ui/zLayers";
+import { AnchoredTooltip } from "../../../ui/AnchoredTooltip";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
 import {
@@ -55,10 +53,8 @@ const HINT_TOOLTIP_WIDTH = 280;
 function HintDot({ label, text }: { label: string; text: string }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
-  const tooltipRef = useRef<HTMLSpanElement | null>(null);
   // Portalled and placed against the window, so neither the panel's overflow nor
   // the window edge can cut off the sentence it exists to show.
-  const placement = useTooltipPlacement({ open, triggerRef: anchorRef, tooltipRef, side: "bottom", remeasureKey: text });
   const show = useCallback(() => setOpen(true), []);
 
   return (
@@ -87,17 +83,15 @@ function HintDot({ label, text }: { label: string; text: string }) {
       >
         <Question size={12} />
       </button>
-      {open && typeof document !== "undefined" ? createPortal(
-        <span
-          ref={tooltipRef}
-          role="tooltip"
+      {open ? (
+        <AnchoredTooltip
+          open
+          triggerRef={anchorRef}
+          side="bottom"
+          remeasureKey={text}
+          onDismiss={() => setOpen(false)}
           style={{
-            position: "fixed",
-            left: placement?.x ?? 0,
-            top: placement?.y ?? 0,
-            visibility: placement ? "visible" : "hidden",
             pointerEvents: "none",
-            zIndex: Z_LAYERS.tooltip,
             width: HINT_TOOLTIP_WIDTH,
             padding: "9px 11px",
             fontSize: 11,
@@ -111,8 +105,7 @@ function HintDot({ label, text }: { label: string; text: string }) {
           }}
         >
           {text}
-        </span>,
-        document.body,
+        </AnchoredTooltip>
       ) : null}
     </span>
   );

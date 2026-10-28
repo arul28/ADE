@@ -257,7 +257,6 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           aria-expanded={layoutsOpen}
           aria-label={`Layout: ${activeName}`}
           title="Saved layouts"
-          data-home-popover-toggle
           onClick={() => {
             setLookOpen(false);
             setAppsOpen(false);
@@ -280,7 +279,6 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           type="button"
           className="ade-home-action"
           aria-expanded={lookOpen}
-          data-home-popover-toggle
           onClick={() => {
             setLayoutsOpen(false);
             setAppsOpen(false);
@@ -298,7 +296,6 @@ export default function HomeEditTools({ onDone }: { onDone: () => void }) {
           type="button"
           className="ade-home-action"
           aria-expanded={appsOpen}
-          data-home-popover-toggle
           onClick={() => {
             setLayoutsOpen(false);
             setLookOpen(false);
