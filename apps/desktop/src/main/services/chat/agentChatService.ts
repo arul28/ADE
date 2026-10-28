@@ -4582,6 +4582,9 @@ function claudePendingSettingsAfterBackground(
   return (["reasoningEffort", "fastMode"] as const).filter((setting) => settings.has(setting));
 }
 
+/** How long a live Claude effort change may take before it falls back to the deferred reset. */
+const CLAUDE_EFFORT_CHANGE_TIMEOUT_MS = 5_000;
+
 /** Hold an effort change for the deferred reset, remembering the effort the live query keeps. */
 function deferClaudeReasoningEffortReset(runtime: ClaudeRuntime, runningEffort: string | null): void {
   if (runtime.pendingResetRunningEffort === undefined) runtime.pendingResetRunningEffort = runningEffort;
@@ -61001,13 +61004,17 @@ export function createAgentChatService(args: {
   ): Promise<boolean> => {
     const control = getClaudeQueryControl(sessionQuery);
     if (typeof control.applyFlagSettings !== "function") return false;
+    const applyFlagSettings = control.applyFlagSettings;
     try {
       // Both keys every time: an effort change sent without `ultracode`
       // turns ultracode off, and `null` returns to the model's default.
-      await control.applyFlagSettings({
+      // Bounded, so a process that stopped answering falls back to the
+      // deferred reset instead of holding every later effort change. A late
+      // answer is harmless: that reset rebuilds the query at the picked effort.
+      await awaitClaudeControlCall("Claude effort change", CLAUDE_EFFORT_CHANGE_TIMEOUT_MS, () => applyFlagSettings({
         effortLevel: claudeRuntimeEffortForReasoningEffort(effort),
         ultracode: isClaudeUltracodeEffort(effort),
-      } as Parameters<NonNullable<typeof control.applyFlagSettings>>[0]);
+      } as Parameters<typeof applyFlagSettings>[0]));
     } catch (error) {
       logger.warn("agent_chat.claude_set_effort_live_failed", {
         sessionId: managed.session.id,
@@ -66780,6 +66787,7 @@ export function createAgentChatService(args: {
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
       pendingSettingsAfterBackground: summary.pendingSettingsAfterBackground ?? [],
       reasoningEffortChange: summary.reasoningEffortChange ?? null,
+      modelId: summary.modelId ?? summary.model,
       currentTool: runningWithTool?.lastToolName
         ? { name: runningWithTool.lastToolName }
         : null,

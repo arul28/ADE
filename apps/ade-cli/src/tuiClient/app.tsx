@@ -11,6 +11,7 @@ import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
 import {
   pendingSettingsAfterBackgroundShortLabel,
   reasoningEffortChangeLabel,
+  reasoningEffortChangeShortLabel,
   settingsHeldBesideEffortChange,
 } from "../../../desktop/src/shared/chatTurnStatus";
 import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
@@ -2949,6 +2950,9 @@ function mentionRemoteCacheEntry(cache: Map<string, MentionRemoteCacheEntry>, la
   }
   return entry;
 }
+
+/** Center-pane width below which the footer shows an effort change as "High → Medium". */
+const FOOTER_FULL_EFFORT_CHANGE_MIN_WIDTH = 100;
 
 function useTerminalDimensions(): [number, number] {
   const read = (): [number, number] => [
@@ -5909,14 +5913,18 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   const activePendingSettings = activeSession?.pendingSettingsAfterBackground;
   const activeEffortChange = activeSession?.reasoningEffortChange;
   const activeEffortModelId = activeSession?.modelId ?? activeSession?.model ?? null;
+  // A narrow center pane gets the mobile form ("High → Medium"), so the
+  // footer row's truncation does not cut the change off.
+  const footerEffortChangeShort = centerWidth < FOOTER_FULL_EFFORT_CHANGE_MIN_WIDTH;
   const footerPendingSettingsLabel = useMemo(() => {
     const held = settingsHeldBesideEffortChange(activePendingSettings, activeEffortChange);
+    const formatEffortChange = footerEffortChangeShort ? reasoningEffortChangeShortLabel : reasoningEffortChangeLabel;
     const parts = [
-      activeEffortChange ? reasoningEffortChangeLabel(activeEffortChange, activeEffortModelId) : null,
+      activeEffortChange ? formatEffortChange(activeEffortChange, activeEffortModelId) : null,
       held.length ? pendingSettingsAfterBackgroundShortLabel(held) : null,
     ].filter((part): part is string => part != null);
     return parts.length ? parts.join(" · ") : null;
-  }, [activePendingSettings, activeEffortChange, activeEffortModelId]);
+  }, [activePendingSettings, activeEffortChange, activeEffortModelId, footerEffortChangeShort]);
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"

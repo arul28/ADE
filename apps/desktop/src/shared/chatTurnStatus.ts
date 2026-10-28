@@ -69,6 +69,8 @@ export type ChatTurnStatusSnapshot = {
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   /** The picked effort the running work has not picked up yet (see the session summary field). */
   reasoningEffortChange?: AgentChatReasoningEffortChange;
+  /** The chat's model, so effort levels read as its picker names them. */
+  modelId?: string;
   /** Present when the id names a tracked CLI terminal rather than a chat. */
   cliSession?: CliSessionFacts;
   /**
@@ -97,6 +99,7 @@ export type DeriveChatTurnStatusInput = {
   backgroundWorkCount?: number;
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   reasoningEffortChange?: AgentChatReasoningEffortChange | null;
+  modelId?: string | null;
   ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
   nowMs?: number;
 };
@@ -159,6 +162,7 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
       ? { pendingSettingsAfterBackground: input.pendingSettingsAfterBackground }
       : {}),
     ...(input.reasoningEffortChange ? { reasoningEffortChange: input.reasoningEffortChange } : {}),
+    ...(input.reasoningEffortChange && input.modelId ? { modelId: input.modelId } : {}),
     ...(ownedElsewhere ? { ownedElsewhere } : {}),
   };
 }
@@ -226,7 +230,7 @@ export function formatChatTurnStatus(
     ));
   }
   if (status.reasoningEffortChange) {
-    lines.push(chatTurnStatusRow("effort", reasoningEffortChangeLabel(status.reasoningEffortChange)));
+    lines.push(chatTurnStatusRow("effort", reasoningEffortChangeLabel(status.reasoningEffortChange, status.modelId)));
   }
   const heldSettings = settingsHeldBesideEffortChange(status.pendingSettingsAfterBackground, status.reasoningEffortChange);
   if (heldSettings.length) {

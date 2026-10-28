@@ -531,6 +531,7 @@ func workPreviewChatSessionView(
   }
   summary.pendingSettingsAfterBackground = pendingSettingsAfterBackground
   summary.reasoningEffortChange = reasoningEffortChange
+  if let next = reasoningEffortChange?.next { summary.reasoningEffort = next }
   if compactFirst {
     summary.compactionIdleMode = "ask"
     summary.compactFirstMinTokens = 1_000
