@@ -23,7 +23,12 @@ export function startLine(r: Partial<StartResult>): WriteLine {
   return { line: (running ? "Starting " : "Started ") + chat, tone: running ? "info" : "ok", note: lane, link: safeLink(r.link) };
 }
 export function sendLine(r: Partial<SendResult>): WriteLine {
-  return { line: "Sent to " + chatName(null, r.sessionId), tone: "ok", note: str(r.delivery), link: safeLink(r.link) };
+  const chat = chatName(null, r.sessionId);
+  const how = r.routedAction === "steer" ? "Steered the running turn"
+    : r.routedAction === "interrupt-replace" ? "Interrupted and sent"
+    : r.delivery === "queued" ? "Queued for after this turn"
+    : "Message sent";
+  return { line: how, tone: r.delivery === "queued" ? "info" : "ok", note: chat, link: safeLink(r.link) };
 }
 export function viewWrite(w: WriteLine, scope: Scope): HTMLElement {
   const body = h("div", { cls: "head", style: "height:auto;min-height:44px;padding:8px 14px" }, h("span", { cls: "dot big", "data-s": w.tone }),

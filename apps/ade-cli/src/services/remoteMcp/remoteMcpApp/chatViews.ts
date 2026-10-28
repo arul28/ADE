@@ -62,19 +62,17 @@ export function viewChatList(r: unknown, scope: Scope): HTMLElement {
   return frame(scope, "Chats", chats.length, listBody(items, 12, "No chats."));
 }
 export function mdBlocks(text: string, container: HTMLElement): HTMLElement {
-  const parts = text.split(/\n?```[^\n]*\n?/);
+  // HTML comments (bot markers) and `<details>`-style tags say nothing here.
+  const clean = text.replace(/<!--[\s\S]*?-->/g, "").replace(/<\/?(details|summary|br|sub|sup|p|div)[^>]*>/gi, "");
+  const parts = clean.split(/\n?```[^\n]*\n?/);
   parts.forEach((part, i) => {
     if (i % 2 === 1) { container.appendChild(h("pre", null, part.replace(/\n$/, ""))); return; }
     for (const para of part.split(/\n{2,}/)) {
       let t = para.trim();
       if (!t) continue;
       const lines = t.split("\n");
-      if (lines.every((l) => /^\s*([-*]|\d+\.)\s+/.test(l))) {
-        const ul = h("ul");
-        for (const l of lines) ul.appendChild(inlineMd(h("li"), l.replace(/^\s*([-*]|\d+\.)\s+/, "")));
-        container.appendChild(ul);
-        continue;
-      }
+      const table = mdTable(lines);
+      if (table) { container.appendChild(table); continue; }
       const heading = /^#{1,6}\s+(.*)$/.exec(lines[0]!);
       if (heading) {
         container.appendChild(inlineMd(h("p", { cls: "mdh" }), heading[1]!));
@@ -82,16 +80,53 @@ export function mdBlocks(text: string, container: HTMLElement): HTMLElement {
         t = lines.join("\n").trim();
         if (!t) continue;
       }
-      container.appendChild(inlineMd(h("p"), t));
+      // Runs of list lines become lists; the lines between them stay text.
+      const item = /^(\s*)([-*+]|\d+\.)\s+/;
+      let text: string[] = [];
+      let list: HTMLElement | null = null;
+      const flush = () => { if (text.length) container.appendChild(inlineMd(h("p"), text.join("\n"))); text = []; };
+      for (const l of t.split("\n")) {
+        const m = item.exec(l);
+        if (m) {
+          flush();
+          if (!list) { list = h("ul"); container.appendChild(list); }
+          list.appendChild(inlineMd(h("li", m[1]!.length >= 2 ? { cls: "sub" } : null), l.slice(m[0].length)));
+        } else {
+          list = null;
+          text.push(l);
+        }
+      }
+      flush();
     }
   });
   return container;
 }
+/** A GitHub table (`| a | b |` over `|---|---|`), when the paragraph is one; text before it stays text. */
+function mdTable(lines: string[]): HTMLElement | null {
+  const sep = lines.findIndex((l) => /^\s*\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?\s*$/.test(l));
+  if (sep < 1 || !lines.slice(sep - 1).every((l) => l.includes("|"))) return null;
+  const cells = (l: string) => l.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((c) => c.trim());
+  const wrap = h("div", { cls: "mdt" });
+  const lead = lines.slice(0, sep - 1).join("\n").trim();
+  if (lead) wrap.appendChild(inlineMd(h("p"), lead));
+  const head = h("tr");
+  for (const c of cells(lines[sep - 1]!)) head.appendChild(inlineMd(h("th"), c));
+  const body = h("tbody");
+  for (const l of lines.slice(sep + 1)) {
+    const tr = h("tr");
+    for (const c of cells(l)) tr.appendChild(inlineMd(h("td"), c));
+    body.appendChild(tr);
+  }
+  wrap.appendChild(h("div", { cls: "mdt-scroll" }, h("table", null, h("thead", null, head), body)));
+  return wrap;
+}
 function inlineMd(el: HTMLElement, t: string): HTMLElement {
-  for (const b of t.split(/(`[^`\n]+`|\*\*[^*\n]+\*\*)/)) {
+  // Links keep their words; images and their alt text are dropped.
+  const plain = t.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1");
+  for (const b of plain.split(/(`[^`\n]+`|\*\*[^*\n]+?\*\*)/)) {
     if (!b) continue;
     if (b.charAt(0) === "`" && b.length > 1) el.appendChild(h("code", null, b.slice(1, -1)));
-    else if (b.slice(0, 2) === "**" && b.length > 4) el.appendChild(h("strong", null, b.slice(2, -2)));
+    else if (b.slice(0, 2) === "**" && b.length > 4) el.appendChild(inlineMd(h("strong"), b.slice(2, -2)));
     else el.appendChild(document.createTextNode(b));
   }
   return el;

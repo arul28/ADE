@@ -1,8 +1,8 @@
 /** prs_list, prs_show and prs_checks. */
 import { mdBlocks } from "./chatViews";
 import { h, listButton, isObj, num, rel, rows, safeLink, str } from "./dom";
-import { frame, listBody } from "./frame";
-import { openLink } from "./host";
+import { frame, listBody, scoped } from "./frame";
+import { callTool, canCallTools, openLink, reportSize } from "./host";
 import type { CheckRow, ChecksResult, PrDetail, PrRow, Scope } from "./types";
 
 /** One GitHub check: its tone and word. */
@@ -90,7 +90,9 @@ export function viewPrShow(r: unknown, scope: Scope): HTMLElement {
       const color = /^[0-9a-f]{6}$/i.test(String(l.color ?? "")) ? "#" + l.color : "var(--t3)";
       return h("span", { cls: "label" }, h("i", { style: "background:" + color }), str(l.name) || "label");
     }));
-  const body = h("div", { cls: "body flush" }, meta);
+  const summary = h("div", { cls: "prsum", hidden: "" });
+  const body = h("div", { cls: "body flush" }, summary, meta);
+  fillPrSummary(summary, str(pr.prId), scope);
   if (reviewers.length) body.appendChild(h("div", { cls: "row small t2" }, "Review requested from " + reviewers.join(", ")));
   for (const issue of issues) {
     body.appendChild(h("div", { cls: "row small t2" }, h("span", { cls: "mono dim" }, "#" + issue.number), str(issue.title) ?? "", str(issue.state) ? h("span", { cls: "tag" }, String(issue.state)) : null));
@@ -98,7 +100,49 @@ export function viewPrShow(r: unknown, scope: Scope): HTMLElement {
   const text = str(pr.body);
   if (text) {
     body.appendChild(h("div", { cls: "rule" }));
-    body.appendChild(mdBlocks(text.length > 2400 ? text.slice(0, 2400) + "…" : text, h("div", { cls: "prbody a" })));
+    const desc = mdBlocks(text.length > 6000 ? text.slice(0, 6000) + "…" : text, h("div", { cls: "prbody a", "data-open": "false" }));
+    body.appendChild(desc);
+    // Long descriptions open on request; a short one shows whole.
+    requestAnimationFrame(() => {
+      if (desc.scrollHeight <= desc.clientHeight + 4) { desc.dataset.open = "true"; return; }
+      const more = h("button", { cls: "more", type: "button", "aria-expanded": "false" }, "Show more");
+      more.addEventListener("click", () => {
+        const open = desc.dataset.open !== "true";
+        desc.dataset.open = String(open);
+        more.textContent = open ? "Show less" : "Show more";
+        more.setAttribute("aria-expanded", String(open));
+      });
+      desc.after(more);
+    });
   }
   return frame(scope, "Pull request" + prLabel(pr.prId).replace(" · ", " "), null, body);
+}
+
+/**
+ * `prs show` answers with the detail only; its title, state, review, checks
+ * and link come from the PR's row in `prs_list`, read once when the card opens.
+ */
+function fillPrSummary(el: HTMLElement, prId: string | null, scope: Scope): void {
+  if (!prId || !canCallTools()) return;
+  void callTool("prs_list", scoped(scope, {})).then((res) => {
+    const env = res?.structuredContent;
+    const row = rows<PrRow & { id?: string }>(isObj(env) ? env.result : null)
+      .find((p) => p.id === prId || String(p.githubPrNumber ?? "") === prId);
+    if (!row) return;
+    const state = String(row.state ?? "");
+    const review = reviewWord(row.reviewStatus);
+    const url = safeLink(row.githubUrl);
+    el.replaceChildren(
+      h("div", { cls: "prtitle" }, h("span", { cls: "dot big", style: "background:" + prStateColor(state) }),
+        h("span", { cls: "grow" }, str(row.title) || "Pull request"),
+        url ? h("button", { cls: "btn", type: "button", onclick: () => openLink(url) }, "Open ↗") : null),
+      h("div", { cls: "row", style: "flex-wrap:wrap;gap:6px;padding-top:0" },
+        state ? h("span", { cls: "tag", "data-t": state === "open" ? "ok" : state === "closed" ? "crit" : "" }, state) : null,
+        review ? h("span", { cls: "tag" }, "review: " + review) : null,
+        row.checksStatus && row.checksStatus !== "none"
+          ? h("span", { cls: "tag", "data-t": checksTone(row.checksStatus) }, "checks: " + row.checksStatus) : null,
+        h("span", { cls: "small dim num" }, rel(row.updatedAt ?? row.createdAt))));
+    el.hidden = false;
+    reportSize();
+  }, () => {});
 }

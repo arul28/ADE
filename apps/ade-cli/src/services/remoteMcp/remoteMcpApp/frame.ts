@@ -103,5 +103,9 @@ export function viewKv(title: string, r: unknown, scope: Scope): HTMLElement {
   return frame(scope, title, null, h("div", { cls: "body flush" }, dl));
 }
 export function viewText(title: string, text: string, isErr: boolean, scope: Scope): HTMLElement {
-  return frame(scope, title, null, h("div", { cls: "body flush" }, h("div", { cls: isErr ? "err" : "text" }, text || "(no output)")));
+  if (!isErr) return frame(scope, title, null, h("div", { cls: "body flush" }, h("div", { cls: "text" }, text || "(no output)")));
+  // The tool's own words, under one plain line saying it did not work.
+  return frame(scope, title, null, h("div", { cls: "errbox", role: "alert" },
+    h("span", { cls: "dot big", "data-s": "crit" }),
+    h("div", { cls: "grow" }, h("div", { cls: "errhead" }, "That didn't work"), h("div", { cls: "errtext" }, text || "No details came back."))));
 }
