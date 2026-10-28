@@ -24612,6 +24612,10 @@ async function createConnection(
         socketClient?.close();
       } catch {}
       if (args.machineRuntimeOnly) throw error;
+      // A live brain answered and this CLI runs inside it. Any fallback below
+      // would answer from a runtime without its live chats, and a headless one
+      // would open the same project database as a second writer.
+      if (error instanceof RuntimeSelfShutdownBlockedError) throw error;
       // Bare `--socket` means this channel's brain. The per-project pipe is
       // tried only when a caller named an endpoint.
       if (
@@ -25118,6 +25122,15 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 
 class RuntimeSelfShutdownBlockedError extends Error {}
 
+/** Say once, on stderr, that this CLI and the brain it uses are different builds. */
+function warnUsingMismatchedRuntime(runtimeInfo: MachineRuntimeInfo, mismatch: string): void {
+  process.stderr.write(
+    `ade: using the running ADE brain as is: ${mismatch}. `
+      + "It cannot be restarted from inside its own session; "
+      + `use the brain's own CLI${runtimeInfo.version ? ` (${runtimeInfo.version})` : ""} to remove this warning.\n`,
+  );
+}
+
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
 }
@@ -25437,6 +25450,15 @@ async function connectMachineRuntimeDaemon(
         localRuntime: isLocalRuntime,
       });
       if (selfShutdownBlock) {
+        // This CLI runs inside that brain's own process tree, so it may not
+        // restart it. When only the version or build differs the brain can
+        // still serve, and it is the only runtime with the live chats: use it
+        // as is. Throwing sent the caller to a headless runtime instead, whose
+        // chat list and reads came back empty with exit 0.
+        if (canRuntimeDefaultRoleServe(runtimeInfo.defaultRole, options.role)) {
+          warnUsingMismatchedRuntime(runtimeInfo, mismatch);
+          return client;
+        }
         client.close();
         throw selfShutdownBlock;
       }
