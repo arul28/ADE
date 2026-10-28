@@ -165,6 +165,15 @@ one anyway is refused with the reason, before anything runs.
   `chat_respond` names what it approved or answered. A `chat_wait` that ends
   without the state (timed out, waiting on the person, no such chat yet) is
   an answer, not an error.
+- **A chat id finds its computer.** `chat_read`, `chat_status`,
+  `chat_wait`, `chat_send` and `chat_respond` without `machine` run here
+  first. When the answer says this computer has no such chat, the service runs
+  `ade chat locate` (every online computer is asked, read-only), forwards the
+  call to the one that has it with the app's own token, and remembers that
+  computer for the chat, so the next call goes straight there. A call that was
+  itself forwarded is answered where it landed (one hop). An `onlyMachine`
+  connection, or a computer left out, gets a refusal that names where the
+  chat is.
 - **Text is short.** Each rule is stated once, where the model reads it when it
   decides. The project rule lives in the instructions and in the `project`
   input. `projects_list` and `usage_limits` answer for the whole computer and

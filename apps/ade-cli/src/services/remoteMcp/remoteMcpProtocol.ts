@@ -76,6 +76,25 @@ const CATALOG_TTL_MS = 5 * 60_000;
 const EVERY_PROJECT_WINDOW_MS = 30 * 24 * 60 * 60_000;
 const EVERY_PROJECT_MAX = 6;
 const EVERY_PROJECT_PARALLEL = 2;
+/** Tools that act on one chat by id: without `machine`, the chat's own computer answers. */
+const CHAT_ID_TOOL_NAMES: ReadonlySet<string> = new Set(["chat_read", "chat_status", "chat_wait", "chat_send", "chat_respond"]);
+/** `ade chat locate` asks every computer at once, five seconds each. */
+const CHAT_LOCATE_TIMEOUT_MS = 20_000;
+
+/** A chat tool's answer that says this computer has no such chat. */
+function isChatMiss(result: RemoteMcpToolResult): boolean {
+  if (result.isError) {
+    const text = result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
+    return /chat session '[^']*' was not found/i.test(text);
+  }
+  const structured = asRecord(result.structuredContent);
+  if (!("result" in structured)) return false;
+  if (structured.result === null) return true;
+  const value = asRecord(structured.result);
+  // chat_wait's `session_not_found`; chat_status's `{ result: null }`.
+  return value.error === "session_not_found" || ("result" in value && value.result === null);
+}
+
 /** A call the HTTP layer said nothing about: no bearer to forward, not forwarded, the per-machine address. */
 const NO_CALL_CONTEXT: RemoteMcpCallContext = { bearer: null, via: null, protocolVersion: null, accountMount: false };
 
@@ -482,7 +501,27 @@ export function createRemoteMcpProtocol(deps: {
     const localParams = { ...params, arguments: rest };
     if (selector === undefined || selector === null || selector === "") {
       if (onlyElsewhere) return await forwardToOnlyMachine(connection, name, rest, only, context, logBase);
+      // A chat id with no computer: the chat's own computer answers. A call
+      // forwarded here already went its one hop, so it is answered here.
+      const sessionId = CHAT_ID_TOOL_NAMES.has(name) && !context.via ? nonEmptyString(rest.session) : null;
+      const rememberedKey = sessionId ? chatHomes.get(sessionId) : undefined;
+      if (sessionId && rememberedKey) {
+        const remembered = await router.resolve(rememberedKey);
+        if (remembered.kind === "remote" && !router.unavailableReason(remembered.machine)) {
+          const result = await forwardTo(connection, name, rest, remembered.machine, context, forwardTimeoutMs(name, rest));
+          if (!isChatMiss(result)) return result;
+        }
+        chatHomes.delete(sessionId);
+      }
       const result = await callTool(connection, params);
+      if (sessionId && isChatMiss(result)) {
+        const elsewhere = await chatElsewhere(connection, sessionId, only, logBase);
+        if (elsewhere && "refusal" in elsewhere) return elsewhere.refusal;
+        if (elsewhere) {
+          chatHomes.set(sessionId, elsewhere.machine.machineKey);
+          return await forwardTo(connection, name, rest, elsewhere.machine, context, forwardTimeoutMs(name, rest));
+        }
+      }
       // On the account address any computer may answer: say which one did.
       return context.accountMount ? withMachineLabel(result, self) : result;
     }
@@ -508,6 +547,47 @@ export function createRemoteMcpProtocol(deps: {
     const reason = router.unavailableReason(resolved.machine);
     if (reason) return refuse(logBase, reason);
     return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest));
+  };
+
+  /** Chat id → the computer that answered for it, so the next call goes straight there. */
+  const chatHomes = new Map<string, string>();
+
+  /**
+   * The other computer that has `sessionId` (`ade chat locate`: one read-only
+   * question to each online computer). Null when none does; a refusal when one
+   * does but this connection can't reach it.
+   */
+  const chatElsewhere = async (
+    connection: RemoteMcpConnectionSummary,
+    sessionId: string,
+    only: RemoteMcpConnectionSummary["onlyMachine"] | null,
+    logBase: ActivityBase,
+  ): Promise<{ machine: RemoteMcpRosterMachine } | { refusal: RemoteMcpToolResult } | null> => {
+    let located: unknown;
+    try {
+      const run = await runAdeForRemote({
+        argv: ["chat", "locate", sessionId, "--json"],
+        cwd: os.homedir(),
+        timeoutMs: CHAT_LOCATE_TIMEOUT_MS,
+        connectionId: connection.id,
+        connectionLabel: connection.label,
+        role: "agent",
+      });
+      located = run.exitCode === 0 ? JSON.parse(run.stdout) : null;
+    } catch {
+      return null;
+    }
+    const machine = asRecord(asRecord(located).machine);
+    const key = nonEmptyString(machine.key);
+    if (!key || machine.isThisMachine === true) return null;
+    const resolved = await deps.machines.resolve(key);
+    if (resolved.kind !== "remote") return null;
+    if (only && only.machineKey !== key) {
+      return { refusal: refuse(logBase, `This chat is on ${resolved.machine.name}. ${onlyMachineRefusal(only)}`) };
+    }
+    const reason = deps.machines.unavailableReason(resolved.machine);
+    if (reason) return { refusal: refuse(logBase, `This chat is on ${resolved.machine.name}. ${reason}`) };
+    return { machine: resolved.machine };
   };
 
   /** A connection from before accounts, on the account address of another computer: its call goes to its own. */
@@ -637,7 +717,9 @@ export function createRemoteMcpProtocol(deps: {
     type: "string",
     description: findTypedTool(toolName)?.fanOut
       ? "Computer (machines_list) or \"all\". Default: this one."
-      : "Computer (machines_list). Default: this one.",
+      : CHAT_ID_TOOL_NAMES.has(toolName)
+        ? "Computer (machines_list). Default: the chat's computer."
+        : "Computer (machines_list). Default: this one.",
   });
 
   const machinesToolDefinition = () => ({

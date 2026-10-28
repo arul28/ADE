@@ -319,7 +319,7 @@ export type MultiProjectRpcHandlerOptions = {
   crossScopeChats?: Pick<
     CrossScopeChats,
     "rememberLocalCaller" | "recordRemoteChild" | "acceptRemoteWake" | "locateChat"
-  > | null;
+  > & Partial<Pick<CrossScopeChats, "findChat">> | null;
   projectRegistry?: ProjectRegistry;
   scopeRegistry?: ProjectScopeRegistry;
   disposeScopesOnDispose?: boolean;
@@ -487,6 +487,7 @@ export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
 }
 
 const RUNTIME_METHODS = new Set([
+  "chats.locate",
   "machines.call",
   "machines.list",
   "machines.deliverWake",
@@ -3076,6 +3077,22 @@ export function createMultiProjectRpcRequestHandler(
         scopeRegistry,
         personalChatScope,
       });
+    }
+
+    // "Do you have this chat?" from this machine's CLI or another machine's,
+    // for a chat id given without a machine. Read-only, and it names only the
+    // project (which `projects.list` already shows that caller).
+    if (method === "chats.locate") {
+      const sessionId = typeof params.sessionId === "string" ? params.sessionId.trim() : "";
+      if (!sessionId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "chats.locate requires sessionId.");
+      const scope = await options.crossScopeChats?.findChat?.(sessionId).catch(() => null) ?? null;
+      if (!scope) return { found: false };
+      if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
+      const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
+      return {
+        found: true,
+        scope: { kind: "project", projectId: scope.projectId, name: record?.displayName ?? null, rootPath: record?.rootPath ?? null },
+      };
     }
 
     if (method === "projects.list") {

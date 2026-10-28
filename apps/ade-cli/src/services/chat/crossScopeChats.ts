@@ -41,6 +41,8 @@ import {
   type ExternalWakeDeliveryResult,
 } from "../../../../desktop/src/main/services/chat/externalChats";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
+import { resolveReadableHistoryPath } from "../../../../desktop/src/main/services/storage/historyCompression";
+import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import { parseForeignCallerSessionId } from "../../../../desktop/src/shared/runtimeClientNames";
 import type { PermissionLevel } from "../../../../desktop/src/shared/permissionLadder";
@@ -252,6 +254,24 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
     return null;
   };
 
+  /**
+   * Where a chat id lives on this machine, for another machine (or this CLI)
+   * asking "do you have it?". Booted scopes first, then each project's
+   * transcripts on disk, so an unopened project still answers. Never boots.
+   */
+  const findChat = async (sessionId: string): Promise<ExternalChatScope | null> => {
+    const located = await locateChat(sessionId, { boot: false });
+    if (located) return located.scope;
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(sessionId)) return null;
+    for (const record of deps.projectRegistry.list()) {
+      const layout = resolveAdeLayout(record.rootPath);
+      const onDisk = resolveReadableHistoryPath(path.join(layout.chatTranscriptsDir, `${sessionId}.jsonl`))
+        ?? resolveReadableHistoryPath(path.join(layout.transcriptsDir, `${sessionId}.chat.jsonl`));
+      if (onDisk) return { kind: "project", projectId: record.projectId };
+    }
+    return null;
+  };
+
   /** The scope a child's own project root names, for its failure notice. */
   const scopeOfProjectRoot = (rootPath: string): ExternalChatScope => {
     const record = deps.projectRegistry.list().find((candidate) => samePathOnPlatform(candidate.rootPath, rootPath));
@@ -445,6 +465,7 @@ export function createCrossScopeChats(deps: CrossScopeChatsDeps) {
   return {
     router,
     locateChat,
+    findChat,
     rememberLocalCaller,
     recordRemoteChild,
     acceptRemoteWake,

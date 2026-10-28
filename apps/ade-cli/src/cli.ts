@@ -26,6 +26,15 @@ import {
   withMachineColumns,
 } from "./cliMachineTargeting";
 import {
+  chatIdForLookup,
+  chatLocateValue,
+  describeUnasked,
+  formatChatLocate,
+  locateChatOnAccount,
+  routedToLocation,
+  type ChatLocateReport,
+} from "./cliChatLocate";
+import {
   isNoneValue,
   linearLookupNeeds,
   looksLikeLinearId,
@@ -2615,6 +2624,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat show <session>                       Session summary (title, provider, model, activity report)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
+    $ ade chat locate <session> --text              Which machine on your account has this chat. A chat command
+                                                    given an id without --machine finds it there by itself
                                                     Exit 0 running or waiting (turn ended, background
                                                     agents/shells still running), 1 idle, 2 blocked. Use --text.
                                                     Adds an 'effort' line while the running work keeps an
@@ -14623,11 +14634,64 @@ function chatOtherMachineHint(argv: string[]): string | null {
   if (command[0]?.toLowerCase() !== "chat" || command[1]?.toLowerCase() === "handoff") return null;
   const flags = flagNamesOutsideFreeText(command);
   if (flags.has("--machine") || flags.has("--all-machines")) return null;
-  // ADE MCP refuses --machine and --all-machines: it reaches only this computer.
-  if (process.env.ADE_REMOTE_MCP_SCOPE?.trim()) {
-    return "If this chat lives on another machine, connect to that computer's own ADE MCP server to work with it.";
+  // Through ADE MCP the app names a computer with `machine`, and ADE MCP
+  // already looked for the chat's own computer.
+  if (process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim()) return null;
+  // The other machines were already asked: say which ones could not be.
+  if (chatLookupMiss) {
+    const unasked = describeUnasked(chatLookupMiss);
+    return unasked
+      ? `No machine that answered has this chat (${unasked}).`
+      : "No machine on your account has this chat.";
   }
   return "If this chat lives on another machine, find it with: ade chat list --all-machines --text, then re-run with --machine <name>";
+}
+
+/** The account-wide lookup this run made and found nothing in, for the hint above. */
+let chatLookupMiss: ChatLocateReport | null = null;
+
+/**
+ * A chat command whose chat is on another machine of the account, sent there.
+ * Null to run it here: no chat id, a machine was named, or the chat is here
+ * (or nowhere, and today's "not found" stands). See cliChatLocate.ts.
+ */
+async function routeChatToItsMachine(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<ReturnType<typeof extractMachineTargeting> | null> {
+  const sessionId = chatIdForLookup(parsed);
+  if (!sessionId) return null;
+  const report = await locateChatOnAccount(parsed.options, sessionId);
+  if (report.matches.length > 1) {
+    throw new CliUsageError(
+      `Chat ${sessionId} is on more than one machine (${report.matches.map((match) => match.machineName).join(", ")}). `
+      + "Pass --machine <name>.",
+    );
+  }
+  const match = report.matches[0];
+  if (!match) {
+    chatLookupMiss = report;
+    return null;
+  }
+  if (match.isThisMachine || !match.machineKey) return null;
+  process.stderr.write(`· on ${match.machineName}\n`);
+  return routedToLocation(parsed, match);
+}
+
+/** `ade chat locate <session>`: which machine of the account has a chat. */
+async function runChatLocate(
+  parsed: ReturnType<typeof extractMachineTargeting>,
+): Promise<{ output: string; exitCode: number }> {
+  const args = parsed.command.slice(2);
+  const sessionId = readValue(args, ["--session", "--session-id"]) ?? firstStandalonePositional(args);
+  if (!sessionId?.trim()) throw new CliUsageError("chat locate requires a chat session id.");
+  if (parsed.options.machine || parsed.options.allMachines) {
+    throw new CliUsageError("chat locate asks every machine itself; drop --machine/--all-machines.");
+  }
+  const value = chatLocateValue(await locateChatOnAccount(parsed.options, sessionId.trim()));
+  return {
+    output: parsed.options.text ? formatChatLocate(value) : `${JSON.stringify(value, null, 2)}\n`,
+    exitCode: value.found === true ? 0 : 1,
+  };
 }
 
 /**
@@ -24319,6 +24383,7 @@ async function initializeConnection(
 
 function isMachineRuntimeScopedMethod(method: string): boolean {
   return (
+    method === "chats.locate" ||
     method === "machines.call" ||
     method === "machines.list" ||
     method === "ade/initialize" ||
@@ -37673,13 +37738,22 @@ async function runResetCommand(
   };
 }
 
+function isChatLocateCommand(command: string[]): boolean {
+  const typed = command[0]?.toLowerCase() ?? "";
+  return (CLI_COMMAND_ALIASES[typed] ?? typed) === "chat" && command[1]?.toLowerCase() === "locate";
+}
+
 async function runCli(
   argv: string[],
 ): Promise<{ output: string; exitCode: number }> {
   const parsed = extractMachineTargeting(parseCliArgs(argv));
   const restoreShellScope = dropShellScopeForOtherProject(parsed.options);
   try {
-    if (!parsed.options.machine) return await runParsedCli(parsed);
+    if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
+    if (!parsed.options.machine) {
+      const routed = await routeChatToItsMachine(parsed);
+      return routed ? await runOnMachine(routed) : await runParsedCli(parsed);
+    }
     return await runOnMachine(parsed);
   } finally {
     restoreShellScope();
