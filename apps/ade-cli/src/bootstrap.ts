@@ -12,7 +12,6 @@ import { createFileLogger, type Logger } from "../../desktop/src/main/services/l
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
-import { isEmbeddedAdeRuntime } from "../../desktop/src/main/services/shared/processExecution";
 import {
   clearLastFailure,
   recordLastFailure,
