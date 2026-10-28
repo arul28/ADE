@@ -128,4 +128,35 @@ describe("chat turn status", () => {
     expect(formatChatTurnStatus(status)).toContain("last turn ended 12m00s ago");
     expect(formatCompactDuration(12_000)).toBe("12s");
   });
+
+  // A host that predates `reasoningEffortChange` only lists a held effort in
+  // `pendingSettingsAfterBackground`; a newer host names it in both, and the
+  // effort row replaces the pending one.
+  it.each([
+    { name: "older host, held effort", pending: ["reasoningEffort"] as const, change: null, rows: ["pending"] },
+    {
+      name: "newer host, held effort",
+      pending: ["reasoningEffort"] as const,
+      change: { current: "high", next: "low", appliesAfter: "background" } as const,
+      rows: ["effort"],
+    },
+    {
+      name: "newer host, next-turn effort and held fast mode",
+      pending: ["fastMode"] as const,
+      change: { current: "high", next: "low", appliesAfter: "turn" } as const,
+      rows: ["effort", "pending"],
+    },
+  ])("names a held effort once: $name", ({ pending, change, rows }) => {
+    const status = deriveChatTurnStatus({
+      sessionId: "effort-1",
+      sessionStatus: "active",
+      pendingSettingsAfterBackground: [...pending],
+      reasoningEffortChange: change,
+    });
+    const rowKeys = formatChatTurnStatus(status)
+      .split("\n")
+      .map((line) => /^  (effort|pending)\b/.exec(line)?.[1])
+      .filter(Boolean);
+    expect(rowKeys).toEqual(rows);
+  });
 });

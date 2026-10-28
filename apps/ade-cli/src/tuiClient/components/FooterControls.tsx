@@ -205,7 +205,7 @@ function FooterControlsComponent({
   workPaneFocused?: boolean;
   /** A Claude chat whose prompt cache expired: whether the next send compacts first, and the sizes. */
   compactFirst?: { enabled: boolean; contextTokens: number; estimatedPostTokens: number } | null;
-  /** "Effort pending" / "Fast mode pending": a setting change the host holds until the chat's background work ends. */
+  /** "High now · Medium next turn" / "Fast mode pending": a picked setting the running work has not taken yet. */
   pendingSettingsLabel?: string | null;
 }) {
   const brand = provider ? theme.provider(provider) : null;

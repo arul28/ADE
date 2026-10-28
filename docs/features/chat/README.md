@@ -1549,9 +1549,14 @@ otherwise wait forever.
 while it still runs background work: the idle sweep, the warm-runtime budget
 and compact-first all skip it (until the 3 h silence backstop below), the
 compaction-settings refresh waits, a caller-MCP replacement queues
-(`callerMcpReplacementMustWait`), and a reasoning-effort or fast-mode change
-(from Settings, `updateSession`, or a send carrying a new effort) stays armed
-as `pendingSessionReset` (`claudeQueryResetMustWait`). Only work somebody waits
+(`callerMcpReplacementMustWait`), and a fast-mode change the live query
+refuses (from Settings, `updateSession`, or a send) stays armed as
+`pendingSessionReset` (`claudeQueryResetMustWait`). A reasoning-effort change
+first goes to the live query (`applyClaudeReasoningEffortLive`:
+`applyFlagSettings({ effortLevel, ultracode })`), which takes it on its next
+model request, inside the running turn too, so a steer sent with a new effort
+is answered at it; only when that fails is the effort reset deferred the same
+way. Only work somebody waits
 on holds these (`claudeHasAwaitedBackgroundWorkload`: agents, workflows,
 shells); a watch-only monitor does not, and when a reset or replacement ends
 one, the chat gets the loss notice and next-turn note with no wake. A deferred
@@ -1559,11 +1564,31 @@ reset (any kind, including a permission-mode one) applies on the first turn
 after the work is gone, at the send (`flushClaudePendingSessionReset`) or at
 the end of a turn. Until then the old setting stays in force, and the session
 summary's `pendingSettingsAfterBackground` (`reasoningEffort` / `fastMode`)
-says so: the composer's status strip shows a neutral "Effort pending" /
-"Fast mode pending" / "Settings pending" chip whose tooltip says the change
-applies after background work, and `ade chat status` prints a `pending` row
+says so: the composer's status strip shows a neutral "Fast mode pending" /
+"Settings pending" chip whose tooltip says the change applies after background
+work, and `ade chat status` prints a `pending` row
 (`pendingSettingsAfterBackground` in `--json`). Every query reset clears it,
 since the next query is built from the current settings.
+
+**Effort change chip (every provider).** The summary's `reasoningEffortChange`
+(`{ current, next, appliesAfter: "turn" | "background" }`,
+`managedReasoningEffortChange`) names an effort the running work has not taken
+yet. Providers other than Claude take effort per turn: `setSessionActive`
+records the effort a turn starts with (`turnReasoningEffort`; a turn marked
+active before its send applied the effort is corrected by
+`recordTurnReasoningEffort`), and a change mid-turn, a steer included,
+reaches the next turn. Claude applies a send's or steer's effort to the live
+query (`applyClaudeReasoningEffortChange`, which drops a result a reset, a new
+runtime or a newer change overtook) and reports one only while a deferred
+effort reset holds (`pendingResetRunningEffort`). It is gone
+once the turn ends (stopped or interrupted turns too), unless Claude
+background work still holds the reset, and once a live change lands. Desktop
+and the TUI show "High now · Medium next turn" (or "after background work"),
+iOS shows "High → Medium", and `ade chat status` prints an `effort` row.
+The host lists `reasoningEffort` in `pendingSettingsAfterBackground` only
+while `reasoningEffortChange` names it, so older clients keep their "Effort
+pending" chip; newer clients drop it then (`settingsHeldBesideEffortChange`)
+and keep it from a host that predates the field.
 
 **Told when it is lost anyway.** For Claude, every path that ends the process —
 `teardownRuntime` (model switch, caller-MCP replacement, account move,

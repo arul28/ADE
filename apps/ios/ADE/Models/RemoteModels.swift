@@ -1151,6 +1151,15 @@ struct AgentChatPromptCache: Codable, Equatable {
   var since: String?
 }
 
+/// Desktop `AgentChatReasoningEffortChange`: the effort the running work uses
+/// (`current`) and the one the user picked (`next`); nil is the model default.
+/// `appliesAfter` is `turn` or `background`.
+struct AgentChatReasoningEffortChange: Codable, Equatable {
+  var current: String?
+  var next: String?
+  var appliesAfter: String
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var compactionIdleMode: String? = nil
   /// Claude only: the chat's prompt cache after its last turn.
@@ -1302,6 +1311,9 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   /// work ends (`reasoningEffort`, `fastMode`): applying them restarts the agent
   /// process, which would stop that work. Live only; older hosts omit it.
   var pendingSettingsAfterBackground: [String]? = nil
+  /// The picked effort the running work has not taken yet (a change made mid-turn
+  /// reaches the next turn). Live only; older hosts omit it.
+  var reasoningEffortChange: AgentChatReasoningEffortChange? = nil
   /// Work the live turn still has open (commands, tools, foreground subagents,
   /// pending approvals). Present, zero included, while a turn is live; an older
   /// host omits it, which means unknown, never zero.
@@ -1405,6 +1417,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.usageLimitResumeWasCleared == rhs.usageLimitResumeWasCleared
       && lhs.activeBackgroundTaskCount == rhs.activeBackgroundTaskCount
       && lhs.pendingSettingsAfterBackground == rhs.pendingSettingsAfterBackground
+      && lhs.reasoningEffortChange == rhs.reasoningEffortChange
       && lhs.turnOpenWorkCount == rhs.turnOpenWorkCount
       && lhs.threadId == rhs.threadId
       && lhs.requestedCwd == rhs.requestedCwd
