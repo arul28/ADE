@@ -17,6 +17,7 @@ export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) 
         { icon: <Cube size={14} weight="fill" />, label: "3D view" },
         { icon: <DeviceMobileCamera size={14} weight="fill" />, label: "Cover screen" },
       ]}
+      action={{ tipId: "ios-simulator", label: "Open the simulator" }}
       media={{
         gif,
         still,
