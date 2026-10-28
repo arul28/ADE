@@ -574,7 +574,9 @@ export function createRemoteMcpProtocol(deps: {
         role: "agent",
       });
       located = run.exitCode === 0 ? JSON.parse(run.stdout) : null;
-    } catch {
+    } catch (error) {
+      // The call still answers as "not found here"; the log says why no computer was asked.
+      deps.warn?.("remote_mcp.chat_locate_failed", { error: getErrorMessage(error) });
       return null;
     }
     const machine = asRecord(asRecord(located).machine);

@@ -16,6 +16,8 @@ import {
   scopeAccountStatusForRole,
 } from "./registry";
 import { runGit } from "../git/git";
+import { createAccountSettingsStore } from "../../../../../ade-cli/src/services/account/accountSettingsStore";
+import { createAccountVaultStore } from "../../../../../ade-cli/src/services/account/accountVaultStore";
 
 function withEnv<T>(updates: Record<string, string | undefined>, run: () => T): T {
   const previous = new Map<string, string | undefined>();
@@ -191,6 +193,43 @@ describe("runtime domain services behind the allowlist", () => {
     }
   });
 
+
+  it("never lets an action read or write ADE MCP's own account rows", () => {
+    // Its vault rows hold the connections' token hashes and the account
+    // secret; its settings say where the account's calls go. A caller that
+    // could write them could mint itself a permanent token.
+    const adeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-guard-"));
+    try {
+      const account = { adeDir, relay: null, getAccountUserId: () => "user_owner", getDeviceId: () => "this-machine" };
+      const vault = createAccountVaultStore(account);
+      const settings = createAccountSettingsStore(account);
+      expect(vault.set("all", "ade_mcp", "account-secret", "s3cret"), "setup").toBe(true);
+      expect(vault.set("all", "provider_key", "anthropic", "sk-1"), "setup").toBe(true);
+      expect(settings.set("all", "ade_mcp.enabled", true), "setup").toBe(true);
+      const services = getAdeActionDomainServices({ accountVaultStore: vault, accountSettingsStore: settings } as never);
+      const vaultDomain = services.account_vault as Record<string, (...args: unknown[]) => unknown>;
+      const settingsDomain = services.account_settings as Record<string, (...args: unknown[]) => unknown>;
+
+      expect((vaultDomain.list!() as Array<{ kind: string }>).map((row) => row.kind)).toEqual(["provider_key"]);
+      for (const call of [
+        () => vaultDomain.get!("all", "ade_mcp", "account-secret"),
+        () => vaultDomain.set!("all", "ade_mcp", "connection:0123456789abcdef", "{}"),
+        () => vaultDomain.remove!("all", "ade_mcp", "account-secret"),
+        () => settingsDomain.set!("all", "ade_mcp.enabled", false),
+        () => settingsDomain.set!("all", "ade_mcp.machine.abc", { endpointKey: "x" }),
+      ]) {
+        expect(call).toThrow(/Settings → ADE MCP/);
+      }
+      expect(vault.get("all", "ade_mcp", "account-secret")).toBe("s3cret");
+      expect(settings.get("all", "ade_mcp.enabled")).toBe(true);
+      // Everything else is untouched.
+      expect(vaultDomain.get!("all", "provider_key", "anthropic")).toBe("sk-1");
+      expect(settingsDomain.set!("all", "theme", "dark")).toBe(true);
+      expect(settingsDomain.get!("all", "ade_mcp.enabled")).toBe(true);
+    } finally {
+      fs.rmSync(adeDir, { recursive: true, force: true });
+    }
+  });
 
   it("keeps proof ingestion off the action domain so owner and caller-root validation cannot be skipped", () => {
     // `ade actions call computer_use_artifacts.ingest` used to reach the broker
