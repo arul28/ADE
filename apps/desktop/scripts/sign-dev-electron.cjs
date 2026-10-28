@@ -39,22 +39,35 @@ function appBundleOf(executable) {
   return index === -1 ? null : executable.slice(0, index + marker.length - 1);
 }
 
-function pickIdentity() {
-  const fromEnv = (process.env.ADE_DEV_SIGN_IDENTITY || "").trim();
-  if (fromEnv) return fromEnv;
+function codeSigningIdentities() {
   const result = cp.spawnSync("security", ["find-identity", "-v", "-p", "codesigning"], {
     encoding: "utf8",
     timeout: 15_000,
   });
-  if (result.status !== 0) return null;
+  if (result.status !== 0) return [];
   const identities = [];
   for (const line of result.stdout.split(/\r?\n/)) {
     const match = line.match(/^\s*\d+\)\s+([0-9A-Fa-f]{40})\s+"([^"]*)"\s*$/);
     if (match) identities.push({ hash: match[1], name: match[2] });
   }
+  return identities;
+}
+
+/** The identity named by `ADE_DEV_SIGN_IDENTITY` (a name or a SHA-1 hash), or null. */
+function explicitIdentity() {
+  const fromEnv = (process.env.ADE_DEV_SIGN_IDENTITY || "").trim();
+  if (!fromEnv) return null;
+  const known = codeSigningIdentities().find(
+    (identity) => identity.name === fromEnv || identity.hash.toLowerCase() === fromEnv.toLowerCase(),
+  );
+  return known ?? { hash: fromEnv, name: fromEnv };
+}
+
+function pickIdentity() {
+  const identities = codeSigningIdentities();
   const local = identities.find((identity) => identity.name === LOCAL_IDENTITY);
   const development = identities.find((identity) => identity.name.startsWith("Apple Development:"));
-  return (local ?? development)?.hash ?? null;
+  return local ?? development ?? null;
 }
 
 /** The identity the bundle is signed with now, or null for ad-hoc / unsigned. */
@@ -77,18 +90,22 @@ function main() {
   const bundle = typeof executable === "string" ? appBundleOf(executable) : null;
   if (!bundle) return;
 
-  if (currentSigner(bundle)) return;
+  // An explicit identity re-signs a bundle signed with another one; otherwise any real
+  // signature is kept, so launches do not re-sign (and re-prompt) for nothing.
+  const explicit = explicitIdentity();
+  const signer = currentSigner(bundle);
+  if (signer && (!explicit || signer === explicit.name)) return;
 
-  const identity = pickIdentity();
+  const identity = explicit ?? pickIdentity();
   if (!identity) {
     log("no Apple Development or \"ADE Local\" certificate; Electron stays ad-hoc and macOS may ask for the Keychain password after an Electron upgrade");
     return;
   }
 
-  const signed = run(["--force", "--deep", "--sign", identity, bundle], SIGN_TIMEOUT_MS);
-  const signer = signed.status === 0 ? currentSigner(bundle) : null;
-  if (signer) {
-    log(`signed ${path.basename(bundle)} as "${signer}"; allow the Keychain once and it stays allowed`);
+  const signed = run(["--force", "--deep", "--sign", identity.hash, bundle], SIGN_TIMEOUT_MS);
+  const newSigner = signed.status === 0 ? currentSigner(bundle) : null;
+  if (newSigner) {
+    log(`signed ${path.basename(bundle)} as "${newSigner}"; allow the Keychain once and it stays allowed`);
     return;
   }
   const reason = signed.error?.code === "ETIMEDOUT" ? "codesign timed out" : (signed.stderr || "").trim() || "verify failed";

@@ -37,10 +37,14 @@ enum ADEColorSchemeChoice: String, CaseIterable, Identifiable {
 
   /// A new install starts in dark. An install that ran before this default
   /// existed keeps following the system, as it always did. Call once at launch,
-  /// before anything writes `ade.sync.deviceId` (the first launch writes it).
+  /// before `SyncService` creates a device id (the first launch does).
+  ///
+  /// A device id in either place means ADE ran here before: `ade.sync.deviceId`
+  /// in defaults, or the Keychain copy, which outlives an uninstall, so an app
+  /// reinstalled before this release still counts as one that ran before.
   static func seedDefaultIfNeeded(_ defaults: UserDefaults = .standard) {
     guard defaults.string(forKey: storageKey) == nil else { return }
-    let ranBefore = defaults.string(forKey: "ade.sync.deviceId") != nil
+    let ranBefore = defaults.string(forKey: "ade.sync.deviceId") != nil || KeychainService().loadDeviceId() != nil
     defaults.set((ranBefore ? ADEColorSchemeChoice.system : .dark).rawValue, forKey: storageKey)
   }
 }
