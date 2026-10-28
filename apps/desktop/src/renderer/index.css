@@ -4959,6 +4959,85 @@ button, [role="button"] {
   animation: ade-thinking-pulse 1.6s infinite;
 }
 
+/* ThinkingIndicator (components/ui/ThinkingIndicator.tsx): a sparkle that
+   melts into a circle and back, a twinkle at the turn, a sheen across the
+   label. Every loop is stepped at 30 changes a second so the stepped loop clock
+   drives it from a timer (it adopts a loop at <= 31/s); nothing here ticks at
+   the display rate. A step count applies to each keyframe segment, so each
+   segment gets 30 x its seconds: 36 steps for a 1.2 s segment, 24 for 0.8 s.
+   Measured with `loop-cost.mjs thinking` (docs/perf/macos-baseline.md). */
+@keyframes ade-thinking-glyph-shape {
+  0% { d: path("M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"); animation-timing-function: steps(36, jump-none); }
+  30% { d: path("M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z"); animation-timing-function: steps(24, jump-none); }
+  50% { d: path("M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z"); animation-timing-function: steps(24, jump-none); }
+  70% { d: path("M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z"); animation-timing-function: steps(36, jump-none); }
+  100% { d: path("M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"); }
+}
+@keyframes ade-thinking-glyph-turn {
+  0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(36, jump-none); }
+  30% { transform: rotate(108deg) scale(0.9); animation-timing-function: steps(24, jump-none); }
+  50% { transform: rotate(180deg) scale(0.78); animation-timing-function: steps(24, jump-none); }
+  70% { transform: rotate(252deg) scale(0.9); animation-timing-function: steps(36, jump-none); }
+  100% { transform: rotate(360deg) scale(1); }
+}
+@keyframes ade-thinking-twinkle {
+  0%, 30% { opacity: 0; transform: rotate(0deg) scale(0.2); animation-timing-function: steps(24, jump-none); }
+  50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(24, jump-none); }
+  70%, 100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
+}
+@keyframes ade-thinking-sheen {
+  from { background-position: 100% center, 0 0; }
+  to { background-position: 0% center, 0 0; }
+}
+@keyframes ade-thinking-label-in {
+  from { opacity: 0; transform: translateY(70%); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.ade-thinking-glyph {
+  animation: ade-thinking-glyph-turn 4s infinite;
+}
+.ade-thinking-glyph-shape {
+  animation: ade-thinking-glyph-shape 4s infinite;
+}
+.ade-thinking-twinkle {
+  transform-origin: 79% 21%;
+  animation: ade-thinking-twinkle 4s infinite;
+}
+.ade-thinking-label {
+  --ade-thinking-spread: 2.5em;
+  background-image:
+    linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), var(--color-fg), transparent calc(50% + var(--ade-thinking-spread))),
+    linear-gradient(color-mix(in srgb, var(--color-fg) 55%, transparent), color-mix(in srgb, var(--color-fg) 55%, transparent));
+  background-size: 250% 100%, auto;
+  background-repeat: no-repeat, padding-box;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation:
+    ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both,
+    ade-thinking-sheen 2s steps(60, jump-none) infinite;
+}
+/* ADE is not the focused app: no loops at all, so the step clock drops them
+   (a paused loop would still wake its timer). The label keeps its slide-in. */
+.ade-thinking-indicator[data-resting] .ade-thinking-glyph,
+.ade-thinking-indicator[data-resting] .ade-thinking-glyph-shape,
+.ade-thinking-indicator[data-resting] .ade-thinking-twinkle {
+  animation: none;
+}
+.ade-thinking-indicator[data-resting] .ade-thinking-twinkle { opacity: 0; }
+.ade-thinking-indicator[data-resting] .ade-thinking-label {
+  animation: ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .ade-thinking-glyph,
+  .ade-thinking-glyph-shape,
+  .ade-thinking-twinkle,
+  .ade-thinking-label {
+    animation: none;
+  }
+  .ade-thinking-twinkle { opacity: 0.5; transform: none; }
+}
+
 .ade-shimmer-text {
   background: linear-gradient(
     90deg,

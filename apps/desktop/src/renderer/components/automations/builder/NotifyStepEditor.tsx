@@ -549,7 +549,7 @@ function LinkFields({
             <PickField
               label="File path"
               value={f.path ?? ""}
-              placeholder="apps/desktop/src/main.ts"
+              placeholder="src/index.ts"
               triggerType={triggerType}
               onChange={(path) => set({ path })}
             />

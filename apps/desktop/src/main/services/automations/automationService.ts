@@ -54,6 +54,7 @@ import {
   withSafeTestNotice,
 } from "./automationTestRun";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
+import { automationRunNeedsLane } from "../../../shared/automationRunLane";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
 import {
@@ -912,7 +913,8 @@ export function triggerMatches(
     || canonicalType === "github.pr_updated"
     || canonicalType === "github.pr_closed"
     || canonicalType === "github.pr_commented"
-    || canonicalType === "github.pr_review_submitted";
+    || canonicalType === "github.pr_review_submitted"
+    || canonicalType === "github.pr_checks_failed";
   if (canonicalType === "github.pr_merged") {
     const expectedTarget = (ruleTrigger.targetBranch ?? ruleTrigger.branch ?? "").trim();
     if (expectedTarget && !matchesGlob(expectedTarget, trigger.targetBranch)) return false;
@@ -3429,7 +3431,9 @@ export function createAutomationService({
       if (!laneId) {
         return {
           status: "failed",
-          output: "delete-lane requires an explicit target lane, a lane created earlier in the chain, or a trigger lane.",
+          output: trigger.triggerType === "manual"
+            ? "No lane to delete. This step deletes the lane its trigger names; pick a lane when you run it by hand, or set a target lane on the step."
+            : "No lane to delete. The trigger named no lane, and the step sets no target lane and follows no create-lane step.",
         };
       }
       if (trigger.test?.mode === "safe" && !trigger.test.lanes.some((lane) => lane.id === laneId)) {
@@ -4753,6 +4757,37 @@ export function createAutomationService({
     }
   };
 
+  /**
+   * A PR's checks turned failing. Fires once per PR head commit: a re-run that
+   * fails again on the same commit stays quiet, a new push that fails fires.
+   * A PR first seen already failing does not fire (no flood on first sync).
+   */
+  const notifyPrChecksFailed = (
+    pr: PrSummary,
+    baseContext: Omit<TriggerContext, "triggerType">,
+  ): void => {
+    const commit = pr.headSha?.trim() || pr.updatedAt;
+    const dedupeKey = `automations.pr-checks-failed.v1:${projectId}:${pr.id}:${commit}`;
+    if (db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [dedupeKey])) return;
+    db.run(`insert into kv(key, value) values (?, ?) on conflict(key) do nothing`, [dedupeKey, nowIso()]);
+    const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined;
+    const trigger: TriggerContext = {
+      ...baseContext,
+      triggerType: "github.pr_checks_failed",
+      repo,
+      pr: {
+        number: pr.githubPrNumber,
+        title: pr.title,
+        url: pr.githubUrl,
+        repo,
+        headBranch: pr.headBranch,
+        baseBranch: pr.baseBranch,
+      },
+    };
+    trigger.summary = `PR #${pr.githubPrNumber} checks failed: ${pr.title}`;
+    void dispatchTrigger(trigger);
+  };
+
   const notifyLaneMerged = async (args: LaneMergedNotification): Promise<boolean> => {
     const laneId = args.laneId.trim();
     const laneName = args.laneName.trim();
@@ -5480,7 +5515,7 @@ export function createAutomationService({
       const rule = findRule(id);
       if (!rule) throw new Error(`Automation not found: ${id}`);
       const laneId = typeof args.laneId === "string" && args.laneId.trim().length ? args.laneId.trim() : undefined;
-      if (requiresTriggerLane(rule) && !laneId) {
+      if (automationRunNeedsLane(rule) && !laneId) {
         throw new Error(missingTriggerLaneMessage({ triggerType: "manual" }));
       }
       const run = await runRule(rule, {
@@ -5840,6 +5875,9 @@ export function createAutomationService({
       if (!args.previousState) {
         void dispatchTrigger({ triggerType: "git.pr_opened", ...baseContext });
         return;
+      }
+      if (args.pr.checksStatus === "failing" && args.previousChecksStatus && args.previousChecksStatus !== "failing") {
+        notifyPrChecksFailed(args.pr, baseContext);
       }
       if (args.pr.state === "merged" && args.previousState !== "merged") {
         void dispatchTrigger({

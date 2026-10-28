@@ -85,6 +85,7 @@ export const IPC = {
   appReadClipboardText: "ade.app.readClipboardText",
   appGetElevatedDesktop: "ade.app.getElevatedDesktop",
   appElevatedDesktopChanged: "ade.app.elevatedDesktopChanged",
+  appWindowFocusChanged: "ade.app.windowFocusChanged",
   appHasClipboardImage: "ade.app.hasClipboardImage",
   appReadClipboardImage: "ade.app.readClipboardImage",
   appConvertImageToJpeg: "ade.app.convertImageToJpeg",

@@ -1356,6 +1356,7 @@ declare global {
         readClipboardText: () => Promise<string>;
         getElevatedDesktop: () => Promise<boolean>;
         onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => () => void;
+        onWindowFocusChanged?: (cb: (focused: boolean) => void) => () => void;
         hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{
           data: string;

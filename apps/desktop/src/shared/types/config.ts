@@ -570,6 +570,8 @@ export const AUTOMATION_TRIGGER_TYPES = [
   "github.pr_closed",
   "github.pr_commented",
   "github.pr_review_submitted",
+  // A PR's checks turned failing, once per head commit (the PR poller).
+  "github.pr_checks_failed",
   "github.issue_opened",
   "github.issue_edited",
   "github.issue_closed",

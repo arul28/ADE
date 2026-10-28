@@ -302,6 +302,25 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+/** A failed built-in run: the "Clean up merged lanes" template run by hand. */
+const BROWSER_MOCK_FAILED_RUN = {
+  id: "run-2",
+  automationId: "auto-session-review",
+  chatSessionId: null,
+  triggerType: "manual",
+  startedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  endedAt: new Date(Date.now() - 2 * 60_000 + 4).toISOString(),
+  status: "failed",
+  executionKind: "built-in",
+  actionsCompleted: 0,
+  actionsTotal: 1,
+  errorMessage: "No lane to delete. This step deletes the lane its trigger names; pick a lane when you run it by hand, or set a target lane on the step.",
+  spendUsd: 0,
+  confidence: null,
+  triggerMetadata: { reason: "clean-up-merged-lanes", scheduledAt: new Date(Date.now() - 2 * 60_000).toISOString() },
+  summary: null,
+  billingCode: "auto:clean-up-merged-lanes",
+};
 /** Mirrors `createLoginImportUnavailableStub` in the hosted web adapter. */
 const LOGIN_IMPORT_UNAVAILABLE = {
   ok: false as const,
@@ -6857,7 +6876,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               },
             ],
       ),
-      getRunDetail: resolvedArg({
+      getRunDetail: async (runId: unknown) => (runId === BROWSER_MOCK_FAILED_RUN.id ? {
+        run: BROWSER_MOCK_FAILED_RUN,
+        rule: null,
+        chatSession: null,
+        actions: [{
+          id: "run-2-step-1",
+          runId: BROWSER_MOCK_FAILED_RUN.id,
+          actionIndex: 0,
+          actionType: "delete-lane",
+          startedAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+          endedAt: BROWSER_MOCK_FAILED_RUN.endedAt,
+          status: "failed",
+          errorMessage: BROWSER_MOCK_FAILED_RUN.errorMessage,
+          output: BROWSER_MOCK_FAILED_RUN.errorMessage,
+        }],
+        ingressEvent: null,
+      } : {
         run: {
           id: "run-1",
           automationId: "auto-session-review",
@@ -6923,6 +6958,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
           ? ADE_DB_AUTOMATIONS.runs
           : [
+              BROWSER_MOCK_FAILED_RUN,
               {
                 id: "run-1",
                 automationId: "auto-session-review",

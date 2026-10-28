@@ -271,6 +271,7 @@ import {
   USER_SCROLL_UP_REPIN_HOLD_MS,
 } from "./chatListScrollAnchoring";
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
+import { ThinkingIndicator } from "../ui/ThinkingIndicator";
 import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
 import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
 import { useWakeLoopFolds } from "./useWakeLoopFolds";
@@ -2026,20 +2027,6 @@ function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
   return null;
 }
 
-function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5" aria-hidden="true">
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className={cn("ade-thinking-pulse inline-block h-[5px] w-[5px] rounded-full", toneClass)}
-          style={{ animationDelay: `${index * 0.18}s` }}
-        />
-      ))}
-    </span>
-  );
-}
-
 /**
  * Formats the elapsed turn time as a compact "working for" duration. Stays as
  * bare seconds under a minute ("42s") and rolls into minutes past it
@@ -2121,8 +2108,7 @@ function WorkingIndicator({
   }, [toolEntries, replyWritesScene]);
   const status = (
     <span className="inline-flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
-      <ThinkingDots toneClass="bg-violet-400/70" />
-      <span className="min-w-0 truncate font-medium text-fg/55">{activity ?? "Working"}</span>
+      <ThinkingIndicator label={activity ?? "Working"} className="text-violet-300/80" />
       <span className="shrink-0 text-fg/28" aria-hidden>·</span>
       <span className="shrink-0 text-fg/38">
         working for <span ref={attachTimer} className="tabular-nums">0s</span>
@@ -2990,13 +2976,10 @@ function renderEvent(
      that they never wrote. */
   // One decision for what a user-message row shows (`userMessageBody.ts`);
   // find (⌘F) searches the same text.
-  // A subagent's report: the spawn_wake_divider row above it already says who
-  // came back and what it said. The agent still reads this message; the user
-  // does not need it twice.
-  const spawnCompletion = event.type === "user_message" ? event.metadata?.spawnCompletion : undefined;
-  if (spawnCompletion?.childSessionId?.trim() && (spawnCompletion.spawnKind === "subagent" || spawnCompletion.spawnKind === "peer")) {
-    return null;
-  }
+  // A subagent's report draws nothing here (`transcriptEventDrawsNothing`, at
+  // the top): the spawn_wake_divider row above it already says who came back
+  // and what it said. The agent still reads the message; the user does not
+  // need it twice.
   const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
   if (userBody?.kind === "board-move") {
     const boardMove = userBody.move;
@@ -5498,7 +5481,10 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       // The rect is screen pixels under hosted-web body zoom; the heights the
       // scroll math stores are layout pixels.
       const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
-      if (height > 0) onMeasure(rowKey, height);
+      // A row that draws nothing measures 0 and must say so, or it keeps its
+      // estimate as blank space. A 0 from a hidden pane (no layout box) is not
+      // a measurement.
+      if (height > 0 || el.getClientRects().length > 0) onMeasure(rowKey, height);
     };
 
     measureNow();
@@ -6901,7 +6887,11 @@ function AgentChatMessageListMain({
     // Only a turn's newest computer-use action is drawn in full.
     const arranged = arrangeComputerUseRuns(merged, previousComputerUseRunRowsRef.current);
     previousComputerUseRunRowsRef.current = arranged.built;
-    return arranged.rows;
+    // A row that draws nothing (a queued steer, a stale interrupt receipt, …)
+    // is not a row: kept, it measures 0, which never replaces its estimate,
+    // and a run of them at the tail strands the thread above a blank band.
+    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext));
+    return drawn.length === arranged.rows.length ? arranged.rows : drawn;
   }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
