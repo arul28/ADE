@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { mcpPlainTextSecretFindings, parseMcpServerSnippet } from "./mcpServerImport";
+import { sameMcpServerUrl } from "./mcpRegistry";
 
 describe("parseMcpServerSnippet", () => {
   it.each([
@@ -24,6 +25,16 @@ describe("parseMcpServerSnippet", () => {
       expected: [{ name: "api", transport: "http", url: "https://mcp.example.test/mcp", env: {}, headers: {} }],
     },
     {
+      label: "an HTTP URL with an SSE path",
+      text: '{"api":{"httpUrl":"https://mcp.example.test/sse"}}',
+      expected: [{ name: "api", transport: "http", url: "https://mcp.example.test/sse", env: {}, headers: {} }],
+    },
+    {
+      label: "an explicit HTTP transport with an SSE path",
+      text: '{"api":{"transport":"http","serverUrl":"https://mcp.example.test/sse"}}',
+      expected: [{ name: "api", transport: "http", url: "https://mcp.example.test/sse", env: {}, headers: {} }],
+    },
+    {
       label: "a fragment copied from the middle of a file, with a trailing comma",
       text: '"git": {"command": "uvx"},',
       expected: [{ name: "git", transport: "stdio", command: "uvx", env: {}, headers: {} }],
@@ -35,6 +46,18 @@ describe("parseMcpServerSnippet", () => {
     },
   ])("reads $label", ({ text, expected }) => {
     expect(parseMcpServerSnippet(text)).toEqual(expected);
+  });
+});
+
+describe("MCP sign-in endpoint matching", () => {
+  it.each([
+    ["https://EXAMPLE.test:443/mcp/", "https://example.test/mcp", true],
+    ["https://example.test/mcp#fragment", "https://example.test/mcp", true],
+    ["https://example.test/mcp?a=1", "https://example.test/mcp?a=2", false],
+    ["https://example.test/mcp", "https://example.test/other", false],
+    ["", "", false],
+  ])("compares %s with %s", (left, right, equal) => {
+    expect(sameMcpServerUrl(left, right)).toBe(equal);
   });
 });
 
