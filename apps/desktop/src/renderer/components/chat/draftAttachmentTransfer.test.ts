@@ -91,6 +91,7 @@ describe("draft attachment transfer", () => {
         { path: "/tmp/pasted.txt", type: "file", intent: "user_prompt" },
       ],
       removedAttachments: [{ path: "/tmp/spec.md", type: "file" }],
+      linkedAttachments: [{ path: "/tmp/ios.png", type: "image" }],
     });
   });
 

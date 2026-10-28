@@ -22,6 +22,7 @@ import {
 } from "../../lib/visualContextFormatting";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
 import { draftAttachmentSource, rememberDraftAttachmentSource } from "./draftAttachmentSources";
+import { readAttachmentStagingMode } from "./chatAttachmentStaging";
 import type { ChatNoticeAction } from "./chatNotice";
 
 
@@ -79,17 +80,20 @@ export function partitionDraftMachineAttachments(
   portableAttachments: AgentChatFileRef[];
   movableAttachments: AgentChatLocalFileRef[];
   removedAttachments: AgentChatLocalFileRef[];
+  /** Images of selected elements; they go with the selection they belong to. */
+  linkedAttachments: AgentChatLocalFileRef[];
 } {
   const portableAttachments: AgentChatFileRef[] = [];
   const movableAttachments: AgentChatLocalFileRef[] = [];
   const removedAttachments: AgentChatLocalFileRef[] = [];
+  const linkedAttachments: AgentChatLocalFileRef[] = [];
   for (const attachment of attachments) {
     if (attachment.type === "image-url") portableAttachments.push(attachment);
-    else if (linkedVisualAttachmentPaths.has(attachment.path)) continue;
+    else if (linkedVisualAttachmentPaths.has(attachment.path)) linkedAttachments.push(attachment);
     else if (attachment.type === "image" || draftAttachmentSource(attachment.path)) movableAttachments.push(attachment);
     else removedAttachments.push(attachment);
   }
-  return { portableAttachments, movableAttachments, removedAttachments };
+  return { portableAttachments, movableAttachments, removedAttachments, linkedAttachments };
 }
 
 /** Whether moving this attachment has to read it back from its old machine. */
@@ -115,6 +119,10 @@ export async function copyDraftAttachmentsToMachine(args: {
         args.targetBinding,
       ));
     } else if (source?.kind === "local") {
+      // A path only travels to a host that can copy or stream it; an older
+      // host (or a relay route) takes base64 alone, which this file never was.
+      const { mode } = await readAttachmentStagingMode(args.targetBinding);
+      if (mode === "base64") throw new Error("ADE on that machine can't receive files from this computer; attach it again there");
       ({ path } = await window.ade.agentChat.stageFileAttachment(
         { sourcePath: source.sourcePath, filename: source.filename },
         args.targetBinding,
@@ -291,6 +299,7 @@ export function useDraftAttachmentTransfer(args: {
       portableAttachments,
       movableAttachments,
       removedAttachments,
+      linkedAttachments,
     } = partitionDraftMachineAttachments(attachments, getLinkedVisualAttachmentPaths());
     const transferSequence = transferSequenceRef.current + 1;
     transferSequenceRef.current = transferSequence;
@@ -301,7 +310,9 @@ export function useDraftAttachmentTransfer(args: {
 
     // A file picked on one machine is not on the other: a status, not a failure.
     const leftBehind = leftBehindMessage({
-      removed: removedAttachments,
+      // A selection's images are named with the selection; with no selection
+      // left to name them, they are named as files.
+      removed: visualContextCount > 0 ? removedAttachments : [...removedAttachments, ...linkedAttachments],
       visualContextCount,
       from: previousMachine.name,
       to: currentMachine.name,

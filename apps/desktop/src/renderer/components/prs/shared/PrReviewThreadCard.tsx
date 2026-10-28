@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import {
   forwardRef,
   memo,
@@ -33,7 +34,7 @@ import {
   outlineButton,
   fgTint,
 } from "../../lanes/laneDesignTokens";
-import { formatError, formatTimeAgo } from "./prFormatters";
+import { formatTimeAgo } from "./prFormatters";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrCommentEditForm } from "./PrCommentEditForm";
@@ -419,7 +420,7 @@ export const PrReviewThreadCard = memo(
         setReplyValue("");
         setReplyOpen(false);
       } catch (err) {
-        setError(formatError(err));
+        setError(extractError(err));
       } finally {
         replyInFlightRef.current = false;
         setBusy(null);
@@ -438,7 +439,7 @@ export const PrReviewThreadCard = memo(
         const result = await bridge({ prId, threadId: thread.id, resolved: next });
         setLocalResolved(result?.isResolved ?? next);
       } catch (err) {
-        setError(formatError(err));
+        setError(extractError(err));
       } finally {
         resolveInFlightRef.current = false;
         setBusy(null);
@@ -582,7 +583,7 @@ export const PrReviewThreadCard = memo(
                 repoOwner={repoOwner}
                 repoName={repoName}
                 viewerLogin={viewerLogin}
-                onError={(err) => setError(formatError(err))}
+                onError={(err) => setError(extractError(err))}
               />
             </div>
           ))}

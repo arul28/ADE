@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import React from "react";
 import type { WorkflowMachines } from "../state/workflowMachines";
 import { machineBlockedReason, pinArg } from "../../../state/laneMachineRouting";
@@ -15,7 +16,7 @@ import type {
 } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
-import { Banner } from "../../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { PrConflictBadge } from "../PrConflictBadge";
@@ -26,7 +27,6 @@ import { PrDetailPane } from "../detail/PrDetailPane";
 import { IntegrationPrContextPanel } from "../shared/IntegrationPrContextPanel";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { normalizeBranchName } from "../shared/prHelpers";
-import { formatError } from "../shared/prFormatters";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
 import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
@@ -598,9 +598,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const [selectedProposalId, setSelectedProposalId] = React.useState<string | null>(null);
   const [urlProposalId, setUrlProposalId] = React.useState<string | null>(() => readQueryParam("proposalId"));
   const [commitBusy, setCommitBusy] = React.useState(false);
-  // `failed: false` is the proposal's or the machine's state (nothing to
-  // resolve, the machine is offline): it warns, with no Report.
-  const [commitError, setCommitError] = React.useState<{ message: string; failed: boolean } | null>(null);
+
+  const [commitError, setCommitError] = React.useState<{ message: string; kind: NoticeKind } | null>(null);
   const [resimBusy, setResimBusy] = React.useState(false);
   const [deleteProposalBusy, setDeleteProposalBusy] = React.useState(false);
   const [deleteProposalConfirm, setDeleteProposalConfirm] = React.useState(false);
@@ -738,7 +737,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         const result = await window.ade.prs.commitIntegration(commitArgs, ...proposalPin(proposal.proposalId));
         return result.pr.id;
       } catch (error) {
-        const message = formatError(error);
+        const message = extractError(error);
         if (
           !isDirtyWorktreeErrorMessage(message)
           || !(await confirmDialog({
@@ -763,7 +762,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleCommitProposal = async (p: IntegrationProposal) => {
     const blocked = proposalBlocked(p.proposalId);
     if (blocked) {
-      setCommitError({ message: blocked, failed: false });
+      setCommitError({ message: blocked, kind: "status" });
       return;
     }
     // A PR created on another machine has that machine's id; the GitHub list
@@ -784,7 +783,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         onSelectPr(committedPrId);
       }
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
       await loadProposals();
       await onRefresh().catch(() => {});
     } finally {
@@ -795,7 +794,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleResimulate = async (p: IntegrationProposal) => {
     const blocked = proposalBlocked(p.proposalId);
     if (blocked) {
-      setCommitError({ message: blocked, failed: false });
+      setCommitError({ message: blocked, kind: "status" });
       return;
     }
     const pinArgs = proposalPin(p.proposalId);
@@ -839,17 +838,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
           deleteIntegrationLane,
         }, ...pinArgs);
       } catch (cleanupError) {
-        cleanupWarning = formatError(cleanupError);
+        cleanupWarning = extractError(cleanupError);
       }
 
       refreshProposalMachine(p.proposalId);
       await loadProposals();
       setSelectedProposalId(listProposalId(p.proposalId, result.proposalId));
       if (cleanupWarning) {
-        setCommitError({ message: `Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`, failed: true });
+        setCommitError({ message: `Re-simulated successfully, but the previous proposal could not be removed: ${cleanupWarning}`, kind: "failure" });
       }
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
     } finally {
       setResimBusy(false);
     }
@@ -858,7 +857,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const handleDeleteProposal = async (proposal: IntegrationProposal) => {
     const blocked = proposalBlocked(proposal.proposalId);
     if (blocked) {
-      setCommitError({ message: blocked, failed: false });
+      setCommitError({ message: blocked, kind: "status" });
       return;
     }
     setDeleteProposalBusy(true);
@@ -877,7 +876,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       clearProposalIdFromLocation();
       await loadProposals();
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
     } finally {
       setDeleteProposalBusy(false);
     }
@@ -1188,7 +1187,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       try {
         result = await runCreate(false);
       } catch (error) {
-        const message = formatError(error);
+        const message = extractError(error);
         if (
           !isDirtyWorktreeErrorMessage(message)
           || !(await confirmDialog({
@@ -1220,7 +1219,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       await onRefresh().catch(() => {});
       return nextState;
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
       return null;
     } finally {
       setCreateLaneBusy(false);
@@ -1231,13 +1230,13 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     if (!selectedProposal) return;
     const uniqueLaneIds = Array.from(new Set(laneIds.filter(Boolean)));
     if (!uniqueLaneIds.length) {
-      setCommitError({ message: "No lanes were selected for AI resolution.", failed: false });
+      setCommitError({ message: "No lanes were selected for AI resolution.", kind: "hint" });
       return;
     }
 
     const targetLaneId = resolveTargetLaneId(selectedProposal.baseBranch, selectedProposal.proposalId);
     if (!targetLaneId) {
-      setCommitError({ message: `Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`, failed: false });
+      setCommitError({ message: `Could not map base branch "${selectedProposal.baseBranch}" to a lane. Create/attach that lane first.`, kind: "status" });
       return;
     }
 
@@ -1257,7 +1256,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setResolutionPanelDismissed(false);
       setResolverOpen(true);
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
     } finally {
       setResolvingLaneId(null);
     }
@@ -1285,7 +1284,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       conflictLaneIds = proposalConflictSteps.map((step) => step.laneId);
     } else {
       // Nothing to resolve
-      setCommitError({ message: "No conflicts found to auto-resolve.", failed: false });
+      setCommitError({ message: "No conflicts found to auto-resolve.", kind: "status" });
       return;
     }
 
@@ -1308,7 +1307,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         stepResolutions: { ...prev.stepResolutions, [stepLaneId]: result.resolution },
       } : prev);
       if (result.message) {
-        setCommitError({ message: result.message, failed: true });
+        setCommitError({ message: result.message, kind: "failure" });
       }
       setResolutionPanelDismissed(false);
       if (result.allResolved) {
@@ -1316,7 +1315,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
         await loadProposals();
       }
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
     }
   };
 
@@ -1438,7 +1437,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       return;
     }
     if (nextPreferredIntegrationLaneId && selectedProposal.sourceLaneIds.includes(nextPreferredIntegrationLaneId)) {
-      setCommitError({ message: "Merge-into lane cannot be one of the source lanes.", failed: false });
+      setCommitError({ message: "Merge-into lane cannot be one of the source lanes.", kind: "hint" });
       return;
     }
     setMergeIntoLaneBusy(true);
@@ -1466,17 +1465,17 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       try {
         await window.ade.prs.deleteProposal({ proposalId: apiProposalId(oldId), deleteIntegrationLane: false }, ...pinArgs);
       } catch (cleanupError) {
-        cleanupWarning = formatError(cleanupError);
+        cleanupWarning = extractError(cleanupError);
       }
       setResolutionState(null);
       await loadProposals();
       refreshProposalMachine(oldId);
       setSelectedProposalId(listProposalId(oldId, persisted.proposalId));
       if (cleanupWarning) {
-        setCommitError({ message: `Updated merge target, but the previous proposal row could not be removed: ${cleanupWarning}`, failed: true });
+        setCommitError({ message: `Updated merge target, but the previous proposal row could not be removed: ${cleanupWarning}`, kind: "failure" });
       }
     } catch (err: unknown) {
-      setCommitError({ message: formatError(err), failed: true });
+      setCommitError({ message: extractError(err), kind: "failure" });
       await loadProposals();
     } finally {
       setMergeIntoLaneBusy(false);
@@ -1558,7 +1557,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       setSimulateResult(result);
     } catch (err: unknown) {
       if (requestSeq !== simulateRequestSeqRef.current) return;
-      setSimulateError(formatError(err));
+      setSimulateError(extractError(err));
     } finally {
       if (requestSeq === simulateRequestSeqRef.current) {
         setSimulateBusy(false);
@@ -1585,7 +1584,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       onSelectPr(null);
       await onRefresh();
     } catch (err: unknown) {
-      setSimulateError(formatError(err));
+      setSimulateError(extractError(err));
     } finally { setDeleteBusy(false); }
   };
 
@@ -2910,7 +2909,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                       };
                     });
                     if (result.status === "failed" && result.message) {
-                      setCommitError({ message: result.message, failed: true });
+                      setCommitError({ message: result.message, kind: "failure" });
                     }
                   }
                   setActiveWorkerStepId(null);
@@ -3262,9 +3261,8 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
               style={{ marginTop: 12 }}
               model={{
                 id: "integration-commit-error",
-                tone: commitError.failed ? "error" : "warning",
+                ...noticeKindModel(commitError.kind, commitError.kind === "failure" ? { surface: "integration_commit" } : undefined),
                 title: commitError.message,
-                report: commitError.failed ? { surface: "integration_commit" } : false,
                 dismiss: { onDismiss: () => setCommitError(null) },
               }}
             />

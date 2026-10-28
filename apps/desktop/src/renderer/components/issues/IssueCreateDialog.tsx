@@ -13,7 +13,7 @@ import { showToast } from "../app/toast/toastStore";
 import { LinearMark } from "../lanes/linearBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { Dialog } from "../ui/dialog";
-import { Banner } from "../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { GitHubIssueFormFields } from "./GitHubIssueFormFields";
 import {
@@ -136,9 +136,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const [showMore, setShowMore] = useState(() => Boolean(parent));
   const [createMore, setCreateMore] = useState(false);
   const [busy, setBusy] = useState(false);
-  // `failed: false` is the person's to fix (no title, a picture the provider
-  // can't take): it warns, with no Report.
-  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
+
+  const [error, setError] = useState<{ message: string; kind: NoticeKind } | null>(null);
   const titleRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -362,12 +361,12 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       return;
     }
     if (provider === "jira") {
-      setError({ message: "Jira image attachments are not available here. Add a link in the description instead.", failed: false });
+      setError({ message: "Jira image attachments are not available here. Add a link in the description instead.", kind: "hint" });
       return;
     }
     const upload = window.ade?.cto?.uploadLinearFile;
     if (!upload) {
-      setError({ message: "Uploading pictures to Linear is not available here.", failed: false });
+      setError({ message: "Uploading pictures to Linear is not available here.", kind: "status" });
       return;
     }
     for (const file of files) {
@@ -376,7 +375,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         const result = await upload({ filename: file.name || "image.png", contentType: file.type || "image/png", dataBase64: await fileToBase64(file) });
         insertAtCursor(`![${result.filename}](${result.assetUrl})\n`);
       } catch (cause) {
-        setError({ message: cause instanceof Error ? cause.message : "Linear refused the picture.", failed: true });
+        setError({ message: cause instanceof Error ? cause.message : "Linear refused the picture.", kind: "failure" });
       } finally {
         setUploads((count) => count - 1);
       }
@@ -407,7 +406,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     if (busy || uploads > 0) return;
     const trimmed = title.trim();
     if (!trimmed) {
-      setError({ message: "Give the issue a title.", failed: false });
+      setError({ message: "Give the issue a title.", kind: "hint" });
       titleRef.current?.focus();
       return;
     }
@@ -503,7 +502,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         onClose();
       }
     } catch (cause) {
-      setError({ message: cause instanceof Error ? cause.message : "The issue was not created.", failed: true });
+      setError({ message: cause instanceof Error ? cause.message : "The issue was not created.", kind: "failure" });
     } finally {
       setBusy(false);
     }
@@ -800,9 +799,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
               style={{ flex: 1, minWidth: 0 }}
               model={{
                 id: "issue-create-error",
-                tone: error.failed ? "error" : "warning",
+                ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "issue_create" } : undefined),
                 title: error.message,
-                report: error.failed ? { surface: "issue_create" } : false,
                 dismiss: { onDismiss: () => setError(null) },
               }}
             />

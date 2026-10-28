@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import React from "react";
 import {
   ArrowsClockwise,
@@ -19,8 +20,8 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton, fgTint } from "../../lanes/laneDesignTokens";
-import { Banner } from "../../ui/notice";
-import { formatError, formatTimestampShort } from "../shared/prFormatters";
+import { Banner, noticeKindModel, type NoticeKind } from "../../ui/notice";
+import { formatTimestampShort } from "../shared/prFormatters";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
@@ -223,9 +224,8 @@ function IntegrationWorkflowsTab({
   const [archiveIntegrationLane, setArchiveIntegrationLane] = React.useState(true);
   const [archiveSourceLaneIds, setArchiveSourceLaneIds] = React.useState<string[]>([]);
   const [actionBusy, setActionBusy] = React.useState(false);
-  // `failed: false` is the PR's or the machine's state blocking the action
-  // (merge is blocked, the machine is offline): it warns, with no Report.
-  const [actionError, setActionError] = React.useState<{ message: string; failed: boolean } | null>(null);
+
+  const [actionError, setActionError] = React.useState<{ message: string; kind: NoticeKind } | null>(null);
 
   React.useEffect(() => {
     if (workflows.length === 0) {
@@ -256,7 +256,7 @@ function IntegrationWorkflowsTab({
   // Refuse, never fall back to the tab's machine, when the owner is unreachable.
   const guardSelected = React.useCallback((): boolean => {
     const blocked = machineBlockedReason(selectedMachine);
-    if (blocked) setActionError({ message: blocked, failed: false });
+    if (blocked) setActionError({ message: blocked, kind: "status" });
     return !blocked;
   }, [selectedMachine]);
   const afterMachineAction = React.useCallback(async () => {
@@ -283,7 +283,7 @@ function IntegrationWorkflowsTab({
       );
       await afterMachineAction();
     } catch (err) {
-      setActionError({ message: formatError(err), failed: true });
+      setActionError({ message: extractError(err), kind: "failure" });
     } finally {
       setActionBusy(false);
     }
@@ -301,7 +301,7 @@ function IntegrationWorkflowsTab({
       }, ...pinArg(selectedMachine?.pin));
       await afterMachineAction();
     } catch (err) {
-      setActionError({ message: formatError(err), failed: true });
+      setActionError({ message: extractError(err), kind: "failure" });
     } finally {
       setActionBusy(false);
     }
@@ -408,9 +408,8 @@ function IntegrationWorkflowsTab({
                 layout="inline"
                 model={{
                   id: "pr-workflow-action-error",
-                  tone: actionError.failed ? "error" : "warning",
+                  ...noticeKindModel(actionError.kind, actionError.kind === "failure" ? { surface: "pr_workflow_action" } : undefined),
                   title: actionError.message,
-                  report: actionError.failed ? { surface: "pr_workflow_action" } : false,
                   dismiss: { onDismiss: () => setActionError(null) },
                 }}
               />
@@ -676,7 +675,7 @@ export function WorkflowsTab({
       workflowsLoadedRef.current = true;
       setIntegrationWorkflows(next);
     } catch (err) {
-      setWorkflowError(formatError(err));
+      setWorkflowError(extractError(err));
     } finally {
       setLoading(false);
     }

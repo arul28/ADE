@@ -7,7 +7,7 @@ import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { BranchIcon } from "../../ui/vcsIcons";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, outlineButton, fgTint } from "../laneDesignTokens";
-import { Banner, InlineErrorNotice } from "../../ui/notice";
+import { Banner, InlineErrorNotice, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import {
   formatBranchCheckoutError,
   stripRemotePrefix,
@@ -74,9 +74,8 @@ export function LaneBranchSwitcher({
   const [branches, setBranches] = useState<LaneBranchOption[]>([]);
   const [branchesLoading, setBranchesLoading] = useState(false);
   const [busy, setBusy] = useState(false);
-  // `failed: false` is the lane's state blocking the switch (uncommitted
-  // changes, the branch is open elsewhere): it warns, with no Report.
-  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
+
+  const [error, setError] = useState<{ message: string; kind: NoticeKind } | null>(null);
   const [query, setQuery] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
   const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
@@ -178,7 +177,7 @@ export function LaneBranchSwitcher({
     acknowledgeActiveWork?: boolean;
   }) => {
     if (lane.status.dirty) {
-      setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`, failed: false });
+      setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes. Commit, stash, or discard changes first.`, kind: "status" });
       return;
     }
     const mode = request.mode ?? "existing";
@@ -197,11 +196,11 @@ export function LaneBranchSwitcher({
           baseRef: request.baseRef,
         }, pinRef.current);
         if (preview.duplicateLaneId) {
-          setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, failed: false });
+          setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, kind: "status" });
           return;
         }
         if (preview.dirty) {
-          setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes.`, failed: false });
+          setError({ message: `Cannot switch branches while ${lane.name} has uncommitted changes.`, kind: "status" });
           return;
         }
         if (preview.activeWork.length > 0) {
@@ -237,7 +236,7 @@ export function LaneBranchSwitcher({
       const raw = extractError(err);
       const message = formatBranchCheckoutError(raw, lane.name);
       // The formatter only rewrites git's "commit or stash first" refusal.
-      setError({ message, failed: message === raw.trim() });
+      setError({ message, kind: message === raw.trim() ? "failure" : "status" });
     } finally {
       setBusy(false);
       if (succeeded) setOpen(false);
@@ -323,7 +322,7 @@ export function LaneBranchSwitcher({
           id="lane-branch-switch"
           message={error.message}
           // Local changes or a branch held by another lane are the person's to sort out.
-          report={error.failed ? { surface: "lane_branch_switch", headline: "Couldn't switch branch" } : false}
+          report={error.kind === "failure" ? { surface: "lane_branch_switch", headline: "Couldn't switch branch" } : false}
           onDismiss={() => setError(null)}
           style={{ marginLeft: 8 }}
         />
@@ -516,9 +515,8 @@ export function LaneBranchSwitcher({
                 style={{ margin: "6px 12px" }}
                 model={{
                   id: "lane-branch-switch-error",
-                  tone: error.failed ? "error" : "warning",
+                  ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "lane_branch_switch" } : undefined),
                   title: error.message,
-                  report: error.failed ? { surface: "lane_branch_switch" } : false,
                   dismiss: { onDismiss: () => setError(null) },
                 }}
               />

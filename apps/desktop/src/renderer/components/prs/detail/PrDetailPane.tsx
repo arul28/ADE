@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import React from "react";
 import type { PrAssigneeChange } from "../shared/PrAssigneesCard";
 import type { GitHubFilterOptionsLoader } from "../shared/useGitHubFilterOptions";
@@ -8,7 +9,7 @@ import {
   GitCommit,
   GitMerge,
 } from "@phosphor-icons/react";
-import { Banner, type BannerModel } from "../../ui/notice";
+import { Banner, type BannerModel, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import type {
   PrWithConflicts, PrCheck, PrReview, PrComment, PrStatus, PrDetail,
   PrFile, PrCommit, PrActionRun, PrActivityEvent, PrReviewThread,
@@ -44,7 +45,7 @@ import {
   prOpenFindings,
 } from "../shared/prChatActions";
 import { readLastMergeMethod } from "../shared/prMergeRailUtils";
-import { formatError, formatTimeAgoCompact } from "../shared/prFormatters";
+import { formatTimeAgoCompact } from "../shared/prFormatters";
 import type { PrActionsContext } from "../shared/PrActionsMenu";
 import { PrChecksTab } from "./PrChecksTab";
 import { resolveMergeabilityDeadline, type MergeabilityDeadline } from "./mergeabilityDeadline";
@@ -662,9 +663,8 @@ export function PrDetailPane({
   }, [activeTab, setActiveTab]);
   // Action states
   const [actionBusy, setActionBusy] = React.useState(false);
-  // `failed: false` is the PR's or the machine's state blocking the action
-  // (merge is blocked, the machine is offline): it warns, with no Report.
-  const [actionError, setActionError] = React.useState<{ message: string; failed: boolean } | null>(null);
+
+  const [actionError, setActionError] = React.useState<{ message: string; kind: NoticeKind } | null>(null);
   const [actionResult, setActionResult] = React.useState<LandResult | null>(null);
   // The merge that produced `actionResult`, so a merge refused for a moved
   // head can be sent again against the new head in one click.
@@ -710,7 +710,7 @@ export function PrDetailPane({
       );
       chatHandoff({ laneId: pr.laneId, sessionId: session?.sessionId ?? null, prompt });
     } catch (error) {
-      setActionError({ message: formatError(error), failed: true });
+      setActionError({ message: extractError(error), kind: "failure" });
     }
   }, [chatHandoff, onPin, pr]);
 
@@ -1204,7 +1204,7 @@ export function PrDetailPane({
     try {
       await fn();
     } catch (err: unknown) {
-      setActionError({ message: formatError(err), failed: true });
+      setActionError({ message: extractError(err), kind: "failure" });
     } finally {
       setActionBusy(false);
     }
@@ -1220,7 +1220,7 @@ export function PrDetailPane({
     setActionResult(null);
     setLastMergeRequest({ method, options: options ?? {} });
     if (mergeBlockedReason) {
-      setActionError({ message: mergeBlockedReason, failed: false });
+      setActionError({ message: mergeBlockedReason, kind: "status" });
       return Promise.resolve();
     }
     return runAction(async () => {
@@ -1289,7 +1289,7 @@ export function PrDetailPane({
         // Re-poll status + detail so the checklist refreshes off the new head.
         await refreshAll();
       } catch (err: unknown) {
-        setUpdateBranchNotice({ tone: "error", text: formatError(err) });
+        setUpdateBranchNotice({ tone: "error", text: extractError(err) });
       } finally {
         setUpdateBranchBusy(false);
       }
@@ -1452,7 +1452,7 @@ export function PrDetailPane({
   const handleHeaderRefresh = React.useCallback(() => {
     setRefreshing(true);
     void refreshAll()
-      .catch((error: unknown) => setActionError({ message: formatError(error), failed: true }))
+      .catch((error: unknown) => setActionError({ message: extractError(error), kind: "failure" }))
       .finally(() => setRefreshing(false));
   }, [refreshAll]);
 
@@ -1510,7 +1510,7 @@ export function PrDetailPane({
       }
       await refreshAll();
     } catch (error) {
-      setActionError({ message: formatError(error), failed: true });
+      setActionError({ message: extractError(error), kind: "failure" });
     }
   }, [mergeMethod, onPin, pr.id, refreshAll]);
 
@@ -1530,7 +1530,7 @@ export function PrDetailPane({
     onRefresh: handleHeaderRefresh,
     refreshing,
     onChanged: refreshAll,
-    onError: (message: string) => setActionError({ message, failed: true }),
+    onError: (message: string) => setActionError({ message, kind: "failure" }),
     // The lane dialog needs a live lane; a PR without one has nothing to manage.
     ...(laneForPr ? { onManageLane: handleOpenManageLane } : {}),
   }), [
@@ -1592,9 +1592,8 @@ export function PrDetailPane({
           style={{ margin: "8px 20px" }}
           model={{
             id: "pr-detail-action-error",
-            tone: actionError.failed ? "error" : "warning",
+            ...noticeKindModel(actionError.kind, actionError.kind === "failure" ? { surface: "pr_detail_action" } : undefined),
             title: actionError.message,
-            report: actionError.failed ? { surface: "pr_detail_action" } : false,
             dismiss: { onDismiss: () => setActionError(null) },
           }}
         />

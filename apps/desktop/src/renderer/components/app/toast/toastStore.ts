@@ -163,9 +163,15 @@ export function showToast(input: ToastInput): string {
     const group = input.report ? input.report.surface : toastGroupKey(input.title);
     // Toast text is UI copy plus an error message, but an error message can
     // quote what it failed on; a short prefix is enough to recognise it.
+    // A toast with a report says what is safe to send; its message can quote
+    // the person's own words ("“fix the…” never reached its chat") and stays here.
+    const detail = input.report
+      ? input.report.technicalDetail
+      : typeof input.message === "string" ? input.message : null;
     forwardLogToSentry("warn", `toast.${group}`, {
       title: input.title.slice(0, TOAST_TEXT_LIMIT),
-      ...(typeof input.message === "string" ? { message: input.message.slice(0, TOAST_TEXT_LIMIT) } : {}),
+      ...(input.report?.code ? { code: input.report.code } : {}),
+      ...(detail ? { message: detail.slice(0, TOAST_TEXT_LIMIT) } : {}),
     });
   }
   const durationMs = input.durationMs ?? DEFAULT_DURATION_MS;

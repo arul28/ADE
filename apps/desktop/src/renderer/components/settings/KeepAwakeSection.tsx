@@ -9,7 +9,7 @@ import {
   systemSleepStopsAgents,
 } from "../../../shared/types/keepAwake";
 import { isMacRuntimeTarget } from "../../lib/platform";
-import { Banner } from "../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import { ModernSection } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./machineSettings.css";
@@ -58,7 +58,7 @@ const WINDOWS_NEVER_LIMIT = "Turns pause when this PC sleeps";
 
 const inertSnapshot = INERT_KEEP_AWAKE_SNAPSHOT;
 
-type ActionError = { message: string; failed: boolean };
+type ActionError = { message: string; kind: NoticeKind };
 
 /**
  * The levels a machine can honour. `lid-closed` is absent on Windows, not
@@ -111,7 +111,6 @@ export function KeepAwakeControls() {
   const [snapshot, setSnapshot] = useState<KeepAwakeSnapshot | null>(null);
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // `failed: false` is a change only the other machine can make: it warns, with no Report.
   const [fixError, setFixError] = useState<ActionError | null>(null);
   const [levelActionError, setLevelActionError] = useState<ActionError | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -163,7 +162,7 @@ export function KeepAwakeControls() {
       try {
         const activePin = pinRef.current;
         if (level === "lid-closed" && !isThisMachine) {
-          setLevelActionError({ message: `Open Settings on ${machineName} to authorize lid-closed mode.`, failed: false });
+          setLevelActionError({ message: `Open Settings on ${machineName} to authorize lid-closed mode.`, kind: "status" });
           return;
         }
         if (isThisMachine && current.platform === "mac") {
@@ -176,7 +175,7 @@ export function KeepAwakeControls() {
             // the page reaches this computer through a pinned binding.
             const result = await window.ade.keepAwakeApplyLidClosed(shouldEnableLid);
             if (!result.ok) {
-              setLevelActionError({ message: result.error ?? "macOS couldn't change lid-closed mode.", failed: true });
+              setLevelActionError({ message: result.error ?? "macOS couldn't change lid-closed mode.", kind: "failure" });
               return;
             }
           }
@@ -194,7 +193,7 @@ export function KeepAwakeControls() {
           setLoadError(null);
         }
       } catch {
-        if (mounted.current) setLevelActionError({ message: "ADE couldn't save that.", failed: true });
+        if (mounted.current) setLevelActionError({ message: "ADE couldn't save that.", kind: "failure" });
       } finally {
         if (mounted.current) setBusy(false);
       }
@@ -208,7 +207,7 @@ export function KeepAwakeControls() {
     setFixError(null);
     try {
       if (!isThisMachine && current.platform === "mac") {
-        setFixError({ message: `Open Settings on ${machineName} to change its macOS sleep timer.`, failed: false });
+        setFixError({ message: `Open Settings on ${machineName} to change its macOS sleep timer.`, kind: "status" });
         return;
       }
       const activePin = pinRef.current;
@@ -221,9 +220,9 @@ export function KeepAwakeControls() {
           ? { ...previous, systemSleep: result.snapshot.systemSleep }
           : result.snapshot);
       }
-      if (!result.ok) setFixError({ message: result.error ?? "That didn't work.", failed: true });
+      if (!result.ok) setFixError({ message: result.error ?? "That didn't work.", kind: "failure" });
     } catch {
-      if (mounted.current) setFixError({ message: "That didn't work.", failed: true });
+      if (mounted.current) setFixError({ message: "That didn't work.", kind: "failure" });
     } finally {
       if (mounted.current) setBusy(false);
     }
@@ -324,9 +323,8 @@ export function KeepAwakeControls() {
           layout="inline"
           model={{
             id: "keep-awake-level-error",
-            tone: levelActionError.failed ? "error" : "warning",
+            ...noticeKindModel(levelActionError.kind, levelActionError.kind === "failure" ? { surface: "keep_awake_level" } : undefined),
             title: levelActionError.message,
-            report: levelActionError.failed ? { surface: "keep_awake_level" } : false,
             dismiss: { onDismiss: () => setLevelActionError(null) },
           }}
         />
@@ -373,9 +371,8 @@ export function KeepAwakeControls() {
                 layout="inline"
                 model={{
                   id: "keep-awake-fix-error",
-                  tone: fixError.failed ? "error" : "warning",
+                  ...noticeKindModel(fixError.kind, fixError.kind === "failure" ? { surface: "keep_awake_system_sleep_fix" } : undefined),
                   title: fixError.message,
-                  report: fixError.failed ? { surface: "keep_awake_system_sleep_fix" } : false,
                   dismiss: { onDismiss: () => setFixError(null) },
                 }}
               />

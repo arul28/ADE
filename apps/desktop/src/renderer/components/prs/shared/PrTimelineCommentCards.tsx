@@ -1,10 +1,10 @@
+import { extractError } from "../../../lib/format";
 import { useState, type ReactNode } from "react";
 import { CaretRight } from "@phosphor-icons/react";
 
 import type { PrTimelineEvent } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import { relativeWhen } from "../../../lib/format";
-import { formatError } from "./prFormatters";
 import { PrDescriptionBody } from "./PrBrief";
 import { PrMarkdown } from "./PrMarkdown";
 import { PrReactionBar } from "./PrReactionBar";
@@ -125,7 +125,7 @@ export function DescriptionContent({
   plain?: boolean;
 }) {
   const [reactionError, setReactionError] = useState<string | null>(null);
-  const onReactionError = (err: unknown) => setReactionError(formatError(err));
+  const onReactionError = (err: unknown) => setReactionError(extractError(err));
   const reactionErrorBanner = reactionError ? (
     <Banner
       layout="inline"
@@ -253,7 +253,7 @@ export function IssueCommentContent({
           subjectId={event.commentNodeId}
           reactions={event.reactions}
           viewerLogin={viewerLogin}
-          onError={(err) => setReactionError(formatError(err))}
+          onError={(err) => setReactionError(extractError(err))}
         />
         {canEdit && !editing ? (
           <button

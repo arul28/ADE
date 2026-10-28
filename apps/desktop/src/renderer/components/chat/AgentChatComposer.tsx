@@ -3994,7 +3994,9 @@ function AgentChatComposerImpl({
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
             rememberDraftAttachmentSource(stagedPath, {
               kind: "local",
-              sourcePath: plan.sourcePath,
+              // Staged on this computer, the copy is a snapshot: a later edit
+              // or delete of the original cannot change what moves.
+              sourcePath: attachmentOwnerBinding?.kind === "local" ? stagedPath : plan.sourcePath,
               filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
             });
           } else {

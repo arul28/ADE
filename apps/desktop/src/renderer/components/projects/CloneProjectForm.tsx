@@ -43,7 +43,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
-import { Banner } from "../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 
 export type CloneProjectFormProps = {
   onCancel: () => void;
@@ -673,13 +673,13 @@ function ConnectGithubPrompt({
 }) {
   const [token, setToken] = useState("");
   const [pending, setPending] = useState(false);
-  // `failed: false` is the person's to fix (no token, GitHub refused it): no Report.
-  const [error, setError] = useState<{ message: string; failed: boolean } | null>(null);
+
+  const [error, setError] = useState<{ message: string; kind: NoticeKind } | null>(null);
 
   const handleSave = useCallback(async () => {
     const trimmed = token.trim();
     if (!trimmed) {
-      setError({ message: "Enter a token", failed: false });
+      setError({ message: "Enter a token", kind: "hint" });
       return;
     }
     setPending(true);
@@ -688,12 +688,12 @@ function ConnectGithubPrompt({
       const result = await window.ade.github.setToken(trimmed);
       const verification = describeGithubPatVerification(result);
       if (!verification.verified) {
-        setError({ message: verification.message, failed: false });
+        setError({ message: verification.message, kind: "hint" });
         return;
       }
       onConnected();
     } catch (err) {
-      setError({ message: extractError(err), failed: true });
+      setError({ message: extractError(err), kind: "failure" });
     } finally {
       setPending(false);
     }
@@ -774,9 +774,8 @@ function ConnectGithubPrompt({
           layout="inline"
           model={{
             id: "clone-github-connect-error",
-            tone: error && !error.failed ? "warning" : "error",
+            ...noticeKindModel(error?.kind ?? "failure", error?.kind === "failure" || !error ? { surface: "clone_github_connect" } : undefined),
             title: error?.message ?? statusError,
-            report: error && !error.failed ? false : { surface: "clone_github_connect" },
           }}
         />
       ) : null}

@@ -43,6 +43,9 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
     ?? `ADE could not find its ${provider} runtime on this machine.`;
 }
 
+/** Providers whose current snapshot disagreement Sentry has already heard about. */
+const staleSnapshotProviders = new Set<string>();
+
 /**
  * True when the CLI snapshot says ADE's copy is missing but the tools cache,
  * read live, says it is ready. The snapshot is cached for up to a minute and
@@ -52,9 +55,15 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
  * to Sentry so its cause can be found.
  */
 function pinnedRuntimeReadyDespiteSnapshot(provider: string, cli: CliAuthStatus | null): boolean {
-  if (cli?.installed) return false;
+  if (cli?.installed) {
+    staleSnapshotProviders.delete(provider);
+    return false;
+  }
   const tool = pinnedToolForProvider(provider);
   if (!tool || pinnedToolState(tool.tool, tool.label).state !== "ready") return false;
+  // Every status poll asks; Sentry hears once per disagreement, not per poll.
+  if (staleSnapshotProviders.has(provider)) return true;
+  staleSnapshotProviders.add(provider);
   forwardSignalToSentry("ai.provider_status.stale_runtime_snapshot", {
     provider,
     snapshotState: cli?.pinnedState ?? null,

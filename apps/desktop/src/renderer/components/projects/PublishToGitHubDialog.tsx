@@ -34,7 +34,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
-import { Banner } from "../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
   "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
@@ -47,8 +47,7 @@ export type PublishToGitHubDialogProps = {
 };
 
 type PublishError = { code: string; message: string };
-/** `failed: false` is the person's to fix (no token pasted, GitHub refused it): no Report. */
-type TokenError = { message: string; failed: boolean };
+type TokenError = { message: string; kind: NoticeKind };
 
 type NameValidation = { ok: true } | { ok: false; reason: string };
 type OwnerValidation = { ok: true } | { ok: false; reason: string };
@@ -202,7 +201,7 @@ export function PublishToGitHubDialog({
   const handleSaveToken = useCallback(async () => {
     const token = tokenDraft.trim();
     if (!token) {
-      setTokenError({ message: "Paste a personal access token first.", failed: false });
+      setTokenError({ message: "Paste a personal access token first.", kind: "hint" });
       return;
     }
     setTokenSaving(true);
@@ -211,7 +210,7 @@ export function PublishToGitHubDialog({
       const result = await window.ade.github.setToken(token);
       const verification = describeGithubPatVerification(result);
       if (!verification.verified) {
-        setTokenError({ message: verification.message, failed: false });
+        setTokenError({ message: verification.message, kind: "hint" });
         return;
       }
       setTokenDraft("");
@@ -220,7 +219,7 @@ export function PublishToGitHubDialog({
         if (status.connected && status.userLogin) setOwner(status.userLogin);
       }).catch(() => {});
     } catch (err) {
-      setTokenError({ message: extractError(err), failed: true });
+      setTokenError({ message: extractError(err), kind: "failure" });
     } finally {
       setTokenSaving(false);
     }
@@ -683,9 +682,8 @@ function ConnectBody({
           layout="inline"
           model={{
             id: "publish-github-token-error",
-            tone: error.failed ? "error" : "warning",
+            ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "publish_github_token" } : undefined),
             title: error.message,
-            report: error.failed ? { surface: "publish_github_token" } : false,
           }}
         />
       ) : null}

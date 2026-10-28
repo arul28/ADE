@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
@@ -47,6 +47,23 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
    */
   const generationRef = useRef(0);
 
+  // One notice can swap its failure for another without unmounting (the chat
+  // pane's line). The result belongs to the failure it was sent for: a new
+  // failure starts clean, and a reply still in flight for the old one is dropped.
+  const identity = [context.surface, context.headline, context.code, context.technicalDetail].join("\u0000");
+  const [shownFor, setShownFor] = useState(identity);
+  if (shownFor !== identity) {
+    setShownFor(identity);
+    setSending(false);
+    setSent(null);
+    setOpening(false);
+    setIssue(null);
+    setIssueFailed(false);
+  }
+  useEffect(() => {
+    generationRef.current += 1;
+  }, [identity]);
+
   const bridge = typeof window !== "undefined" ? window.ade?.diagnostics : undefined;
   const canSend = Boolean(bridge?.sendManual);
 
@@ -64,24 +81,29 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
         setIssueFailed(true);
       }
     } finally {
-      setOpening(false);
+      // A newer press already freed the button; a stale reply leaves it be.
+      if (generationRef.current === generation) setOpening(false);
     }
   }, [bridge, context, opening]);
 
   const send = useCallback(async () => {
     if (!bridge?.sendManual || sending) return;
-    generationRef.current += 1;
+    const generation = ++generationRef.current;
     setSending(true);
+    // An issue still opening for the earlier press no longer owns the button.
+    setOpening(false);
     setSent(null);
     setIssue(null);
     setIssueFailed(false);
+    let result: DiagnosticsManualSendResult;
     try {
-      setSent(await bridge.sendManual(context));
+      result = await bridge.sendManual(context);
     } catch {
-      setSent({ ok: false, reason: "failed" });
-    } finally {
-      setSending(false);
+      result = { ok: false, reason: "failed" };
     }
+    if (generationRef.current !== generation) return;
+    setSent(result);
+    setSending(false);
   }, [bridge, context, sending]);
 
   const run = useCallback(async () => {
@@ -90,6 +112,7 @@ export function useIssueReport(context: DiagnosticReportRequestPayload) {
       return;
     }
     generationRef.current += 1;
+    setOpening(false);
     setIssue(null);
     await openIssue();
   }, [canSend, openIssue, send]);
