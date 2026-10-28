@@ -7,6 +7,8 @@ import { trackedCliUserMcpFlags } from "../../../shared/cliLaunch";
 import { resolveCodexUserServers } from "./mcpUserServersForLaunch";
 import { createNpxDirectLauncher, npxCacheInstallDir } from "./npxDirectLaunch";
 import { resolveTrackedCliUserMcp } from "./trackedCliUserMcp";
+import { scanProviderMcpConfigs } from "./mcpProviderConfigScan";
+import { createMcpRegistryAuthTokenResolver } from "./mcpRegistryService";
 
 let root: string;
 
@@ -26,6 +28,34 @@ afterEach(() => {
 });
 
 describe("the user's MCP servers at launch", () => {
+  it.each(["account", "machine"])("does not hand a token to a server switched off for the %s", async (scope) => {
+    const url = "https://example.test/mcp";
+    const server = { name: "example", transport: "http", url, enabled: scope !== "account" };
+    const settings: Record<string, unknown> = { "all\u0000mcp.servers": { value: [server] } };
+    if (scope === "machine") settings["all\u0000device.test-device.mcp.off"] = { value: ["example"] };
+    write(path.join(root, "secrets", "sync-device-id"), "test-device");
+    write(path.join(root, "account-settings.json"), JSON.stringify({ settings }));
+    const token = JSON.stringify({ v: 1, url, accessToken: "secret", clientId: "client", tokenEndpoint: "https://example.test/token" });
+    const resolve = createMcpRegistryAuthTokenResolver({ adeHome: root, readSecret: () => token, writeSecret: () => true });
+
+    const result = await resolve(url);
+    expect(result.registryConfigured).toBe(true);
+    expect(result.off).toBe(true);
+    expect(result.accessToken).toBeUndefined();
+  });
+  it("imports user provider configs while excluding repository configs", () => {
+    const home = path.join(root, "home");
+    const copilot = path.join(root, "copilot-override");
+    const project = path.join(root, "project");
+    write(path.join(copilot, "mcp-config.json"), JSON.stringify({ mcpServers: { notion: { url: "https://notion.example/mcp" } } }));
+    write(path.join(home, ".qwen", "settings.json"), JSON.stringify({ mcpServers: { qwen: { url: "https://qwen.example/events" } } }));
+    write(path.join(project, ".mcp.json"), JSON.stringify({ mcpServers: { untrusted: { command: "untrusted" } } }));
+
+    const { servers } = scanProviderMcpConfigs({ homeDir: home, projectRoot: project, env: { COPILOT_HOME: copilot } });
+    expect(servers.map((server) => server.name)).toEqual(["notion", "qwen"]);
+    expect(servers[0]).toMatchObject({ providers: ["copilot"], transport: "http" });
+    expect(servers[1]).toMatchObject({ providers: ["qwen"], transport: "sse" });
+  });
   it("gives a Codex chat on an ADE account the login's servers, without doubling or editing anything", async () => {
     const loginHome = path.join(root, "codex-login");
     const accountHome = path.join(root, "codex-account");

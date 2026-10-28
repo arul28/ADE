@@ -309,8 +309,9 @@ one. The file change rows that follow a tool call carry paths only.
 
 ## MCP servers
 
-- **ADE's own servers** and the **MCP registry** servers go to the session as
-  `mcpServers`. Registry servers keep their `Authorization` headers.
+- **ADE's own servers** go to the session as `mcpServers`. The MCP
+  registry's servers are not delivered to Copilot yet (`registryMcpSupport`
+  has no Copilot row); its sign-ins are, through the handoff below.
 - **The user's own servers.** Interactive chats keep Copilot's config discovery
   on, so servers from the workspace `.mcp.json` and from the user's Copilot
   config (`mcp-config.json` under `COPILOT_HOME`) run in chats. ADE shows no
@@ -319,12 +320,16 @@ one. The file change rows that follow a tool call carry paths only.
   - If ADE already sends an `Authorization` header for that server URL, the
     request is cancelled and no notice is shown.
   - If the MCP registry holds a sign-in for that server URL, ADE returns that
-    token to Copilot.
+    token to Copilot. URLs match ignoring host case, a default port, a
+    fragment and a trailing slash (`sameMcpServerUrl`).
   - Otherwise the request is cancelled and one warning notice is posted per chat
     and server. A server that is not in ADE's MCP registry gets: "<server> needs
-    a sign-in. Add it to ADE's MCP servers (Settings → MCP servers → Import) and
-    sign in once — every agent will use it." A server in the registry but signed
-    out gets: "<server> needs a sign-in. Sign in from Settings → MCP servers."
+    a sign-in. Add it to ADE's MCP servers (Settings → MCP servers: Import, or
+    Add with <origin and path of its URL>) and sign in once — every agent will
+    use it." Import lists it because the scan reads Copilot's
+    `mcp-config.json`. A registry server that is signed out names the registry
+    entry and asks for a sign-in, then a new chat; one switched off here says
+    it is off.
   - ADE does not start the OAuth browser flow for these requests. Copilot no
     longer opens browser tabs for ADE's servers.
 
