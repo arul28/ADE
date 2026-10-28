@@ -81,18 +81,19 @@ const CHAT_ID_TOOL_NAMES: ReadonlySet<string> = new Set(["chat_read", "chat_stat
 /** `ade chat locate` asks every computer at once, five seconds each. */
 const CHAT_LOCATE_TIMEOUT_MS = 20_000;
 
+const MAX_CHAT_HOMES = 500;
+
 /** A chat tool's answer that says this computer has no such chat. */
-function isChatMiss(result: RemoteMcpToolResult): boolean {
+function isChatMiss(tool: string, result: RemoteMcpToolResult): boolean {
   if (result.isError) {
     const text = result.content.find((item) => item?.type === "text" && typeof item.text === "string")?.text ?? "";
     return /chat session '[^']*' was not found/i.test(text);
   }
-  const structured = asRecord(result.structuredContent);
-  if (!("result" in structured)) return false;
-  if (structured.result === null) return true;
-  const value = asRecord(structured.result);
-  // chat_wait's `session_not_found`; chat_status's `{ result: null }`.
-  return value.error === "session_not_found" || ("result" in value && value.result === null);
+  const value = asRecord(asRecord(result.structuredContent).result);
+  if (tool === "chat_wait") return value.error === "session_not_found";
+  // chat_status answers `{ result: null }` for a chat it does not have.
+  return tool === "chat_status"
+    && (asRecord(result.structuredContent).result === null || ("result" in value && value.result === null));
 }
 
 /** A call the HTTP layer said nothing about: no bearer to forward, not forwarded, the per-machine address. */
@@ -504,21 +505,23 @@ export function createRemoteMcpProtocol(deps: {
       // A chat id with no computer: the chat's own computer answers. A call
       // forwarded here already went its one hop, so it is answered here.
       const sessionId = CHAT_ID_TOOL_NAMES.has(name) && !context.via ? nonEmptyString(rest.session) : null;
-      const rememberedKey = sessionId ? chatHomes.get(sessionId) : undefined;
-      if (sessionId && rememberedKey) {
+      // Remembered per connection: one app's lookups never steer another's.
+      const homeKey = sessionId ? `${connection.id}:${sessionId}` : null;
+      const rememberedKey = homeKey ? chatHomes.get(homeKey) : undefined;
+      if (homeKey && rememberedKey && (!only || only.machineKey === rememberedKey)) {
         const remembered = await router.resolve(rememberedKey);
         if (remembered.kind === "remote" && !router.unavailableReason(remembered.machine)) {
           const result = await forwardTo(connection, name, rest, remembered.machine, context, forwardTimeoutMs(name, rest));
-          if (!isChatMiss(result)) return result;
+          if (!isChatMiss(name, result)) return result;
         }
-        chatHomes.delete(sessionId);
+        chatHomes.delete(homeKey);
       }
       const result = await callTool(connection, params);
-      if (sessionId && isChatMiss(result)) {
+      if (sessionId && homeKey && isChatMiss(name, result)) {
         const elsewhere = await chatElsewhere(connection, sessionId, only, logBase);
         if (elsewhere && "refusal" in elsewhere) return elsewhere.refusal;
         if (elsewhere) {
-          chatHomes.set(sessionId, elsewhere.machine.machineKey);
+          rememberChatHome(homeKey, elsewhere.machine.machineKey);
           return await forwardTo(connection, name, rest, elsewhere.machine, context, forwardTimeoutMs(name, rest));
         }
       }
@@ -549,8 +552,14 @@ export function createRemoteMcpProtocol(deps: {
     return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest));
   };
 
-  /** Chat id → the computer that answered for it, so the next call goes straight there. */
+  /** Connection and chat id → the computer that answered for it, so the next call goes straight there. */
   const chatHomes = new Map<string, string>();
+  const rememberChatHome = (key: string, machineKey: string): void => {
+    chatHomes.delete(key);
+    chatHomes.set(key, machineKey);
+    // Oldest first: a long-lived brain keeps the most recent few hundred.
+    while (chatHomes.size > MAX_CHAT_HOMES) chatHomes.delete(chatHomes.keys().next().value!);
+  };
 
   /**
    * The other computer that has `sessionId` (`ade chat locate`: one read-only

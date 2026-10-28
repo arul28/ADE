@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { parseCliArgs } from "./cli";
-import { locateChatOnAccount } from "./cliChatLocate";
+import { extractMachineTargeting } from "./cliMachineTargeting";
+import { chatIdForLookup, locateChatOnAccount, routedToLocation } from "./cliChatLocate";
 
 /**
  * "Which machine has this chat?", asked through this machine's brain. The
@@ -39,7 +40,7 @@ async function startBrain(machines: Machine[], answers: Record<string, Answer>) 
   const socketPath = path.join(dir, "b.sock");
   const answer = (method: string, params: Record<string, any>): unknown => {
     if (method === "ade/initialize") return { serverInfo: { name: "test" }, capabilities: {}, runtimeInfo: { defaultRole: "cto" } };
-    if (method === "chats.locate") return answers.here === "refuse" ? { found: false } : answers.here ?? { found: false };
+    if (method === "chats.locate") return answers.here ?? { found: false };
     if (method === "machines.list") return { state: "ok", machines };
     if (method === "machines.call" && params.request?.method === "chats.locate") {
       asked.push(params.machine);
@@ -116,5 +117,47 @@ describe("locating a chat on the account", () => {
     expect(report.matches.map((match) => match.machineName).sort()).toEqual(["MacBook Pro", "Old Mac"]);
     // An ambiguous answer is not remembered.
     expect(fs.existsSync(path.join(process.env.ADE_HOME!, "cache", "chat-machines.json"))).toBe(false);
+  });
+});
+
+describe("which chat commands look for their chat elsewhere, and how they are sent there", () => {
+  const parsed = (argv: string[]) => extractMachineTargeting(parseCliArgs(argv));
+  const elsewhere = { machineKey: "k-mbp", machineName: "MacBook Pro", isThisMachine: false };
+
+  it.each([
+    ["read", ["chat", "read", CHAT, "--text"], CHAT],
+    ["send with flag-like text", ["chat", "send", CHAT, "--text", "--personal"], CHAT],
+    ["--session form", ["chat", "status", "--session", CHAT], CHAT],
+    ["alias", ["chats", "respond", CHAT, "--option", "2"], CHAT],
+    ["a machine named", ["chat", "read", CHAT, "--machine", "MacBook Pro"], null],
+    ["all machines", ["chat", "list", "--all-machines"], null],
+    ["no id", ["chat", "list"], null],
+    ["not a chat command", ["lanes", "show", CHAT], null],
+    ["not an id", ["chat", "read", "x"], null],
+  ])("%s", (_name, argv, expected) => {
+    const saved = process.env.ADE_REMOTE_MCP_CONNECTION_ID;
+    delete process.env.ADE_REMOTE_MCP_CONNECTION_ID;
+    try {
+      expect(chatIdForLookup(parsed(argv as string[]))).toBe(expected);
+      // Through ADE MCP the MCP layer looks, with the app's own token.
+      process.env.ADE_REMOTE_MCP_CONNECTION_ID = "c1";
+      expect(chatIdForLookup(parsed(argv as string[]))).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.ADE_REMOTE_MCP_CONNECTION_ID;
+      else process.env.ADE_REMOTE_MCP_CONNECTION_ID = saved;
+    }
+  });
+
+  it.each([
+    ["project chat keeps text that looks like a flag", ["chat", "send", CHAT, "--message", "--personal", "--personal"],
+      { kind: "project", projectId: "p-ADE", name: "ADE", rootPath: null }, ["chat", "send", CHAT, "--message", "--personal"]],
+    ["personal chat gains the flag before --", ["chat", "send", CHAT, "--", "--message"],
+      { kind: "personal" }, ["chat", "send", CHAT, "--personal", "--", "--message"]],
+    ["personal chat already named", ["chat", "read", CHAT, "--personal"], { kind: "personal" }, ["chat", "read", CHAT, "--personal"]],
+  ])("%s", (_name, argv, scope, command) => {
+    const routed = routedToLocation(parsed(argv as string[]), { ...elsewhere, scope: scope as never });
+    expect(routed.command).toEqual(command);
+    expect(routed.options.machine).toBe("k-mbp");
+    expect(routed.options.machineProject).toBe((scope as { projectId?: string }).projectId ?? null);
   });
 });

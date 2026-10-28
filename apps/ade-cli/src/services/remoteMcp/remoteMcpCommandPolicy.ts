@@ -85,7 +85,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs", new Set(["list", "list-open", "show", "checks", "comments", "watch-status", "github-snapshot"])],
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
-    "list", "inbox", "locate", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
+    "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
     "linear-issues", "actions", "wait", "watch",
   ])],
   ["terminal", new Set(["list", "read", "active"])],
@@ -189,6 +189,11 @@ export function checkRemoteAdeCommand(
     };
   }
   const words = positionalWords(args);
+  // It asks every computer of the account; ADE MCP's chat tools run it for a
+  // connection and apply its own computer rules (remoteMcpProtocol.ts).
+  if ((command === "chat" || command === "chats") && words[0] === "locate") {
+    return { ok: false, reason: "ADE MCP reaches only this computer. The chat tools find a chat's computer by themselves." };
+  }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }

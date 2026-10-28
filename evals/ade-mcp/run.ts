@@ -50,6 +50,8 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const TSX = path.resolve(HERE, "../../apps/ade-cli/node_modules/tsx/dist/cli.mjs");
 const CASES_PATH = path.join(HERE, "cases.ndjson");
 const RUN_TIMEOUT_MS = 240_000;
+// Ctrl-C ends the eval through `exit`, which stops each running case's process group.
+process.once("SIGINT", () => process.exit(130));
 const SYSTEM_PROMPT = [
   "You are Claude, a helpful assistant in a chat app.",
   "The person has connected ADE, the app they code with, as the MCP server `ade`. Use its tools to do what they ask, then answer briefly.",
@@ -136,20 +138,27 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
     });
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
     let timedOut = false;
+    // Its own process group no longer hears Ctrl-C: stop it when the eval exits.
+    const stopOnExit = () => signalChildProcessTree(child, "SIGKILL");
+    process.once("exit", stopOnExit);
     const timer = setTimeout(() => {
       // The whole tree: on Windows a `.cmd` shim leaves `claude` under cmd.exe.
-      // Resolved on `close`, so the case folder is removed only after it exits.
+      // Resolved on `close`, so the case folder is removed only after it exits;
+      // a straggler holding its output open gets a few seconds, then is left.
       timedOut = true;
       signalChildProcessTree(child, "SIGKILL");
+      setTimeout(() => resolve({ code: null, timedOut: true }), 5_000).unref();
     }, RUN_TIMEOUT_MS);
     // `claude` missing or not startable: a failed case, not a crashed run.
     child.on("error", (error) => {
       clearTimeout(timer);
+      process.off("exit", stopOnExit);
       stderr.push(`spawn failed: ${error.message}`);
       resolve({ code: null, timedOut: false });
     });
     child.on("close", (code) => {
       clearTimeout(timer);
+      process.off("exit", stopOnExit);
       if (buffer.trim()) lines.push(buffer);
       resolve({ code: timedOut ? null : code, timedOut });
     });

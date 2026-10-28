@@ -122,12 +122,19 @@ export function viewPrShow(r: unknown, scope: Scope): HTMLElement {
  * `prs show` answers with the detail only; its title, state, review, checks
  * and link come from the PR's row in `prs_list`, read once when the card opens.
  */
+const prRowsCache: Record<string, Promise<Array<PrRow & { id?: string }>>> = {};
 function fillPrSummary(el: HTMLElement, prId: string | null, scope: Scope): void {
   if (!prId || !canCallTools()) return;
-  void callTool("prs_list", scoped(scope, {})).then((res) => {
-    const env = res?.structuredContent;
-    const row = rows<PrRow & { id?: string }>(isObj(env) ? env.result : null)
-      .find((p) => p.id === prId || String(p.githubPrNumber ?? "") === prId);
+  const key = (scope.projectId ?? "") + "|" + (scope.machineKey ?? "");
+  const list = prRowsCache[key] ?? (prRowsCache[key] = callTool("prs_list", scoped(scope, {})).then((res) => {
+    // A failed read is not remembered, so the next card asks again.
+    if (!res || res.isError) throw new Error("prs_list failed");
+    const env = res.structuredContent;
+    return rows<PrRow & { id?: string }>(isObj(env) ? env.result : null);
+  }));
+  list.then((prs) => {
+    // `prs show` answers with ADE's id for the PR.
+    const row = prs.find((p) => p.id === prId);
     if (!row) return;
     const state = String(row.state ?? "");
     const review = reviewWord(row.reviewStatus);
@@ -144,5 +151,5 @@ function fillPrSummary(el: HTMLElement, prId: string | null, scope: Scope): void
         h("span", { cls: "small dim num" }, rel(row.updatedAt ?? row.createdAt))));
     el.hidden = false;
     reportSize();
-  }, () => {});
+  }, () => { delete prRowsCache[key]; });
 }

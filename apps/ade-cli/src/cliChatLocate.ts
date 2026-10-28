@@ -2,10 +2,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../desktop/src/main/services/state/durableFile";
 import { resolveMachineAdeDir } from "./services/projects/machineLayout";
+import { FREE_TEXT_VALUE_FLAGS } from "./cliMachineTargeting";
 import {
   CLI_COMMAND_ALIASES,
+  VALUE_CARRIER_FLAGS,
   asString,
   connectMachineRuntimeDaemon,
+  firstPositional,
   firstStandalonePositional,
   isRecord,
   readValue,
@@ -20,14 +23,15 @@ import {
    WHERE A CHAT LIVES — a chat id given without `--machine`.
 
    A chat id is unique across the account, but a chat runs on one machine.
-   Before a chat command runs here, this machine's brain is asked whether it
-   has the chat (`chats.locate`: booted scopes, then transcripts on disk). If
-   not, every online machine on the account is asked the same, once, with a
-   short timeout. Exactly one match: the command runs there, one hop, and the
+   When a chat command finds no such chat here, this machine's brain is asked
+   whether it has the chat anywhere (`chats.locate`: booted scopes, then
+   transcripts on disk). If not, every online machine on the account is asked
+   the same, once, with a short timeout. Exactly one match: the command runs there, one hop, and the
    target applies its own rules to the caller. No match: the command runs
    here and fails as before, naming the machines that could not be asked.
 
-   A match is remembered (chatId → machine) so the next command asks only
+   The command runs here first; only a "no such chat" here starts the lookup.
+   A match is remembered (chatId → machine) so the next lookup asks only
    that machine. The lookup is read-only. Through ADE MCP the CLI does not
    look anywhere else: the MCP layer forwards the call itself, so the target
    checks the app's own token (remoteMcpProtocol.ts).
@@ -77,7 +81,8 @@ export function chatIdForLookup(parsed: ParsedCli): string | null {
   // Through ADE MCP the MCP layer routes, with the app's own token.
   if (process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim()) return null;
   const args = parsed.command.slice(1);
-  const sub = firstStandalonePositional(args)?.toLowerCase() ?? "";
+  // Read the way `buildChatPlan` reads it, so both agree on the subcommand and the id.
+  const sub = firstPositional(args)?.toLowerCase() ?? "";
   if (!CHAT_ID_SUBCOMMANDS.has(sub)) return null;
   const id = readValue(args, ["--session", "--session-id"]) ?? firstStandalonePositional(args);
   return id && /^[A-Za-z0-9_-]{8,128}$/.test(id) ? id : null;
@@ -192,17 +197,26 @@ export async function locateChatOnAccount(
     // The remembered machine first: one question instead of all of them.
     const cached = readCache()[sessionId];
     const remembered = cached ? online.find((machine) => machine.key === cached.machineKey) : undefined;
+    let asked: string | null = null;
     if (remembered) {
-      const scope = await askMachine(client, remembered.key, remembered.name, sessionId).catch(() => null);
+      let scope: ChatLocationScope | null = null;
+      try {
+        scope = await askMachine(client, remembered.key, remembered.name, sessionId);
+      } catch (error) {
+        // No answer is not "not there": say so, and do not wait on it twice.
+        report.unreachable.push({ machine: remembered.name, error: errorText(error) });
+        asked = remembered.key;
+      }
       if (scope) {
         report.matches.push({ machineKey: remembered.key, machineName: remembered.name, isThisMachine: false, scope });
         writeCache((entries) => { entries[sessionId] = { machineKey: remembered.key, machineName: remembered.name, at: Date.now() }; });
         return report;
       }
-      writeCache((entries) => { delete entries[sessionId]; });
+      // It answered, and the chat is no longer there.
+      if (!asked) writeCache((entries) => { delete entries[sessionId]; });
     }
 
-    const answers = await Promise.all(online.map(async (machine) => {
+    const answers = await Promise.all(online.filter((machine) => machine.key !== asked).map(async (machine) => {
       try {
         return { machine, scope: await askMachine(client, machine.key, machine.name, sessionId), error: null };
       } catch (error) {
@@ -238,13 +252,28 @@ export function describeUnasked(report: ChatLocateReport): string | null {
   return parts.length ? parts.join("; ") : null;
 }
 
-/** The parsed command, sent to the machine that has the chat. */
+/**
+ * Where `--personal` stands as a flag in `command` (never as the value of
+ * `--text` and the like), and where flags end (`--` or the end).
+ */
+function personalFlagPositions(command: readonly string[]): { at: number[]; end: number } {
+  const at: number[] = [];
+  for (let index = 0; index < command.length; index += 1) {
+    const token = command[index]!;
+    if (token === "--") return { at, end: index };
+    if (token === "--personal") at.push(index);
+    else if (!token.includes("=") && (FREE_TEXT_VALUE_FLAGS.has(token) || VALUE_CARRIER_FLAGS.has(token))) index += 1;
+  }
+  return { at, end: command.length };
+}
+
+/** The parsed command, sent to where the chat is: its machine, its project, personal or not. */
 export function routedToLocation(parsed: ParsedCli, location: ChatLocation): ParsedCli {
   const personal = location.scope.kind === "personal";
-  const hasPersonal = parsed.command.includes("--personal");
-  const command = personal && !hasPersonal
-    ? [...parsed.command, "--personal"]
-    : !personal && hasPersonal ? parsed.command.filter((token) => token !== "--personal") : parsed.command;
+  const { at, end } = personalFlagPositions(parsed.command);
+  const command = personal && !at.length
+    ? [...parsed.command.slice(0, end), "--personal", ...parsed.command.slice(end)]
+    : !personal && at.length ? parsed.command.filter((_, index) => !at.includes(index)) : parsed.command;
   return {
     command,
     options: {

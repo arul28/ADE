@@ -64,7 +64,7 @@ const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "mach
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
-const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
+export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
 
 /**
  * The flag names in `args`, skipping each value-carrying flag's value: in

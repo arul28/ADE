@@ -2624,14 +2624,14 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat show <session>                       Session summary (title, provider, model, activity report)
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
-    $ ade chat locate <session> --text              Which machine on your account has this chat. A chat command
-                                                    given an id without --machine finds it there by itself
                                                     Exit 0 running or waiting (turn ended, background
                                                     agents/shells still running), 1 idle, 2 blocked. Use --text.
                                                     Adds an 'effort' line while the running work keeps an
                                                     older effort than the one picked, and a 'pending' line
                                                     while a fast-mode change waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
+    $ ade chat locate <session> --text              Which machine on your account has this chat. A chat command
+                                                    whose id is not found here looks there by itself
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
@@ -14637,6 +14637,8 @@ function chatOtherMachineHint(argv: string[]): string | null {
   // Through ADE MCP the app names a computer with `machine`, and ADE MCP
   // already looked for the chat's own computer.
   if (process.env.ADE_REMOTE_MCP_CONNECTION_ID?.trim()) return null;
+  // The command is about to look on the other machines itself.
+  if (chatLookupPending) return null;
   // The other machines were already asked: say which ones could not be.
   if (chatLookupMiss) {
     const unasked = describeUnasked(chatLookupMiss);
@@ -14649,18 +14651,46 @@ function chatOtherMachineHint(argv: string[]): string | null {
 
 /** The account-wide lookup this run made and found nothing in, for the hint above. */
 let chatLookupMiss: ChatLocateReport | null = null;
+/** True while a chat command runs here before looking elsewhere: its miss hint waits. */
+let chatLookupPending = false;
+/** Set by a chat command that answered "no such chat" without throwing (`chat status`, `chat wait`). */
+let chatMissedHere = false;
+
+function isChatNotFoundError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  const cause = error instanceof CliExecutionError && typeof error.details.cause === "string" ? error.details.cause : "";
+  return /chat session '[^']*' was not found/i.test(`${error.message}\n${cause}`);
+}
 
 /**
- * A chat command whose chat is on another machine of the account, sent there.
- * Null to run it here: no chat id, a machine was named, or the chat is here
- * (or nowhere, and today's "not found" stands). See cliChatLocate.ts.
+ * A chat command given an id and no machine: run here first, and only when
+ * this machine has no such chat ask the account's other machines (one
+ * read-only question each). One match: run it there, once. Retrying is safe:
+ * "not found" means nothing ran. See cliChatLocate.ts.
  */
-async function routeChatToItsMachine(
+async function runChatHereThenElsewhere(
   parsed: ReturnType<typeof extractMachineTargeting>,
-): Promise<ReturnType<typeof extractMachineTargeting> | null> {
-  const sessionId = chatIdForLookup(parsed);
-  if (!sessionId) return null;
+  sessionId: string,
+): Promise<{ output: string; exitCode: number }> {
+  let local: { output: string; exitCode: number } | null = null;
+  let failure: unknown = null;
+  chatLookupPending = true;
+  chatMissedHere = false;
+  try {
+    local = await runParsedCli(parsed);
+  } catch (error) {
+    if (!isChatNotFoundError(error)) {
+      chatLookupPending = false;
+      throw error;
+    }
+    failure = error;
+  }
+  if (!failure && !chatMissedHere) {
+    chatLookupPending = false;
+    return local!;
+  }
   const report = await locateChatOnAccount(parsed.options, sessionId);
+  chatLookupPending = false;
   if (report.matches.length > 1) {
     throw new CliUsageError(
       `Chat ${sessionId} is on more than one machine (${report.matches.map((match) => match.machineName).join(", ")}). `
@@ -14668,13 +14698,19 @@ async function routeChatToItsMachine(
     );
   }
   const match = report.matches[0];
-  if (!match) {
-    chatLookupMiss = report;
-    return null;
+  if (match && !match.isThisMachine && match.machineKey) {
+    process.stderr.write(`· on ${match.machineName}\n`);
+    return await runOnMachine(routedToLocation(parsed, match));
   }
-  if (match.isThisMachine || !match.machineKey) return null;
-  process.stderr.write(`· on ${match.machineName}\n`);
-  return routedToLocation(parsed, match);
+  // Here after all, as a personal chat the command did not name as one.
+  if (match?.isThisMachine && match.scope.kind === "personal" && !parsed.command.includes("--personal")) {
+    return await runParsedCli(routedToLocation(parsed, match));
+  }
+  if (!match) chatLookupMiss = report;
+  if (failure) throw failure;
+  const hint = chatOtherMachineHint(process.argv.slice(2));
+  if (hint) process.stderr.write(`${hint}\n`);
+  return local!;
 }
 
 /** `ade chat locate <session>`: which machine of the account has a chat. */
@@ -14715,6 +14751,8 @@ async function chatNotFoundHintNamingMachine(
 ): Promise<string | null> {
   const generic = sessionIdHint !== undefined ? chatOtherMachineHint(argv) : chatNotFoundMachineHint(message, argv);
   if (!generic) return null;
+  // `runChatHereThenElsewhere` already asked every machine; its answer is the hint.
+  if (chatLookupMiss) return generic;
   const sessionId = sessionIdHint?.trim()
     || /chat session '([^']+)' was not found/i.exec(message)?.[1]?.trim()
     || null;
@@ -36277,7 +36315,10 @@ function summarizeExecution(args: {
     // `result` silently broke every one of them. The optional summary step is
     // enrichment, so it contributes two sibling keys and nothing else.
     const turnStatus = unwrapActionEnvelope(values.result);
-    if (!isRecord(turnStatus)) return { result: turnStatus };
+    if (!isRecord(turnStatus)) {
+      if (turnStatus == null) chatMissedHere = true;
+      return { result: turnStatus };
+    }
     const summary = values.summary !== undefined
       ? unwrapActionEnvelope(values.summary) as Partial<AdeChatSessionSummaryActionResult> | null
       : null;
@@ -37425,6 +37466,7 @@ async function runChatWaitCommand(
           waitFor: plan.waitFor,
           elapsedMs,
         };
+        chatMissedHere = true;
         const machineHint = await chatNotFoundHintNamingMachine("", process.argv.slice(2), plan.sessionId);
         if (machineHint) process.stderr.write(`${machineHint}\n`);
         return { output: formatOutput(result, options), exitCode: 1 };
@@ -37751,8 +37793,8 @@ async function runCli(
   try {
     if (isChatLocateCommand(parsed.command)) return await runChatLocate(parsed);
     if (!parsed.options.machine) {
-      const routed = await routeChatToItsMachine(parsed);
-      return routed ? await runOnMachine(routed) : await runParsedCli(parsed);
+      const sessionId = chatIdForLookup(parsed);
+      return sessionId ? await runChatHereThenElsewhere(parsed, sessionId) : await runParsedCli(parsed);
     }
     return await runOnMachine(parsed);
   } finally {
