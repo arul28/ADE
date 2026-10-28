@@ -1,4 +1,5 @@
-import { useId, useSyncExternalStore } from "react";
+import { useId } from "react";
+import { useWindowFocused } from "../../lib/windowFocus";
 import { cn } from "./cn";
 
 /**
@@ -16,61 +17,14 @@ import { cn } from "./cn";
  * nobody is watching, so a long turn in the background costs no frames and no
  * clock timers. The glyph rests as a still sparkle and starts again on focus.
  */
-/**
- * The ADE window's focus, from the OS window where the desktop reports it: a
- * page `blur` also fires when the built-in browser pane (its own web view)
- * takes focus, and the chat must not look frozen while ADE is still in front.
- * The web client falls back to the page's own focus.
- */
-let windowFocused = typeof document === "undefined" ? true : document.hasFocus();
-const focusListeners = new Set<() => void>();
-let stopWindowFocus: (() => void) | null = null;
-
-function setWindowFocused(next: boolean): void {
-  if (next === windowFocused) return;
-  windowFocused = next;
-  for (const listener of focusListeners) listener();
-}
-
-function subscribeWindowFocus(onChange: () => void): () => void {
-  focusListeners.add(onChange);
-  if (!stopWindowFocus) {
-    const onWindowFocusChanged = window.ade?.app?.onWindowFocusChanged;
-    if (onWindowFocusChanged) {
-      stopWindowFocus = onWindowFocusChanged(setWindowFocused);
-    } else {
-      const onFocus = () => setWindowFocused(true);
-      const onBlur = () => setWindowFocused(false);
-      window.addEventListener("focus", onFocus);
-      window.addEventListener("blur", onBlur);
-      stopWindowFocus = () => {
-        window.removeEventListener("focus", onFocus);
-        window.removeEventListener("blur", onBlur);
-      };
-    }
-  }
-  return () => {
-    focusListeners.delete(onChange);
-    if (focusListeners.size === 0) {
-      stopWindowFocus?.();
-      stopWindowFocus = null;
-    }
-  };
-}
-
-function readWindowFocus(): boolean {
-  return windowFocused;
-}
-
 export function ThinkingIndicator({ label, className }: { label: string; className?: string }) {
   // A bare token: React ids carry punctuation that `url(#…)` does not need.
   const gradientId = `ade-thinking-${useId().replace(/[^a-zA-Z0-9]/g, "")}`;
-  const focused = useSyncExternalStore(subscribeWindowFocus, readWindowFocus, () => true);
+  const focused = useWindowFocused();
   return (
     <span
       className={cn("ade-thinking-indicator inline-flex min-w-0 items-center gap-[0.5em]", className)}
       data-resting={focused ? undefined : "true"}
-      role="status"
     >
       <span className="relative inline-block h-[1.3em] w-[1.3em] shrink-0" aria-hidden>
         <span className="ade-thinking-glyph absolute inset-0">

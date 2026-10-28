@@ -7,11 +7,13 @@
 import type { AiPermissionSettings, AutomationRuleDraft, ModelConfig } from "../../../../shared/types";
 import { defaultKickoffPrompt } from "../../../lib/linearBatchLaunch";
 
+const GROUP_ORDER = ["Agent workflows", "Pull requests", "Chats", "Issue intake", "Hygiene"] as const;
+
 export type AutomationTemplate = {
   id: string;
   name: string;
   description: string;
-  group: string;
+  group: (typeof GROUP_ORDER)[number];
   triggerType: string;
   whatYouConfigure: string[];
   isFlagship?: boolean;
@@ -35,7 +37,6 @@ const BASE: Pick<
 const SONNET = { modelId: "anthropic/claude-sonnet-5", thinkingLevel: "medium" as const };
 
 export const TEMPLATES: AutomationTemplate[] = [
-  // ---- Flagship 1 ----
   {
     id: "daily-agent-task",
     name: "Daily agent task",
@@ -64,7 +65,6 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
-  // ---- Flagship 2 ----
   {
     id: "linear-issue-lane-agent",
     name: "Linear issue → lane + agent",
@@ -97,7 +97,6 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
-  // ---- Flagship 3 ----
   {
     id: "github-issue-lane-agent",
     name: "GitHub issue → lane + agent",
@@ -166,8 +165,6 @@ export const TEMPLATES: AutomationTemplate[] = [
       ...BASE,
       name: "Fix failing CI on a PR",
       mode: "fix",
-      // Two tries per PR: a fix that fails again stops here for a human.
-      maxRuns: 2,
       triggers: [{ type: "github.pr_checks_failed" }],
       trigger: { type: "github.pr_checks_failed" },
       execution: {
@@ -178,7 +175,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "The checks on PR #{{trigger.pr.number}} ({{trigger.pr.title}}) failed. You are on its branch. Read the failing checks (`ade prs checks {{trigger.pr.number}} --text`) and the failed jobs' logs from your CI (for GitHub Actions, `gh run view <run> --log-failed`), find the cause, and fix it with the smallest change. Run the failing checks locally where you can, then commit and push to this branch. Do not skip, disable or weaken a test to make it pass. If the failure is flaky or outside this PR, do not push; say so and stop.",
+        "The checks on PR #{{trigger.pr.number}} ({{trigger.pr.title}}) failed. You are on its branch. Read the failing checks (`ade prs checks {{trigger.pr.number}} --text`) and the failed jobs' logs from your CI (for GitHub Actions, `gh run view <run> --log-failed`), find the cause, and fix it with the smallest change. Run the failing checks locally where you can, then commit and push to this branch. Do not skip, disable or weaken a test to make it pass. Do not push when the failure is flaky or outside this PR, or when the last commit on this branch is already a CI fix from this automation and the same check failed again; say so and stop, so a human takes over.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:fix-failing-ci",
@@ -191,7 +188,7 @@ export const TEMPLATES: AutomationTemplate[] = [
     description: "When a review asks for changes on a PR, an agent opens the PR's branch, makes the changes and replies to each comment.",
     group: "Pull requests",
     triggerType: "github.pr_review_submitted",
-    whatYouConfigure: ["Reviewers to answer", "Model"],
+    whatYouConfigure: ["Whose PRs (PR authors)", "Model"],
     isFlagship: true,
     draft: {
       ...BASE,
@@ -207,14 +204,13 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}} --text`). If the review only approves or asks for nothing, stop. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Finish with one PR comment that goes through each request: what you changed, or why you did not when a request is unclear or wrong (`ade actions run pr.addComment`). Do not resolve threads; the reviewer does.",
+        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every open thread already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`ade prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:fix-review-comments",
       actions: [],
     },
   },
-  // ---- Flagship 4 ----
   {
     id: "clean-up-merged-lanes",
     name: "Clean up merged lanes",
@@ -256,21 +252,19 @@ export const TEMPLATES: AutomationTemplate[] = [
       ...BASE,
       name: "Keep going when a model runs out",
       mode: "monitor",
-      // One handoff per chat: the new chat hitting its own limit stops there.
-      maxRuns: 1,
       triggers: [{ type: "session.limit_reached" }],
       trigger: { type: "session.limit_reached" },
       execution: {
         kind: "built-in",
         builtIn: {
-          actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5-codex", targetLaneMode: "same" }],
+          actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5", targetLaneMode: "same" }],
         },
       },
       prompt: "",
       toolPalette: ["repo"],
       guardrails: {},
       billingCode: "auto:handoff-on-usage-limit",
-      actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5-codex", targetLaneMode: "same" }],
+      actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5", targetLaneMode: "same" }],
     },
   },
   {
@@ -293,7 +287,7 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no commits, or only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file pr.md`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
+        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file pr.md`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
       toolPalette: ["repo", "git", "github"],
       outputs: { disposition: "open-pr-draft", createArtifact: true },
       guardrails: {},
@@ -422,10 +416,8 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [{ type: "predict-conflicts" }],
     },
   },
-
 ];
 
-export const GROUP_ORDER = ["Agent workflows", "Pull requests", "Chats", "Issue intake", "Hygiene"];
 
 export const TEMPLATE_GROUPS: Array<{ title: string; templates: AutomationTemplate[] }> = GROUP_ORDER.map(
   (title) => ({ title, templates: TEMPLATES.filter((t) => t.group === title) }),

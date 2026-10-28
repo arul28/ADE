@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useSearchParams } from "react-router-dom";
-import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
+import { ClockCounterClockwise, PencilSimple, Play, Trash } from "@phosphor-icons/react";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AiSettingsStatus,
@@ -37,7 +37,7 @@ import { parseMachineScopedId } from "../../state/foreignMachineReads";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
-import { automationRunLaneNeed, automationRunNeedsLane } from "../../../shared/automationRunLane";
+import { automationRunLaneNeed } from "../../../shared/automationRunLane";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
 
@@ -688,10 +688,11 @@ export function AutomationsWorkspace({
         setError(blocked);
         return;
       }
-      if (automationRunNeedsLane(rule)) {
+      const laneNeed = automationRunLaneNeed(rule);
+      if (laneNeed !== "none") {
         setManualRunRule(rule);
         // Never preselect the lane a run will delete.
-        setManualRunLaneId(automationRunLaneNeed(rule) === "lane-to-delete" ? "" : lanesForMachine(entry.machine)[0]?.id ?? "");
+        setManualRunLaneId(laneNeed === "lane-to-delete" ? "" : lanesForMachine(entry.machine)[0]?.id ?? "");
         return;
       }
       void runRuleNow(entry);
@@ -1071,6 +1072,12 @@ function ManualRunModal({
   const deletes = automationRunLaneNeed(rule) === "lane-to-delete";
   // The primary lane is the project checkout; it is never a lane to delete.
   const choices = deletes ? lanes.filter((lane) => lane.laneType !== "primary") : lanes;
+  // Steps that delete a lane the rule names run too; the confirmation says so.
+  const alsoDeletes = deletes
+    ? (rule.execution?.builtIn?.actions ?? [])
+      .filter((action) => action.type === "delete-lane" && action.targetLaneId?.trim())
+      .map((action) => lanes.find((lane) => lane.id === action.targetLaneId)?.name ?? action.targetLaneId!)
+    : [];
   return (
     <Dialog
       open
@@ -1078,9 +1085,11 @@ function ManualRunModal({
         if (!open) onCancel();
       }}
       title={deletes ? "Choose the lane to delete" : "Choose a lane for this run"}
-      {...(deletes ? { tone: "error" as const } : {})}
+      tone={deletes ? "error" : "neutral"}
       description={deletes
-        ? `${rule.name} deletes the lane its trigger names. Run by hand, it deletes the lane you pick here.`
+        ? `${rule.name} deletes the lane its trigger names. Run by hand, it deletes the lane you pick here${
+          alsoDeletes.length ? `, and also ${alsoDeletes.join(", ")}` : ""
+        }.`
         : `${rule.name} requires a lane when triggered.`}
       width={448}
       actions={[
@@ -1088,7 +1097,7 @@ function ManualRunModal({
         {
           label: deletes ? "Delete lane" : "Run",
           variant: "solid",
-          icon: <Play size={12} weight="fill" />,
+          icon: deletes ? <Trash size={12} weight="fill" /> : <Play size={12} weight="fill" />,
           disabled: !laneId || pending,
           onClick: onRun,
         },

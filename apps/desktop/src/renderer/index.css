@@ -5013,9 +5013,8 @@ button, [role="button"] {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation:
-    ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both,
-    ade-thinking-sheen 2s steps(60, jump-none) infinite;
+  --ade-thinking-label-in: ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation: var(--ade-thinking-label-in), ade-thinking-sheen 2s steps(60, jump-none) infinite;
 }
 /* ADE is not the focused app: no loops at all, so the step clock drops them
    (a paused loop would still wake its timer). The label keeps its slide-in. */
@@ -5026,13 +5025,14 @@ button, [role="button"] {
 }
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle { opacity: 0; }
 .ade-thinking-indicator[data-resting] .ade-thinking-label {
-  animation: ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both;
+  animation: var(--ade-thinking-label-in);
 }
 @media (prefers-reduced-motion: reduce) {
   .ade-thinking-glyph,
   .ade-thinking-glyph-shape,
   .ade-thinking-twinkle,
-  .ade-thinking-label {
+  .ade-thinking-label,
+  .ade-thinking-indicator[data-resting] .ade-thinking-label {
     animation: none;
   }
   .ade-thinking-twinkle { opacity: 0.5; transform: none; }

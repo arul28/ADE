@@ -9155,18 +9155,16 @@ app.whenReady().then(async () => {
   ): void => {
     assignWindowSession(win.id, projectRoot, remoteBinding);
     // The page's own focus also drops when a pane that is its own web view
-    // (the built-in browser) takes focus; the OS window's does not.
+    // (the built-in browser) takes focus; the OS window's does not. Sent on
+    // every change and after each page load, so a reload starts truthful.
     const sendWindowFocus = (focused: boolean) => {
-      if (win.isDestroyed()) return;
-      try {
-        win.webContents.send(IPC.appWindowFocusChanged, focused);
-      } catch {
-        // ignore
-      }
+      if (win.isDestroyed() || win.webContents.isDestroyed()) return;
+      win.webContents.send(IPC.appWindowFocusChanged, focused);
     };
     win.on("blur", () => sendWindowFocus(false));
-    win.on("focus", () => sendWindowFocus(true));
+    win.webContents.on("did-finish-load", () => sendWindowFocus(win.isFocused()));
     win.on("focus", () => {
+      sendWindowFocus(true);
       const focusedRemoteBinding = windowProjectBindings.get(win.id) ?? null;
       const focusedRoot = windowProjectRoots.get(win.id) ?? null;
       if (focusedRemoteBinding) {

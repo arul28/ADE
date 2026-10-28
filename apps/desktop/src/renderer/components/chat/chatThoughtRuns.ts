@@ -59,10 +59,12 @@ export function transcriptEventDrawsNothing(
       // Queued steers live in the composer's staging area only.
       if (event.deliveryState === "queued" && event.steerId) return true;
       // A subagent's or peer's report: the spawn_wake_divider row above it
-      // already says who came back and what it said.
+      // already says who came back and what it said. Same test as the
+      // divider's (chatTranscriptRows), so a report never loses both.
       const spawnCompletion = event.metadata?.spawnCompletion;
       return Boolean(spawnCompletion?.childSessionId?.trim())
-        && (spawnCompletion?.spawnKind === "subagent" || spawnCompletion?.spawnKind === "peer");
+        && (spawnCompletion?.spawnKind === "subagent" || spawnCompletion?.spawnKind === "peer")
+        && (spawnCompletion?.status === "completed" || spawnCompletion?.status === "failed" || spawnCompletion?.status === "stopped");
     }
     case "codex_moderation_metadata":
     // The order of the composer's staging area; nothing in the timeline.

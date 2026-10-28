@@ -54,7 +54,7 @@ import {
   withSafeTestNotice,
 } from "./automationTestRun";
 import { AUTOMATION_CHAT_SESSION_PREFIX } from "../../../shared/types/macDesktop";
-import { automationRunNeedsLane } from "../../../shared/automationRunLane";
+import { automationRunNeedsLane, createsLaneForRun, requiresTriggerLane } from "../../../shared/automationRunLane";
 import { stripHostAuthoredMessageProvenance } from "../chat/spawnMissionOwnership";
 import type { Logger } from "../logging/logger";
 import {
@@ -463,6 +463,9 @@ export type LaneMergedNotification = {
 export function summarizeTrigger(trigger: TriggerContext): string {
   if (trigger.summary?.trim()) return trigger.summary.trim();
   const lane = trigger.laneName?.trim() || trigger.branch?.trim() || trigger.laneId?.trim() || "lane";
+  if (trigger.triggerType === "github.pr_checks_failed") {
+    return `PR #${trigger.pr?.number ?? "?"} checks failed: ${trigger.pr?.title ?? lane}`;
+  }
   if (trigger.triggerType === "lane.merged") {
     const prNumber = trigger.pr?.number;
     return `Lane merged: ${lane}${typeof prNumber === "number" ? ` (PR #${prNumber})` : ""}`;
@@ -3286,13 +3289,6 @@ export function createAutomationService({
     return trimToNull(action?.targetLaneId) ?? trimToNull(rule.execution?.targetLaneId);
   };
 
-  const requiresTriggerLane = (rule: AutomationRule): boolean =>
-    rule.execution?.laneMode === "require-on-trigger";
-
-  /** Lane modes that resolve (and may create) the run's lane before a step runs. */
-  const createsLaneForRun = (rule: AutomationRule): boolean =>
-    rule.execution?.laneMode === "create" || rule.execution?.laneMode === "pr-branch";
-
   const missingTriggerLaneMessage = (trigger: Pick<TriggerContext, "triggerType">): string =>
     trigger.triggerType === "manual"
       ? "This automation requires a lane when triggered manually. Pass laneId / --lane."
@@ -4757,19 +4753,26 @@ export function createAutomationService({
     }
   };
 
+  /** True the first time `key` is claimed in this project's kv; false after. */
+  const claimOnce = (key: string): boolean => {
+    if (db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [key])) return false;
+    db.run(`insert into kv(key, value) values (?, ?) on conflict(key) do nothing`, [key, nowIso()]);
+    return true;
+  };
+
+  /** Claims a PR's current head commit as reported failing; false when it already was. */
+  const claimPrChecksFailure = (pr: PrSummary): boolean =>
+    claimOnce(`automations.pr-checks-failed.v1:${projectId}:${pr.id}:${pr.headSha?.trim() || pr.updatedAt}`);
+
   /**
-   * A PR's checks turned failing. Fires once per PR head commit: a re-run that
+   * A PR's checks are failing. Fires once per PR head commit: a re-run that
    * fails again on the same commit stays quiet, a new push that fails fires.
-   * A PR first seen already failing does not fire (no flood on first sync).
    */
   const notifyPrChecksFailed = (
     pr: PrSummary,
     baseContext: Omit<TriggerContext, "triggerType">,
   ): void => {
-    const commit = pr.headSha?.trim() || pr.updatedAt;
-    const dedupeKey = `automations.pr-checks-failed.v1:${projectId}:${pr.id}:${commit}`;
-    if (db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [dedupeKey])) return;
-    db.run(`insert into kv(key, value) values (?, ?) on conflict(key) do nothing`, [dedupeKey, nowIso()]);
+    if (!claimPrChecksFailure(pr)) return;
     const repo = pr.repoOwner && pr.repoName ? `${pr.repoOwner}/${pr.repoName}` : undefined;
     const trigger: TriggerContext = {
       ...baseContext,
@@ -4784,8 +4787,14 @@ export function createAutomationService({
         baseBranch: pr.baseBranch,
       },
     };
-    trigger.summary = `PR #${pr.githubPrNumber} checks failed: ${pr.title}`;
-    void dispatchTrigger(trigger);
+    trigger.summary = summarizeTrigger({ ...trigger, summary: undefined });
+    dispatchTrigger(trigger).catch((error) => {
+      logger.warn("automations.pr_checks_failed_dispatch_failed", {
+        prId: pr.id,
+        prNumber: pr.githubPrNumber,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   };
 
   const notifyLaneMerged = async (args: LaneMergedNotification): Promise<boolean> => {
@@ -4797,14 +4806,9 @@ export function createAutomationService({
       throw new Error("notifyLaneMerged requires laneId, laneName, branch, prUrl, and a positive prNumber.");
     }
     const prIdentity = args.repo?.trim() || prUrl;
-    const dedupeKey = `automations.lane-merged.v1:${projectId}:${encodeURIComponent(prIdentity)}:${Math.floor(args.prNumber)}`;
-    if (db.get<{ value: string }>(`select value from kv where key = ? limit 1`, [dedupeKey])) {
+    if (!claimOnce(`automations.lane-merged.v1:${projectId}:${encodeURIComponent(prIdentity)}:${Math.floor(args.prNumber)}`)) {
       return false;
     }
-    db.run(
-      `insert into kv(key, value) values (?, ?) on conflict(key) do nothing`,
-      [dedupeKey, nowIso()],
-    );
     const trigger: TriggerContext = {
       triggerType: "lane.merged",
       laneId,
@@ -5364,7 +5368,11 @@ export function createAutomationService({
     hasEnabledGithubRules(): boolean {
       return listRules().some((rule) =>
         rule.enabled
-        && rule.triggers.some((trigger) => normalizeTriggerType(trigger.type).startsWith("github."))
+        // `github.pr_checks_failed` comes from the PR poller, not the repo poller.
+        && rule.triggers.some((trigger) => {
+          const type = normalizeTriggerType(trigger.type);
+          return type.startsWith("github.") && type !== "github.pr_checks_failed";
+        })
       );
     },
 
@@ -5873,12 +5881,16 @@ export function createAutomationService({
         scheduledAt: nowIso(),
       };
       if (!args.previousState) {
+        // Already failing when first seen: record its commit so only a new
+        // failure fires, never the backlog of a first sync.
+        if (args.pr.checksStatus === "failing") claimPrChecksFailure(args.pr);
         void dispatchTrigger({ triggerType: "git.pr_opened", ...baseContext });
         return;
       }
-      if (args.pr.checksStatus === "failing" && args.previousChecksStatus && args.previousChecksStatus !== "failing") {
-        notifyPrChecksFailed(args.pr, baseContext);
-      }
+      // Failing now: a fresh failure, or a new commit that is red as well
+      // (the poll can miss the pending in between). The per-commit claim
+      // keeps a re-run on the same commit quiet.
+      if (args.pr.checksStatus === "failing") notifyPrChecksFailed(args.pr, baseContext);
       if (args.pr.state === "merged" && args.previousState !== "merged") {
         void dispatchTrigger({
           triggerType: "git.pr_merged",

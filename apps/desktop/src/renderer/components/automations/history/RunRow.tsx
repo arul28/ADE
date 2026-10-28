@@ -3,7 +3,7 @@ import { cn } from "../../ui/cn";
 import { relativeWhen } from "../../../lib/format";
 import { eventLabel } from "../triggerCatalog";
 import { readTestRunInfo, testRunLabel } from "./testRunInfo";
-import { RUN_HEADLINE, STATE_TEXT, StatusGlyph, durationLabel, runState } from "./runPresentation";
+import { STATE_TEXT, StatusGlyph, durationLabel, messageTone, runState, statusWord } from "./runPresentation";
 
 function summarizeExecution(run: AutomationRun): string {
   if (run.executionKind === "agent-session") return "Agent chat";
@@ -43,7 +43,7 @@ export function RunRow({
           </span>
         </span>
         <span className="mt-0.5 flex flex-wrap items-center gap-x-1.5 text-[10.5px] text-[color:var(--kit-text-3)]">
-          <span className={cn("font-medium", STATE_TEXT[state])}>{RUN_HEADLINE[run.status] ?? run.status}</span>
+          <span className={cn("font-medium", STATE_TEXT[state])}>{statusWord(run.status)}</span>
           <span aria-hidden>·</span>
           <span>{summarizeExecution(run)}</span>
           {took ? <><span aria-hidden>·</span><span className="kit-num">{took}</span></> : null}
@@ -52,7 +52,7 @@ export function RunRow({
           ) : null}
         </span>
         {message ? (
-          <span className={cn("mt-1 line-clamp-2 block text-[11px] leading-snug", state === "failed" ? "text-red-300/85" : "text-fg/60")}>
+          <span className={cn("mt-1 line-clamp-2 block text-[11px] leading-snug", messageTone(state))}>
             {message}
           </span>
         ) : null}

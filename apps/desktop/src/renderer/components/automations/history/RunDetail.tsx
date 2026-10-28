@@ -9,7 +9,7 @@ import { formatDate, relativeWhen } from "../../../lib/format";
 import { STEP_DEFS, type StepDef } from "../actionCatalog";
 import { eventLabel } from "../triggerCatalog";
 import { readTestRunInfo, summarizeTestRun, testRunLabel } from "./testRunInfo";
-import { RUN_HEADLINE, STATE_TEXT, StatusGlyph, durationLabel, runState } from "./runPresentation";
+import { STATE_HALO, STATE_TEXT, StatusGlyph, durationLabel, messageTone, runState, statusWord } from "./runPresentation";
 
 function stepLabel(actionType: string): string {
   if (actionType === "lane-setup") return "Set up the lane";
@@ -25,6 +25,11 @@ function detailEntry(key: string, value: unknown): { label: string; value: strin
     return { label, value: /^\d{4}-\d{2}-\d{2}T/.test(value) ? formatDate(value) : value };
   }
   return { label, value: JSON.stringify(value) };
+}
+
+function readString(record: Record<string, unknown>, key: string): string | null {
+  const value = record[key];
+  return typeof value === "string" && value.trim() ? value : null;
 }
 
 function DetailRow({ label, children }: { label: string; children: ReactNode }) {
@@ -102,13 +107,13 @@ export function RunDetail({
   detail,
   loading,
   pin = null,
-  ruleName = null,
+  ruleName,
   onChanged,
 }: {
   detail: AutomationRunDetail | null;
   loading: boolean;
   /** The rule's name, for a run whose rule has since been removed. */
-  ruleName?: string | null;
+  ruleName: string;
   /** The machine the run is on. */
   pin?: OpenProjectBinding | null;
   /** Called after Clean up, so the history reloads. */
@@ -119,14 +124,13 @@ export function RunDetail({
 
   const { run } = detail;
   const metadata = (run.triggerMetadata ?? {}) as Record<string, unknown>;
-  const laneId =
-    detail.chatSession?.laneId ?? (typeof metadata.laneId === "string" ? (metadata.laneId as string) : null);
-  const laneName = typeof metadata.laneName === "string" ? metadata.laneName : null;
-  const prUrl =
-    (metadata.pr && typeof metadata.pr === "object" && "url" in (metadata.pr as object)
-      ? (metadata.pr as { url?: string }).url
-      : undefined) ?? (typeof metadata.prUrl === "string" ? (metadata.prUrl as string) : undefined);
-  const title = detail.rule?.name ?? ruleName ?? run.automationId;
+  const pr = metadata.pr && typeof metadata.pr === "object" ? (metadata.pr as Record<string, unknown>) : {};
+  const laneId = detail.chatSession?.laneId ?? readString(metadata, "laneId");
+  const laneName = readString(metadata, "laneName");
+  const prUrl = readString(pr, "url") ?? readString(metadata, "prUrl");
+  const title = detail.rule?.name ?? ruleName;
+  const queueStatus = detail.rule?.queueStatus ? detail.rule.queueStatus.replace(/-/g, " ") : null;
+  const verifyBeforePublish = detail.rule?.verification?.verifyBeforePublish === true;
   const state = runState(run.status);
   // What happened, said once: the run's error, else its summary.
   const message = run.errorMessage ?? run.summary;
@@ -134,16 +138,14 @@ export function RunDetail({
   const whenLine = [
     eventLabel(run.triggerType),
     relativeWhen(run.startedAt),
-    run.endedAt ? (took ? `took ${took}` : null) : "still running",
+    run.endedAt ? (took ? `took ${took}` : null) : state === "running" ? "still running" : null,
     run.spendUsd > 0 ? `$${run.spendUsd.toFixed(2)}` : null,
   ].filter(Boolean).join(" · ");
   const doneSteps = detail.actions.filter((action) => action.status === "succeeded").length;
-  const detailEntries = [
-    // `test` has its own notice; a manual run's `reason` is only the rule id.
-    ...Object.entries(metadata)
-      .filter(([key, value]) => key !== "test" && !(key === "reason" && value === run.automationId))
-      .map(([key, value]) => detailEntry(key, value)),
-  ];
+  // `test` has its own notice; a manual run's `reason` is only the rule id.
+  const detailEntries = Object.entries(metadata)
+    .filter(([key, value]) => key !== "test" && !(key === "reason" && value === run.automationId))
+    .map(([key, value]) => detailEntry(key, value));
 
   return (
     <div className="h-full overflow-y-auto px-5 py-5">
@@ -154,26 +156,25 @@ export function RunDetail({
           <div className="p-5">
             <div className="flex items-center gap-3">
               <div
-                className={cn(
-                  "flex h-9 w-9 shrink-0 items-center justify-center rounded-full",
-                  state === "failed" ? "bg-red-500/10" : state === "succeeded" ? "bg-emerald-500/10" : state === "running" ? "bg-sky-500/10" : "bg-fg/[0.05]",
-                )}
+                className={cn("flex h-9 w-9 shrink-0 items-center justify-center rounded-full", STATE_HALO[state])}
               >
                 <StatusGlyph status={run.status} size={22} />
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="truncate text-base font-semibold text-fg">{title}</h2>
                 <div className="text-xs leading-relaxed text-[color:var(--kit-text-3)]">
-                  <span className={cn("font-medium", STATE_TEXT[state])}>{RUN_HEADLINE[run.status] ?? run.status}</span>
+                  <span className={cn("font-medium", STATE_TEXT[state])}>{statusWord(run.status)}</span>
                   {whenLine ? ` · ${whenLine}` : null}
                 </div>
               </div>
             </div>
             {message ? (
-              <p className={cn("mt-4 text-sm leading-relaxed", state === "failed" ? "text-red-300/90" : "text-fg/75")}>{message}</p>
+              <p className={cn("mt-4 text-sm leading-relaxed", messageTone(state))}>{message}</p>
             ) : null}
-            {(laneId || prUrl) ? (
+            {(laneId || prUrl || queueStatus || verifyBeforePublish) ? (
               <div className="mt-4 flex flex-wrap items-center gap-2">
+                {queueStatus ? <span className="kit-tag">{queueStatus}</span> : null}
+                {verifyBeforePublish ? <span className="kit-tag" data-tone="warn">Verify before publish</span> : null}
                 {laneId ? (
                   <span className="inline-flex items-center gap-1.5 rounded-md border border-fg/[0.08] bg-fg/[0.03] px-2 py-1 text-[11px] text-fg/70">
                     <GitBranch size={12} weight="regular" />
@@ -218,7 +219,7 @@ export function RunDetail({
                           {action.endedAt ? stepTook ?? "" : "running"}
                         </span>
                       </div>
-                      {error ? <p className="mt-1 text-xs leading-relaxed text-red-300/90">{error}</p> : null}
+                      {error ? <p className={cn("mt-1 text-xs leading-relaxed", messageTone("failed"))}>{error}</p> : null}
                       {output ? (
                         <details className="group mt-2">
                           <summary className="inline-flex cursor-pointer list-none items-center gap-1 text-[11px] text-[color:var(--kit-text-3)] hover:text-fg/80">
@@ -272,7 +273,7 @@ export function RunDetail({
           <dl className="kit-card-body divide-y divide-fg/[0.05]">
             <DetailRow label="Run ID"><span className="font-mono">{run.id}</span></DetailRow>
             <DetailRow label="Started">{formatDate(run.startedAt)}</DetailRow>
-            <DetailRow label="Finished">{run.endedAt ? formatDate(run.endedAt) : "Still running"}</DetailRow>
+            <DetailRow label="Finished">{run.endedAt ? formatDate(run.endedAt) : `Not yet (${statusWord(run.status).toLowerCase()})`}</DetailRow>
             <DetailRow label="Spend">${(run.spendUsd ?? 0).toFixed(2)}</DetailRow>
             <DetailRow label="Billing code"><span className="font-mono">{run.billingCode ?? detail.rule?.billingCode ?? "None"}</span></DetailRow>
             {run.chatSessionId ? <DetailRow label="Chat"><span className="font-mono">{run.chatSessionId}</span></DetailRow> : null}

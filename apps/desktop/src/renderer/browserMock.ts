@@ -305,7 +305,7 @@ const resolvedArg =
 /** A failed built-in run: the "Clean up merged lanes" template run by hand. */
 const BROWSER_MOCK_FAILED_RUN = {
   id: "run-2",
-  automationId: "auto-session-review",
+  automationId: "auto-clean-up-merged-lanes",
   chatSessionId: null,
   triggerType: "manual",
   startedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
@@ -6788,6 +6788,33 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                     "Recent runs consistently produced concise PR follow-up notes.",
                 },
               },
+              {
+                id: "auto-clean-up-merged-lanes",
+                name: "Clean up merged lanes",
+                description: "When a lane is merged, delete it and its local branch so the workspace stays tidy.",
+                enabled: true,
+                mode: "monitor",
+                triggers: [{ type: "lane.merged" }],
+                trigger: { type: "lane.merged" },
+                execution: {
+                  kind: "built-in",
+                  builtIn: { actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }] },
+                },
+                executor: { mode: "automation-bot" },
+                prompt: "",
+                reviewProfile: "quick",
+                toolPalette: ["git"],
+                contextSources: [],
+                guardrails: {},
+                outputs: { disposition: "comment-only", createArtifact: true },
+                verification: { verifyBeforePublish: false, mode: "intervention" },
+                billingCode: "auto:clean-up-merged-lanes",
+                actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }],
+                running: false,
+                lastRunAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+                lastRunStatus: "failed",
+                confidence: null,
+              },
             ],
       ),
       toggle: resolvedArg([]),
@@ -6954,7 +6981,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           receivedAt: now,
         },
       }),
-      listRuns: resolvedArg(
+      // Each rule's history shows only its own runs.
+      listRuns: async (args: { automationId?: string } = {}) => (
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
           ? ADE_DB_AUTOMATIONS.runs
           : [
@@ -6982,8 +7010,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                   "Summarized the latest PR update and suggested next review points.",
                 billingCode: "auto:session-review",
               },
-            ],
-      ),
+            ]
+      ).filter((run: { automationId?: string }) => !args?.automationId || run.automationId === args.automationId),
       getIngressStatus: resolved({
         webhookGateway: {
           enabled: true,

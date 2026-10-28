@@ -5,8 +5,9 @@
  * run an older ADE than the window editing it. Without this the builder offered
  * a step the machine's ADE does not have, and the first sign was a raw
  * `action_not_callable` after a click. Add a row when a step type, an ADE
- * action an automation can call, or a lane mode first ships, with the first
- * release that has it. Anything without a row is treated as available.
+ * action an automation can call, a trigger, or a lane mode first ships, with
+ * the first release that has it. Anything without a row is treated as
+ * available.
  */
 
 import { compareUpdateVersions } from "./updateVersions";
@@ -28,7 +29,13 @@ const LANE_MODE_MIN_VERSIONS: Record<string, AutomationFeatureRequirement> = {
   "pr-branch": { label: "Run in the PR's branch", minVersion: "1.2.95" },
 };
 
+/** Triggers ("When"). */
+const TRIGGER_MIN_VERSIONS: Record<string, AutomationFeatureRequirement> = {
+  "github.pr_checks_failed": { label: "When a PR's checks fail", minVersion: "1.2.126" },
+};
+
 type DraftLike = {
+  triggers?: ReadonlyArray<{ type?: string | null }> | null;
   execution?: {
     laneMode?: string | null;
     builtIn?: { actions?: ReadonlyArray<StepLike> | null } | null;
@@ -49,6 +56,10 @@ export function automationFeaturesNeedingNewerAde(
   const consider = (key: string, requirement: AutomationFeatureRequirement | undefined) => {
     if (requirement && compareUpdateVersions(version, requirement.minVersion) < 0) needed.set(key, requirement);
   };
+  for (const trigger of draft.triggers ?? []) {
+    const type = trigger?.type?.trim();
+    if (type) consider(`trigger:${type}`, TRIGGER_MIN_VERSIONS[type]);
+  }
   const laneMode = draft.execution?.laneMode?.trim();
   if (laneMode) consider(`lane:${laneMode}`, LANE_MODE_MIN_VERSIONS[laneMode]);
   for (const step of [...(draft.actions ?? []), ...(draft.execution?.builtIn?.actions ?? [])]) {
