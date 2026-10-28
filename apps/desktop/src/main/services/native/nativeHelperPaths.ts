@@ -398,16 +398,32 @@ function cachedWindowsExecutableVersion(executablePath: string): string | null {
   }
 }
 
-/** Where a running app is not installed: a mounted disk image, or macOS's App Translocation copy. */
+/**
+ * Where a running app is not installed: macOS's App Translocation copy, or a
+ * read-only volume (a mounted disk image). An app on a writable external drive
+ * is installed there.
+ */
 function isTransientMacAppPath(appPath: string): boolean {
-  return appPath.startsWith("/Volumes/") || appPath.includes("/AppTranslocation/");
+  if (appPath.includes("/AppTranslocation/")) return true;
+  if (!appPath.startsWith("/Volumes/")) return false;
+  try {
+    fs.accessSync(path.dirname(appPath), fs.constants.W_OK);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
+/** `ADE_DESKTOP_APP_PATH`: the app (`.app` on macOS, `.exe` on Windows) someone named by hand. */
+function explicitDesktopAppPath(env: NodeJS.ProcessEnv): string | null {
+  return env.ADE_DESKTOP_APP_PATH?.trim() || null;
 }
 
 /**
- * The channel's app bundles on this Mac, best first: the one the desktop
- * recorded (unless it ran from a disk image or a translocated copy), then
- * /Applications and ~/Applications. A bundle whose Info.plist names another
- * channel's bundle id is skipped.
+ * The channel's app bundles on this Mac, best first: `ADE_DESKTOP_APP_PATH`,
+ * the one the desktop recorded (unless it ran from a disk image or a
+ * translocated copy), then /Applications and ~/Applications. A bundle whose
+ * Info.plist names another channel's bundle id is skipped.
  */
 function macDesktopAppPaths(
   env: NodeJS.ProcessEnv,
@@ -415,7 +431,9 @@ function macDesktopAppPaths(
   record: DesktopAppRecord | null,
 ): string[] {
   const bundleId = resolveAssociatedAppBundleId(env);
+  const explicit = explicitDesktopAppPath(env);
   return dedupePaths([
+    ...(explicit ? [explicit] : []),
     ...(record && !isTransientMacAppPath(record.appPath) ? [record.appPath] : []),
     ...installedDesktopAppNames(env).flatMap((name) => applicationsDirs.map((dir) => path.join(dir, `${name}.app`))),
   ]).filter((appPath) => {
@@ -430,13 +448,16 @@ export function defaultMacApplicationsDirs(homeDir: string = os.homedir()): stri
 }
 
 /**
- * The `.exe`s this channel's app installs as on Windows, best first: the one
- * the desktop recorded, then `%LOCALAPPDATA%\Programs` and `%ProgramFiles%`.
+ * The `.exe`s this channel's app installs as on Windows, best first:
+ * `ADE_DESKTOP_APP_PATH`, the one the desktop recorded, then
+ * `%LOCALAPPDATA%\Programs` and `%ProgramFiles%`.
  */
 function windowsDesktopAppExecutables(env: NodeJS.ProcessEnv, record: DesktopAppRecord | null): string[] {
   const win = path.win32;
   const names = installedDesktopAppNames(env);
   const executables: string[] = [];
+  const explicit = explicitDesktopAppPath(env);
+  if (explicit) executables.push(explicit);
   if (record) {
     if (record.executablePath) executables.push(record.executablePath);
     for (const name of names) executables.push(win.join(record.appPath, `${name}.exe`));
@@ -503,6 +524,7 @@ export type InstalledDesktopApp = {
  * update` the brain can run a newer version than the app), the "is this
  * machine up to date" check of Update & restart, `ade doctor`, and the macOS
  * app update. One reader, so the machine is judged on the version it reports.
+ * `ADE_DESKTOP_APP_PATH` names the app by hand and is looked at first.
  *
  * macOS: the app the desktop recorded, then the channel's app in
  * /Applications and ~/Applications, read from its Info.plist, so an app
@@ -596,16 +618,35 @@ export function standaloneNativeHelperCandidates(input: {
 
 /** ADE's Developer ID team, for a Spotlight hit when no installed app names one. */
 const ADE_DEVELOPER_TEAM_ID = "VQ372F39G6";
-const CODESIGN_TIMEOUT_MS = 60_000;
 
-/** `TeamIdentifier` from `codesign -dv`, which prints to stderr. Null when unsigned or ad hoc. */
-function readCodeSigningTeam(appPath: string): string | null {
-  const result = spawnSync("/usr/bin/codesign", ["-dv", "--verbose=2", appPath], {
+/** Runs one command for `readCodeSigningTeam`; the macOS app update passes its own. */
+export type CodeSigningCommandRunner = (
+  command: string,
+  args: string[],
+  options: { timeout: number },
+) => { status: number | null; stdout: string; stderr: string };
+
+const spawnCodeSigningCommand: CodeSigningCommandRunner = (command, args, options) => {
+  const result = spawnSync(command, args, {
     encoding: "utf8",
-    timeout: CODESIGN_TIMEOUT_MS,
+    timeout: options.timeout,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  const team = /^TeamIdentifier=(.+)$/m.exec(`${result.stderr ?? ""}\n${result.stdout ?? ""}`)?.[1]?.trim() ?? "";
+  return {
+    status: result.status,
+    stdout: typeof result.stdout === "string" ? result.stdout : "",
+    stderr: typeof result.stderr === "string" ? result.stderr : "",
+  };
+};
+
+/** `TeamIdentifier` from `codesign -dv`, which prints to stderr. Null when unsigned or ad hoc. */
+export function readCodeSigningTeam(
+  appPath: string,
+  options: { timeoutMs: number; run?: CodeSigningCommandRunner },
+): string | null {
+  const run = options.run ?? spawnCodeSigningCommand;
+  const result = run("/usr/bin/codesign", ["-dv", "--verbose=2", appPath], { timeout: options.timeoutMs });
+  const team = /^TeamIdentifier=(.+)$/m.exec(`${result.stderr}\n${result.stdout}`)?.[1]?.trim() ?? "";
   return result.status === 0 && team && team !== "not set" ? team : null;
 }
 
@@ -616,6 +657,80 @@ function readCodeSigningTeam(appPath: string): string | null {
  */
 const spotlightAppByBundleId = new Map<string, { path: string | null; at: number }>();
 const SPOTLIGHT_MISS_TTL_MS = 5 * 60_000;
+/**
+ * These checks run on resolver paths (status polls, service creation), so a
+ * bundle codesign cannot judge quickly is skipped rather than waited on, and a
+ * lookup checks only a few bundles it has not judged before.
+ */
+const SPOTLIGHT_CODESIGN_TIMEOUT_MS = 10_000;
+const SPOTLIGHT_MAX_CHECKS_PER_LOOKUP = 3;
+
+/**
+ * Signature verdicts already reached, by bundle path and bundle identity (the
+ * Info.plist's and main executable's inode, size and mtime): a rejected hit is
+ * not verified again on every lookup, and a bundle replaced in place is.
+ */
+const bundleSignatureCache = new Map<string, { stamp: string; valid?: boolean; team?: string | null }>();
+
+function bundleIdentityStamp(appPath: string): string | null {
+  const stampOf = (file: string): string => {
+    const stat = fs.statSync(file);
+    return `${stat.ino}:${stat.size}:${stat.mtimeMs}`;
+  };
+  try {
+    const executable = readMacAppBundleInfo(appPath)?.executable;
+    const parts = [stampOf(path.join(appPath, "Contents", "Info.plist"))];
+    if (executable) parts.push(stampOf(path.join(appPath, "Contents", "MacOS", executable)));
+    return parts.join("|");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * A bundle's signature facts, from the cache while the bundle is unchanged.
+ * `verify` also asks whether the signature is valid (`codesign --verify
+ * --strict`); the team is read only from a bundle that is not known invalid.
+ * A bundle with anything left to judge spends one of `budget`'s checks, and
+ * none is left: its facts stay unknown (undefined), as do the ones that timed
+ * out, so a later lookup tries again.
+ */
+function bundleSignature(
+  appPath: string,
+  verify: boolean,
+  budget: { left: number },
+): { valid?: boolean; team?: string | null } {
+  const stamp = bundleIdentityStamp(appPath);
+  if (!stamp) return { valid: false, team: null };
+  const cached = bundleSignatureCache.get(appPath);
+  const entry: { stamp: string; valid?: boolean; team?: string | null } = cached && cached.stamp === stamp ? cached : { stamp };
+  const needsVerify = verify && entry.valid === undefined;
+  const needsTeam = entry.team === undefined && entry.valid !== false;
+  if ((needsVerify || needsTeam) && budget.left > 0) {
+    budget.left -= 1;
+    if (needsVerify) {
+      const result = spawnSync("/usr/bin/codesign", ["--verify", "--strict", appPath], {
+        timeout: SPOTLIGHT_CODESIGN_TIMEOUT_MS,
+        stdio: "ignore",
+      });
+      if (result.status !== null) entry.valid = result.status === 0;
+    }
+    if (entry.valid !== false) {
+      let timedOut = false;
+      const team = readCodeSigningTeam(appPath, {
+        timeoutMs: SPOTLIGHT_CODESIGN_TIMEOUT_MS,
+        run: (command, args, options) => {
+          const result = spawnCodeSigningCommand(command, args, options);
+          timedOut = result.status === null;
+          return result;
+        },
+      });
+      if (!timedOut) entry.team = team;
+    }
+    bundleSignatureCache.set(appPath, entry);
+  }
+  return { valid: entry.valid, team: entry.team };
+}
 
 /**
  * An app Spotlight finds by bundle id can be any copy on the disk: a mounted
@@ -640,13 +755,11 @@ function spotlightAppPath(bundleId: string, env: NodeJS.ProcessEnv): string | nu
       .filter((line) => line.endsWith(".app") && readBundleIdentifier(line) === bundleId);
     if (hits.length > 0) {
       const installed = readInstalledDesktopApp({ platform: "darwin", env });
-      const expectedTeam = (installed ? readCodeSigningTeam(installed.path) : null) ?? ADE_DEVELOPER_TEAM_ID;
+      const expectedTeam = (installed ? bundleSignature(installed.path, false, { left: 1 }).team : null) ?? ADE_DEVELOPER_TEAM_ID;
+      const budget = { left: SPOTLIGHT_MAX_CHECKS_PER_LOOKUP };
       found = hits.find((hit) => {
-        const verify = spawnSync("/usr/bin/codesign", ["--verify", "--strict", hit], {
-          timeout: CODESIGN_TIMEOUT_MS,
-          stdio: "ignore",
-        });
-        return verify.status === 0 && readCodeSigningTeam(hit) === expectedTeam;
+        const signature = bundleSignature(hit, true, budget);
+        return signature.valid === true && signature.team === expectedTeam;
       }) ?? null;
     }
   } catch {

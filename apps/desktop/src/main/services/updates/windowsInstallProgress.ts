@@ -24,6 +24,8 @@ const HEARTBEAT_FRESH_MS = 5_000;
 const HEARTBEAT_FUTURE_SLACK_MS = 5_000;
 /** Plenty for one update's lifecycle lines; a corrupt or runaway log is cut. */
 const MAX_REPORT_LINES = 40;
+/** As long as an install-on-quit relaunch may land (`installOnQuit.ts`). */
+const LAUNCH_REQUEST_FRESH_MS = 10 * 60_000;
 
 type Heartbeat = {
   pid?: unknown;
@@ -36,7 +38,8 @@ type Heartbeat = {
  * Every file the window and ADE share, in one per-channel folder. The script
  * finds its settings beside itself (`progress-args.json`) and writes the
  * heartbeat and log at the paths given there; `.focus` and `.cancel` sit next
- * to the heartbeat.
+ * to the heartbeat. `launch-requested.json` is ADE's alone: the window never
+ * reads it.
  */
 function progressFiles(channel: string | null) {
   const localAppData = process.env.LOCALAPPDATA || path.join(os.homedir(), "AppData", "Local");
@@ -49,6 +52,7 @@ function progressFiles(channel: string | null) {
     heartbeat,
     focus: `${heartbeat}.focus`,
     cancel: `${heartbeat}.cancel`,
+    launchRequest: path.join(dir, "launch-requested.json"),
     log: path.join(dir, "progress.log"),
   };
 }
@@ -69,6 +73,11 @@ function processAlive(pid: number): boolean {
  * instead. The ADE the installer opens is the target version, so it never
  * defers; nor does any launch after the window reported a failure or stopped
  * beating.
+ *
+ * It also leaves a note that the person asked for ADE. An install on quit ends
+ * with the installer's own relaunch running hidden and closing again; with the
+ * note, that relaunch opens a window instead (`takeWindowsLaunchRequest`), so
+ * the launch the person made is not lost.
  */
 export function deferToRunningWindowsInstall(args: {
   channel: string | null;
@@ -90,11 +99,49 @@ export function deferToRunningWindowsInstall(args: {
   if (ageMs > HEARTBEAT_FRESH_MS || ageMs < -HEARTBEAT_FUTURE_SLACK_MS) return false;
   if (!processAlive(pid)) return false;
   try {
+    fs.writeFileSync(files.launchRequest, JSON.stringify({
+      targetVersion: heartbeat.targetVersion,
+      requestedAt: new Date().toISOString(),
+    }));
+  } catch {
+    // The window still comes forward; only a quit-install relaunch stays hidden.
+  }
+  try {
     fs.writeFileSync(files.focus, String(process.pid));
   } catch {
     // The window is still up and still says what is happening.
   }
   return true;
+}
+
+/**
+ * Whether the person tried to open ADE during the install that this launch
+ * finishes (see `deferToRunningWindowsInstall`). Read once and removed, so a
+ * later launch never inherits it; a note for another version or from long ago
+ * is dropped.
+ */
+export function takeWindowsLaunchRequest(args: {
+  channel: string | null;
+  appVersion: string;
+  nowMs?: number;
+}): boolean {
+  const file = progressFiles(args.channel).launchRequest;
+  let request: { targetVersion?: unknown; requestedAt?: unknown };
+  try {
+    request = JSON.parse(fs.readFileSync(file, "utf8")) as typeof request;
+  } catch {
+    return false;
+  } finally {
+    try {
+      fs.rmSync(file, { force: true });
+    } catch {
+      // A leftover is replaced by the next install's start.
+    }
+  }
+  if (request.targetVersion !== args.appVersion) return false;
+  const requestedAtMs = typeof request.requestedAt === "string" ? Date.parse(request.requestedAt) : Number.NaN;
+  const ageMs = (args.nowMs ?? Date.now()) - requestedAtMs;
+  return Number.isFinite(ageMs) && ageMs >= -HEARTBEAT_FUTURE_SLACK_MS && ageMs <= LAUNCH_REQUEST_FRESH_MS;
 }
 
 /**
@@ -145,7 +192,7 @@ export function startWindowsInstallProgress(args: {
       installerPath: args.installerPath ?? "",
       quitInstall: args.quitInstall,
     }));
-    for (const stale of [files.heartbeat, files.focus, files.cancel, files.log]) fs.rmSync(stale, { force: true });
+    for (const stale of [files.heartbeat, files.focus, files.cancel, files.launchRequest, files.log]) fs.rmSync(stale, { force: true });
   } catch (error) {
     return unavailable("prepare_failed", error);
   }

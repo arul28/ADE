@@ -859,7 +859,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Apple Development",
   },
   {
-    id: "appearance.apple-auto-record",
+    id: "apple.auto-record",
     label: "Record agent input",
     keywords: ["apple", "simulator", "ios", "recording", "auto", "proof", "agent", "apple.autoRecordAgentInput"],
     tab: "apple",

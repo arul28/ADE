@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { CancellationToken } from "builder-util-runtime";
 import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
-import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport } from "./windowsInstallProgress";
+import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport, takeWindowsLaunchRequest } from "./windowsInstallProgress";
 import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
   buildGithubReleaseUrl,
@@ -3596,8 +3596,12 @@ describe("Windows update window files", () => {
     const heartbeat = writeHeartbeat(null, { ...beat, updatedAt: ago(ageMs) });
 
     expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(defers);
-    // Deferring is only half of it: the window has to be asked to come forward.
+    // Deferring is only half of it: the window has to be asked to come forward,
+    // and the launch the installer makes has to open a window for the person,
+    // once.
     expect(fs.existsSync(`${heartbeat}.focus`)).toBe(defers);
+    expect(takeWindowsLaunchRequest({ channel: null, appVersion: "1.2.95" })).toBe(defers);
+    expect(takeWindowsLaunchRequest({ channel: null, appVersion: "1.2.95" })).toBe(false);
   });
 
   it("hand-launch guard starts normally with no update window, or another channel's", () => {

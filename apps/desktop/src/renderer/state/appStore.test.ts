@@ -1718,8 +1718,9 @@ describe("appStore", () => {
   });
 
   describe("Apple device preferences", () => {
-    it("defaults the five contract keys and persists them under apple", () => {
+    it("defaults the contract keys and persists them under apple", () => {
       expect(useAppStore.getState().appleDevice.realisticBody).toBe(true);
+      expect(useAppStore.getState().appleDevice.autoRecordAgentInput).toBe(true);
       expect(useAppStore.getState().appleDevice.recordingTapRings).toBe(true);
       expect(useAppStore.getState().appleDevice.recordingKeyBadges).toBe(true);
       expect(useAppStore.getState().appleDevice.remoteBitrateKbpsCap).toBe(2500);
@@ -1731,6 +1732,7 @@ describe("appStore", () => {
       );
       const parsed = JSON.parse(calls[calls.length - 1]![1]);
       expect(parsed.apple).toEqual({
+        autoRecordAgentInput: true,
         realisticBody: false,
         recordingOverlays: { tapRings: true, keyBadges: true },
         remoteBitrateKbpsCap: 1000,

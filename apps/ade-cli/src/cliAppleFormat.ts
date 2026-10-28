@@ -8,6 +8,7 @@
  *   NEITHER FILE MAY USE THE OTHER'S IMPORTS AS A VALUE AT MODULE SCOPE.
  */
 import { asString, isRecord, renderKeyValues, unwrapActionEnvelope } from "./cli";
+import { describeAppleWindowOffScreen } from "../../desktop/src/main/services/ios/appleWindowLayout";
 
 /** The answer inside an `ade apple lease` result, however it was wrapped. */
 export function appleLeaseAnswer(result: unknown): unknown {
@@ -80,9 +81,9 @@ export function formatAppleWindow(value: unknown): string {
   const lines: string[] = [];
   if (action === "status") {
     const off = isRecord(result.offScreen) ? result.offScreen : null;
+    const side = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : 0);
     const offText = off
-      ? Object.entries(off).filter(([, value]) => typeof value === "number" && value > 0)
-        .map(([side, value]) => `${Math.round(value as number)} pt past the ${side} edge`).join(", ")
+      ? describeAppleWindowOffScreen({ left: side(off.left), top: side(off.top), right: side(off.right), bottom: side(off.bottom) })
       : "";
     lines.push(result.before
       ? `${app}'s window is ${frame(result.before)} on a ${screen} screen${offText ? `, partly off it (${offText})` : ""}.`

@@ -7,7 +7,7 @@ import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersion
 import { terminateProcessTree } from "../../../desktop/src/main/services/shared/processExecution";
 import { manifestNameForPlatform, releaseAssetUrl, sha512Base64 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
-import { readWindowsServiceBrainCommand } from "../serviceManager/installWindows";
+import { readInstalledDesktopApp } from "../../../desktop/src/main/services/native/nativeHelperPaths";
 
 /**
  * Installs the ADE desktop app's own update on a Windows machine whose app
@@ -52,67 +52,62 @@ function runPowerShell(script: string, env: NodeJS.ProcessEnv): CommandResult {
   };
 }
 
-/** `1.2.112.0` (a Windows file version) as `1.2.112`; null when it is not a version. */
-function releaseVersionOf(fileVersion: string): string | null {
-  const match = /^(\d+)\.(\d+)\.(\d+)/.exec(fileVersion.trim());
-  return match ? `${match[1]}.${match[2]}.${match[3]}` : null;
-}
-
 /**
- * The stable desktop app on this machine. Prefers the app the installed
- * background service runs from, so a machine that installed ADE somewhere
- * unusual is still found; falls back to the per-user default location.
+ * The stable desktop app on this machine, as the "is this machine up to date"
+ * check sees it (`readInstalledDesktopApp`): the recorded install, then the
+ * per-user and machine-wide install folders. Null when there is none, or when
+ * the app found is Beta or Alpha: those have no release feed and must never
+ * receive a stable installer.
  */
-function locateStableDesktopApp(env: NodeJS.ProcessEnv): { appExe: string; installDir: string } | null {
-  const candidates: string[] = [];
-  const service = readWindowsServiceBrainCommand(env);
-  if (service && path.win32.basename(service.command).toLowerCase() === "ade.exe") {
-    candidates.push(service.command);
-  }
-  const localAppData = env.LOCALAPPDATA?.trim();
-  if (localAppData) candidates.push(path.win32.join(localAppData, "Programs", "ADE", "ADE.exe"));
-  for (const appExe of candidates) {
-    const installDir = path.win32.dirname(appExe);
-    // Only the stable product: Beta and Alpha install beside it under their own
-    // names, have no release feed, and must never receive a stable installer.
-    if (path.win32.basename(installDir).toLowerCase() !== "ade") continue;
-    if (!fs.existsSync(appExe)) continue;
-    if (!fs.existsSync(path.win32.join(installDir, "resources", "ade-cli", "cli.cjs"))) continue;
-    return { appExe, installDir };
-  }
-  return null;
+function locateStableDesktopApp(env: NodeJS.ProcessEnv): { appExe: string; installDir: string; version: string | null } | null {
+  const app = readInstalledDesktopApp({ platform: "win32", env });
+  if (!app?.updatable) return null;
+  return { appExe: app.path, installDir: path.win32.dirname(app.path), version: app.version };
 }
 
 /**
  * What a rescue would install, or why there is nothing to rescue: no stable
- * desktop app here, its version cannot be read, or it already runs
- * `targetVersion` or newer. The reason is recorded in the update status, so a
- * runtime-only update on Windows says why it left the app alone.
+ * desktop app here, it has no bundled CLI to restart its service with, its
+ * version cannot be read, or it already runs `targetVersion` or newer. The
+ * reason is recorded in the update status, so a runtime-only update on Windows
+ * says why it left the app alone.
  */
 export function planWindowsDesktopRescue(args: {
   env: NodeJS.ProcessEnv;
   targetVersion: string;
 }):
   | { plan: WindowsDesktopRescuePlan }
-  | { skipped: string; reason: "no_app" | "version_unreadable" | "app_current"; appExe?: string } {
+  | { skipped: string; reason: "no_app" | "app_incomplete" | "version_unreadable" | "app_current"; appExe?: string } {
   const app = locateStableDesktopApp(args.env);
   if (!app) return { skipped: "no stable ADE desktop app was found on this machine", reason: "no_app" };
-  const read = runPowerShell(
-    "[Console]::Out.Write((Get-Item -LiteralPath $env:ADE_RESCUE_APP_EXE).VersionInfo.ProductVersion)",
-    { ...args.env, ADE_RESCUE_APP_EXE: app.appExe },
-  );
-  const installedVersion = read.status === 0 ? releaseVersionOf(read.stdout) : null;
-  if (!installedVersion) {
-    return {
-      skipped: `the version of ${app.appExe} could not be read (${read.stderr || read.stdout || `exit ${read.status}`})`,
-      reason: "version_unreadable",
-      appExe: app.appExe,
-    };
+  // The update check sees this app, so leaving it alone would report success
+  // while the machine stays behind: a missing CLI is a failure, not "no app".
+  const cli = path.win32.join(app.installDir, "resources", "ade-cli", "cli.cjs");
+  if (!fs.existsSync(cli)) {
+    return { skipped: `${app.appExe} has no ${cli}`, reason: "app_incomplete", appExe: app.appExe };
   }
-  if (compareUpdateVersions(installedVersion, args.targetVersion) >= 0) {
-    return { skipped: `the ADE app is already on ${installedVersion}`, reason: "app_current", appExe: app.appExe };
+  if (!app.version) {
+    return { skipped: `the version of ${app.appExe} could not be read`, reason: "version_unreadable", appExe: app.appExe };
   }
-  return { plan: { ...app, installedVersion, targetVersion: args.targetVersion } };
+  if (compareUpdateVersions(app.version, args.targetVersion) >= 0) {
+    return { skipped: `the ADE app is already on ${app.version}`, reason: "app_current", appExe: app.appExe };
+  }
+  return {
+    plan: { appExe: app.appExe, installDir: app.installDir, installedVersion: app.version, targetVersion: args.targetVersion },
+  };
+}
+
+/**
+ * The installer updates the app where it installed it, which is not always
+ * where the update check found one (a copy in Program Files, say). Then the
+ * check would still see an old app after a successful install, and the update
+ * would be offered forever. Null when the check now sees the target or newer,
+ * or cannot read a version (which never holds the machine back).
+ */
+function appStillBehind(plan: WindowsDesktopRescuePlan, env: NodeJS.ProcessEnv): string | null {
+  const app = readInstalledDesktopApp({ platform: "win32", env });
+  if (!app?.version || compareUpdateVersions(app.version, plan.targetVersion) >= 0) return null;
+  return `The ADE ${plan.targetVersion} installer finished, but ${app.path} is still on ${app.version}: the installer updates the copy it installed, not this one. Remove that copy or install ADE ${plan.targetVersion} over it by hand.`;
 }
 
 /** The installer's sha512 as the release's update feed publishes it. */
@@ -239,6 +234,13 @@ export async function runWindowsDesktopRescue(
   // so with the app closed the service is started here instead.
   const exitCode = await runInstaller(installerPath, ["--updated", "/S", ...(reopen ? ["--force-run"] : [])], withoutHelperEnv(args.env));
   if (exitCode === 0) {
+    const behind = appStillBehind(plan, args.env);
+    if (behind) {
+      // A reopened app starts its own service; otherwise keep the machine
+      // reachable on the copy the check sees.
+      if (!reopen) startAppService(plan, args.env);
+      return { ok: false, message: behind };
+    }
     if (reopen) return { ok: true, message: `Installed ADE ${plan.targetVersion}; it is reopening and starts its background service.` };
     const started = startAppService(plan, args.env);
     return started.ok

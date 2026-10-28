@@ -2,6 +2,7 @@ import os from "node:os";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
 
 export type MachineAdeLayout = {
   adeDir: string;
@@ -315,11 +316,15 @@ function windowsPipeKey(value: string): string {
   return value.trim().replace(/\//g, "\\").toLowerCase();
 }
 
-/** Whether `socketPath` is one of `names` (a `resolveMachineEndpointNames` list). */
+/**
+ * Whether `socketPath` is one of `names` (a `resolveMachineEndpointNames`
+ * list). A socket path is compared as a file path, by the platform's case
+ * rules; a named pipe has no file to resolve and is compared by name.
+ */
 export function isMachineEndpointName(socketPath: string, names: readonly string[]): boolean {
   if (!/^[\\/]{2}[.?][\\/]pipe[\\/]/i.test(socketPath.trim())) {
     const resolved = path.resolve(socketPath);
-    return names.some((name) => path.resolve(name) === resolved);
+    return names.some((name) => pathsEqual(path.resolve(name), resolved));
   }
   const key = windowsPipeKey(socketPath);
   return names.some((name) => windowsPipeKey(name) === key);

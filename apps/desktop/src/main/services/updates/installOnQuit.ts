@@ -120,8 +120,9 @@ export type InstallOnQuitController = ReturnType<typeof createInstallOnQuitContr
  * updater's own relaunch (`isQuitInstallRelaunch`), ADE starts with no window
  * and no Dock icon, lets the post-update transaction move the service to the
  * new build, and closes again. Anything the person does meanwhile (reopening
- * ADE, a deep link, a file) shows the window and the launch stays open. A
- * failed transaction is shown, never closed over.
+ * ADE, a deep link, a file) shows the window and the launch stays open; on
+ * Windows, a launch made while the installer ran makes the relaunch visible
+ * from the start. A failed transaction is shown, never closed over.
  */
 export function createInstallOnQuitController(deps: {
   logger: { info: (event: string, data?: Record<string, unknown>) => void; warn: (event: string, data?: Record<string, unknown>) => void };
@@ -231,8 +232,21 @@ export function createInstallOnQuitController(deps: {
       argv: readonly string[];
       env: NodeJS.ProcessEnv;
       version: string;
+      /**
+       * The person tried to open ADE while the install ran (Windows: the
+       * launch deferred to the update window). The relaunch is then theirs.
+       */
+      launchRequested: boolean;
     }): boolean {
       if (!args.refreshingAfterUpdate || !args.landed) return false;
+      if (args.launchRequested) {
+        deps.logger.info("autoUpdate.quit_install_launch_visible", {
+          version: args.version,
+          requestedAt: args.landed.requestedAt,
+          reason: "launch_requested",
+        });
+        return false;
+      }
       const relaunch = isQuitInstallRelaunch({
         requestedAt: args.landed.requestedAt,
         nowMs: nowMs(),

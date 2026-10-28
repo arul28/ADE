@@ -54,7 +54,10 @@ $ParentPid = [int](Read-ConfigString "parentPid" "0")
 $LogPath = Read-ConfigString "logPath"
 # The person quit ADE and the quit installed this update. The ADE the installer
 # opens finishes the install with no window and closes again, so a new ADE.exe
-# starting once the installer is done is the end here, not a window.
+# starting once the installer is done is the end here, not a window. A focus
+# request ends this mode: the person opened ADE meanwhile, so the ADE the
+# installer opens shows a window, and this one waits for it as it would after
+# any install.
 $QuitInstall = $config.quitInstall -eq $true
 # Past this, whatever is happening is not an update finishing.
 $TimeoutSeconds = 600
@@ -313,6 +316,10 @@ $timer.Add_Tick({
     if (Test-Path -LiteralPath "$HeartbeatPath.focus") {
       Remove-Item -LiteralPath "$HeartbeatPath.focus" -Force -ErrorAction SilentlyContinue
       Write-ProgressLog "focus_requested"
+      if ($QuitInstall) {
+        $script:QuitInstall = $false
+        Write-ProgressLog "quit_install_opened_by_person"
+      }
       if ($window.WindowState -eq "Minimized") { $window.WindowState = "Normal" }
       $window.Activate() | Out-Null
     }

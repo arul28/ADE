@@ -364,6 +364,7 @@ import {
   deferToRunningWindowsInstall,
   startWindowsInstallProgress,
   takeWindowsInstallProgressReport,
+  takeWindowsLaunchRequest,
 } from "./services/updates/windowsInstallProgress";
 import {
   ElectronSafeStorageCredentialStore,
@@ -3679,6 +3680,12 @@ app.whenReady().then(async () => {
     argv: process.argv,
     env: process.env,
     version: app.getVersion(),
+    // Read on every packaged Windows launch, so a note never outlives the
+    // install it was made during.
+    launchRequested: process.platform === "win32" && app.isPackaged && takeWindowsLaunchRequest({
+      channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+      appVersion: app.getVersion(),
+    }),
   })) {
     app.on("activate", () => installOnQuit.reveal("activate"));
     app.on("second-instance", () => installOnQuit.reveal("second_instance"));

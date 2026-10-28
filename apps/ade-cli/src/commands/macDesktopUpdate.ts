@@ -10,6 +10,7 @@ import { packagedCliNodeModulePaths, shellQuote } from "../serviceManager/common
 import type { DesktopAppUpdateRouting } from "../services/runtime/desktopAppUpdateBridge";
 import {
   defaultMacApplicationsDirs,
+  readCodeSigningTeam,
   readInstalledDesktopApp,
   readMacAppBundleInfo,
 } from "../../../desktop/src/main/services/native/nativeHelperPaths";
@@ -166,14 +167,6 @@ async function unwritableAppPaths(app: MacDesktopApp): Promise<string[]> {
   return problems;
 }
 
-/** `TeamIdentifier=…` from `codesign -dv`, which prints to stderr. Null when unsigned or ad hoc. */
-function readTeamIdentifier(run: MacCommandRunner, appPath: string): string | null {
-  const result = run("/usr/bin/codesign", ["-dv", "--verbose=2", appPath], { timeout: CODESIGN_TIMEOUT_MS });
-  const match = /^TeamIdentifier=(.+)$/m.exec(`${result.stderr}\n${result.stdout}`);
-  const team = match?.[1]?.trim() ?? "";
-  return result.status === 0 && team && team !== "not set" ? team : null;
-}
-
 /**
  * The new bundle must be intact, signed by the installed app's team, the same
  * app, and the version asked for. The feed checksum proves the archive is the
@@ -192,11 +185,11 @@ function verifyStagedApp(args: {
   }
   // Fail closed: with no team on the installed app there is nothing to match,
   // and any valid signature would pass.
-  const installedTeam = readTeamIdentifier(run, installed.appPath);
+  const installedTeam = readCodeSigningTeam(installed.appPath, { timeoutMs: CODESIGN_TIMEOUT_MS, run });
   if (!installedTeam) {
     throw new Error("The installed ADE app has no signing team, so the download's publisher can't be confirmed.");
   }
-  const stagedTeam = readTeamIdentifier(run, stagedAppPath);
+  const stagedTeam = readCodeSigningTeam(stagedAppPath, { timeoutMs: CODESIGN_TIMEOUT_MS, run });
   if (stagedTeam !== installedTeam) {
     throw new Error(`The downloaded app is signed by team ${stagedTeam ?? "none"}, not by the installed app's team ${installedTeam}.`);
   }

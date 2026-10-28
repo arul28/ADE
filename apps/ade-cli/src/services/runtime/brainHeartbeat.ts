@@ -2,8 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { SUSPEND_GAP_THRESHOLD_MS } from "../power/suspendGapDetector";
 import { writeJsonAtomic } from "./atomicJson";
-import { pathsEqual } from "../../../../desktop/src/main/services/shared/pathCompare";
-import { isAdeRuntimeNamedPipePath } from "../../../../desktop/src/shared/adeRuntimeIpc";
+import { isMachineEndpointName } from "../projects/machineLayout";
 
 // Re-exported from its old home so existing importers keep working.
 export { writeJsonAtomic };
@@ -47,14 +46,7 @@ export function servesMachineRuntimeEndpoint(
   /** Every name the machine endpoint answers on (`resolveMachineEndpointNames().runtime`). */
   machineEndpointNames: readonly string[],
 ): boolean {
-  if (isAdeRuntimeNamedPipePath(requestedSocketPath)) {
-    // Named pipes have no filesystem path to resolve; Windows treats their
-    // names case-insensitively and `/` as `\`.
-    const pipeKey = (name: string) => name.trim().replace(/\//g, "\\").toLowerCase();
-    return machineEndpointNames.some((name) => pipeKey(name) === pipeKey(requestedSocketPath));
-  }
-  const resolved = path.resolve(requestedSocketPath);
-  return machineEndpointNames.some((name) => pathsEqual(resolved, path.resolve(name)));
+  return isMachineEndpointName(requestedSocketPath, machineEndpointNames);
 }
 
 /** How often the brain refreshes the heartbeat. */
