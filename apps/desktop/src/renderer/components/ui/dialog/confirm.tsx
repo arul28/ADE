@@ -3,6 +3,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { noticeTone, type NoticeTone } from "../notice/noticeTones";
 import { Dialog } from "./Dialog";
 import { isImeComposing } from "../../../lib/imeComposition";
+import { isMac } from "../../../lib/platform";
 
 /**
  * `confirmDialog` / `promptDialog`: the app's replacement for `window.confirm`
@@ -48,6 +49,11 @@ export type ConfirmDialogOptions = {
   signal?: AbortSignal;
   /** Panel width. Default `sm`; `md` for a confirm that names long user content. */
   size?: "sm" | "md";
+  /**
+   * Say that Return confirms, left of the buttons. For a confirm someone may
+   * have to answer without the mouse (an update that fixes broken clicks).
+   */
+  returnKeyHint?: boolean;
 };
 
 export type ConfirmDialogCheckbox = {
@@ -318,6 +324,13 @@ function ConfirmDialogView({
             type="checkbox"
             checked={checked[box.key] ?? false}
             onChange={(event) => setChecked((current) => ({ ...current, [box.key]: event.target.checked }))}
+            // Keep the Return hint true when a checkbox has focus.
+            onKeyDown={options.returnKeyHint ? (event) => {
+              if (event.key === "Enter" && !awaitingRequired) {
+                event.preventDefault();
+                settle(true);
+              }
+            } : undefined}
           />
           <span>{box.label}</span>
         </label>
@@ -340,6 +353,7 @@ function ConfirmDialogView({
       title={options.title}
       description={options.message}
       hideClose
+      {...(options.returnKeyHint && !awaitingRequired ? { footerStart: <ReturnKeyHint label={options.confirmLabel ?? "OK"} /> } : {})}
       actions={[
         { label: options.cancelLabel ?? "Cancel", variant: "secondary", onClick: () => settle(false) },
         {
@@ -353,6 +367,14 @@ function ConfirmDialogView({
     >
       {body}
     </Dialog>
+  );
+}
+
+function ReturnKeyHint({ label }: { label: string }): JSX.Element {
+  return (
+    <span className="ade-dialog-key-hint">
+      Press <kbd>{isMac ? "Return" : "Enter"}</kbd> to {label.toLowerCase()}
+    </span>
   );
 }
 

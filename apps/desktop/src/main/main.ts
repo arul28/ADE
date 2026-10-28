@@ -479,6 +479,12 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import {
+  INSTALL_UPDATE_ARG,
+  nativeUpdateMenuItem,
+  nativeUpdateMenuLabel,
+  runNativeUpdateInstall,
+} from "./services/updates/nativeUpdateInstall";
 import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
@@ -1605,8 +1611,18 @@ app.on("open-file", (event, filePath) => {
   enqueueProjectOpenFile(filePath);
 });
 
+/** Set once the updater exists; the Windows jump-list task reaches it through `second-instance`. */
+let requestNativeUpdateInstall: (() => void) | null = null;
+/** A jump-list request that arrived before the updater existed (ADE starting up, or started by it). */
+let nativeUpdateInstallPending = process.platform === "win32" && process.argv.includes(INSTALL_UPDATE_ARG);
+
 app.on("second-instance", (_event, argv) => {
   if (process.platform === "darwin") return;
+  if (argv.includes(INSTALL_UPDATE_ARG)) {
+    if (requestNativeUpdateInstall) requestNativeUpdateInstall();
+    else nativeUpdateInstallPending = true;
+    return;
+  }
   for (const arg of argv.slice(1)) {
     const filePath = normalizeExistingAbsoluteOpenFileArg(arg);
     if (filePath) enqueueProjectOpenFile(filePath);
@@ -9567,6 +9583,14 @@ app.whenReady().then(async () => {
     return { closed: true };
   };
 
+  let nativeUpdateRunning = false;
+  const runUpdateFromNativeUi = (win: BrowserWindow | null): void => {
+    if (nativeUpdateRunning) return;
+    nativeUpdateRunning = true;
+    void runNativeUpdateInstall(autoUpdateService, win).finally(() => {
+      nativeUpdateRunning = false;
+    });
+  };
   const installApplicationMenu = (): void => {
     /**
      * Every menu command the renderer gets first, on one route.
@@ -9613,6 +9637,7 @@ app.whenReady().then(async () => {
             label: app.name,
             submenu: [
               { role: "about" as const },
+              nativeUpdateMenuItem(autoUpdateService.getSnapshot(), runUpdateFromNativeUi),
               { type: "separator" as const },
               { role: "hide" as const },
               { role: "hideOthers" as const },
@@ -9733,6 +9758,30 @@ app.whenReady().then(async () => {
   };
 
   installApplicationMenu();
+  // The update item's label follows the updater; rebuild only when it changes.
+  let nativeUpdateLabel = nativeUpdateMenuLabel(autoUpdateService.getSnapshot());
+  autoUpdateService.onStateChange((snapshot) => {
+    const label = nativeUpdateMenuLabel(snapshot);
+    if (label === nativeUpdateLabel) return;
+    nativeUpdateLabel = label;
+    if (process.platform === "darwin") installApplicationMenu();
+  });
+  requestNativeUpdateInstall = () => runUpdateFromNativeUi(BrowserWindow.getFocusedWindow());
+  if (nativeUpdateInstallPending) {
+    nativeUpdateInstallPending = false;
+    requestNativeUpdateInstall();
+  }
+  if (process.platform === "win32" && app.isPackaged) {
+    // The taskbar's right-click menu: the Windows counterpart of the macOS menu item.
+    app.setUserTasks([{
+      program: process.execPath,
+      arguments: INSTALL_UPDATE_ARG,
+      iconPath: process.execPath,
+      iconIndex: 0,
+      title: "Install update and restart",
+      description: "Install a downloaded ADE update, or check for one",
+    }]);
+  }
 
   let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();

@@ -13,6 +13,7 @@ import {
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_END_EVENT,
   ADE_WORK_SIDEBAR_BROWSER_RESIZE_START_EVENT,
 } from "../../../lib/workSidebarBrowserResize";
+import { FLOATS_OVER_BROWSER_ATTR } from "../../ui/overlayState";
 import type { BrowserFrame } from "./browserPanelTypes";
 
 /**
@@ -58,6 +59,7 @@ const OVERLAY_CANDIDATE_SELECTOR = [
   "[data-radix-popover-content]",
   "[data-radix-select-content]",
   "[data-side][data-align]",
+  `[${FLOATS_OVER_BROWSER_ATTR}]`,
   ".fixed",
   ".absolute",
   ".sticky",
@@ -130,8 +132,8 @@ function measureNativeBrowserBounds(
   };
 }
 
-/** The popover libraries' own content boxes, which are always overlays. */
-const OVERLAY_CONTENT_SELECTOR = "[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align]";
+/** The popover libraries' own content boxes and ADE's floating notices, which are always overlays. */
+const OVERLAY_CONTENT_SELECTOR = `[data-radix-popper-content-wrapper], [data-radix-dialog-content], [data-radix-menu-content], [data-radix-popover-content], [data-radix-select-content], [data-side][data-align], [${FLOATS_OVER_BROWSER_ATTR}]`;
 
 /**
  * Read the overlay decision's inputs off a live element.

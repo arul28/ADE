@@ -7,6 +7,7 @@ import {
   NoticeIcon,
   type NoticeAction,
 } from "./NoticeParts";
+import { FLOATS_OVER_BROWSER_PROPS } from "../overlayState";
 import { NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "./noticeTones";
 
 /**
@@ -85,6 +86,7 @@ export function ToastCard({
       role={model.tone === "error" ? "alert" : "status"}
       data-notice-tone={model.tone}
       data-testid={testId}
+      {...FLOATS_OVER_BROWSER_PROPS}
       className={className}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
