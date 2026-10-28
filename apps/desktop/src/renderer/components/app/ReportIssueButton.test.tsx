@@ -1,6 +1,6 @@
 /* @vitest-environment jsdom */
 
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { DiagnosticReportPayload } from "../../../shared/types/diagnostics";
 import { ReportIssueButton } from "./ReportIssueButton";
@@ -118,11 +118,14 @@ describe("ReportIssueButton", () => {
     await screen.findByRole("button", { name: "Sending report…" });
 
     rerender(<ReportIssueButton context={next} />);
-    settleOld({ ok: true, reference: "old111", reportPath: "", report: "old report" });
+    // Settle the old send and let its reply land before looking.
+    await act(async () => {
+      settleOld({ ok: true, reference: "old111", reportPath: "", report: "old report" });
+    });
 
-    const button = await screen.findByRole("button", { name: "Report issue" });
+    const button = screen.getByRole("button", { name: "Report issue" });
     expect(button.hasAttribute("disabled")).toBe(false);
-    await waitFor(() => expect(screen.queryByText(/reference old111/)).toBeNull());
+    expect(screen.queryByText(/reference old111/)).toBeNull();
 
     fireEvent.click(button);
     await screen.findByText(/reference new777/);
