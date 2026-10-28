@@ -279,8 +279,7 @@ struct DuoFilesWindow<Tree: View, Editor: View>: View {
   }
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
-      let landscape = size.width > size.height
+    DuoLocalFoldReader { fold, size, landscape in
       let narrow = !landscape && !fold.isStacked && size.width - Self.treeWidth < Self.minimumEditorWidth
       Group {
         if landscape {

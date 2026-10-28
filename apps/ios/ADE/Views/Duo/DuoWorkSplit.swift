@@ -363,7 +363,7 @@ struct DuoWorkBoard<Card: View>: View {
   @Environment(\.duoWorkFamily) private var family
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
+    DuoLocalFoldReader { fold, size, _ in
       if family == .tall {
         tallGrid(fold: fold, size: size)
       } else {

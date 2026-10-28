@@ -91,10 +91,21 @@ private struct DuoLayoutRootModifier: ViewModifier {
           fold: DuoFoldReading.fold(in: proxy),
           hingeAngle: hingeAngle,
           hasFold: DuoFoldReading.hasFold(in: proxy),
-          isLandscape: proxy.size.width > proxy.size.height
+          isLandscape: proxy.isLandscapeIgnoringKeyboard
         ))
     }
     .modifier(DuoHingeObserver(angle: $hingeAngle))
+  }
+}
+
+extension GeometryProxy {
+  /// Wider than tall, measured on the view's whole frame, safe areas
+  /// included. The keyboard is a safe area: it shrinks `size` (an upright
+  /// phone's view goes wider than tall while it is up), and a layout that
+  /// changed with it would drop the keyboard, grow back, and loop.
+  var isLandscapeIgnoringKeyboard: Bool {
+    let insets = safeAreaInsets
+    return size.width + insets.leading + insets.trailing > size.height + insets.top + insets.bottom
   }
 }
 
@@ -192,11 +203,14 @@ private struct DuoHingeObserver: ViewModifier {
 /// The fold as seen by one pane, in that pane's own coordinates. Use it for a
 /// pane that has to keep a control off the fold or draw along it.
 struct DuoLocalFoldReader<Content: View>: View {
-  @ViewBuilder var content: (DuoFold, CGSize) -> Content
+  /// The fold, the area's size, and whether the area is held landscape.
+  /// Decide wide or tall from the flag, not from the size: the keyboard
+  /// shortens the size, and an upright area is not landscape while it is up.
+  @ViewBuilder var content: (DuoFold, CGSize, Bool) -> Content
 
   var body: some View {
     GeometryReader { proxy in
-      content(DuoFoldReading.fold(in: proxy), proxy.size)
+      content(DuoFoldReading.fold(in: proxy), proxy.size, proxy.isLandscapeIgnoringKeyboard)
     }
   }
 }
@@ -215,11 +229,11 @@ enum DuoFamily: Equatable {
 }
 
 extension DuoLayout {
-  /// The family for a screen of `size`. Callers pass the size of the area
-  /// they lay out (a GeometryReader's size), not the screen's.
-  func family(for size: CGSize) -> DuoFamily {
+  /// The family for the area a caller lays out (not the screen), from
+  /// whether that area is landscape (`isLandscapeIgnoringKeyboard`).
+  func family(landscape: Bool) -> DuoFamily {
     guard isWide else { return .compact }
-    return size.width > size.height ? .wide : .tall
+    return landscape ? .wide : .tall
   }
 }
 

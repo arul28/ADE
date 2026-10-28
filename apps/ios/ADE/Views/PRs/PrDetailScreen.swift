@@ -2608,10 +2608,10 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
     // list over the diff. Only a chat's pane keeps a list that pushes.
     // Loading or empty, the list says so on its own.
     if context != .pane, !model.files.isEmpty {
-      DuoLocalFoldReader { fold, size in
+      DuoLocalFoldReader { fold, size, landscape in
         // A phone held landscape has the width and not the height: side by
         // side, like the wide column.
-        if family == .wide || (context == .phone && size.width > size.height) {
+        if family == .wide || (context == .phone && landscape) {
           let listWidth: CGFloat = {
             if case .sideBySide(let rect) = fold, rect.minX > 220 { return rect.minX }
             return min(300, size.width * 0.4)
@@ -2703,7 +2703,7 @@ struct PrDuoDetail<Header: View, Overflow: View>: View {
   @ViewBuilder
   private var checks: some View {
     if context == .column {
-      DuoLocalFoldReader { fold, size in
+      DuoLocalFoldReader { fold, size, _ in
         // Beside the check only when both fit; a single page pushes it.
         if family == .wide, size.width >= 460 {
           let listWidth = min(300, size.width * 0.45)
