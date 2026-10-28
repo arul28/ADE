@@ -24,6 +24,7 @@ import {
   type ProviderKeySpec,
 } from "./providerKeySpecs";
 import { providerActionMessage } from "../providerErrorMessage";
+import { noticeKindModel, type NoticeKind } from "../../../ui/notice/noticeKind";
 
 export type ApiKeyDraft = {
   /** OpenCode only; empty for every other provider. */
@@ -140,7 +141,8 @@ export function AddApiKeySheet({
   );
   const [models, setModels] = useState((existing?.models ?? []).join(", "));
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [error, setError] = useState<{ message: string; kind: NoticeKind } | null>(null);
   const labelInputRef = useRef<HTMLInputElement | null>(null);
 
   const envVar = useMemo(() => resolveKeyEnvVar(spec, baseUrl), [spec, baseUrl]);
@@ -154,7 +156,7 @@ export function AddApiKeySheet({
     if (!canSave || busy) return;
     const endpointError = spec.endpoint ? endpointProblem(baseUrl) : null;
     if (endpointError) {
-      setError(endpointError);
+      setError({ message: endpointError, kind: "hint" });
       return;
     }
     setBusy(true);
@@ -171,7 +173,7 @@ export function AddApiKeySheet({
           : [],
       });
     } catch (err) {
-      setError(providerActionMessage(err, "That key could not be saved."));
+      setError({ message: providerActionMessage(err, "That key could not be saved."), kind: "failure" });
       setBusy(false);
     }
   }, [baseUrl, busy, canSave, key, label, models, onSave, protocol, providerId, spec]);
@@ -209,7 +211,11 @@ export function AddApiKeySheet({
         <Banner
           layout="inline"
           style={{ margin: "8px 20px 0" }}
-          model={{ id: "provider-api-key-error", tone: "error", title: error }}
+          model={{
+            id: "provider-api-key-error",
+            ...noticeKindModel(error.kind),
+            title: error.message,
+          }}
         />
       ) : null}
 

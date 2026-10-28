@@ -29,5 +29,8 @@ export {
   type NoticeAction,
   type NoticeActionVariant,
 } from "./NoticeParts";
+export { type NoticeReport } from "./NoticeReport";
+export { InlineErrorNotice } from "./InlineErrorNotice";
+export { noticeKindModel, type NoticeKind } from "./noticeKind";
 export { noticeTone, type NoticeTone, type NoticeToneTokens } from "./noticeTones";
 export { StatusChip, StatusStrip, type StatusChipAction } from "./StatusChip";

@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type ReactNode } from "react";
-import { CheckCircle, CircleNotch, WarningCircle } from "@phosphor-icons/react";
+import { CheckCircle, CircleNotch } from "@phosphor-icons/react";
 import { harnessBodyLabel, type HarnessPresetBody } from "../../../../shared/harnessPresets";
 import type { ProviderFamily } from "../../../../shared/modelRegistry";
 import { routeKindLabel } from "../../../../shared/harnessRoutes";
@@ -14,6 +14,7 @@ import {
 } from "../../settings/harnesses/harnessReach";
 import type { HarnessRouteTestState } from "../../settings/harnesses/useHarnessReach";
 import { scoreModelPickerSearch } from "./modelPickerSearch";
+import { InlineErrorNotice } from "../../ui/notice";
 
 /**
  * The shared "what can this harness run" list.
@@ -222,10 +223,14 @@ export function RouteTestBadge({ state }: { state: HarnessRouteTestState | undef
     );
   }
   return (
-    <span className="inline-flex max-w-[140px] items-center gap-1 text-[10px] text-red-300/85" title={state.error}>
-      <WarningCircle size={10} weight="fill" />
-      <span className="truncate">Failed</span>
-    </span>
+    <InlineErrorNotice
+      id="harness-route-test"
+      message={state.error ?? "The test failed."}
+      label="Failed"
+      report={{ surface: "harness_route_test", headline: "Route test failed" }}
+      size={10}
+      maxWidth={140}
+    />
   );
 }
 

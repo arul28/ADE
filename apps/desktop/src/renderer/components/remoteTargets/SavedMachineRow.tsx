@@ -37,6 +37,7 @@ import {
   type SavedMachineRow as SavedMachineRowModel,
 } from "./remoteMachineModel";
 import { RemoteErrorCard } from "./RemoteErrorCard";
+import { Banner } from "../ui/notice";
 import {
   RemoteTargetForm,
   type RemoteTargetFormPrefill,
@@ -46,7 +47,6 @@ import {
   connectButtonStyle,
   iconActionButtonStyle,
   inlineDetailStyle,
-  inlineErrorTextStyle,
   inlineSuccessTextStyle,
   machineRowStyle,
   nameStyle,
@@ -408,12 +408,22 @@ export function SavedMachineRow({
         ) : null}
 
         {showFinalUpdateStatus && updateStatus ? (
-          <div
-            role="status"
-            style={updateStatus.ok ? inlineSuccessTextStyle : inlineErrorTextStyle}
-          >
-            {updateStatus.message}
-          </div>
+          updateStatus.ok ? (
+            <div role="status" style={inlineSuccessTextStyle}>
+              {updateStatus.message}
+            </div>
+          ) : (
+            <Banner
+              layout="inline"
+              model={{
+                id: "machine-update-error",
+                tone: "error",
+                title: `Couldn't update ${target.name}`,
+                detail: updateStatus.message,
+                report: { surface: "machine_update", code: "remote_update_failed", technicalDetail: updateStatus.message },
+              }}
+            />
+          )
         ) : null}
 
         {shownErrorCard ? (

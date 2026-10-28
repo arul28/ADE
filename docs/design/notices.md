@@ -193,7 +193,30 @@ useSituationalSuggestion({
   × tooltip, for example "Dismiss for an hour".
 - **None** (`false` or omitted): the banner cannot be dismissed. Use this for
   states the user cannot ignore, such as being signed out or a missing project
-  folder. The banner goes away when the state resolves.
+  folder. The banner goes away when the state resolves. A failure banner (see
+  below) still gets a ×.
+
+## Failures: one template
+
+Every notice about a failure is a `Banner` (or a toast) with `tone: "error"`,
+never a hand-styled red line. `Banner` then adds, with no wiring from the
+owner:
+
+- a × even when `dismiss` is omitted; it hides that exact failure until its
+  text changes or the owner stops rendering it;
+- **Details**, a fold with the raw error when it is not already on screen;
+- **Report issue** (`ReportIssueButton`), which sends a redacted diagnostic
+  report to ADE;
+- one Sentry log, `notice.<surface>`, the first time that failure is shown.
+
+`BannerModel.report` (`NoticeReport` in `ui/notice/NoticeReport.tsx`) names
+the failure: `surface`, a stable `code`, and the raw `technicalDetail` when
+the title is a friendly sentence. Pass it to give a warning that is really a
+failure the same treatment (the "Claude runtime" banner, "Couldn't load
+chats from <machine>"). Pass `report: false` for an error the person fixes
+themselves, such as a required field. Error toasts get Details and Report the
+same way; `showToast` already logs them to Sentry. Field-level validation
+under an input stays plain text.
 
 Toasts: `dismissible` defaults to true. `onClose` runs only when the user
 clicks ×. It does not run on auto-dismiss.

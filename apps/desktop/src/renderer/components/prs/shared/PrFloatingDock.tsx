@@ -34,6 +34,7 @@ import {
 } from "../../../../shared/prNextStep";
 import { classifyPrAuthor, normalizeGithubLogin } from "../../../../shared/prBotIdentity";
 import { COLORS, MONO_FONT, SANS_FONT, fgTint } from "../../lanes/laneDesignTokens";
+import { Banner } from "../../ui/notice";
 import { PrAgentAvatar } from "./PrAgentAvatar";
 import { PrMarkdownEditor } from "./PrMarkdownEditor";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
@@ -604,8 +605,18 @@ function PrMergeCardFooter({ mergeBlockedReason, notice }: { mergeBlockedReason:
           {mergeBlockedReason}
         </div>
       ) : null}
-      {notice ? (
-        <div className="text-[11.5px]" style={{ color: notice.tone === "error" ? COLORS.danger : COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
+      {notice?.tone === "error" ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "pr-merge-card-error",
+            tone: "error",
+            title: notice.text,
+            report: { surface: "pr_merge_card" },
+          }}
+        />
+      ) : notice ? (
+        <div className="text-[11.5px]" style={{ color: COLORS.success, fontFamily: SANS_FONT }}>{notice.text}</div>
       ) : null}
     </>
   );

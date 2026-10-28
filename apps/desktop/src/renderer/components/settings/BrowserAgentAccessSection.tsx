@@ -10,6 +10,7 @@ import {
   useBrowserAgentAccess,
 } from "../chat/browser/browserAgentAccess";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 import { useSettingsAction } from "./useSettingsAction";
 import "./machineSettings.css";
 
@@ -151,7 +152,17 @@ export function BrowserAgentAccessSection() {
         </div>
       ) : null}
 
-      {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "browser-agent-access-error",
+            tone: "error",
+            title: error,
+            report: { surface: "browser_agent_access" },
+          }}
+        />
+      ) : null}
     </ModernSection>
   );
 }

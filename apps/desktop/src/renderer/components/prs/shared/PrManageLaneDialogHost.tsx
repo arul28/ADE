@@ -6,8 +6,10 @@ import type { DeleteLaneArgs, LaneSummary } from "../../../../shared/types";
 import {
   ManageLaneDialog,
   EMPTY_LANE_DELETE_SELECTION,
+  type LaneActionError,
   type LaneDeleteSelection,
 } from "../../lanes/ManageLaneDialog";
+import { extractError } from "../../../lib/format";
 import { useAppStore } from "../../../state/appStore";
 import { requestCrossMachineLanesForMachine, useLanesForPin } from "../../../state/crossMachineLanes";
 import { machineIdForBinding } from "../../../../shared/machineIdentity";
@@ -41,7 +43,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
-  const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionError, setLaneActionError] = useState<LaneActionError | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
 
   const runLaneAction = useCallback(async (
@@ -61,7 +63,7 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       onOpenChange(false);
       return true;
     } catch (err) {
-      setLaneActionError(err instanceof Error ? err.message : String(err));
+      setLaneActionError({ message: extractError(err), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);

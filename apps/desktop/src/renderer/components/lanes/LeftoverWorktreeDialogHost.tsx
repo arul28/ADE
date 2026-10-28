@@ -4,7 +4,9 @@ import type { LaneDeleteLeftoverWorktree } from "../../../shared/types";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { revealLabel } from "../../lib/platform";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { extractError } from "../../lib/format";
 import { Dialog } from "../ui/dialog";
+import { Banner } from "../ui/notice";
 
 type LeftoverPrompt = LaneDeleteLeftoverWorktree & { laneId: string };
 
@@ -49,7 +51,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
 
   const reveal = () => {
     void window.ade.lanes.revealLeftoverWorktree({ laneId: current.laneId }).catch((reason: unknown) => {
-      setError(reason instanceof Error ? reason.message : String(reason));
+      setError(extractError(reason));
     });
   };
 
@@ -60,7 +62,7 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       .then(() => dismiss())
       .catch((reason: unknown) => {
         setDeleting(false);
-        setError(stripElectronErrorWrapper(reason instanceof Error ? reason.message : String(reason)));
+        setError(stripElectronErrorWrapper(extractError(reason)));
       });
   };
 
@@ -98,7 +100,19 @@ export function LeftoverWorktreeDialogHost(): JSX.Element | null {
       ]}
     >
       <p className="break-all font-mono text-[12px] text-fg/80">{current.path}</p>
-      {error ? <p className="mt-2 text-[12px] text-[var(--color-danger,#F87171)]">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 8 }}
+          model={{
+            id: "leftover-worktree-error",
+            tone: "error",
+            title: error,
+            report: { surface: "leftover_worktree" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
     </Dialog>
   );
 }

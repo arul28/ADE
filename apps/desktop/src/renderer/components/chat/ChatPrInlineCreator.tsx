@@ -7,16 +7,17 @@ import {
   CircleNotch,
   GitPullRequest,
   LockSimple,
-  Warning,
 } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { LaneCombobox } from "../terminals/LaneCombobox";
 import { LaneLogoMark, laneDisplayColor } from "../terminals/LaneChip";
 import { toneText } from "../lanes/laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { useAppStore } from "../../state/appStore";
 import type { PrSummary } from "../../../shared/types";
 import { branchNameFromRef, resolveLaneBaseBranch } from "../prs/shared/laneBranchTargets";
 import { buildLinearPrReference } from "../../../shared/linearMagicWords";
+import { extractError } from "../../lib/format";
 
 /**
  * Lightweight pull-request creator embedded in the left PR floating pane. A
@@ -163,7 +164,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
   }, [linearIssue]);
 
   const cleanError = (err: unknown): string =>
-    (err instanceof Error ? err.message : String(err)).replace(
+    (extractError(err)).replace(
       /^Error invoking remote method '[^']+': (?:Error: )?/,
       "",
     );
@@ -302,10 +303,16 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
             transition={{ duration: 0.15 }}
             className="overflow-hidden"
           >
-            <div className="flex items-start gap-1.5 rounded-lg border border-red-400/25 bg-red-500/[0.07] px-2.5 py-1.5 text-[11px] leading-[1.45] text-red-200/90">
-              <Warning size={12} weight="fill" className="mt-px shrink-0 text-red-300/80" />
-              <span className="min-w-0 break-words">{error}</span>
-            </div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "chat-pr-create-error",
+                tone: "error",
+                title: error,
+                report: { surface: "chat_pr_create" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
           </motion.div>
         ) : null}
       </AnimatePresence>

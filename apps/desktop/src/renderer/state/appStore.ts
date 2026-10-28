@@ -1434,6 +1434,11 @@ export type CrossMachineMachineLanes = {
   lanesSyncedAtMs: number | null;
   /** Last read failure, kept alongside (not instead of) the retained lanes. */
   error: string | null;
+  /**
+   * Reads failed in a row since the last good read or reconnect. One failure
+   * is usually a machine still waking after it reconnects, not worth a notice.
+   */
+  failedReads?: number;
 };
 
 export type BrowserDockState = {
@@ -2521,13 +2526,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const incomingBinding =
         entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
       const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
+      const online = entry.online !== undefined ? entry.online : previous?.online ?? false;
+      // A machine coming back starts clean: the error it had before it dropped
+      // says nothing about the connection it has now.
+      const reconnected = previous?.online === false && online;
+      const priorError = reconnected ? null : previous?.error ?? null;
+      const priorFailedReads = reconnected ? 0 : previous?.failedReads ?? 0;
       const next: CrossMachineMachineLanes = {
         machineId,
         machineName: entry.machineName.trim() || previous?.machineName || machineId,
         targetId: entry.targetId !== undefined ? entry.targetId : previous?.targetId ?? null,
         projectId: entry.projectId !== undefined ? entry.projectId : previous?.projectId ?? null,
         binding,
-        online: entry.online !== undefined ? entry.online : previous?.online ?? false,
+        online,
         // Retention, stated explicitly rather than left to accident: a read that
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
@@ -2540,7 +2551,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         // Lane-specific on purpose: only an actual lane read advances this, so a
         // sessions-only or PR-only merge cannot pass itself off as a lane read.
         lanesSyncedAtMs: entry.lanes ? Date.now() : previous?.lanesSyncedAtMs ?? null,
-        error: entry.error !== undefined ? entry.error : previous?.error ?? null,
+        error: entry.error !== undefined ? entry.error : priorError,
+        failedReads: entry.error === undefined
+          ? priorFailedReads
+          : entry.error === null ? 0 : priorFailedReads + 1,
       };
       // A read that found nothing new still re-stamps the sync clocks. Their
       // readers judge staleness on a minute scale, so a stamp-only change waits
@@ -2561,6 +2575,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && stampCurrent(previous.lastSyncedAtMs, next.lastSyncedAtMs)
         && stampCurrent(previous.lanesSyncedAtMs, next.lanesSyncedAtMs)
         && previous.error === next.error
+        && (previous.failedReads ?? 0) === next.failedReads
       );
       if (sliceUnchanged && !intendedChanged) return {};
       return {
@@ -2590,8 +2605,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           continue;
         }
         // Flag, never drop. The lanes and sessions carry over verbatim; the
-        // union hook decides how that flag renders.
-        nextRecord[machineId] = { ...entry, online: isOnline };
+        // union hook decides how that flag renders. A reconnect clears the
+        // read error from before the drop.
+        nextRecord[machineId] = isOnline
+          ? { ...entry, online: true, error: null, failedReads: 0 }
+          : { ...entry, online: false };
         changed = true;
       }
       return changed ? { crossMachineLanesByMachineId: nextRecord } : {};

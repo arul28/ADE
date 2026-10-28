@@ -22,6 +22,7 @@ import {
   type MacDesktopPoint,
 } from "../chat/useMacDesktopRealInput";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { isDesktopWorkTool, type DesktopWorkTool } from "./workTools";
 import { createBackoffPoller } from "../../lib/backoffPoller";
 import {
@@ -29,6 +30,7 @@ import {
   macDesktopWebApi,
 } from "../chat/macDesktopWebStream";
 import { useMacDesktopStreamSubscription } from "../chat/useMacDesktopStreamSubscription";
+import { extractError } from "../../lib/format";
 
 export { createMacDesktopStreamSource } from "../chat/macDesktopWebStream";
 
@@ -567,7 +569,7 @@ function MacDesktopPanel({
       holdingSinceRef.current = Date.now();
       setControlHolderId(next.holderId);
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      setActionError(extractError(error));
     } finally {
       setControlBusy(false);
     }
@@ -695,7 +697,7 @@ function MacDesktopPanel({
       else await api.stop?.({ laneId });
       onRefresh();
     } catch (error) {
-      setActionError(error instanceof Error ? error.message : String(error));
+      setActionError(extractError(error));
     } finally {
       setBusy(false);
     }
@@ -715,7 +717,18 @@ function MacDesktopPanel({
             {busy ? "Starting…" : "Start desktop"}
           </button>
         ) : null}
-        {actionError ? <p className="text-[11px] text-red-400">{actionError}</p> : null}
+        {actionError ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "work-tool-desktop-start-error",
+              tone: "error",
+              title: actionError,
+              report: { surface: "work_tool_desktop_action" },
+              dismiss: { onDismiss: () => setActionError(null) },
+            }}
+          />
+        ) : null}
       </div>
     );
   }
@@ -802,20 +815,24 @@ function MacDesktopPanel({
           </p>
         ) : null}
         {actionError ? (
-          <p className="mt-1 flex items-center gap-1.5 text-[11px] text-red-400" data-testid="mac-desktop-web-error">
-            <span className="min-w-0 truncate" title={actionError}>{actionError}</span>
-            <button
-              type="button"
-              aria-label="Dismiss error"
-              className="shrink-0 px-0.5 text-red-300/80 hover:text-red-200"
-              onClick={() => {
-                setActionError(null);
-                clearRealInputError();
-              }}
-            >
-              ×
-            </button>
-          </p>
+          <Banner
+            layout="inline"
+            testId="mac-desktop-web-error"
+            style={{ marginTop: 4 }}
+            model={{
+              id: "mac-desktop-web-error",
+              tone: "error",
+              title: actionError,
+              report: { surface: "mac_desktop_web" },
+              dismiss: {
+                label: "Dismiss error",
+                onDismiss: () => {
+                  setActionError(null);
+                  clearRealInputError();
+                },
+              },
+            }}
+          />
         ) : null}
       </div>
 

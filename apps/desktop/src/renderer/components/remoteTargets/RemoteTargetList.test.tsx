@@ -1262,14 +1262,14 @@ describe("RemoteTargetList", () => {
     expect(
       await screen.findByText("The remote machine is out of disk space."),
     ).toBeTruthy();
-    // Technical detail is hidden until the expander is opened.
-    expect(screen.queryByText(/100% used/)).toBeNull();
+    // The raw error shows as one line; the rest opens from it.
+    expect(screen.queryByText(/extract aborted/)).toBeNull();
 
     fireEvent.click(
-      screen.getByRole("button", { name: /Show technical details/ }),
+      screen.getByRole("button", { name: /100% used/ }),
     );
 
-    expect(screen.getByText(/df: \/: 100% used \(0 bytes free\)/)).toBeTruthy();
+    expect(screen.getByText(/extract aborted/)).toBeTruthy();
   });
 
   it("shows bounded privacy-safe route diagnostics without endpoint paths", async () => {

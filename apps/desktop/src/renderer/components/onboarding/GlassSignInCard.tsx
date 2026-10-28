@@ -7,6 +7,7 @@ import { useSignInFlow } from "../account/useSignInFlow";
 import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { SmartTooltip } from "../ui/SmartTooltip";
+import { Banner } from "../ui/notice";
 
 /**
  * The launch gate's sign-in: a frosted card floating over the window mesh.
@@ -110,7 +111,18 @@ export function GlassSignInCard({
         </div>
       ) : null}
 
-      {error ? <div className="ade-glass-error">{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 14 }}
+          model={{
+            id: "glass-sign-in-error",
+            tone: "error",
+            title: error,
+            report: { surface: "account_sign_in" },
+          }}
+        />
+      ) : null}
 
       <div className="ade-glass-foot">
         <span>Sign in to use ADE Relay</span>

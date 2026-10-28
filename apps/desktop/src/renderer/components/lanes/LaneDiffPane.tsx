@@ -8,6 +8,7 @@ import { AdeDiffViewer, type AdeDiffViewerHandle } from "../shared/AdeDiffViewer
 import type { FileDiff, FilePatch, GitCommitSummary, LaneDiffMode, OpenProjectBinding } from "../../../shared/types";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { getFileIcon } from "../files/filePresentation";
 import { createPinnedFilesApi } from "../files/v2/pinnedFilesApi";
 import { COLORS, MONO_FONT, outlineButton } from "./laneDesignTokens";
@@ -46,14 +47,17 @@ function splitPath(path: string): { dir: string; name: string } {
 function DiffFailedRetry({ onRetry }: { onRetry: () => void }) {
   return (
     <div className="flex h-full flex-col items-center justify-center gap-2 p-4">
-      <span className="text-sm text-red-400">Failed to load diff</span>
-      <button
-        type="button"
-        onClick={onRetry}
-        className="text-xs text-white/60 hover:text-white/80 underline focus-visible:ring-2 focus-visible:ring-purple-400/50 focus-visible:ring-offset-0"
-      >
-        Retry
-      </button>
+      <Banner
+        layout="inline"
+        style={{ maxWidth: 420 }}
+        model={{
+          id: "lane-diff-load-error",
+          tone: "error",
+          title: "Failed to load diff",
+          actions: [{ label: "Retry", onClick: onRetry }],
+          report: { surface: "lane_diff_load" },
+        }}
+      />
     </div>
   );
 }

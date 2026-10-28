@@ -7,6 +7,7 @@ import { threadCommentQuoteText, threadReviewCountLabel, type ChatThreadComment 
 import { fixedMenuAboveAnchorStyle } from "../../lib/fixedMenuPlacement";
 import { useOnSurfaceHidden } from "../../lib/parkedSurface";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import {
@@ -154,7 +155,17 @@ export function ThreadCommentEditor({
         }}
         className="w-full resize-none rounded-md border border-fg/[0.08] bg-black/25 px-2 py-1.5 font-sans text-[12px] leading-[1.5] text-fg/90 outline-none placeholder:text-fg/35 focus:border-[color:color-mix(in_srgb,var(--chat-accent)_45%,transparent)]"
       />
-      {error ? <div className="font-sans text-[11px] text-red-300/85">{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "thread-comment-save-error",
+            tone: "error",
+            title: error,
+            report: { surface: "thread_comment_save" },
+          }}
+        />
+      ) : null}
       <div className="flex items-center justify-end gap-1.5">
         <button
           type="button"
@@ -405,7 +416,16 @@ export function ComposerThreadCommentsButton({
                 ))}
               </div>
               {actions.error && !actions.editingId ? (
-                <div className="border-t border-fg/[0.06] px-3 py-1.5 font-sans text-[11px] text-red-300/85">{actions.error}</div>
+                <Banner
+                  layout="inline"
+                  style={{ margin: "6px 12px" }}
+                  model={{
+                    id: "thread-comment-action-error",
+                    tone: "error",
+                    title: actions.error,
+                    report: { surface: "thread_comment_action" },
+                  }}
+                />
               ) : null}
             </div>
           </ViewportOverlayPortal>

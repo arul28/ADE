@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import type { SessionLifecycleSettings } from "../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 
 export function SessionLifecycleSection() {
@@ -78,7 +79,18 @@ export function SessionLifecycleSection() {
             )
           }
         >
-          {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+          {error ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "session-lifecycle-error",
+                tone: "error",
+                title: error,
+                report: { surface: "session_lifecycle_settings" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
+          ) : null}
         </ModernRow>
       </ModernRows>
     </ModernSection>

@@ -5,6 +5,7 @@ import { useAppStore } from "../../state/appStore";
 import { useVoiceModelInstall } from "../../hooks/useVoiceModelInstall";
 import { VOICE_MODEL_SIZE_LABEL } from "../../services/globalVoiceModelInstaller";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 
 const detailPanelStyle: React.CSSProperties = {
   display: "flex",
@@ -120,9 +121,17 @@ export function DictationSection() {
                 </span>
               </button>
               {install.phase === "error" && install.error ? (
-                <div style={{ flexBasis: "100%", fontSize: 12, color: "var(--color-error)", lineHeight: 1.5 }}>
-                  {install.error}
-                </div>
+                <Banner
+                  layout="inline"
+                  style={{ flexBasis: "100%" }}
+                  model={{
+                    id: "dictation-model-download-error",
+                    tone: "error",
+                    title: "Couldn't download the speech model",
+                    detail: install.error,
+                    report: { surface: "dictation_model_download", technicalDetail: install.error },
+                  }}
+                />
               ) : null}
             </div>
           ) : null}

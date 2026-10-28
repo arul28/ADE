@@ -40,6 +40,7 @@ import {
 } from "./commitRowModel";
 import { PR_STATE_COLOR } from "./commitRowModel";
 import { copyText, stripIpcErrorPrefix } from "./historyClipboard";
+import { InlineErrorNotice } from "../ui/notice";
 
 const FILE_ROWS = 200;
 
@@ -432,11 +433,16 @@ export function CommitDetailPanel({
                 </DropdownMenu.Content>
               </DropdownMenu.Portal>
             </DropdownMenu.Root>
-            {notice ? (
-              <span
-                className={cn("min-w-0 truncate text-[12px]", notice.error ? "text-[var(--color-error)]" : "text-muted-fg")}
-                title={notice.text}
-              >
+            {notice?.error ? (
+              <InlineErrorNotice
+                id="commit-detail-action"
+                message={notice.text}
+                report={{ surface: "commit_detail_action", headline: "Commit action failed" }}
+                onDismiss={() => setNotice(null)}
+                size={12}
+              />
+            ) : notice ? (
+              <span className="min-w-0 truncate text-[12px] text-muted-fg" title={notice.text}>
                 {notice.text}
               </span>
             ) : null}

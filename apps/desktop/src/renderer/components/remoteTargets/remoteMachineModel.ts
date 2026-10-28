@@ -562,7 +562,18 @@ export type MachineErrorCard = {
    * Recovery actions key off this — the message is prose and is never parsed.
    */
   failure: RemoteRuntimeConnectionAttemptFailure | null;
+  /** The structured error's kind, when there is one. */
+  kind: RemoteRuntimeConnectErrorInfo["kind"] | null;
 };
+
+/**
+ * A connect error that is the machine's state (asleep, out of disk) or the
+ * person's to fix (SSH key, host key, sign-in), not ADE failing. Its banner
+ * warns instead of alarming; it keeps Report so the raw error stays at hand.
+ */
+export function isMachineStateConnectError(kind: RemoteRuntimeConnectErrorInfo["kind"] | null | undefined): boolean {
+  return kind != null && kind !== "generic";
+}
 
 /**
  * Chooses what a failed connection should show the user. A structured
@@ -584,13 +595,14 @@ export function selectMachineErrorCard(args: {
       detail: errorInfo.detail?.trim() ? errorInfo.detail : null,
       structured: true,
       failure: errorInfo.failure ?? null,
+      kind: errorInfo.kind,
     };
   }
   const fallback =
     overrideMessage?.trim() ||
     (rawError ? formatRemoteTargetError(rawError) : null);
   if (!fallback) return null;
-  return { message: fallback, detail: null, structured: false, failure: null };
+  return { message: fallback, detail: null, structured: false, failure: null, kind: null };
 }
 
 // ---------------------------------------------------------------------------

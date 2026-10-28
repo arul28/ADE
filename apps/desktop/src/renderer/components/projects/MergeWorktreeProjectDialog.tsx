@@ -18,6 +18,7 @@ import {
   outlineButton,
 } from "../lanes/laneDesignTokens";
 import { openWorktreeAsLane } from "./worktreeLaneFlow";
+import { Banner } from "../ui/notice";
 
 function retiredWorkLine(
   state: { chatCount: number; laneCount: number } | null,
@@ -300,22 +301,15 @@ export function MergeWorktreeProjectDialog({
                 ) : null}
 
                 {error ? (
-                  <div
-                    role="alert"
-                    style={{
-                      fontFamily: SANS_FONT,
-                      fontSize: 12,
-                      lineHeight: 1.45,
-                      color: "#FCA5A5",
-                      background: "rgba(248,113,113,0.12)",
-                      border: "1px solid rgba(248,113,113,0.4)",
-                      borderRadius: 8,
-                      padding: "8px 10px",
-                      whiteSpace: "pre-wrap",
+                  <Banner
+                    layout="inline"
+                    model={{
+                      id: "merge-worktree-project-error",
+                      tone: "error",
+                      title: error,
+                      report: { surface: "merge_worktree_project" },
                     }}
-                  >
-                    {error}
-                  </div>
+                  />
                 ) : null}
 
                 <div

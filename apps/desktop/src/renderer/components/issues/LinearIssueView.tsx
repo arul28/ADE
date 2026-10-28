@@ -6,6 +6,7 @@ import type {
   LinearIssueRef,
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { BranchIcon } from "../ui/vcsIcons";
 import { LinearStateIcon } from "../lanes/linearBrand";
 import { issueProjectLabel, issueUpdatedLabel } from "../lanes/linearIssueDisplay";
@@ -203,7 +204,15 @@ function ActivitySection({
           {loading ? (
             <div className="text-[11px] text-[color:var(--kit-text-3)]">Loading comments…</div>
           ) : commentError ? (
-            <div className="text-[11px] text-[color:var(--kit-crit)]">{commentError}</div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "linear-issue-comments-error",
+                tone: "error",
+                title: commentError,
+                report: { surface: "linear_issue_comments" },
+              }}
+            />
           ) : comments && comments.length > 0 ? (
             comments.map((comment) => {
               const author = comment.userDisplayName || comment.userName || "Someone";

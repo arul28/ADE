@@ -13,7 +13,7 @@ import { showToast } from "../app/toast/toastStore";
 import { LinearMark } from "../lanes/linearBrand";
 import { JiraMark } from "../lanes/jiraBrand";
 import { Dialog } from "../ui/dialog";
-import { Banner } from "../ui/notice";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 import { settingsRouteFor } from "../settings/settingsManifest";
 import { GitHubIssueFormFields } from "./GitHubIssueFormFields";
 import {
@@ -60,6 +60,7 @@ import {
   useJiraConnectionStatus,
   useJiraProjects,
 } from "./jiraIssueStore";
+import { extractError } from "../../lib/format";
 
 /**
  * Starting a new issue in Linear, GitHub or Jira, in one composer: a big title, the
@@ -135,7 +136,8 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
   const [showMore, setShowMore] = useState(() => Boolean(parent));
   const [createMore, setCreateMore] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+
+  const [error, setError] = useState<{ message: string; kind: NoticeKind } | null>(null);
   const titleRef = useRef<HTMLInputElement | null>(null);
   const bodyRef = useRef<HTMLTextAreaElement | null>(null);
 
@@ -359,12 +361,12 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
       return;
     }
     if (provider === "jira") {
-      setError("Jira image attachments are not available here. Add a link in the description instead.");
+      setError({ message: "Jira image attachments are not available here. Add a link in the description instead.", kind: "hint" });
       return;
     }
     const upload = window.ade?.cto?.uploadLinearFile;
     if (!upload) {
-      setError("Uploading pictures to Linear is not available here.");
+      setError({ message: "Uploading pictures to Linear is not available here.", kind: "status" });
       return;
     }
     for (const file of files) {
@@ -373,7 +375,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         const result = await upload({ filename: file.name || "image.png", contentType: file.type || "image/png", dataBase64: await fileToBase64(file) });
         insertAtCursor(`![${result.filename}](${result.assetUrl})\n`);
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : "Linear refused the picture.");
+        setError({ message: cause instanceof Error ? cause.message : "Linear refused the picture.", kind: "failure" });
       } finally {
         setUploads((count) => count - 1);
       }
@@ -404,7 +406,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
     if (busy || uploads > 0) return;
     const trimmed = title.trim();
     if (!trimmed) {
-      setError("Give the issue a title.");
+      setError({ message: "Give the issue a title.", kind: "hint" });
       titleRef.current?.focus();
       return;
     }
@@ -456,7 +458,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
                   .catch((error: unknown) => showToast({
                     tone: "error",
                     title: "Could not start a lane",
-                    message: error instanceof Error ? error.message : String(error),
+                    message: extractError(error),
                   }));
               },
             }],
@@ -500,7 +502,7 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
         onClose();
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "The issue was not created.");
+      setError({ message: cause instanceof Error ? cause.message : "The issue was not created.", kind: "failure" });
     } finally {
       setBusy(false);
     }
@@ -791,7 +793,18 @@ export function IssueCreateDialog({ request, onClose }: { request: IssueCreateRe
             <input type="checkbox" checked={createMore} onChange={(event) => setCreateMore(event.target.checked)} />
             Create more
           </label>
-          {error ? <span role="alert" className="min-w-0 flex-1 truncate text-[11.5px] text-[color:var(--kit-crit)]" title={error}>{error}</span> : <span className="flex-1" />}
+          {error ? (
+            <Banner
+              layout="inline"
+              style={{ flex: 1, minWidth: 0 }}
+              model={{
+                id: "issue-create-error",
+                ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "issue_create" } : undefined),
+                title: error.message,
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
+          ) : <span className="flex-1" />}
           <span className="text-[11px] text-[color:var(--kit-text-3)]">{MOD()}↵</span>
           <button
             type="button"

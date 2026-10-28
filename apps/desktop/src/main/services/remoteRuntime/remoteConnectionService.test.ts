@@ -1439,11 +1439,11 @@ describe("RemoteConnectionService", () => {
   });
 
   it("uses bounded exponential backoff for automatic reconnect attempts", () => {
-    expect(automaticReconnectBackoffMs(1)).toBe(30_000);
-    expect(automaticReconnectBackoffMs(2)).toBe(60_000);
-    expect(automaticReconnectBackoffMs(3)).toBe(120_000);
-    expect(automaticReconnectBackoffMs(10)).toBe(5 * 60_000);
-    expect(automaticReconnectBackoffMs(100)).toBe(5 * 60_000);
+    expect(automaticReconnectBackoffMs(1)).toBe(10_000);
+    expect(automaticReconnectBackoffMs(2)).toBe(20_000);
+    expect(automaticReconnectBackoffMs(3)).toBe(40_000);
+    expect(automaticReconnectBackoffMs(10)).toBe(2 * 60_000);
+    expect(automaticReconnectBackoffMs(100)).toBe(2 * 60_000);
   });
 
   it("does not change the backoff state on pool backoff throttle errors", async () => {

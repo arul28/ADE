@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
 import type { DiffMode, FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
 import { hostSupportsBranchDiff } from "../../../../lib/branchDiffSupport";
+import { extractError } from "../../../../lib/format";
 import { COLORS, MONO_FONT } from "../../../lanes/laneDesignTokens";
+import { Banner } from "../../../ui/notice";
 import { AdeDiffViewer } from "../../../shared/AdeDiffViewer";
 
 function diffHasChanges(diff: FileDiff | null): boolean {
@@ -89,7 +91,7 @@ export function DiffViewer({
       const nextPatch = p.status === "fulfilled" && patchHasChanges(p.value) ? p.value : null;
       if (!nextPatch && !diffHasChanges(nextDiff)) {
         if (d.status === "rejected") {
-          setError(d.reason instanceof Error ? d.reason.message : String(d.reason));
+          setError(extractError(d.reason));
         }
       }
       setDiff(nextDiff);
@@ -98,7 +100,7 @@ export function DiffViewer({
       if (!cancelled) {
         setDiff(null);
         setPatch(null);
-        setError(err instanceof Error ? err.message : String(err));
+        setError(extractError(err));
       }
     });
     return () => {
@@ -143,7 +145,16 @@ export function DiffViewer({
         <span className="ml-auto truncate text-xs" style={{ fontFamily: MONO_FONT, color: COLORS.textDim }}>{path}</span>
       </div>
       {error ? (
-        <div className="px-3 py-2 text-xs" style={{ fontFamily: MONO_FONT, color: COLORS.danger }}>{error}</div>
+        <Banner
+          layout="inline"
+          style={{ margin: "8px 12px" }}
+          model={{
+            id: "files-diff-load-error",
+            tone: "error",
+            title: error,
+            report: { surface: "files_diff_load" },
+          }}
+        />
       ) : null}
       <div className="min-h-0 min-w-0 flex-1">
         {patchHasChanges(patch) || diffHasChanges(diff) ? (

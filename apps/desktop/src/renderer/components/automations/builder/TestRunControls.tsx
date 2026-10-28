@@ -331,7 +331,18 @@ function TestEventPicker({
       {source === "none" && !needsLane ? (
         <p className="text-[11px] text-muted-fg/70">This trigger has no event to pick. The test runs as if it fired now.</p>
       ) : null}
-      {loadError ? <p className="text-[11px] text-red-300">{loadError}</p> : null}
+      {loadError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "automation-test-run-load-error",
+            tone: "error",
+            title: loadError,
+            report: { surface: "automation_test_run_load" },
+            dismiss: { onDismiss: () => setLoadError(null) },
+          }}
+        />
+      ) : null}
     </div>
   );
 }

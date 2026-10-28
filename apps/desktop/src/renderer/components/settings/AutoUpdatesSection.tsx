@@ -4,6 +4,7 @@ import {
   type AutoUpdatePreferences,
 } from "../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 
 /**
  * The two update-install preferences, as rows of one panel.
@@ -65,7 +66,18 @@ export function AutoUpdatesControls() {
           />
         }
       >
-        {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "auto-updates-error",
+              tone: "error",
+              title: error,
+              report: { surface: "auto_updates_settings" },
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
+        ) : null}
       </ModernRow>
 
       {/* Only meaningful once automatic installs are on — it qualifies when the

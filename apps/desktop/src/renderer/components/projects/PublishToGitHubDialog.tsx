@@ -34,6 +34,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
+import { Banner, noticeKindModel, type NoticeKind } from "../ui/notice";
 
 const GITHUB_CLASSIC_TOKEN_NEW_URL =
   "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
@@ -46,6 +47,7 @@ export type PublishToGitHubDialogProps = {
 };
 
 type PublishError = { code: string; message: string };
+type TokenError = { message: string; kind: NoticeKind };
 
 type NameValidation = { ok: true } | { ok: false; reason: string };
 type OwnerValidation = { ok: true } | { ok: false; reason: string };
@@ -118,7 +120,7 @@ export function PublishToGitHubDialog({
   const [connectMode, setConnectMode] = useState(false);
   const [tokenDraft, setTokenDraft] = useState("");
   const [tokenSaving, setTokenSaving] = useState(false);
-  const [tokenError, setTokenError] = useState<string | null>(null);
+  const [tokenError, setTokenError] = useState<TokenError | null>(null);
   const [storeUnreadable, setStoreUnreadable] = useState(false);
 
   // Reset all local state whenever the dialog opens.
@@ -199,7 +201,7 @@ export function PublishToGitHubDialog({
   const handleSaveToken = useCallback(async () => {
     const token = tokenDraft.trim();
     if (!token) {
-      setTokenError("Paste a personal access token first.");
+      setTokenError({ message: "Paste a personal access token first.", kind: "hint" });
       return;
     }
     setTokenSaving(true);
@@ -208,7 +210,7 @@ export function PublishToGitHubDialog({
       const result = await window.ade.github.setToken(token);
       const verification = describeGithubPatVerification(result);
       if (!verification.verified) {
-        setTokenError(verification.message);
+        setTokenError({ message: verification.message, kind: "hint" });
         return;
       }
       setTokenDraft("");
@@ -217,7 +219,7 @@ export function PublishToGitHubDialog({
         if (status.connected && status.userLogin) setOwner(status.userLogin);
       }).catch(() => {});
     } catch (err) {
-      setTokenError(extractError(err));
+      setTokenError({ message: extractError(err), kind: "failure" });
     } finally {
       setTokenSaving(false);
     }
@@ -508,7 +510,18 @@ function FormBody({
         </div>
       </Field>
 
-      {error ? <InlineHint tone="danger">{error.message}</InlineHint> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "publish-github-error",
+            // A remote that already exists is the project's state, not a failure.
+            tone: error.code === "remote_already_exists" ? "warning" : "error",
+            title: error.message,
+            report: error.code === "remote_already_exists" ? false : { surface: "publish_to_github", code: error.code },
+          }}
+        />
+      ) : null}
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
         <button
@@ -557,7 +570,7 @@ function ConnectBody({
   onTokenChange: (value: string) => void;
   onSaveToken: () => void;
   saving: boolean;
-  error: string | null;
+  error: TokenError | null;
   onOpenTokenLink: () => void;
   onCancel: () => void;
   storeUnreadable: boolean;
@@ -664,7 +677,16 @@ function ConnectBody({
         <ArrowSquareOut size={11} weight="regular" />
       </button>
 
-      {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "publish-github-token-error",
+            ...noticeKindModel(error.kind, error.kind === "failure" ? { surface: "publish_github_token" } : undefined),
+            title: error.message,
+          }}
+        />
+      ) : null}
 
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 4 }}>
         <button

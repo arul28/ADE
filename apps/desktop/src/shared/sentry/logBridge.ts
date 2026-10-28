@@ -55,6 +55,42 @@ function errorFromMeta(meta: Record<string, unknown> | undefined): unknown {
   return undefined;
 }
 
+/**
+ * Budget for diagnostic signals: a notice a person saw, a status that
+ * contradicts itself, a reconnect that keeps failing. They answer "is this
+ * happening, and to whom", which the first few copies say; a machine that sits
+ * offline all day must not log all day. Each signal (event name) has its own
+ * budget per process, so a burst of error banners cannot crowd out a reconnect
+ * signal: 2 per key an hour, 6 a day, and 10 an hour / 30 a day for the event
+ * as a whole. Sent as Sentry Logs, never as issues, so they cannot touch the
+ * error quota.
+ */
+const SIGNAL_BUDGET = { perFingerprintPerHour: 2, totalPerHour: 10, perFingerprintPerDay: 6, totalPerDay: 30 } as const;
+const MAX_SIGNAL_EVENTS = 50;
+const signalLimiters = new Map<string, ReturnType<typeof createEventLimiter>>();
+
+function signalLimiter(event: string): ReturnType<typeof createEventLimiter> | null {
+  const existing = signalLimiters.get(event);
+  if (existing) return existing;
+  // Event names are fixed strings in code; a runaway set of them is a bug, not a reason to send more.
+  if (signalLimiters.size >= MAX_SIGNAL_EVENTS) return null;
+  const created = createEventLimiter(SIGNAL_BUDGET);
+  signalLimiters.set(event, created);
+  return created;
+}
+
+/**
+ * A warn-level signal on the tight budget above. `key` narrows it within the
+ * event (one notice surface, one provider) so one noisy source cannot use up
+ * another's; it defaults to the event name.
+ */
+export function forwardSignalToSentry(event: string, meta?: Record<string, unknown>, key: string = event): void {
+  if (!isSentryActive()) return;
+  const attributes = scrubRecord(meta) ?? {};
+  if (signalLimiter(event)?.admit(key)) sendSentryLog("warn", event, attributes);
+  addSentryBreadcrumb("log", event, attributes, "warning");
+}
+
 export function forwardLogToSentry(level: Level, event: string, meta?: Record<string, unknown>): void {
   if (level !== "warn" && level !== "error") return;
   if (!isSentryActive()) return;

@@ -261,7 +261,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/rebaseNeedUtils.ts` | Rebase need dedup, route selection, upstream rebase chain |
 | `shared/rebaseAttentionUtils.ts` | Auto-rebase attention items for the Rebase tab |
 | `shared/lanePrWarnings.ts` | Pre-submit lane-health warnings |
-| `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. `formatError` turns a thrown value into a message for the detail pane and the `⋯` menu. |
+| `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. |
 | `shared/laneBranchTargets.ts` | Target branch resolution for PR creation |
 | `ConflictFilePreview.tsx` | File-level conflict marker preview |
 | `PrRebaseBanner.tsx` | Rebase banner on a PR |

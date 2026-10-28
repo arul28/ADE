@@ -11,7 +11,6 @@ import {
   MagnifyingGlass,
   SignIn,
   SpinnerGap,
-  WarningCircle,
   X,
   type Icon,
 } from "@phosphor-icons/react";
@@ -25,6 +24,8 @@ import { isMacRuntimeTarget } from "../../lib/platform";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { STANDARD_EASE } from "../../lib/motion";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
 
 /**
  * Import the logins you already have.
@@ -78,10 +79,6 @@ function loginImportApi(): LoginImportApi | null {
   return api && typeof api.listSources === "function" ? api : null;
 }
 
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
 function sourceReason(source: BrowserLoginImportSource): string {
   if (source.status === "ready") return "";
   return source.reason ?? "This browser cannot be imported from right now.";
@@ -131,7 +128,7 @@ export function BrowserLoginImportDialog({
       const listed = await api.listSources();
       setSources(listed.sources ?? []);
     } catch (caught) {
-      setError(errorText(caught));
+      setError(extractError(caught));
     } finally {
       setBusy(false);
     }
@@ -163,7 +160,7 @@ export function BrowserLoginImportDialog({
       setSearch("");
       setStep("domains");
     } catch (caught) {
-      setError(errorText(caught));
+      setError(extractError(caught));
       setSourceId(null);
     } finally {
       setBusy(false);
@@ -185,7 +182,7 @@ export function BrowserLoginImportDialog({
       setStep("done");
       onImported?.(imported);
     } catch (caught) {
-      setError(errorText(caught));
+      setError(extractError(caught));
     } finally {
       setBusy(false);
     }
@@ -317,13 +314,17 @@ export function BrowserLoginImportDialog({
                       transition={REVEAL}
                       className="overflow-hidden px-3.5"
                     >
-                      <div
-                        role="alert"
-                        className="mt-2.5 flex items-start gap-2 rounded-[var(--radius-md)] border border-rose-400/20 bg-rose-500/10 px-2.5 py-2 text-[11px] text-rose-100/85"
-                      >
-                        <WarningCircle size={13} className="mt-px shrink-0" />
-                        <span className="min-w-0 break-words">{error}</span>
-                      </div>
+                      <Banner
+                        layout="inline"
+                        style={{ marginTop: 10 }}
+                        model={{
+                          id: "browser-login-import-error",
+                          tone: "error",
+                          title: error,
+                          report: { surface: "browser_login_import" },
+                          dismiss: { onDismiss: () => setError(null) },
+                        }}
+                      />
                     </motion.div>
                   ) : null}
                 </AnimatePresence>

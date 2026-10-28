@@ -29,6 +29,7 @@ import {
 } from "../../../shared/acpProviderMetadata";
 import { COPILOT_TOKEN_ENV_KEYS } from "../shared/providerConfigHomes";
 import { pinnedToolForProvider, pinnedToolState } from "./pinnedProviderTools";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 /**
  * Why a provider's runtime is not on this machine: the reason the CLI status
@@ -40,6 +41,37 @@ function runtimeMissingBlocker(provider: string, cli: CliAuthStatus | null): str
   const tool = pinnedToolForProvider(provider);
   return (tool ? pinnedToolState(tool.tool, tool.label).blocker : null)
     ?? `ADE could not find its ${provider} runtime on this machine.`;
+}
+
+/** Providers whose current snapshot disagreement Sentry has already heard about. */
+const staleSnapshotProviders = new Set<string>();
+
+/**
+ * True when the CLI snapshot says ADE's copy is missing but the tools cache,
+ * read live, says it is ready. The snapshot is cached for up to a minute and
+ * is taken once around launch, so it can trail the cache; reading "missing"
+ * then gave the false "ADE could not find its claude runtime" banner over a
+ * chat that was running fine. The tools cache wins, and the disagreement goes
+ * to Sentry so its cause can be found.
+ */
+function pinnedRuntimeReadyDespiteSnapshot(provider: string, cli: CliAuthStatus | null): boolean {
+  // `installed` is checked first: when the snapshot agrees, the tools cache is not read.
+  const tool = cli?.installed ? null : pinnedToolForProvider(provider);
+  const disagree = Boolean(tool && pinnedToolState(tool.tool, tool.label).state === "ready");
+  if (!disagree) {
+    // The two agree again; a later disagreement is a new one.
+    staleSnapshotProviders.delete(provider);
+    return false;
+  }
+  // Every status poll asks; Sentry hears once per disagreement, not per poll.
+  if (staleSnapshotProviders.has(provider)) return true;
+  staleSnapshotProviders.add(provider);
+  forwardSignalToSentry("ai.provider_status.stale_runtime_snapshot", {
+    provider,
+    snapshotState: cli?.pinnedState ?? null,
+    snapshotPresent: Boolean(cli),
+  }, `ai.provider_status.stale_runtime_snapshot:${provider}`);
+  return true;
 }
 
 /** What the Copilot SDK runtime reported when ADE asked it who is signed in. */
@@ -144,11 +176,13 @@ export async function buildProviderConnections(
   const piRuntimeHealth = getProviderRuntimeHealth("pi");
 
   const deriveProviderFlags = (
+    provider: "claude" | "codex",
     cli: CliAuthStatus | null,
     localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
   ) => {
     // `installed` is ADE's own pinned copy, the only one chats run on.
-    const runtimeDetected = Boolean(cli?.installed);
+    // Asked first on every poll, so it also sees the disagreement end.
+    const runtimeDetected = pinnedRuntimeReadyDespiteSnapshot(provider, cli) || Boolean(cli?.installed);
     const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
     const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
     const localCredsDetected = Boolean(localCreds);
@@ -160,8 +194,8 @@ export async function buildProviderConnections(
     return { runtimeDetected, cliAuthenticated, cliExplicitlyUnauthenticated, localCredsDetected, authAvailable, runtimeAvailable };
   };
 
-  const claudeFlags = deriveProviderFlags(claudeCli, claudeLocalCreds);
-  const codexFlags = deriveProviderFlags(codexCli, codexLocalCreds);
+  const claudeFlags = deriveProviderFlags("claude", claudeCli, claudeLocalCreds);
+  const codexFlags = deriveProviderFlags("codex", codexCli, codexLocalCreds);
   const codexUsageAvailable = Boolean(codexLocalCreds && !isCodexTokenStale(codexLocalCreds));
 
   function resolveBlocker(

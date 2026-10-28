@@ -20,8 +20,10 @@ import { showToast } from "../app/toast/toastStore";
 import {
   EMPTY_LANE_DELETE_SELECTION,
   ManageLaneDialog,
+  type LaneActionError,
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
+import { extractError } from "../../lib/format";
 
 /**
  * How long a deleted lane on another machine keeps its deleting state while that
@@ -60,7 +62,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
-  const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionError, setLaneActionError] = useState<LaneActionError | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
 
   const refreshManagedLanes = useCallback(async (options?: { includeStatus?: boolean }) => {
@@ -85,7 +87,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     setPinnedLanes(pinnedLane ? [pinnedLane] : []);
     setPinnedLanesLoaded(false);
     void refreshManagedLanes({ includeStatus: true }).catch((error) => {
-      setLaneActionError(error instanceof Error ? error.message : String(error));
+      setLaneActionError({ message: extractError(error), kind: "failure" });
     });
   }, [pinnedLane, refreshManagedLanes, runtimePin]);
 
@@ -118,7 +120,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       onClose();
       return true;
     } catch (error) {
-      setLaneActionError(error instanceof Error ? error.message : String(error));
+      setLaneActionError({ message: extractError(error), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);
@@ -191,7 +193,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
         clearPending();
         showToast({
           title: `Could not delete ${lane.name}`,
-          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
+          message: stripElectronErrorWrapper(extractError(error)),
           tone: "error",
           durationMs: 0,
         });
