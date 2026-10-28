@@ -174,6 +174,7 @@ import {
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useCrossMachineLaneSync } from "../../state/crossMachineLanes";
 import { useHomeAppEffects } from "../home/useHomeAppEffects";
+import { BootSplashReveal, useBootSplashHold } from "./BootSplashReveal";
 import { findOnOtherMachines, readOtherMachines, type OtherMachines } from "../../lib/otherMachineNavigation";
 import type {
   AppNavigationRequest,
@@ -197,12 +198,9 @@ const Router = usesBrowserRouter ? BrowserRouter : HashRouter;
 
 const StartupSplashScreen = (
   <div className="flex h-full w-full flex-col items-center justify-center relative overflow-hidden" style={{ background: "var(--color-bg)" }}>
-    {/* Background glow */}
-    <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-[60vw] h-[60vw] max-w-[600px] max-h-[600px] rounded-full opacity-20 blur-[100px] pointer-events-none" style={{ background: "var(--color-accent)" }} />
     <div className="relative z-10 flex flex-col items-center animate-fade-in-up">
-      <div className="flex items-center justify-center mb-6" style={{ filter: "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))" }}>
-        <img src="./logo.png" alt="ADE Logo" className="h-[240px] w-[420px] max-w-[72vw] object-contain" />
-      </div>
+      {/* The canvas paints the page colour itself, so no glow sits behind it. */}
+      <BootSplashReveal tileSize={300} className="mb-2 h-[460px] w-[520px] max-h-[58vh] max-w-[80vw]" />
       <div className="flex flex-col items-center gap-2">
         <div className="text-xl font-bold tracking-tight text-fg">Starting ADE</div>
         <div className="text-[12px] font-mono text-muted-fg/70 animate-pulse">Initializing local workspace...</div>
@@ -765,6 +763,8 @@ function ProjectTabHost() {
     setWindowRuntimeBinding(activeProjectBinding ?? null);
   }, [activeProjectBinding]);
   const projectHydrated = useAppStore((s) => s.projectHydrated);
+  // The splash stays while its logo reveal is still playing, never longer.
+  const bootSplashHeld = useBootSplashHold(!projectHydrated && !activeProject);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const standaloneSettingsOpen = useAppStore((s) => s.standaloneSettingsOpen);
   const setStandaloneSettingsOpen = useAppStore((s) => s.setStandaloneSettingsOpen);
@@ -1088,7 +1088,7 @@ function ProjectTabHost() {
     );
   }
 
-  if (!projectHydrated && !activeProject) {
+  if ((!projectHydrated && !activeProject) || bootSplashHeld) {
     return GuardLoadingFallback;
   }
 

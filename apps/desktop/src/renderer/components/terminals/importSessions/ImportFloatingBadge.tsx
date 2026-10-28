@@ -71,7 +71,7 @@ export function ImportFloatingBadge({
         data-draft-depart="fade"
         data-onboarding-anchor="import-pill"
         className={cn(
-          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-(color:--color-card) to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)]",
+          "import-chat-pill relative inline-flex min-w-0 max-w-full items-center gap-3 rounded-full border border-violet-300/25 bg-gradient-to-r from-violet-500/18 via-(color:--color-card) to-cyan-400/12 px-3 py-1.5 shadow-[0_10px_28px_rgba(88,28,135,0.28)] [[data-theme=light]_&]:bg-(--color-card)",
           disabled ? "opacity-40" : "transition-transform hover:-translate-y-px",
         )}
       >

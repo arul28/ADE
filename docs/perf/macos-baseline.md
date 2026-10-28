@@ -2268,3 +2268,26 @@ lazy-loads the Jira pane's issue viewer (as the GitHub pane does): 876 → 797 s
 
 Left: the Work list's section headers still redraw (new inline handlers and children) when a session's
 data changes right after launch, ~200 renders in the first run on a fresh home.
+
+## Mac Studio (M4 Max): boot splash and the after-update "What's new" (2026-10-28)
+
+Dev build, 240 Hz display, the owner's ADE project, warm reloads of the dev
+renderer. The boot splash plays the liquid glass logo reveal; after an update
+the logo flies from the splash into the "What's new" header
+(`announcements/WhatsNewArrival.tsx`). Frame times are `requestAnimationFrame`
+deltas read in the page; the switch frame is the one in which the splash
+unmounts and the app (and the window) mount. Three to five runs each.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Switch frame, normal boot (no update) | — | 8-9 ms | not set (new row; ceilings are the owner's call) |
+| Switch frame, after an update | 50-62 ms | 8 ms (one run of five: 25 ms) | not set (new row; ceilings are the owner's call) |
+| Window mount frame, after an update (one frame later, while the logo holds) | — | 20-29 ms | not set (new row; ceilings are the owner's call) |
+| Flight frames, splash to header (p50 / p95 / slowest) | — | 4.2 / 4.7-5.1 / 25-30 ms, none over 34 ms | not set (new row; ceilings are the owner's call) |
+
+Before is the first version of the arrival, which mounted the window in the
+switch frame. The window now mounts one frame after the logo and veil, while
+the logo still holds still. The Work page's own first frames after the boot
+(one 25-29 ms frame) are there with or without the window. One run of
+five had a single 217 ms frame within 1.5 s of the switch; the other four,
+and the three flight runs, had none over 34 ms.

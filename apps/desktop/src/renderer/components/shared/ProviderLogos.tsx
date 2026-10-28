@@ -134,7 +134,7 @@ function CursorSubscriptionModelMark({ providerModelId, size, className }: { pro
     return <Grok.Avatar size={size} className={c} />;
   }
   if (/kimi/.test(s)) {
-    return <Kimi.Color size={size} className={c} />;
+    return <Kimi.Color size={size} className={cn(c, "ade-mark-kimi")} />;
   }
   if (/claude|sonnet|opus|haiku/.test(s)) {
     return <Claude.Avatar size={size} className={c} />;
@@ -176,7 +176,7 @@ function DroidModelMark({ providerModelId, size, className }: { providerModelId:
     return <Gemini.Color size={size} className={c} />;
   }
   if (/kimi/.test(s)) {
-    return <Kimi.Color size={size} className={c} />;
+    return <Kimi.Color size={size} className={cn(c, "ade-mark-kimi")} />;
   }
   return <DroidLogo size={size} className={className} />;
 }
@@ -247,7 +247,7 @@ export function ProviderLogo({
     case "moonshot":
     case "kimi":
     case "kimi-for-coding":
-      return <Kimi.Color size={size} className={c} />;
+      return <Kimi.Color size={size} className={cn(c, "ade-mark-kimi")} />;
     case "github-copilot":
     case "githubcopilot":
     case "copilot":

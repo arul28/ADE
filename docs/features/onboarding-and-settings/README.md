@@ -2066,12 +2066,34 @@ due, a pager.
   with no dialog, setup screen or tour up, and only once onboarding finished
   or was skipped before this launch, so a new user meets them on a later
   visit. A page counts as seen once it is on screen.
+- **After an update** this computer installed: on the first launch of the new
+  version, after the boot splash. Up to three unseen pages, then the release
+  notes since the version it came from. This one arrives: the logo flies from
+  where the splash left it into the window's header while the window opens
+  around it (`WhatsNewArrival.tsx`; `BootSplashReveal.tsx` records the splash's
+  last logo box and says when the splash is gone). The window mounts one frame
+  after the logo, so the frame in which the splash goes stays light. Reduce
+  motion (ADE's or the system's) skips the flight.
 - **Reopen:** Help › What's new and the command palette ("What's new") show
-  every page.
+  every page, with the plain dialog fade.
 
 To add one: create `pages/<Name>.tsx` exporting a default component that
 takes `{ close }` (call it before navigating from a "Try it" button), then add
 its entry at the top of `ANNOUNCEMENT_PAGES`.
+
+### Boot splash and the ADE logo
+
+While a window starts, "Starting ADE" plays a liquid glass reveal of the logo
+(`components/ui/LiquidGlassLogoReveal.tsx`, a WebGL2 pass; its texture,
+renderer, timeline and settings live in `components/ui/liquidGlass/`). The
+splash stays for the boot or the reveal (about 3.5 s), whichever ends later,
+never longer, and plays once per window (`app/BootSplashReveal.tsx`). Reduce
+motion, no WebGL or a logo that fails to load show the still logo and hold
+nothing.
+
+The logo everywhere in the app is `<AdeWordmark>` (`components/ui/AdeWordmark.tsx`):
+`logo.png` on dark themes, `logo-light.png` (purple and white swapped) on light
+ones.
 
 ### ADE Tips
 

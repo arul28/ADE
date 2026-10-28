@@ -46,6 +46,7 @@ import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
 import { Banner } from "../ui/notice";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -127,7 +128,7 @@ export function SignInCard({
         gap: 14,
       }}
     >
-      <img src="./logo.png" alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
+      <AdeWordmark alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
       <div
         style={cardStyle({
           padding: 28,

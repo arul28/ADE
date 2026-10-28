@@ -10,6 +10,11 @@
   filter: invert(1);
 }
 
+/* Kimi's colour mark draws its "K" in white, which vanishes on a light page. */
+[data-theme="light"] .ade-mark-kimi path[fill="#fff"] {
+  fill: var(--color-fg);
+}
+
 /* Font @font-face declarations are injected from main.tsx via Vite ?url imports
    so the dev server resolves them correctly (CSS-relative ../../node_modules
    paths fall outside Vite's served root and 403). */
@@ -154,9 +159,11 @@
      is near-black; light pages fill with deep tones, so it turns white.
      `--ade-tone-text-strength` is how much of a lane or status colour
      survives when it is used as text (`toneText()`, `text-tone-[#hex]`);
-     dark pages keep it whole. */
+     dark pages keep it whole. `--ade-dim-row-opacity` fades text that steps
+     back (History's other lanes, an idle tab's count). */
   --ade-on-tone-ink: #0F0D14;
   --ade-tone-text-strength: 100%;
+  --ade-dim-row-opacity: 0.62;
   --chat-copy-button-bg: rgba(255, 255, 255, 0.03);
   --chat-copy-button-border: rgba(255, 255, 255, 0.08);
   --chat-copy-button-fg: rgba(240, 240, 242, 0.45);
@@ -352,6 +359,7 @@
 
   --ade-on-tone-ink: #ffffff;
   --ade-tone-text-strength: 50%;
+  --ade-dim-row-opacity: 0.85;
   --chat-copy-button-bg: rgba(15, 23, 42, 0.04);
   --chat-copy-button-border: rgba(15, 23, 42, 0.10);
   --chat-copy-button-fg: rgba(26, 26, 30, 0.55);
@@ -374,11 +382,11 @@
   --shadow-float: 0 20px 50px -16px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(4, 144, 104, 0.08);
   --shadow-popup: 0 20px 50px -12px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(214, 211, 206, 0.7);
   --shadow-modal: 0 28px 64px -16px rgba(0, 0, 0, 0.18), 0 0 0 1px rgba(214, 211, 206, 0.7);
-  --color-success: #16a34a;
-  --color-warning: #d97706;
+  --color-success: #15803d;
+  --color-warning: #b45309;
   --color-error: #dc2626;
   --color-info: #2563eb;
-  --color-diff-add: #16a34a;
+  --color-diff-add: #15803d;
   --color-diff-del: #dc2626;
   --color-diff-hunk: #2563eb;
   /* PRs tab surfaces — light-theme equivalents. */
@@ -668,6 +676,9 @@
   :where([data-theme="light"]) :is(.text-muted-fg\/77, .text-muted-fg\/78, .text-muted-fg\/79, .text-muted-fg\/80) { color: color-mix(in srgb, var(--color-muted-fg) 91%, transparent); }
   :where([data-theme="light"]) :is(.text-muted-fg\/81, .text-muted-fg\/82, .text-muted-fg\/83, .text-muted-fg\/84) { color: color-mix(in srgb, var(--color-muted-fg) 92%, transparent); }
   :where([data-theme="light"]) :is(.text-muted-fg\/85) { color: color-mix(in srgb, var(--color-muted-fg) 93%, transparent); }
+  /* Placeholders: every `placeholder:text-*` fade reads as one muted grey. The
+     repeated attribute outweighs the single `placeholder:` utility class. */
+  :where([data-theme="light"]) [class*="placeholder:text-"][class*="placeholder:text-"]::placeholder { color: color-mix(in srgb, var(--color-muted-fg) 78%, transparent); }
 }
 
 /* Accent as text on light pages. A theme's accent (and its lighter

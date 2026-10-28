@@ -5,6 +5,7 @@ import type { FileContents } from "@pierre/diffs/react";
 import type { FileDiff, FilePatch } from "../../../shared/types";
 import { MonacoDiffView, type MonacoDiffHandle } from "../lanes/MonacoDiffView";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { useAppearanceStore } from "../../state/appearanceStore";
 import { cn } from "../ui/cn";
 import { isWhitespaceOnlyTextDiff, stripWhitespaceOnlyPatchChanges, type WhitespaceFilteredPatch } from "./diffWhitespace";
 import { readPersistedFlag, writePersistedFlag } from "./persistedFlag";
@@ -21,6 +22,7 @@ type AdeDiffViewerProps = {
   patch?: FilePatch | null;
   editable?: boolean;
   className?: string;
+  /** The app theme when left out. */
   theme?: "dark" | "light";
   compact?: boolean;
   showToolbar?: boolean;
@@ -227,13 +229,16 @@ export const AdeDiffViewer = forwardRef<AdeDiffViewerHandle, AdeDiffViewerProps>
     patch,
     editable = false,
     className,
-    theme = "dark",
+    theme: themeProp,
     compact = false,
     showToolbar = true,
     persistKey,
   },
   ref,
 ) {
+  // The app theme unless the caller picks one.
+  const appTheme = useAppearanceStore((s) => s.theme);
+  const theme = themeProp ?? appTheme;
   const monacoRef = useRef<MonacoDiffHandle | null>(null);
   const findRootRef = useRef<HTMLDivElement | null>(null);
   const findScrollRef = useRef<HTMLDivElement | null>(null);

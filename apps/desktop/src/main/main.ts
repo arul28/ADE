@@ -736,6 +736,8 @@ let startupProjectOpen: Promise<void> | null = null;
  * read answers instead of timing out.
  */
 const STARTUP_PROJECT_WINDOW_WAIT_MS = 20_000;
+/** How long a dev window waits to clear its cache before it loads anyway. */
+const DEV_CACHE_CLEAR_WAIT_MS = 3_000;
 
 /**
  * Makes `ade` exist for a user who never opens Settings. Every guard that
@@ -1321,15 +1323,30 @@ async function createWindow(args: {
   );
 
   if (process.env.VITE_DEV_SERVER_URL) {
-    try {
-      await win.webContents.session.clearCache();
-      await win.webContents.session.clearStorageData({
-        storages: ["serviceworkers", "cachestorage"],
-      });
-    } catch (error) {
-      args.logger?.warn("renderer.dev_cache_clear_failed", {
-        err: error instanceof Error ? error.message : String(error),
-      });
+    // Bounded: both calls go through Chromium's network service, and one that
+    // has crashed or stalled (it reads the Keychain too) never answers.
+    // Unbounded, the launch never finishes creating this window, the startup
+    // gate never opens, and every window-session call waits out its timeout.
+    const outcome = await settledWithin<"cleared" | "failed" | "timed_out">(
+      (async () => {
+        try {
+          await win.webContents.session.clearCache();
+          await win.webContents.session.clearStorageData({
+            storages: ["serviceworkers", "cachestorage"],
+          });
+          return "cleared" as const;
+        } catch (error) {
+          args.logger?.warn("renderer.dev_cache_clear_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+          return "failed" as const;
+        }
+      })(),
+      DEV_CACHE_CLEAR_WAIT_MS,
+      "timed_out",
+    );
+    if (outcome === "timed_out") {
+      args.logger?.warn("renderer.dev_cache_clear_skipped", { waitMs: DEV_CACHE_CLEAR_WAIT_MS });
     }
   }
 

@@ -213,7 +213,7 @@ export function RuleList({
                     title={inert ? `${hint} None right now.` : hint}
                     disabled={inert}
                     data-active={active ? "true" : undefined}
-                    className={cn(FILTER_CHIP_CLASS, inert && "cursor-default opacity-40")}
+                    className={cn(FILTER_CHIP_CLASS, inert && "cursor-default opacity-40 [[data-theme=light]_&]:opacity-60")}
                     style={{ color: active ? "var(--color-fg)" : "var(--color-muted-fg)" }}
                     onClick={() => setOriginFilter(key)}
                   >

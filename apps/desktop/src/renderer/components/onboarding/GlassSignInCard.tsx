@@ -8,6 +8,7 @@ import { COLORS } from "../lanes/laneDesignTokens";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { Banner } from "../ui/notice";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /**
  * The launch gate's sign-in: a frosted card floating over the window mesh.
@@ -32,7 +33,7 @@ export function GlassSignInCard({
   return (
     <div className="ade-glass-card" data-testid="sign-in-glass-card">
       <span className="ade-glass-mark">
-        <img src="./logo.png" alt="ADE" draggable={false} />
+        <AdeWordmark alt="ADE" draggable={false} />
       </span>
       <h1 className="ade-glass-title">
         {unreadable || expired ? accountSessionTitle(sessionState) : "Sign in to ADE"}
