@@ -7596,6 +7596,38 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("fails instead of opening a headless runtime when its own brain cannot serve the requested role", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-own-brain-"));
+    vi.stubEnv("ADE_HOME", root);
+    vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
+    vi.stubEnv("ADE_RPC_SOCKET_PATH", "");
+    vi.stubEnv("ADE_RPC_URL", "");
+    vi.stubEnv("ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION", "");
+    vi.stubEnv("ADE_DISABLE_RUNTIME_SERVICE_INSTALL", "1");
+    const requests: string[] = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath: resolveMachineAdeLayout().socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push(request.method);
+        if (request.method === "ade/initialize") return { runtimeInfo: {
+          version: "0.0.0", defaultRole: "agent", pid: process.pid,
+        } };
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    try {
+      await expect(runCli(["--project-root", root, "--role", "cto", "chat", "list"])).rejects.toMatchObject({
+        details: { cause: expect.stringMatching(/Refusing to repair\/restart ADE runtime/) },
+      });
+      expect(requests).toContain("ade/initialize");
+      expect(requests).not.toContain("shutdown");
+    } finally {
+      stop?.();
+      vi.unstubAllEnvs();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   posixIt("runs typed account status as CTO and passes project config root for token creation", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-account-status-sock-"));
     const socketPath = path.join(root, "ade.sock");

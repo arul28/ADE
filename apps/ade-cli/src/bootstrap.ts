@@ -12,6 +12,7 @@ import { createFileLogger, type Logger } from "../../desktop/src/main/services/l
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
 import { stripHostRuntimeEnv } from "../../desktop/src/main/services/shared/hostRuntimeEnv";
+import { isEmbeddedAdeRuntime } from "../../desktop/src/main/services/shared/processExecution";
 import {
   clearLastFailure,
   recordLastFailure,
@@ -594,6 +595,12 @@ function automationsEnabledForHeadlessRuntime(): boolean {
 }
 
 function resolveCurrentAdeCliEntry(): string | null {
+  // The standalone runtime is one Node SEA executable, so the binary IS the
+  // CLI. Its argv[1] is rewritten to a bare "cli.cjs" that names no real file:
+  // without this the brain found no CLI, wrote no shim, and its agents ran
+  // whatever `ade` PATH had (2026-10-28: an older ADE.app CLI whose chat reads
+  // came back empty), and ADE MCP could not find its own `ade` at all.
+  if (isEmbeddedAdeRuntime()) return process.execPath;
   const fromArgv = typeof process.argv[1] === "string" ? process.argv[1].trim() : "";
   const fromEnv = process.env.ADE_CLI_PATH?.trim();
   const fromEnvBin = process.env.ADE_CLI_BIN_DIR?.trim()
