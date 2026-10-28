@@ -26,7 +26,7 @@ import {
   type Box,
   type Frame,
 } from "./anchorGeometry";
-import { modalOpen } from "../../ui/overlayState";
+import { FLOATS_OVER_BROWSER_PROPS, modalOpen } from "../../ui/overlayState";
 import { useLaneChatHandoff } from "../../../lib/laneChatHandoff";
 import { AdeTourCursorArt } from "./AdeTourCursorArt";
 import { FIRST_CHAT_PROMPT, pickFirstChatModel, type FirstChatModel } from "./firstChat";
@@ -561,6 +561,7 @@ function TourStepOverlay({
           ref={cardRef}
           className="kit-card ade-tour-card"
           data-float="true"
+          {...FLOATS_OVER_BROWSER_PROPS}
           data-kind={doStep ? "do" : "read"}
           aria-labelledby={titleId}
         >

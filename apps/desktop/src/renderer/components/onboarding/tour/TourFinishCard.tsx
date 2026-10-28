@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 import { ArrowCounterClockwise, Lightbulb, Question } from "@phosphor-icons/react";
 import { openAdeTips } from "../tips/AdeTipsDialog";
-import { modalOpen } from "../../ui/overlayState";
+import { FLOATS_OVER_BROWSER_PROPS, modalOpen } from "../../ui/overlayState";
 import { isAnchorVisible, prefersReducedMotion, readFrame } from "./anchorGeometry";
 import type { TourCursorMotion } from "./tourCursor";
 import { watchTourDom } from "./tourWatch";
@@ -80,7 +80,7 @@ export function TourFinishCard({
   if (blocked) return null;
   return (
     <div className="ade-tour-finish-wrap">
-      <section className="kit-card ade-tour-card ade-tour-finish" data-float="true" aria-labelledby={titleId}>
+      <section className="kit-card ade-tour-card ade-tour-finish" data-float="true" {...FLOATS_OVER_BROWSER_PROPS} aria-labelledby={titleId}>
         <span className="ade-tour-count">Tour complete</span>
         <h2 id={titleId} className="ade-tour-finish-title">You're all set</h2>
         <p className="ade-tour-line">Thanks for installing ADE. When you want more, it's all one click away.</p>

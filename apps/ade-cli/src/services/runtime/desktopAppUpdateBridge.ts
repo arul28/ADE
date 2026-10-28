@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 
 /**
@@ -174,27 +174,44 @@ export async function requestDesktopAppUpdate(args: {
 }
 
 /**
- * The macOS app bundle this brain runs from, when the brain is the app's own:
- * launchd runs `/Applications/ADE.app/Contents/MacOS/ADE … cli.cjs serve`.
- * Null for the standalone runtime (`~/.ade/bin/ade`), a development brain run
- * by node, and every other platform.
+ * The installed ADE app this brain runs from, when the brain is the app's own:
+ * launchd runs `/Applications/ADE.app/Contents/MacOS/ADE … cli.cjs serve`
+ * (the bundle is returned), and the Windows per-user service runs
+ * `ADE.exe …\\ade-cli\\cli.cjs serve` as Node (the exe is returned). Null for
+ * the standalone runtime (`ade` / `ade.exe`, which is not Electron), a
+ * development brain run by node, and other platforms.
  */
-export function hostAppBundlePath(
+export function hostAppPath(
   execPath: string = process.execPath,
   platform: NodeJS.Platform = process.platform,
+  electronVersion: string | undefined = process.versions.electron,
 ): string | null {
-  if (platform !== "darwin") return null;
-  return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
+  if (platform === "darwin") return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
+  if (platform === "win32") return electronVersion && /\.exe$/i.test(execPath) ? execPath : null;
+  return null;
 }
 
 /** How long a closed app gets to open and answer on the bridge. */
 const CLOSED_APP_ANSWER_WAIT_MS = 60_000;
 const CLOSED_APP_POLL_MS = 2_000;
 
-function openAppInBackground(appBundlePath: string): Promise<void> {
+function openApp(appPath: string, platform: NodeJS.Platform = process.platform): Promise<void> {
+  if (platform === "win32") {
+    return new Promise((resolve, reject) => {
+      // This process is the same exe run as Node; the app must not inherit that.
+      const env = { ...process.env };
+      delete env.ELECTRON_RUN_AS_NODE;
+      const child = spawn(appPath, [], { detached: true, stdio: "ignore", windowsHide: false, env });
+      child.once("error", reject);
+      child.once("spawn", () => {
+        child.unref();
+        resolve();
+      });
+    });
+  }
   return new Promise((resolve, reject) => {
     // `-g` keeps it behind whatever is in front on that Mac.
-    execFile("/usr/bin/open", ["-g", "-a", appBundlePath], { timeout: 15_000 }, (error, _stdout, stderr) => {
+    execFile("/usr/bin/open", ["-g", "-a", appPath], { timeout: 15_000 }, (error, _stdout, stderr) => {
       if (error) reject(new Error(String(stderr ?? "").trim() || error.message));
       else resolve();
     });
@@ -202,8 +219,8 @@ function openAppInBackground(appBundlePath: string): Promise<void> {
 }
 
 /**
- * "Update & restart" for a Mac whose brain is the app's own while the app is
- * closed.
+ * "Update & restart" for a machine whose brain is the app's own while the app
+ * is closed.
  *
  * The standalone update would move the brain to `~/.ade/bin/ade`. macOS keeps
  * its privacy permissions per program, and that program has none: its first
@@ -214,9 +231,14 @@ function openAppInBackground(appBundlePath: string): Promise<void> {
  * and installs its own update, as it does when it is already open. When it
  * cannot be opened or never answers, the update is refused with that reason
  * instead of switching the program that runs the brain.
+ *
+ * Windows has no such prompt, but the same split applies: a standalone update
+ * leaves the app on the old version, and the app puts its own older brain back
+ * the next time it opens. So it is opened there too (in front: Windows has no
+ * background launch), and installs and restarts itself.
  */
 export async function requestUpdateThroughClosedApp(args: {
-  appBundlePath: string;
+  appPath: string;
   socketPath: string;
   targetVersion: string | null;
 }): Promise<DesktopAppUpdateRouting> {
@@ -226,11 +248,11 @@ export async function requestUpdateThroughClosedApp(args: {
       outcome: "failed",
       currentVersion: null,
       version: null,
-      message: `ADE is closed on this Mac and could not be opened to update itself (${detail}). Open ADE on this Mac, then update again.`,
+      message: `ADE is closed on this computer and could not be opened to update itself (${detail}). Open ADE there, then update again.`,
     },
   });
   try {
-    await openAppInBackground(args.appBundlePath);
+    await openApp(args.appPath);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }
