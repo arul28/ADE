@@ -109,7 +109,7 @@
 
 .ade-stt-doc:hover,
 .ade-stt-doc:focus-visible {
-  color: var(--color-accent-strong, #C4B5FD);
+  color: var(--color-accent-text);
   outline: none;
 }
 

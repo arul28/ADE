@@ -191,7 +191,7 @@ export const USAGE_PRESSURE = {
 
 /** Bar fill for a percentage, falling back to the provider's own colour. */
 export function usagePressureColor(percent: number, providerColor: string): string {
-  if (percent > USAGE_PRESSURE.critical) return "var(--color-usage-critical, #F87171)";
-  if (percent > USAGE_PRESSURE.warn) return "var(--color-usage-warn, #F5A623)";
+  if (percent > USAGE_PRESSURE.critical) return "var(--color-error)";
+  if (percent > USAGE_PRESSURE.warn) return "var(--color-warning)";
   return providerColor;
 }

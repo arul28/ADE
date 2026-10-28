@@ -125,7 +125,7 @@ function DiffPreview({
   if (activeDiff) {
     return (
       <div className="min-h-[210px] border-t border-fg/[0.05] bg-black/15" style={{ maxHeight: 360 }}>
-        <AdeDiffViewer diff={activeDiff} editable={false} theme="dark" compact showToolbar={false} className="h-full rounded-none border-0" />
+        <AdeDiffViewer diff={activeDiff} editable={false} compact showToolbar={false} className="h-full rounded-none border-0" />
       </div>
     );
   }

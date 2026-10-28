@@ -39,7 +39,7 @@ function ProviderLogo({ provider, size = 14 }: { provider: UsageProvider; size?:
   return <Logo size={size} />;
 }
 
-const WARNING_COLOR = "var(--color-usage-warn, #F5A623)";
+const WARNING_COLOR = "var(--color-warning)";
 
 function clampPercent(percent: number): number | null {
   if (!Number.isFinite(percent)) return null;
@@ -446,7 +446,7 @@ export function HeaderUsageControl({
                   style={{
                     background: warning.warn
                       ? WARNING_COLOR
-                      : "var(--color-usage-ok, #34D399)",
+                      : "var(--color-success)",
                   }}
                   title={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : "Usage is up to date"}
                   aria-label={warning.warn ? warning.detail ?? "Some usage couldn't be refreshed" : undefined}

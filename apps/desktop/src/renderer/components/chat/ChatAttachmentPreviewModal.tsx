@@ -13,6 +13,7 @@ import {
 } from "./attachmentViewerTarget";
 import { Dialog } from "../ui/dialog";
 import { useChatPaneScope } from "./agentChatApi";
+import { useAppearanceStore } from "../../state/appearanceStore";
 
 type ResolveState =
   | { status: "loading" }
@@ -54,6 +55,7 @@ export function ChatAttachmentPreviewModal({
   onClose: () => void;
 }) {
   const files = useMemo(() => createPinnedFilesApi(pin), [pin]);
+  const theme = useAppearanceStore((s) => s.theme);
   const registryRef = useRef(createMonacoModelRegistry());
   const containerRef = useRef<HTMLDivElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
@@ -197,7 +199,7 @@ export function ChatAttachmentPreviewModal({
               files={files}
               rootPath={state.target.rootPath}
               tab={tab}
-              theme="dark"
+              theme={theme}
               registry={registry}
             />
           ) : null}
