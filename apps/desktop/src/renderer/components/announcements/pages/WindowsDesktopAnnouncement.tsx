@@ -1,7 +1,7 @@
 import { AppleLogo, Camera, VideoCamera, WindowsLogo } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import gif from "./assets/windows-desktop.gif";
+import video from "./assets/windows-desktop.mp4";
 import still from "./assets/windows-desktop-still.webp";
 
 /** Agents drive a private Windows desktop from any computer and send proof back. */
@@ -18,10 +18,10 @@ export default function WindowsDesktopAnnouncement({ close }: AnnouncementPagePr
         { icon: <VideoCamera size={14} weight="fill" />, label: "Videos" },
       ]}
       media={{
-        gif,
+        video,
         still,
-        width: 760,
-        height: 527,
+        width: 1440,
+        height: 1000,
         alt: "From a Mac, an agent takes a screenshot of its private Windows desktop and posts it in the chat",
       }}
     />
