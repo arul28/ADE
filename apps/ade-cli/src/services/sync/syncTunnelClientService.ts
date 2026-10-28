@@ -328,8 +328,9 @@ export function relayPipeLocalPath(message: { kind?: string; path?: string }): s
 
 /**
  * One HTTP request for this machine's ADE MCP, carried over the
- * control socket. The relay forwards anything under `/m/<machineKey>/`; the
- * remote MCP service decides what it means. See services/remoteMcp.
+ * control socket. The relay forwards anything under `/m/<endpointKey>/`, and
+ * the account address `/a/<accountKey>/` with `mount` set; the remote MCP
+ * service decides what it means. See services/remoteMcp.
  */
 export type ControlHttpMessage = {
   t: "http";
@@ -338,6 +339,8 @@ export type ControlHttpMessage = {
   path: string;
   headers: Record<string, string>;
   body: string | null;
+  /** Absent for the per-machine address. */
+  mount?: { kind: "account"; key: string };
 };
 
 /** An `http` frame whose request id is usable but whose request is not; it gets a 400. */
@@ -355,13 +358,19 @@ const MAX_HTTP_BODY_CHARS = 1024 * 1024;
 const MAX_HTTP_RESPONSE_ENVELOPE_CHARS = 4 * 1024 * 1024;
 
 function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMessage | ControlHttpRejectedMessage | null {
-  const { rid, method, path, headers, body } = parsed;
+  const { rid, method, path, headers, body, mount } = parsed;
   if (typeof rid !== "string" || !/^[a-f0-9]{16,32}$/i.test(rid)) return null;
   // The relay waits on this rid; answer it rather than leave it to time out.
   const rejected: ControlHttpRejectedMessage = { t: "http_invalid", rid };
   if (typeof method !== "string" || !HTTP_METHODS.has(method)) return rejected;
   if (typeof path !== "string" || !path.startsWith("/") || path.startsWith("//") || path.length > MAX_HTTP_PATH_CHARS) return rejected;
   if (body !== null && body !== undefined && (typeof body !== "string" || body.length > MAX_HTTP_BODY_CHARS)) return rejected;
+  let accountMount: { kind: "account"; key: string } | null = null;
+  if (mount !== undefined && mount !== null) {
+    const record = typeof mount === "object" && !Array.isArray(mount) ? mount as Record<string, unknown> : {};
+    if (record.kind !== "account" || typeof record.key !== "string" || !/^[a-f0-9]{32,64}$/.test(record.key)) return rejected;
+    accountMount = { kind: "account", key: record.key };
+  }
   const cleanHeaders: Record<string, string> = {};
   if (headers && typeof headers === "object" && !Array.isArray(headers)) {
     const entries = Object.entries(headers as Record<string, unknown>);
@@ -370,12 +379,26 @@ function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMe
       if (typeof value === "string" && value.length <= 8_192) cleanHeaders[key.toLowerCase()] = value;
     }
   }
-  return { t: "http", rid, method, path, headers: cleanHeaders, body: typeof body === "string" ? body : null };
+  return {
+    t: "http",
+    rid,
+    method,
+    path,
+    headers: cleanHeaders,
+    body: typeof body === "string" ? body : null,
+    ...(accountMount ? { mount: accountMount } : {}),
+  };
 }
 
 /** The slice of the remote MCP service the relay connection drives. */
 export type TunnelRemoteMcpHost = {
   isEnabled(): boolean;
+  /**
+   * The ADE account's ADE MCP secret while this machine serves the account
+   * address, else null. Sent in `mcp_state.account`; the relay derives the
+   * account key from it.
+   */
+  accountSecret?(): string | null;
   onEnabledChange(listener: (enabled: boolean) => void): () => void;
   handleHttp(request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse>;
 };
@@ -1673,16 +1696,21 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   };
 
   /**
-   * Tell the relay whether ADE MCP is on. Said only by a client that has (or
-   * just lost) the service: a relay that never hears "on" keeps answering 404
-   * without waking this machine, and an older relay ignores the message.
+   * Tell the relay whether ADE MCP is on, and for which account. Said only by
+   * a client that has (or just lost) the service: a relay that never hears
+   * "on" keeps answering 404 without waking this machine. `account` adds this
+   * machine to the account address; leaving it out takes it off. An older
+   * relay ignores `account` (and the whole message, older still).
    */
   const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
     if (!controlSocket || (!remoteMcp && !force)) return;
+    const enabled = remoteMcp?.isEnabled() === true;
+    const secret = enabled ? remoteMcp?.accountSecret?.() ?? null : null;
     sendControlLifecycle(controlSocket, {
       t: "mcp_state",
-      enabled: remoteMcp?.isEnabled() === true,
+      enabled,
       endpointKey: mcpEndpointKeyFor(identity()),
+      ...(secret ? { account: { secret } } : {}),
     });
   };
 

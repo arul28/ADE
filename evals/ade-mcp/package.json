@@ -1,0 +1,10 @@
+{
+  "name": "ade-mcp-eval",
+  "private": true,
+  "type": "module",
+  "description": "How real models use ADE MCP's tools. See README.md.",
+  "scripts": {
+    "eval": "node ../../apps/ade-cli/node_modules/tsx/dist/cli.mjs run.ts",
+    "typecheck": "../../apps/ade-cli/node_modules/.bin/tsc -p tsconfig.json"
+  }
+}

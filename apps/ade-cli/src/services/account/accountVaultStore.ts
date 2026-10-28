@@ -84,7 +84,8 @@ function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
     || value === "integration"
     || value === "provider_api_key"
     || value === "linear_refresh_token"
-    || value === "project_secret";
+    || value === "project_secret"
+    || value === "ade_mcp";
 }
 
 function readNullableString(value: unknown): string | null | undefined {

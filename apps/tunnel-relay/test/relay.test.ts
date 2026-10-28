@@ -7,6 +7,8 @@ import {
   handleRequest,
   hmacSha256Hex,
   locationHintForGeo,
+  mcpAccountKeyForSecret,
+  routeMcpPath,
   routeTunnelPath,
   verifySignedQuery,
   type TunnelRelayEnv,
@@ -215,6 +217,27 @@ describe("routeTunnelPath", () => {
   });
 });
 
+describe("routeMcpPath", () => {
+  const KEY = "b".repeat(40);
+  it.each([
+    ["per-machine MCP", `/m/${KEY}/mcp?x=1`, { kind: "mcp", machineKey: KEY, path: "/mcp?x=1" }],
+    ["account MCP", `/a/${KEY}/mcp`, { kind: "mcp-account", accountKey: KEY, path: "/mcp" }],
+    ["account root", `/a/${KEY}`, { kind: "mcp-account", accountKey: KEY, path: "/" }],
+    ["account OAuth path keeps its encoding", `/a/${KEY}/oauth/authorize?state=s%20t`, { kind: "mcp-account", accountKey: KEY, path: "/oauth/authorize?state=s%20t" }],
+    ["account key is lowercased", `/a/${KEY.toUpperCase()}/mcp`, { kind: "mcp-account", accountKey: KEY, path: "/mcp" }],
+    ["account protected-resource discovery", `/.well-known/oauth-protected-resource/a/${KEY}/mcp`, { kind: "mcp-account", accountKey: KEY, path: "/.well-known/oauth-protected-resource/mcp" }],
+    ["account authorization-server discovery", `/.well-known/oauth-authorization-server/a/${KEY}`, { kind: "mcp-account", accountKey: KEY, path: "/.well-known/oauth-authorization-server" }],
+    ["account openid discovery", `/.well-known/openid-configuration/a/${KEY}`, { kind: "mcp-account", accountKey: KEY, path: "/.well-known/openid-configuration" }],
+    ["account key that is not hex", "/a/not-a-key/mcp", null],
+    ["account key that is too short", `/a/${"b".repeat(31)}/mcp`, null],
+    ["dot segment under an account", `/a/${KEY}/%2e%2e/mcp`, null],
+    ["unknown discovery kind", `/.well-known/security.txt/a/${KEY}`, null],
+    ["internal account path", "/__mcp-account", null],
+  ] as const)("%s", (_label, path, expected) => {
+    expect(routeMcpPath(new URL(`https://relay.test${path}`))).toEqual(expected);
+  });
+});
+
 describe("locationHintForGeo", () => {
   it("splits the two-region continents on longitude", () => {
     expect(locationHintForGeo({ continent: "NA", longitude: "-122.33" })).toBe("wnam"); // Seattle
@@ -356,6 +379,170 @@ describe("Durable Object transient failures", () => {
     } as TunnelRelayEnv;
     await expect(handleRequest(new Request(`https://relay.test/host/${MACHINE_KEY}`, { headers: { upgrade: "websocket" } }), env))
       .rejects.toThrow("Cannot read properties of undefined");
+  });
+});
+
+describe("mcpAccountKeyForSecret", () => {
+  it.each([
+    ["32 random bytes in base64url", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0u_-", true],
+    ["padded base64url", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0u_=", true],
+    ["too short", "A1b2C3d4E5f6", false],
+    ["standard base64 characters", "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0u+/", false],
+    ["too long", "a".repeat(129), false],
+    ["not a string", 42, false],
+  ] as const)("%s", async (_label, secret, valid) => {
+    const expected = valid ? (await hmacSha256Hex(secret as string, "ade-mcp-account")).slice(0, 40) : null;
+    const key = await mcpAccountKeyForSecret(secret);
+    expect(key).toBe(expected);
+    if (key) expect(key).toMatch(/^[a-f0-9]{40}$/);
+  });
+});
+
+// The account address tries each computer on the account in turn, and only
+// while the machine object proves the brain never saw the request.
+describe("ADE MCP account failover", () => {
+  const ACCOUNT_KEY = "c".repeat(40);
+  const M1 = "1".repeat(48);
+  const M2 = "2".repeat(48);
+  const M3 = "3".repeat(48);
+  type MachineAnswer = "ok" | "offline" | "off" | "lost" | "busy";
+
+  function answerFor(kind: MachineAnswer, machineKey: string): Response {
+    const cors = { "access-control-allow-origin": "*" };
+    switch (kind) {
+      case "ok":
+        return new Response(`answered by ${machineKey}`, { status: 200, headers: cors });
+      case "offline":
+        return Response.json({ error: "offline" }, { status: 503, headers: { ...cors, "x-ade-mcp-undelivered": "offline" } });
+      case "off":
+        return Response.json({ error: "ade_mcp_off" }, { status: 404, headers: { ...cors, "x-ade-mcp-undelivered": "ade_mcp_off" } });
+      case "lost":
+        // Sent to the brain, then its socket went: the same 503, no marker.
+        return Response.json({ error: "offline" }, { status: 503, headers: cors });
+      case "busy":
+        return Response.json({ error: "rate_limited" }, { status: 429, headers: cors });
+    }
+  }
+
+  function accountHarness(args: {
+    members: string[];
+    front?: string | null;
+    answers: Record<string, MachineAnswer>;
+  }) {
+    const tried: Array<{ machineKey: string; mount: string | null; body: string }> = [];
+    const fronts: string[] = [];
+    const waited: Promise<unknown>[] = [];
+    const ctx = { waitUntil: (promise: Promise<unknown>) => { waited.push(promise); } };
+    const env = {
+      TUNNEL: {
+        idFromName: (name: string) => name as unknown as DurableObjectId,
+        get: (id: DurableObjectId) => ({
+          fetch: async (request: Request) => {
+            const name = id as unknown as string;
+            const url = new URL(request.url);
+            if (name === `mcp-account:${ACCOUNT_KEY}`) {
+              if (url.pathname === "/__mcp-account") return Response.json({ members: args.members, front: args.front ?? null });
+              if (url.pathname === "/__mcp-account/front") {
+                fronts.push(((await request.json()) as { machineKey: string }).machineKey);
+                return new Response(null, { status: 204 });
+              }
+            }
+            tried.push({ machineKey: name, mount: request.headers.get("x-ade-mcp-mount"), body: await request.text() });
+            return answerFor(args.answers[name] ?? "offline", name);
+          },
+        }),
+      } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+    const send = (init: RequestInit = { method: "POST", body: "{\"jsonrpc\":\"2.0\"}" }) =>
+      handleRequest(new Request(`https://relay.test/a/${ACCOUNT_KEY}/mcp`, init), env, ctx);
+    return { send, tried, fronts, settle: () => Promise.all(waited) };
+  }
+
+  it.each([
+    ["front answers first", [M1, M2, M3], M1, { [M1]: "ok" }, [M1], 200, M1, []],
+    ["newest first without a front", [M1, M2, M3], null, { [M3]: "ok" }, [M3], 200, M3, [M3]],
+    ["a front that left is ignored", [M2, M3], M1, { [M3]: "ok" }, [M3], 200, M3, [M3]],
+    ["offline front fails over to the newest", [M1, M2, M3], M1, { [M1]: "offline", [M3]: "ok" }, [M1, M3], 200, M3, [M3]],
+    ["off and offline both fail over", [M1, M2, M3], null, { [M3]: "off", [M2]: "offline", [M1]: "ok" }, [M3, M2, M1], 200, M1, [M1]],
+    ["a request the brain may have seen is final", [M1, M2], M2, { [M2]: "lost", [M1]: "ok" }, [M2], 503, null, []],
+    ["a rate limit is final", [M1, M2], null, { [M2]: "busy", [M1]: "ok" }, [M2], 429, null, [M2]],
+    ["all offline", [M1, M2], null, { [M1]: "offline", [M2]: "off" }, [M2, M1], 503, null, []],
+    ["all off", [M1, M2], null, { [M1]: "off", [M2]: "off" }, [M2, M1], 404, null, []],
+    ["no members", [], null, {}, [], 404, null, []],
+  ] as const)("%s", async (_label, members, front, answers, expectedTried, status, answeredBy, expectedFronts) => {
+    const harness = accountHarness({ members: [...members], front, answers: answers as Record<string, MachineAnswer> });
+
+    const response = await harness.send();
+    await harness.settle();
+
+    expect(harness.tried.map((entry) => entry.machineKey)).toEqual(expectedTried);
+    expect(response.status).toBe(status);
+    expect(response.headers.get("access-control-allow-origin")).toBe("*");
+    expect(response.headers.get("x-ade-mcp-undelivered")).toBeNull();
+    if (answeredBy) expect(await response.text()).toBe(`answered by ${answeredBy}`);
+    if (status === 503 && !answeredBy && expectedTried.length > 1) {
+      expect(response.headers.get("retry-after")).toBe("30");
+      expect(await response.json()).toMatchObject({ error: "offline" });
+    }
+    if (status === 404) expect(await response.json()).toMatchObject({ error: "ade_mcp_off" });
+    expect(harness.fronts).toEqual(expectedFronts);
+  });
+
+  it("resends the same body to each computer under the Worker's own mount", async () => {
+    const harness = accountHarness({ members: [M1, M2], answers: { [M2]: "offline", [M1]: "ok" } });
+
+    const response = await harness.send({
+      method: "POST",
+      headers: { "x-ade-mcp-mount": `a/${"d".repeat(40)}` },
+      body: "{\"jsonrpc\":\"2.0\",\"id\":7}",
+    });
+
+    expect(response.status).toBe(200);
+    expect(harness.tried).toEqual([
+      { machineKey: M2, mount: `a/${ACCOUNT_KEY}`, body: "{\"jsonrpc\":\"2.0\",\"id\":7}" },
+      { machineKey: M1, mount: `a/${ACCOUNT_KEY}`, body: "{\"jsonrpc\":\"2.0\",\"id\":7}" },
+    ]);
+  });
+
+  it("refuses a body over 1 MiB without reaching a computer", async () => {
+    const harness = accountHarness({ members: [M1], answers: { [M1]: "ok" } });
+
+    const response = await harness.send({ method: "POST", body: "x".repeat(1024 * 1024 + 1) });
+
+    expect(response.status).toBe(413);
+    expect(harness.tried).toEqual([]);
+  });
+
+  it("drops a client's mount header on the per-machine address", async () => {
+    const seen: Array<string | null> = [];
+    const env = {
+      TUNNEL: {
+        idFromName: (name: string) => name,
+        get: () => ({
+          fetch: async (request: Request) => {
+            if (new URL(request.url).pathname === "/__mcp-endpoint") return Response.json({ machineKey: MACHINE_KEY });
+            seen.push(request.headers.get("x-ade-mcp-mount"));
+            return new Response("ok");
+          },
+        }),
+      } as unknown as DurableObjectNamespace,
+    } as TunnelRelayEnv;
+
+    await handleRequest(new Request(`https://relay.test/m/${"9".repeat(40)}/mcp`, {
+      method: "POST",
+      headers: { "x-ade-mcp-mount": `a/${ACCOUNT_KEY}` },
+      body: "{}",
+    }), env);
+
+    expect(seen).toEqual([null]);
+  });
+
+  it("answers account preflight at the Worker", async () => {
+    const harness = accountHarness({ members: [M1], answers: { [M1]: "ok" } });
+    const response = await harness.send({ method: "OPTIONS" });
+    expect(response.status).toBe(204);
+    expect(response.headers.get("access-control-allow-methods")).toContain("POST");
+    expect(harness.tried).toEqual([]);
   });
 });
 

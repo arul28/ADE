@@ -138,6 +138,12 @@ export type TunnelRoute =
    * its relay key (see resolveMcpEndpoint). `path` is what the brain sees.
    */
   | { kind: "mcp"; machineKey: string; path: string }
+  /**
+   * ADE MCP for a whole ADE account: any of the account's computers with ADE
+   * MCP on may answer. `accountKey` (lowercase) names the account object, which
+   * lists those computers; `path` is what the brain sees, as for `mcp`.
+   */
+  | { kind: "mcp-account"; accountKey: string; path: string }
   | { kind: "claim"; machineKey: string }
   | { kind: "host"; machineKey: string }
   | { kind: "pipe"; machineKey: string; id: string }
@@ -215,7 +221,32 @@ export function routeMcpPath(url: URL): TunnelRoute | null {
       path: `/.well-known/${parts[1]}${suffix.length ? `/${suffix.map(encodeURIComponent).join("/")}` : ""}${url.search}`,
     };
   }
+  // The account address: the same shapes with `a/<accountKey>` in place of
+  // `m/<endpointKey>`.
+  if (parts.length >= 2 && parts[0] === "a") {
+    if (!validKey(parts[1])) return null;
+    const rest = parts.slice(2);
+    return {
+      kind: "mcp-account",
+      accountKey: parts[1].toLowerCase(),
+      path: `/${rest.map(encodeURIComponent).join("/")}${url.search}`,
+    };
+  }
+  if (parts.length >= 4 && parts[0] === ".well-known" && MCP_WELL_KNOWN.has(parts[1]!) && parts[2] === "a") {
+    if (!validKey(parts[3])) return null;
+    const suffix = parts.slice(4);
+    return {
+      kind: "mcp-account",
+      accountKey: parts[3].toLowerCase(),
+      path: `/.well-known/${parts[1]}${suffix.length ? `/${suffix.map(encodeURIComponent).join("/")}` : ""}${url.search}`,
+    };
+  }
   return null;
+}
+
+/** Either ADE MCP route: answered with MCP_CORS_HEADERS, OPTIONS by the Worker. */
+export function isMcpRoute(route: TunnelRoute | null): route is Extract<TunnelRoute, { kind: "mcp" | "mcp-account" }> {
+  return route?.kind === "mcp" || route?.kind === "mcp-account";
 }
 
 /** CORS for ADE MCP: browser-based MCP clients call it cross-origin. */
@@ -318,6 +349,168 @@ async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Pro
 }
 
 /**
+ * ADE MCP for an account. The brain sends its account secret in `mcp_state`;
+ * the relay derives the public account key from it (never trusting a key the
+ * brain names) and the object named `mcp-account:<accountKey>` lists the
+ * machines (relay keys) that serve it. Its internal paths are reached only from
+ * inside this Worker: the public routers never produce them.
+ */
+export const MCP_ACCOUNT_PATH = "/__mcp-account";
+export const MCP_ACCOUNT_FRONT_PATH = "/__mcp-account/front";
+export const MCP_ACCOUNT_MAX_MEMBERS = 32;
+/**
+ * Set by the Worker on an account request it forwards to a machine object,
+ * after dropping any copy the client sent. Never sent on to the brain: the
+ * machine object turns it into the `http` message's `mount`.
+ */
+export const MCP_MOUNT_HEADER = "x-ade-mcp-mount";
+/**
+ * Set by a machine object on an account request it refused before the brain
+ * could see it (`offline` or `ade_mcp_off`), so the Worker may try the next
+ * computer. Never returned to a client.
+ */
+export const MCP_UNDELIVERED_HEADER = "x-ade-mcp-undelivered";
+export const MCP_MAX_REQUEST_BYTES = 1024 * 1024;
+// 32 random bytes in base64url is 43 characters; allow optional padding and
+// longer secrets, never a short or non-base64url one.
+const MCP_ACCOUNT_SECRET_PATTERN = /^[A-Za-z0-9_-]{32,128}={0,2}$/;
+
+export function mcpAccountObjectName(accountKey: string): string {
+  return `mcp-account:${accountKey.toLowerCase()}`;
+}
+
+/**
+ * The account key for an account secret, or null for a secret of the wrong
+ * shape: hex(HMAC-SHA256(utf8(secret), "ade-mcp-account")), first 40 chars.
+ */
+export async function mcpAccountKeyForSecret(secret: unknown): Promise<string | null> {
+  if (typeof secret !== "string" || !MCP_ACCOUNT_SECRET_PATTERN.test(secret)) return null;
+  return (await hmacSha256Hex(secret, "ade-mcp-account")).slice(0, 40);
+}
+
+export type McpAccountState = { members: string[]; front: string | null };
+
+/** Machines to try for an account request: the front first, then newest-first. */
+export function mcpAccountCandidates(state: McpAccountState): string[] {
+  const newestFirst = [...state.members].reverse();
+  if (!state.front || !newestFirst.includes(state.front)) return newestFirst;
+  return [state.front, ...newestFirst.filter((key) => key !== state.front)];
+}
+
+export function mcpErrorResponse(
+  status: number,
+  error: string,
+  description: string,
+  extra: Record<string, string> = {},
+): Response {
+  return jsonResponse(
+    { error, error_description: description },
+    { status, headers: { "cache-control": "no-store", ...MCP_CORS_HEADERS, ...extra } },
+  );
+}
+
+/** The request body, or null once it passes `maxBytes` (read as a stream). */
+async function readBytesCapped(body: ReadableStream<Uint8Array>, maxBytes: number): Promise<ArrayBuffer | null> {
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  const joined = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    joined.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return joined.buffer;
+}
+
+type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
+
+const MCP_ACCOUNT_OFF_DESCRIPTION =
+  "ADE MCP is off for this account. Turn it on in ADE Settings → ADE MCP on one of your computers.";
+const MCP_ACCOUNT_OFFLINE_DESCRIPTION =
+  "None of your computers with ADE MCP on are online. Open ADE on one of them, or try again shortly.";
+
+/**
+ * An account request. Each computer on the account is tried in turn (the one
+ * that last answered first, then the newest), and the next is tried only when
+ * a machine object refused before its brain could see the request (offline,
+ * or ADE MCP off there). Any other answer is final: a request a brain may have
+ * received is never sent to a second one. The body is buffered (1 MiB cap) so
+ * it can be resent.
+ */
+async function handleAccountMcp(
+  request: Request,
+  env: TunnelRelayEnv,
+  accountKey: string,
+  ctx: WaitUntil | undefined,
+): Promise<Response> {
+  const declaredLength = Number(request.headers.get("content-length") ?? "0");
+  if (Number.isFinite(declaredLength) && declaredLength > MCP_MAX_REQUEST_BYTES) {
+    return mcpErrorResponse(413, "too_large", "Request too large.");
+  }
+  // Only a POST body ever reaches the brain; the machine object answers other
+  // methods without reading theirs.
+  let body: ArrayBuffer | null = null;
+  if (request.method === "POST" && request.body) {
+    body = await readBytesCapped(request.body, MCP_MAX_REQUEST_BYTES);
+    if (body === null) return mcpErrorResponse(413, "too_large", "Request too large.");
+  }
+
+  const accountId = env.TUNNEL.idFromName(mcpAccountObjectName(accountKey));
+  const stateResponse = await fetchDurableObject(
+    () => env.TUNNEL.get(accountId),
+    new Request(`https://relay.internal${MCP_ACCOUNT_PATH}`),
+  );
+  if (!stateResponse.ok) return transientUnavailableResponse(MCP_CORS_HEADERS);
+  const state = (await stateResponse.json()) as McpAccountState;
+  const candidates = mcpAccountCandidates(state);
+
+  const headers = new Headers(request.headers);
+  headers.delete("content-length");
+  headers.delete("transfer-encoding");
+  headers.set(MCP_MOUNT_HEADER, `a/${accountKey}`);
+  let sawOffline = false;
+  for (const machineKey of candidates) {
+    if (!validKey(machineKey)) continue;
+    const id = env.TUNNEL.idFromName(machineKey);
+    const forwarded = new Request(request.url, { method: request.method, headers, body });
+    // May reach a brain: never sent twice, whatever its method.
+    const response = await fetchDurableObject(() => env.TUNNEL.get(id), forwarded, { retry: "never" });
+    const undelivered = response.headers.get(MCP_UNDELIVERED_HEADER);
+    if ((response.status === 503 && undelivered === "offline") || (response.status === 404 && undelivered === "ade_mcp_off")) {
+      if (undelivered === "offline") sawOffline = true;
+      await response.body?.cancel().catch(() => undefined);
+      continue;
+    }
+    if (machineKey !== state.front) {
+      const recordFront = fetchDurableObject(
+        () => env.TUNNEL.get(accountId),
+        new Request(`https://relay.internal${MCP_ACCOUNT_FRONT_PATH}`, {
+          method: "POST",
+          body: JSON.stringify({ machineKey }),
+        }),
+        { retry: "replayable" },
+      ).then((answer) => answer.body?.cancel(), () => undefined);
+      if (ctx) ctx.waitUntil(recordFront);
+    }
+    return response;
+  }
+  return sawOffline
+    ? mcpErrorResponse(503, "offline", MCP_ACCOUNT_OFFLINE_DESCRIPTION, { "retry-after": "30" })
+    : mcpErrorResponse(404, "ade_mcp_off", MCP_ACCOUNT_OFF_DESCRIPTION);
+}
+
+/**
  * Durable Objects restart under Cloudflare now and then ("storage is no longer
  * accessible", "instance is no longer active", "internal error; reference =
  * …"). A request that can be sent twice gets one more try on a fresh stub
@@ -326,20 +519,20 @@ async function resolveMcpEndpoint(env: TunnelRelayEnv, endpointKey: string): Pro
  * brain's control socket and the phone both reconnect on a failed upgrade with
  * their usual backoff, whatever its status.
  */
-export async function handleRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
+export async function handleRequest(request: Request, env: TunnelRelayEnv, ctx?: WaitUntil): Promise<Response> {
   try {
-    return await routeRequest(request, env);
+    return await routeRequest(request, env, ctx);
   } catch (error) {
     const kind = cloudflareTransientKind(error);
     if (!kind) throw error;
     const url = new URL(request.url);
     logCloudflareTransient("ade-tunnel-relay", kind, scrubString(url.pathname), error);
-    const mcp = (routeTunnelPath(url.pathname) ?? routeMcpPath(url))?.kind === "mcp";
+    const mcp = isMcpRoute(routeTunnelPath(url.pathname) ?? routeMcpPath(url));
     return transientUnavailableResponse(mcp ? MCP_CORS_HEADERS : {});
   }
 }
 
-async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Response> {
+async function routeRequest(request: Request, env: TunnelRelayEnv, ctx?: WaitUntil): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/health") {
     const { id, tag, timestamp } = env.CF_VERSION_METADATA;
@@ -353,9 +546,16 @@ async function routeRequest(request: Request, env: TunnelRelayEnv): Promise<Resp
 
   const route = routeTunnelPath(url.pathname) ?? routeMcpPath(url);
   if (!route) return textResponse("not found", 404);
-  if (route.kind === "mcp" && request.method === "OPTIONS") {
+  if (isMcpRoute(route) && request.method === "OPTIONS") {
     return new Response(null, { status: 204, headers: MCP_CORS_HEADERS });
   }
+  // The mount header is the Worker's own; a client's copy never goes further.
+  if (isMcpRoute(route) && request.headers.has(MCP_MOUNT_HEADER)) {
+    const headers = new Headers(request.headers);
+    headers.delete(MCP_MOUNT_HEADER);
+    request = new Request(request, { headers });
+  }
+  if (route.kind === "mcp-account") return await handleAccountMcp(request, env, route.accountKey, ctx);
   if (route.kind === "mcp") {
     const machineKey = await resolveMcpEndpoint(env, route.machineKey);
     if (!machineKey) {

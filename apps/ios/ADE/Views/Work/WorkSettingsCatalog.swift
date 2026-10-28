@@ -31,7 +31,6 @@ enum WorkSettingsCatalog {
     "general.diagnostics-sharing": Setting(path: "Computer › ADE service › Send a report to ADE", locked: true),
     "general.reset": Setting(path: "Computer › ADE service › Reset ADE", locked: true),
     "general.keep-awake": Setting(path: "Computer › Behaviour › Keep this computer awake", locked: true),
-    "ade-mcp.server": Setting(path: "Computer › ADE MCP › ADE MCP: let AI apps use this computer", locked: true),
     "behaviour.terminal-shell": Setting(path: "Computer › Behaviour › Default terminal shell", locked: false),
     "general.capture-gesture": Setting(path: "Computer › Behaviour › Capture with a key gesture", locked: true),
     "general.link-open-mode": Setting(path: "Computer › Behaviour › Open links", locked: false),
@@ -129,6 +128,9 @@ enum WorkSettingsCatalog {
     "activity.machines": Setting(path: "You › Notifications › Machines", locked: false),
     "secrets.secrets": Setting(path: "Project › Secrets", locked: false),
     "stats.usage": Setting(path: "You › Usage › Usage & spend", locked: true),
+    "ade-mcp.server": Setting(path: "You › ADE MCP › ADE MCP: let AI apps use ADE", locked: true),
+    "ade-mcp.computers": Setting(path: "You › ADE MCP › Computers AI apps can reach", locked: true),
+    "ade-mcp.connections": Setting(path: "You › ADE MCP › Connected AI apps and tokens", locked: true),
   ]
 
   static let places: [String: String] = [

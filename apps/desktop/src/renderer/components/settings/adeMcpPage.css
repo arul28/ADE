@@ -1,4 +1,4 @@
-/* Settings → Computer → ADE MCP (AdeMcpPage). Theme tokens only. */
+/* Settings → You → ADE MCP (AdeMcpPage). Theme tokens only. */
 
 .ade-mcp-status { display: inline-flex; align-items: center; gap: 6px; }
 
@@ -15,8 +15,14 @@
 }
 
 .ade-mcp-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.ade-mcp-title > .kit-tag { text-transform: none; letter-spacing: 0; }
 
-.ade-mcp-logos { display: inline-flex; align-items: center; gap: 4px; color: var(--kit-text-2); }
+/* Connect an app: the app picker, then one line and the thing to paste. */
+.ade-mcp-howto { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }
+.ade-mcp-howto-body { display: flex; flex-direction: column; gap: 8px; align-self: stretch; }
+.ade-mcp-howto-line { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-2); }
+.ade-mcp-howto-line code { font: 11.5px/1.4 var(--font-mono, ui-monospace, monospace); color: var(--color-fg); }
+.ade-mcp-howto-actions { display: flex; gap: 8px; }
 
 .ade-mcp-mark {
   display: inline-flex;
@@ -30,16 +36,18 @@
 }
 .ade-mcp-mark[data-generic="true"] { color: var(--kit-text-2); }
 
-.ade-mcp-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 10px; }
+.ade-mcp-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; }
 .ade-mcp-token-form > .kit-input { flex: 1 1 160px; min-width: 0; }
 
-.ade-mcp-token { margin-top: 10px; }
+.ade-mcp-token { margin-bottom: 10px; }
+/* Disconnect and Revoke take the same width, so the access switches line up. */
+.ade-mcp-remove { min-width: 82px; justify-content: center; }
 .ade-mcp-token-value { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .ade-mcp-token-value > .ade-mcp-url { flex: 1 1 260px; margin-top: 0; }
 
 .ade-mcp-activity-row {
   display: grid;
-  grid-template-columns: 64px minmax(72px, 140px) minmax(0, 1fr) auto;
+  grid-template-columns: 64px minmax(72px, 140px) minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 12px;
   padding: 7px 14px;
@@ -49,9 +57,11 @@
 .ade-mcp-activity-time { color: var(--kit-text-3); }
 .ade-mcp-activity-app,
 .ade-mcp-activity-cmd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-mcp-activity-hop { color: var(--kit-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
 .ade-mcp-activity-cmd { font-family: var(--font-mono, ui-monospace, monospace); color: var(--kit-text-2); }
 
 @container modernpage (max-width: 520px) {
-  .ade-mcp-activity-row { grid-template-columns: 56px minmax(0, 1fr) auto; }
+  .ade-mcp-activity-row { grid-template-columns: 56px minmax(0, 1fr) auto auto; }
   .ade-mcp-activity-app { display: none; }
+  .ade-mcp-activity-hop { max-width: 96px; }
 }

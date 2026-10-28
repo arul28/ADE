@@ -85,7 +85,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs", new Set(["list", "list-open", "show", "checks", "comments", "watch-status", "github-snapshot"])],
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
-    "list", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
+    "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
     "linear-issues", "actions", "wait", "watch",
   ])],
   ["terminal", new Set(["list", "read", "active"])],

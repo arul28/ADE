@@ -9,13 +9,22 @@ import {
   jsonResponse,
   MACHINE_KEY_PATTERN,
   MCP_CORS_HEADERS,
+  MCP_ACCOUNT_FRONT_PATH,
+  MCP_ACCOUNT_MAX_MEMBERS,
+  MCP_ACCOUNT_PATH,
   MCP_ENDPOINT_PATH,
+  MCP_MOUNT_HEADER,
+  MCP_UNDELIVERED_HEADER,
+  mcpAccountKeyForSecret,
+  mcpAccountObjectName,
   mcpEndpointObjectName,
   routeMcpPath,
   routeTunnelPath,
   verifySignedQuery,
+  type McpAccountState,
   type TunnelRelayEnv,
 } from "./relay";
+import { fetchDurableObject } from "./cloudflareTransient";
 
 // Application close codes must live in 4000-4999. Documented in the README.
 export const CLOSE_PARTNER_CLOSED = 4000; // the other end closed without an application code
@@ -87,6 +96,9 @@ const MCP_FORWARDED_REQUEST_HEADERS = [
   "mcp-protocol-version",
   "mcp-session-id",
   "user-agent",
+  // Set by a brain that forwards a call to another computer on the account; the
+  // target refuses a second hop and logs it. A client's copy only stops forwarding.
+  "x-ade-mcp-via",
 ];
 const MCP_RETURNED_RESPONSE_HEADERS = new Set([
   "content-type",
@@ -100,6 +112,9 @@ const MCP_RETURNED_RESPONSE_HEADERS = new Set([
   "x-content-type-options",
 ]);
 const MCP_METHODS = new Set(["GET", "POST", "DELETE", "HEAD"]);
+
+/** Which address an MCP request came in on; absent for the per-machine one. */
+type McpMount = { kind: "account"; key: string };
 
 type PendingMcpRequest = {
   control: WebSocket;
@@ -214,6 +229,8 @@ type SocketAttachment = {
   machineKey?: string;
   /** Control sockets only: the MCP endpoint key already registered. */
   mcpEndpointKey?: string;
+  /** Control sockets only: the ADE MCP account this machine was added to. */
+  mcpAccountKey?: string;
   ts: number;
 };
 
@@ -247,6 +264,9 @@ export class TunnelDurableObject implements DurableObject {
   private readonly pendingMcp = new Map<string, PendingMcpRequest>();
   private mcpWindowStart = 0;
   private mcpWindowCount = 0;
+  // Account membership changes run one at a time, in the order the brain sent
+  // them: each awaits another object, which lets the next message in.
+  private mcpAccountSync: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -299,10 +319,21 @@ export class TunnelDurableObject implements DurableObject {
     const url = new URL(request.url);
     // Reached only from inside this Worker: the public router never routes it.
     if (url.pathname === MCP_ENDPOINT_PATH) return this.handleMcpEndpoint(request);
+    if (url.pathname === MCP_ACCOUNT_PATH || url.pathname === MCP_ACCOUNT_FRONT_PATH) {
+      return this.handleMcpAccount(request, url.pathname);
+    }
     const route = routeTunnelPath(url.pathname) ?? routeMcpPath(url);
     if (!route) return new Response("not found", { status: 404 });
 
     if (route.kind === "mcp") return this.handleMcp(request, route.path);
+    if (route.kind === "mcp-account") {
+      // Only the Worker's account route sets this header (after dropping any
+      // client copy), and only for the account named in the address.
+      if (request.headers.get(MCP_MOUNT_HEADER) !== `a/${route.accountKey}`) {
+        return new Response("not found", { status: 404 });
+      }
+      return this.handleMcp(request, route.path, { kind: "account", key: route.accountKey });
+    }
     if (route.kind === "claim") return this.handleClaim(request);
     if (route.kind === "host") return this.handleHost(request, url, route.machineKey);
     if (route.kind === "pipe") return this.handlePipe(request, url, route.machineKey, route.id);
@@ -317,16 +348,29 @@ export class TunnelDurableObject implements DurableObject {
    * OAuth, tokens all live on the machine); it only refuses early when the
    * machine is offline or has the feature off, and bounds the traffic.
    */
-  private async handleMcp(request: Request, path: string): Promise<Response> {
+  private async handleMcp(request: Request, path: string, mount?: McpMount): Promise<Response> {
     if (!MCP_METHODS.has(request.method)) return mcpJson(405, "method_not_allowed", "Method not allowed.");
     if (path.length > MCP_MAX_PATH_CHARS) return mcpJson(414, "uri_too_long", "Request address too long.");
+    // On the account address, a refusal the brain never saw tells the Worker
+    // it may try the account's next computer.
+    const undelivered = (reason: "offline" | "ade_mcp_off"): Record<string, string> => (
+      mount ? { [MCP_UNDELIVERED_HEADER]: reason } : {}
+    );
     const control = this.currentControl();
     if (!control) {
-      return mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it.", { "retry-after": "30" });
+      return mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it.", {
+        "retry-after": "30",
+        ...undelivered("offline"),
+      });
     }
     const controlAttachment = this.normalizedAttachment(control);
     if (controlAttachment?.mcp !== true) {
-      return mcpJson(404, "ade_mcp_off", "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.");
+      return mcpJson(404, "ade_mcp_off", "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.", undelivered("ade_mcp_off"));
+    }
+    // A machine still listed on an account it has left (or never joined on
+    // this socket) does not answer for it.
+    if (mount && controlAttachment.mcpAccountKey !== mount.key) {
+      return mcpJson(404, "ade_mcp_off", "ADE MCP is off for this account on that computer.", undelivered("ade_mcp_off"));
     }
     const now = Date.now();
     if (now - this.mcpWindowStart >= 60_000) {
@@ -361,11 +405,104 @@ export class TunnelDurableObject implements DurableObject {
       this.pendingMcp.set(rid, { control, resolve, timer });
     });
     try {
-      control.send(JSON.stringify({ t: "http", rid, method: request.method, path, headers, body }));
+      control.send(JSON.stringify(mount
+        ? { t: "http", rid, method: request.method, path, headers, body, mount }
+        : { t: "http", rid, method: request.method, path, headers, body }));
     } catch {
-      this.settleMcp(rid, mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it."));
+      // A send that throws queued nothing: the brain never saw it.
+      this.settleMcp(rid, mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it.", undelivered("offline")));
     }
     return response;
+  }
+
+  /**
+   * The `mcp-account:<accountKey>` object: the machines (relay keys) serving an
+   * account, most recent registration last, and the one that last answered.
+   */
+  private async handleMcpAccount(request: Request, pathname: string): Promise<Response> {
+    const members = (await this.state.storage.get<string[]>("members")) ?? [];
+    const front = (await this.state.storage.get<string>("front")) ?? null;
+    if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
+      return jsonResponse({ members, front } satisfies McpAccountState, { headers: { "cache-control": "no-store" } });
+    }
+    const expected = pathname === MCP_ACCOUNT_PATH ? "PUT" : "POST";
+    if (request.method !== expected) return new Response("method not allowed", { status: 405 });
+    let parsed: { machineKey?: unknown; op?: unknown };
+    try {
+      parsed = (await request.json()) as typeof parsed;
+    } catch {
+      return new Response("invalid json", { status: 400 });
+    }
+    const machineKey = typeof parsed?.machineKey === "string" ? parsed.machineKey.toLowerCase() : "";
+    if (!MACHINE_KEY_PATTERN.test(machineKey)) return new Response("bad machine key", { status: 400 });
+
+    if (pathname === MCP_ACCOUNT_FRONT_PATH) {
+      if (!members.includes(machineKey)) return new Response("not a member", { status: 409 });
+      if (front !== machineKey) await this.state.storage.put("front", machineKey);
+      return new Response(null, { status: 204 });
+    }
+    if (parsed.op !== "add" && parsed.op !== "remove") return new Response("bad op", { status: 400 });
+    let next = members.filter((key) => key !== machineKey);
+    if (parsed.op === "add") {
+      next.push(machineKey);
+      if (next.length > MCP_ACCOUNT_MAX_MEMBERS) next = next.slice(next.length - MCP_ACCOUNT_MAX_MEMBERS);
+    }
+    await this.state.storage.put("members", next);
+    if (front && !next.includes(front)) await this.state.storage.put("front", null);
+    return new Response(null, { status: 204 });
+  }
+
+  /** Adds this machine to, or removes it from, an account object. True when it took. */
+  private async putMcpAccountMember(accountKey: string, machineKey: string, op: "add" | "remove"): Promise<boolean> {
+    const id = this.env.TUNNEL.idFromName(mcpAccountObjectName(accountKey));
+    // Adding or removing twice leaves the same list, so a retry is safe.
+    const response = await fetchDurableObject(
+      () => this.env.TUNNEL.get(id),
+      new Request(`https://relay.internal${MCP_ACCOUNT_PATH}`, {
+        method: "PUT",
+        body: JSON.stringify({ machineKey, op }),
+      }),
+      { retry: "replayable" },
+    );
+    await response.body?.cancel();
+    return response.ok;
+  }
+
+  /**
+   * Brings this machine's account membership in line with one `mcp_state`:
+   * on with a well-formed account secret → a member of the account derived
+   * from it; off, no account, or a different account → removed from the one
+   * it joined before. The last joined account is also kept in storage so a
+   * fresh control socket (a restarted brain) can still leave it. The secret is
+   * never stored or logged.
+   */
+  private async syncMcpAccount(ws: WebSocket, enabled: boolean, account: unknown): Promise<void> {
+    const att = this.normalizedAttachment(ws);
+    if (!att?.machineKey || !this.isOpen(ws)) return;
+    const machineKey = att.machineKey.toLowerCase();
+    const secret = account && typeof account === "object" ? (account as { secret?: unknown }).secret : undefined;
+    const desired = enabled && secret !== undefined ? await mcpAccountKeyForSecret(secret) : null;
+    if (enabled && secret !== undefined && !desired) {
+      logTunnel("mcp_account_rejected", { machineKey: machineKey.slice(0, 8), reason: "bad_secret" });
+    }
+    const current = att.mcpAccountKey ?? null;
+    const previous = current ?? (await this.state.storage.get<string>("mcpAccountKey")) ?? null;
+    if (current === desired && previous === desired) return;
+
+    if (previous && previous !== desired) {
+      if (await this.putMcpAccountMember(previous, machineKey, "remove")) {
+        await this.state.storage.delete("mcpAccountKey");
+        logTunnel("mcp_account_left", { machineKey: machineKey.slice(0, 8), account: previous.slice(0, 8) });
+      }
+    }
+    let joined: string | null = null;
+    if (desired && (await this.putMcpAccountMember(desired, machineKey, "add"))) {
+      joined = desired;
+      await this.state.storage.put("mcpAccountKey", desired);
+      logTunnel("mcp_account_joined", { machineKey: machineKey.slice(0, 8), account: desired.slice(0, 8) });
+    }
+    const { mcpAccountKey: _previous, ...rest } = this.normalizedAttachment(ws) ?? att;
+    this.writeAttachment(ws, joined ? { ...rest, mcpAccountKey: joined } : rest);
   }
 
   /** The `mcp-endpoint:<key>` object: which machine an MCP endpoint key belongs to. */
@@ -892,8 +1029,16 @@ export class TunnelDurableObject implements DurableObject {
               att = { ...att, mcp: enabled };
               this.writeAttachment(ws, att);
             }
+            const account = (parsed as { account?: unknown }).account;
+            const accountSync = this.mcpAccountSync
+              .then(() => this.syncMcpAccount(ws, enabled, account))
+              .catch((error: unknown) => {
+                logTunnel("mcp_account_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+              });
+            this.mcpAccountSync = accountSync;
             const endpointKey = (parsed as { endpointKey?: unknown }).endpointKey;
             if (typeof endpointKey === "string") await this.registerMcpEndpoint(ws, att, endpointKey);
+            await accountSync;
           } else if (
             parsed?.t === "reject"
             && typeof parsed.id === "string"

@@ -111,7 +111,7 @@ export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
 ] as const;
 
 /** The pages that exist once per machine (the Computer group). */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour", "ade-mcp"];
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -159,6 +159,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // this project do with it, because that is where a server is switched off.
   { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "account" },
   { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
+  // One MCP server for the account: one URL reaches every computer you
+  // include. The id stays `ade-mcp`, so links from when it was a Computer page
+  // still land here.
+  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor use ADE on your computers.", group: "account" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "Every lane in this project, and how new ones start and stay current.", group: "project" },
@@ -181,8 +185,6 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   // terminal, and none of it follows the account.
   { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "machines" },
   { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser.", group: "machines" },
-  // Per computer: each machine is its own MCP server, switched on separately.
-  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor run ade on this computer.", group: "machines" },
 ] as const;
 
 /**
@@ -427,18 +429,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // settings, so the write would resolve against nothing.
     web: "hidden",
     group: "Sleep",
-  },
-  {
-    id: "ade-mcp.server",
-    label: "ADE MCP: let AI apps use this computer",
-    keywords: ["mcp", "ade mcp", "remote", "server", "claude.ai", "chatgpt", "cursor", "grok", "connector", "token", "oauth", "relay", "ai apps"],
-    tab: "ade-mcp",
-    anchor: "ade-mcp",
-    scope: "machine",
-    // Granting an outside app a machine is done from a desktop that reaches
-    // it, never from a browser tab.
-    web: "hidden",
-    group: "ADE MCP",
   },
   {
     id: "behaviour.terminal-shell",
@@ -1507,6 +1497,39 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "account",
     web: "machine",
     group: "Usage",
+  },
+  // ── ADE MCP: the account's one MCP server ────────────────────────────
+  {
+    id: "ade-mcp.server",
+    label: "ADE MCP: let AI apps use ADE",
+    keywords: ["mcp", "ade mcp", "remote", "server", "url", "claude.ai", "chatgpt", "claude code", "cursor", "vs code", "grok", "connector", "oauth", "relay", "ai apps"],
+    tab: "ade-mcp",
+    anchor: "ade-mcp",
+    scope: "account",
+    // Granting an outside app your computers is done from a desktop, never
+    // from a browser tab.
+    web: "hidden",
+    group: "ADE MCP",
+  },
+  {
+    id: "ade-mcp.computers",
+    label: "Computers AI apps can reach",
+    keywords: ["mcp", "machines", "include", "leave out", "exclude", "mac mini", "online"],
+    tab: "ade-mcp",
+    anchor: "ade-mcp-computers",
+    scope: "account",
+    web: "hidden",
+    group: "ADE MCP",
+  },
+  {
+    id: "ade-mcp.connections",
+    label: "Connected AI apps and tokens",
+    keywords: ["mcp", "token", "bearer", "revoke", "disconnect", "read only", "access", "apps"],
+    tab: "ade-mcp",
+    anchor: "ade-mcp-connections",
+    scope: "account",
+    web: "hidden",
+    group: "ADE MCP",
   },
 ] as const;
 

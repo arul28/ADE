@@ -206,6 +206,7 @@ import type {
   AgentChatDispatchSteerMode,
   PendingInputRequest,
 } from "../../desktop/src/shared/types/chat";
+import { buildChatInboxPlan } from "./cliChatInbox";
 import {
   describePendingInputForAgent,
   resolvePendingInputResponse,
@@ -882,7 +883,7 @@ export type CliPlan =
        * The list this plan returns, so `--all-machines` can merge it across
        * the account's machines (see `cliMachineTargeting.ts`).
        */
-      machineList?: "chats" | "lanes" | "projects" | "usageLimits";
+      machineList?: "chats" | "inbox" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
       /** `chat create`: what to compare after the chat exists (see `chatCreateNotices`). */
@@ -2638,6 +2639,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
+                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
     $ ade chat respond <session> --option 2         Answer the chat's pending question (alias: answer). Finds the one
@@ -10804,6 +10808,7 @@ function buildChatPlan(args: string[]): CliPlan {
       label: "chat actions",
       steps: [listActionsStep("actions", "chat")],
     };
+  if (sub === "inbox") return buildChatInboxPlan();
   if (sub === "move") {
     // `--note --no-changes` reports the missing note instead of eating
     // `--no-changes` and moving the changes the person asked to leave behind.

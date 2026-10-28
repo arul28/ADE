@@ -401,8 +401,8 @@ const TIP_LIST = [
   },
   {
     id: "ade-mcp", group: "integrations", icon: Plug, title: "ADE MCP", size: "small",
-    sentence: "Let ChatGPT, claude.ai and other AI apps use ADE on this computer.",
-    action: setting("ade-mcp.server", "Let other AI apps use ADE on this computer."),
+    sentence: "Give ChatGPT, claude.ai and other AI apps one address that reaches ADE on all your computers.",
+    action: setting("ade-mcp.server", "Let other AI apps use ADE on your computers."),
   },
 
   // Git

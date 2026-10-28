@@ -80,7 +80,9 @@ export type AccountVaultItemKind =
   | "integration"
   | "provider_api_key"
   | "linear_refresh_token"
-  | "project_secret";
+  | "project_secret"
+  /** ADE MCP: the account secret and the connections (token hashes only). */
+  | "ade_mcp";
 
 export type AccountVaultItem = {
   scope: string;
@@ -107,6 +109,7 @@ const ACCOUNT_VAULT_ITEM_KINDS: ReadonlySet<string> = new Set([
   "provider_api_key",
   "linear_refresh_token",
   "project_secret",
+  "ade_mcp",
 ]);
 
 /** Validate one vault row before callers can mistake corrupt data for a secret. */

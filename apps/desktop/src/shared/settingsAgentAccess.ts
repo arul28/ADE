@@ -92,6 +92,8 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
   ],
   "agent-reach": [
     "ade-mcp.server",
+    "ade-mcp.computers",
+    "ade-mcp.connections",
     "general.browser-agent-access",
     "general.browser-auto-grant",
     "agents.scheduled-work",

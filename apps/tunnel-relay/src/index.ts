@@ -13,7 +13,7 @@ export const TunnelDurableObject = Sentry.instrumentDurableObjectWithSentry<
 >(sentryOptions, TunnelDurableObjectClass);
 
 export default Sentry.withSentry(sentryOptions, {
-  fetch(request: Request, env: TunnelRelayEnv): Promise<Response> {
-    return handleRequest(request, env);
+  fetch(request: Request, env: TunnelRelayEnv, ctx?: ExecutionContext): Promise<Response> {
+    return handleRequest(request, env, ctx);
   },
 });

@@ -1,7 +1,9 @@
 /**
- * ADE MCP: this computer as an MCP server, reached through ADE Relay.
- * The brain's `remote_mcp` action domain answers with these shapes; Settings
- * and `ade mcp` read them. Implemented in apps/ade-cli/src/services/remoteMcp.
+ * ADE MCP: one MCP server for the person's ADE account, reached through ADE
+ * Relay. Any of the account's computers with ADE MCP on can answer the
+ * account address; a call for another computer is forwarded to it. The
+ * brain's `remote_mcp` action domain answers with these shapes; Settings and
+ * `ade mcp` read them. Implemented in apps/ade-cli/src/services/remoteMcp.
  */
 
 export type RemoteMcpScope = "read" | "write";
@@ -12,6 +14,7 @@ export function isRemoteMcpScope(value: unknown): value is RemoteMcpScope {
 
 export type RemoteMcpConnectionKind = "app" | "token";
 
+/** A connection belongs to the account: its token works on every included computer. */
 export type RemoteMcpConnectionSummary = {
   id: string;
   kind: RemoteMcpConnectionKind;
@@ -25,12 +28,35 @@ export type RemoteMcpConnectionSummary = {
   redirectHost: string | null;
 };
 
+/** One of the account's computers, as ADE MCP sees it. */
+export type RemoteMcpMachine = {
+  machineKey: string;
+  name: string;
+  /** False when the person left this computer out of ADE MCP. */
+  included: boolean;
+  /**
+   * The computer runs an ADE that serves the account address. False for a
+   * computer on an older ADE, or one that never turned on since the update.
+   */
+  supported: boolean;
+  /** From the account directory; null when it could not be read. */
+  online: boolean | null;
+  isThisMachine: boolean;
+};
+
 export type RemoteMcpStatus = {
+  /** ADE MCP is on for the account. */
   enabled: boolean;
-  /** The URL to give an AI app; null until this computer has a relay identity. */
+  /** This computer is signed in to an ADE account; ADE MCP needs one. */
+  signedIn: boolean;
+  /** The account's one URL to give an AI app; null until it exists. */
   serverUrl: string | null;
+  /** This computer's relay connection is up, so it can answer the URL. */
   relayConnected: boolean;
   machineName: string;
+  /** This computer is included and answering. */
+  thisMachineServing: boolean;
+  machines: RemoteMcpMachine[];
   connections: RemoteMcpConnectionSummary[];
 };
 
@@ -58,12 +84,17 @@ export type RemoteMcpActivityEntry = {
   project?: string;
   /** The typed tool that ran the command, when it was not the `ade` tool. */
   tool?: string;
+  /** The computer that took the call from the app, when it was another one. */
+  via?: string;
+  /** The computer the call was sent on to, on the computer that sent it. */
+  forwardedTo?: string;
 };
 
 export const REMOTE_MCP_ACTIONS = [
   "getStatus",
   "listActivity",
   "setEnabled",
+  "setMachineIncluded",
   "createToken",
   "updateConnection",
   "removeConnection",
