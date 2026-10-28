@@ -55,12 +55,14 @@ const staleSnapshotProviders = new Set<string>();
  * to Sentry so its cause can be found.
  */
 function pinnedRuntimeReadyDespiteSnapshot(provider: string, cli: CliAuthStatus | null): boolean {
-  if (cli?.installed) {
+  // `installed` is checked first: when the snapshot agrees, the tools cache is not read.
+  const tool = cli?.installed ? null : pinnedToolForProvider(provider);
+  const disagree = Boolean(tool && pinnedToolState(tool.tool, tool.label).state === "ready");
+  if (!disagree) {
+    // The two agree again; a later disagreement is a new one.
     staleSnapshotProviders.delete(provider);
     return false;
   }
-  const tool = pinnedToolForProvider(provider);
-  if (!tool || pinnedToolState(tool.tool, tool.label).state !== "ready") return false;
   // Every status poll asks; Sentry hears once per disagreement, not per poll.
   if (staleSnapshotProviders.has(provider)) return true;
   staleSnapshotProviders.add(provider);
@@ -179,7 +181,8 @@ export async function buildProviderConnections(
     localCreds: Awaited<ReturnType<typeof readClaudeCredentials>> | Awaited<ReturnType<typeof readCodexCredentials>>,
   ) => {
     // `installed` is ADE's own pinned copy, the only one chats run on.
-    const runtimeDetected = Boolean(cli?.installed) || pinnedRuntimeReadyDespiteSnapshot(provider, cli);
+    // Asked first on every poll, so it also sees the disagreement end.
+    const runtimeDetected = pinnedRuntimeReadyDespiteSnapshot(provider, cli) || Boolean(cli?.installed);
     const cliAuthenticated = Boolean(cli?.installed && cli.authenticated);
     const cliExplicitlyUnauthenticated = Boolean(cli?.installed && cli.verified && !cli.authenticated);
     const localCredsDetected = Boolean(localCreds);
