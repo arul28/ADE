@@ -146,7 +146,10 @@ context environment variables. The `identity.role` field in
 not grant access by itself. Direct headless CLI mode sets
 `ADE_DEFAULT_ROLE` from `--role`, and socket-backed launchers restart
 stale runtimes when the runtime's reported `runtimeInfo.defaultRole`
-does not match the requested role.
+cannot serve the requested role. A command running inside the brain cannot
+restart that brain: if its role is compatible, the command uses it despite a
+build or version mismatch and warns on stderr; otherwise it fails rather than
+opening a separate headless runtime.
 
 The initialize response advertises the runtime contract used by clients
 to detect stale runtimes:
@@ -308,6 +311,8 @@ the stable brain from an Alpha chat. The hash covers the entry, runtime, socket
 and home, so two brains sharing one CLI entry never share a shim. An explicit
 `--socket <path>` still wins. The brain also sets `ADE_CLI_ENTRY_PATH` next to
 the shim, to name the CLI entry that the shim runs.
+For a standalone brain, that entry is the brain's own executable. On Windows
+the brain writes both an `ade.cmd` shim and an extensionless Git Bash shim.
 
 A shell rc file that rebuilds `PATH` can drop the shim directory, so a plain
 `ade` can resolve to an older install. For that case, every `ade` run first
