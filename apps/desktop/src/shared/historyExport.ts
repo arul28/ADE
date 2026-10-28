@@ -51,5 +51,8 @@ export function buildHistoryExport(args: {
 }
 
 function escapeCsvCell(value: string): string {
-  return /[",\r\n]/.test(value) ? `"${value.replace(/"/g, "\"\"")}"` : value;
+  // A cell starting with = + - @ runs as a formula in a spreadsheet; a lane
+  // name is user text, so it is kept literal with a leading apostrophe.
+  const cell = /^[=+\-@]/.test(value) ? `'${value}` : value;
+  return /[",\r\n]/.test(cell) ? `"${cell.replace(/"/g, "\"\"")}"` : cell;
 }

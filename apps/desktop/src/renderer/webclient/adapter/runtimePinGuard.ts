@@ -114,8 +114,17 @@ export function guardPinnedMembers<T extends object>(
   for (const [name, index] of Object.entries(pinArgIndex)) {
     const member = members[name];
     if (typeof member !== "function") continue;
+    // A subscription (`onEvent`) returns its unsubscribe synchronously, so it
+    // throws; every other member is async and must reject instead, or a
+    // caller's `.catch()` never sees the refusal.
+    const subscription = /^on[A-Z]/.test(name);
     members[name] = (...args: unknown[]) => {
-      assertWebRuntimePinRoutable(`${operationPrefix}.${name}`, args[index] as RuntimePinArg, scope);
+      try {
+        assertWebRuntimePinRoutable(`${operationPrefix}.${name}`, args[index] as RuntimePinArg, scope);
+      } catch (error) {
+        if (subscription) throw error;
+        return Promise.reject(error);
+      }
       return (member as (...values: unknown[]) => unknown)(...args);
     };
   }

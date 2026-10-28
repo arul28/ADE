@@ -672,7 +672,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       guardPin("getImageDataUrl", pin);
       // Chat attachments live in `.ade/attachments`, outside the artifact
       // file-request jail. Use the chat command that owns those paths instead.
-      return await callLargeRead<{ dataUrl: string }>("chat.getImageDataUrl", { path }, { dataUrl: "" });
+      return await callLargeRead<{ dataUrl: string }>("chat.getImageDataUrl", { path }, () => {
+        // Reject, never `{ dataUrl: "" }`: the attachment reader caches a
+        // resolved answer, so an empty one would outlive the reconnect.
+        throw new Error("Image previews are unavailable on the connected ADE host.");
+      });
     },
     resolveSmartLinkPreview: (args: unknown) => {
       const record = asRecord(args);
