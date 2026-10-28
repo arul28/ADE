@@ -235,8 +235,12 @@ async function* readSocket(
       // The close handler below reports the failure.
     }
   };
+  // A failed or dropped socket is followed by its close event (1006), which
+  // decides how the read ends. Only a refused ticket is an error: any other
+  // close, the relay's bridge race (4510) and a lost connection included,
+  // ends the read as `stopped`, which the viewer redials a bounded number of
+  // times with a fresh ticket before it shows Reconnect.
   socket.onerror = () => {
-    if (ended === undefined) ended = new Error(`The ${name} could not be reached.`);
     wake();
   };
   socket.onclose = (event: CloseEvent) => {

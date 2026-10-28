@@ -11,6 +11,22 @@ const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "
 export const runtimeEntitlementsPath = path.join(packageRoot, "build", "entitlements.mac.plist");
 export const requiredRuntimeEntitlement = "com.apple.security.cs.allow-jit";
 export const forbiddenRuntimeEntitlement = "com.apple.security.cs.allow-unsigned-executable-memory";
+/**
+ * Per-payload entitlements for native-archive files, by path inside the
+ * archive. The simulator helper dlopens CoreSimulator and SimulatorKit out of
+ * the active Xcode, which the hardened runtime refuses without
+ * disable-library-validation (the app signs its own copy the same way, through
+ * apps/desktop/build/entitlements.mac.inherit.plist).
+ */
+export const nativePayloadEntitlements = new Map([
+  ["native/ade-sim-helper", path.join(packageRoot, "build", "entitlements.sim-helper.plist")],
+]);
+
+/** The entitlements file for one extracted archive payload, or null for none. */
+export function nativePayloadEntitlementsPath(workDir, filePath) {
+  const relative = path.relative(workDir, filePath).split(path.sep).join("/");
+  return nativePayloadEntitlements.get(relative) ?? null;
+}
 
 function readFlag(name) {
   const prefix = `${name}=`;
@@ -141,12 +157,14 @@ async function signRuntimeBinary(binaryPath, identity) {
   assertRuntimeEntitlements(`${stdout}\n${stderr}`, binaryPath);
 }
 
-async function signNativeBinary(binaryPath, identity) {
+async function signNativeBinary(binaryPath, identity, entitlementsPath = null) {
+  if (entitlementsPath) await assertExists(entitlementsPath, `entitlements for ${path.basename(binaryPath)}`);
   await run("codesign", [
     "--force",
     "--options",
     "runtime",
     "--timestamp",
+    ...(entitlementsPath ? ["--entitlements", entitlementsPath] : []),
     "--sign",
     identity,
     binaryPath,
@@ -169,7 +187,7 @@ async function signNativeArchiveIfPresent(binaryPath, identity) {
     let signed = 0;
     for (const filePath of files) {
       if (!(await isMachO(filePath))) continue;
-      await signNativeBinary(filePath, identity);
+      await signNativeBinary(filePath, identity, nativePayloadEntitlementsPath(workDir, filePath));
       signed += 1;
     }
 

@@ -125,6 +125,12 @@ extension WindowControl {
                 // A window some lane took inside the previous park's wait is
                 // no longer a new window.
                 guard ownership.owner(ofWindow: Int(windowId)) == nil else { continue }
+                // A sheet is part of its window: it moves with it and is never
+                // parked alone. Its window is a candidate of its own.
+                if current.first(where: { $0.id == windowId })?.sheetOf != nil {
+                    newWindows.noteParked(pid: pid, windowId: windowId)
+                    continue
+                }
                 let origin = newWindows.originForNewWindow(pid: pid)
                 do {
                     _ = try park(laneId: laneId, windowId: windowId, origin: origin)

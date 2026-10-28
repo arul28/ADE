@@ -17,6 +17,13 @@ import {
   getPathEnvValue,
   setPathEnvValue,
 } from "../ai/cliExecutableResolver";
+import { recordInstalledDesktopApp } from "../native/nativeHelperPaths";
+import {
+  ADE_CLI_VIA_CMD_ENV,
+  installWindowsCliLauncher,
+  resolveWindowsCliLauncherSource,
+  windowsCliCompileCacheDefault,
+} from "./windowsCliLauncher";
 
 type CreateAdeCliServiceArgs = {
   isPackaged: boolean;
@@ -598,7 +605,51 @@ function statusMessage(args: {
   };
 }
 
+/**
+ * The packaged Windows app's `ade.exe` launcher for ADE_CLI_PATH
+ * (windowsCliLauncher.ts), installed under userData once per process. It runs
+ * what `bin\ade.cmd` runs (`ADE.exe …\ade-cli\cli.cjs` as Node, with the
+ * app's module dirs on NODE_PATH and this channel's ADE_HOME as the default
+ * brain) without cmd.exe. Null off Windows, in a dev build, or when the
+ * launcher is missing; the caller keeps `ade.cmd`.
+ */
+function resolvePackagedWindowsCliLauncher(
+  args: CreateAdeCliServiceArgs,
+  resolved: ResolvedCliPaths,
+  env: NodeJS.ProcessEnv,
+): string | null {
+  if (process.platform !== "win32" || resolved.source !== "packaged" || !resolved.cliJsPath || !args.resourcesPath) {
+    return null;
+  }
+  const launcherSource = resolveWindowsCliLauncherSource({ resourcesPath: args.resourcesPath });
+  if (!launcherSource) return null;
+  const resourcesPath = path.resolve(args.resourcesPath);
+  const adeHome = env.ADE_HOME?.trim();
+  return installWindowsCliLauncher({
+    launcherSource,
+    dir: path.join(args.userDataPath, "ade-cli-launcher"),
+    spec: {
+      exe: args.appExecutablePath,
+      args: [resolved.cliJsPath],
+      env: [["ELECTRON_RUN_AS_NODE", "1"]],
+      brainDefaults: adeHome ? [["ADE_HOME", adeHome]] : [],
+      prepend: [[
+        "NODE_PATH",
+        [path.join(resourcesPath, "app.asar.unpacked", "node_modules"), path.join(resourcesPath, "app.asar", "node_modules")].join(";"),
+      ]],
+      unset: [ADE_CLI_VIA_CMD_ENV],
+      // What `ade.cmd` also did: a warm compile cache for every call, and real
+      // Node for `ade code` (Electron run as Node has no TTY on Windows).
+      ifNone: [windowsCliCompileCacheDefault(adeHome || path.win32.join(env.USERPROFILE?.trim() || os.homedir(), ".ade"))],
+      ttyNode: true,
+    },
+  });
+}
+
 export function createAdeCliService(args: CreateAdeCliServiceArgs) {
+  // A standalone brain (`ade brain update`) has no app resources; this record
+  // is how it finds the app's signed native helpers. Once per process.
+  recordInstalledDesktopApp({ isPackaged: Boolean(args.isPackaged), resourcesPath: args.resourcesPath });
   const commandName = resolveCommandName(args);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
@@ -629,13 +680,16 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   }
   const envSnapshot = args.env ?? process.env;
   const hostPathSnapshot = getPathEnvValue(envSnapshot);
+  const windowsLauncherPath = resolvePackagedWindowsCliLauncher(args, resolved, envSnapshot);
 
   const agentEnv = (baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => {
     const next: NodeJS.ProcessEnv = stripHostRuntimeEnv({ ...baseEnv });
     if (resolved.commandPath) {
       const nextPath = prependPathDir(getPathEnvValue(next), resolved.binDir);
       if (nextPath) setPathEnvValue(next, nextPath);
-      next.ADE_CLI_PATH = resolved.commandPath;
+      // On Windows the native launcher, not `ade.cmd`: cmd.exe cuts a
+      // multi-line argument at its first line feed. `ade.cmd` stays on PATH.
+      next.ADE_CLI_PATH = windowsLauncherPath ?? resolved.commandPath;
       if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
       // Delegation trusts this as the identity of `ADE_CLI_PATH`, so an inherited
       // value naming another build must not ride along with our command.

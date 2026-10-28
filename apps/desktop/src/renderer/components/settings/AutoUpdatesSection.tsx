@@ -56,7 +56,7 @@ export function AutoUpdatesControls() {
       <ModernRow
         anchor="auto-updates"
         title="Install ADE updates automatically"
-        hint="ADE restarts after a countdown you can cancel. Off: install from the top-right control."
+        hint="ADE restarts after a countdown you can cancel, and quitting ADE installs it when no agent is running. Off: install from the top-right control."
         control={
           <SettingsToggle
             label="Install ADE updates automatically"

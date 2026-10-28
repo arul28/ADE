@@ -329,6 +329,71 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  // A quit never installs (autoInstallOnAppQuit is off), so the shutdown is the
+  // only place that can say a downloaded update was left behind. Without the
+  // record, "downloaded, then nothing" reads the same as a crash. Shutdown
+  // disposes twice; the install's own quit is not a left-behind update.
+  it.each([
+    { name: "a plain quit with the update downloaded", installFirst: false, expected: 1 },
+    { name: "the install's own quit", installFirst: true, expected: 0 },
+  ])("records an uninstalled downloaded update on $name", async ({ installFirst, expected }) => {
+    const { service, logger } = stageReadyUpdate();
+    if (installFirst) {
+      await expect(service.quitAndInstall()).resolves.toBe(true);
+      expect(service.getSnapshot().status).toBe("installing");
+    }
+
+    service.dispose();
+    service.dispose();
+
+    const records = (logger.warn as Mock).mock.calls.filter(
+      ([event]) => event === "autoUpdate.quit_with_update_ready",
+    );
+    expect(records).toHaveLength(expected);
+    if (expected > 0) {
+      expect(records[0][1]).toMatchObject({ version: "1.2.61", currentVersion: "1.2.60", automaticInstall: false });
+      expect(logger.flushSync).toHaveBeenCalled();
+    }
+  });
+
+  // The quit-install contract across the relaunch: the quit records it, and
+  // only the launch that lands that install runs hidden and closes again. A
+  // launch the install never reached, a later launch of the same version, and
+  // an ordinary Restart and install all open normally.
+  it.each([
+    { label: "the launch that lands it", relaunchVersion: "1.2.61", closeAfterInstall: true, landed: true },
+    { label: "not a launch the install never reached", relaunchVersion: "1.2.60", closeAfterInstall: true, landed: false },
+    { label: "not after a Restart and install", relaunchVersion: "1.2.61", closeAfterInstall: false, landed: false },
+  ])("a quit-install closes after $label", async ({ relaunchVersion, closeAfterInstall, landed }) => {
+    const globalStatePath = makeStatePath();
+    const onInstallHandoff = vi.fn(() => null);
+    const { service, updater } = stageReadyUpdate({ globalStatePath, autoApplyEnabled: true, onInstallHandoff });
+    // Automatic install is off by default, and then a quit never installs.
+    expect(service.installOnQuitVersion()).toBeNull();
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
+    expect(service.installOnQuitVersion()).toBe("1.2.61");
+
+    await expect(service.quitAndInstall(false, { closeAfterInstall })).resolves.toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    // Nothing goes on screen for an install the person quit into.
+    expect(onInstallHandoff).toHaveBeenCalledTimes(closeAfterInstall ? 0 : 1);
+    service.dispose();
+
+    const relaunch = () => createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: relaunchVersion,
+      globalStatePath,
+      updater: new FakeAutoUpdater(),
+      autoCheckEnabled: false,
+    });
+    const landing = relaunch();
+    expect(landing.landedQuitInstall()).toBe(landed);
+    landing.dispose();
+    const later = relaunch();
+    expect(later.landedQuitInstall()).toBe(false);
+    later.dispose();
+  });
+
   it("uses electron-builder app-update.yml as the packaged feed authority", () => {
     const updater = new FakeAutoUpdater();
     const service = createAutoUpdateService({

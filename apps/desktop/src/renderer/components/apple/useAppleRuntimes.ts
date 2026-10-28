@@ -22,7 +22,8 @@ export type AppleRuntimes = {
   inventory: AppleRuntimeInventory | null;
   /** A remove or prune is running. */
   removing: boolean;
-  install: () => Promise<void>;
+  /** Start a download; `version` pins one runtime, none lets Xcode fetch what its SDK needs. */
+  install: (version?: string | null) => Promise<void>;
   cancelInstall: () => void;
   remove: (id: string, simulators: AppleRuntimeSimulatorDisposition) => Promise<AppleRuntimeDeleteResult | null>;
   prune: (simulators: AppleRuntimeSimulatorDisposition) => Promise<AppleRuntimeDeleteResult | null>;
@@ -176,9 +177,12 @@ export function useAppleRuntimes({
     return () => window.clearInterval(timer);
   }, [enabled, installRunning, reload]);
 
-  const install = useCallback(async () => {
+  const install = useCallback(async (version?: string | null) => {
     try {
-      const started = await window.ade.iosSimulator.runtimeInstall(scopeRef.current, runtimePinRef.current);
+      const started = await window.ade.iosSimulator.runtimeInstall(
+        version ? { ...scopeRef.current, version } : scopeRef.current,
+        runtimePinRef.current,
+      );
       const was = lastInstallRef.current;
       // An install that failed before it ran (no SDK, too little space) comes
       // back already settled, with no event to say so on the web client.
@@ -244,9 +248,16 @@ export function useAppleRuntimes({
     }
   }, [runtimePinRef]);
 
+  const inventoryRef = useRef(inventory);
+  inventoryRef.current = inventory;
   const installAndCreate = useCallback((deviceType: string) => {
     installThenCreateRef.current = deviceType;
-    void install();
+    // Pin the runtime this model needs when the brain knows it: with iOS 27.1
+    // installed (it runs only the Duo) an iPhone 17 needs iOS 27.0, and an
+    // unpinned install asks Xcode for its SDK's 27.1 again.
+    const group = inventoryRef.current?.missing?.runtimes
+      ?.find((entry) => entry.deviceTypes.some((type) => type.identifier === deviceType)) ?? null;
+    void install(group?.installVersion ?? null);
   }, [install]);
 
   return { inventory, removing, install, cancelInstall, remove, prune, runXcodeSetup, installAndCreate };

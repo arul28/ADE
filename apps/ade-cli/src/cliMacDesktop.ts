@@ -18,6 +18,7 @@ import {
   MAC_DESKTOP_RESOLUTION_PRESETS,
 } from "../../desktop/src/shared/types/macDesktop";
 import {
+  CliToolError,
   CliUsageError,
   HELP_BY_COMMAND,
   actionStep,
@@ -45,6 +46,7 @@ import {
   type ValueCarrierFlags,
 } from "./cli";
 import { recordingStopLeftNoFile } from "./cliMacDesktopFormat";
+import { longRunningLocalRuntimeActionTimeoutMs } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 
 /* ──────────────────────────────────────────────────────────────────────────
    MAC DESKTOP — `ade desktop`.
@@ -130,6 +132,73 @@ function macDesktopTargetFromToken(token: string | null): JsonObject {
   return { text: token };
 }
 
+/** The `getStatus` reply a pre-read step got, unwrapped. */
+function macDesktopStatusOf(value: unknown): JsonObject {
+  const status = unwrapActionEnvelope(value);
+  return isRecord(status) ? status : {};
+}
+
+/**
+ * Refuses a flag the brain does not list in `capabilities`.
+ *
+ * An older brain drops an argument it does not know without an error, and the
+ * command then does something else than asked. Refusing says so instead.
+ */
+export function requireMacDesktopBrainCapability(
+  statusValue: unknown,
+  capability: string,
+  flag: string,
+  consequence: string,
+): void {
+  const capabilities = macDesktopStatusOf(statusValue).capabilities;
+  if (Array.isArray(capabilities) && capabilities.includes(capability)) return;
+  throw new CliToolError(
+    `The ADE brain this command reached is older than this ade and does not support ${flag}; it would ignore it, so ${consequence}. Update ADE (or run \`ade brain update\` for a standalone brain), or leave out ${flag}.`,
+    { capability, flag },
+  );
+}
+
+/**
+ * Turns `--local` (display-local) points in a payload into global points,
+ * with the display origin from a `getStatus` read, and drops the marker.
+ *
+ * Done here, not by the brain, so a newer CLI never depends on an older brain
+ * knowing `local`: one that does not would read the point as global and act
+ * somewhere else — with `--real`, on the user's own screen.
+ */
+export function globalizeMacDesktopLocalPoints(payload: JsonObject, statusValue: unknown): JsonObject {
+  const display = macDesktopStatusOf(statusValue).display;
+  const origin = isRecord(display) && isRecord(display.origin) ? display.origin : null;
+  const ox = typeof origin?.x === "number" ? origin.x : null;
+  const oy = typeof origin?.y === "number" ? origin.y : null;
+  if (ox == null || oy == null) {
+    throw new CliToolError(
+      "--local needs the lane display's position, and this lane has no display (or the brain did not report one). Start it first (ade screen start --text), or pass global points without --local.",
+      { flag: "--local" },
+    );
+  }
+  const shift = (target: unknown): unknown => {
+    if (!isRecord(target) || target.local !== true) return target;
+    const { local: _local, ...rest } = target;
+    return typeof rest.x === "number" && typeof rest.y === "number"
+      ? { ...rest, x: rest.x + ox, y: rest.y + oy }
+      : rest;
+  };
+  const shifted = shift(payload) as JsonObject;
+  return {
+    ...shifted,
+    ...(isRecord(shifted.from) ? { from: shift(shifted.from) } : {}),
+    ...(isRecord(shifted.to) ? { to: shift(shifted.to) } : {}),
+  };
+}
+
+/** Marks a point target as display-local; a handle or text target is unchanged. */
+function withLocalPoint(target: JsonObject, local: boolean): JsonObject {
+  return local && typeof target.x === "number" && typeof target.y === "number"
+    ? { ...target, local: true }
+    : target;
+}
+
 function isMacDesktopHandleToken(value: string): boolean {
   return /^obs-[A-Za-z0-9_-]+:e:\d+$/.test(value);
 }
@@ -147,6 +216,21 @@ export function macDesktopSocketPlacementWarning(args: string[]): string | null 
   return args.some((token) => token === "--socket" || token.startsWith("--socket="))
     ? "Note: put --socket before the subcommand"
     : null;
+}
+
+/**
+ * The client timeout floor for an action that waits on a card in the chat: the
+ * brain's own budget for it plus a margin, so the brain always answers
+ * (granted, declined, or withdrawn unanswered) before the client gives up.
+ */
+export function macDesktopInteractiveClientFloorMs(action: "requestInputLease" | "requestSharedDesktop"): number {
+  return (longRunningLocalRuntimeActionTimeoutMs(`mac_desktop.${action}`) ?? 180_000) + 15_000;
+}
+
+/** Whether a `requestInputLease` result is a grant (or a screen that needs none). */
+export function macDesktopLeaseGranted(result: unknown): boolean {
+  const value = unwrapActionEnvelope(result);
+  return isRecord(value) && (value.granted === true || value.notRequired === true);
 }
 
 export function buildMacDesktopPlan(args: string[]): CliPlan {
@@ -193,6 +277,9 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     }
     return windowIdValue;
   };
+  // `--local`: the point is display-local (0,0 is the lane display's top-left,
+  // as in the screenshot), not global. The brain adds the display's origin.
+  const localPoints = (): boolean => readFlag(args, ["--local", "--display-local"]);
   const realMode = (): JsonObject =>
     readFlag(args, ["--real", "--cg-event", "--pointer"]) ? { mode: "real" } : {};
   const modifiers = (): JsonObject => {
@@ -209,11 +296,44 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     ];
     return pressed.length ? { modifiers: pressed } : {};
   };
+  /**
+   * `desktopAction`, after a `getStatus` read of the lane: `adjust` builds the
+   * final arguments from that status (the display origin for `--local`, the
+   * brain's capabilities for a flag an older brain would drop), or throws.
+   */
+  const desktopActionAfterStatus = (
+    label: string,
+    method: string,
+    payload: JsonObject,
+    formatter: FormatterId,
+    adjust: (payload: JsonObject, status: unknown) => JsonObject,
+  ): CliPlan => {
+    const base = collectGenericObjectArgs(args, payload);
+    return {
+      kind: "execute" as const,
+      label,
+      formatter,
+      steps: [
+        macDesktopStep("status", "getStatus", { ...claimArgs }),
+        {
+          ...macDesktopStep("result", method, base),
+          params: (values: JsonObject) =>
+            macDesktopStep("result", method, adjust(base, values.status)).params as JsonObject,
+        },
+      ],
+      shapeResult: (values: JsonObject) => values.result,
+    };
+  };
   const desktopAction = (
     label: string,
     method: string,
     payload: JsonObject = {},
     formatter?: FormatterId,
+    extra: {
+      minTimeoutMs?: number;
+      progressNotice?: string;
+      exitCodeFromResult?: (result: unknown) => number;
+    } = {},
   ): CliPlan => ({
     kind: "execute" as const,
     label,
@@ -221,6 +341,7 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     steps: [
       macDesktopStep("result", method, collectGenericObjectArgs(args, payload)),
     ],
+    ...extra,
   });
 
   if (sub === "status")
@@ -247,7 +368,11 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       return desktopAction("screen start --shared", "requestSharedDesktop", {
         ...laneClaim(),
         reason: readValue(args, ["--reason", "--for"]),
-      }, "mac-desktop-status");
+      }, "mac-desktop-status", {
+        // Same card budget as `lease`: the client must outlive it.
+        minTimeoutMs: macDesktopInteractiveClientFloorMs("requestSharedDesktop"),
+        progressNotice: "Asked the user in the chat to use the main desktop. Waiting up to about 3 minutes for an answer…",
+      });
     }
     return desktopAction("screen start", "start", {
       ...laneClaim(),
@@ -326,11 +451,29 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     // CLI's --text, and TextEdit got it as a second file.
     const appArgs = [...tail];
     while (appArgs.length && (appArgs[appArgs.length - 1] === "--text" || appArgs[appArgs.length - 1] === "--json")) appArgs.pop();
-    return desktopAction("screen open", "open", {
+    // A document goes to the lane's own running copy of its app; this asks
+    // for a separate new copy instead.
+    const newInstance = readFlag(args, ["--new-instance"]);
+    const openPayload: JsonObject = {
       ...laneClaim(),
       target,
       ...(appArgs.length ? { args: appArgs } : {}),
-    }, "mac-desktop-open");
+      ...(newInstance ? { newInstance: true } : {}),
+    };
+    // An older brain drops `newInstance`; a current one forwards it to any
+    // driver. An older driver ignores it, which is safe: it always opens a
+    // new copy, which is what the flag asks for.
+    return newInstance
+      ? desktopActionAfterStatus("screen open", "open", openPayload, "mac-desktop-open", (payload, status) => {
+        requireMacDesktopBrainCapability(
+          status,
+          "open.newInstance",
+          "--new-instance",
+          "the document would open in the lane's running copy instead of a separate one",
+        );
+        return payload;
+      })
+      : desktopAction("screen open", "open", openPayload, "mac-desktop-open");
   }
   if (sub === "observe" || sub === "snapshot") {
     const observeArgs = {
@@ -362,22 +505,28 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       ...(text ? { text } : {}),
       ...(x == null ? {} : { x, y }),
     };
-    const target = Object.keys(explicit).length
-      ? explicit
-      : macDesktopTargetFromToken(positionals(args)[0] ?? null);
+    const target = withLocalPoint(
+      Object.keys(explicit).length
+        ? explicit
+        : macDesktopTargetFromToken(positionals(args)[0] ?? null),
+      localPoints(),
+    );
     if (Object.keys(target).length === 0) {
       throw new CliUsageError(
         "screen click needs a target: a handle from the last observation, --text \"<label>\", or --x/--y.",
       );
     }
-    return desktopAction("screen click", "click", {
+    const clickPayload: JsonObject = {
       ...laneClaim(),
       ...target,
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...realMode(),
       ...(readFlag(args, ["--right", "--secondary"]) ? { button: "right" } : {}),
       ...(readFlag(args, ["--double", "--double-click"]) ? { count: 2 } : {}),
-    }, "mac-desktop-action");
+    };
+    return target.local === true
+      ? desktopActionAfterStatus("screen click", "click", clickPayload, "mac-desktop-action", globalizeMacDesktopLocalPoints)
+      : desktopAction("screen click", "click", clickPayload, "mac-desktop-action");
   }
   if (sub === "type" || sub === "type-text") {
     const text = requireTypedText(
@@ -423,24 +572,28 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     if ((x == null) !== (y == null)) {
       throw new CliUsageError("screen scroll requires both --x and --y when scrolling at a point.");
     }
-    return desktopAction("screen scroll", "scroll", {
+    const scrollPayload: JsonObject = {
       ...laneClaim(),
       direction,
       amount: readNumberOption(args, ["--amount", "--lines"]),
-      ...(x == null ? macDesktopTargetFromToken(rest[1] ?? null) : { x, y }),
+      ...withLocalPoint(x == null ? macDesktopTargetFromToken(rest[1] ?? null) : { x, y }, localPoints()),
       ...(windowId() == null ? {} : { windowId: windowId() }),
       ...realMode(),
-    }, "mac-desktop-action");
+    };
+    return scrollPayload.local === true
+      ? desktopActionAfterStatus("screen scroll", "scroll", scrollPayload, "mac-desktop-action", globalizeMacDesktopLocalPoints)
+      : desktopAction("screen scroll", "scroll", scrollPayload, "mac-desktop-action");
   }
   if (sub === "drag") {
-    const from = macDesktopTargetFromToken(readValue(args, ["--from", "--start"]));
-    const to = macDesktopTargetFromToken(readValue(args, ["--to", "--end"]));
+    const local = localPoints();
+    const from = withLocalPoint(macDesktopTargetFromToken(readValue(args, ["--from", "--start"])), local);
+    const to = withLocalPoint(macDesktopTargetFromToken(readValue(args, ["--to", "--end"])), local);
     if (!Object.keys(from).length || !Object.keys(to).length) {
       throw new CliUsageError(
         "screen drag requires --from <handle|x,y> and --to <handle|x,y>.",
       );
     }
-    return desktopAction("screen drag", "drag", {
+    const dragPayload: JsonObject = {
       ...laneClaim(),
       from,
       to,
@@ -448,7 +601,10 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
       // A drag stays inside the window it starts in by default; --real is for
       // a drop onto another app or the Dock.
       ...realMode(),
-    }, "mac-desktop-action");
+    };
+    return from.local === true || to.local === true
+      ? desktopActionAfterStatus("screen drag", "drag", dragPayload, "mac-desktop-action", globalizeMacDesktopLocalPoints)
+      : desktopAction("screen drag", "drag", dragPayload, "mac-desktop-action");
   }
   if (sub === "wait" || sub === "wait-for") {
     const text = readValue(args, ["--text", "--label"]);
@@ -487,7 +643,9 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
         ...laneClaim(),
         caption: readValue(args, ["--caption", "--description", "--desc"]),
         fps: readNumberOption(args, ["--fps"]),
-        ...(plain ? { plain: true } : {}),
+        // `keepIdle` too: an older brain forwards only that name, and every
+        // recorder honours either, so `--plain` keeps real time on both.
+        ...(plain ? { plain: true, keepIdle: true } : {}),
         ...(maxSeconds == null ? {} : { maxSeconds }),
       }, "mac-desktop-recording");
     }
@@ -523,7 +681,16 @@ export function buildMacDesktopPlan(args: string[]): CliPlan {
     return desktopAction("screen lease", "requestInputLease", {
       ...laneArgs,
       reason: readValue(args, ["--reason", "--for"]),
-    }, "mac-desktop-lease");
+    }, "mac-desktop-lease", {
+      // The card waits up to 170 s and the brain up to 180 s. A shorter client
+      // timeout gave up first and printed "Timed out waiting for
+      // ade/actions/call" for a card that was still on screen.
+      minTimeoutMs: macDesktopInteractiveClientFloorMs("requestInputLease"),
+      progressNotice: "Asked the user in the chat for real input. Waiting up to about 3 minutes for an answer…",
+      // Anything but a grant is a failure the caller must notice, in --json
+      // and through a pipe alike.
+      exitCodeFromResult: (result: unknown) => (macDesktopLeaseGranted(result) ? 0 : 1),
+    });
   }
   if (sub === "display" || sub === "resolution") {
     const resolution = readValue(args, ["--resolution", "--size"]) ?? positionals(args)[0] ?? null;

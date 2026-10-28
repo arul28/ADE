@@ -120,7 +120,7 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
               title={machine.name}
               hint={(
                 <>
-                  {machine.version ? <>ADE <span className="kit-num">{machine.version}</span></> : "Version unknown"}
+                  {machine.version ? <>ADE <span className="kit-num">{machine.versionLabel ?? machine.version}</span></> : "Version unknown"}
                   {behindIds.has(machine.id) && newestVersion
                     ? <> · <span className="kit-num">{newestVersion}</span> available</>
                     : null}

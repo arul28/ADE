@@ -272,7 +272,13 @@ import {
   type DevServerRecord,
 } from "../../desktop/src/shared/types/builtInBrowser";
 import { WORK_TOOLS_STATE_CHANGED_EVENT } from "../../desktop/src/shared/types/workTools";
-import { brainLogPath, resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import {
+  brainLogPath,
+  isMachineEndpointName,
+  resolveMachineAdeLayout,
+  resolveMachineEndpointNames,
+  resolveReachableMachineDesktopBridgeSocketPath,
+} from "./services/projects/machineLayout";
 import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
@@ -333,13 +339,13 @@ import { attachSharedModelRouter, createModelRouterService } from "../../desktop
 import { createModelRegistryStore, createWorkerRegistryFetcher } from "../../desktop/src/main/services/router/modelRegistryStore";
 import { createTeardownStack } from "./services/runtime/startupTeardown";
 import {
-  adeCliShimDirName,
+  installAdeCliShim,
   packagedCliNodeModulePaths,
-  renderAdeCliGitBashShim,
-  renderAdeCliShim,
   resolveAdeCliShimBrain,
   type AdeCliShimBrain,
 } from "./services/runtime/adeCliShim";
+import { isEmbeddedAdeRuntime } from "../../desktop/src/main/services/shared/processExecution";
+import { installedDesktopAppNativeDirs } from "../../desktop/src/main/services/native/nativeHelperPaths";
 import { createEventBuffer, type BufferedEvent, type EventBuffer } from "./eventBuffer";
 import { isHighVolumeRuntimeEvent } from "./runtimeEventVolume";
 import { appControlEventsFromRuntimeBuffer } from "./services/sync/appControlSyncStream";
@@ -622,44 +628,15 @@ function resolveCurrentAdeCliEntry(): string | null {
   return null;
 }
 
-function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain): { dir: string; path: string } | null {
-  const shimDir = path.join(os.tmpdir(), "ade-cli-shims", adeCliShimDirName(entryPath, process.execPath, brain));
-  const shimPath = path.join(shimDir, process.platform === "win32" ? "ade.cmd" : "ade");
-  try {
-    fs.mkdirSync(shimDir, { recursive: true });
-    const nodeModulePaths = packagedCliNodeModulePaths(entryPath);
-    const body = renderAdeCliShim({
-      entryPath,
-      execPath: process.execPath,
-      brain,
-      nodeModulePaths,
-    });
-    if (!fs.existsSync(shimPath) || fs.readFileSync(shimPath, "utf8") !== body) {
-      fs.writeFileSync(shimPath, body, "utf8");
-    }
-    if (process.platform !== "win32") fs.chmodSync(shimPath, 0o755);
-    if (process.platform === "win32") {
-      // Git Bash runs `ade` only as an extensionless script. ADE_CLI_PATH
-      // stays `ade.cmd`, which PowerShell and cmd.exe run.
-      const gitBashShimPath = path.join(shimDir, "ade");
-      const gitBashBody = renderAdeCliGitBashShim({
-        entryPath,
-        execPath: process.execPath,
-        brain,
-        nodeModulePaths,
-      });
-      try {
-        if (!fs.existsSync(gitBashShimPath) || fs.readFileSync(gitBashShimPath, "utf8") !== gitBashBody) {
-          fs.writeFileSync(gitBashShimPath, gitBashBody, "utf8");
-        }
-      } catch {
-        // Best effort: PowerShell and cmd.exe still have `ade.cmd`.
-      }
-    }
-    return { dir: shimDir, path: shimPath };
-  } catch {
-    return null;
-  }
+function ensureAdeCliShim(entryPath: string, brain: AdeCliShimBrain) {
+  return installAdeCliShim({
+    entryPath,
+    execPath: process.execPath,
+    brain,
+    shimsRoot: path.join(os.tmpdir(), "ade-cli-shims"),
+    resourcesPath: (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath ?? null,
+    nodeModulePaths: packagedCliNodeModulePaths(entryPath),
+  });
 }
 
 function prependPathDir(env: NodeJS.ProcessEnv, dir: string): void {
@@ -731,6 +708,36 @@ function trustedAgentSkillsRootForCliEntry(
     const parent = path.dirname(current);
     if (parent === current) break;
     current = parent;
+  }
+  return standaloneAgentSkillsRoot(canonicalCliEntry);
+}
+
+/**
+ * The skills of a standalone `ade` (Node SEA), which has no `ade-cli` folder:
+ * its runtime archive's copy first (`<ADE_RUNTIME_ROOT>/agent-skills`, the
+ * brain's own version), then the copy SSH bootstrap uploads beside
+ * `<home>/bin/ade` (`<home>/agent-skills`), then the installed ADE app's.
+ * Each is accepted only inside its own folder, as the packaged root is.
+ */
+function standaloneAgentSkillsRoot(canonicalCliEntry: string): string | null {
+  const runtimeRoots = [
+    process.env.ADE_RESOLVED_RUNTIME_ROOT?.trim(),
+    process.env.ADE_RUNTIME_ROOT?.trim(),
+  ].filter((root): root is string => Boolean(root));
+  for (const root of runtimeRoots) {
+    const found = canonicalDirectoryWithin(path.join(root, "agent-skills"), root);
+    if (found) return found;
+  }
+  const binDir = path.dirname(canonicalCliEntry);
+  if (path.basename(binDir).toLowerCase() === "bin") {
+    const home = path.dirname(binDir);
+    const found = canonicalDirectoryWithin(path.join(home, "agent-skills"), home);
+    if (found) return found;
+  }
+  for (const nativeDir of installedDesktopAppNativeDirs()) {
+    const resources = path.dirname(nativeDir);
+    const found = canonicalDirectoryWithin(path.join(resources, "agent-skills"), resources);
+    if (found) return found;
   }
   return null;
 }
@@ -813,10 +820,10 @@ export function createHeadlessAdeCliAgentEnv(
   if (cliEntry) {
     const shim = ensureAdeCliShim(cliEntry, options.brain ?? resolveAdeCliShimBrain(process.env));
     if (shim) {
-      next.ADE_CLI_PATH = shim.path;
+      next.ADE_CLI_PATH = shim.commandPath;
       next.ADE_CLI_BIN_DIR = shim.dir;
       next.ADE_CLI_ENTRY_PATH = cliEntry;
-      prependPathDir(next, shim.dir);
+      for (const dir of [...shim.pathDirs].reverse()) prependPathDir(next, dir);
     } else {
       next.ADE_CLI_PATH = cliEntry;
       delete next.ADE_CLI_ENTRY_PATH;
@@ -970,7 +977,9 @@ export async function createAdeRuntime(args: {
     ? resolvedArgs.runtimeSocketPath.trim() || paths.socketPath
     : paths.socketPath;
   const machineRuntimeLayout = resolveMachineAdeLayout();
-  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeLayout.socketPath);
+  // On Windows a machine brain also answers on its endpoint's older pipe names.
+  const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, machineRuntimeLayout.socketPath)
+    || isMachineEndpointName(runtimeSocketPath, resolveMachineEndpointNames().runtime);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
   const diskPressureMonitor = createDiskPressureMonitor({
@@ -1964,10 +1973,12 @@ export async function createAdeRuntime(args: {
     // through `<adeHome>/sock/desktop-bridge.sock`; if no desktop is running,
     // individual calls fail clearly. Override the socket path with
     // `ADE_DESKTOP_BRIDGE_SOCKET_PATH` for dev launches that use a non-default
-    // ADE home.
+    // ADE home. On Windows an older desktop app listens on an older pipe name;
+    // the one listening when this project opens is used (a current desktop
+    // also answers on the older names, so it is reached either way).
     const builtInBrowserBridgeSocketPath =
       process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
-      || resolveMachineAdeLayout().desktopBridgeSocketPath;
+      || resolveReachableMachineDesktopBridgeSocketPath();
     // Whether the desktop app answers on its bridge, as last probed. The brain
     // asks for itself rather than waiting to be told: it probes at start, when
     // a desktop connects, and in the background whenever the answer is older

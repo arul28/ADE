@@ -4,7 +4,11 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { execFile, spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
-import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  resolveMachineAdeDir,
+  resolveMachineAdeLayout,
+  resolveReachableMachineRuntimeSocketPath,
+} from "../services/projects/machineLayout";
 import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 import { buildPackagedRuntimeNodeModulePaths } from "../../../desktop/src/main/services/runtime/packagedNodePath";
 
@@ -932,7 +936,7 @@ async function terminateWindowsPidGracefullyAsync(
   let socketPath = deps.runtimeSocketPath ?? null;
   if (socketPath === null) {
     try {
-      socketPath = resolveMachineAdeLayout().socketPath;
+      socketPath = resolveReachableMachineRuntimeSocketPath();
     } catch {
       socketPath = null;
     }

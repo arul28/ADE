@@ -75,6 +75,7 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       laneId,
       target: args.target,
       args: args.args ?? [],
+      ...(args.newInstance ? { newInstance: true } : {}),
     });
     const windows = asWindows(reply.windows);
     const bundleId = asNullableString(reply.bundleId);
@@ -254,7 +255,9 @@ export function createMacDesktopWindows(deps: MacDesktopWindowsDeps) {
       pid: window.pid,
       bundleId: window.bundleId,
       appName: window.appName,
-      origin: "claimed",
+      // A claim of a sheet answers with the window it hangs from, which this
+      // lane may already hold as its own app's: that origin stays.
+      origin: window.origin === "ade_launched" ? "ade_launched" : "claimed",
       singleInstance: window.singleInstance,
     });
     ownership.touchDisplay(laneId);

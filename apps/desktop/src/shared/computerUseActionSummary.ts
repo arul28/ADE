@@ -459,6 +459,7 @@ const VERBS: Readonly<Record<string, VerbSpec>> = {
   "right-click": { past: "Right-clicked", progressive: "Right-clicking", infinitive: "right-click", target: "element" },
   tap: { past: "Tapped", progressive: "Tapping", infinitive: "tap", target: "element" },
   "tap-element": { past: "Tapped", progressive: "Tapping", infinitive: "tap", target: "element" },
+  "long-press": { past: "Long-pressed", progressive: "Long-pressing", infinitive: "long-press", target: "element" },
   hover: { past: "Hovered over", progressive: "Hovering over", infinitive: "hover over", target: "element" },
   drag: { past: "Dragged", progressive: "Dragging", infinitive: "drag", target: "element" },
   swipe: { past: "Swiped", progressive: "Swiping", infinitive: "swipe", target: "direction" },

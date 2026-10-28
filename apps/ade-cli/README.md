@@ -167,7 +167,7 @@ Manage the service from the CLI:
 ade brain start                   # enable/load the login service
 ade brain stop                    # disable/unload the login service
 ade brain status --text           # endpoint state, service state, sync state, project-host readiness
-ade brain update --text           # stage/apply the latest standalone brain release and restart the service
+ade brain update --text           # stage/apply the latest standalone brain release and restart the service (on macOS the installed ADE app moves to the same version)
 ade brain update status --text    # last headless update state
 ade brain restart                 # re-exec after an app update
 

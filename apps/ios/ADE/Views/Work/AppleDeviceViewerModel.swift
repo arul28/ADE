@@ -50,6 +50,9 @@ final class AppleDeviceViewerModel: ObservableObject {
   private var lastSpeedPublish = Date.distantPast
   /// When the person last touched the picture while controlling.
   private var lastControlActivity = Date()
+  /// Automatic redials after a transient drop, and the one that is pending.
+  private var retryPolicy = AppleStreamRetryPolicy()
+  private var retryTask: Task<Void, Never>?
   private lazy var liveTouch = AppleLiveTouchSender { [weak self] phase, point in
     await self?.sendNow(.touch(phase: phase, at: point))
   }
@@ -89,13 +92,13 @@ final class AppleDeviceViewerModel: ObservableObject {
     socket.onStats = { [weak self] stats in
       self?.networkStats = stats
     }
-    socket.onError = { [weak self] message in
+    socket.onError = { [weak self] failure in
       guard let self else { return }
-      // A failure after frames were flowing is a stall the user can retry;
-      // before any frame it is a connection that never worked. Both offer
-      // Reconnect, but only the second names the host's own reason.
-      self.health.fail(message)
       self.endControl()
+      // A transient drop is redialed quietly a few times first. A refusal, or
+      // a drop once the budget is spent, offers Reconnect with its reason.
+      if self.scheduleAutoRetry(transient: failure.transient) { return }
+      self.health.fail(failure.message)
     }
   }
 
@@ -107,6 +110,8 @@ final class AppleDeviceViewerModel: ObservableObject {
 
   func stop() {
     started = false
+    cancelAutoRetry()
+    retryPolicy.reset()
     mode = .watching
     socket.setVisible(false)
     socket.close()
@@ -114,7 +119,14 @@ final class AppleDeviceViewerModel: ObservableObject {
     health.reset()
   }
 
+  /// The Reconnect action: the person asked, so the automatic budget refills.
   func reconnect() async {
+    cancelAutoRetry()
+    retryPolicy.reset()
+    await redial()
+  }
+
+  private func redial() async {
     // A fresh ticket, not a redial: tickets are short-lived and single-use by
     // design, so reusing one would fail in a way that reads like a broken Mac.
     socket.close()
@@ -129,6 +141,8 @@ final class AppleDeviceViewerModel: ObservableObject {
     visible = nextVisible
     socket.setVisible(nextVisible)
     if !nextVisible {
+      // Nobody is looking: no redial behind their back. Coming back redials.
+      cancelAutoRetry()
       endControl()
       return
     }
@@ -140,7 +154,14 @@ final class AppleDeviceViewerModel: ObservableObject {
 
   func tick() {
     let now = Date()
+    let before = health.phase
     health.tick(now: now)
+    // A socket that opened and never drew a frame is the relay race's other
+    // face. Redial it quietly, unless the Mac has said why its capture failed.
+    if before == .connecting, health.phase == .stalled, !health.sawFrame,
+       (status?.stream?.lastError ?? "").isEmpty {
+      _ = scheduleAutoRetry(transient: true)
+    }
     if mode == .controlling {
       if health.phase != .streaming {
         endControl(notice: "Control ended: the picture stopped.")
@@ -161,7 +182,7 @@ final class AppleDeviceViewerModel: ObservableObject {
   var overlayMessage: String? {
     guard let message = health.statusMessage else { return nil }
     if case .stalled = health.phase, let hostError = status?.stream?.lastError, !hostError.isEmpty {
-      return hostError
+      return appleHostErrorMessage(hostError)
     }
     return message
   }
@@ -204,6 +225,7 @@ final class AppleDeviceViewerModel: ObservableObject {
     #endif
     return appleDeviceControlBlocker(
       hostSupportsControl: syncService?.supportsAppleDeviceControl(laneId: laneId) ?? false,
+      hasTicket: ticket != nil,
       pointMetrics: pointMetrics,
       ownsDevice: appleStatusShowsLaneDevice(status),
       owner: appleDeviceForeignOwner(status?.owner, viewerChatSessionId: chatSessionId),
@@ -306,6 +328,32 @@ final class AppleDeviceViewerModel: ObservableObject {
 
   // MARK: Stream
 
+  /// Schedules one automatic redial, with a fresh ticket, and says so. False
+  /// when the failure has to be shown instead (see `AppleStreamRetryPolicy`).
+  private func scheduleAutoRetry(transient: Bool) -> Bool {
+    if retryTask != nil { return true }
+    guard let delay = retryPolicy.nextDelay(transient: transient, started: started, visible: visible) else {
+      return false
+    }
+    socket.close()
+    decoder.reset()
+    health.reconnecting()
+    appleViewerLog.notice("stream redial \(self.retryPolicy.attempts, privacy: .public) in \(delay, privacy: .public)s")
+    retryTask = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+      guard let self, !Task.isCancelled else { return }
+      self.retryTask = nil
+      guard self.started, self.visible else { return }
+      await self.redial()
+    }
+    return true
+  }
+
+  private func cancelAutoRetry() {
+    retryTask?.cancel()
+    retryTask = nil
+  }
+
   /// Aspect source before the first keyframe: the ticket's geometry, then the
   /// status's. The decoder's own size replaces it on the first frame.
   private static func initialPixelSize(status: AppleDeviceStatus?, ticket: AppleStreamTicket?) -> CGSize? {
@@ -379,6 +427,7 @@ final class AppleDeviceViewerModel: ObservableObject {
       rateMeter.record(bytes: bytes.count, at: now)
       guard decoder.decode(accessUnit: bytes, keyframe: keyframe) else { return }
       health.frameDecoded(at: now)
+      retryPolicy.reset()
       if let size = decoder.presentedSize, size != contentPixelSize, size.width > 0, size.height > 0 {
         contentPixelSize = size
       }

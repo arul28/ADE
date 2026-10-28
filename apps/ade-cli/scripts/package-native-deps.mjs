@@ -282,6 +282,59 @@ async function copyLinuxDesktopDriver(bundleRoot, target) {
   return true;
 }
 
+/**
+ * The macOS helpers a standalone brain spawns itself: the simulator helper
+ * (iOS simulators, the phone viewer) and the demo engine. Built by
+ * apps/desktop/scripts/build-sim-helper.mjs and build-ade-media.mjs into
+ * apps/desktop/resources/native. `ade brain update` installs this archive at
+ * <ADE_RUNTIME_ROOT>, and the brain looks in <ADE_RUNTIME_ROOT>/native first
+ * (nativeHelperPaths.standaloneNativeHelperCandidates), so it runs a helper
+ * of its own build even when ADE.app is older or missing. The Mac Desktop
+ * driver is deliberately NOT shipped here: its Screen Recording and
+ * Accessibility grants belong to the app's signed copy.
+ *
+ * The release build sets ADE_REQUIRE_DARWIN_NATIVE_HELPERS=1 so a missing
+ * helper fails the job; a local package without Swift skips with a warning.
+ */
+const DARWIN_RUNTIME_NATIVE_HELPERS = ["ade-sim-helper", "ade-media"];
+
+async function copyDarwinNativeHelpers(bundleRoot, target) {
+  if (!target.startsWith("darwin-")) return [];
+  const copied = [];
+  for (const name of DARWIN_RUNTIME_NATIVE_HELPERS) {
+    const source = path.join(packageRoot, "..", "desktop", "resources", "native", name);
+    if (!(await exists(source))) {
+      const message = `no ${name} built for ${target} (${source}); run npm --prefix apps/desktop run build:${name === "ade-media" ? "ade-media" : "sim-helper"}`;
+      if (process.env.ADE_REQUIRE_DARWIN_NATIVE_HELPERS === "1") throw new Error(message);
+      process.stderr.write(`[package-native-deps] warning: ${message}. A standalone brain will use the installed ADE app's copy.\n`);
+      continue;
+    }
+    const destination = path.join(bundleRoot, "native", name);
+    await fs.mkdir(path.dirname(destination), { recursive: true });
+    await fs.copyFile(source, destination);
+    await fs.chmod(destination, 0o755);
+    copied.push(name);
+  }
+  return copied;
+}
+
+/**
+ * The agent skills ADE hands its chats (ADE_AGENT_SKILLS_DIRS), the same tree
+ * the desktop app ships as <Resources>/agent-skills. A standalone brain has no
+ * app resources, so without this copy its chats got no ADE skills at all; it
+ * reads <ADE_RUNTIME_ROOT>/agent-skills first (bootstrap.ts
+ * inferAgentSkillsRootForCliEntry), which matches the brain's own version.
+ */
+async function copyAgentSkills(bundleRoot) {
+  const source = path.join(packageRoot, "..", "desktop", "resources", "agent-skills");
+  if (!(await exists(source))) {
+    throw new Error(`Missing ADE agent skills at ${source}; the standalone brain's chats would get no ADE skills.`);
+  }
+  const destination = path.join(bundleRoot, "agent-skills");
+  await fs.rm(destination, { recursive: true, force: true });
+  await fs.cp(source, destination, { recursive: true });
+}
+
 async function copyBuiltTuiClient(bundleRoot) {
   const source = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
   if (!(await exists(source))) {
@@ -351,8 +404,10 @@ async function main() {
     }
   }
   await copyBuiltTuiClient(bundleRoot);
+  await copyAgentSkills(bundleRoot);
   await copyCrsqliteExtension(bundleRoot, args.target);
   await copyLinuxDesktopDriver(bundleRoot, args.target);
+  await copyDarwinNativeHelpers(bundleRoot, args.target);
   await chmodRuntimeExecutables(bundleRoot, args.target);
   await writeManifest(bundleRoot, args.target, copied, inlined);
 
@@ -370,6 +425,7 @@ async function main() {
 }
 
 export {
+  DARWIN_RUNTIME_NATIVE_HELPERS,
   CRSQLITE_REQUIRED_TARGETS,
   copyCrsqliteExtension,
   crsqliteExtensionFileName,

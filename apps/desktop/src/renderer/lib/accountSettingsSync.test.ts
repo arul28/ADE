@@ -184,6 +184,7 @@ describe("accountSettingsSync (renderer)", () => {
       "apple.realisticBody",
       "apple.recordingOverlays.tapRings",
       "apple.recordingOverlays.keyBadges",
+      "apple.autoRecordAgentInput",
       "apple.remoteBitrateKbpsCap",
       "apple.recordingsWarnBytes",
     ]);

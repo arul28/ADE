@@ -287,3 +287,88 @@ export function macDesktopRefusedNextStep(args: {
   if (args.resolved && args.resolved.enabled === false) return disabledObserveStep();
   return browserPageStep(args.resolved, args.before) ?? realInputStep(args, "the element has no press action");
 }
+
+/** The lane display's rectangle on the global plane, in points. */
+export type MacDesktopDisplayBounds = { x: number; y: number; width: number; height: number };
+
+/**
+ * The driver's "(x, y) is not on this lane's display" refusal, made readable.
+ *
+ * Points are global screen points; the lane's display usually sits far from
+ * (0,0) (here at -2560,1440). A point read off the screenshot is display-local,
+ * so the refusal looked like an off-screen click. This adds the display's
+ * global bounds (an older driver omits them) and, when the point fits the
+ * display as a local one, the global point it most likely meant. Null for any
+ * other message, so it ships in the brain ahead of a driver update.
+ */
+export function macDesktopOffDisplayRefusalMessage(
+  message: string,
+  bounds: MacDesktopDisplayBounds,
+): string | null {
+  const match = message.match(/\((-?\d+(?:\.\d+)?), (-?\d+(?:\.\d+)?)\) is not on this lane's display/);
+  if (!match) return null;
+  const x = Number(match[1]);
+  const y = Number(match[2]);
+  const left = Math.round(bounds.x);
+  const top = Math.round(bounds.y);
+  const right = Math.round(bounds.x + bounds.width);
+  const bottom = Math.round(bounds.y + bounds.height);
+  const parts = [message.trim()];
+  if (!/global points/i.test(message)) {
+    parts.push(`This lane's display is x ${left}..${right}, y ${top}..${bottom} in global points.`);
+  }
+  const looksLocal = x >= 0 && y >= 0 && x < bounds.width && y < bounds.height && (left !== 0 || top !== 0);
+  if (looksLocal && !/Points are global/.test(message)) {
+    parts.push(
+      `Points are global, not screenshot pixels: (${Math.round(x)}, ${Math.round(y)}) on this display is (${left + Math.round(x)}, ${top + Math.round(y)}); or pass --local.`,
+    );
+  }
+  return parts.join(" ");
+}
+
+/** How far below a window's top edge a drag reads as a title-bar (window-move) drag. */
+const WINDOW_DRAG_BAND_POINTS = 60;
+
+/**
+ * The advice after a background drag that started in a window's title area
+ * and left the window where it was.
+ *
+ * Background input posts mouse events to the app; only the window server
+ * moves a window, so neither a title bar nor an Electron (frameless) drag
+ * region moves from here. `claim` is how a window gets onto the lane, and ADE
+ * places it there. Null when the drag was not a window move or the window moved.
+ */
+export function macDesktopWindowDragNextStep(args: {
+  mode: MacDesktopInputMode;
+  from: { x: number; y: number } | null;
+  before: MacDesktopObservation | null;
+  after: MacDesktopObservation;
+}): ComputerUseActionNextStep | null {
+  if (args.mode !== "background" || !args.from || !args.before) return null;
+  const { x, y } = args.from;
+  const hit = [...args.before.windows].reverse().find((window) => {
+    const frame = window.frame;
+    return !window.minimized
+      && x >= frame.x && x <= frame.x + frame.width
+      && y >= frame.y && y <= frame.y + Math.min(WINDOW_DRAG_BAND_POINTS, frame.height);
+  });
+  if (!hit) return null;
+  const now = args.after.windows.find((window) => window.id === hit.id);
+  if (!now) return null;
+  const moved = Math.abs(now.frame.x - hit.frame.x) > 1 || Math.abs(now.frame.y - hit.frame.y) > 1;
+  if (moved) return null;
+  const why = "a background drag cannot move a window: it posts mouse events to the app, and only the window server moves windows, so a title bar or a frameless (Electron) drag region stays put";
+  if (hit.laneId) {
+    // Already this lane's: there is nowhere to claim it to.
+    return {
+      method: "observe",
+      reason: `${why}. The window is already on this lane and needs no move; to show it on the user's screen, use \`ade mac-desktop present main\``,
+      command: null,
+    };
+  }
+  return {
+    method: "observe",
+    reason: `${why}. Claim it instead: ADE moves it onto this lane's display`,
+    command: `ade mac-desktop claim --window ${hit.id} --text`,
+  };
+}

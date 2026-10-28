@@ -14,8 +14,10 @@ import type {
   IosSimulatorDeviceArgs,
   IosSimulatorDeviceSession,
   IosSimulatorDeviceSettings,
+  IosScreenElement,
   IosSimulatorElementActionResult,
   IosSimulatorElementMatch,
+  IosSimulatorTypedCheck,
   IosSimulatorEventLogArgs,
   IosSimulatorEventLogPage,
   IosSimulatorEventPayload,
@@ -48,12 +50,15 @@ import { notCheckedEffect } from "../../../shared/agentObservation";
 import { isPathInside } from "../shared/pathCompare";
 import { isPathEscapeError, resolvePathWithinRoot } from "../shared/utils";
 import { createIosDeviceTools, type IosDeviceToolsRunCommand } from "./iosDeviceTools";
-import { createIosEventLog, type IosEventLogProcess } from "./iosEventLog";
+import { buildLogPredicate, createIosEventLog, type IosEventLogProcess } from "./iosEventLog";
 import {
   buildElementRef,
   describeElement,
+  describeMatchChoice,
   describeQuery,
   elementTapPoint,
+  isInferredElement,
+  isUnplacedElement,
   matchElements,
 } from "./iosSemanticActions";
 
@@ -87,6 +92,51 @@ const DEFAULT_WAIT_TIMEOUT_MS = 5_000;
 const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_INTERVAL_MS = 350;
 const PROOF_LOG_ROW_DEFAULT = 50;
+/** Time the app gets to show typed text before `fill-element` reads the field back. */
+const FILL_READBACK_SETTLE_MS = 150;
+/** One more read after this when the first did not see the text: a slow app, not a lost focus. */
+const FILL_READBACK_RETRY_MS = 350;
+
+function pause(ms: number): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+function normaliseTyped(value: string): string {
+  return value.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+function isSecureField(element: IosScreenElement): boolean {
+  return [element.role, element.elementType, element.metadata?.role_description]
+    .some((value) => typeof value === "string" && /secure/i.test(value));
+}
+
+function overlapRatio(a: IosScreenElement["frame"], b: IosScreenElement["frame"]): number {
+  const width = Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x);
+  const height = Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y);
+  if (width <= 0 || height <= 0) return 0;
+  const smaller = Math.min(a.width * a.height, b.width * b.height);
+  return smaller > 0 ? (width * height) / smaller : 0;
+}
+
+/** The element of a point read that is the field `target` was, or null. */
+function sameElement(target: IosScreenElement, read: IosScreenElement[]): IosScreenElement | null {
+  const identifier = target.identifier?.trim();
+  if (identifier) {
+    const byIdentifier = read.find((element) => element.identifier?.trim() === identifier);
+    if (byIdentifier) return byIdentifier;
+  }
+  const role = (target.role ?? target.elementType ?? "").toLowerCase();
+  const label = target.label?.trim().toLowerCase();
+  return read.find((element) => {
+    const sameRole = (element.role ?? element.elementType ?? "").toLowerCase() === role;
+    if (!sameRole) return false;
+    if (label && element.label?.trim().toLowerCase() === label) return true;
+    return overlapRatio(element.frame, target.frame) >= 0.5;
+  }) ?? null;
+}
 
 /*
  * The `effect` every element action answers with. None of them compare: a
@@ -109,7 +159,15 @@ export type IosDeviceHubDeps = {
   getScreenSnapshot: (args: { deviceUdid?: string | null; projectRoot?: string | null; laneId?: string | null }) => Promise<IosScreenSnapshot>;
   screenshot: (args: { deviceUdid?: string | null; projectRoot?: string | null; laneId?: string | null; outPath?: string | null }) => Promise<IosSimulatorScreenshot>;
   tap: (args: { deviceUdid?: string | null; x: number; y: number }) => Promise<unknown>;
+  /** A press held at one point (`tap-element --hold-ms`). */
+  longPress: (args: { deviceUdid?: string | null; x: number; y: number; durationMs: number }) => Promise<unknown>;
   typeText: (args: { deviceUdid?: string | null; text: string }) => Promise<unknown>;
+  /**
+   * The element at one point and its children (device points), with no tree
+   * walk: `fill-element` reads its field back with it. Null when nothing
+   * answers there or the helper cannot read one point.
+   */
+  readElementAt: (deviceUdid: string, x: number, y: number) => Promise<IosScreenElement[] | null>;
   resolveBuildRoot: (args: { projectRoot?: string | null; laneId?: string | null }) => Promise<string>;
   /**
    * The chat holding the APP session, when there is one.
@@ -272,8 +330,28 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
    * that the dark-mode switch happened between two app log lines, not have to
    * infer it.
    */
-  const recordAction = (message: string, command: string | null) => {
-    eventLog.record({ message, command, level: "action" });
+  const recordAction = (message: string, command: string | null, deviceUdid: string | null = null) => {
+    eventLog.record({ message, command, level: "action", deviceUdid });
+  };
+
+  /**
+   * The installed app's executable name (`CFBundleExecutable`), the process
+   * its log rows carry. Null when the app is not installed on that device,
+   * or the name could not go in a predicate.
+   */
+  const appExecutableName = async (deviceUdid: string, bundleId: string): Promise<string | null> => {
+    try {
+      const { stdout } = await deps.run("xcrun", ["simctl", "get_app_container", deviceUdid, bundleId, "app"], { timeoutMs: 15_000 });
+      const appPath = stdout.trim();
+      if (!appPath) return null;
+      const plist = await deps.run("/usr/bin/plutil", ["-extract", "CFBundleExecutable", "raw", "-o", "-", path.join(appPath, "Info.plist")], { timeoutMs: 10_000 });
+      const name = plist.stdout.trim();
+      if (!name) return null;
+      buildLogPredicate({ process: name });
+      return name;
+    } catch {
+      return null;
+    }
   };
 
   const readSettings = async (deviceUdid?: string | null): Promise<IosSimulatorDeviceSettings> => {
@@ -294,14 +372,14 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
   const findMatch = async (
     args: IosSimulatorFindElementArgs,
     options: { labelPrefix?: boolean } = {},
-  ): Promise<{ match: IosSimulatorElementMatch | null; reason: string | null; snapshot: IosScreenSnapshot }> => {
+  ): Promise<{ match: IosSimulatorElementMatch | null; reason: string | null; choice: string | null; snapshot: IosScreenSnapshot }> => {
     const snapshot = await deps.getScreenSnapshot({
       deviceUdid: args.deviceUdid ?? null,
       projectRoot: args.projectRoot ?? null,
       laneId: args.laneId ?? null,
     });
     const outcome = matchElements(snapshot.elements, args.query, options);
-    if (!outcome.selected) return { match: null, reason: outcome.reason, snapshot };
+    if (!outcome.selected) return { match: null, reason: outcome.reason, choice: null, snapshot };
     return {
       match: {
         ref: buildElementRef(outcome.selected),
@@ -310,7 +388,102 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         ...(outcome.note ? { note: outcome.note } : {}),
       },
       reason: null,
+      choice: describeMatchChoice(outcome, args.query),
       snapshot,
+    };
+  };
+
+  /**
+   * Refuses an action on an element ADE inferred from source rather than read
+   * from the screen (a SwiftUI tab placed at an equal slice of its bar): its
+   * frame is a guess, and a tap there reported `ok` while nothing changed.
+   * The answer names the point, so a caller who knows better can tap it.
+   */
+  const inferredRefusal = (
+    match: IosSimulatorElementMatch,
+    action: "tap" | "fill",
+  ): IosSimulatorElementActionResult | null => {
+    if (isUnplacedElement(match.element)) {
+      return {
+        ok: false,
+        action,
+        match,
+        matchCount: match.matchCount,
+        message: `${describeElement(match.element)} is in an iPadOS window that could not be placed on the screen, so its frame `
+          + "is relative to that window and a tap there would land elsewhere. Nothing was sent. Run the command again "
+          + "(a window still opening is placed on the next read), or `ade apple window --fill`.",
+        waitedMs: null,
+        effect: NOTHING_SENT_EFFECT,
+      };
+    }
+    if (!isInferredElement(match.element)) return null;
+    const point = elementTapPoint(match.element);
+    const where = match.element.sourceFile
+      ? ` from ${match.element.sourceFile}${match.element.sourceLine ? `:${match.element.sourceLine}` : ""}`
+      : "";
+    return {
+      ok: false,
+      action,
+      match,
+      matchCount: match.matchCount,
+      message: `${JSON.stringify(match.element.label ?? "That element")} is not in the accessibility tree: ADE inferred it${where} `
+        + "as a slice of the Tab Bar, so its place is a guess. Nothing was sent."
+        + (point ? ` If the tab is drawn there, run: ade apple tap ${point.x} ${point.y}` : ""),
+      waitedMs: null,
+      effect: NOTHING_SENT_EFFECT,
+    };
+  };
+
+  /**
+   * Reads the filled field back once (one point read at its centre, not a
+   * snapshot) and says whether the text is in it. A field that is gone from
+   * its place, a secure field and an older helper are "unknown", never a
+   * claim either way.
+   */
+  const checkTyped = async (
+    target: IosScreenElement,
+    text: string,
+    deviceUdid: string,
+  ): Promise<{ typed: IosSimulatorTypedCheck; detail: string }> => {
+    const wanted = normaliseTyped(text);
+    if (!wanted) return { typed: "unknown", detail: "Nothing printable was typed, so there is nothing to look for." };
+    if (isSecureField(target)) return { typed: "unknown", detail: "A secure field hides its text, so it cannot be read back." };
+    const point = elementTapPoint(target);
+    if (!point) return { typed: "unknown", detail: "The field has no frame to read back." };
+    const before = target.value ? normaliseTyped(target.value) : "";
+    let last: { element: IosScreenElement | null; values: string[]; hit: IosScreenElement | null } | null = null;
+    for (const waitMs of [FILL_READBACK_SETTLE_MS, FILL_READBACK_RETRY_MS]) {
+      await pause(waitMs);
+      const read = await deps.readElementAt(deviceUdid, point.x, point.y).catch(() => null);
+      if (!read) return { typed: "unknown", detail: "The field could not be read back (nothing answered at its place, or this helper cannot read one point)." };
+      const element = sameElement(target, read);
+      const values = element
+        ? read
+          .filter((candidate) => candidate === element || overlapRatio(candidate.frame, element.frame) >= 0.9)
+          .map((candidate) => candidate.value ?? "")
+          .filter(Boolean)
+        : [];
+      last = { element, values, hit: read[0] ?? null };
+      if (!element) continue;
+      const holds = values.some((value) => normaliseTyped(value).includes(wanted));
+      if (holds && !(before.includes(wanted) && normaliseTyped(element.value ?? "") === before)) {
+        return { typed: "verified", detail: `The field reads ${JSON.stringify(element.value ?? values[0] ?? "")}.` };
+      }
+    }
+    if (!last?.element) {
+      return {
+        typed: "unknown",
+        detail: `The field is no longer at its place${last?.hit ? ` (${describeElement(last.hit)} is there now)` : ""}; the screen may have moved.`,
+      };
+    }
+    const reads = last.element.value ?? last.values[0] ?? "";
+    if (before.includes(wanted)) {
+      return { typed: "unknown", detail: `The field already held that text before typing and still reads ${JSON.stringify(reads)}.` };
+    }
+    return {
+      typed: "not-seen",
+      detail: `The field reads ${JSON.stringify(reads)} after typing, without the text. It may never have taken focus, `
+        + "or the app replaced the text. Check with a screenshot before you go on.",
     };
   };
 
@@ -444,6 +617,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Opened ${device.name}.`,
         `ade ios-sim open-device --device ${device.udid}`,
+        device.udid,
       );
       deps.emit({ type: "device-session-started", deviceSession });
       return deviceSession;
@@ -527,6 +701,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Set appearance to ${args.appearance}.`,
         `ade ios-sim appearance ${args.appearance} --device ${udid}`,
+        udid,
       );
       void announceSettings(udid);
       return readSettings(udid);
@@ -538,6 +713,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Set text size to ${args.contentSize}.`,
         `ade ios-sim content-size ${args.contentSize} --device ${udid}`,
+        udid,
       );
       void announceSettings(udid);
       return readSettings(udid);
@@ -549,6 +725,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `${args.enabled ? "Enabled" : "Disabled"} ${args.option}.`,
         `ade ios-sim accessibility ${args.option} ${args.enabled ? "on" : "off"} --device ${udid}`,
+        udid,
       );
       void announceSettings(udid);
       return readSettings(udid);
@@ -561,6 +738,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Set location to ${args.latitude}, ${args.longitude}.`,
         `ade ios-sim location ${args.latitude} ${args.longitude} --device ${udid}`,
+        udid,
       );
       void announceSettings(udid);
       return readSettings(udid);
@@ -570,7 +748,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       await tools.clearLocation(udid);
       lastLocationByDevice.delete(udid);
-      recordAction("Cleared the simulated location.", `ade ios-sim location --clear --device ${udid}`);
+      recordAction("Cleared the simulated location.", `ade ios-sim location --clear --device ${udid}`, udid);
       void announceSettings(udid);
       return readSettings(udid);
     },
@@ -595,6 +773,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         `ade ios-sim permission ${args.action} ${args.service}`
           + (bundleId ? ` --bundle-id ${bundleId}` : "")
           + ` --device ${udid}`,
+        udid,
       );
       return { ok: true };
     },
@@ -605,6 +784,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Sent a push notification to ${args.bundleId}.`,
         `ade ios-sim push --bundle-id ${args.bundleId} --device ${udid}`,
+        udid,
       );
       return { ok: true };
     },
@@ -612,7 +792,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
     async openUrl(args: IosSimulatorOpenUrlArgs): Promise<{ ok: true }> {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       await tools.openUrl(udid, args.url);
-      recordAction(`Opened ${args.url}.`, `ade ios-sim open-url ${args.url} --device ${udid}`);
+      recordAction(`Opened ${args.url}.`, `ade ios-sim open-url ${args.url} --device ${udid}`, udid);
       return { ok: true };
     },
 
@@ -641,6 +821,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         // The arguments are not recorded: one can carry a token, and the
         // action log ends up in proof bundles.
         `ade ios-sim relaunch --bundle-id ${args.bundleId} --device ${udid}${launchArguments.length ? ` -- <${launchArguments.length} launch arguments>` : ""}`,
+        udid,
       );
       return tools.getAppState(udid, args.bundleId);
     },
@@ -651,6 +832,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Terminated ${args.bundleId}.`,
         `ade ios-sim terminate --bundle-id ${args.bundleId} --device ${udid}`,
+        udid,
       );
       return { ok: true };
     },
@@ -672,6 +854,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       recordAction(
         `Uninstalled ${args.bundleId}.`,
         `ade ios-sim uninstall --bundle-id ${args.bundleId} --device ${udid}`,
+        udid,
       );
       return { ok: true };
     },
@@ -680,7 +863,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       await tools.setStatusBar({ ...args, deviceUdid: udid });
       statusBarOverridden.add(udid);
-      recordAction("Set a status bar override.", `ade ios-sim status-bar --device ${udid}`);
+      recordAction("Set a status bar override.", `ade ios-sim status-bar --device ${udid}`, udid);
       return { ok: true };
     },
 
@@ -688,7 +871,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
       await tools.clearStatusBar(udid);
       statusBarOverridden.delete(udid);
-      recordAction("Cleared the status bar override.", `ade ios-sim status-bar --clear --device ${udid}`);
+      recordAction("Cleared the status bar override.", `ade ios-sim status-bar --clear --device ${udid}`, udid);
       return { ok: true };
     },
 
@@ -726,9 +909,15 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         );
       }
       const udid = await deps.resolveControlDeviceUdid(args.deviceUdid);
-      eventLog.start({ deviceUdid: udid, bundleId });
+      const subsystem = args.subsystem?.trim() || null;
+      // The app's own process by default, so NSLog and a Logger under any
+      // subsystem arrive; a name that cannot go in a predicate is left out
+      // rather than failing the start. A `--process` the caller typed is
+      // checked strictly by the predicate builder.
+      const processName = args.process?.trim() || await appExecutableName(udid, bundleId);
+      eventLog.start({ deviceUdid: udid, bundleId, subsystem, process: processName });
       eventLogOwner = args.chatSessionId ?? null;
-      return eventLog.read({});
+      return eventLog.read({ deviceUdid: udid });
     },
 
     stopEventLog(args: IosSimulatorStopEventLogArgs = {}): IosSimulatorEventLogPage {
@@ -764,7 +953,9 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           lastError: null,
         };
       }
-      return eventLog.read({ sinceId: args.sinceId ?? null, limit: args.limit ?? null });
+      // A lane's log holds ADE's rows for every device it drove (its extras
+      // too), so a read keeps the named device's, else the followed one's.
+      return eventLog.read({ sinceId: args.sinceId ?? null, limit: args.limit ?? null, deviceUdid: requested || following });
     },
 
     recordAction,
@@ -774,23 +965,32 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
      * ----------------------------------------------------------------- */
 
     async findElement(args: IosSimulatorFindElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args, { labelPrefix: true });
+      const { match, reason, choice } = await findMatch(args, { labelPrefix: true });
+      const inferred = match && isInferredElement(match.element)
+        ? "Inferred from source, not read from the screen: its frame is a guess."
+        : null;
       return {
         ok: Boolean(match),
         action: "assert",
         match,
         matchCount: match?.matchCount ?? 0,
-        message: match ? [describeElement(match.element), match.note].filter(Boolean).join(" ") : reason,
+        message: match ? [describeElement(match.element), inferred, match.note, choice].filter(Boolean).join(" ") : reason,
         waitedMs: null,
         effect: READ_ONLY_EFFECT,
       };
     },
 
     async tapElement(args: IosSimulatorTapElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args, { labelPrefix: true });
+      const holdMs = args.holdMs ?? null;
+      if (holdMs !== null && (!Number.isFinite(holdMs) || holdMs <= 0)) {
+        throw new Error("holdMs must be a positive number of milliseconds.");
+      }
+      const { match, reason, choice, snapshot } = await findMatch(args, { labelPrefix: true });
       if (!match) {
         return { ok: false, action: "tap", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }
+      const refused = inferredRefusal(match, "tap");
+      if (refused) return refused;
       const point = elementTapPoint(match.element);
       if (!point) {
         return {
@@ -803,27 +1003,34 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
           effect: NOTHING_SENT_EFFECT,
         };
       }
-      await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
+      if (holdMs !== null) {
+        await deps.longPress({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y, durationMs: holdMs });
+      } else {
+        await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
+      }
       recordAction(
-        `Tapped ${describeElement(match.element)}.`,
-        `ade ios-sim tap-element ${describeQuery(args.query)}`,
+        `${holdMs !== null ? `Long-pressed (${Math.round(holdMs)} ms)` : "Tapped"} ${describeElement(match.element)}.`,
+        `ade ios-sim tap-element ${describeQuery(args.query)}${holdMs !== null ? ` --hold-ms ${Math.round(holdMs)}` : ""}`,
+        snapshot.deviceUdid,
       );
       return {
         ok: true,
         action: "tap",
         match,
         matchCount: match.matchCount,
-        message: match.note ?? null,
+        message: [match.note, choice].filter(Boolean).join(" ") || null,
         waitedMs: null,
         effect: APPLE_ACTION_EFFECT,
       };
     },
 
     async fillElement(args: IosSimulatorFillElementArgs): Promise<IosSimulatorElementActionResult> {
-      const { match, reason } = await findMatch(args, { labelPrefix: true });
+      const { match, reason, choice, snapshot } = await findMatch(args, { labelPrefix: true });
       if (!match) {
         return { ok: false, action: "fill", match: null, matchCount: 0, message: reason, waitedMs: null, effect: NOTHING_SENT_EFFECT };
       }
+      const refused = inferredRefusal(match, "fill");
+      if (refused) return refused;
       if (args.focusFirst !== false) {
         const point = elementTapPoint(match.element);
         if (!point) {
@@ -840,18 +1047,26 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
         await deps.tap({ deviceUdid: args.deviceUdid ?? null, x: point.x, y: point.y });
       }
       await deps.typeText({ deviceUdid: args.deviceUdid ?? null, text: args.text });
+      const check = await checkTyped(match.element, args.text, snapshot.deviceUdid);
       recordAction(
-        `Typed into ${describeElement(match.element)}.`,
+        `Typed into ${describeElement(match.element)} (${check.typed}).`,
         `ade ios-sim fill-element ${describeQuery(args.query)}`,
+        snapshot.deviceUdid,
       );
       return {
         ok: true,
         action: "fill",
         match,
         matchCount: match.matchCount,
-        message: match.note ?? null,
+        message: [
+          check.typed === "not-seen" ? `Warning: the text was not seen in the field. ${check.detail}` : null,
+          match.note,
+          choice,
+        ].filter(Boolean).join(" ") || null,
         waitedMs: null,
         effect: APPLE_ACTION_EFFECT,
+        typed: check.typed,
+        typedDetail: check.detail,
       };
     },
 
@@ -1011,7 +1226,7 @@ export function createIosDeviceHub(deps: IosDeviceHubDeps) {
       if (limit > 0 && !logFromAnotherDevice) {
         // The drawer is the reader that shows the gap, so a proof capture takes
         // the rows without consuming the counter on its way past.
-        const logRows = eventLog.snapshotRows(limit);
+        const logRows = eventLog.snapshotRows(limit, shot.deviceUdid);
         if (logRows.length) {
           logPath = path.join(dir, "log.json");
           await fileSystem.writeFile(logPath, JSON.stringify(logRows, null, 2));

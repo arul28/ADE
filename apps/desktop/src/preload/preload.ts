@@ -1004,6 +1004,7 @@ import type {
   ComputerUseOwnerSnapshotArgs,
   IosSimulatorDevice,
   IosSimulatorDragArgs,
+  IosSimulatorLongPressArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
   IosSimulatorEnsurePreviewWorkspaceArgs,
@@ -9909,6 +9910,16 @@ const adeBridge = {
       const stamped = asUserInput(args);
       return callIosSimulatorActionOr(pin, "tap", { args: stamped }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, stamped),
+      );
+    },
+    /** A press held at one point (a context menu), sent once the pointer lifts. */
+    longPress: async (
+      args: IosSimulatorLongPressArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true; action: "long-press"; durationMs: number }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "longPress", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorLongPress, stamped),
       );
     },
     pressButton: (

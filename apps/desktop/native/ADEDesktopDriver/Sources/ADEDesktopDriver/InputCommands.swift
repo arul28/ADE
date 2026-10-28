@@ -463,7 +463,7 @@ extension DriverRuntime {
             guard placement.frame.contains(raw) else {
                 throw DriverError(
                     code: DriverErrorCode.invalidArgument,
-                    message: "(\(Int(raw.x)), \(Int(raw.y))) is not on this lane's display; background input only reaches the lane's own windows."
+                    message: Geometry.offDisplayRefusal(point: raw, display: placement)
                 )
             }
             return raw

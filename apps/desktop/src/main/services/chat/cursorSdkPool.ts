@@ -415,7 +415,13 @@ function applyCurrentAdeCliEnv(
     prependPathDir(env, binDir);
     const commandPath = findAdeCommandInBinDir(binDir, sourceEnv)
       ?? findAdeCommandInBinDir(binDir, env);
-    if (commandPath) env.ADE_CLI_PATH = commandPath;
+    // On Windows ADE_CLI_PATH names a native exe (the CLI launcher, or the
+    // standalone ade.exe) on purpose: `ade.cmd` from the bin dir would bring
+    // back cmd.exe's cut of multi-line arguments.
+    const existing = existingFilePath(sourceEnv.ADE_CLI_PATH ?? env.ADE_CLI_PATH);
+    const keepNative = process.platform === "win32" && existing != null && !/\.(?:cmd|bat)$/i.test(existing);
+    if (commandPath && !keepNative) env.ADE_CLI_PATH = commandPath;
+    else if (keepNative) env.ADE_CLI_PATH = existing;
   }
   const cliEntry = inferAdeCliEntryFromBinDir(binDir) ?? envCliEntry ?? argvCliEntry;
   if (cliEntry) env.ADE_CLI_ENTRY_PATH = cliEntry;

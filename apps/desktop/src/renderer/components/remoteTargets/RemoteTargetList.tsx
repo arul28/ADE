@@ -470,6 +470,7 @@ export function RemoteTargetList({
       target: status.target,
       arch: status.arch ?? status.target.lastSeenArch ?? "unknown",
       version: status.version ?? status.target.runtimeBinaryVersion,
+      appVersion: status.version != null ? status.appVersion ?? null : null,
       route: status.route,
       capabilities: status.capabilities,
       compatibilityWarnings: status.compatibilityWarnings,
@@ -634,6 +635,7 @@ export function RemoteTargetList({
             state: "connected",
             arch: result.arch,
             version: result.version,
+            appVersion: result.appVersion ?? null,
             route: result.route,
             capabilities: result.capabilities,
             compatibilityWarnings: result.compatibilityWarnings,
@@ -1141,7 +1143,7 @@ export function RemoteTargetList({
       ? outdatedMachines(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
-              ? [{ id: row.target.id, name: row.target.name, version: row.version }]
+              ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }]
               : []),
           newestKnownVersion,
         )
@@ -1228,7 +1230,7 @@ export function RemoteTargetList({
                 updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 onUpdateAndRestart={(targetVersion) =>
                   void requestMachineUpdates(
-                    [{ id: row.target.id, name: row.target.name, version: row.version }],
+                    [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }],
                     targetVersion,
                   )
                 }

@@ -273,6 +273,75 @@ describe("ade mac-desktop dispatch", () => {
     delete process.env.ADE_CHAT_SESSION_ID;
     expect(() => buildCliPlan(["mac-desktop", "lease"])).toThrow(/requires --chat-session/);
   });
+
+  /**
+   * Mixed versions: a newer `ade` must never send an argument an older brain
+   * drops without an error. `--local` is converted here from the brain's own
+   * display origin; a flag only a newer brain honours is refused without its
+   * capability.
+   */
+  describe("against an older brain", () => {
+    const envelope = (result: unknown) => ({ domain: "mac_desktop", action: "getStatus", result });
+    const status = (extra: Record<string, unknown> = {}) =>
+      envelope({ display: { laneId: "lane-1", origin: { x: -2560, y: 1440 }, width: 2560, height: 1440 }, ...extra });
+    const resolved = (built: ExecutePlan, values: Record<string, unknown>) => {
+      const step = built.steps.find((entry) => entry.key === "result")!;
+      const params = (typeof step.params === "function" ? step.params(values as never) : step.params) as {
+        arguments?: { args?: Record<string, unknown> };
+      };
+      return params.arguments?.args ?? {};
+    };
+
+    it.each([
+      [["mac-desktop", "click", "--x", "300", "--y", "200", "--local", "--real"], { x: -2260, y: 1640 }],
+      [["mac-desktop", "scroll", "down", "--x", "5", "--y", "6", "--local"], { x: -2555, y: 1446 }],
+      [["mac-desktop", "drag", "--from", "10,20", "--to", "30,40", "--local"], { from: { x: -2550, y: 1460 }, to: { x: -2530, y: 1480 } }],
+    ])("sends %j as global points, never as `local`", (argv, expected) => {
+      const args = resolved(plan(argv), { status: status() });
+      expect(args).toMatchObject(expected);
+      expect(JSON.stringify(args)).not.toContain("local");
+    });
+
+    it("refuses --local when there is no display to read the origin from", () => {
+      expect(() => resolved(plan(["mac-desktop", "click", "--x", "1", "--y", "2", "--local"]), { status: envelope({ display: null }) }))
+        .toThrow(/--local needs the lane display/);
+    });
+
+    it("refuses --new-instance unless the brain lists it, and sends it when it does", () => {
+      const built = plan(["mac-desktop", "open", "/tmp/song.als", "--new-instance"]);
+      expect(() => resolved(built, { status: status() })).toThrow(/does not support --new-instance/);
+      expect(resolved(built, { status: status({ capabilities: ["open.newInstance"] }) })).toMatchObject({ newInstance: true });
+    });
+
+    it("refuses proof record --plain on the lane display unless the brain lists it", () => {
+      const built = plan(["proof", "record", "--seconds", "5", "--plain"]);
+      const step = built.steps.find((entry) => entry.key === "result")!;
+      const run = (values: Record<string, unknown>) =>
+        (step.params as (values: never) => { arguments?: Record<string, unknown> })(values as never);
+      expect(() => run({ capabilities: status() })).toThrow(/does not support --plain/);
+      expect(run({ capabilities: status({ capabilities: ["proof.plain"] }) }).arguments).toMatchObject({ plain: true });
+      // A real-screen recording is real time on every brain: no check.
+      expect(plan(["proof", "record", "--plain", "--real-screen"]).steps.some((entry) => entry.key === "capabilities")).toBe(false);
+    });
+
+    it("sends record start --plain under the old name too, which an older brain forwards", () => {
+      expect(actionArgs(plan(["mac-desktop", "record", "start", "--plain"]))).toMatchObject({ plain: true, keepIdle: true });
+    });
+  });
+
+  it("waits past the card's own budget for the lease, and exits non-zero on anything but a grant", () => {
+    const built = plan(["mac-desktop", "lease", "--chat-session", "chat-1"]);
+    // The card is withdrawn at 170 s and the brain answers by 180 s.
+    expect(built.minTimeoutMs).toBeGreaterThan(180_000);
+    const exit = built.exitCodeFromResult!;
+    const envelope = (result: unknown) => ({ domain: "mac_desktop", action: "requestInputLease", result });
+    expect(exit({ granted: true, code: null, lease: null })).toBe(0);
+    expect(exit(envelope({ granted: false, notRequired: true, code: null, lease: null }))).toBe(0);
+    for (const outcome of ["declined", "unanswered", "unasked", "no_chat", "held"]) {
+      expect(exit({ granted: false, outcome, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null }), outcome).toBe(1);
+      expect(exit(envelope({ granted: false, outcome, code: "MAC_DESKTOP_INPUT_LEASE_REQUIRED", lease: null })), outcome).toBe(1);
+    }
+  });
 });
 
 describe("macDesktopErrorHint", () => {

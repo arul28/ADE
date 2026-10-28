@@ -118,6 +118,14 @@ export type MachineUpdateControlsArgs = {
   requestRestart: () => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** See `MachineUpdateAndRestartDeps.requestDesktopAppUpdate`. */
   requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
+  /**
+   * The installed ADE app's version on this machine (macOS), or null. The
+   * brain update moves the app too, so the machine is behind when either one
+   * is: a brain that already runs the target beside an older, closed app
+   * would otherwise answer "already on the newest version" and leave the app
+   * behind for good.
+   */
+  installedAppVersion?: () => Promise<string | null>;
 };
 
 // One comparator for the whole app. Slightly wider than the old local
@@ -143,9 +151,11 @@ export function createMachineUpdateControls(
     currentVersion: args.version,
     checkForUpdate: async (targetVersion) => {
       const normalizedTarget = targetVersion?.trim() || null;
+      const appVersion = await args.installedAppVersion?.().catch(() => null) ?? null;
+      const appCovers = (target: string) => !appVersion || machineVersionCovers(appVersion, target);
       // The one thing the host can decide on its own: it will not "update" to
       // the version it is already running, nor back to an older one.
-      if (normalizedTarget && machineVersionCovers(args.version, normalizedTarget)) {
+      if (normalizedTarget && machineVersionCovers(args.version, normalizedTarget) && appCovers(normalizedTarget)) {
         return {
           available: false,
           currentVersion: args.version,
@@ -180,7 +190,7 @@ export function createMachineUpdateControls(
         : "";
       const resolved = resolvedRaw && resolvedRaw.toLowerCase() !== "latest" ? resolvedRaw : null;
       const effectiveTarget = normalizedTarget ?? resolved;
-      if (effectiveTarget && sameVersion(effectiveTarget, args.version)) {
+      if (effectiveTarget && sameVersion(effectiveTarget, args.version) && appCovers(effectiveTarget)) {
         return {
           available: false,
           currentVersion: args.version,

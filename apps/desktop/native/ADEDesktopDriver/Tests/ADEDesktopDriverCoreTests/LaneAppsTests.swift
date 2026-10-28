@@ -242,4 +242,32 @@ final class LaneAppsTests: XCTestCase {
         XCTAssertTrue(registry.forgetLane("lane").isEmpty)
         XCTAssertEqual(registry.releasedApps(forLane: "lane").map(\.pid), [42])
     }
+
+    /// `quit "FL Studio"` refused while `windows` listed "FL Studio 2025" as
+    /// the lane's app: the match was exact on one recorded name.
+    func testQuitMatchesAnyNameCaseInsensitivelyAndByPrefixWhenItNamesOneApp() {
+        let fl = LaneAppMatch.Candidate(pid: 10, names: ["/Users/me/song.flp", "FL Studio 2025"], bundleId: "com.image-line.flstudio")
+        let flSecond = LaneAppMatch.Candidate(pid: 11, names: ["FL Studio 2025"], bundleId: "com.image-line.flstudio")
+        let text = LaneAppMatch.Candidate(pid: 12, names: ["TextEdit"], bundleId: "com.apple.TextEdit")
+        let finder = LaneAppMatch.Candidate(pid: 13, names: ["Finder"], bundleId: "com.apple.finder")
+        let fileMerge = LaneAppMatch.Candidate(pid: 14, names: ["FileMerge"], bundleId: "com.apple.FileMerge")
+        let all = [fl, flSecond, text, finder, fileMerge]
+        let cases: [(String?, LaneAppMatch.Outcome)] = [
+            (nil, .matched([0, 1, 2, 3, 4])),
+            ("  ", .matched([0, 1, 2, 3, 4])),
+            ("fl studio 2025", .matched([0, 1])),
+            ("FL Studio 2025.app", .matched([0, 1])),
+            // A prefix of one app's name: both of its copies.
+            ("FL Studio", .matched([0, 1])),
+            ("com.apple.textedit", .matched([2])),
+            ("12", .matched([2])),
+            // A prefix that fits two different apps is a question, not a quit.
+            ("F", .ambiguous([0, 1, 3, 4])),
+            ("Safari", .none),
+        ]
+        for (needle, expected) in cases {
+            XCTAssertEqual(LaneAppMatch.match(needle, in: all), expected, "needle \(needle ?? "nil")")
+        }
+        XCTAssertEqual(LaneAppMatch.match(nil, in: []), .none)
+    }
 }

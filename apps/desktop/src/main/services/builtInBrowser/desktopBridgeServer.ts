@@ -186,6 +186,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
    * cannot open its bridge pipe. The caller tells the user.
    */
   onElevatedDesktop?: (() => void) | null;
+  /**
+   * Windows: the other pipe names this bridge answers on, the ones an older
+   * brain derives (`resolveMachineEndpointNames`). A name another process
+   * already holds is left to it.
+   */
+  aliasSocketPaths?: readonly string[];
 }): BuiltInBrowserDesktopBridgeServer {
   const { socketPath, service, logger } = args;
   const isNamedPipe = socketPath.startsWith("\\\\");
@@ -214,7 +220,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   const activeServerHandles = new Set<() => void>();
   const activeSockets = new Set<net.Socket>();
 
-  const server = net.createServer((conn) => {
+  const handleConnection = (conn: net.Socket): void => {
     activeSockets.add(conn);
     const connection: BridgeConnectionState = { recorderKeys: new Set(), demoJobs: new Map(), closed: false };
     const transport: JsonRpcTransport = {
@@ -250,7 +256,29 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
     conn.on("error", () => {
       // ignore per-connection errors; they are surfaced via the JSON-RPC frame.
     });
-  });
+  };
+  const server = net.createServer(handleConnection);
+
+  const aliasServers: net.Server[] = [];
+  if (isNamedPipe) {
+    for (const aliasPath of args.aliasSocketPaths ?? []) {
+      if (!aliasPath.startsWith("\\\\") || aliasPath.toLowerCase() === socketPath.toLowerCase()) continue;
+      const aliasServer = net.createServer(handleConnection);
+      aliasServer.on("error", (error) => {
+        logger.info("built_in_browser_bridge.alias_not_served", {
+          socketPath: aliasPath,
+          reason: error instanceof Error ? error.message : String(error),
+        });
+        try {
+          aliasServer.close();
+        } catch {
+          // ignore close failures when yielding an alias
+        }
+      });
+      aliasServer.listen(localIpcListenOptions(aliasPath));
+      aliasServers.push(aliasServer);
+    }
+  }
 
   const yieldToLiveOwner = (): void => {
     logger.warn("built_in_browser_bridge.already_served", {
@@ -636,10 +664,12 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
         }
       }
       activeSockets.clear();
-      try {
-        server.close();
-      } catch {
-        // ignore
+      for (const closing of [server, ...aliasServers]) {
+        try {
+          closing.close();
+        } catch {
+          // ignore
+        }
       }
       if (!isNamedPipe) {
         try {

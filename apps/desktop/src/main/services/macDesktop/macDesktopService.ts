@@ -20,6 +20,7 @@ import path from "node:path";
 import { createDemoEngineSet, type DemoEngineSet } from "../demoVideo/demoEngines";
 import type { Logger } from "../logging/logger";
 import {
+  MAC_DESKTOP_BRAIN_CAPABILITIES,
   MAC_DESKTOP_DEFAULT_RESOLUTION,
   MAC_DESKTOP_IDLE_RELEASE_MS,
   MAC_DESKTOP_MACOS_ONLY_MESSAGE,
@@ -1060,7 +1061,7 @@ export function createMacDesktopService(deps: MacDesktopServiceDeps): MacDesktop
       windowsDesktop: windowsOps.withOperation(await readWindowsDesktopStatus()),
       ...(isLinuxSeat ? { linuxDesktop: linuxDesktopStatusFacts() } : {}),
     };
-    return { ...base, seat: describeDesktopSeat(base) };
+    return { ...base, seat: describeDesktopSeat(base), capabilities: [...MAC_DESKTOP_BRAIN_CAPABILITIES] };
   };
 
   /**

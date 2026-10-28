@@ -303,4 +303,19 @@ final class GeometryTests: XCTestCase {
             CGPoint(x: 8000, y: 0)
         )
     }
+
+    /// The off-display refusal names the display's global range, and the
+    /// global point a screenshot-local one meant.
+    func testOffDisplayRefusalNamesTheDisplayAndTheGlobalPointALocalOneMeant() {
+        let local = Geometry.offDisplayRefusal(point: CGPoint(x: 100, y: 200), display: display)
+        XCTAssertTrue(local.contains("x 8000..10560, y 0..1440 in global points"), local)
+        XCTAssertTrue(local.contains("is (8100, 200)"), local)
+        // Off the display and not a plausible local point: no guess.
+        let far = Geometry.offDisplayRefusal(point: CGPoint(x: -5000, y: 3000), display: display)
+        XCTAssertTrue(far.contains("x 8000..10560"), far)
+        XCTAssertFalse(far.contains("Points are global"), far)
+        // A display at (0,0) has no local/global difference to point out.
+        let atZero = DisplayPlacement(origin: .zero, width: 1000, height: 800, scale: 1)
+        XCTAssertFalse(Geometry.offDisplayRefusal(point: CGPoint(x: 5, y: 5), display: atZero).contains("Points are global"))
+    }
 }

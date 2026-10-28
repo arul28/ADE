@@ -42,6 +42,27 @@ const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 // cannot lose their first protocol frame and no per-frame DO storage is needed.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
 const MAX_BUFFERED_CLIENT_BYTES = 256 * 1024;
+// The other direction. The host's local socket can speak first (the Apple
+// device stream sends its config and keyframe the moment it opens), and its
+// bytes reach this object on the pipe socket while the epoch-matched
+// {t:"ready"} is still in flight on the control socket: two sockets, no
+// ordering between them. Those bytes are held, in order, until the pair is
+// ready, then flushed after the client's ready. Like the legacy buffer it is
+// instance memory only: a reconstructed instance that lost it fails the pair
+// loudly instead of forwarding a gap.
+//
+// Sized for the stream's first burst, config + one H.264 keyframe in one
+// message. Measured on the sim helper (2026-10-27): real screens 30-190 KB
+// (a full-screen photo is 59 KB at the 2.5 Mb/s remote cap, 188 KB at the
+// 20 Mb/s maximum); full-screen noise, the worst case, 1.1 MB at 2.5 Mb/s and
+// 1.9 MB at 20 Mb/s on an iPhone 17 Pro (1206x2622), 0.9-1.3 MB on the iPhone
+// Duo's inner panel (2007x2853). 4 MiB fits that with 2x margin. The object
+// total bounds memory however many streams open at once (16 tunnels x 4 MiB
+// would be half of a Durable Object's 128 MB); past either cap the pair
+// closes with 4506 and the viewer redials.
+const MAX_BUFFERED_PIPE_FRAMES = 64;
+const MAX_BUFFERED_PIPE_BYTES = 4 * 1024 * 1024;
+const MAX_BUFFERED_PIPE_BYTES_PER_OBJECT = 16 * 1024 * 1024;
 export const RELAY_READY_VERSION = 2;
 export const LEGACY_CONTROL_EPOCH = "legacy-v1";
 const MAX_CLOSE_REASON_BYTES = 123;
@@ -181,6 +202,8 @@ type SocketAttachment = {
   established?: boolean;
   /** Legacy pre-ready bytes exist only in this instance's bounded memory. */
   legacyBuffered?: true;
+  /** Pipe sockets only: pre-ready host bytes exist only in this instance's memory. */
+  pipeBuffered?: true;
   /** Pre-deploy data socket whose volatile pre-ready state cannot be proven. */
   legacyStateUnknown?: true;
   /** Safe client-generated operation id; never contains endpoint/auth data. */
@@ -208,6 +231,13 @@ export class TunnelDurableObject implements DurableObject {
     string,
     { frames: (string | ArrayBuffer)[]; bytes: number }
   >();
+  // Host bytes that reached a pipe before its pair was ready, by connection id.
+  private readonly pendingPipeFrames = new Map<
+    string,
+    { frames: (string | ArrayBuffer)[]; bytes: number }
+  >();
+  /** Sum of every `pendingPipeFrames` entry's bytes. */
+  private pendingPipeBytes = 0;
   private readonly terminalSocketLogs = new WeakSet<WebSocket>();
   // Pure overhead removal for the hot path; the socket's own attachment stays
   // authoritative. Hibernation drops instance memory, so every read falls back
@@ -877,7 +907,7 @@ export class TunnelDurableObject implements DurableObject {
             if (clientAttachment?.established) return;
             const code = applicationCloseCode(parsed.code, CLOSE_BRIDGE_REJECTED);
             const reason = sanitizedCloseReason(parsed.reason, "bridge rejected");
-            this.pendingClientFrames.delete(parsed.id);
+            this.forgetPending(parsed.id);
             logTunnel("connect_rejected", {
               reason: "bridge_rejected",
               code,
@@ -962,11 +992,74 @@ export class TunnelDurableObject implements DurableObject {
         att = { ...att, legacyBuffered: true, ts: Date.now() };
         this.writeAttachment(ws, att satisfies SocketAttachment);
       }
+    } else if (att.role === "pipe" && att.id) {
+      const buffered = this.bufferPipeFrame(ws, att, att.id, partner, message);
+      if (!buffered) return;
+      att = buffered;
     } else if (att.role === "pipe") {
       this.closePair(ws, att, CLOSE_NOT_READY, "relay bridge not ready");
       return;
     }
     this.touch(ws, att);
+  }
+
+  /**
+   * Holds one host frame that arrived before its pair was ready. Returns the
+   * pipe's attachment to keep using, or null once the pair has been closed.
+   */
+  private bufferPipeFrame(
+    ws: WebSocket,
+    att: SocketAttachment,
+    id: string,
+    partner: WebSocket | null,
+    message: string | ArrayBuffer,
+  ): SocketAttachment | null {
+    if (!this.isOpen(ws)) return null;
+    const epoch = this.epochOf(att) ?? LEGACY_CONTROL_EPOCH;
+    // Only the one pipe this object paired may hold bytes for the id. A
+    // duplicate or stale pipe was closed at accept and must not add to them.
+    if (this.pipeForId(id, epoch) !== ws) {
+      this.closePair(ws, null, CLOSE_STALE_PIPE, "stale pipe");
+      return null;
+    }
+    if (!partner) {
+      this.closePair(ws, att, CLOSE_CLIENT_GONE, "relay client gone");
+      return null;
+    }
+    const buffered = this.pendingPipeFrames.get(id);
+    if (att.pipeBuffered && !buffered) {
+      // A reconstructed instance lost the earlier bytes; forwarding this frame
+      // would hand the client a stream with a hole in it.
+      this.closePair(ws, att, CLOSE_FORWARD_FAILED, "pre-ready pipe buffer unavailable");
+      return null;
+    }
+    const pending = buffered ?? { frames: [], bytes: 0 };
+    const frameBytes = bufferedFrameBytes(message);
+    const nextBytes = pending.bytes + frameBytes;
+    if (
+      pending.frames.length >= MAX_BUFFERED_PIPE_FRAMES
+      || nextBytes > MAX_BUFFERED_PIPE_BYTES
+      || this.pendingPipeBytes + frameBytes > MAX_BUFFERED_PIPE_BYTES_PER_OBJECT
+    ) {
+      logTunnel("pipe_buffer_overflow", {
+        connectionId: id,
+        frames: pending.frames.length + 1,
+        bytes: nextBytes,
+        objectBytes: this.pendingPipeBytes + frameBytes,
+        correlationId: att.correlationId ?? null,
+      });
+      this.closePair(ws, att, CLOSE_PRE_PIPE_BUFFER_OVERFLOW, "pre-ready pipe buffer overflow");
+      return null;
+    }
+    pending.frames.push(message);
+    pending.bytes = nextBytes;
+    this.pendingPipeBytes += frameBytes;
+    this.pendingPipeFrames.set(id, pending);
+    if (att.pipeBuffered) return att;
+    // One attachment write per pipe, recording only that volatile bytes exist.
+    const marked = { ...att, pipeBuffered: true as const, ts: Date.now() } satisfies SocketAttachment;
+    this.writeAttachment(ws, marked);
+    return marked;
   }
 
   private touch(ws: WebSocket, att: SocketAttachment): void {
@@ -1016,7 +1109,7 @@ export class TunnelDurableObject implements DurableObject {
       );
       return;
     }
-    if (att.id) this.pendingClientFrames.delete(att.id);
+    if (att.id) this.forgetPending(att.id);
     const partner = this.partnerOf(ws, att);
     if (partner) {
       const code = applicationCloseCode(sourceCode, CLOSE_PARTNER_CLOSED);
@@ -1054,17 +1147,24 @@ export class TunnelDurableObject implements DurableObject {
       this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "legacy pre-ready buffer unavailable");
       return;
     }
+    const bufferedPipe = this.pendingPipeFrames.get(id);
+    if (pipeAttachment.pipeBuffered && !bufferedPipe) {
+      this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "pre-ready pipe buffer unavailable");
+      return;
+    }
     try {
       if (clientAttachment.readyVersion === RELAY_READY_VERSION) {
         client.send(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
       } else {
         for (const frame of buffered?.frames ?? []) pipe.send(frame);
       }
+      // After the client's ready, so a ready-v2 client still reads ready first.
+      for (const frame of bufferedPipe?.frames ?? []) client.send(frame);
     } catch {
       this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "relay readiness forwarding failed");
       return;
     }
-    this.pendingClientFrames.delete(id);
+    this.forgetPending(id);
     const now = Date.now();
     const {
       legacyBuffered: _legacyBuffered,
@@ -1072,7 +1172,16 @@ export class TunnelDurableObject implements DurableObject {
       ...cleanClientAttachment
     } = clientAttachment;
     this.writeAttachment(client, { ...cleanClientAttachment, established: true, ts: now } satisfies SocketAttachment);
-    this.writeAttachment(pipe, { ...pipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+    const { pipeBuffered: _pipeBuffered, ...cleanPipeAttachment } = pipeAttachment;
+    this.writeAttachment(pipe, { ...cleanPipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+  }
+
+  private forgetPending(id: string): void {
+    this.pendingClientFrames.delete(id);
+    const pipe = this.pendingPipeFrames.get(id);
+    if (!pipe) return;
+    this.pendingPipeBytes = Math.max(0, this.pendingPipeBytes - pipe.bytes);
+    this.pendingPipeFrames.delete(id);
   }
 
   private closePair(
@@ -1091,7 +1200,7 @@ export class TunnelDurableObject implements DurableObject {
         correlationId: attachment?.correlationId ?? null,
       });
     }
-    if (attachment?.id) this.pendingClientFrames.delete(attachment.id);
+    if (attachment?.id) this.forgetPending(attachment.id);
     const partner = attachment ? this.partnerOf(socket, attachment) : null;
     for (const candidate of [socket, partner]) {
       if (!candidate) continue;

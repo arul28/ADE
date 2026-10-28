@@ -25,6 +25,7 @@ import {
 import {
   APPLE_DEVICE_MARKER_GRACE_MS,
   appleMarkerIsProject,
+  appleMarkerMovedToProject,
   appleSimulatorOwnership,
   listAppleDeviceMarkers,
   appleMarkerProjectHolds,
@@ -210,7 +211,7 @@ export type LaneDeviceRegistry = {
    *
    * Returns what was detached, or null when the lane had no device.
    */
-  deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"] }): Promise<AppleLaneDevice | null>;
+  deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean }): Promise<AppleLaneDevice | null>;
   /**
    * The device this lane last gave up (`deviceDetach`) in this process, while
    * the lane has had no device since. Null once the lane holds one again.
@@ -1038,9 +1039,13 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
     for (const { udid, marker } of projectRoot ? listAppleDeviceMarkers(root) : []) {
       const listed = all.get(udid);
       if (!listed || heldNow(udid)) continue;
+      // Released and kept by the person: a free simulator, not a leftover.
+      if (marker.keptAt) continue;
       const since = Date.parse(marker.detachedAt || marker.createdAt);
       if (Number.isFinite(since) && nowMs - since < APPLE_DEVICE_MARKER_GRACE_MS) continue;
-      const ours = appleMarkerIsProject(marker, projectRoot!);
+      // A marker that still names the folder this project moved from is ours:
+      // "that folder is gone" must not delete a device this project made.
+      const ours = appleMarkerIsProject(marker, projectRoot!) || appleMarkerMovedToProject(marker, projectRoot!);
       const foreign = ours ? null : foreignHolds(marker, udid);
       if (foreign === "held" || foreign === "unknown") continue;
       if (ours && !marker.detachedAt && marker.extra && isLaneLive(marker.laneId)) {
@@ -1144,7 +1149,7 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       };
     },
     deviceDelete: remove,
-    async deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"] }) {
+    async deviceDetach(args: { laneId: string; by?: AppleLaneDeviceRelease["by"]; keep?: boolean }) {
       const laneId = requireLaneId(args.laneId);
       const device = readOne(laneId);
       if (!device) return null;
@@ -1168,14 +1173,24 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       }
       // An ADE device no lane holds is a leftover. Stamp it, so the cleanup
       // pass deletes it after the grace period instead of handing it back.
+      // The answer says when, so `device-detach` never claims it stays.
+      // `keep` (the person's choice) stamps it kept instead: the pass then
+      // neither deletes it nor gives it back to this lane. A plain unstamped
+      // marker would not do: the pass re-adopts that into a live lane that
+      // "lost its row".
+      let deletesAfter: string | null = null;
+      const kept = args.keep === true && isAdeOwnedLaneDevice(device.origin);
       if (isAdeOwnedLaneDevice(device.origin)) {
         const marker = readAppleDeviceMarker(dataRoot(), device.udid);
+        const at = now();
         writeMarker(device.udid, {
           laneId,
           name: device.name,
           createdAt: marker?.createdAt || device.createdAt,
-          detachedAt: now().toISOString(),
+          detachedAt: kept ? null : at.toISOString(),
+          ...(kept ? { keptAt: at.toISOString() } : {}),
         });
+        if (!kept) deletesAfter = new Date(at.getTime() + APPLE_DEVICE_MARKER_GRACE_MS).toISOString();
       }
       const by = args.by ?? "user";
       releasedByLane.set(laneId, {
@@ -1186,8 +1201,9 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
         releasedAt: now().toISOString(),
         by,
       });
-      deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid, origin: device.origin, by });
-      return device;
+      deps.logger.info("apple.lane_device_detached", { laneId, udid: device.udid, origin: device.origin, by, kept });
+      if (kept) return { ...device, kept: true };
+      return deletesAfter ? { ...device, deletesAfter } : device;
     },
     get: (laneId: string) => readOne(laneId),
     lastReleased: (laneId: string) => {

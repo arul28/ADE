@@ -845,7 +845,8 @@ struct AppleDeviceViewer: View {
 
   private func statusOverlay(_ message: String) -> some View {
     VStack(spacing: 12) {
-      if model.health.phase == .connecting || model.health.phase == .requestingTicket {
+      if model.health.phase == .connecting || model.health.phase == .requestingTicket
+        || model.health.phase == .reconnecting {
         ProgressView().tint(.white)
       }
       Text(message)

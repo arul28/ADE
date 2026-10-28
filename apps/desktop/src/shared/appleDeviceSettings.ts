@@ -16,7 +16,16 @@ export const APPLE_DEVICE_SETTING_KEYS = {
   keyBadges: "apple.recordingOverlays.keyBadges",
   remoteBitrateKbpsCap: "apple.remoteBitrateKbpsCap",
   recordingsWarnBytes: "apple.recordingsWarnBytes",
+  autoRecordAgentInput: "apple.autoRecordAgentInput",
 } as const;
+
+/**
+ * Agent input starts an automatic recording (filed as proof when it stops).
+ * On by default; off here stops it on this machine, `ade apple auto-record
+ * off` for one lane, `--no-record` for one call.
+ */
+export const APPLE_AUTO_RECORD_SETTING_KEY = APPLE_DEVICE_SETTING_KEYS.autoRecordAgentInput;
+export const DEFAULT_APPLE_AUTO_RECORD_AGENT_INPUT = true;
 
 export const DEFAULT_APPLE_REALISTIC_BODY = true;
 export const DEFAULT_APPLE_TAP_RINGS = true;
@@ -35,6 +44,7 @@ export type AppleDevicePreferences = {
   recordingKeyBadges: boolean;
   remoteBitrateKbpsCap: number;
   recordingsWarnBytes: number;
+  autoRecordAgentInput: boolean;
 };
 
 export const DEFAULT_APPLE_DEVICE_PREFERENCES: AppleDevicePreferences = {
@@ -43,6 +53,7 @@ export const DEFAULT_APPLE_DEVICE_PREFERENCES: AppleDevicePreferences = {
   recordingKeyBadges: DEFAULT_APPLE_KEY_BADGES,
   remoteBitrateKbpsCap: DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
   recordingsWarnBytes: DEFAULT_APPLE_RECORDINGS_WARN_BYTES,
+  autoRecordAgentInput: DEFAULT_APPLE_AUTO_RECORD_AGENT_INPUT,
 };
 
 function asBoolean(value: unknown, fallback: boolean): boolean {
@@ -93,6 +104,7 @@ export function normalizeAppleDevicePreferences(value: unknown): AppleDevicePref
     ),
     remoteBitrateKbpsCap: clampAppleRemoteBitrateKbps(record.remoteBitrateKbpsCap),
     recordingsWarnBytes: clampAppleRecordingsWarnBytes(record.recordingsWarnBytes),
+    autoRecordAgentInput: asBoolean(record.autoRecordAgentInput, DEFAULT_APPLE_AUTO_RECORD_AGENT_INPUT),
   };
 }
 
@@ -108,6 +120,7 @@ export function serializeAppleDevicePreferences(
     },
     remoteBitrateKbpsCap: prefs.remoteBitrateKbpsCap,
     recordingsWarnBytes: prefs.recordingsWarnBytes,
+    autoRecordAgentInput: prefs.autoRecordAgentInput,
   };
 }
 

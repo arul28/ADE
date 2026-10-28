@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 
-import { isMachineAdeHome, isSyncCapableAdeHome, resolveMachineAdeLayout } from "./machineLayout";
+import {
+  isMachineAdeHome,
+  isSyncCapableAdeHome,
+  resolveMachineAdeLayout,
+  resolveMachineEndpointNames,
+} from "./machineLayout";
 
 describe("isMachineAdeHome", () => {
   it("accepts only the default machine state root", () => {
@@ -76,7 +81,9 @@ describe("resolveMachineAdeLayout", () => {
     expect(beta.socketPath).toContain("ade-runtime-beta-");
   });
 
-  it("isolates Windows runtime and desktop-bridge pipes for different users", () => {
+  // On a Windows host the user is read from the process token, which one
+  // process cannot vary; off Windows the env's profile stands for it.
+  it.skipIf(process.platform === "win32")("isolates Windows runtime and desktop-bridge pipes for different users", () => {
     const arul = resolveMachineAdeLayout(
       { ...arulEnv, ADE_HOME: "D:\\Shared\\ADE" },
       "win32",
@@ -95,28 +102,46 @@ describe("resolveMachineAdeLayout", () => {
     expect(arul.desktopBridgeSocketPath).not.toBe(other.desktopBridgeSocketPath);
   });
 
-  it("prefers a provided Windows SID over mutable account labels", () => {
-    const first = resolveMachineAdeLayout(
-      {
-        ...arulEnv,
-        ADE_WINDOWS_USER_SID: "S-1-5-21-1000",
-        ADE_HOME: "D:\\Shared\\ADE",
-      },
+  // One account reaches one brain however it logged in. The env differs per
+  // logon (OpenSSH says WORKGROUP where the desktop says the machine name), so
+  // none of it may move the name. Each row is one session of the same user.
+  it.each([
+    ["an OpenSSH session", { USERDOMAIN: "WORKGROUP" }],
+    ["a session without a domain", { USERDOMAIN: "" }],
+    ["a SID hint in the env", { ADE_WINDOWS_USER_SID: "S-1-5-21-1000" }],
+    ["a different account label", { USERDOMAIN: "NEWDOMAIN", USERNAME: "ARUL" }],
+  ])("keeps one Windows pipe name for %s", (_label, sessionEnv) => {
+    const desktop = resolveMachineAdeLayout({ ...arulEnv, ADE_HOME: "C:\\Users\\arul\\.ade" }, "win32");
+    const session = resolveMachineAdeLayout(
+      { ...arulEnv, ...sessionEnv, ADE_HOME: "C:\\Users\\arul\\.ade" },
       "win32",
     );
-    const renamed = resolveMachineAdeLayout(
-      {
-        USERDOMAIN: "NEWDOMAIN",
-        USERNAME: "renamed",
-        USERPROFILE: "C:\\Users\\renamed",
-        ADE_WINDOWS_USER_SID: "S-1-5-21-1000",
-        ADE_HOME: "D:\\Shared\\ADE",
-      },
-      "win32",
-    );
+    expect(session.socketPath).toBe(desktop.socketPath);
+    expect(session.desktopBridgeSocketPath).toBe(desktop.desktopBridgeSocketPath);
+  });
 
-    expect(renamed.socketPath).toBe(first.socketPath);
-    expect(renamed.desktopBridgeSocketPath).toBe(first.desktopBridgeSocketPath);
+  it("still names the pipes ADE up to v1.2.125 listened on, from any session", () => {
+    // Measured on a Windows PC on 2026-10-28: the brain started at the desktop
+    // (USERDOMAIN=ARUL) listened on ...23b8c33b935af5fb, and an SSH session
+    // (USERDOMAIN=WORKGROUP) computed ...ac69688075680682. A newer ade must
+    // find either, and a newer brain must answer on both.
+    const sshEnv = {
+      ADE_HOME: "C:\\Users\\arul2\\.ade",
+      USERDOMAIN: "WORKGROUP",
+      USERNAME: "arul2",
+      COMPUTERNAME: "ARUL",
+      USERPROFILE: "C:\\Users\\arul2",
+    };
+    const names = resolveMachineEndpointNames(sshEnv, "win32");
+    expect(names.runtime[0]).toBe(resolveMachineAdeLayout(sshEnv, "win32").socketPath);
+    expect(names.runtime).toEqual(expect.arrayContaining([
+      "\\\\.\\pipe\\ade-runtime-stable-23b8c33b935af5fb",
+      "\\\\.\\pipe\\ade-runtime-stable-ac69688075680682",
+    ]));
+    expect(names.desktopBridge).toEqual(expect.arrayContaining([
+      "\\\\.\\pipe\\ade-desktop-bridge-stable-23b8c33b935af5fb",
+      "\\\\.\\pipe\\ade-desktop-bridge-stable-ac69688075680682",
+    ]));
   });
 
   (process.platform === "win32" ? it : it.skip)(

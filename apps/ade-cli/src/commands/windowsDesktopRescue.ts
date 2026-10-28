@@ -264,7 +264,7 @@ export async function runWindowsDesktopRescue(
  * that is about to be deleted), and it carries the helper's own permissions,
  * which must not reach the app the installer reopens or its agent shells.
  */
-function withoutHelperEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function withoutHelperEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const next: NodeJS.ProcessEnv = { ...env };
   for (const key of [
     "ADE_RUNTIME_ROOT",

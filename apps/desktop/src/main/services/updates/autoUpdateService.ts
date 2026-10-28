@@ -390,9 +390,12 @@ function reconcilePersistedUpdateState(args: {
   recentlyInstalled: RecentlyInstalledUpdate | null;
   cacheCleanupReason: string | null;
   failedInstall: { targetVersion: string; attempt: number } | null;
+  /** This launch landed an install that a quit started (`closeAfterInstall`). */
+  landedQuitInstall: boolean;
 } {
   const nextState: GlobalState = { ...args.state };
   let changed = false;
+  let landedQuitInstall = false;
   let cacheCleanupReason: string | null = null;
   let failedInstall: { targetVersion: string; attempt: number } | null = null;
 
@@ -449,6 +452,9 @@ function reconcilePersistedUpdateState(args: {
       cacheCleanupReason = "installed";
       nextState.failedInstallAttempts = undefined;
       failedInstall = null;
+      // Read once, here: the pending record is cleared below, so a crash and
+      // relaunch of this same version opens normally.
+      landedQuitInstall = pendingInstall.closeAfterInstall === true;
     } else {
       const previous = nextState.failedInstallAttempts;
       const attempt = previous?.targetVersion === pendingInstall.targetVersion
@@ -493,6 +499,7 @@ function reconcilePersistedUpdateState(args: {
     recentlyInstalled,
     cacheCleanupReason,
     failedInstall,
+    landedQuitInstall,
   };
 }
 
@@ -2106,7 +2113,17 @@ export function createAutoUpdateService({
     }
   }
 
-  async function quitAndInstall(resumeChats = false, options: { requestedRemotely?: boolean } = {}): Promise<boolean> {
+  async function quitAndInstall(
+    resumeChats = false,
+    options: {
+      requestedRemotely?: boolean;
+      /**
+       * The person quit with automatic install on: the launch that lands this
+       * install restarts the service on the new build and closes again.
+       */
+      closeAfterInstall?: boolean;
+    } = {},
+  ): Promise<boolean> {
     // Mirrors checkPromise: collapse concurrent IPC/idle-timer calls onto one
     // transaction so cleanup, rollback, and native handoff cannot race.
     if (quitAndInstallPromise) return quitAndInstallPromise;
@@ -2196,6 +2213,7 @@ export function createAutoUpdateService({
           releaseNotesUrl: snapshot.releaseNotesUrl,
           requestedAt: now(),
           ...(options.requestedRemotely ? { requestedRemotely: true } : {}),
+          ...(options.closeAfterInstall ? { closeAfterInstall: true } : {}),
           ...(resumedChats.length > 0 ? { resumedChats } : {}),
         },
         recentlyInstalledUpdate: undefined,
@@ -2218,10 +2236,14 @@ export function createAutoUpdateService({
         // costs is not counted as quitting.
         runInstallHandoffCancel();
         try {
-          cancelInstallHandoff = onInstallHandoff?.({
-            version: snapshot.version ?? installVersion,
-            installerPath: downloadedFilePath,
-          }) ?? null;
+          // A quit-install has nothing to show: the person asked ADE to go,
+          // and the launch that lands it opens no window either.
+          cancelInstallHandoff = options.closeAfterInstall
+            ? null
+            : onInstallHandoff?.({
+              version: snapshot.version ?? installVersion,
+              installerPath: downloadedFilePath,
+            }) ?? null;
         } catch (error) {
           // The window is a courtesy; the install goes ahead without it.
           logger.warn("autoUpdate.install_handoff_surface_failed", {
@@ -2304,6 +2326,7 @@ export function createAutoUpdateService({
 
   const startupTimer = autoCheckEnabled ? setTimeout(checkForUpdates, startupDelayMs) : null;
   const periodicTimer = autoCheckEnabled ? setInterval(checkForUpdates, periodicCheckMs) : null;
+  let disposed = false;
 
   return {
     checkForUpdates,
@@ -2373,6 +2396,28 @@ export function createAutoUpdateService({
       });
     },
     quitAndInstall,
+    /**
+     * The update a quit should install, or null. Only with automatic install
+     * on, a staged update, and no install already under way. Whether running
+     * work allows it is the caller's decision (`installOnQuit.ts`).
+     */
+    installOnQuitVersion(): string | null {
+      if (
+        !autoApplyEnabled
+        || !autoUpdatePreferences.automaticInstall
+        || snapshot.status !== "ready"
+        || !snapshot.version
+        || quitAndInstallPromise != null
+        || installQuitArmed
+      ) {
+        return null;
+      }
+      return snapshot.version;
+    },
+    /** This launch landed an install a quit started; see `PendingInstallUpdate.closeAfterInstall`. */
+    landedQuitInstall(): boolean {
+      return initialState.landedQuitInstall;
+    },
     cancelAutoApply(): boolean {
       if (snapshot.status !== "ready" || !snapshot.autoApplyPending) return false;
       const autoApplySuppressedUntil = nowMs() + autoApplySuppressionMs;
@@ -2394,6 +2439,28 @@ export function createAutoUpdateService({
       clearQuitDeadline();
     },
     dispose() {
+      // Shutdown disposes twice (the shutdown sequence, then the exit cleanup).
+      // The record below must be written once.
+      if (!disposed) {
+        disposed = true;
+        // A quit installs only through quitAndInstall (`autoInstallOnAppQuit`
+        // is off: the install needs the service handoff), and only with
+        // automatic install on and nothing running on the brain
+        // (installOnQuit.ts). A quit that leaves a downloaded update behind is the one
+        // outcome no other line records, and without it "downloaded, then
+        // nothing" cannot be told apart from a crash or a stuck install.
+        // `installing` (and a running transaction) is the install's own quit.
+        if (snapshot.status === "ready" && quitAndInstallPromise == null) {
+          logger.warn("autoUpdate.quit_with_update_ready", {
+            version: snapshot.version,
+            currentVersion,
+            automaticInstall: autoUpdatePreferences.automaticInstall,
+            onlyWhenIdle: autoUpdatePreferences.onlyWhenIdle,
+          });
+          // The process exits within the same shutdown; a batched line dies with it.
+          logger.flushSync?.();
+        }
+      }
       if (startupTimer) clearTimeout(startupTimer);
       if (periodicTimer) clearInterval(periodicTimer);
       clearQuitDeadline();

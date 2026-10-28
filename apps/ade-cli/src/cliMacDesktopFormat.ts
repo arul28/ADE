@@ -217,7 +217,9 @@ function macDesktopWindowsFooter(windows: JsonObject[], options: { elevatedWarni
       // its app until it closes, so the agent has to see which one it is.
       const layer = typeof window.layer === "number" ? window.layer : 0;
       const panel = layer >= 8 ? " [modal panel]" : layer > 0 ? " [panel]" : "";
-      return `  #${window.id ?? "?"} ${appName}${window.elevated === true ? " [admin]" : ""}${panel}`
+      // A sheet hangs from another window; its buttons are in that tree.
+      const sheet = typeof window.sheetOf === "number" ? ` [sheet of #${window.sheetOf}]` : "";
+      return `  #${window.id ?? "?"} ${appName}${window.elevated === true ? " [admin]" : ""}${panel}${sheet}`
         + `${title ? ` — ${title}` : ""}`;
     }),
   ];
@@ -228,6 +230,34 @@ function macDesktopWindowsFooter(windows: JsonObject[], options: { elevatedWarni
     );
   }
   return lines;
+}
+
+/**
+ * Where the display sits in global screen points, which is what `--x/--y`
+ * take. Without it a caller read the screenshot's pixels as click points, and
+ * the refusal "not on this lane's display" looked like an off-screen click.
+ */
+function macDesktopDisplayPointsLine(display: JsonObject | null, windowCapture: boolean): string | null {
+  const bounds = display && isRecord(display.bounds) ? display.bounds : null;
+  const origin = display && isRecord(display.origin) ? display.origin : bounds;
+  const x = typeof origin?.x === "number" ? origin.x : null;
+  const y = typeof origin?.y === "number" ? origin.y : null;
+  if (x == null || y == null) return null;
+  const width = typeof bounds?.width === "number" ? bounds.width : null;
+  const height = typeof bounds?.height === "number" ? bounds.height : null;
+  const range = width != null && height != null
+    ? `x ${Math.round(x)}..${Math.round(x + width)}, y ${Math.round(y)}..${Math.round(y + height)} (global)`
+    : `origin ${Math.round(x)},${Math.round(y)} (global)`;
+  if (windowCapture) return range;
+  // Image pixels per point: the picture's own width over the display's, which
+  // is right whether the capture was taken at points or at backing pixels.
+  const imageWidth = typeof display?.width === "number" ? display.width : null;
+  const ratio = imageWidth != null && width != null && width > 0 ? imageWidth / width : 1;
+  const scale = Math.abs(ratio - 1) < 0.01 ? 1 : Math.round(ratio * 100) / 100;
+  const pixel = scale === 1
+    ? `image pixel (px,py) = point (${Math.round(x)}+px, ${Math.round(y)}+py)`
+    : `image pixel (px,py) = point (${Math.round(x)}+px/${scale}, ${Math.round(y)}+py/${scale})`;
+  return `${range}; ${pixel}`;
 }
 
 /**
@@ -257,13 +287,14 @@ function macDesktopObservationSections(
       sizeLabel,
       display?.width && display?.height ? `${display.width}x${display.height}` : null,
     ],
+    ["points", macDesktopDisplayPointsLine(display, options.windowCapture === true)],
     ["caption", observation.caption],
     ["elements", `${elements.length}/${observation.elementCount ?? elements.length}`],
     // The bracketed number on each line below is an index, not a handle. Say
     // once how the two compose so a --text caller never has to guess the shape
     // `click` accepts.
     ["handles", observation.id ? `obs-${observation.id}:e:<#>` : null],
-  ]);
+  ], ["points"]);
   const sections = [header];
   if (elements.length) {
     sections.push("", ...elements.map((element) => macDesktopElementLine(element)));
@@ -508,6 +539,10 @@ export function formatMacDesktopOpen(value: unknown): string {
     ["profile", result.profileDir],
   ]);
   const lines = [header];
+  // Mac: the document went to the lane's running copy, or a second copy of an
+  // app the user already runs was opened. Said whole, before the windows.
+  const note = result.handedOff === true ? null : asString(result.message);
+  if (note) lines.push("", `Note: ${note}`);
   if (windows.length) {
     lines.push(...macDesktopWindowsFooter(windows));
   } else if (result.handedOff === true) {
@@ -542,6 +577,20 @@ export function formatMacDesktopScreenshot(value: unknown): string {
   ], ["filed"]);
 }
 
+/** The lease outcome in words; null for an older brain that sends none. */
+function macDesktopLeaseOutcomeText(outcome: string | null): string | null {
+  switch (outcome) {
+    case "granted": return "granted";
+    case "not_required": return "not needed on this screen";
+    case "declined": return "declined by the user";
+    case "unanswered": return "not answered; the card was withdrawn";
+    case "unasked": return "the card could not be shown";
+    case "no_chat": return "no chat to ask in";
+    case "held": return "someone else has control right now";
+    default: return outcome;
+  }
+}
+
 /** `screen lease`: granted, not needed, or refused, and what to do next. */
 export function formatMacDesktopLease(value: unknown): string {
   const result = isRecord(value) ? value : {};
@@ -549,6 +598,7 @@ export function formatMacDesktopLease(value: unknown): string {
   const code = asString(result.code);
   return renderKeyValues(screenTitle(result, "lease"), [
     ["granted", result.notRequired === true ? "not needed" : result.granted],
+    ["outcome", macDesktopLeaseOutcomeText(asString(result.outcome))],
     ["holder", lease ? `${lease.holder} ${lease.holderLabel ?? lease.holderId}` : null],
     ["expires", lease?.expiresAt],
     ["note", result.message],

@@ -22,13 +22,17 @@ enum AppleDeviceViewerMode: Equatable {
 /// then a picture that is not live yet.
 func appleDeviceControlBlocker(
   hostSupportsControl: Bool,
+  hasTicket: Bool,
   pointMetrics: CGSize?,
   ownsDevice: Bool,
   owner: AppleDeviceStatusOwner?,
   streaming: Bool
 ) -> String? {
   // Both are an older Mac: no input commands, or a ticket without points.
-  guard hostSupportsControl, let pointMetrics, pointMetrics.width > 0, pointMetrics.height > 0 else {
+  // No ticket at all is not one: the stream has not started (or the Mac
+  // refused it, and the viewer already shows why), so nothing is known yet.
+  let hasMetrics = pointMetrics.map { $0.width > 0 && $0.height > 0 } ?? false
+  guard hostSupportsControl, hasMetrics || !hasTicket else {
     return "Update ADE on your Mac to control its simulator from here."
   }
   guard ownsDevice else {
@@ -37,7 +41,7 @@ func appleDeviceControlBlocker(
   if let label = appleDeviceOwnerLabel(owner) {
     return "\(label) is driving this simulator. You can watch."
   }
-  guard streaming else {
+  guard streaming, hasMetrics else {
     return "Control turns on once the picture is live."
   }
   return nil

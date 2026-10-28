@@ -49,6 +49,7 @@ final class AccessibilityBridge: NSObject {
     static let shared = AccessibilityBridge()
     private static let maxSerializedElements = 500
     private static let maxSerializationDepth = 80
+    private static let maxProbePoints = 600
 
     private let queue = DispatchQueue(label: "serve-sim.ax.bridge", qos: .userInitiated)
     private let lock = NSLock()
@@ -88,12 +89,37 @@ final class AccessibilityBridge: NSObject {
         loaded = true
     }
 
+    /// The tree, and which caps cut the walk short (ADE patch): `elements`
+    /// (500 serialized), `depth` (80 levels) or `probe-points` (600 grid
+    /// hit-tests). Empty when the walk saw everything it was looking for.
+    struct Description {
+        let json: Data
+        let truncatedBy: [String]
+        /// A window could not be placed on the screen (ADE patch, see
+        /// `WindowPlacement`), so some frames stayed relative to it.
+        let unplaced: Bool
+    }
+
+    static let limits: [String: Int] = [
+        "elements": maxSerializedElements,
+        "depth": maxSerializationDepth,
+        "probe-points": maxProbePoints,
+    ]
+
     /// Capture the simulator's accessibility tree and return JSON bytes
     /// matching the `axe describe-ui` flat-array output. Throws on
     /// framework load failure or if the simulator returns no frontmost
     /// application (e.g. SpringBoard hasn't come up yet).
-    func describeUI(udid: String, displayId: UInt32 = 0, displayOrientation: String? = nil) throws -> Data {
+    func describeUI(
+        udid: String,
+        displayId: UInt32 = 0,
+        displayOrientation: String? = nil,
+        displaySize: CGSize? = nil,
+        screenTurn: ScreenTurn? = nil
+    ) throws -> Description {
         try ensureLoaded()
+        currentTurn = screenTurn
+        defer { currentTurn = nil }
 
         guard let device = FrameCapture.findSimDevice(udid: udid) else {
             throw NSError(domain: "Accessibility", code: 1,
@@ -148,21 +174,48 @@ final class AccessibilityBridge: NSObject {
         var coverage = AccessibilityCoverage()
         var visited = Set<ObjectIdentifier>()
         var remainingElements = Self.maxSerializedElements
+        var truncatedBy = Set<String>()
+        // ADE patch: an iPadOS window's elements come back relative to the
+        // window; this places each window on the screen (see WindowPlacement).
+        let placement = makePlacement(
+            udid: udid,
+            token: token,
+            displayId: displayId,
+            rootElement: rootElement,
+            displayOrientation: displayOrientation,
+            displaySize: displaySize,
+            allowSearch: true
+        )
+        // The walk reads every frame as it comes (relative to its window, in
+        // a window) and notes each element's window; then each window is
+        // placed, with its own small elements to decide between readings,
+        // and every frame is moved onto the screen.
         guard var root = serialize(
             element: rootElement,
             token: token,
             coverage: &coverage,
             visited: &visited,
             remainingElements: &remainingElements,
-            depth: 0
+            truncatedBy: &truncatedBy,
+            depth: 0,
+            recordContext: placement.enabled
         ) else {
             throw AccessibilityError.noFrontmostApplication
         }
-        let screenFrame: NSRect
+        var screenFrame: NSRect
         if let app = rootElement as? NSAccessibilityElement {
             screenFrame = app.accessibilityFrame()
         } else {
             screenFrame = .zero
+        }
+        if placement.enabled {
+            root = Self.placeTree(root, placement: placement)
+            coverage = AccessibilityCoverage()
+            Self.cover(root, into: &coverage)
+            // The grid samples the window where it is on the screen, not at 0,0.
+            if let offset = Self.contextId(of: rootElement).flatMap({ placement.knownOffset(context: $0) }) {
+                screenFrame = screenFrame.offsetBy(dx: offset.x, dy: offset.y)
+            }
         }
 
         // 2. Grid hit-test discovery: many iOS containers (UIScrollView,
@@ -173,21 +226,481 @@ final class AccessibilityBridge: NSObject {
         //    technique as idb's processRemoteContent path.
         if screenFrame.width > 1, screenFrame.height > 1 {
             var children = (root["children"] as? [[String: Any]]) ?? []
+            // A rigid device samples the screen and turns each point onto its
+            // framebuffer for the hit-test; a foldable's panel keeps its own
+            // probe space (`probeToFrame`).
+            let rigid = screenTurn
             let discovered = discoverByGrid(
                 token: token,
                 bounds: screenFrame,
                 displayId: displayId,
-                toFrame: Self.probeToFrame(orientation: displayOrientation, bounds: screenFrame),
+                toFrame: rigid == nil ? Self.probeToFrame(orientation: displayOrientation, bounds: screenFrame) : { $0 },
+                toProbe: rigid.map { turn in { turn.toFrame($0) } } ?? { $0 },
                 coverage: &coverage,
                 visited: &visited,
-                remainingElements: &remainingElements
+                remainingElements: &remainingElements,
+                truncatedBy: &truncatedBy,
+                placement: placement
             )
             children.append(contentsOf: discovered)
             root["children"] = children
         }
 
+        if placement.enabled {
+            let aligned = Self.alignToGrabber(root, placement: placement)
+            root = aligned.root
+            // The grid sampled where the hit-tests put the window; sample
+            // where it really is for what that missed.
+            if let shift = aligned.shift, remainingElements > 0 {
+                coverage = AccessibilityCoverage()
+                Self.cover(root, into: &coverage)
+                var children = (root["children"] as? [[String: Any]]) ?? []
+                children.append(contentsOf: discoverByGrid(
+                    token: token,
+                    bounds: screenFrame.offsetBy(dx: shift.x, dy: shift.y),
+                    displayId: displayId,
+                    toFrame: { $0 },
+                    toProbe: screenTurn.map { turn in { turn.toFrame($0) } } ?? { $0 },
+                    coverage: &coverage,
+                    visited: &visited,
+                    remainingElements: &remainingElements,
+                    truncatedBy: &truncatedBy,
+                    placement: placement
+                ))
+                root["children"] = children
+            }
+        }
+        root = Self.placeLater(root, placement: placement)
         let json: [Any] = [root]
-        return try JSONSerialization.data(withJSONObject: json)
+        return Description(
+            json: try JSONSerialization.data(withJSONObject: json),
+            truncatedBy: truncatedBy.sorted(),
+            unplaced: Self.anyUnplaced(root)
+        )
+    }
+
+    /// Frames written before their window was placed (a container whose
+    /// window was measured from a later child): moved now, and the marks
+    /// dropped. What stays marked could not be placed at all.
+    static func anyUnplaced(_ node: [String: Any]) -> Bool {
+        if node["ADEUnplaced"] as? Bool == true { return true }
+        return ((node["children"] as? [[String: Any]]) ?? []).contains(where: anyUnplaced)
+    }
+
+    private static func frameOf(_ node: [String: Any]) -> CGRect? {
+        guard let frame = node["frame"] as? [String: Any],
+              let x = frame["x"] as? CGFloat, let y = frame["y"] as? CGFloat,
+              let width = frame["width"] as? CGFloat, let height = frame["height"] as? CGFloat else { return nil }
+        return CGRect(x: x, y: y, width: width, height: height)
+    }
+
+    /// Places each window the walk saw (its elements carry `ADEContext`) and
+    /// moves their frames onto the screen; what cannot be placed is marked
+    /// `ADEUnplaced` and keeps its window-relative frame.
+    static func placeTree(_ root: [String: Any], placement: WindowPlacement) -> [String: Any] {
+        var leaves: [UInt32: [CGRect]] = [:]
+        var first: [UInt32: CGRect] = [:]
+        var order: [UInt32] = []
+        func collect(_ node: [String: Any]) {
+            let children = (node["children"] as? [[String: Any]]) ?? []
+            if let context = (node["ADEContext"] as? Int).map(UInt32.init), let frame = frameOf(node) {
+                if first[context] == nil {
+                    first[context] = frame
+                    order.append(context)
+                }
+                if children.isEmpty { leaves[context, default: []].append(frame) }
+            }
+            children.forEach(collect)
+        }
+        collect(root)
+        // A scroll view's rows past the window's edge are in the tree too, but
+        // nothing answers there: only leaves inside the window can vote.
+        let rootContext = (root["ADEContext"] as? Int).map(UInt32.init)
+        let window = frameOf(root)
+        for context in order {
+            var candidates = leaves[context] ?? []
+            if context == rootContext, let window {
+                candidates = candidates.filter { window.insetBy(dx: -0.5, dy: -0.5).contains($0) }
+            }
+            _ = placement.place(context: context, leaves: candidates, any: first[context] ?? .zero, isWindow: context == rootContext)
+        }
+        func move(_ node: [String: Any]) -> [String: Any] {
+            var node = node
+            if let context = (node["ADEContext"] as? Int).map(UInt32.init) {
+                if let offset = placement.knownOffset(context: context), var frame = node["frame"] as? [String: Any],
+                   let x = frame["x"] as? CGFloat, let y = frame["y"] as? CGFloat {
+                    frame["x"] = x + offset.x
+                    frame["y"] = y + offset.y
+                    node["frame"] = frame
+                } else {
+                    node["ADEUnplaced"] = true
+                }
+            }
+            if let children = node["children"] as? [[String: Any]] {
+                node["children"] = children.map(move)
+            }
+            return node
+        }
+        return move(root)
+    }
+
+    /// The grid's coverage, from frames already on the screen: the same rule
+    /// as the walk (a leaf blocks probes, a container does not).
+    static func cover(_ node: [String: Any], into coverage: inout AccessibilityCoverage) {
+        let children = (node["children"] as? [[String: Any]]) ?? []
+        if let frame = frameOf(node) {
+            if !children.isEmpty || max(frame.width, frame.height) >= 250 {
+                coverage.insertContainer(frame)
+            } else {
+                coverage.insertLeaf(frame)
+            }
+        }
+        for child in children { cover(child, into: &coverage) }
+    }
+
+    /// The window's resize grabber is SpringBoard's, drawn in screen points,
+    /// and its centre is the window's corner (its value names which). Where
+    /// the app's own grabber is on the screen, the window origin it gives
+    /// wins over the hit-test measurement: for a window hanging off the
+    /// screen's edge, hit-tests answer in a space shifted from what is drawn
+    /// (measured on iPadOS 27), and taps go where things are drawn.
+    static func alignToGrabber(_ root: [String: Any], placement: WindowPlacement) -> (root: [String: Any], shift: CGPoint?) {
+        guard let rootContext = (root["ADEContext"] as? Int).map(UInt32.init),
+              let measured = placement.knownOffset(context: rootContext),
+              let window = frameOf(root) else { return (root, nil) }
+        let label = (root["AXLabel"] as? String).map { "Resize \($0)" }
+        func findGrabber(_ node: [String: Any]) -> [String: Any]? {
+            if node["AXUniqueId"] as? String == "resize-grabber",
+               label == nil || node["AXLabel"] as? String == nil || node["AXLabel"] as? String == label {
+                return node
+            }
+            for child in (node["children"] as? [[String: Any]]) ?? [] {
+                if let found = findGrabber(child) { return found }
+            }
+            return nil
+        }
+        guard let grabber = findGrabber(root), let corner = frameOf(grabber) else { return (root, nil) }
+        let names = ((grabber["AXValue"] as? String) ?? "").lowercased()
+        let originX = names.contains("left") ? corner.midX : corner.midX - window.width
+        let originY = names.contains("top") ? corner.midY : corner.midY - window.height
+        let dx = ((originX - window.minX) * 2).rounded() / 2
+        let dy = ((originY - window.minY) * 2).rounded() / 2
+        guard abs(dx) > 2 || abs(dy) > 2 else { return (root, nil) }
+        // Every window context placed with the app window's offset moves
+        // with it (the keyboard's toolbar is the app window's).
+        let corrected = CGPoint(x: measured.x + dx, y: measured.y + dy)
+        var moved = Set(placement.contexts(withOffset: measured))
+        if let grabberContext = (grabber["ADEContext"] as? Int).map(UInt32.init) { moved.remove(grabberContext) }
+        for context in moved { placement.correct(context: context, to: corrected) }
+        func shift(_ node: [String: Any]) -> [String: Any] {
+            var node = node
+            if let context = (node["ADEContext"] as? Int).map(UInt32.init), moved.contains(context),
+               node["ADEUnplaced"] as? Bool != true,
+               var frame = node["frame"] as? [String: Any],
+               let x = frame["x"] as? CGFloat, let y = frame["y"] as? CGFloat {
+                frame["x"] = x + dx
+                frame["y"] = y + dy
+                node["frame"] = frame
+            }
+            if let children = node["children"] as? [[String: Any]] {
+                node["children"] = children.map(shift)
+            }
+            return node
+        }
+        return (shift(root), CGPoint(x: dx, y: dy))
+    }
+
+    static func placeLater(_ node: [String: Any], placement: WindowPlacement) -> [String: Any] {
+        var node = node
+        if node["ADEUnplaced"] as? Bool == true,
+           let context = (node["ADEContext"] as? Int).map(UInt32.init),
+           let offset = placement.knownOffset(context: context),
+           var frame = node["frame"] as? [String: Any],
+           let x = frame["x"] as? CGFloat, let y = frame["y"] as? CGFloat {
+            frame["x"] = x + offset.x
+            frame["y"] = y + offset.y
+            node["frame"] = frame
+            node.removeValue(forKey: "ADEUnplaced")
+        }
+        node.removeValue(forKey: "ADEContext")
+        if let children = node["children"] as? [[String: Any]] {
+            node["children"] = children.map { placeLater($0, placement: placement) }
+        }
+        return node
+    }
+
+    /// The window context an element belongs to (ADE patch): each iPadOS
+    /// window is its own, and so is SpringBoard's status bar.
+    static func contextId(of element: NSObject) -> UInt32? {
+        let selector = NSSelectorFromString("_windowContextId")
+        guard element.responds(to: selector), let imp = element.method(for: selector) else { return nil }
+        typealias ContextFunc = @convention(c) (AnyObject, Selector) -> UInt32
+        return unsafeBitCast(imp, to: ContextFunc.self)(element, selector)
+    }
+
+    /// One hit-test at a screen point, as `WindowPlacement` reads it: the
+    /// element's own (window-relative) frame and its window context.
+    /// The turn of the read in progress (a rigid device held sideways), or nil.
+    /// The helper runs one command at a time, so a read sets it for its own
+    /// duration.
+    private var currentTurn: ScreenTurn?
+
+    /// Pids whose elements are SpringBoard's (frames already on the screen,
+    /// in the framebuffer's points), by pid.
+    private var systemPids: [Int32: Bool] = [:]
+
+    /// SpringBoard's element (the status bar, window controls, resize
+    /// grabbers): its frame is in screen (framebuffer) points, never relative
+    /// to a window.
+    private func isSystemElement(_ element: NSObject) -> Bool {
+        guard let translation = element.value(forKey: "translation") as? NSObject,
+              let pid = (translation.value(forKey: "pid") as? NSNumber)?.int32Value, pid > 0 else { return false }
+        lock.lock()
+        let known = systemPids[pid]
+        lock.unlock()
+        if let known { return known }
+        let system = Self.bundleIdForPid(pid) == "com.apple.springboard"
+        lock.lock()
+        systemPids[pid] = system
+        lock.unlock()
+        return system
+    }
+
+    private func placementHitTest(token: String, displayId: UInt32) -> (CGPoint) -> WindowPlacement.Hit? {
+        guard let translator,
+              let pointIMP = translator.method(for: NSSelectorFromString("objectAtPoint:displayId:bridgeDelegateToken:")),
+              let macIMP = translator.method(for: NSSelectorFromString("macPlatformElementFromTranslation:")) else {
+            return { _ in nil }
+        }
+        let pointSel = NSSelectorFromString("objectAtPoint:displayId:bridgeDelegateToken:")
+        let macSel = NSSelectorFromString("macPlatformElementFromTranslation:")
+        typealias PointFunc = @convention(c) (AnyObject, Selector, CGPoint, UInt32, NSString) -> AnyObject?
+        typealias MacFunc = @convention(c) (AnyObject, Selector, AnyObject) -> AnyObject?
+        let objectAtPoint = unsafeBitCast(pointIMP, to: PointFunc.self)
+        let toMacElement = unsafeBitCast(macIMP, to: MacFunc.self)
+        let turn = currentTurn
+        return { [weak self] point in
+            let probe = turn?.toFrame(point) ?? point
+            guard let self,
+                  let translation = objectAtPoint(translator, pointSel, probe, displayId, token as NSString) as? NSObject else {
+                return nil
+            }
+            translation.setValue(token, forKey: "bridgeDelegateToken")
+            guard let element = toMacElement(translator, macSel, translation) as? NSObject else { return nil }
+            if let inner = element.value(forKey: "translation") as? NSObject {
+                inner.setValue(token, forKey: "bridgeDelegateToken")
+            }
+            let frame = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+            guard self.isSystemElement(element) else {
+                return WindowPlacement.Hit(frame: frame, context: Self.contextId(of: element))
+            }
+            // SpringBoard's chrome is told by its identifier, label and value.
+            return WindowPlacement.Hit(
+                frame: turn?.toScreen(frame) ?? frame,
+                context: Self.contextId(of: element),
+                system: true,
+                identifier: self.stringValue(element, key: "accessibilityIdentifier"),
+                label: self.stringValue(element, key: "accessibilityLabel"),
+                value: self.stringValue(element, key: "accessibilityValue")
+            )
+        }
+    }
+
+    private func makePlacement(
+        udid: String,
+        token: String,
+        displayId: UInt32,
+        rootElement: NSObject,
+        displayOrientation: String?,
+        displaySize: CGSize?,
+        allowSearch: Bool
+    ) -> WindowPlacement {
+        let rootFrame = (rootElement as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+        // A foldable's turned panel keeps its own probe space and is never
+        // placed; a rigid device's turn is handled by `currentTurn`.
+        let foldableTurn = displayOrientation?.replacingOccurrences(of: "_", with: "-")
+        let turned = currentTurn == nil && foldableTurn != nil && foldableTurn != "portrait"
+        let screen = currentTurn?.screen ?? displaySize.map { display -> CGSize in
+            let landscape = rootFrame.width > display.width + 1 || rootFrame.height > display.height + 1
+            return landscape ? CGSize(width: display.height, height: display.width) : display
+        }
+        return WindowPlacement(
+            udid: udid,
+            enabled: WindowPlacement.needed(rootFrame: rootFrame, screen: screen, turned: turned),
+            rootFrame: rootFrame,
+            screen: screen,
+            appLabel: stringValue(rootElement, key: "accessibilityLabel"),
+            allowSearch: allowSearch,
+            hitTest: placementHitTest(token: token, displayId: displayId)
+        )
+    }
+
+    /// The frontmost application's root element on a display (ADE patch,
+    /// shared by the point and focus reads below).
+    private func frontmostRoot(device: NSObject, token: String, displayId: UInt32) throws -> NSObject {
+        guard let translator = translator else { throw AccessibilityError.translatorUnavailable }
+        let frontmostSel = NSSelectorFromString("frontmostApplicationWithDisplayId:bridgeDelegateToken:")
+        typealias FrontmostFunc = @convention(c) (AnyObject, Selector, UInt32, NSString) -> AnyObject?
+        guard let frontmostIMP = translator.method(for: frontmostSel) else {
+            throw AccessibilityError.translatorUnavailable
+        }
+        let frontmost = unsafeBitCast(frontmostIMP, to: FrontmostFunc.self)
+        guard let translation = frontmost(translator, frontmostSel, displayId, token as NSString) as? NSObject else {
+            throw AccessibilityError.noFrontmostApplication
+        }
+        translation.setValue(token, forKey: "bridgeDelegateToken")
+        let macElementSel = NSSelectorFromString("macPlatformElementFromTranslation:")
+        typealias MacElementFunc = @convention(c) (AnyObject, Selector, AnyObject) -> AnyObject?
+        guard let macIMP = translator.method(for: macElementSel) else {
+            throw AccessibilityError.translatorUnavailable
+        }
+        let toMacElement = unsafeBitCast(macIMP, to: MacElementFunc.self)
+        guard let rootElement = toMacElement(translator, macElementSel, translation) as? NSObject else {
+            throw AccessibilityError.noFrontmostApplication
+        }
+        if let rootTranslation = rootElement.value(forKey: "translation") as? NSObject {
+            rootTranslation.setValue(token, forKey: "bridgeDelegateToken")
+        }
+        return rootElement
+    }
+
+    private func simDevice(udid: String) throws -> NSObject {
+        guard let device = FrameCapture.findSimDevice(udid: udid) else {
+            throw NSError(domain: "Accessibility", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Device \(udid) not found"])
+        }
+        return device
+    }
+
+    /// The one element under a point, with its children (ADE patch). The
+    /// point is in the tree's own space (element frames, the picture), so on a
+    /// panel whose picture is turned it is turned back into the probe space
+    /// first. One hit-test and one small walk: what `fill-element` needs to
+    /// read a field back after typing, at a fraction of a full describe.
+    /// Returns nil when nothing answers there.
+    func describeElement(
+        udid: String,
+        x: Double,
+        y: Double,
+        displayId: UInt32 = 0,
+        displayOrientation: String? = nil,
+        displaySize: CGSize? = nil,
+        screenTurn: ScreenTurn? = nil
+    ) throws -> Data? {
+        try ensureLoaded()
+        currentTurn = screenTurn
+        defer { currentTurn = nil }
+        let device = try simDevice(udid: udid)
+        guard let translator = translator else { throw AccessibilityError.translatorUnavailable }
+        let token = UUID().uuidString
+        registerToken(token, device: device)
+        defer { unregisterToken(token) }
+
+        let rootElement = try frontmostRoot(device: device, token: token, displayId: displayId)
+        let bounds = (rootElement as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+        let point = CGPoint(x: x, y: y)
+        let probe = screenTurn?.toFrame(point) ?? Self.frameToProbe(orientation: displayOrientation, bounds: bounds)(point)
+
+        let pointSel = NSSelectorFromString("objectAtPoint:displayId:bridgeDelegateToken:")
+        typealias PointFunc = @convention(c) (AnyObject, Selector, CGPoint, UInt32, NSString) -> AnyObject?
+        guard let pointIMP = translator.method(for: pointSel) else { throw AccessibilityError.translatorUnavailable }
+        let objectAtPoint = unsafeBitCast(pointIMP, to: PointFunc.self)
+        let macSel = NSSelectorFromString("macPlatformElementFromTranslation:")
+        typealias MacFunc = @convention(c) (AnyObject, Selector, AnyObject) -> AnyObject?
+        guard let macIMP = translator.method(for: macSel) else { throw AccessibilityError.translatorUnavailable }
+        let toMacElement = unsafeBitCast(macIMP, to: MacFunc.self)
+
+        guard let translation = objectAtPoint(translator, pointSel, probe, displayId, token as NSString) as? NSObject else {
+            return nil
+        }
+        translation.setValue(token, forKey: "bridgeDelegateToken")
+        guard let element = toMacElement(translator, macSel, translation) as? NSObject else { return nil }
+        if let t = element.value(forKey: "translation") as? NSObject {
+            t.setValue(token, forKey: "bridgeDelegateToken")
+        }
+        var coverage = AccessibilityCoverage()
+        var visited = Set<ObjectIdentifier>()
+        var remaining = 40
+        var truncatedBy = Set<String>()
+        let placement = makePlacement(
+            udid: udid,
+            token: token,
+            displayId: displayId,
+            rootElement: rootElement,
+            displayOrientation: displayOrientation,
+            displaySize: displaySize,
+            allowSearch: false
+        )
+        guard let serialized = serialize(
+            element: element,
+            token: token,
+            coverage: &coverage,
+            visited: &visited,
+            remainingElements: &remaining,
+            truncatedBy: &truncatedBy,
+            depth: 0,
+            placement: placement,
+            seed: screenTurn == nil ? probe : point
+        ) else { return nil }
+        return try JSONSerialization.data(withJSONObject: [Self.placeLater(serialized, placement: placement)])
+    }
+
+    /// The element with keyboard focus in the frontmost app (ADE patch), or
+    /// nil when none has it. `supported` is false when this runtime's
+    /// translation does not answer the focus question at all, so "nil" there
+    /// means "unknown", not "nothing focused".
+    func focusedElement(
+        udid: String,
+        displayId: UInt32 = 0,
+        displaySize: CGSize? = nil,
+        screenTurn: ScreenTurn? = nil
+    ) throws -> (supported: Bool, element: [String: Any]?) {
+        try ensureLoaded()
+        currentTurn = screenTurn
+        defer { currentTurn = nil }
+        let device = try simDevice(udid: udid)
+        let token = UUID().uuidString
+        registerToken(token, device: device)
+        defer { unregisterToken(token) }
+        let rootElement = try frontmostRoot(device: device, token: token, displayId: displayId)
+        let focusSel = NSSelectorFromString("accessibilityFocusedUIElement")
+        let attributeSel = NSSelectorFromString("accessibilityAttributeValue:")
+        let focusedValue: Any?
+        if rootElement.responds(to: focusSel) {
+            focusedValue = rootElement.value(forKey: "accessibilityFocusedUIElement")
+        } else if rootElement.responds(to: attributeSel) {
+            focusedValue = rootElement.perform(attributeSel, with: "AXFocusedUIElement")?.takeUnretainedValue()
+        } else {
+            return (false, nil)
+        }
+        guard let focused = focusedValue as? NSObject, focused !== rootElement else { return (true, nil) }
+        if let t = focused.value(forKey: "translation") as? NSObject {
+            t.setValue(token, forKey: "bridgeDelegateToken")
+        }
+        var coverage = AccessibilityCoverage()
+        var visited = Set<ObjectIdentifier>()
+        var remaining = 1
+        var truncatedBy = Set<String>()
+        let placement = makePlacement(
+            udid: udid,
+            token: token,
+            displayId: displayId,
+            rootElement: rootElement,
+            displayOrientation: nil,
+            displaySize: displaySize,
+            allowSearch: false
+        )
+        let serialized = serialize(
+            element: focused,
+            token: token,
+            coverage: &coverage,
+            visited: &visited,
+            remainingElements: &remaining,
+            truncatedBy: &truncatedBy,
+            depth: 0,
+            placement: placement
+        )
+        return (true, serialized)
     }
 
     /// Cheap point-query for the frontmost app on a simulator: returns
@@ -298,9 +811,12 @@ final class AccessibilityBridge: NSObject {
         bounds: CGRect,
         displayId: UInt32,
         toFrame: (CGPoint) -> CGPoint,
+        toProbe: (CGPoint) -> CGPoint = { $0 },
         coverage: inout AccessibilityCoverage,
         visited: inout Set<ObjectIdentifier>,
-        remainingElements: inout Int
+        remainingElements: inout Int,
+        truncatedBy: inout Set<String>,
+        placement: WindowPlacement? = nil
     ) -> [[String: Any]] {
         guard let translator = translator else { return [] }
 
@@ -315,7 +831,7 @@ final class AccessibilityBridge: NSObject {
         let toMacElement = unsafeBitCast(macIMP, to: MacFunc.self)
 
         let step: CGFloat = 32
-        var pointBudget = 600  // safety cap for misbehaving sims
+        var pointBudget = Self.maxProbePoints  // safety cap for misbehaving sims
         var discovered: [[String: Any]] = []
 
         var y = bounds.minY + step / 2
@@ -332,7 +848,7 @@ final class AccessibilityBridge: NSObject {
                 if coverage.contains(toFrame(point)) { continue }
                 pointBudget -= 1
 
-                guard let translation = objectAtPoint(translator, pointSel, point, displayId, token as NSString) as? NSObject else {
+                guard let translation = objectAtPoint(translator, pointSel, toProbe(point), displayId, token as NSString) as? NSObject else {
                     continue
                 }
                 translation.setValue(token, forKey: "bridgeDelegateToken")
@@ -346,7 +862,16 @@ final class AccessibilityBridge: NSObject {
                 // Read the frame once; serialize() will read it again for
                 // the dict, but the AXP element caches lazily so the cost
                 // collapses.
-                let frame: NSRect = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+                var frame: NSRect = (element as? NSAccessibilityElement)?.accessibilityFrame() ?? .zero
+                // ADE patch: the probe point is on the screen; the frame is
+                // relative to its window until it is placed, or, SpringBoard's,
+                // in the framebuffer's points.
+                if currentTurn?.isTurned == true || placement?.enabled == true, isSystemElement(element) {
+                    frame = currentTurn?.toScreen(frame) ?? frame
+                } else if let placement, placement.enabled,
+                   let offset = placement.offset(context: Self.contextId(of: element), frame: frame, seed: point) {
+                    frame = frame.offsetBy(dx: offset.x, dy: offset.y)
+                }
                 if coverage.contains(frame) { continue }
                 // The Application/window itself is too coarse to be
                 // useful — skip when the hit returns the screen.
@@ -361,13 +886,20 @@ final class AccessibilityBridge: NSObject {
                     coverage: &coverage,
                     visited: &visited,
                     remainingElements: &remainingElements,
-                    depth: 0
+                    truncatedBy: &truncatedBy,
+                    depth: 0,
+                    placement: placement,
+                    seed: point
                 ) {
                     discovered.append(serialized)
                 }
             }
             y += step
         }
+        // A cap reached: the rest of the screen was never asked about (ADE
+        // patch: said, not silent).
+        if pointBudget <= 0 { truncatedBy.insert("probe-points") }
+        if remainingElements <= 0 { truncatedBy.insert("elements") }
         return discovered
     }
 
@@ -383,6 +915,18 @@ final class AccessibilityBridge: NSObject {
         case "landscape-left": return { CGPoint(x: height - $0.y, y: $0.x) }
         case "portrait-upside-down": return { CGPoint(x: width - $0.x, y: height - $0.y) }
         case "landscape-right": return { CGPoint(x: $0.y, y: width - $0.x) }
+        default: return { $0 }
+        }
+    }
+
+    /// The inverse of `probeToFrame` (ADE patch): a point in the tree's own
+    /// space turned back into the probe space a hit-test is asked in.
+    static func frameToProbe(orientation: String?, bounds: CGRect) -> (CGPoint) -> CGPoint {
+        let width = bounds.width, height = bounds.height
+        switch orientation?.replacingOccurrences(of: "_", with: "-") {
+        case "landscape-left": return { CGPoint(x: $0.y, y: height - $0.x) }
+        case "portrait-upside-down": return { CGPoint(x: width - $0.x, y: height - $0.y) }
+        case "landscape-right": return { CGPoint(x: width - $0.y, y: $0.x) }
         default: return { $0 }
         }
     }
@@ -415,9 +959,18 @@ final class AccessibilityBridge: NSObject {
         coverage: inout AccessibilityCoverage,
         visited: inout Set<ObjectIdentifier>,
         remainingElements: inout Int,
-        depth: Int
+        truncatedBy: inout Set<String>,
+        depth: Int,
+        placement: WindowPlacement? = nil,
+        seed: CGPoint? = nil,
+        recordContext: Bool = false
     ) -> [String: Any]? {
-        guard remainingElements > 0, depth <= Self.maxSerializationDepth else {
+        guard remainingElements > 0 else {
+            truncatedBy.insert("elements")
+            return nil
+        }
+        guard depth <= Self.maxSerializationDepth else {
+            truncatedBy.insert("depth")
             return nil
         }
         guard visited.insert(ObjectIdentifier(element)).inserted else {
@@ -445,6 +998,29 @@ final class AccessibilityBridge: NSObject {
                 frame = value.rectValue
             }
         }
+        // ADE patch: into screen points. SpringBoard's elements are already
+        // there, in the framebuffer's points (turned onto a sideways screen);
+        // an element of an iPadOS window is placed (a no-op when the app fills
+        // the display).
+        let system = (currentTurn?.isTurned == true || placement?.enabled == true || recordContext)
+            && isSystemElement(element)
+        if system {
+            frame = currentTurn?.toScreen(frame) ?? frame
+        } else if recordContext, let context = Self.contextId(of: element) {
+            // Placed after the walk (`placeTree`).
+            dict["ADEContext"] = Int(context)
+        } else if let placement, placement.enabled {
+            let context = Self.contextId(of: element)
+            // Kept until the end of the read, so the grabber check can move it too.
+            if let context { dict["ADEContext"] = Int(context) }
+            if let offset = placement.offset(context: context, frame: frame, seed: seed) {
+                frame = frame.offsetBy(dx: offset.x, dy: offset.y)
+            } else {
+                // Still relative to its window: said, so a reader does not tap
+                // it. `placeLater` moves it if a later element places the window.
+                dict["ADEUnplaced"] = true
+            }
+        }
         dict["frame"] = [
             "x": frame.origin.x,
             "y": frame.origin.y,
@@ -463,7 +1039,18 @@ final class AccessibilityBridge: NSObject {
         dict["type"] = role
 
         dict["AXLabel"] = stringValue(element, key: "accessibilityLabel") ?? NSNull()
-        dict["AXValue"] = stringValue(element, key: "accessibilityValue") ?? NSNull()
+        let rawValue = element.value(forKey: "accessibilityValue")
+        dict["AXValue"] = stringValue(rawValue) ?? NSNull()
+        // ADE patch: the app's own words for an adjustable value ("0:29 of
+        // 0:49", "50%"). A SwiftUI slider's AXValue is a number, NaN when the
+        // app never set one, so without this the reader saw "nan". Each read is
+        // a round trip into the guest, so it is asked only where it can matter:
+        // an adjustable role, or a value that is a number (NaN included) on
+        // anything but an on/off control, whose 0 or 1 says it all.
+        if Self.adjustableRoles.contains(role) || (rawValue is NSNumber && !Self.toggleRoles.contains(role)),
+           element.responds(to: NSSelectorFromString("accessibilityValueDescription")) {
+            dict["AXValueDescription"] = stringValue(element, key: "accessibilityValueDescription") ?? NSNull()
+        }
         dict["AXUniqueId"] = stringValue(element, key: "accessibilityIdentifier") ?? NSNull()
         dict["role_description"] = stringValue(element, key: "accessibilityRoleDescription") ?? ""
         dict["enabled"] = boolValue(element, key: "accessibilityEnabled") ?? true
@@ -479,7 +1066,10 @@ final class AccessibilityBridge: NSObject {
         }
         if let children {
             for child in children {
-                guard remainingElements > 0 else { break }
+                guard remainingElements > 0 else {
+                    truncatedBy.insert("elements")
+                    break
+                }
                 guard let childObj = child as? NSObject else { continue }
                 if let childDict = serialize(
                     element: childObj,
@@ -487,7 +1077,10 @@ final class AccessibilityBridge: NSObject {
                     coverage: &coverage,
                     visited: &visited,
                     remainingElements: &remainingElements,
-                    depth: depth + 1
+                    truncatedBy: &truncatedBy,
+                    depth: depth + 1,
+                    placement: placement,
+                    recordContext: recordContext
                 ) {
                     childDicts.append(childDict)
                 }
@@ -509,14 +1102,32 @@ final class AccessibilityBridge: NSObject {
         return dict
     }
 
+    /// Roles whose value is a position on a scale (ADE patch, see the value
+    /// description above), with the AX prefix stripped as `type` has it.
+    private static let adjustableRoles: Set<String> = [
+        "Slider", "Incrementor", "ValueIndicator", "ProgressIndicator", "LevelIndicator", "ScrollBar",
+    ]
+
+    private static let toggleRoles: Set<String> = ["CheckBox", "RadioButton", "Switch", "Toggle", "MenuItemCheckbox"]
+
     private func stringValue(_ obj: NSObject, key: String) -> String? {
         // KVC works for these because NSAccessibilityElement exposes them
         // as @objc properties; the underlying AXPMacPlatformElement faults
         // them in lazily via the delegate bridge.
-        let value = obj.value(forKey: key)
+        stringValue(obj.value(forKey: key))
+    }
+
+    private func stringValue(_ value: Any?) -> String? {
         if let s = value as? String { return s.isEmpty ? nil : s }
         if let s = (value as? NSAttributedString)?.string { return s.isEmpty ? nil : s }
         if value == nil { return nil }
+        // ADE patch: a number that is not finite is no value. A SwiftUI
+        // adjustable element with no numeric value answers NaN, which
+        // `String(describing:)` wrote as "nan".
+        if let number = value as? NSNumber {
+            let double = number.doubleValue
+            return double.isFinite ? number.stringValue : nil
+        }
         return String(describing: value!)
     }
 

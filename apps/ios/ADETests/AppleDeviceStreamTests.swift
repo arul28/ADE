@@ -53,6 +53,13 @@ final class AppleDeviceStreamTests: XCTestCase {
       "The simulator is off on your Mac. Start it in ADE on the Mac to watch it here."
     )
     XCTAssertEqual(appleStreamTicketFailureMessage("Something else broke."), "Something else broke.")
+    // A Mac whose install lost its helper is not an old Mac: no "update" here.
+    XCTAssertEqual(
+      appleStreamTicketFailureMessage(
+        "APPLE_HELPER_UNAVAILABLE: The simulator helper binary is missing at /Users/a/.ade/bin/resources/native/ade-sim-helper. Run `npm run build:sim-helper` in apps/desktop."
+      ),
+      appleDeviceHelperMissingMessage
+    )
   }
 
   func testParsesAConfigThenAKeyframeFromOneChunk() throws {
@@ -238,6 +245,40 @@ final class AppleDeviceStreamTests: XCTestCase {
     XCTAssertFalse(health.offersReconnect)
     health.frameDecoded(at: Date())
     XCTAssertFalse(health.offersReconnect)
+    // Nor while the viewer is already redialing by itself.
+    health.reconnecting()
+    XCTAssertFalse(health.offersReconnect)
+    XCTAssertEqual(health.statusMessage, "Reconnecting…")
+    health.tick(now: Date().addingTimeInterval(600))
+    XCTAssertEqual(health.phase, .reconnecting)
+  }
+
+  // MARK: - Automatic redial
+
+  func testAutoRedialIsBoundedAndRefilledOnlyByReset() {
+    var policy = AppleStreamRetryPolicy()
+    var delays: [TimeInterval] = []
+    while let delay = policy.nextDelay(transient: true, started: true, visible: true) {
+      delays.append(delay)
+      XCTAssertLessThan(delays.count, 10, "the budget must run out")
+    }
+    XCTAssertEqual(delays, AppleStreamRetryPolicy.delays)
+    XCTAssertGreaterThan(delays.count, 1)
+    XCTAssertNil(policy.nextDelay(transient: true, started: true, visible: true))
+    policy.reset()
+    XCTAssertEqual(policy.nextDelay(transient: true, started: true, visible: true), AppleStreamRetryPolicy.delays[0])
+  }
+
+  func testAutoRedialNeverRetriesARefusalOrAViewerNobodyIsWatching() {
+    for (transient, started, visible) in [(false, true, true), (true, false, true), (true, true, false)] {
+      var policy = AppleStreamRetryPolicy()
+      XCTAssertNil(
+        policy.nextDelay(transient: transient, started: started, visible: visible),
+        "transient=\(transient) started=\(started) visible=\(visible)"
+      )
+      // A refused try does not spend the budget.
+      XCTAssertEqual(policy.attempts, 0)
+    }
   }
 
   func testResetClearsTheClockSoReturningStartsCleanRatherThanStalled() {
@@ -372,6 +413,22 @@ final class AppleDeviceStreamTests: XCTestCase {
     XCTAssertEqual(AppleStreamSocket.message(forCloseCode: 1000, reason: nil), "The stream ended.")
     XCTAssertEqual(AppleStreamSocket.message(forCloseCode: 1006, reason: "upstream gone"), "upstream gone")
     XCTAssertEqual(AppleStreamSocket.message(forCloseCode: 1006, reason: nil), "The Mac closed the stream.")
+  }
+
+  @MainActor
+  func testOnlyDropsARedialCanCureAreTransient() {
+    // 4510 is the relay's bridge race (#31); 1006 a drop without a close frame.
+    for code in [4510, 4509, 4506, 1006, 1001] {
+      XCTAssertTrue(AppleStreamSocket.failure(forCloseCode: code, reason: nil).transient, "\(code)")
+    }
+    // An expired pass, a stopped capture, a clean end, a host that is offline:
+    // the same thing would happen again, so the person sees why.
+    for code in [4401, 1012, 1000, 4000, 4501, 4507] {
+      XCTAssertFalse(AppleStreamSocket.failure(forCloseCode: code, reason: nil).transient, "\(code)")
+    }
+    XCTAssertTrue(AppleStreamSocket.failure(for: NSError(domain: NSURLErrorDomain, code: NSURLErrorNetworkConnectionLost)).transient)
+    XCTAssertFalse(AppleStreamSocket.failure(for: NSError(domain: NSURLErrorDomain, code: NSURLErrorCannotConnectToHost)).transient)
+    XCTAssertFalse(AppleStreamSocket.failure(for: NSError(domain: NSURLErrorDomain, code: NSURLErrorCancelled)).transient)
   }
 
   // MARK: - apple.status / apple.streamTicket decoding

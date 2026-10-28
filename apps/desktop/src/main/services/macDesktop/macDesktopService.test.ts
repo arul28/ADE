@@ -298,6 +298,8 @@ describe("Windows Desktop seats, consent and window verbs", () => {
     await mac.service.start({ laneId: "lane-1" });
     const lease = await mac.service.requestInputLease({ laneId: "lane-1", chatSessionId: "chat-1" });
     expect(lease.granted).toBe(grants);
+    // A refusal says it was the user's no, not a card nobody answered.
+    expect(lease.outcome).toBe(grants ? "granted" : "declined");
     expect((await mac.service.getStatus({ laneId: "lane-1" })).lease?.holderId ?? null).toBe(grants ? "chat-1" : null);
     mac.service.dispose();
 
@@ -454,7 +456,7 @@ describe("Windows Desktop seats, consent and window verbs", () => {
       expect(settled).toBeNull();
       await vi.advanceTimersByTimeAsync(1_000);
       // Refused, with the sentence that says the card was withdrawn, not denied.
-      expect(settled).toMatchObject({ granted: false, message: MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE });
+      expect(settled).toMatchObject({ granted: false, outcome: "unanswered", message: MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE });
       // The user's late Allow changes nothing: the lease was already refused.
       open.at(-1)!.allow();
       await vi.advanceTimersByTimeAsync(0);

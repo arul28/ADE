@@ -2525,8 +2525,16 @@ function safeCloseWebSocket(socket: WebSocket, code: number, reason: string): vo
 
 /** Aggregate frames buffered across both still-connecting tunnel targets. */
 export const MAX_PENDING_TUNNEL_FRAMES = 64;
-/** Aggregate bytes buffered across both still-connecting tunnel targets. */
-export const MAX_PENDING_TUNNEL_BYTES = 256 * 1024;
+/**
+ * Aggregate bytes buffered across both still-connecting tunnel targets.
+ *
+ * The Apple device stream's loopback socket opens long before the relay pipe
+ * and sends its config and an H.264 keyframe at once, all of which waits here.
+ * Measured keyframes reach 1.9 MB (full-screen noise at the 20 Mb/s cap), so
+ * this matches the relay's 4 MiB pre-ready pipe buffer and the open-socket
+ * budget below rather than being the tighter limit of the three.
+ */
+export const MAX_PENDING_TUNNEL_BYTES = 4 * 1024 * 1024;
 /** Aggregate bytes queued by Node across both open tunnel targets. */
 export const MAX_BUFFERED_TUNNEL_BYTES = 4 * 1024 * 1024;
 /**

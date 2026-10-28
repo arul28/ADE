@@ -859,6 +859,16 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Apple Development",
   },
   {
+    id: "appearance.apple-auto-record",
+    label: "Record agent input",
+    keywords: ["apple", "simulator", "ios", "recording", "auto", "proof", "agent", "apple.autoRecordAgentInput"],
+    tab: "apple",
+    anchor: "apple-auto-record",
+    scope: "machine",
+    web: "browser",
+    group: "Apple Development",
+  },
+  {
     id: "appearance.apple-remote-bitrate",
     label: "Remote viewer bitrate cap",
     keywords: ["apple", "simulator", "ios", "stream", "bitrate", "kbit", "remote", "apple.remoteBitrateKbpsCap"],

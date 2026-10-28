@@ -41,6 +41,7 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
+import { formatMachineVersions } from "../../../shared/machineVersions";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -3125,7 +3126,7 @@ function ProjectLocationChooser({
               </span>
               <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                 {isRemote
-                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${status.version}` : ""}`
+                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${formatMachineVersions({ brainVersion: status.version, appVersion: status.appVersion })}` : ""}`
                   : "Projects on this computer"}
               </span>
               {isRemote ? (

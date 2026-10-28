@@ -11,7 +11,12 @@ import {
   type MacDesktopWindow,
 } from "../../../shared/types/macDesktop";
 import type { MacDesktopLeaseDecision } from "./macDesktopLease";
-import { macDesktopNextStep, macDesktopRefusedNextStep } from "./macDesktopNextStep";
+import {
+  macDesktopNextStep,
+  macDesktopOffDisplayRefusalMessage,
+  macDesktopRefusedNextStep,
+  macDesktopWindowDragNextStep,
+} from "./macDesktopNextStep";
 
 /**
  * The next input method for an unconfirmed action.
@@ -288,5 +293,60 @@ describe("macDesktopRefusedNextStep", () => {
     const webText = element({ index: 1, role: "AXStaticText", title: null, value: "Read more", actions: [], parentIndex: 2 });
     const next = refused({ resolved: webText, before: withWindow("com.apple.Safari", [webText, webArea]) });
     expect(next?.method).toBe("browser");
+  });
+});
+
+describe("macDesktopOffDisplayRefusalMessage", () => {
+  const lane = { x: -2560, y: 1440, width: 2560, height: 1440 };
+  const oldDriver = "(300, 200) is not on this lane's display; background input only reaches the lane's own windows.";
+
+  it("adds the display's global range and the global point a local one meant, for an older driver", () => {
+    const message = macDesktopOffDisplayRefusalMessage(oldDriver, lane)!;
+    expect(message).toContain("x -2560..0, y 1440..2880 in global points");
+    expect(message).toContain("is (-2260, 1640)");
+  });
+
+  it.each([
+    ["a message that is not the off-display refusal", "No window of this lane is under (3, 4).", lane, null],
+    ["a point that cannot be display-local", "(-9000, 200) is not on this lane's display; x.", lane, "no-guess"],
+    ["a display at the origin", oldDriver, { x: 0, y: 0, width: 2560, height: 1440 }, "no-guess"],
+  ] as const)("does not guess for %s", (_label, input, bounds, expected) => {
+    const message = macDesktopOffDisplayRefusalMessage(input, bounds);
+    if (expected === null) expect(message).toBeNull();
+    else expect(message).not.toContain("Points are global");
+  });
+
+  it("does not repeat what a current driver already said", () => {
+    const current = "(300, 200) is not on this lane's display, which is x -2560..0, y 1440..2880 in global points; background input only reaches the lane's own windows. Points are global, not screenshot pixels: (300, 200) on this display is (-2260, 1640); or pass --local.";
+    expect(macDesktopOffDisplayRefusalMessage(current, lane)).toBe(current);
+  });
+});
+
+describe("macDesktopWindowDragNextStep", () => {
+  const at = (window: MacDesktopWindow, frame: MacDesktopWindow["frame"]): MacDesktopObservation => ({
+    ...withWindow(null, []),
+    windows: [{ ...window, frame }],
+  });
+  const frame = { x: 0, y: 0, width: 900, height: 700 };
+  const borrowed = { ...appWindow(null), laneId: null };
+
+  it("tells a background drag on a window's title area that left it in place to claim it", () => {
+    const step = macDesktopWindowDragNextStep({ mode: "background", from: { x: 100, y: 10 }, before: at(borrowed, frame), after: at(borrowed, frame) });
+    expect(step?.command).toBe("ade mac-desktop claim --window 5 --text");
+  });
+
+  it("gives no claim command for a window the lane already holds", () => {
+    const held = appWindow(null);
+    const step = macDesktopWindowDragNextStep({ mode: "background", from: { x: 100, y: 10 }, before: at(held, frame), after: at(held, frame) });
+    expect(step).not.toBeNull();
+    expect(step?.command).toBeNull();
+  });
+
+  it.each([
+    ["the drag started below the title area", { x: 100, y: 400 }, "background", frame],
+    ["the window moved", { x: 100, y: 10 }, "background", { ...frame, x: 300 }],
+    ["the drag was real input", { x: 100, y: 10 }, "real", frame],
+  ] as const)("gives no advice when %s", (_label, from, mode, after) => {
+    expect(macDesktopWindowDragNextStep({ mode, from, before: at(borrowed, frame), after: at(borrowed, after) })).toBeNull();
   });
 });

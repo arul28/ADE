@@ -1,4 +1,5 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
+import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
@@ -141,6 +142,7 @@ import {
 } from "./services/account/agentRemoteRpc";
 import { gitRemoteIdentity, peerGitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
 import { readPermissionLevel } from "../../desktop/src/shared/permissionLadder";
+import { readInstalledDesktopAppVersion } from "../../desktop/src/main/services/native/nativeHelperPaths";
 
 type HandlerEntry = {
   handler: JsonRpcHandler & { dispose?: () => void };
@@ -2163,6 +2165,14 @@ export function createMultiProjectRpcRequestHandler(
       defaultRole: normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
       packageChannel,
       projectRoot: projectRoot ? path.resolve(projectRoot) : null,
+      // What this brain runs (its SEA `ade`, or the cli.cjs it was started
+      // with), so an `ade` from another install can tell this brain is not its
+      // own and leave it alone (lib/brainVersionSkew.ts).
+      cliEntryPath: resolveCurrentCliEntry(),
+      // The installed desktop app's version, beside this brain's own: after
+      // `ade brain update` they differ, and another device must not read the
+      // brain's version as the app's. Null on a machine with no app.
+      desktopAppVersion: readInstalledDesktopAppVersion(),
     };
   };
 

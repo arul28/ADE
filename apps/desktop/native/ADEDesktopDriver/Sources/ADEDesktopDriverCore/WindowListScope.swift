@@ -90,6 +90,40 @@ public enum WindowLayerPolicy {
         return ownerIsLaneApp || lookupById || isOpenSavePanelInLaneListing
     }
 
+    /// How an on-screen entry above layer 0 is admitted, once its app was
+    /// asked through Accessibility.
+    public enum PanelAdmission: Equatable, Sendable {
+        /// One of the app's Accessibility windows: a panel, a palette, an alert.
+        case window
+        /// A sheet attached to one of the app's windows ("Replace?" on a Save
+        /// panel). It is no Accessibility window of its own, only a child of
+        /// its parent's, so it was dropped, and with it the only row that
+        /// told a lane the app was blocked.
+        case sheet(parent: UInt32)
+        case none
+    }
+
+    /// `axKnown` is false when the app could not be read at all. `isAXWindow`
+    /// is whether the entry is one of its windows, `sheetParent` the window a
+    /// sheet entry is attached to.
+    ///
+    /// An unreadable lane app's modal panel (layer 8) is still listed: it
+    /// blocks the app, and a lane that cannot see it cannot say why nothing
+    /// answers. Other unreadable surfaces (tooltips, popover chrome, reused
+    /// hidden panels) stay out.
+    public static func panelAdmission(
+        layer: Int,
+        axKnown: Bool,
+        isAXWindow: Bool,
+        sheetParent: UInt32?,
+        ownerIsLaneApp: Bool
+    ) -> PanelAdmission {
+        if isAXWindow { return .window }
+        if let sheetParent { return .sheet(parent: sheetParent) }
+        if !axKnown, layer == modalPanel, ownerIsLaneApp { return .window }
+        return .none
+    }
+
     /// The process macOS runs an app's Open and Save panels in, when the app
     /// is sandboxed or asks for the remote panel. On macOS 27 the panel window
     /// on screen belongs to the app, which shows the service's content in it;

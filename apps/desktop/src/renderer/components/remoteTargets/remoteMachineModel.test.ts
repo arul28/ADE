@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type {
   AdeAccountMachine,
+  RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeTarget,
@@ -11,6 +12,7 @@ import {
   accountMachineMatchesTarget,
   assignMachineSections,
   autoConnectOffReason,
+  connectedMachinesFromSnapshot,
   describeMachineUpdateAttempt,
   describePublishHealth,
   formatLastSeen,
@@ -20,6 +22,7 @@ import {
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
   machineUpdateAttemptFromResult,
+  outdatedMachines,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 
@@ -453,6 +456,35 @@ describe("isMachineVersionCurrent", () => {
     ["an unreadable version", "not-a-version", "1.2.55", false],
   ])("is current: %s", (_label, version, target, expected) => {
     expect(isMachineVersionCurrent(version, target)).toBe(expected);
+  });
+});
+
+describe("connected machine versions (brain and desktop app)", () => {
+  // A machine whose brain was updated alone (`ade brain update`) but whose app
+  // was not must read as behind, and show both versions.
+  it.each([
+    ["app and brain agree", "1.2.125", "1.2.125", "1.2.125", false],
+    ["no app (a headless server)", "1.2.125", null, "1.2.125", false],
+    ["an older brain that does not report the app", "1.2.125", undefined, "1.2.125", false],
+    ["app behind a newer brain", "1.2.125", "1.2.123", "1.2.123 · brain 1.2.125", true],
+    ["brain behind a newer app", "1.2.123", "1.2.125", "1.2.125 · brain 1.2.123", true],
+    ["both behind", "1.2.124", "1.2.123", "1.2.123 · brain 1.2.124", true],
+    ["a v-prefixed app version", "1.2.125", "v1.2.125", "1.2.125", false],
+  ])("%s", (_label, brainVersion, appVersion, expectedLabel, expectedBehind) => {
+    const status: RemoteRuntimeConnectionStatus = {
+      target: savedTarget({ runtimeBinaryVersion: "1.2.100" }),
+      state: "connected",
+      arch: "darwin-arm64",
+      version: brainVersion,
+      ...(appVersion !== undefined ? { appVersion } : {}),
+      projects: [],
+      lastError: null,
+      lastAttemptedAt: null,
+      connectedAt: 1,
+    };
+    const machines = connectedMachinesFromSnapshot({ connections: [status], connectedCount: 1, updatedAt: 1 } satisfies RemoteRuntimeConnectionSnapshot);
+    expect(machines[0]?.versionLabel).toBe(expectedLabel);
+    expect(outdatedMachines(machines, "1.2.125").length > 0).toBe(expectedBehind);
   });
 });
 

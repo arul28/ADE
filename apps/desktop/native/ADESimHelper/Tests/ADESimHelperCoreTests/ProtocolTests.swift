@@ -51,6 +51,8 @@ final class ProtocolTests: XCTestCase {
             #"{"type":"scroll","id":"9","udid":"U","deltaX":0,"deltaY":-120}"#,
             #"{"type":"orientation","id":"10","udid":"U","value":3}"#,
             #"{"type":"ax-describe","id":"11","udid":"U"}"#,
+            #"{"type":"ax-hit","id":"16","udid":"U","x":10,"y":20}"#,
+            #"{"type":"ax-focused","id":"17","udid":"U"}"#,
             #"{"type":"ax-frontmost","id":"12","udid":"U"}"#,
             #"{"type":"screenshot","id":"13","udid":"U","path":"/tmp/a.png"}"#,
             #"{"type":"device-reset","id":"15","udid":"U"}"#,

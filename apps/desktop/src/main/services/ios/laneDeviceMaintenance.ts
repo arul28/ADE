@@ -26,6 +26,9 @@ import type { LaneDeviceRegistry } from "./laneDeviceRegistry";
  * a simulator service for one project, and one of them must not power off a
  * device the other is driving. A process that is streaming, recording, testing
  * or launching on a device touches it on every tick, so that work counts too.
+ * Use outside ADE counts as well, as far as the device shows it: a device
+ * still booting is never idle, and CoreSimulator's last boot time and the
+ * last app install or removal on the device move the idle clock forward.
  */
 
 export const APPLE_DEVICE_ACTIVITY_FILE = "ade-last-activity" as const;
@@ -202,6 +205,15 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     }
   };
 
+  /** When an app was last installed or removed on the device, from its bundle folder; 0 when unreadable. */
+  const lastInstallChangeMs = (udid: string): number => {
+    try {
+      return fs.statSync(path.join(root(), udid, "data", "Containers", "Bundle", "Application")).mtimeMs;
+    } catch {
+      return 0;
+    }
+  };
+
   const lastActivityMs = (udid: string): number => {
     try {
       return fs.statSync(activityFile(udid)).mtimeMs;
@@ -230,7 +242,7 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
       isAdeOwnedLaneDevice(device.origin) && (!options.onlyUdids || options.onlyUdids.has(device.udid))
     ));
     if (!devices.length) return done();
-    let states: Map<string, { state: string }>;
+    let states: Map<string, { state: string; lastBootedAtMs?: number | null }>;
     try {
       const { stdout } = await deps.run("xcrun", ["simctl", "list", "devices", "--json"], { timeoutMs: 30_000 });
       states = parseSimctlDevices(stdout);
@@ -239,12 +251,27 @@ export function createLaneDeviceMaintenance(deps: LaneDeviceMaintenanceDeps) {
     }
     let psOutput: string | null = null;
     for (const device of devices) {
-      if (states.get(device.udid)?.state !== "Booted") continue;
+      const listed = states.get(device.udid);
+      // A device still booting is in use by whoever booted it (often a raw
+      // `simctl boot` outside ADE): restart its idle clock, never power it off.
+      if (listed?.state === "Booting") {
+        touch(device.udid);
+        continue;
+      }
+      if (listed?.state !== "Booted") continue;
       if (deps.isBusyHere(device.udid)) {
         touch(device.udid);
         continue;
       }
-      const last = Math.max(lastActivityMs(device.udid), startedAt);
+      // ADE's own record of use, and what the device shows of use outside
+      // ADE: CoreSimulator's last boot (a raw `simctl boot`) and the last
+      // app install or removal (a raw `simctl install`).
+      const last = Math.max(
+        lastActivityMs(device.udid),
+        startedAt,
+        listed.lastBootedAtMs ?? 0,
+        lastInstallChangeMs(device.udid),
+      );
       if (!options.force && now() - last < idleMs) continue;
       if (psOutput === null) {
         psOutput = await deps.run("ps", ["-axo", "command="], { timeoutMs: 10_000 })

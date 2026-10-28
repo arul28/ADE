@@ -35,6 +35,10 @@ struct DesktopWindow {
     /// The window-server layer: 0 for an ordinary window, 3 for a floating
     /// palette, 8 for an app-modal alert or panel. See `WindowLayerPolicy`.
     var layer: Int = 0
+    /// The window a sheet is attached to, for a sheet entry. A sheet moves
+    /// with its parent and its buttons are in its parent's tree, so it is
+    /// claimed through the parent and never parked on its own.
+    var sheetOf: CGWindowID? = nil
     /// The app's icon, base64 PNG. Carried by the first window of each bundle
     /// id in a listing and nil on the rest — see `WindowControl.appIconBase64`.
     var iconPng: String? = nil
@@ -62,6 +66,7 @@ struct DesktopWindow {
             // Omitted rather than sent as null on every row that does not carry
             // one: a listing is mostly rows without an icon.
         ].merging(iconPng.map { ["iconPng": JSONValue.string($0)] } ?? [:]) { _, new in new }
+            .merging(sheetOf.map { ["sheetOf": JSONValue.int(Int($0))] } ?? [:]) { _, new in new }
     }
 }
 
@@ -295,6 +300,9 @@ final class WindowControl {
         // One AX read per app, at most, and only for apps that have an entry the
         // window server says is not on screen. See `axWindowMinimizedState`.
         var axStateByPid: [pid_t: [CGWindowID: Bool]?] = [:]
+        // Sheets per app, read only when a panel-layer entry is not one of the
+        // app's windows: that is what a sheet looks like, and it is rare.
+        var sheetParentsByPid: [pid_t: [CGWindowID: CGWindowID]] = [:]
         // One icon per app per reply: the renderer joins it across the app's
         // other rows, so forty windows of eight apps cost eight PNGs.
         var iconSentFor: Set<String> = []
@@ -354,12 +362,14 @@ final class WindowControl {
                 pid: ownerPid,
                 application: application
             ) || (isOpenSavePanel && frame.width > 0 && frame.height > 0) else { continue }
+            var sheetOf: CGWindowID?
             if layer != 0 {
                 // Above layer 0 an app also keeps surfaces that are not
                 // windows: tooltips, popover chrome, hidden panels it reuses.
                 // Only an on-screen entry that the app publishes as an
-                // Accessibility window is a panel a lane can see, park or
-                // press keys into; without the bridge there is no telling.
+                // Accessibility window (or a sheet attached to one) is a panel
+                // a lane can see, park or press keys into; without the bridge
+                // there is no telling. See `WindowLayerPolicy.panelAdmission`.
                 guard onScreen else { continue }
                 let state: [CGWindowID: Bool]?
                 if let cached = axStateByPid[ownerPid] {
@@ -368,7 +378,25 @@ final class WindowControl {
                     state = axWindowMinimizedState(pid: ownerPid)
                     axStateByPid[ownerPid] = state
                 }
-                guard let state, state[windowId] != nil else { continue }
+                let isAXWindow = state?[windowId] != nil
+                var sheetParent: CGWindowID?
+                if !isAXWindow, state != nil {
+                    if sheetParentsByPid[ownerPid] == nil {
+                        sheetParentsByPid[ownerPid] = axSheetParents(pid: ownerPid)
+                    }
+                    sheetParent = sheetParentsByPid[ownerPid]?[windowId]
+                }
+                switch WindowLayerPolicy.panelAdmission(
+                    layer: layer,
+                    axKnown: state != nil,
+                    isAXWindow: isAXWindow,
+                    sheetParent: sheetParent,
+                    ownerIsLaneApp: lanePids.contains(ownerPid)
+                ) {
+                case .window: break
+                case .sheet(let parent): sheetOf = parent
+                case .none: continue
+                }
             }
             /*
               Off screen is three different facts, and reporting them as one is
@@ -435,6 +463,7 @@ final class WindowControl {
                     minimized: minimized,
                     singleInstance: Self.isSingleInstance(bundleId: bundleId, application: application),
                     layer: layer,
+                    sheetOf: sheetOf,
                     iconPng: iconPng
                 )
             )
@@ -512,6 +541,37 @@ final class WindowControl {
         // Every element answered without an id is the bridge failing on this
         // app rather than the app having no windows.
         return state.isEmpty ? nil : state
+    }
+
+    /// The sheets attached to one app's windows: sheet window id → the id of
+    /// the window it hangs from. Empty when the app has none or cannot be read.
+    ///
+    /// A sheet (`AXSheet`) is a child of its window in the Accessibility tree,
+    /// not one of the app's `AXWindows`, though the window server lists it as
+    /// a window of its own.
+    private func axSheetParents(pid: pid_t) -> [CGWindowID: CGWindowID] {
+        guard AXWindowBridge.isAvailable, let elements = axWindowElements(pid: pid) else { return [:] }
+        var parents: [CGWindowID: CGWindowID] = [:]
+        for element in elements {
+            guard let parentId = AXWindowBridge.windowId(of: element) else { continue }
+            for sheet in Self.sheetChildren(of: element, pid: pid, control: self) {
+                if let sheetId = AXWindowBridge.windowId(of: sheet) { parents[sheetId] = parentId }
+            }
+        }
+        return parents
+    }
+
+    /// A window's attached sheets, read with the walk's short timeout.
+    static func sheetChildren(of window: AXUIElement, pid: pid_t, control: WindowControl) -> [AXUIElement] {
+        AXUIElementSetMessagingTimeout(window, AXTimeouts.walkRead)
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(window, kAXChildrenAttribute as CFString, &value)
+        if AXCallResult.classify(rawError: result.rawValue) == .timedOut {
+            control.noteStall(pid: pid, during: "reading a window's sheets")
+            return []
+        }
+        guard result == .success, let children = value as? [AXUIElement] else { return [] }
+        return children.filter { stringAttribute($0, kAXRoleAttribute) == (kAXSheetRole as String) }
     }
 
     /// Whether a CoreGraphics entry is a window a person could point at.
@@ -609,6 +669,12 @@ final class WindowControl {
         if AXWindowBridge.isAvailable {
             for element in elements where AXWindowBridge.windowId(of: element) == window.id {
                 return element
+            }
+            // A sheet is a child of its parent window, not one of `AXWindows`.
+            if let parentId = window.sheetOf,
+               let parent = elements.first(where: { AXWindowBridge.windowId(of: $0) == parentId }) {
+                return Self.sheetChildren(of: parent, pid: window.pid, control: self)
+                    .first { AXWindowBridge.windowId(of: $0) == window.id }
             }
         }
         // Fallback: title first, then frame. Two identical untitled windows in
@@ -712,6 +778,15 @@ final class WindowControl {
                 code: DriverErrorCode.windowNotFound,
                 message: "No window \(windowId) on this Mac. Window ids die with their process; list again."
             )
+        }
+        // A sheet goes where its window goes, and cannot be moved alone: the
+        // claim is of the window it is attached to. One this lane already
+        // holds is answered as it is, unmoved.
+        if let parentId = window.sheetOf, parentId != windowId {
+            if ownership.owner(ofWindow: Int(parentId)) == laneId, let parent = self.window(withId: parentId) {
+                return parent
+            }
+            return try park(laneId: laneId, windowId: parentId, origin: origin)
         }
         // A window of an app another lane launched is that lane's: its stop
         // quits the app, and the window with it.

@@ -18,7 +18,7 @@ import {
 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
 
 type BrainUpdateExecFile = (
   file: string,
@@ -94,6 +94,8 @@ export type BrainUpdateDeps = {
   execFile?: BrainUpdateExecFile;
   spawnDetached?: (command: string, args: string[], options: SpawnOptions) => void;
   runCommand?: typeof runCommand;
+  /** Where macOS looks for the installed ADE app. */
+  applicationsDirs?: readonly string[];
 };
 
 function nowIso(deps: BrainUpdateDeps): string {
@@ -307,13 +309,14 @@ async function defaultDownloadFile(url: string, outPath: string): Promise<void> 
 function runCommand(
   command: string,
   args: string[],
-  options: { env?: NodeJS.ProcessEnv; cwd?: string } = {},
+  options: { env?: NodeJS.ProcessEnv; cwd?: string; timeout?: number } = {},
 ): { status: number | null; stdout: string; stderr: string } {
   const result = spawnSync(command, args, {
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
     windowsHide: true,
+    ...(options.timeout ? { timeout: options.timeout } : {}),
   });
   return {
     status: result.status,
@@ -646,12 +649,56 @@ async function applyStagedBrainUpdate(
     env: { ...runtimeSidecarEnv(baseEnv, manifest.stagedRuntimeRoot), ADE_HOME: manifest.adeHome },
   };
 
-  // Why the desktop app was left alone on Windows, carried into every status
-  // this update writes so a runtime-only update says so.
+  // Why the desktop app was left alone, carried into every status this update
+  // writes so a runtime-only update says so.
   let desktopAppSkipped: string | null = null;
   const withAppNote = (message: string) =>
     desktopAppSkipped ? `${message} The ADE app was left alone because ${desktopAppSkipped}.` : message;
+  // macOS: the app updated (or already matched) and its runtime now runs the
+  // service. The standalone `ade` is still brought to the same version, as a
+  // command only: the service stays on the app.
+  let macAppOutcome: string | null = null;
   try {
+    if (platform === "darwin") {
+      // Loaded here: the brain imports this module at startup for its restart
+      // helper, and the app half is only needed by an update.
+      const { applyMacDesktopUpdate, defaultApplicationsDirs } = await import("./macDesktopUpdate");
+      const mac = await applyMacDesktopUpdate({
+        targetVersion: manifest.version,
+        repo: manifest.repo,
+        arch: manifest.target.split("-")[1] ?? os.arch(),
+        stagingDir,
+        env: baseEnv,
+        restartService: manifest.restartService,
+        applicationsDirs: deps.applicationsDirs ?? defaultApplicationsDirs(),
+        run: deps.runCommand ?? runCommand,
+        downloadFile: deps.downloadFile ?? defaultDownloadFile,
+        requestAppUpdate: async (targetVersion) => {
+          const { requestDesktopAppUpdate } = await import("../services/runtime/desktopAppUpdateBridge");
+          return await requestDesktopAppUpdate({
+            socketPath: baseEnv.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+              || resolveReachableMachineDesktopBridgeSocketPath({ ...baseEnv, ADE_HOME: manifest.adeHome }, platform),
+            targetVersion,
+          });
+        },
+        stopService: () => {
+          const stop = requestBrainServiceStop(stagedServiceCommand, deps.runCommand ?? runCommand);
+          return { ok: stop.status === 0, message: stop.stderr || stop.stdout || `exit ${stop.status}` };
+        },
+        writeStatus,
+      });
+      if ("runtimeOnly" in mac) {
+        desktopAppSkipped = mac.runtimeOnly;
+      } else {
+        const { ok, applied, message } = mac.finished;
+        // Nothing to bring along: a failed app update changed nothing, and
+        // without a standalone `ade` there is no command to update.
+        if (!ok || !(await pathExists(manifest.binaryPath))) {
+          return result(ok, applied, applied, ok ? await cleanupStagingAfterSuccess(message) : message, applied ? { desktopAppUpdated: true } : {});
+        }
+        macAppOutcome = message;
+      }
+    }
     if (platform === "win32") {
       const windows = await applyWindowsDesktopUpdate({
         targetVersion: manifest.version,
@@ -765,8 +812,16 @@ async function applyStagedBrainUpdate(
       throw error;
     }
 
+    if (macAppOutcome != null) {
+      const successMessage = `${macAppOutcome} The standalone ade at ${manifest.binaryPath} is on ${manifest.version} too.`;
+      await writeStatus("succeeded", successMessage);
+      await discardPromotedBackups();
+      const message = await cleanupStagingAfterSuccess(successMessage);
+      return result(true, true, manifest.restartService, message, { desktopAppUpdated: true });
+    }
+
     if (!manifest.restartService) {
-      const successMessage = "ADE brain runtime updated. Service restart was skipped.";
+      const successMessage = withAppNote("ADE brain runtime updated. Service restart was skipped.");
       await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
       const message = await cleanupStagingAfterSuccess(successMessage);
@@ -799,19 +854,51 @@ async function applyStagedBrainUpdate(
       return result(false, false, false, failureMessage);
     }
 
-    const successMessage = "ADE brain updated and service restart requested.";
+    const successMessage = withAppNote("ADE brain updated and service restart requested.");
     await writeStatus("succeeded", successMessage);
     await discardPromotedBackups();
     const message = await cleanupStagingAfterSuccess(successMessage);
     return result(true, true, true, message);
   } catch (error) {
-    const baseMessage = error instanceof Error ? error.message : String(error);
+    const failure = error instanceof Error ? error.message : String(error);
+    // The app half already landed: say so, so the failed command is not read
+    // as an app and brain left apart.
+    const baseMessage = macAppOutcome
+      ? `${macAppOutcome} Bringing the standalone ade at ${manifest.binaryPath} along failed: ${failure}`
+      : failure;
     const rollbackRestartError = restartRolledBackWindowsService();
     const message = withAppNote(rollbackRestartError
       ? `${baseMessage} Previous Windows service restart also failed: ${rollbackRestartError}`
       : baseMessage);
     await writeStatus("failed", message, message).catch(() => undefined);
     return result(false, false, false, message);
+  }
+}
+
+async function describeMacDesktopAppForPlan(
+  env: NodeJS.ProcessEnv,
+  deps: BrainUpdateDeps,
+): Promise<{ state: "none" | "channel" | "unreadable" | "found"; path: string | null; version: string | null; note: string }> {
+  const { defaultApplicationsDirs, findMacDesktopApp } = await import("./macDesktopUpdate");
+  const lookup = findMacDesktopApp({
+    env,
+    applicationsDirs: deps.applicationsDirs ?? defaultApplicationsDirs(),
+    run: deps.runCommand ?? runCommand,
+  });
+  switch (lookup.state) {
+    case "found":
+      return {
+        state: "found",
+        path: lookup.app.appPath,
+        version: lookup.app.version,
+        note: `The ADE app at ${lookup.app.appPath} (${lookup.app.version}) is updated to the same version, and the background service runs its runtime.`,
+      };
+    case "channel":
+      return { state: "channel", path: null, version: null, note: `${lookup.appName} has no update feed and is left alone.` };
+    case "unreadable":
+      return { state: "unreadable", path: lookup.appPath, version: null, note: `The version of ${lookup.appPath} can't be read, so the update would change nothing.` };
+    default:
+      return { state: "none", path: null, version: null, note: "No ADE app is installed; only the brain is updated." };
   }
 }
 
@@ -861,6 +948,9 @@ export async function runBrainUpdateCommand(
   const binaryPath = path.join(installDir, installedRuntimeBinaryName(target));
   const runtimeTargetDir = path.join(layout.runtimeDir, target);
   const currentVersion = deps.currentVersion ?? null;
+  // On a Mac with the ADE app, the app moves with the brain (see
+  // macDesktopUpdate.ts); the plan names it so a check says so up front.
+  const desktopApp = target.startsWith("darwin-") ? await describeMacDesktopAppForPlan(env, deps) : null;
   const summary = {
     ok: true,
     action: options.action === "check" ? "update-check" : "update",
@@ -875,12 +965,13 @@ export async function runBrainUpdateCommand(
     binaryPath,
     runtimePath: runtimeTargetDir,
     restartService: options.restartService,
+    ...(desktopApp ? { desktopApp } : {}),
   };
 
   if (options.dryRun) {
     return {
       ...summary,
-      message: "ADE brain update check passed. Runtime assets are available at the listed release URLs.",
+      message: `ADE brain update check passed. Runtime assets are available at the listed release URLs.${desktopApp?.note ? ` ${desktopApp.note}` : ""}`,
     };
   }
 

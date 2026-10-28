@@ -29,6 +29,17 @@ export function appleOrientationFamily(orientation: AppleDeviceOrientation): "po
 /** The Duo's live panel by name; null for any other screen id. */
 export type AppleDuoScreen = "cover" | "inner";
 
+/**
+ * True for a CoreSimulator device type that folds: the iPhone Duo
+ * (`com.apple.CoreSimulator.SimDeviceType.iPhone-Duo`) or a future "Fold".
+ * The gate everywhere a Duo is told from a rigid device; the display name is
+ * never an input. Deliberately narrow, so a false positive is unlikely.
+ */
+export function appleDeviceTypeSupportsDuo(identifier: string | null | undefined): boolean {
+  const value = (identifier ?? "").trim();
+  return /(^|[^a-z])duo([^a-z]|$)/i.test(value) || /fold/i.test(value);
+}
+
 export function appleDuoScreenName(screenId: number | null | undefined): AppleDuoScreen | null {
   if (screenId === APPLE_DUO_COVER_SCREEN_ID) return "cover";
   if (screenId === APPLE_DUO_INNER_SCREEN_ID) return "inner";

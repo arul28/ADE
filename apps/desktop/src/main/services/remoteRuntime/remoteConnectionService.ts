@@ -338,6 +338,8 @@ export class RemoteConnectionService {
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
       this.mergeStatus(targetId, {
         version: result.version,
+        // Read with the version, so a brain that stopped reporting it clears it.
+        appVersion: result.appVersion ?? null,
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
@@ -781,6 +783,9 @@ export class RemoteConnectionService {
           state: status.state ?? (target.lastConnectedAt ? "idle" : "idle"),
           arch: status.arch ?? target.lastSeenArch,
           version: status.version ?? target.runtimeBinaryVersion,
+          // Only beside the live version it was read with, never beside the
+          // persisted one, which can be from another connection.
+          appVersion: status.version != null ? status.appVersion ?? null : null,
           ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
@@ -892,6 +897,7 @@ export class RemoteConnectionService {
         state: "connected",
         arch: connectedResult.arch,
         version: connectedResult.version,
+        appVersion: connectedResult.appVersion ?? null,
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,

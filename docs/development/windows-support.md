@@ -85,6 +85,26 @@ command names this channel's launcher and delete all but the current one;
 uninstall deletes all of them. A host where the SID cannot be read falls back to
 the bare account name, which is also session-independent.
 
+The brain's pipe names (`\\.\pipe\ade-runtime-<channel>-<hash>` and
+`ade-desktop-bridge-...`) follow the same rule. The hash covers the ADE home,
+the channel and the profile folder of the account that owns the process, read
+from its token (`os.userInfo()`), so a desktop logon, an SSH session, a
+scheduled task and `runas` all compute one name. ADE up to v1.2.125 hashed
+`USERDOMAIN\USERNAME` instead, and an SSH `ade brain status` dialed a pipe the
+running brain never opened. For the move:
+
+- A brain also listens on the names an older ADE could have derived for this
+  account (its domain as the machine name, `WORKGROUP`, or none), so an older
+  `ade` or desktop still reaches it.
+- A client with no explicit socket dials the current name, or the older name
+  that is listening when only an older brain runs. It reads the pipe listing to
+  choose; it never dials a pipe just to test it.
+- A brain refuses to start while any of those names is taken, or while
+  `<home>/brains` records a live brain of this channel on another pipe. Two
+  brains never share one home because they disagree on the name.
+- `ade brain status` says when the brain answers on an older name, and names
+  the pipe a brain it cannot reach is recorded on.
+
 One supervisor and one brain exist per user and channel, whatever the number of
 logon sessions. Before starting a supervisor the launcher:
 

@@ -75,7 +75,7 @@ import { useAppleLaneDeviceList } from "./useAppleLaneDeviceList";
 import { useAppleRuntimes } from "./useAppleRuntimes";
 import { useAppleDuoModel } from "./useAppleDuoModel";
 import { AppleRenderSheet } from "./AppleRenderSheet";
-import { APPLE_DEVICE_POSE_TARGETS, APPLE_ROTATE_NOT_ADOPTED_CODE } from "../../../shared/types/iosSimulator";
+import { APPLE_DEVICE_POSE_TARGETS, APPLE_ROTATE_NOT_ADOPTED_CODE, isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
 import { useAppleInspect } from "./useAppleInspect";
 import { openAppleMiniPlayer } from "./appleMiniPlayerStore";
 import { AppleDuoDock } from "./AppleDuoDock";
@@ -85,6 +85,7 @@ import { useAppleRenderRequests } from "./useAppleRenderRequests";
 import type { AppleRenderedPreview } from "./drawer/sections/PreviewLabSection";
 import { isInParkedSurface } from "../../lib/parkedSurface";
 import { useTicker } from "../../lib/ticker";
+import { confirmAppleDeviceRelease } from "./appleReleaseConfirm";
 
 /**
  * The Apple device, as the body of the Work tools pane's Apple tab.
@@ -690,17 +691,32 @@ export function AppleDevicePane({
   }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
 
   /**
-   * "Choose another device" on the Off card: one click, and it never deletes.
-   * The device can be off for reasons the person did not choose here (an
-   * agent, the CLI, a restart), so this only releases the lane's binding; the
-   * simulator stays installed and shows in the picker as free.
+   * "Choose another device" on the Off card. The device can be off for
+   * reasons the person did not choose here (an agent, the CLI, a restart), so
+   * this only releases the lane's binding. A simulator the user attached
+   * stays installed and shows in the picker as free, in one click. One ADE
+   * made would be deleted by the cleanup pass a few minutes later, so that
+   * case asks first and offers to keep it as a free simulator
+   * (`confirmAppleDeviceRelease`).
    */
   const chooseAnotherDevice = useCallback(() => {
-    void window.ade.iosSimulator
-      .deviceDetach({ laneId, chatSessionId: sessionId, ignoreOwnership: ignoreChatOwnership }, runtimePinRef.current)
-      .then(dropLaneDevice)
-      .catch((cause: unknown) => setError(cause));
-  }, [dropLaneDevice, ignoreChatOwnership, laneId, sessionId]);
+    const device = laneDevice;
+    void (async () => {
+      const choice = device ? await confirmAppleDeviceRelease({ name: device.name, origin: device.origin }) : { keep: false };
+      if (!choice) return;
+      await window.ade.iosSimulator.deviceDetach(
+        {
+          laneId,
+          chatSessionId: sessionId,
+          ignoreOwnership: ignoreChatOwnership,
+          ...(device ? { udid: device.udid } : {}),
+          ...(choice.keep ? { keep: true } : {}),
+        },
+        runtimePinRef.current,
+      );
+      dropLaneDevice();
+    })().catch((cause: unknown) => setError(cause));
+  }, [dropLaneDevice, ignoreChatOwnership, laneDevice, laneId, sessionId]);
 
   const screenshot = useCallback(() => {
     setScreenshotPending(true);
@@ -1391,12 +1407,19 @@ export function AppleDevicePane({
 
           {confirmSwitch ? (
             <div className="absolute inset-x-0 bottom-0 z-20 flex min-w-0 flex-wrap items-center gap-2 border-t border-border bg-surface px-3 py-2 font-sans text-xs text-fg">
-              <span className="min-w-0 flex-1">Give up this device and pick another?</span>
+              {/* What "switch" does depends on who made the device: ADE's own
+                  is deleted now, with its apps and data; the user's stays
+                  installed and is only given back. */}
+              <span className="min-w-0 flex-1">
+                {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin)
+                  ? `Delete ${laneDevice.name} and pick another? ADE made it, so its apps and data go with it.`
+                  : "Give up this device and pick another? It stays installed."}
+              </span>
               <Button variant="ghost" size="sm" onClick={() => setConfirmSwitch(false)}>
                 Keep it
               </Button>
               <Button variant="danger" size="sm" onClick={switchDevice}>
-                Switch device
+                {laneDevice && isAdeOwnedLaneDevice(laneDevice.origin) ? "Delete and switch" : "Switch device"}
               </Button>
             </div>
           ) : null}

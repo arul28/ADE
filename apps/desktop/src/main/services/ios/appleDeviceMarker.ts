@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import type { AppleInstalledSimulator, AppleSimulatorOwnershipInfo } from "../../../shared/types/iosSimulator";
 import { pathsEqual } from "../shared/pathCompare";
 
@@ -36,6 +37,13 @@ export type AppleDeviceMarker = {
    * lane, and deletes it after the grace period unless a lane picks it again.
    */
   detachedAt?: string | null;
+  /**
+   * Set when the person released the device and chose to keep it as a free
+   * simulator (`deviceDetach` with `keep`). The cleanup pass then neither
+   * deletes it nor gives it back to its old lane; it stays until a lane
+   * attaches it (which clears this) or the person deletes it from the picker.
+   */
+  keptAt?: string | null;
   /** One of the lane's extra devices: a lost row is given back as an extra, never as the lane's own device. */
   extra?: boolean;
 };
@@ -55,6 +63,7 @@ export function readAppleDeviceMarker(dataRoot: string, udid: string): AppleDevi
       name: typeof raw.name === "string" ? raw.name : "",
       createdAt: typeof raw.createdAt === "string" ? raw.createdAt : "",
       detachedAt: typeof raw.detachedAt === "string" ? raw.detachedAt : null,
+      ...(typeof raw.keptAt === "string" ? { keptAt: raw.keptAt } : {}),
       ...(raw.extra === true ? { extra: true } : {}),
     };
   } catch {
@@ -114,15 +123,82 @@ export function appleSimulatorOwnership(input: {
     let ownership: AppleSimulatorOwnershipInfo["ownership"] = "unknown";
     const foreign = Boolean(marker && input.projectRoot && !appleMarkerIsProject(marker, input.projectRoot));
     if (input.heldUdids.has(device.udid)) ownership = "lane";
+    else if (marker?.keptAt) ownership = "ade-kept";
     else if (marker && foreign && input.foreignInUse(marker, device.udid)) ownership = "ade-other-project";
     else if (marker) ownership = "ade-orphan";
+    // A released ADE device waits out the grace, then the next pass deletes it.
+    const detachedMs = ownership === "ade-orphan" && marker?.detachedAt ? Date.parse(marker.detachedAt) : Number.NaN;
     return {
       udid: device.udid,
       ownership,
       markerLaneId: marker?.laneId ?? null,
       looksLikeAde: !marker && looksLikeAdeDeviceName(device.name),
+      ...(Number.isFinite(detachedMs) ? { deletesAfter: new Date(detachedMs + APPLE_DEVICE_MARKER_GRACE_MS).toISOString() } : {}),
     };
   });
+}
+
+/**
+ * Where a project that moved went: the old folder's own `.ade/moved-to.json`
+ * (a kept copy), else the machine's move journal
+ * (`<ADE_HOME>/project-moves/*.json`, a finished move from that root). Null
+ * when neither says. Read here rather than imported from the CLI's move code,
+ * which imports this file.
+ */
+export function appleProjectMovedTo(root: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(root, ".ade", "moved-to.json"), "utf8")) as { movedTo?: unknown };
+    if (typeof parsed.movedTo === "string" && parsed.movedTo.trim()) return parsed.movedTo;
+  } catch {
+    // No kept copy at that root (or an unreadable marker): ask the journal.
+  }
+  // The same home the move journal is written to (moveJournal.ts).
+  const dir = path.join(resolveMachineAdeDir(env), "project-moves");
+  let names: string[] = [];
+  try {
+    names = fs.readdirSync(dir).filter((name) => name.endsWith(".json"));
+  } catch {
+    return null;
+  }
+  let best: { to: string; at: number } | null = null;
+  for (const name of names) {
+    try {
+      const record = JSON.parse(fs.readFileSync(path.join(dir, name), "utf8")) as {
+        sourceRoot?: unknown; destinationRoot?: unknown; state?: unknown; finishedAt?: unknown;
+      };
+      if (record.state !== "done" || typeof record.sourceRoot !== "string" || typeof record.destinationRoot !== "string") continue;
+      if (!pathsEqual(path.resolve(record.sourceRoot), path.resolve(root))) continue;
+      const at = typeof record.finishedAt === "number" ? record.finishedAt : 0;
+      if (!best || at > best.at) best = { to: record.destinationRoot, at };
+    } catch {
+      // One unreadable record does not hide the others.
+    }
+  }
+  return best?.to ?? null;
+}
+
+/**
+ * The marker names a folder this project moved away from (one or more
+ * moves): the device is this project's, though the move did not rewrite its
+ * marker.
+ */
+export function appleMarkerMovedToProject(
+  marker: AppleDeviceMarker,
+  projectRoot: string,
+  movedTo: (root: string) => string | null = (root) => appleProjectMovedTo(root),
+): boolean {
+  const target = path.resolve(projectRoot);
+  const seen: string[] = [];
+  let root = marker.projectRoot;
+  for (let hop = 0; hop < 5; hop += 1) {
+    seen.push(path.resolve(root));
+    const next = movedTo(root);
+    if (!next) return false;
+    if (pathsEqual(path.resolve(next), target)) return true;
+    if (seen.some((each) => pathsEqual(each, path.resolve(next)))) return false;
+    root = next;
+  }
+  return false;
 }
 
 /**
@@ -133,14 +209,43 @@ export function appleSimulatorOwnership(input: {
  * project, or its database, is no longer on disk. `unknown` when the database
  * is there but could not be read (locked, older schema): nothing is decided on
  * a guess.
+ *
+ * A project that moved is followed to where it went (`movedTo`, up to five
+ * moves): a marker the move did not rewrite still names the old folder, and
+ * "the old folder is gone" must not delete a device the moved project's lane
+ * still holds.
  */
 export function appleMarkerProjectHolds(
   marker: AppleDeviceMarker,
   udid: string,
   openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void },
+  movedTo: (root: string) => string | null = (root) => appleProjectMovedTo(root),
 ): "held" | "free" | "gone" | "unknown" {
-  const dbPath = path.join(marker.projectRoot, ".ade", "ade.db");
-  if (!fs.existsSync(marker.projectRoot) || !fs.existsSync(dbPath)) return "gone";
+  const seen: string[] = [];
+  let root = marker.projectRoot;
+  let answer: "held" | "free" | "gone" | "unknown" = "gone";
+  for (let hop = 0; hop < 6; hop += 1) {
+    seen.push(path.resolve(root));
+    const here = projectHoldsAt(root, marker, udid, openDatabase);
+    // A later root's answer wins only over "gone"/"free": a kept copy that
+    // still reads "held" is never overruled into a delete.
+    if (hop === 0 || answer === "gone" || (answer === "free" && here !== "gone")) answer = here;
+    if (answer === "held" || answer === "unknown") return answer;
+    const next = movedTo(root);
+    if (!next || seen.some((each) => pathsEqual(each, path.resolve(next)))) break;
+    root = next;
+  }
+  return answer;
+}
+
+function projectHoldsAt(
+  projectRoot: string,
+  marker: AppleDeviceMarker,
+  udid: string,
+  openDatabase: (dbPath: string) => { prepare: (sql: string) => { get: (...params: string[]) => unknown }; close: () => void },
+): "held" | "free" | "gone" | "unknown" {
+  const dbPath = path.join(projectRoot, ".ade", "ade.db");
+  if (!fs.existsSync(projectRoot) || !fs.existsSync(dbPath)) return "gone";
   let db: ReturnType<typeof openDatabase> | null = null;
   try {
     db = openDatabase(dbPath);

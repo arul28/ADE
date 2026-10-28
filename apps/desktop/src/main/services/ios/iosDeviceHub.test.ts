@@ -115,7 +115,7 @@ type Harness = {
   runs: RecordedRun[];
   runArgs: () => string[][];
   /** Every tap and type, in the order the hub made them. */
-  interactions: Array<{ kind: "tap" | "type"; detail: string }>;
+  interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string }>;
   openSimulatorApp: ReturnType<typeof vi.fn>;
   events: IosSimulatorEventPayload[];
   writes: Array<{ filePath: string; contents: string }>;
@@ -144,7 +144,7 @@ function createHarness(options: {
   /** One entry per spawned log stream, so a test can see what it filters on. */
   const logPredicates: Array<string | null> = [];
   let logLineHandler: ((line: string) => void) | null = null;
-  const interactions: Array<{ kind: "tap" | "type"; detail: string }> = [];
+  const interactions: Array<{ kind: "tap" | "long-press" | "type"; detail: string }> = [];
   const events: IosSimulatorEventPayload[] = [];
   const writes: Array<{ filePath: string; contents: string }> = [];
   const mkdirs: string[] = [];
@@ -228,9 +228,13 @@ function createHarness(options: {
     tap: async ({ x, y }) => {
       interactions.push({ kind: "tap", detail: `${x},${y}` });
     },
+    longPress: async ({ x, y, durationMs }) => {
+      interactions.push({ kind: "long-press", detail: `${x},${y},${durationMs}` });
+    },
     typeText: async ({ text }) => {
       interactions.push({ kind: "type", detail: text });
     },
+    readElementAt: async () => null,
     resolveBuildRoot: async () => BUILD_ROOT,
     emit: (payload) => events.push(payload),
     logger: { info: () => {}, debug: () => {} },
@@ -1147,7 +1151,9 @@ describe("captureProofBundle containment", () => {
       capturedAt: "2026-01-01T00:00:00.000Z",
     }),
     tap: async () => {},
+    longPress: async () => {},
     typeText: async () => {},
+    readElementAt: async () => null,
     resolveBuildRoot: async () => buildRoot,
     getAppSessionOwner: () => null,
     getAppSessionDeviceUdid: () => null,
@@ -1992,6 +1998,23 @@ describe("buildLogPredicate", () => {
     expect(() => buildLogPredicate({ bundleId: "com.acme\\app" })).toThrow(
       /quote or a backslash/,
     );
+  });
+
+  it.each([
+    [{ bundleId: "com.acme.app.dev", process: "Acme" }, '(subsystem BEGINSWITH "com.acme.app.dev" OR process == "Acme")'],
+    [{ bundleId: "com.acme.app.dev", subsystem: "com.acme.app" }, 'subsystem BEGINSWITH "com.acme.app"'],
+    [{ bundleId: "com.acme.app.dev", subsystem: "com.acme", process: "My App" }, '(subsystem BEGINSWITH "com.acme" OR process == "My App")'],
+  ])("keeps the app's subsystem or its process: %j", (args, expected) => {
+    expect(buildLogPredicate(args)).toBe(expected);
+  });
+
+  it.each([
+    { bundleId: "com.acme", subsystem: 'x" OR 1 == 1 OR subsystem == "y' },
+    { bundleId: "com.acme", process: 'Acme" OR process == "Other' },
+    { bundleId: "com.acme", process: "Acme\nOR" },
+    { bundleId: "com.acme", process: "Acme)(" },
+  ])("refuses a subsystem or process that can add a clause: %j", (args) => {
+    expect(() => buildLogPredicate(args)).toThrow(/Refusing to build a log predicate/);
   });
 });
 

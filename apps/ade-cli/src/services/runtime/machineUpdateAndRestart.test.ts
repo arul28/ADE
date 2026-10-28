@@ -253,6 +253,23 @@ describe("createMachineUpdateControls", () => {
     expect(runBrainUpdateCommand).not.toHaveBeenCalled();
   });
 
+  it("still updates a machine whose brain is current when its ADE app is behind", async () => {
+    // A brain moved ahead on its own (the old macOS `ade brain update`) beside
+    // a closed, older app. The update moves the app, so it is not "newest".
+    runBrainUpdateCommand.mockResolvedValue({ ok: true, action: "update-check", requestedVersion: "v1.2.55" });
+    const withApp = (appVersion: string) => createMachineUpdateControls({
+      version: "1.2.55",
+      logger: { error: () => {} },
+      requestRestart: async () => ({ status: 0, stdout: "", stderr: "" }),
+      installedAppVersion: async () => appVersion,
+    });
+
+    expect((await withApp("1.2.53").checkForUpdate("1.2.55")).available).toBe(true);
+    expect((await withApp("1.2.53").checkForUpdate(null)).available).toBe(true);
+    expect((await withApp("1.2.55").checkForUpdate("1.2.55")).available).toBe(false);
+    expect((await withApp("1.2.55").checkForUpdate(null)).available).toBe(false);
+  });
+
   it("reports no update when a null target resolves to the version already installed", async () => {
     // The client can ask without naming a version. The check then resolves one,
     // and if that is the version already running, saying "update available"

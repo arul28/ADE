@@ -6688,6 +6688,7 @@ function registerMacDesktopPaneRemoteCommands(
       laneId: requireString(payload.laneId, "macDesktop.open requires laneId."),
       target: requireString(payload.target, "macDesktop.open requires target."),
       args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
+      ...(asOptionalBoolean(payload.newInstance) ? { newInstance: true } : {}),
     });
   });
 
@@ -6732,6 +6733,8 @@ function registerMacDesktopPaneRemoteCommands(
       laneId: requireString(payload.laneId, "macDesktop.startRecording requires laneId."),
       caption: asTrimmedString(payload.caption),
       fps: asOptionalNumber(payload.fps) ?? null,
+      // `plain` is the current name, `keepIdle` the old one; both keep real time.
+      plain: asOptionalBoolean(payload.plain) ?? null,
       keepIdle: asOptionalBoolean(payload.keepIdle) ?? null,
       maxSeconds: asOptionalNumber(payload.maxSeconds) ?? null,
       ...chatSessionId(payload),

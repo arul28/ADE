@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import {
   resolveAdeSigningState,
+  standaloneNativeHelperCandidates,
   resolveMacDesktopDriverBinary,
   resolveMusicHostExecutable,
   resolveNowPlayingHelperBinary,
@@ -101,6 +102,39 @@ describe("native helper paths", () => {
       platform: "darwin",
       env: { ADE_MAC_DESKTOP_DRIVER_PATH: process.execPath },
     })).toBe(process.execPath);
+  });
+
+  // A standalone brain (`~/.ade/bin/ade serve`) has no resources of its own:
+  // the brain's runtime archive and the installed app are where its helpers
+  // are. The driver prefers the app's signed copy (its TCC grants belong to
+  // that binary); the rest prefer the archive (the brain's own protocol).
+  it.each([
+    ["ade-desktop-driver", "app", ["app", "runtime"]],
+    ["ade-sim-helper", "runtime", ["runtime", "app"]],
+  ] as const)("orders %s candidates %s first and skips another channel's app", (binaryName, prefer, order) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-native-home-"));
+    const app = (name: string, bundleId: string) => {
+      const contents = path.join(home, "Applications", `${name}.app`, "Contents");
+      fs.mkdirSync(contents, { recursive: true });
+      fs.writeFileSync(path.join(contents, "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>${bundleId}</string></dict></plist>`);
+      return path.join(contents, "Resources", "native", binaryName);
+    };
+    const own = app("VLTest", "com.ade.desktop.beta");
+    // Named like this channel's app, but its bundle says it is the stable one.
+    app("ADE Beta", "com.ade.desktop");
+    const env = {
+      ADE_HOME: path.join(home, ".ade-beta"),
+      ADE_PACKAGE_CHANNEL: "beta",
+      ADE_DESKTOP_APP_NAME: "VLTest",
+      ADE_RUNTIME_ROOT: path.join(home, "runtime"),
+    };
+    const runtime = path.join(home, "runtime", "native", binaryName);
+    const candidates = standaloneNativeHelperCandidates({ binaryName, prefer, platform: "darwin", env, homeDir: home });
+    const positions = { app: candidates.indexOf(own), runtime: candidates.indexOf(runtime) };
+    expect(positions.app).toBeGreaterThanOrEqual(0);
+    expect(positions.runtime).toBeGreaterThanOrEqual(0);
+    expect(positions[order[0]]).toBeLessThan(positions[order[1]]);
+    expect(candidates).not.toContain(path.join(home, "Applications", "ADE Beta.app", "Contents", "Resources", "native", binaryName));
   });
 
   describe("ade signing marker", () => {
