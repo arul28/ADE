@@ -60,6 +60,22 @@ async function message(win: BrowserWindow | null, options: Electron.MessageBoxOp
   return win ? dialog.showMessageBox(win, options) : dialog.showMessageBox(options);
 }
 
+function notReadyMessage(snapshot: AutoUpdateSnapshot): Electron.MessageBoxOptions {
+  const releases = "You can also download ADE from https://github.com/arul28/ADE/releases/latest.";
+  switch (snapshot.status) {
+    case "error":
+      return { type: "warning", message: "ADE could not check for updates.", detail: `${snapshot.error ?? "The update check failed."} ${releases}`, buttons: ["OK"] };
+    case "downloading":
+      return { type: "info", message: `ADE is downloading ${versionLabel(snapshot.version)}.`, detail: "Choose Install Update from this menu again when it finishes.", buttons: ["OK"] };
+    case "checking":
+      return { type: "info", message: "ADE is still checking for updates.", detail: "Try again in a moment.", buttons: ["OK"] };
+    case "installing":
+      return { type: "info", message: "ADE is already installing an update.", detail: "It restarts when the install finishes.", buttons: ["OK"] };
+    default:
+      return { type: "info", message: `ADE is up to date (${versionLabel(snapshot.currentVersion)}).`, buttons: ["OK"] };
+  }
+}
+
 /**
  * Installs a downloaded update after a native confirm, or checks for one and
  * then offers it. Never throws: every outcome ends in a native message.
@@ -73,27 +89,13 @@ export async function runNativeUpdateInstall(service: NativeUpdateService, win: 
     snapshot = service.getSnapshot();
   }
   if (snapshot.status !== "ready" || !snapshot.version) {
-    const failed = snapshot.status === "error";
-    await message(win, {
-      type: failed ? "warning" : "info",
-      message: failed
-        ? "ADE could not check for updates."
-        : snapshot.status === "downloading"
-          ? `ADE is downloading ${versionLabel(snapshot.version)}.`
-          : `ADE is up to date (${versionLabel(snapshot.currentVersion)}).`,
-      detail: failed
-        ? `${snapshot.error ?? "The update check failed."} You can also download ADE from https://github.com/arul28/ADE/releases/latest.`
-        : snapshot.status === "downloading"
-          ? "Choose Install Update from this menu again when it finishes."
-          : undefined,
-      buttons: ["OK"],
-    });
+    await message(win, notReadyMessage(snapshot));
     return;
   }
   const { response } = await message(win, {
     type: "question",
     message: `Install ADE ${versionLabel(snapshot.version)} and restart?`,
-    detail: "ADE quits, installs the update and opens again. Running chats resume when it is back. Your other machines are not updated from here.",
+    detail: "ADE quits, installs the update and opens again. Running chats resume when it is back; any unsaved work may be lost. Your other machines are not updated from here.",
     buttons: ["Install and Restart", "Cancel"],
     defaultId: 0,
     cancelId: 1,

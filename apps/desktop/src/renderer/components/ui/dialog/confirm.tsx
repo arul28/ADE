@@ -324,6 +324,13 @@ function ConfirmDialogView({
             type="checkbox"
             checked={checked[box.key] ?? false}
             onChange={(event) => setChecked((current) => ({ ...current, [box.key]: event.target.checked }))}
+            // Keep the Return hint true when a checkbox has focus.
+            onKeyDown={options.returnKeyHint ? (event) => {
+              if (event.key === "Enter" && !awaitingRequired) {
+                event.preventDefault();
+                settle(true);
+              }
+            } : undefined}
           />
           <span>{box.label}</span>
         </label>

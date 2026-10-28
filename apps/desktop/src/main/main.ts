@@ -1613,11 +1613,14 @@ app.on("open-file", (event, filePath) => {
 
 /** Set once the updater exists; the Windows jump-list task reaches it through `second-instance`. */
 let requestNativeUpdateInstall: (() => void) | null = null;
+/** A jump-list request that arrived before the updater existed (ADE starting up, or started by it). */
+let nativeUpdateInstallPending = process.platform === "win32" && process.argv.includes(INSTALL_UPDATE_ARG);
 
 app.on("second-instance", (_event, argv) => {
   if (process.platform === "darwin") return;
   if (argv.includes(INSTALL_UPDATE_ARG)) {
-    requestNativeUpdateInstall?.();
+    if (requestNativeUpdateInstall) requestNativeUpdateInstall();
+    else nativeUpdateInstallPending = true;
     return;
   }
   for (const arg of argv.slice(1)) {
@@ -9764,6 +9767,10 @@ app.whenReady().then(async () => {
     if (process.platform === "darwin") installApplicationMenu();
   });
   requestNativeUpdateInstall = () => runUpdateFromNativeUi(BrowserWindow.getFocusedWindow());
+  if (nativeUpdateInstallPending) {
+    nativeUpdateInstallPending = false;
+    requestNativeUpdateInstall();
+  }
   if (process.platform === "win32" && app.isPackaged) {
     // The taskbar's right-click menu: the Windows counterpart of the macOS menu item.
     app.setUserTasks([{

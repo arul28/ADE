@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
 
 /**
@@ -179,13 +180,15 @@ export async function requestDesktopAppUpdate(args: {
  * (the bundle is returned), and the Windows per-user service runs
  * `ADE.exe …\\ade-cli\\cli.cjs serve` as Node (the exe is returned). Null for
  * the standalone runtime (`ade` / `ade.exe`, which is not Electron), a
- * development brain run by node, and other platforms.
+ * development brain (node, or the bare Electron under `node_modules`, which
+ * would open as an empty Electron app), and other platforms.
  */
 export function hostAppPath(
   execPath: string = process.execPath,
   platform: NodeJS.Platform = process.platform,
   electronVersion: string | undefined = process.versions.electron,
 ): string | null {
+  if (/[\\/]node_modules[\\/]/.test(execPath)) return null;
   if (platform === "darwin") return /^(\/.*?\.app)\/Contents\/MacOS\/[^/]+$/.exec(execPath)?.[1] ?? null;
   if (platform === "win32") return electronVersion && /\.exe$/i.test(execPath) ? execPath : null;
   return null;
@@ -198,14 +201,21 @@ const CLOSED_APP_POLL_MS = 2_000;
 function openApp(appPath: string, platform: NodeJS.Platform = process.platform): Promise<void> {
   if (platform === "win32") {
     return new Promise((resolve, reject) => {
+      // Through `cmd /c start`, which exits at once: the app is then nobody's
+      // child, so a later `taskkill /T` of this brain's tree (watchdog
+      // recovery) cannot take the open app and its unsaved work with it.
       // This process is the same exe run as Node; the app must not inherit that.
       const env = { ...process.env };
       delete env.ELECTRON_RUN_AS_NODE;
-      const child = spawn(appPath, [], { detached: true, stdio: "ignore", windowsHide: false, env });
+      const child = spawn(resolveTrustedWindowsTool("cmd"), ["/d", "/c", "start", "", appPath], {
+        stdio: "ignore",
+        windowsHide: true,
+        env,
+      });
       child.once("error", reject);
-      child.once("spawn", () => {
-        child.unref();
-        resolve();
+      child.once("exit", (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`start exited with ${code}`));
       });
     });
   }
