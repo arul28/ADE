@@ -101,6 +101,34 @@ describe("ReportIssueButton", () => {
     expect(screen.queryByText(/Report copied/)).toBeNull();
   });
 
+  it("starts clean when the failure it reports changes, and drops the old failure's reply", async () => {
+    // One notice can swap its failure for another without unmounting (the
+    // chat pane's line). A send for the old failure must not mark the new one
+    // as sent, or the new failure could never be reported.
+    let settleOld: (result: unknown) => void = () => {};
+    const sendManual = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { settleOld = resolve; }))
+      .mockResolvedValueOnce({ ok: true, reference: "new777", reportPath: "", report: "new report" });
+    installBridge(vi.fn(), sendManual);
+    const next = { ...CONTEXT, headline: "Couldn't deliver the message", technicalDetail: "runtime exited with code 1" };
+
+    const { rerender } = render(<ReportIssueButton context={CONTEXT} />);
+    fireEvent.click(screen.getByRole("button", { name: "Report issue" }));
+    await screen.findByRole("button", { name: "Sending report…" });
+
+    rerender(<ReportIssueButton context={next} />);
+    settleOld({ ok: true, reference: "old111", reportPath: "", report: "old report" });
+
+    const button = await screen.findByRole("button", { name: "Report issue" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    await waitFor(() => expect(screen.queryByText(/reference old111/)).toBeNull());
+
+    fireEvent.click(button);
+    await screen.findByText(/reference new777/);
+    expect(sendManual).toHaveBeenLastCalledWith(next);
+  });
+
   it("drops the disclosure inside one-line banners, and keeps it when asked", () => {
     installBridge(vi.fn());
     const { rerender } = render(<ReportIssueButton context={CONTEXT} variant="ghost" />);

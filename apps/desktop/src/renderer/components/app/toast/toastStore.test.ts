@@ -206,19 +206,32 @@ describe("toastStore", () => {
       showToast({ title: "Push failed: lane-two", tone: "error", message: "x".repeat(1_000) });
       showToast({ title: "Could not open \"notes.md\"", tone: "error" });
       showToast({ title: "Pushed lane-one", tone: "success" });
+      // A toast with a report sends what the report names; its message can
+      // quote the person's own words and stays on the machine.
+      showToast({
+        title: "A message did not send",
+        tone: "warning",
+        message: "“rotate the staging keys” never reached its chat.",
+        report: { surface: "chat_send_lost", code: "message_not_delivered" },
+      });
+      // A failure the person fixes is not ADE's to hear about.
+      showToast({ title: "Give the issue a title", tone: "error", report: false });
 
       // An error toast is a Sentry Log and a breadcrumb, never an issue of its
       // own: the failure behind it (an IPC call, a render crash) already opened
       // one, with a stack; a toast only repeats it under its title.
       expect(captured).toHaveLength(0);
-      // One log per error toast; the success toast says nothing.
-      expect(logs).toHaveLength(3);
+      // One log per error or reported toast; the success toast and `report: false` say nothing.
+      expect(logs).toHaveLength(4);
       for (const log of logs) expect(log.message.startsWith("toast.")).toBe(true);
       // Titles that differ only by the lane (or file) name share one event name.
       expect(logs[0]!.message).toBe(logs[1]!.message);
       expect(logs[0]!.message).not.toBe(logs[2]!.message);
       // The text rides along, cut short: an error message can quote what it failed on.
       expect(logs[1]!.attributes).toMatchObject({ title: "Push failed: lane-two", message: "x".repeat(300) });
+      expect(logs[3]!.message).toBe("toast.chat_send_lost");
+      expect(logs[3]!.attributes).toMatchObject({ title: "A message did not send", code: "message_not_delivered" });
+      expect(JSON.stringify(logs[3]!.attributes)).not.toContain("staging keys");
     } finally {
       connectSentry(null as never);
     }
