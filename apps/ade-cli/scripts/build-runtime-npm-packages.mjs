@@ -81,6 +81,11 @@ const EMBEDDED_EXCLUDED_NATIVE_PATHS = [
   "native/vendor/crsqlite",
   "native/node_modules/@opencode/cli/bin/opencode",
   "native/node_modules/@opencode/cli/bin/opencode.exe",
+  // The standalone brain's macOS helpers (package-native-deps.mjs). The SDK
+  // profile drives no simulators or demo renders, and the signing kit below
+  // signs native Mach-O without the entitlement the simulator helper needs.
+  "native/native/ade-sim-helper",
+  "native/native/ade-media",
 ];
 
 export function runtimePackageName(target) {

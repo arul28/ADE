@@ -21,6 +21,7 @@ import { useAppStore } from "../../../state/appStore";
 import { invalidateAgentChatSessionListCache } from "../../../lib/agentChatSessionListCache";
 import { invalidateSessionListCache } from "../../../lib/sessionListCache";
 import { navigateUrlInAdeBrowser, openExternalUrl } from "../../../lib/openExternal";
+import { Banner } from "../../ui/notice";
 import { revealTerminalSessionInWork } from "../../work/ClaudeLoginPromptButton";
 import { settingsRouteFor } from "../../settings/settingsManifest";
 import { cn } from "../../ui/cn";
@@ -38,6 +39,7 @@ import {
   type CloudAgentFilter,
   type CloudAgentScope,
 } from "./cloudAgentsModel";
+import { extractError } from "../../../lib/format";
 
 const REFRESH_MS = 12_000;
 
@@ -49,7 +51,7 @@ const FILTERS: Array<{ id: CloudAgentFilter; label: string }> = [
 ];
 
 function errorText(error: unknown): string {
-  const raw = error instanceof Error ? error.message : String(error);
+  const raw = extractError(error);
   return raw.replace(/^Error invoking remote method '[^']+': (Error: )?/, "");
 }
 
@@ -419,7 +421,19 @@ export function CloudAgentsPanel({
               {launching ? "Starting…" : "Start"}
             </button>
           </div>
-          {launchError ? <div className="mt-2 px-1 text-[11.5px] text-red-300/90">{launchError}</div> : null}
+          {launchError ? (
+            <Banner
+              layout="inline"
+              style={{ marginTop: 8 }}
+              model={{
+                id: "cloud-agent-launch-error",
+                tone: "error",
+                title: launchError,
+                report: { surface: "cloud_agent_launch" },
+                dismiss: { onDismiss: () => setLaunchError(null) },
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
 

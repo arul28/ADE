@@ -338,7 +338,11 @@ import {
   type JsonRpcServerErrorContext,
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
-import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import {
+  resolveMachineAdeDir,
+  resolveMachineAdeLayout,
+  resolveMachineEndpointNames,
+} from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
@@ -360,6 +364,7 @@ import {
   deferToRunningWindowsInstall,
   startWindowsInstallProgress,
   takeWindowsInstallProgressReport,
+  takeWindowsLaunchRequest,
 } from "./services/updates/windowsInstallProgress";
 import {
   ElectronSafeStorageCredentialStore,
@@ -479,11 +484,19 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import {
+  INSTALL_UPDATE_ARG,
+  nativeUpdateMenuItem,
+  nativeUpdateMenuLabel,
+  runNativeUpdateInstall,
+} from "./services/updates/nativeUpdateInstall";
 import { createRemoteUpdateInstaller, type RemoteUpdateInstaller } from "./services/updates/remoteUpdateInstall";
 import { createKeepAwakeService } from "./services/power/keepAwakeService";
 import { getPowerStateService } from "./services/power/powerStateService";
 import { createMachinePowerBrainBridge } from "./services/power/machinePowerBrainBridge";
 import { runUpdateTransaction } from "./services/updates/updateTransaction";
+import { createInstallOnQuitController, type InstallOnQuitDecision } from "./services/updates/installOnQuit";
+import { recordInstalledDesktopApp } from "./services/native/nativeHelperPaths";
 import {
   checkRuntimeIdentity,
   runVerifiedRuntimeRestart,
@@ -723,6 +736,8 @@ let startupProjectOpen: Promise<void> | null = null;
  * read answers instead of timing out.
  */
 const STARTUP_PROJECT_WINDOW_WAIT_MS = 20_000;
+/** How long a dev window waits to clear its cache before it loads anyway. */
+const DEV_CACHE_CLEAR_WAIT_MS = 3_000;
 
 /**
  * Makes `ade` exist for a user who never opens Settings. Every guard that
@@ -978,6 +993,11 @@ async function createWindow(args: {
   restoreState?: MainWindowState | null;
   /** Receives this window's position and size as they change. */
   onWindowStateChange?: (state: MainWindowState) => void;
+  /**
+   * Created without showing it: the launch that lands a quit-install runs
+   * with no window, and shows this one only if the person opens ADE.
+   */
+  hidden?: boolean;
 } = {}): Promise<BrowserWindow> {
   // Load the app icon from the build directory. In dev (`npm run dev` sets
   // VITE_DEV_SERVER_URL) prefer the inverted icon so the dock/window icon makes
@@ -1031,8 +1051,8 @@ async function createWindow(args: {
 
   const win = new BrowserWindow({
     ...(args.bounds ?? restoredBounds ?? defaultWindowBounds),
-    ...(args.bounds ? { show: false } : {}),
-    ...(restoredBounds && restoreState?.fullScreen ? { fullscreen: true } : {}),
+    ...(args.bounds || args.hidden ? { show: false } : {}),
+    ...(restoredBounds && restoreState?.fullScreen && !args.hidden ? { fullscreen: true } : {}),
     minWidth: MIN_WINDOW_WIDTH,
     icon,
     ...windowChromeOptions(process.platform),
@@ -1055,7 +1075,7 @@ async function createWindow(args: {
     },
   });
 
-  if (restoredBounds && restoreState?.maximized && !restoreState.fullScreen) win.maximize();
+  if (restoredBounds && restoreState?.maximized && !restoreState.fullScreen && !args.hidden) win.maximize();
   if (args.onWindowStateChange) trackMainWindowState(win, args.onWindowStateChange);
   args.onCreated?.(win);
   if (args.bounds) win.showInactive();
@@ -1303,15 +1323,30 @@ async function createWindow(args: {
   );
 
   if (process.env.VITE_DEV_SERVER_URL) {
-    try {
-      await win.webContents.session.clearCache();
-      await win.webContents.session.clearStorageData({
-        storages: ["serviceworkers", "cachestorage"],
-      });
-    } catch (error) {
-      args.logger?.warn("renderer.dev_cache_clear_failed", {
-        err: error instanceof Error ? error.message : String(error),
-      });
+    // Bounded: both calls go through Chromium's network service, and one that
+    // has crashed or stalled (it reads the Keychain too) never answers.
+    // Unbounded, the launch never finishes creating this window, the startup
+    // gate never opens, and every window-session call waits out its timeout.
+    const outcome = await settledWithin<"cleared" | "failed" | "timed_out">(
+      (async () => {
+        try {
+          await win.webContents.session.clearCache();
+          await win.webContents.session.clearStorageData({
+            storages: ["serviceworkers", "cachestorage"],
+          });
+          return "cleared" as const;
+        } catch (error) {
+          args.logger?.warn("renderer.dev_cache_clear_failed", {
+            err: error instanceof Error ? error.message : String(error),
+          });
+          return "failed" as const;
+        }
+      })(),
+      DEV_CACHE_CLEAR_WAIT_MS,
+      "timed_out",
+    );
+    if (outcome === "timed_out") {
+      args.logger?.warn("renderer.dev_cache_clear_skipped", { waitMs: DEV_CACHE_CLEAR_WAIT_MS });
     }
   }
 
@@ -1605,8 +1640,18 @@ app.on("open-file", (event, filePath) => {
   enqueueProjectOpenFile(filePath);
 });
 
+/** Set once the updater exists; the Windows jump-list task reaches it through `second-instance`. */
+let requestNativeUpdateInstall: (() => void) | null = null;
+/** A jump-list request that arrived before the updater existed (ADE starting up, or started by it). */
+let nativeUpdateInstallPending = process.platform === "win32" && process.argv.includes(INSTALL_UPDATE_ARG);
+
 app.on("second-instance", (_event, argv) => {
   if (process.platform === "darwin") return;
+  if (argv.includes(INSTALL_UPDATE_ARG)) {
+    if (requestNativeUpdateInstall) requestNativeUpdateInstall();
+    else nativeUpdateInstallPending = true;
+    return;
+  }
   for (const arg of argv.slice(1)) {
     const filePath = normalizeExistingAbsoluteOpenFileArg(arg);
     if (filePath) enqueueProjectOpenFile(filePath);
@@ -1637,6 +1682,15 @@ app.whenReady().then(async () => {
   })) {
     return;
   }
+  // A standalone brain (`ade brain update`) has no app resources: this record
+  // is how it finds this app, its version and its signed native helpers.
+  recordInstalledDesktopApp({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    executablePath: process.execPath,
+    version: app.getVersion(),
+    logger: getMachineMainLogger(),
+  });
 
   /** Canonical artifacts dir for the active project; ade-artifact:// and the media server only serve under this path. */
   let adeArtifactAllowedDir: string | null = null;
@@ -2188,6 +2242,10 @@ app.whenReady().then(async () => {
   try {
     builtInBrowserBridgeServer = startBuiltInBrowserDesktopBridgeServer({
       socketPath: builtInBrowserBridgeSocketPath,
+      // Windows: an older brain dials the bridge pipe name an older ADE derived.
+      aliasSocketPaths: process.env.ADE_DESKTOP_BRIDGE_SOCKET_PATH?.trim()
+        ? []
+        : resolveMachineEndpointNames().desktopBridge.slice(1),
       service: builtInBrowserService,
       logger: builtInBrowserBridgeLogger,
       appControlScreencastRecorder,
@@ -3258,10 +3316,12 @@ app.whenReady().then(async () => {
   };
   const prepareAutoUpdateInstall = async (
     resumeRequested: boolean,
+    { closeAfterInstall }: { closeAfterInstall: boolean },
   ): Promise<UpdateInterruptedChat[]> => {
     updateLogger.info("autoUpdate.prepare_quit_and_install_start", {
       serviceManaged: shouldRepairRuntimeServiceOnFallback,
       resumeRequested,
+      closeAfterInstall,
     });
     // Windows are still open here. The quit that follows closes them, and each
     // closed handler would otherwise save an empty tab list over this snapshot.
@@ -3280,6 +3340,13 @@ app.whenReady().then(async () => {
     const interruptedChats = resumeRequested
       ? (await updateImpactProbe.liveChats()).filter((chat) => chat.resumable !== false)
       : [];
+    // An install the person quit into stops nothing. The feed re-check before
+    // this took seconds, and a chat can have started meanwhile; this throws
+    // (and the quit stays a plain quit) when one did.
+    if (closeAfterInstall) {
+      const version = autoUpdateService.getSnapshot().version;
+      if (version) await installOnQuit.confirmBeforeServiceStop(version);
+    }
     if (!shouldRepairRuntimeServiceOnFallback) {
       updateLogger.info("autoUpdate.prepare_quit_and_install_done", {
         serviceManaged: false,
@@ -3335,7 +3402,7 @@ app.whenReady().then(async () => {
     stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     onInstallHandoff: process.platform === "win32" && app.isPackaged
-      ? ({ version, installerPath }) => startWindowsInstallProgress({
+      ? ({ version, installerPath, closeAfterInstall }) => startWindowsInstallProgress({
           channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
           productName: appPackageChannelDisplayName(normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)),
           currentVersion: app.getVersion(),
@@ -3344,6 +3411,7 @@ app.whenReady().then(async () => {
           installerPath,
           resourcesPath: process.resourcesPath,
           adeHome: resolveMachineAdeDir(),
+          quitInstall: closeAfterInstall,
           log: (event, data) => updateLogger.info(event, data),
         })
       : undefined,
@@ -3363,6 +3431,22 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  // Installing a waiting update as ADE quits, and the hidden launch that lands
+  // it (`installOnQuit.ts`). The probe and pool are read only once a quit asks.
+  const installOnQuit = createInstallOnQuitController({
+    logger: updateLogger,
+    updates: autoUpdateService,
+    readRuntimeMode: () => localRuntimePool.getStatus().runtimeMode,
+    collectImpact: (timeoutMs) => updateImpactProbe.collect(timeoutMs),
+    hideWindows: () => {
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (!win.isDestroyed()) win.hide();
+      }
+    },
+    dock: process.platform === "darwin"
+      ? { hide: () => app.dock?.hide(), show: () => void app.dock?.show() }
+      : null,
   });
   if (process.platform === "win32" && app.isPackaged) {
     // The update window keeps running until this launch's window is on screen,
@@ -3601,6 +3685,30 @@ app.whenReady().then(async () => {
     && process.env.NODE_ENV !== "test"
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
     && autoUpdateService.getSnapshot().recentlyInstalled != null;
+  // The person quit ADE and the quit installed this update. When this is the
+  // updater's own relaunch, it only finishes the install: the transaction below
+  // moves the background service to the new build with no window and no Dock
+  // icon, and then ADE closes again (`installOnQuit.ts`). Anything the person
+  // does meanwhile shows it.
+  if (installOnQuit.beginLaunch({
+    refreshingAfterUpdate: shouldRefreshRuntimeServiceAfterUpdate,
+    landed: autoUpdateService.landedQuitInstall(),
+    platform: process.platform,
+    argv: process.argv,
+    env: process.env,
+    version: app.getVersion(),
+    // Read on every packaged Windows launch, so a note never outlives the
+    // install it was made during.
+    launchRequested: process.platform === "win32" && app.isPackaged && takeWindowsLaunchRequest({
+      channel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+      appVersion: app.getVersion(),
+    }),
+  })) {
+    app.on("activate", () => installOnQuit.reveal("activate"));
+    app.on("second-instance", () => installOnQuit.reveal("second_instance"));
+    app.on("open-url", () => installOnQuit.reveal("open_url"));
+    app.on("open-file", () => installOnQuit.reveal("open_file"));
+  }
   if (shouldRefreshRuntimeServiceAfterUpdate) {
     // Applying an update is ONE transaction — app swap, background service
     // reinstalled, service restarted, service answering. Replacing
@@ -8235,9 +8343,30 @@ app.whenReady().then(async () => {
   let shutdownPromise: Promise<void> | null = null;
   let shutdownRequested = false;
   let shutdownFinalized = false;
+  let shutdownReason: string | null = null;
+  let mainExitRecorded = false;
   let quitWarningAcknowledged = false;
   let quitConfirmationInFlight = false;
   let shutdownForceTimer: NodeJS.Timeout | null = null;
+  /**
+   * The bookend to `desktop.main_started`, in the same machine log. A launch
+   * line with no exit line for the previous pid is a crash or a kill; without
+   * it a crash, a quit and an app that is still running read the same, which
+   * is what left a 33-hour gap in update checks unexplained. Flushed at once:
+   * the process ends in this frame.
+   */
+  const recordMainExit = (reason: string, exitCode: number | null): void => {
+    if (mainExitRecorded) return;
+    mainExitRecorded = true;
+    logMachineEvent("info", "desktop.main_exiting", {
+      pid: process.pid,
+      version: app.getVersion(),
+      isPackaged: app.isPackaged,
+      reason,
+      exitCode,
+    });
+    flushMachineMainLog();
+  };
   let captureHelper: CaptureHelper | null = null;
   /**
    * The ADE window the user was last in.
@@ -8449,6 +8578,7 @@ app.whenReady().then(async () => {
     }
     destroyWindowsForExit();
     runImmediateProcessCleanup("process_exit_finalize");
+    recordMainExit(shutdownReason ?? "finalize", exitCode);
     if (app.isReady()) {
       app.exit(exitCode);
       return;
@@ -8464,6 +8594,7 @@ app.whenReady().then(async () => {
   }): void => {
     if (shutdownFinalized || shutdownPromise) return;
     shutdownRequested = true;
+    shutdownReason = args.reason;
     quitWarningAcknowledged = true;
 
     const exitCode = args.exitCode ?? 0;
@@ -8943,9 +9074,13 @@ app.whenReady().then(async () => {
   const confirmQuitWarning = async (
     ownerWindow: BrowserWindow | null | undefined,
     relaunch: boolean,
+    plannedInstall: InstallOnQuitDecision | null = null,
   ): Promise<boolean> => {
     if (shutdownRequested || quitWarningAcknowledged) return true;
-    if (!(await quitPrompt.confirm(ownerWindow, relaunch))) return false;
+    const updateOnQuit = plannedInstall
+      ? { version: plannedInstall.version, installs: plannedInstall.action === "install" }
+      : null;
+    if (!(await quitPrompt.confirm(ownerWindow, relaunch, { updateOnQuit }))) return false;
     quitWarningAcknowledged = true;
     return true;
   };
@@ -8978,10 +9113,12 @@ app.whenReady().then(async () => {
     return (async () => {
       try {
         if (!(await confirmNoRunningLaneDeleteForQuit(ownerWindow))) return false;
-        if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch"))) return false;
+        const plannedInstall = reason === "relaunch" ? null : await installOnQuit.plan();
+        if (!(await confirmQuitWarning(ownerWindow, reason === "relaunch", plannedInstall))) return false;
         // Registered only once the user has agreed, so a cancelled restart
         // cannot turn a later plain quit into a relaunch. app.exit honors it.
         if (reason === "relaunch") app.relaunch();
+        else if (await installOnQuit.install(plannedInstall)) return true;
         requestAppShutdown({ reason, exitCode: 0 });
         return true;
       } finally {
@@ -9079,9 +9216,12 @@ app.whenReady().then(async () => {
     runImmediateProcessCleanup("process_exit");
   });
   app.on("will-quit", () => {
+    const installQuit = autoUpdateService.isInstallQuitArmed();
     autoUpdateService.notifyQuitHandoffStarted();
     runImmediateProcessCleanup("will_quit");
     disposeSharedTranscriptionService();
+    // The update installer's quit ends here instead of in finalizeAppExit.
+    recordMainExit(shutdownReason ?? (installQuit ? "update_install" : "will_quit"), null);
   });
 
   try {
@@ -9577,6 +9717,14 @@ app.whenReady().then(async () => {
     return { closed: true };
   };
 
+  let nativeUpdateRunning = false;
+  const runUpdateFromNativeUi = (win: BrowserWindow | null): void => {
+    if (nativeUpdateRunning) return;
+    nativeUpdateRunning = true;
+    void runNativeUpdateInstall(autoUpdateService, win).finally(() => {
+      nativeUpdateRunning = false;
+    });
+  };
   const installApplicationMenu = (): void => {
     /**
      * Every menu command the renderer gets first, on one route.
@@ -9623,6 +9771,7 @@ app.whenReady().then(async () => {
             label: app.name,
             submenu: [
               { role: "about" as const },
+              nativeUpdateMenuItem(autoUpdateService.getSnapshot(), runUpdateFromNativeUi),
               { type: "separator" as const },
               { role: "hide" as const },
               { role: "hideOthers" as const },
@@ -9743,6 +9892,30 @@ app.whenReady().then(async () => {
   };
 
   installApplicationMenu();
+  // The update item's label follows the updater; rebuild only when it changes.
+  let nativeUpdateLabel = nativeUpdateMenuLabel(autoUpdateService.getSnapshot());
+  autoUpdateService.onStateChange((snapshot) => {
+    const label = nativeUpdateMenuLabel(snapshot);
+    if (label === nativeUpdateLabel) return;
+    nativeUpdateLabel = label;
+    if (process.platform === "darwin") installApplicationMenu();
+  });
+  requestNativeUpdateInstall = () => runUpdateFromNativeUi(BrowserWindow.getFocusedWindow());
+  if (nativeUpdateInstallPending) {
+    nativeUpdateInstallPending = false;
+    requestNativeUpdateInstall();
+  }
+  if (process.platform === "win32" && app.isPackaged) {
+    // The taskbar's right-click menu: the Windows counterpart of the macOS menu item.
+    app.setUserTasks([{
+      program: process.execPath,
+      arguments: INSTALL_UPDATE_ARG,
+      iconPath: process.execPath,
+      iconIndex: 0,
+      title: "Install update and restart",
+      description: "Install a downloaded ADE update, or check for one",
+    }]);
+  }
 
   let ipcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
@@ -10239,14 +10412,18 @@ app.whenReady().then(async () => {
 
   await projectMoveRecovery;
   const savedUpdateState = readGlobalState(globalStatePath);
+  // A hidden quit-install launch opens no project: it closes once the service
+  // is on the new build. The saved workspace stays for the next launch the
+  // person makes. Revealed before this point, it opens as any launch does.
+  const quitInstallLaunch = installOnQuit.isLaunchHidden();
   const updateWorkspaceRestore = selectUpdateWorkspaceRestore({
-    restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true,
+    restoreRequested: savedUpdateState.restoreUpdateWorkspaceOnLaunch === true && !quitInstallLaunch,
     explicitLaunch: shouldOpenStartupProject,
     saved: savedUpdateState.updateWorkspace,
     normalizeProjectPath: normalizeProjectRoot,
     isLikelyRepoRoot,
   });
-  if (savedUpdateState.restoreUpdateWorkspaceOnLaunch) {
+  if (savedUpdateState.restoreUpdateWorkspaceOnLaunch && !quitInstallLaunch) {
     const cleared = readGlobalState(globalStatePath);
     writeGlobalState(globalStatePath, {
       ...cleared,
@@ -10370,7 +10547,20 @@ app.whenReady().then(async () => {
       registerWindowSession(createdWindow, null, initialRemoteProjectBinding);
     },
     onCloseRequested: handleMainWindowCloseRequested,
+    hidden: quitInstallLaunch,
   });
+  if (quitInstallLaunch) {
+    // Shown by anything (the person reopening ADE, a deep link, a notification),
+    // a hidden quit-install launch stays open as an ordinary one.
+    installOnQuit.finishLaunch({
+      window: initialWindow,
+      transactionDone: postUpdateTransactionDone ?? Promise.resolve(),
+      readTransaction: () => autoUpdateService.getSnapshot().updateTransaction,
+      anyWindowVisible: () => BrowserWindow.getAllWindows().some((win) => !win.isDestroyed() && win.isVisible()),
+      isShuttingDown: () => shutdownRequested,
+      requestShutdown: () => requestAppShutdown({ reason: "update_installed_on_quit", exitCode: 0 }),
+    });
+  }
   // Binds the first window to what the launch opened, as it was bound when it
   // was created after the opens.
   const bindLaunchWindow = (): void => {
@@ -10444,6 +10634,7 @@ app.whenReady().then(async () => {
   }
 
   app.on("activate", async () => {
+    // A hidden quit-install launch is revealed by its own listener above.
     if (BrowserWindow.getAllWindows().length === 0) {
       await openAdeWindow();
     }

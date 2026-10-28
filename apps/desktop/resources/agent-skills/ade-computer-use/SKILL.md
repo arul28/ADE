@@ -80,7 +80,8 @@ drive that machine's simulator, screen or app (`--lane <lane there>`; use
 Recordings stay on that machine. The person at that Mac sees "Driven by an
 agent on <your machine>" and can end your session; stop it yourself when done.
 If the app needs building, start a subagent on that machine instead
-(`ade chat create --machine …`, see ade-cli-control-plane).
+(`ade chat create --machine …`, see ade-cli-control-plane). Let one agent
+drive a device; other agents hand it work rather than take turns on it.
 
 ## The same answer on every surface
 
@@ -293,16 +294,16 @@ Use these directly; you do not need `--help` for them.
 | Open an app, file or URL | `ade screen open "Safari" --text` |
 | What is on screen | `ade screen observe --text` |
 | Click a control by its label | `ade screen click --text "Sign in" --text` |
-| Click a point from the screenshot | `ade screen click --x 900 --y 420 --text` (add `--right` or `--double`); moves no pointer on a Mac or a private Windows seat |
+| Click a point | `ade screen click --x 900 --y 420 --text` (global points; `--local` for a point read off the screenshot; add `--right` or `--double`); moves no pointer on a Mac or a private Windows seat |
 | Type, then press Return | `ade screen type "reddit" --submit --text` |
 | Press one key | `ade screen press return --text` (also `tab`, `escape`) |
 | Wait for a label to appear | `ade screen wait --label "Done" --timeout 8000 --text` |
-| Record a video | `ade screen record start --caption "<what>" --text`, then `record stop --text` |
+| Record a video | `ade screen record start --caption "<what>" --text`, then `record stop --text` (`--plain` keeps real time: no still stretches cut) |
 | Take a screenshot | `ade screen screenshot --out shot.png --text` |
 | Show the screen to the user | `ade screen show --text` (tools pane) or `--floating` |
 | Close your own window | `ade screen press w --cmd --text` (Windows: `ade screen close --window <id> --text`) |
 | Stop the screen (quits the apps the lane opened) | `ade screen stop --text` |
-| Quit apps the lane opened, released ones too (only when asked) | `ade screen quit [<app>] --text` |
+| Quit apps the lane opened, released ones too (only when asked) | `ade screen quit [<app>] --text` (any name the app goes by, a prefix of it, its bundle id or its pid) |
 
 ## Operating loop
 
@@ -324,7 +325,19 @@ and an idle display with no windows and no viewer closes itself after a while.
 `open` starts a separate, blank copy of the app for the lane: no restored
 windows, tabs or documents, and never a process shared with the user's windows.
 The copy still shares that app's data with the user (cookies, history, recent
-files). To adopt a window that is already running, claim it:
+files).
+
+A document is different. `open <file>` (or `open <app> -- <file>`) hands the
+file to the copy this lane already runs, when it runs one. When the user (or
+another lane) also runs that app, ADE refuses: macOS picks which running copy
+gets the file, and it may be the user's. Open the file from the lane's copy
+(its File menu), or pass `--new-instance` for a separate copy. When only the
+user runs the app, the lane gets its own second copy, and the result says so.
+Apps that hold a fixed port or a lock (Ableton Live, FL Studio) can misbehave
+with two copies; if one does, quit the lane's copy with `ade mac-desktop quit
+<pid>`.
+
+To adopt a window that is already running, claim it:
 
 ```bash
 ade mac-desktop claim --window <id> --text
@@ -334,6 +347,13 @@ ade mac-desktop release --window <id> --text
 `release` gives the window to the user. For an app the lane opened, the user
 gets the whole app: all its windows move to the user's screen, the lane stops
 watching it, and `stop` no longer quits it. A claimed window goes back alone.
+
+`claim` is also how you move a window onto the lane, a floating palette
+included. `drag` cannot move a window: it posts mouse events to the app, and
+only macOS moves windows, so a title bar or a frameless (Electron) drag region
+stays put. ADE places a claimed window on the lane's display; `present main`
+brings the lane's windows to the user's screen and `present display` sends them
+back.
 
 Window ids die with their process. Re-run `windows` rather than caching one.
 
@@ -345,7 +365,10 @@ new panel that opens on the user's screen is moved onto the lane's display; if
 ADE cannot move it, `observe` ends with a `Warning:` line naming the window.
 Then do not act on it: ask the user to close it or drag it onto the lane's
 screen. A lane app's macOS Open/Save panel opens on the lane's display and
-shows up as one of the app's windows. ADE cannot move an Open/Save panel.
+shows up as one of the app's windows. ADE cannot move an Open/Save panel. A
+sheet attached to a window or panel (a "Replace?" question on a Save panel) is
+listed as `[sheet of #<id>]`. Its buttons are in `observe`, first, and a
+`press return` with no target goes to it. Claiming a sheet claims its window.
 
 `open` answers before the app has a window (`watching: yes`, no windows yet).
 Wait for it before you observe — `ade mac-desktop wait --label "<window title>"
@@ -370,10 +393,16 @@ layout did not move. Add `--map` when you want a numbered image to look at.
 
 Some apps list almost nothing: an Electron window shows its three window
 buttons, and a custom-drawn app (FL Studio, Ableton, a game, a canvas) shows
-its panels but not the controls inside them. Then act by point: read the
-control's position off the screenshot (global screen points, the same plane as
-the element list) and click it with `--x/--y`. That is still delivered to the
-app alone and moves no pointer.
+its panels but not the controls inside them. Then act by point and click it
+with `--x/--y`. That is still delivered to the app alone and moves no pointer.
+
+Points are **global screen points**, the plane the element list uses, not
+screenshot pixels. The lane's display sits somewhere on that plane (often far
+from 0,0), and the observation's `points` line says where: the screenshot's
+top-left pixel is the display's origin. Add the origin to a point read off the
+screenshot, or pass `--local` and ADE adds it. A point off the lane's display is
+refused with the display's range. A point that another lane window covers goes
+to that window, the one on top, as a click would.
 
 ### 3. Act — the result already contains the next observation
 
@@ -387,7 +416,8 @@ ade mac-desktop press return --text
 ade mac-desktop press tab --text
 ade mac-desktop press return --cmd --text
 ade mac-desktop scroll down --amount 5 --text
-ade mac-desktop click --x 900 --y 420 --text            # a point, from the screenshot
+ade mac-desktop click --x 900 --y 420 --text            # a global point
+ade mac-desktop click --x 300 --y 200 --local --text    # a point read off the screenshot
 ade mac-desktop click --x 900 --y 420 --right --text    # context menu; --double for a double click
 ade mac-desktop scroll down --x 900 --y 420 --amount 5 --text
 ade mac-desktop drag --from obs-a1b2:e:3 --to 900,420 --text
@@ -430,6 +460,11 @@ app or the Dock. Tell the user their pointer will move before you ask:
 ade mac-desktop lease --reason "drag the file onto the Dock" --text
 ade mac-desktop drag --from obs-a1b2:e:3 --to 1200,1400 --real --text
 ```
+
+`lease` waits up to about three minutes for the user's answer. Its `outcome`
+line says what happened: granted, declined by the user, or not answered (the
+card was withdrawn). Anything but a grant exits 1, so check the exit code, and
+do not pipe the command into `tail` or `head` without `set -o pipefail`.
 
 ## Rules that will bite you
 

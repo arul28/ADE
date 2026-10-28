@@ -11,6 +11,7 @@ import type {
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { isWorkLivePreviewDisabled } from "../../state/workLiveCardState";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { clearMacDesktopFrame, useMacDesktopFrame } from "../chat/macDesktopFrameStore";
 import { H264StreamView } from "../chat/H264StreamView";
 import { useMacDesktopLiveView } from "../chat/useMacDesktopLiveView";
@@ -40,6 +41,7 @@ import {
   useMacDesktopCardGrant,
 } from "./macDesktopCardGrants";
 import { readMacDesktopMiniPlayerChoice, writeMacDesktopMiniPlayerChoice } from "./macDesktopMiniPlayerChoice";
+import { extractError } from "../../lib/format";
 
 /**
  * The lane's Mac Desktop, floating over the chat.
@@ -392,7 +394,7 @@ export function MacDesktopMiniPlayer({
       // back behind it.
       .then((status) => noteStatus(status))
       .catch((cause: unknown) => setStartError(
-        macDesktopErrorText(cause instanceof Error ? cause.message : String(cause), { laneId })
+        macDesktopErrorText(extractError(cause), { laneId })
           ?? `${desktopName} did not start.`,
       ))
       .finally(() => setStarting(false));
@@ -419,7 +421,7 @@ export function MacDesktopMiniPlayer({
       { laneId, ...(chatSessionId ? { chatSessionId } : {}) },
       runtimePinRef.current,
     ).catch((cause: unknown) => {
-      const message = cause instanceof Error ? cause.message : String(cause);
+      const message = extractError(cause);
       showToast({
         tone: "error",
         title: "Recording did not stop",
@@ -647,7 +649,17 @@ function MacDesktopMiniPlayerBox({
           >
             {starting ? "Starting…" : "Start"}
           </button>
-          {startError ? <p className="font-sans text-[11px] text-muted-fg">{startError}</p> : null}
+          {startError ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "mac-desktop-mini-start-error",
+                tone: "error",
+                title: startError,
+                report: { surface: "mac_desktop_mini_player_start" },
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
     </FloatingPlayerShell>

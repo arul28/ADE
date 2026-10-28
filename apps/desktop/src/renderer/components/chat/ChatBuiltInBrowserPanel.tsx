@@ -233,7 +233,8 @@ type ChatBuiltInBrowserPanelProps = {
   toolbarEndControlCount?: number;
 };
 
-type MessageTone = "info" | "error";
+/** `warning` is a message the person can act on (a bad URL); `error` is ADE failing. */
+type MessageTone = "info" | "warning" | "error";
 type Message = { tone: MessageTone; text: string };
 
 /** Live find, without a request per keystroke. */
@@ -1214,7 +1215,7 @@ export function ChatBuiltInBrowserPanel({
     (raw: string) => {
       const normalized = normalizeUrlForNavigation(raw, searchTemplate);
       if (!normalized.ok) {
-        setMessage({ tone: "error", text: normalized.reason });
+        setMessage({ tone: "warning", text: normalized.reason });
         return;
       }
       const nextUrl = normalized.url;
@@ -1844,7 +1845,7 @@ export function ChatBuiltInBrowserPanel({
     // `> 0`, not just finite: `0 × 768` used to banner "Browser is emulating
     // 0×768" while the device pill showed the size main had clamped it to.
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
-      setMessage({ tone: "error", text: "Enter a width and a height to size the browser." });
+      setMessage({ tone: "warning", text: "Enter a width and a height to size the browser." });
       return;
     }
     setDeviceMenuOpen(false);
@@ -3017,13 +3018,22 @@ export function ChatBuiltInBrowserPanel({
           />
         ) : null}
 
-        {message ? (
+        {message && message.tone !== "info" ? (
+          <Banner
+            layout="inline"
+            style={{ margin: "4px 8px", flexShrink: 0 }}
+            model={{
+              id: "chat-browser-error",
+              tone: message.tone,
+              title: message.text,
+              report: message.tone === "error" ? { surface: "chat_built_in_browser" } : false,
+              dismiss: { onDismiss: () => setMessage(null) },
+            }}
+          />
+        ) : message ? (
           <div
-            className={cn(
-              "flex shrink-0 items-start gap-2 border-b border-fg/[0.07] px-2.5 py-1.5 text-[11.5px]",
-              message.tone === "error" ? "text-rose-200/85" : "text-fg/75",
-            )}
-            role={message.tone === "error" ? "alert" : "status"}
+            className="flex shrink-0 items-start gap-2 border-b border-fg/[0.07] px-2.5 py-1.5 text-[11.5px] text-fg/75"
+            role="status"
           >
             <WarningCircle size={12} className="mt-0.5 shrink-0" />
             <span className="min-w-0 break-words">{message.text}</span>

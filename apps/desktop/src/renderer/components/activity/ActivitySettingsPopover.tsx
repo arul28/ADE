@@ -5,15 +5,14 @@ import {
   BellRinging,
   Check,
   GearSix,
-  WarningCircle,
 } from "@phosphor-icons/react";
 
 import { navigateToAppTarget } from "../../lib/openExternal";
-import { Button } from "../ui/Button";
 import {
   ActivitySettingsControls,
   useActivitySettings,
 } from "../settings/ActivitySettingsControls";
+import { Banner } from "../ui/notice";
 import "./Activity.css";
 
 /**
@@ -154,15 +153,20 @@ export function ActivitySettingsPopover() {
             )}
 
             {model.error ? (
-              <div className="activity-settings-error" role="alert">
-                <WarningCircle size={14} weight="fill" />
-                <span>{model.error}</span>
-                {model.loadFailed ? (
-                  <Button variant="ghost" size="sm" onClick={model.retryLoad}>
-                    Try again
-                  </Button>
-                ) : null}
-              </div>
+              <Banner
+                layout="inline"
+                model={{
+                  id: "activity-settings-error",
+                  // Signed out, the only error is "sign in first": not a failure.
+                  tone: model.signedOut ? "warning" : "error",
+                  title: model.error,
+                  actions: model.loadFailed
+                    ? [{ label: "Try again", onClick: model.retryLoad }]
+                    : undefined,
+                  report: model.signedOut ? false : { surface: "activity_settings" },
+                }}
+                style={{ margin: "5px 10px 8px" }}
+              />
             ) : null}
 
             <section>

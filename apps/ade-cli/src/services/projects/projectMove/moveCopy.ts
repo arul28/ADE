@@ -9,7 +9,8 @@ const execFileAsync = promisify(execFile);
 /**
  * What the copy leaves out, as `find` arguments evaluated from the project
  * root: the project database (copied separately through SQLite so the
- * write-ahead log is not lost), sockets, and, unless dependencies are copied
+ * write-ahead log is not lost), sockets, the Apple tools' DerivedData (a
+ * cache that pins the old path), and, unless dependencies are copied
  * too, dependency folders. Left-out dependencies are reinstalled after the
  * move; a lane's `node_modules` *link* to the main checkout is always kept and
  * re-pointed, so lanes work once the main checkout has its dependencies.
@@ -29,8 +30,38 @@ function findExclusions(keep: readonly string[], includeDependencies: boolean): 
     "-o", "-path", "./.ade/ade.db-wal",
     "-o", "-path", "./.ade/ade.db-shm",
     "-o", "-type", "s",
+    // Xcode's build folder for the Apple tools, in the main checkout and in
+    // every lane: a rebuildable cache, and one that pins the old path
+    // (SwiftPM's workspace-state.json names absolute package paths, so a
+    // copied one fails the next build with "no XCFramework found").
+    "-o", "(", "-path", `*/${REBUILDABLE_DERIVED_DATA}`, "-type", "d", ")",
     ")", "-prune",
   ];
+}
+
+/** The Apple tools' DerivedData, relative to a checkout (the main one or a lane's). Never copied by a move. */
+export const REBUILDABLE_DERIVED_DATA = ".ade/cache/ios-simulator/DerivedData";
+
+/**
+ * The DerivedData folders the copy leaves out: the main checkout's and each
+ * lane's under `.ade/worktrees`. Lanes elsewhere do not move.
+ */
+function rebuildableCacheDirs(root: string): string[] {
+  const dirs = [path.join(root, REBUILDABLE_DERIVED_DATA)];
+  try {
+    for (const lane of fs.readdirSync(path.join(root, ".ade", "worktrees"))) {
+      dirs.push(path.join(root, ".ade", "worktrees", lane, REBUILDABLE_DERIVED_DATA));
+    }
+  } catch {
+    // No lanes inside the project.
+  }
+  return dirs.filter((dir) => {
+    try {
+      return fs.lstatSync(dir).isDirectory();
+    } catch {
+      return false;
+    }
+  });
 }
 
 /** `find -path` takes a glob, so a folder named with `*`, `?` or `[` must be escaped. */
@@ -113,12 +144,19 @@ export function measureProject(root: string): Promise<ProjectMeasurement> {
   if (cached && (cached.doneAt === null || Date.now() - cached.doneAt < MEASURE_CACHE_MS)) return cached.value;
   const entry: { doneAt: number | null; value: Promise<ProjectMeasurement> } = {
     doneAt: null,
-    value: Promise.all([duBytes(root, { ignoreDependencies: true }), duBytes(root)])
-      .then(([withoutDependencies, total]): ProjectMeasurement => {
+    value: Promise.all([
+      duBytes(root, { ignoreDependencies: true }),
+      duBytes(root),
+      // Left out of the copy, so not part of what it needs; an unmeasured one
+      // counts as 0 B, which only overstates the copy.
+      Promise.all(rebuildableCacheDirs(root).map((dir) => duBytes(dir, { ignoreDependencies: true })))
+        .then((sizes) => sizes.reduce<number>((sum, size) => sum + (size ?? 0), 0)),
+    ])
+      .then(([withoutDependencies, total, skipped]): ProjectMeasurement => {
         if (withoutDependencies === null || total === null) return { measured: false };
         return {
           measured: true,
-          copyBytes: withoutDependencies,
+          copyBytes: Math.max(0, withoutDependencies - skipped),
           dependencyBytes: Math.max(0, total - withoutDependencies),
         };
       })

@@ -289,7 +289,7 @@ function machineItems(
       id: "machines-behind",
       severity: "note",
       title: behind.length === 1 ? `${behind[0]!.name} runs an older ADE` : `${behind.length} machines run an older ADE`,
-      detail: behind.map((machine) => `${machine.name}: ${machine.version ?? "unknown"}`).join(", "),
+      detail: behind.map((machine) => `${machine.name}: ${machine.versionLabel ?? machine.version ?? "unknown"}`).join(", "),
       where: behind.length === 1 ? behind[0]!.name : "Your computers",
       route: settingsRouteFor("general.update-other-machines"),
     });
@@ -369,7 +369,7 @@ function projectItems(report: ProjectHealthReport | null): AttentionItem[] {
 async function mcpItems(): Promise<AttentionItem[]> {
   const settings = window.ade?.accountSettings;
   const registry = window.ade?.mcpRegistry;
-  if (!settings || !registry) return [];
+  if (!isAdeAvailable(settings) || !isAdeAvailable(registry)) return [];
   const stored = await settings.get({ scope: ACCOUNT_SCOPE_ALL, key: MCP_SERVERS_SETTING_KEY });
   if (!stored.ok) return [];
   const servers = normalizeMcpRegistry(stored.value);

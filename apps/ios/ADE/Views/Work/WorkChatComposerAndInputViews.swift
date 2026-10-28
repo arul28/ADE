@@ -622,6 +622,45 @@ struct WorkComposerControlsRow: View {
   }
 }
 
+/// The composer's held-settings chip. Mirrors desktop
+/// (apps/desktop/src/shared/chatTurnStatus.ts): an effort the running work has
+/// not taken yet reads "High → Medium" (desktop's
+/// `reasoningEffortChangeShortLabel`); other held settings are named as in
+/// `pendingSettingsAfterBackgroundShortLabel`. Effort is left out of that list
+/// when the host sends `reasoningEffortChange`; a host that predates it only
+/// lists effort there. Nil when nothing waits.
+func workPendingSettingsChip(
+  effortChange: AgentChatReasoningEffortChange?,
+  heldSettings: [String]?
+) -> WorkPendingSettingsChipModel? {
+  let effort = effortChange.map { change -> (label: String, spoken: String) in
+    let current = workEffortChangeName(change.current)
+    let next = workEffortChangeName(change.next)
+    let when = change.appliesAfter == "background" ? "after background work finishes" : "on the next turn"
+    return ("\(current) → \(next)", "Effort \(current) now. \(next) starts \(when).")
+  }
+  let held = workPendingSettingsAfterBackgroundShortLabel(
+    effortChange == nil ? heldSettings : heldSettings?.filter { $0 != "reasoningEffort" }
+  ).map { ($0, "\($0). Applies after background work finishes.") }
+  let parts = [effort, held].compactMap { $0 }
+  guard !parts.isEmpty else { return nil }
+  return WorkPendingSettingsChipModel(
+    label: parts.map(\.0).joined(separator: " · "),
+    spoken: parts.map(\.1).joined(separator: " ")
+  )
+}
+
+/// What the held-settings chip shows, and what VoiceOver reads for it.
+struct WorkPendingSettingsChipModel: Equatable {
+  let label: String
+  let spoken: String
+}
+
+private func workEffortChangeName(_ effort: String?) -> String {
+  guard let effort, !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Default" }
+  return workReasoningEffortDisplayName(effort)
+}
+
 /// Mirrors desktop `pendingSettingsAfterBackgroundShortLabel`
 /// (apps/desktop/src/shared/chatTurnStatus.ts): one held setting is named,
 /// several read "Settings pending". Nil when nothing waits.
@@ -640,13 +679,13 @@ func workPendingSettingsAfterBackgroundShortLabel(_ settings: [String]?) -> Stri
 /// just above the prompt box in the Compact first pill's style, so the narrow
 /// control strip never scrolls it out of view.
 struct WorkPendingSettingsChip: View {
-  let label: String
+  let model: WorkPendingSettingsChipModel
 
   var body: some View {
     HStack(spacing: 6) {
       Image(systemName: "clock")
         .font(.system(size: 10, weight: .bold))
-      Text(label)
+      Text(model.label)
         .font(.caption2.weight(.semibold))
         .lineLimit(1)
     }
@@ -660,7 +699,7 @@ struct WorkPendingSettingsChip: View {
     )
     .padding(.bottom, 8)
     .accessibilityElement(children: .combine)
-    .accessibilityLabel("\(label). Applies after background work finishes.")
+    .accessibilityLabel(model.spoken)
     .accessibilityIdentifier("Work.Chat.Composer.PendingSettingsChip")
   }
 }

@@ -38,7 +38,11 @@ export type QuitPrompt = {
    * Skipped when the person ticked "Don't ask again", unless quitting would
    * stop running agents.
    */
-  confirm: (ownerWindow: BrowserWindow | null | undefined, relaunch: boolean) => Promise<boolean>;
+  confirm: (
+    ownerWindow: BrowserWindow | null | undefined,
+    relaunch: boolean,
+    extras?: { updateOnQuit?: QuitPromptRequest["updateOnQuit"] },
+  ) => Promise<boolean>;
   /** "Repair service" from this prompt is running, including the resumes after it. */
   isRepairing: () => boolean;
 };
@@ -218,7 +222,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
     };
   };
 
-  const confirm: QuitPrompt["confirm"] = async (ownerWindow, relaunch) => {
+  const confirm: QuitPrompt["confirm"] = async (ownerWindow, relaunch, extras) => {
     const owned = appOwnedService(deps.getRuntimeStatus());
     // A normal quit stops nothing, so "Don't ask again" skips even the probe.
     // When it would stop agents, ask every time: a probe that timed out
@@ -234,6 +238,7 @@ export function createQuitPrompt(deps: QuitPromptDeps): QuitPrompt {
         ? null
         : impact.chats.length,
       appOwnedService: owned,
+      ...(extras?.updateOnQuit ? { updateOnQuit: extras.updateOnQuit } : {}),
     };
     const parentWindow =
       ownerWindow && !ownerWindow.isDestroyed()

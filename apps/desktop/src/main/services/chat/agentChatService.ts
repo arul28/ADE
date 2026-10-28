@@ -239,6 +239,7 @@ import {
 import { parseCodexPluginList } from "../../../shared/codexPluginList";
 import {
   countHumanChildMessagesForTurn,
+  formatChildRaisedHandAnnotation,
   formatHumanChildMessageAnnotation,
   messageClearsAttentionMarkers,
   resolveSpawnEndedTurnId,
@@ -460,10 +461,12 @@ import {
   mcpOAuthVaultKey,
   mcpRegistryState,
   parseMcpOAuthToken,
+  sameMcpServerUrl,
   type McpRegistryServer,
   type McpRegistryState,
 } from "../../../shared/mcpRegistry";
 import { readCachedMcpRegistry } from "../mcp/mcpRegistryCache";
+import type { McpRegistryAuthLookup } from "../mcp/mcpRegistryService";
 import { createChatUserMcp } from "../mcp/chatUserMcp";
 import { resolveMachineAdeDir } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import {
@@ -675,6 +678,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatPendingSettingAfterBackground,
+  AgentChatReasoningEffortChange,
   AgentChatSessionSummary,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
@@ -3268,6 +3272,14 @@ type ClaudeRuntime = {
    * cleared by every query reset, which applies or supersedes them.
    */
   pendingResetSettings?: Set<AgentChatPendingSettingAfterBackground>;
+  /**
+   * The effort the live query still runs at while a deferred reset holds an
+   * effort change (`pendingResetSettings` has `reasoningEffort`). `undefined`
+   * when no effort change waits; `null` is the model's default.
+   */
+  pendingResetRunningEffort?: string | null;
+  /** The last effort change still settling; the next one waits for it, so they land in order. */
+  effortChangeTail?: Promise<void>;
   /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
   pendingSessionResetClearSdkSessionId?: boolean;
   /** Tool names the user has approved for the session via "Allow for Session". */
@@ -4573,6 +4585,44 @@ function claudePendingSettingsAfterBackground(
   return (["reasoningEffort", "fastMode"] as const).filter((setting) => settings.has(setting));
 }
 
+/** How long a live Claude effort change may take before it falls back to the deferred reset. */
+const CLAUDE_EFFORT_CHANGE_TIMEOUT_MS = 5_000;
+
+/** Hold an effort change for the deferred reset, remembering the effort the live query keeps. */
+function deferClaudeReasoningEffortReset(runtime: ClaudeRuntime, runningEffort: string | null): void {
+  if (runtime.pendingResetRunningEffort === undefined) runtime.pendingResetRunningEffort = runningEffort;
+  deferClaudeQueryResetForSetting(runtime, "reasoningEffort");
+}
+
+/**
+ * The picked effort a Claude chat's live query has not taken yet. Only a
+ * deferred reset leaves one: a live `applyFlagSettings` change lands on the
+ * next model request, even inside the running turn. Once the turn is over and
+ * no background work holds the reset, the next send applies it, so nothing
+ * is shown.
+ */
+function claudeReasoningEffortChange(
+  runtime: ChatRuntime | null,
+  selectedEffort: string | null,
+): AgentChatReasoningEffortChange | null {
+  if (runtime?.kind !== "claude" || !runtime.pendingSessionReset) return null;
+  const current = runtime.pendingResetRunningEffort;
+  if (current === undefined || !runtime.pendingResetSettings?.has("reasoningEffort")) return null;
+  if (current === selectedEffort) return null;
+  const backgroundHolds = claudeHasAwaitedBackgroundWorkload(runtime);
+  if (!runtime.busy && !backgroundHolds) return null;
+  return { current, next: selectedEffort, appliesAfter: backgroundHolds ? "background" : "turn" };
+}
+
+/** The picked effort a chat's running work has not taken yet, for any provider. */
+function managedReasoningEffortChange(managed: ManagedChatSession): AgentChatReasoningEffortChange | null {
+  const selected = managed.session.reasoningEffort ?? null;
+  if (managed.session.provider === "claude") return claudeReasoningEffortChange(managed.runtime, selected);
+  const current = managed.turnReasoningEffort;
+  if (current === undefined || managed.session.status !== "active" || current === selected) return null;
+  return { current, next: selected, appliesAfter: "turn" };
+}
+
 /**
  * Tracked tasks that still claim the runtime is doing work. Housekeeping tasks
  * and hook-only entries never do: neither is guaranteed a terminal edge.
@@ -5223,6 +5273,13 @@ type ManagedChatSession = {
    * the send; the list reports it as in flight meanwhile. In memory only.
    */
   turnAcceptedAt?: string | null;
+  /**
+   * The effort the running turn started with; `undefined` while no turn runs.
+   * Providers other than Claude take effort per turn, so a change mid-turn
+   * (a steer included) reaches only the next one. Claude tracks its live
+   * query instead (`claudeReasoningEffortChange`). In memory only.
+   */
+  turnReasoningEffort?: string | null;
   /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
@@ -11442,7 +11499,7 @@ export function createAgentChatService(args: {
    */
   adoptHarnessPreset?: ((preset: HarnessPreset) => string | null | void) | null;
   /** Resolve an ADE registry MCP sign-in from the owning brain's account vault. */
-  resolveMcpAuthToken?: ((serverUrl: string) => Promise<{ accessToken?: string; expiresIn?: number; registryConfigured: boolean }>) | null;
+  resolveMcpAuthToken?: ((serverUrl: string) => Promise<McpRegistryAuthLookup>) | null;
   /** Optional main-process analytics sink for successful desktop voice starts. */
   analytics?: FeatureAnalytics | null;
   /** Control endpoint this runtime actually bound, used for ownership attribution. */
@@ -21712,11 +21769,20 @@ export function createAgentChatService(args: {
       // A new turn starts: the last turn's id no longer applies. Proof filed
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
+      managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
     // The accepted turn has started, so it no longer waits on a provider start.
     clearTurnAccepted(managed);
+  };
+
+  /**
+   * The turn already marked active (Codex, Cursor and Droid start optimistically)
+   * runs at the effort its send just applied, not the one it was marked with.
+   */
+  const recordTurnReasoningEffort = (managed: ManagedChatSession): void => {
+    if (managed.session.status === "active") managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
   };
 
   const setSessionIdle = (
@@ -21725,6 +21791,7 @@ export function createAgentChatService(args: {
   ): void => {
     managed.session.status = "idle";
     managed.session.currentTurnStartedAt = null;
+    managed.turnReasoningEffort = undefined;
     clearTurnAccepted(managed);
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
@@ -34631,6 +34698,10 @@ export function createAgentChatService(args: {
     const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
       cwd: managed.laneWorktreePath,
       pluginRoots,
+      bundledSkills: {
+        pluginRoots,
+        copyRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+      },
     });
     const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
     const slashCommandsSection = (injectionPlan.commands.length || renderedSkills.lines.length)
@@ -46049,6 +46120,10 @@ export function createAgentChatService(args: {
       const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
         cwd: managed.laneWorktreePath,
         pluginRoots: pluginPaths,
+        bundledSkills: {
+          pluginRoots: adeSkillCatalogFor(managed.session) === "none" ? [] : bundledPluginPaths,
+          copyRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
+        },
       });
       const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
       const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
@@ -46269,6 +46344,7 @@ export function createAgentChatService(args: {
     // The next query is built from the current settings, so every setting
     // that waited is applied (or superseded) by this reset.
     runtime.pendingResetSettings?.clear();
+    runtime.pendingResetRunningEffort = undefined;
     try { runtime.query?.close(); } catch { /* ignore */ }
     runtime.inputPump?.close();
     runtime.query = null;
@@ -48790,8 +48866,12 @@ export function createAgentChatService(args: {
     } else {
       baseSummary = "Turn failed.";
     }
-    const summary = humanAnnotation ? `${baseSummary}\n${humanAnnotation}` : baseSummary;
-    const childTitle = sessionService.get(childSessionId)?.title?.trim()
+    const childRow = sessionService.get(childSessionId);
+    const raisedHandAnnotation = childRow
+      ? formatChildRaisedHandAnnotation({ ...childRow, sessionId: childSessionId })
+      : null;
+    const summary = [baseSummary, humanAnnotation, raisedHandAnnotation].filter(Boolean).join("\n");
+    const childTitle = childRow?.title?.trim()
       || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
       childSessionId,
@@ -59815,25 +59895,37 @@ export function createAgentChatService(args: {
         // mcpServers.Authorization. They need no OAuth handoff or sign-in card.
         const configuredServers = callerMcpServersForLaunch(target) ?? {};
         const alreadyAuthorized = serverUrl && Object.values(configuredServers).some((server) =>
-          server.type !== "stdio" && server.url === serverUrl
+          server.type !== "stdio" && sameMcpServerUrl(server.url, serverUrl)
           && Object.entries(server.headers ?? {}).some(([name, value]) =>
             name.toLowerCase() === "authorization" && Boolean(value.trim()),
           ),
         );
         if (alreadyAuthorized) return { kind: "cancelled" };
         if (serverUrl && args.resolveMcpAuthToken) {
-          const token = await args.resolveMcpAuthToken(serverUrl).catch((error: unknown) => {
+          const token: McpRegistryAuthLookup = await args.resolveMcpAuthToken(serverUrl).catch((error: unknown): McpRegistryAuthLookup => {
             logger.warn("agent_chat.copilot_mcp_auth_lookup_failed", {
               sessionId: chatId,
               server: serverName,
               error: error instanceof Error ? error.message : String(error),
             });
-            return { registryConfigured: false, accessToken: undefined, expiresIn: undefined };
+            return { registryConfigured: false };
           });
           if (token.accessToken) return { kind: "token", accessToken: token.accessToken, expiresIn: token.expiresIn ?? 3600 };
-          const signInMessage = token.registryConfigured
-            ? `${serverName} needs a sign-in. Sign in from Settings → MCP servers.`
-            : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers → Import) and sign in once — every agent will use it.`;
+          const registryName = token.serverName ?? serverName;
+          // Origin and path only: a query string can carry a token.
+          const shownUrl = (() => {
+            try {
+              const parsed = new URL(serverUrl);
+              return `${parsed.origin}${parsed.pathname}`;
+            } catch {
+              return "its URL";
+            }
+          })();
+          const signInMessage = token.off
+            ? `${serverName} needs a sign-in, but ${registryName} is off here in ADE's MCP servers. Turn it on in Settings → MCP servers, then start a new chat.`
+            : token.registryConfigured
+              ? `${serverName} needs a sign-in. Sign in to ${registryName} from Settings → MCP servers, then start a new chat.`
+              : `${serverName} needs a sign-in. Add it to ADE's MCP servers (Settings → MCP servers: Import, or Add with ${shownUrl}) and sign in once — every agent will use it.`;
           const key = `${chatId}:${serverUrl || serverName}`;
           if (!copilotMcpAuthNotices.has(key)) {
             copilotMcpAuthNotices.add(key);
@@ -60045,8 +60137,8 @@ export function createAgentChatService(args: {
           adeSkillRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
           sessionActivityGuidance: droidActivityGuidance,
         });
-    // Droid reads only `.factory/skills`, so the project's and the user's own
-    // skills (`.claude/skills`, `.agents/skills`) are listed for it, as they
+    // Droid reads `.factory`, `.agents` and `.agent` skills itself, so only
+    // the project's and the user's `.claude/skills` are listed for it, as they
     // are for Claude. A personal chat has no project to list.
     const droidSkillListing = isPersonalSession(managed.session)
       ? []
@@ -60598,6 +60690,7 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      recordTurnReasoningEffort(managed);
       if (effectiveCursorRuntime(managed, prepared.runtime) === "cloud") {
         await runCursorCloudTurn(managed, {
           promptText,
@@ -60643,6 +60736,7 @@ export function createAgentChatService(args: {
         chatConfig.opencodePermissionMode,
       );
       managed.session.permissionMode = syncLegacyPermissionMode(managed.session) ?? managed.session.permissionMode;
+      recordTurnReasoningEffort(managed);
       await runDroidTurn(managed, {
         promptText,
         userText: submittedText,
@@ -60864,6 +60958,7 @@ export function createAgentChatService(args: {
         }
       }
 
+      recordTurnReasoningEffort(managed);
       await sendCodexMessage(managed, {
         promptText,
         userText: submittedText,
@@ -60881,33 +60976,21 @@ export function createAgentChatService(args: {
       return;
     }
 
-    const prevClaudeEffort = managed.session.reasoningEffort ?? null;
-    const nextClaudeEffort = validateReasoningEffortForDescriptor(
-      "claude",
-      normalizeReasoningEffort(reasoningEffort),
-      resolveSessionModelDescriptor(managed.session),
-    );
-    if (nextClaudeEffort) {
-      managed.session.reasoningEffort = nextClaudeEffort;
-    }
     // A warm/live query bakes in the effort it was built with (see
     // buildClaudeQueryOptions). When this turn carries a different effort —
     // e.g. the user picks xhigh after the session pre-warmed at medium —
     // ensureClaudeQuery would otherwise reuse the stale warm query and the new
-    // effort would never reach the SDK. Invalidate it so a fresh query is built
-    // with the updated thinking configuration.
-    if (
-      nextClaudeEffort
-      && nextClaudeEffort !== prevClaudeEffort
-      && managed.runtime?.kind === "claude"
-      && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)
-    ) {
-      if (claudeQueryResetMustWait(managed.runtime)) {
-        deferClaudeQueryResetForSetting(managed.runtime, "reasoningEffort");
-      } else {
-        resetClaudeQuerySession(managed, managed.runtime, "session_reset");
-      }
-    } else if (managed.runtime?.kind === "claude" && managed.runtime.pendingSessionReset) {
+    // effort would never reach the SDK, so the query is moved to it first.
+    const prevClaudeEffort = managed.session.reasoningEffort ?? null;
+    const claudeRuntimeBeforeEffort = managed.runtime?.kind === "claude" ? managed.runtime : null;
+    const claudeQueryTakesEffort = Boolean(
+      claudeRuntimeBeforeEffort
+      && (claudeRuntimeBeforeEffort.query || claudeRuntimeBeforeEffort.warmQuery || claudeRuntimeBeforeEffort.warmupDone),
+    );
+    const claudeEffortMove = applyClaudeSendReasoningEffort(managed, reasoningEffort);
+    if (claudeEffortMove) await claudeEffortMove;
+    const claudeEffortMoved = claudeQueryTakesEffort && (managed.session.reasoningEffort ?? null) !== prevClaudeEffort;
+    if (!claudeEffortMoved && managed.runtime?.kind === "claude" && managed.runtime.pendingSessionReset) {
       // A reset that waited (on background work, or a turn that has ended):
       // this turn is the first one that can carry it. Checked before the call
       // so a send with nothing deferred adds no await (a warmup may be racing).
@@ -60933,6 +61016,119 @@ export function createAgentChatService(args: {
       onBackendDispatched,
     });
     markEpochDirectivesDelivered();
+  };
+
+  /**
+   * Change a busy Claude query's effort in place. The CLI takes it on its next
+   * model request, inside the running turn too, so a steer sent with a new
+   * effort is answered at that effort and nothing is restarted. Returns false
+   * when the query cannot take it.
+   */
+  const applyClaudeReasoningEffortLive = async (
+    managed: ManagedChatSession,
+    sessionQuery: ClaudeQuery,
+    effort: string | null,
+  ): Promise<boolean> => {
+    const control = getClaudeQueryControl(sessionQuery);
+    if (typeof control.applyFlagSettings !== "function") return false;
+    const applyFlagSettings = control.applyFlagSettings;
+    try {
+      // Both keys every time: an effort change sent without `ultracode`
+      // turns ultracode off, and `null` returns to the model's default.
+      // Bounded, so a process that stopped answering falls back to the
+      // deferred reset instead of holding every later effort change. A late
+      // answer is harmless: that reset rebuilds the query at the picked effort.
+      await awaitClaudeControlCall("Claude effort change", CLAUDE_EFFORT_CHANGE_TIMEOUT_MS, () => applyFlagSettings({
+        effortLevel: claudeRuntimeEffortForReasoningEffort(effort),
+        ultracode: isClaudeUltracodeEffort(effort),
+      } as Parameters<typeof applyFlagSettings>[0]));
+    } catch (error) {
+      logger.warn("agent_chat.claude_set_effort_live_failed", {
+        sessionId: managed.session.id,
+        effort,
+        error: String(error),
+      });
+      return false;
+    }
+    return true;
+  };
+
+  /**
+   * Move a Claude chat's live query from `prev` to `next`, the session's new
+   * effort. An idle query restarts on it; a busy one, or one kept for
+   * background work, takes it live, and only when that fails does a deferred
+   * reset hold it. Changes to one runtime run one at a time, in order, so
+   * `prev` is always what the query was last moved to. A change is dropped
+   * when a reset or a new runtime got there first: the new query is built
+   * from the latest effort.
+   */
+  const applyClaudeReasoningEffortChange = async (
+    managed: ManagedChatSession,
+    prev: string | null,
+    next: string | null,
+  ): Promise<void> => {
+    const runtime = managed.runtime;
+    if (prev === next || runtime?.kind !== "claude") return;
+    // The previous change's own caller sees its failure; this one still runs.
+    const change = (runtime.effortChangeTail ?? Promise.resolve())
+      .catch(() => undefined)
+      .then(() => moveClaudeQueryEffort(managed, runtime, prev, next));
+    runtime.effortChangeTail = change;
+    try {
+      await change;
+    } finally {
+      if (runtime.effortChangeTail === change) runtime.effortChangeTail = undefined;
+    }
+  };
+
+  const moveClaudeQueryEffort = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    prev: string | null,
+    next: string | null,
+  ): Promise<void> => {
+    if (managed.runtime !== runtime) return;
+    if (!runtime.query && !runtime.warmQuery && !runtime.warmupDone) return;
+    if (!claudeQueryResetMustWait(runtime)) {
+      resetClaudeQuerySession(managed, runtime, "session_reset");
+      return;
+    }
+    const sessionQuery = runtime.query;
+    const applied = sessionQuery ? await applyClaudeReasoningEffortLive(managed, sessionQuery, next) : false;
+    if (managed.runtime !== runtime || runtime.query !== sessionQuery) return;
+    if (!applied) {
+      // Tearing down a live session mid-turn would force the stream down the
+      // failure path, and background work would die with the process.
+      deferClaudeReasoningEffortReset(runtime, prev);
+      return;
+    }
+    // The live query runs at the picked effort now, so an effort change an
+    // earlier reset was holding no longer waits.
+    runtime.pendingResetSettings?.delete("reasoningEffort");
+    runtime.pendingResetRunningEffort = undefined;
+  };
+
+  /**
+   * Take the effort a Claude send or steer carries; `null` keeps the chat's
+   * effort, as it always has for a send. Returns what to await before the
+   * message goes out: the move to a new effort, or an earlier change still
+   * landing. Null when nothing has to settle, so a plain send adds no await
+   * while a warmup may be racing.
+   */
+  const applyClaudeSendReasoningEffort = (
+    managed: ManagedChatSession,
+    reasoningEffort: string | null | undefined,
+  ): Promise<void> | null => {
+    const prev = managed.session.reasoningEffort ?? null;
+    const next = validateReasoningEffortForDescriptor(
+      "claude",
+      normalizeReasoningEffort(reasoningEffort),
+      resolveSessionModelDescriptor(managed.session),
+    );
+    const pendingChange = managed.runtime?.kind === "claude" ? managed.runtime.effortChangeTail ?? null : null;
+    if (!next) return pendingChange;
+    managed.session.reasoningEffort = next;
+    return next !== prev ? applyClaudeReasoningEffortChange(managed, prev, next) : pendingChange;
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -61684,6 +61880,8 @@ export function createAgentChatService(args: {
     mode: AgentChatDispatchSteerMode,
     onAccepted?: () => void,
   ): Promise<number> => {
+    // Read before any wait below, so a Stop during one still refuses the steer.
+    const stopSeq = runtime.stopSeq;
     const initialInputGate = runtime.initialInputDispatchGate;
     if (runtime.busy && initialInputGate) {
       await initialInputGate.promise;
@@ -61698,7 +61896,14 @@ export function createAgentChatService(args: {
     const dispatchUuid = steer.uuid;
     const contextPrompt = buildChatContextAttachmentPrompt(steer.contextAttachments);
     const promptText = contextPrompt ? `${contextPrompt}\n\n${steer.text}` : steer.text;
-    const stopSeq = runtime.stopSeq;
+    // The running query answers this steer, so the effort it carries goes
+    // there first.
+    const effortMove = applyClaudeSendReasoningEffort(managed, steer.reasoningEffort);
+    if (effortMove) {
+      await effortMove;
+      persistChatState(managed);
+      if (managed.runtime !== runtime) throw new Error("Claude restarted before this message was sent.");
+    }
     const retainedSpend = startClaudeRetainedMediaSpend(managed);
     const sdkMsg = await buildClaudeV2MessageAsync(promptText, steer.resolvedAttachments, {
       baseDir: managed.laneWorktreePath,
@@ -65874,7 +66079,12 @@ export function createAgentChatService(args: {
       : undefined;
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
-    const pendingSettingsAfterBackground = claudePendingSettingsAfterBackground(liveManaged?.runtime ?? null);
+    const reasoningEffortChange = liveManaged ? managedReasoningEffortChange(liveManaged) : null;
+    // Older clients read a held effort from this list. It is listed only while
+    // `reasoningEffortChange` names it, which is how newer clients tell this
+    // host apart from one that predates that field.
+    const pendingSettingsAfterBackground = claudePendingSettingsAfterBackground(liveManaged?.runtime ?? null)
+      .filter((setting) => setting !== "reasoningEffort" || reasoningEffortChange != null);
     const modelHandoffHistory = liveSession?.modelHandoffHistory ?? persisted?.modelHandoffHistory;
     const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
     // Reported even when nothing is live in the runtime's own bookkeeping: a
@@ -66174,6 +66384,7 @@ export function createAgentChatService(args: {
       // summary read for every session.
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       ...(pendingSettingsAfterBackground.length ? { pendingSettingsAfterBackground } : {}),
+      ...(reasoningEffortChange ? { reasoningEffortChange } : {}),
       ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
       ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
       // `true` is this brain's own runtime; `false` is only honest when no
@@ -66602,6 +66813,8 @@ export function createAgentChatService(args: {
       // Watch-only monitors never make a chat "waiting": nobody waits on them.
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
       pendingSettingsAfterBackground: summary.pendingSettingsAfterBackground ?? [],
+      reasoningEffortChange: summary.reasoningEffortChange ?? null,
+      modelId: summary.modelId ?? summary.model,
       currentTool: runningWithTool?.lastToolName
         ? { name: runningWithTool.lastToolName }
         : null,
@@ -71360,19 +71573,7 @@ export function createAgentChatService(args: {
           ? validateReasoningEffortForDescriptor("claude", requested, descriptor)
           : validateRuntimeReasoningEffortForDescriptor(requested, descriptor);
       const next = managed.session.reasoningEffort ?? null;
-      // When reasoning effort changes on a Claude session with an active query,
-      // invalidate the query so it is recreated on the next turn
-      // with the updated thinking configuration.
-      if (prev !== next && managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) {
-        if (claudeQueryResetMustWait(managed.runtime)) {
-          // Defer session reset until the current turn completes — tearing down
-          // a live session mid-turn would force the stream down the failure path
-          // — and until background work ends, which would die with the process.
-          deferClaudeQueryResetForSetting(managed.runtime, "reasoningEffort");
-        } else {
-          resetClaudeQuerySession(managed, managed.runtime, "session_reset");
-        }
-      }
+      await applyClaudeReasoningEffortChange(managed, prev, next);
       if (prev !== next && managed.runtime?.kind === "codex") {
         if (
           managed.session.threadId

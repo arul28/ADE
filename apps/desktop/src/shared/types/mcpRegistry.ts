@@ -42,8 +42,10 @@ export type McpServerSignIn = {
   expiresAt: string | null;
 };
 
-/** A provider CLI whose own config the scan reads. */
-export type McpConfigProvider = "claude" | "codex" | "cursor" | "opencode" | "droid" | "pi";
+/** A provider CLI whose own config the scan reads: every chat provider. */
+export type McpConfigProvider =
+  | "claude" | "codex" | "copilot" | "cursor" | "opencode" | "droid" | "pi"
+  | "muse" | "qwen" | "kimi" | "grok" | "devin" | "antigravity";
 
 /** A server found in a provider's own config. Names only: no values. */
 export type McpFoundServer = {

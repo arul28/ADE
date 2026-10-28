@@ -1,7 +1,10 @@
 import { annotateSubagentTree } from "./chatSubagentTree";
 import { resourceLinkCopyPaths } from "./claudeAgentSdkFields";
+import { modelMentionEffortLabel } from "./modelMentions";
+import { usesCodexNamedEffortLabels } from "./modelRegistry";
 import type {
   AgentChatPendingSettingAfterBackground,
+  AgentChatReasoningEffortChange,
   AgentChatResourceLink,
   AgentChatRuntimeOwnerRef,
 } from "./types/chat";
@@ -64,6 +67,10 @@ export type ChatTurnStatusSnapshot = {
   backgroundWorkCount?: number;
   /** Setting changes held until that background work ends (see the session summary field). */
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
+  /** The picked effort the running work has not picked up yet (see the session summary field). */
+  reasoningEffortChange?: AgentChatReasoningEffortChange;
+  /** The chat's model, so effort levels read as its picker names them. */
+  modelId?: string;
   /** Present when the id names a tracked CLI terminal rather than a chat. */
   cliSession?: CliSessionFacts;
   /**
@@ -91,6 +98,8 @@ export type DeriveChatTurnStatusInput = {
   /** Live background work somebody waits on (the summary's working count; monitors excluded). */
   backgroundWorkCount?: number;
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
+  reasoningEffortChange?: AgentChatReasoningEffortChange | null;
+  modelId?: string | null;
   ownedElsewhere?: AgentChatRuntimeOwnerRef | null;
   nowMs?: number;
 };
@@ -152,6 +161,8 @@ export function deriveChatTurnStatus(input: DeriveChatTurnStatusInput): ChatTurn
     ...(input.pendingSettingsAfterBackground?.length
       ? { pendingSettingsAfterBackground: input.pendingSettingsAfterBackground }
       : {}),
+    ...(input.reasoningEffortChange ? { reasoningEffortChange: input.reasoningEffortChange } : {}),
+    ...(input.reasoningEffortChange && input.modelId ? { modelId: input.modelId } : {}),
     ...(ownedElsewhere ? { ownedElsewhere } : {}),
   };
 }
@@ -218,8 +229,12 @@ export function formatChatTurnStatus(
       `${status.queuedMessageCount} message${status.queuedMessageCount === 1 ? "" : "s"} waiting`,
     ));
   }
-  if (status.pendingSettingsAfterBackground?.length) {
-    lines.push(chatTurnStatusRow("pending", pendingSettingsAfterBackgroundLabel(status.pendingSettingsAfterBackground)));
+  if (status.reasoningEffortChange) {
+    lines.push(chatTurnStatusRow("effort", reasoningEffortChangeLabel(status.reasoningEffortChange, status.modelId)));
+  }
+  const heldSettings = settingsHeldBesideEffortChange(status.pendingSettingsAfterBackground, status.reasoningEffortChange);
+  if (heldSettings.length) {
+    lines.push(chatTurnStatusRow("pending", pendingSettingsAfterBackgroundLabel(heldSettings)));
   }
   if (status.ask?.stranded) {
     lines.push("  ⚠ stranded — no deadline set (dialogExpiry: never)");
@@ -297,6 +312,50 @@ export function pendingSettingsAfterBackgroundLabel(
   const names = settings.map((setting) => PENDING_SETTING_LABEL[setting] ?? setting);
   const joined = names.length > 1 ? `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}` : names[0] ?? "setting";
   return `${joined} change${names.length > 1 ? "s apply" : " applies"} after background work`;
+}
+
+/**
+ * The held settings a surface still names on its own. When the host sends
+ * `reasoningEffortChange`, effort has its own chip and is dropped here; a host
+ * that predates that field only lists it, so it stays.
+ */
+export function settingsHeldBesideEffortChange(
+  settings: readonly AgentChatPendingSettingAfterBackground[] | null | undefined,
+  effortChange: AgentChatReasoningEffortChange | null | undefined,
+): AgentChatPendingSettingAfterBackground[] {
+  return (settings ?? []).filter((setting) => setting !== "reasoningEffort" || effortChange == null);
+}
+
+/** The picker's name for an effort: the named GPT models call `low` "Light". */
+function effortChangeName(effort: string | null, modelId: string | null | undefined): string {
+  if (effort === "low" && usesCodexNamedEffortLabels(modelId)) return "Light";
+  return modelMentionEffortLabel(effort);
+}
+
+function effortChangeWhen(change: AgentChatReasoningEffortChange): string {
+  return change.appliesAfter === "background" ? "after background work" : "next turn";
+}
+
+/**
+ * "High now · Medium next turn": the desktop and TUI chip label. `modelId`
+ * names the chat's model so levels read as its picker does.
+ */
+export function reasoningEffortChangeLabel(change: AgentChatReasoningEffortChange, modelId?: string | null): string {
+  return `${effortChangeName(change.current, modelId)} now · ${effortChangeName(change.next, modelId)} ${effortChangeWhen(change)}`;
+}
+
+/** "High → Medium": the narrow label for mobile. */
+export function reasoningEffortChangeShortLabel(change: AgentChatReasoningEffortChange, modelId?: string | null): string {
+  return `${effortChangeName(change.current, modelId)} → ${effortChangeName(change.next, modelId)}`;
+}
+
+/** The chip tooltip: why the running work keeps the old effort. */
+export function reasoningEffortChangeTooltip(change: AgentChatReasoningEffortChange, modelId?: string | null): string {
+  const current = effortChangeName(change.current, modelId);
+  const next = effortChangeName(change.next, modelId);
+  return change.appliesAfter === "background"
+    ? `The agent still runs at ${current}. ${next} starts once the background work ends: applying it now would restart the agent and stop that work.`
+    : `This turn keeps running at ${current}, steered messages included. The next turn starts at ${next}.`;
 }
 
 export function chatTurnStatusCopyPaths(status: ChatTurnStatusSnapshot): string[] {

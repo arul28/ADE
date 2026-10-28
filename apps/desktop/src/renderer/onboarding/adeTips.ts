@@ -1,11 +1,14 @@
 import {
   AppWindow,
+  AppleLogo,
   ArrowsLeftRight,
   At,
   Bell,
+  Binoculars,
   Brain,
   CalendarCheck,
   ChatCenteredText,
+  ChatsCircle,
   ClockCounterClockwise,
   Cloud,
   Crown,
@@ -36,11 +39,14 @@ import {
   PlugsConnected,
   PresentationChart,
   Robot,
+  Screencast,
   ShieldCheck,
   SquaresFour,
   StackSimple,
+  SteeringWheel,
   TerminalWindow,
   Toolbox,
+  UserSwitch,
   type Icon,
 } from "@phosphor-icons/react";
 import type { ConnectionsPanelTab } from "../lib/connectionsPanel";
@@ -72,6 +78,9 @@ import mcpShot from "../components/onboarding/tips/assets/mcp.webp";
 import proofShot from "../components/onboarding/tips/assets/proof.webp";
 import prsShot from "../components/onboarding/tips/assets/prs.webp";
 import secretsShot from "../components/onboarding/tips/assets/secrets.webp";
+import sideChatShot from "../components/onboarding/tips/assets/side-chat.webp";
+import iosSimulatorShot from "../components/onboarding/tips/assets/ios-simulator.webp";
+import phoneSimulatorShot from "../components/onboarding/tips/assets/phone-simulator.webp";
 import themesShot from "../components/onboarding/tips/assets/themes.webp";
 import widgetsShot from "../components/onboarding/tips/assets/widgets.webp";
 
@@ -134,7 +143,8 @@ export type AdeTipAction = {
 /**
  * How a tip sits on its group's wall in ADE Tips, after the group's own tile
  * (2×1): a `screen` tile (2×2) carries a screenshot of the real app (`shot`,
- * which its tip card shows too); `wide` is 2×1; `small` is 1×1. `ADE_TIPS`
+ * which its tip card shows too); `wide` is 2×1, and can carry a `shot` at its
+ * right edge; `small` is 1×1. `ADE_TIPS`
  * lists each group's tips in wall order.
  *
  * The sizes are chosen so every group packs with no holes in both of the
@@ -159,7 +169,7 @@ type AdeTipEntry = {
   sentence: string;
   icon: Icon;
   action?: AdeTipAction;
-} & ({ size: "screen"; shot: TipShot } | { size: Exclude<TipTileSize, "screen">; shot?: undefined });
+} & ({ size: "screen"; shot: TipShot } | { size: Extract<TipTileSize, "wide">; shot?: TipShot } | { size: Extract<TipTileSize, "small">; shot?: undefined });
 
 type AdeTipId = (typeof TIP_LIST)[number]["id"];
 
@@ -191,6 +201,10 @@ const inAChat = (rowLabel: string, emptyLabel: string, ...openChatSpots: Spotlig
   page("/work", ...openChatSpots, spot("session-row", rowLabel), spot("session-list", emptyLabel));
 
 const FIRST_CHAT = "Start a chat first; it shows here.";
+
+/** The composer of a chat that already has a conversation; a new chat's composer does not count. */
+const inChatComposer = (label: string): SpotlightSpot =>
+  at(`body:has([data-chat-user-message-card]) ${anchorSelector("composer")}`, label);
 
 /**
  * For tips that live on a message: open a chat, then ring `messageSpot` in
@@ -265,6 +279,50 @@ const TIP_LIST = [
     id: "cli-chats", group: "agents", icon: TerminalWindow, title: "CLI chats", size: "wide",
     sentence: "Run the same agents in a terminal when you prefer their own interface, with ADE's lanes around them.",
     action: draft(spot("draft-mode-switch", "Pick CLI to run an agent in its own terminal interface.")),
+  },
+  {
+    id: "side-chats", group: "agents", icon: ChatsCircle, title: "Side chats",
+    size: "screen", shot: { src: sideChatShot, alt: "A read-only side chat beside the main chat, sending a note back to it" },
+    sentence: "Type /side to ask a quick question in a read-only side chat that already knows the conversation.",
+    action: inOpenChat(
+      inChatComposer("Type /side and your question. The side chat knows this conversation and changes nothing."),
+      "Once this chat has a conversation, type /side and your question here.",
+    ),
+  },
+  {
+    id: "steer", group: "agents", icon: SteeringWheel, title: "Steer a running turn", size: "small",
+    sentence: "Type while an agent works to steer it, or change its effort mid-turn.",
+    action: inOpenChat(
+      inChatComposer("While the agent works, type here to steer it. The effort chip changes its effort mid-turn."),
+      "Once this chat's agent is working, type here to steer it.",
+    ),
+  },
+  {
+    id: "terminal-watch", group: "agents", icon: Binoculars, title: "Terminal watch", size: "small",
+    sentence: "An agent can watch a terminal and wake up when it prints something new.",
+    action: draft(spot("composer", "Ask the agent to watch a terminal, like your dev server. It wakes up when something new prints.")),
+  },
+  {
+    id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "wide",
+    sentence: "When one account hits its limit, continue the same chat on another.",
+    action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
+  },
+  {
+    id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "wide",
+    shot: { src: iosSimulatorShot, alt: "iPhone Duo in the simulator, half open" },
+    sentence: "Run your iOS app in a simulator inside ADE, including iPhone Duo with its hinge.",
+    action: inAChat(
+      "Open a chat, then Tools and Apple Development to run your app in the simulator.",
+      "Start a chat; its Tools pane has Apple Development, with the simulator.",
+      spot("tools-pane", "Open Apple Development here to run your app in the simulator."),
+      spot("tools-toggle", "Open Tools, then Apple Development, to run your app in the simulator."),
+    ),
+  },
+  {
+    id: "simulator-on-phone", group: "agents", icon: Screencast, title: "Simulator on your phone", size: "wide",
+    shot: { src: phoneSimulatorShot, alt: "An iPhone driving the simulator by touch" },
+    sentence: "Stream the simulator to your iPhone and tap it like a real phone.",
+    action: connections("mobile", "Pair your iPhone here. Then it can stream the simulator and drive it by touch."),
   },
 
   // Project brain
@@ -374,7 +432,7 @@ const TIP_LIST = [
   {
     id: "files", group: "git", icon: FileCode, title: "Files",
     size: "screen", shot: { src: filesShot, alt: "The file editor on a lane, beside the project's files" },
-    sentence: "A full editor for every lane, with a diff for each change.",
+    sentence: "Edit every lane's files with a diff for each change; Word, Excel, PowerPoint and diagrams open the way they look.",
     action: page("/files", at('[data-tour="files.fileTree"]', "This lane's files. Open one to edit it and see its diff.")),
   },
   {
@@ -407,7 +465,7 @@ const TIP_LIST = [
   {
     id: "themes", group: "yours", icon: Palette, title: "Themes and backgrounds",
     size: "screen", shot: { src: themesShot, alt: "Appearance settings: the theme gallery and a live preview" },
-    sentence: "Choose a theme, your own colours and fonts, and a picture behind ADE.",
+    sentence: "Choose a theme, your own colours and fonts, and a picture behind ADE, or shuffle pictures sized for your screen.",
     action: setting("appearance.theme", "Pick a theme. Your own colours, fonts and backgrounds are further down."),
   },
   {
@@ -449,7 +507,7 @@ const TIP_LIST = [
   },
   {
     id: "private-desktop", group: "safety", icon: AppWindow, title: "A private desktop for agents", size: "wide",
-    sentence: "Agents drive apps on their own Mac or Windows screen, so yours stays free.",
+    sentence: "Agents drive apps on their own Mac, Windows or Linux screen, so yours stays free.",
     action: inAChat(
       "Open a chat, then its Tools: agents get a desktop of their own there.",
       "Start a chat; its Tools pane gives agents a desktop of their own.",

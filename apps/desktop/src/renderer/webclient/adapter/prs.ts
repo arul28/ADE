@@ -16,9 +16,81 @@ import type { ResolvePrMediaResult } from "../../../shared/githubMedia";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { createCoalescingReadCache } from "./infra/coalescingReadCache";
 import { unavailableOnHost } from "./misc";
-import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable, guardPinnedMembers, type RuntimePinArg } from "./runtimePinGuard";
 
 const READ_CACHE_TTL_MS = 3_000;
+
+// The desktop contract's trailing runtime pin for these calls names the
+// machine/project that owns the PR or chat. The web adapter is bound to one
+// machine and project, so it can serve a matching pin as-is and must reject a
+// different target rather than silently using its bound project. Keep this in
+// sync with the pin-bearing methods in preload/global.d.ts.
+const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
+  preflightCreateLaneFromPrBranch: 1,
+  createLaneFromPrBranch: 1,
+  getForLane: 1,
+  syncLanePr: 1,
+  reconcileNow: 0,
+  reconcileOnFocus: 0,
+  listAll: 0,
+  listAllConditional: 1,
+  refresh: 1,
+  getStatus: 1,
+  getChecks: 1,
+  getComments: 1,
+  getReviews: 1,
+  getReviewThreads: 1,
+  delete: 1,
+  land: 1,
+  updateBranch: 1,
+  simulateIntegration: 1,
+  commitIntegration: 1,
+  listProposals: 0,
+  updateProposal: 1,
+  deleteProposal: 1,
+  createIntegrationLaneForProposal: 1,
+  recheckIntegrationStep: 1,
+  getIntegrationResolutionState: 1,
+  aiResolutionStart: 1,
+  aiResolutionGetSession: 1,
+  onAiResolutionEvent: 1,
+  getMergeContext: 1,
+  listSnapshots: 1,
+  linkChatSession: 1,
+  unlinkChatSession: 1,
+  setChatWatch: 1,
+  getChatWatches: 1,
+  resolveMedia: 1,
+  linkChatStack: 1,
+  listChatSessionsForPr: 1,
+  getStackLinkOffer: 1,
+  listIntegrationWorkflows: 1,
+  onEvent: 1,
+  getDetail: 1,
+  getFiles: 1,
+  getCommits: 1,
+  getActionRuns: 1,
+  getActivity: 1,
+  addComment: 1,
+  updateTitle: 1,
+  updateBody: 1,
+  setLabels: 1,
+  setAssignees: 1,
+  listGitHubFilterOptions: 1,
+  searchGitHubPrs: 1,
+  requestReviewers: 1,
+  submitReview: 1,
+  close: 1,
+  reopen: 1,
+  setDraft: 1,
+  setAutoMerge: 1,
+  rerunChecks: 1,
+  dismissIntegrationCleanup: 1,
+  cleanupIntegrationWorkflow: 1,
+  getDeployments: 1,
+  reactToComment: 1,
+  cleanupBranch: 1,
+};
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   const { commands, events } = infra;
@@ -516,7 +588,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     cleanupBranch: (args: unknown) => call("prs.cleanupBranch", args, { ok: false, error: "unsupported" }, false),
   };
 
-  return prs as AdeNamespace<"prs">;
+  return guardPinnedMembers(prs, "prs", PINNED_METHOD_ARG_INDEX, infra) as AdeNamespace<"prs">;
 }
 
 function asRecord(args: unknown): Record<string, unknown> {

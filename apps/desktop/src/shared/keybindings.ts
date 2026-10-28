@@ -163,3 +163,23 @@ export const KEYBINDING_DEFINITIONS: KeybindingDefinition[] = [
   }
 ];
 
+
+/**
+ * Defaults for the hosted web client where a desktop default is a chord the
+ * browser reserves: Chrome, Firefox and Safari keep ⌘T/Ctrl+T (new tab),
+ * ⌘⇧N/Ctrl+Shift+N (new private window) and Ctrl+Tab/Ctrl+Shift+Tab (switch
+ * tab) for themselves, so the page never sees them. None of these collide with
+ * another binding above, and a user override still wins over either default.
+ */
+export const WEB_KEYBINDING_DEFAULTS: Readonly<Record<string, string>> = {
+  "work.chat.new": "Mod+Shift+O",
+  "work.tools.toggle": "Mod+J",
+  "project.tab.next": "Ctrl+`",
+  "project.tab.prev": "Ctrl+Shift+~",
+};
+
+/** The table the hosted web client advertises: desktop's, with the web defaults. */
+export const WEB_KEYBINDING_DEFINITIONS: KeybindingDefinition[] = KEYBINDING_DEFINITIONS.map((definition) => {
+  const webDefault = WEB_KEYBINDING_DEFAULTS[definition.id];
+  return webDefault ? { ...definition, defaultBinding: webDefault } : definition;
+});

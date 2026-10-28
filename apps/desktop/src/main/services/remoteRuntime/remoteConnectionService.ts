@@ -1,3 +1,4 @@
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 import type {
   AdeActionRegistryEntry,
   CloneProjectInput,
@@ -141,8 +142,13 @@ type RemoteConnectionConnectOptions = {
   explicit?: boolean;
 };
 
-const AUTOMATIC_RECONNECT_BASE_BACKOFF_MS = 30_000;
-const AUTOMATIC_RECONNECT_MAX_BACKOFF_MS = 5 * 60_000;
+// A machine that restarts for an update is back in one to two minutes; a
+// 30 s base doubling to 5 min left it showing as offline for several minutes
+// after it was up. One dial every 2 min to a machine that stays off costs little.
+const AUTOMATIC_RECONNECT_BASE_BACKOFF_MS = 10_000;
+const AUTOMATIC_RECONNECT_MAX_BACKOFF_MS = 2 * 60_000;
+/** Failed reconnects in a row (about 70 s of them) before one Sentry signal. */
+const RECONNECT_FAILURES_BEFORE_SIGNAL = 4;
 const MAX_LAST_ERROR_CHARS = 500;
 const DISCOVERED_ENDPOINT_REFRESH_INTERVAL_MS = 60_000;
 
@@ -332,6 +338,8 @@ export class RemoteConnectionService {
       if (!this.registry.get(targetId) || this.manuallyDisconnectedTargetIds.has(targetId)) return;
       this.mergeStatus(targetId, {
         version: result.version,
+        // Read with the version, so a brain that stopped reporting it clears it.
+        appVersion: result.appVersion ?? null,
         arch: result.arch,
         ...(result.route ? { route: result.route } : {}),
         ...(result.capabilities ? { capabilities: result.capabilities } : {}),
@@ -775,6 +783,9 @@ export class RemoteConnectionService {
           state: status.state ?? (target.lastConnectedAt ? "idle" : "idle"),
           arch: status.arch ?? target.lastSeenArch,
           version: status.version ?? target.runtimeBinaryVersion,
+          // Only beside the live version it was read with, never beside the
+          // persisted one, which can be from another connection.
+          appVersion: status.version != null ? status.appVersion ?? null : null,
           ...(status.route ? { route: status.route } : {}),
           ...(status.capabilities ? { capabilities: status.capabilities } : {}),
           ...(status.compatibilityWarnings
@@ -886,6 +897,7 @@ export class RemoteConnectionService {
         state: "connected",
         arch: connectedResult.arch,
         version: connectedResult.version,
+        appVersion: connectedResult.appVersion ?? null,
         route: connectedResult.route,
         capabilities: connectedResult.capabilities,
         compatibilityWarnings: connectedResult.compatibilityWarnings,
@@ -1681,10 +1693,19 @@ export class RemoteConnectionService {
     const failureCount =
       (this.automaticReconnectFailuresByTargetId.get(targetId) ?? 0) + 1;
     this.automaticReconnectFailuresByTargetId.set(targetId, failureCount);
-    this.automaticReconnectRetryAtByTargetId.set(
-      targetId,
-      Date.now() + automaticReconnectBackoffMs(failureCount),
-    );
+    const retryInMs = automaticReconnectBackoffMs(failureCount);
+    this.automaticReconnectRetryAtByTargetId.set(targetId, Date.now() + retryInMs);
+    // Nothing else on this machine records a failed reconnect, which left a
+    // machine that stayed "offline" for minutes with no trail to follow. Once
+    // per outage, after a minute of failures: a machine that is simply asleep
+    // or switched off should not log every retry.
+    if (failureCount === RECONNECT_FAILURES_BEFORE_SIGNAL) {
+      forwardSignalToSentry("remote.reconnect_failed", {
+        failureCount,
+        retryInMs,
+        error: errorMessage(error).slice(0, 300),
+      });
+    }
     return errorMessage(error);
   }
 

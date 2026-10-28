@@ -158,7 +158,18 @@ export function TerminalShellSection() {
               }}
             />
           ) : null}
-          {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+          {error ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "terminal-shell-save-error",
+                tone: "error",
+                title: error,
+                report: { surface: "terminal_shell_settings" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
+          ) : null}
         </ModernRow>
       </ModernRows>
     </ModernSection>

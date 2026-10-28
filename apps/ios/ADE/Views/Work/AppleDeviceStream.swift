@@ -199,14 +199,41 @@ func appleDeviceFamilySymbol(_ family: String?) -> String {
 /// and exactly what fixes it.
 let appleDeviceHostUnsupportedMessage = "Update ADE on your Mac to watch its simulator from here."
 
+/// The sentence for a Mac whose ADE install has lost its simulator helper.
+///
+/// Not "update ADE": the Mac's ADE can be current and still be missing the
+/// helper (a standalone brain that looks for it next to itself). What brings
+/// it back is a reinstall or an update of ADE on that Mac.
+let appleDeviceHelperMissingMessage =
+  "The simulator helper is missing on your Mac. Reinstall or update ADE on the Mac to restore it."
+
+/// A host's own capture or helper error, in words for this phone.
+///
+/// The host writes its helper errors for a developer at that Mac ("Run
+/// `npm run build:sim-helper` in apps/desktop."). Those few are reworded;
+/// every other sentence is the Mac's own and is shown as it wrote it.
+func appleHostErrorMessage(_ raw: String) -> String {
+  if raw.range(
+    of: "simulator helper binary is missing|simulator helper (client )?has been disposed|simulator helper exited",
+    options: [.regularExpression, .caseInsensitive]
+  ) != nil {
+    return appleDeviceHelperMissingMessage
+  }
+  if raw.range(of: "simulator helper is not running yet", options: .caseInsensitive) != nil {
+    return "The simulator helper on your Mac is still starting. Try again in a moment."
+  }
+  return raw
+}
+
 /// Why the Mac refused a stream ticket, in words.
 ///
 /// The one refusal worth rewording is `APPLE_DEVICE_OFF`: the simulator is
 /// powered off, and watching from the phone never boots it. The host's
 /// message is "APPLE_DEVICE_OFF: {name} is off. …", so the name is kept.
-/// Anything else is shown as the host wrote it.
+/// A missing helper gets its own sentence (`appleHostErrorMessage`); anything
+/// else is shown as the host wrote it.
 func appleStreamTicketFailureMessage(_ raw: String) -> String {
-  guard let code = raw.range(of: "APPLE_DEVICE_OFF") else { return raw }
+  guard let code = raw.range(of: "APPLE_DEVICE_OFF") else { return appleHostErrorMessage(raw) }
   let tail = raw[code.upperBound...].drop { $0 == ":" || $0 == " " }
   if let off = tail.range(of: " is off") {
     let name = tail[..<off.lowerBound].trimmingCharacters(in: .whitespaces)
@@ -359,6 +386,9 @@ enum AppleStreamPhase: Equatable {
   case streaming
   /// Connected but no frames for longer than the watchdog allows.
   case stalled
+  /// A transient drop (the relay's bridge race, a lost connection, a first
+  /// frame that never came) the viewer is already redialing by itself.
+  case reconnecting
   /// Terminal until the user reconnects. Carries the host's own sentence where
   /// there is one.
   case failed(String)
@@ -418,6 +448,14 @@ struct AppleStreamHealth: Equatable {
     phase = .failed(message)
   }
 
+  /// An automatic redial is pending. Not a failure: no Reconnect is offered.
+  mutating func reconnecting() {
+    phase = .reconnecting
+    openedAt = nil
+    lastFrameAt = nil
+    sawFrame = false
+  }
+
   mutating func markUnsupported() {
     phase = .unsupported
   }
@@ -445,7 +483,7 @@ struct AppleStreamHealth: Equatable {
       if now.timeIntervalSince(lastFrameAt) >= Self.frameWatchdog {
         phase = .stalled
       }
-    case .idle, .requestingTicket, .stalled, .failed, .unsupported:
+    case .idle, .requestingTicket, .stalled, .reconnecting, .failed, .unsupported:
       return
     }
   }
@@ -458,6 +496,7 @@ struct AppleStreamHealth: Equatable {
     case .connecting: return "Connecting…"
     case .streaming: return nil
     case .stalled: return sawFrame ? "The stream stopped sending frames." : "No frames arrived."
+    case .reconnecting: return "Reconnecting…"
     case .failed(let message): return message
     case .unsupported: return appleDeviceHostUnsupportedMessage
     }
@@ -469,8 +508,73 @@ struct AppleStreamHealth: Equatable {
   var offersReconnect: Bool {
     switch phase {
     case .stalled, .failed: return true
-    case .idle, .requestingTicket, .connecting, .streaming, .unsupported: return false
+    case .idle, .requestingTicket, .connecting, .reconnecting, .streaming, .unsupported: return false
     }
+  }
+}
+
+// MARK: - Automatic redial
+
+/// One way the stream socket ended.
+struct AppleStreamSocketFailure: Equatable {
+  let message: String
+  /// A drop a fresh ticket and a redial usually cure, as opposed to a refusal
+  /// (an expired pass, a stream this phone cannot decode, the Mac's own error)
+  /// that would fail the same way again.
+  let transient: Bool
+}
+
+/// When the viewer redials by itself instead of showing the failure.
+///
+/// Kept pure so the budget and the guards are tested rather than observed.
+/// A few quick tries, each with a fresh single-use ticket. The budget refills
+/// only once a stream has stayed up for `steadyAfter` seconds, so a stream
+/// that decodes one keyframe and drops does not redial forever; and a viewer
+/// session redials by itself at most `sessionCeiling` times before it offers
+/// Reconnect. `reset()` (Reconnect, or the viewer closing) clears both.
+struct AppleStreamRetryPolicy: Equatable {
+  /// The pause before each automatic try. Its length is the budget.
+  static let delays: [TimeInterval] = [0.5, 1.5, 3]
+  /// How long a stream must keep decoding after it opens before the budget
+  /// refills.
+  static let steadyAfter: TimeInterval = 5
+  /// Automatic redials per viewer session, however steady the stream was
+  /// between them.
+  static let sessionCeiling = 10
+
+  private(set) var attempts = 0
+  private(set) var sessionRedials = 0
+  private var openedAt: Date?
+
+  /// The pause before the next try, or nil when the viewer must show the
+  /// failure instead: a refusal, a hidden or closed viewer, a spent budget.
+  mutating func nextDelay(transient: Bool, started: Bool, visible: Bool) -> TimeInterval? {
+    guard transient, started, visible,
+          attempts < Self.delays.count, sessionRedials < Self.sessionCeiling else { return nil }
+    defer {
+      attempts += 1
+      sessionRedials += 1
+      openedAt = nil
+    }
+    return Self.delays[attempts]
+  }
+
+  /// The socket opened: the steady clock starts.
+  mutating func streamOpened(at now: Date) {
+    openedAt = now
+  }
+
+  /// A frame decoded: once the stream has been up `steadyAfter` seconds, the
+  /// budget refills.
+  mutating func frameDecoded(at now: Date) {
+    guard attempts > 0, let openedAt, now.timeIntervalSince(openedAt) >= Self.steadyAfter else { return }
+    attempts = 0
+  }
+
+  mutating func reset() {
+    attempts = 0
+    sessionRedials = 0
+    openedAt = nil
   }
 }
 
@@ -693,15 +797,19 @@ final class AppleStreamSocket: NSObject {
   private var visible = true
   /// Records received on this socket; what an ack reports.
   private var received = 0
+  /// One failure per connection: a server close arrives both as a failed
+  /// receive and as `didCloseWith`, and two reports would schedule two redials.
+  private var failureReported = false
 
   var onOpen: (() -> Void)?
   var onRecord: ((AppleStreamRecord) -> Void)?
-  var onError: ((String) -> Void)?
+  var onError: ((AppleStreamSocketFailure) -> Void)?
   var onStats: ((AppleStreamNetworkStats) -> Void)?
 
   func connect(url: URL, token: String?) {
     close()
     closed = false
+    failureReported = false
     parser.reset()
     received = 0
     var request = URLRequest(url: url)
@@ -765,7 +873,14 @@ final class AppleStreamSocket: NSObject {
     guard !closed, self.task === task else { return }
     switch result {
     case .failure(let error):
-      onError?(Self.message(for: error))
+      // A peer close fails the pending receive too. Its close code says more
+      // than the generic socket error does, so it wins when there is one.
+      if task.closeCode != .invalid {
+        let reason = task.closeReason.flatMap { String(data: $0, encoding: .utf8) }
+        report(Self.failure(forCloseCode: task.closeCode.rawValue, reason: reason))
+      } else {
+        report(Self.failure(for: error))
+      }
     case .success(let message):
       switch message {
       case .data(let data):
@@ -793,7 +908,10 @@ final class AppleStreamSocket: NSObject {
         onRecord?(record)
       }
     } catch {
-      onError?((error as? AppleStreamProtocolError)?.message ?? error.localizedDescription)
+      report(AppleStreamSocketFailure(
+        message: (error as? AppleStreamProtocolError)?.message ?? error.localizedDescription,
+        transient: false
+      ))
       close()
     }
   }
@@ -815,15 +933,48 @@ final class AppleStreamSocket: NSObject {
       onStats?(stats)
       return
     }
+    // The host explaining itself: its own sentence, never redialed.
     if let message = object["error"] as? String, !message.isEmpty {
-      onError?(message)
+      report(AppleStreamSocketFailure(message: appleHostErrorMessage(message), transient: false))
       close()
       return
     }
     if let message = object["message"] as? String, object["t"] as? String == "error", !message.isEmpty {
-      onError?(message)
+      report(AppleStreamSocketFailure(message: appleHostErrorMessage(message), transient: false))
       close()
     }
+  }
+
+  private func report(_ failure: AppleStreamSocketFailure) {
+    guard !failureReported else { return }
+    failureReported = true
+    onError?(failure)
+  }
+
+  /// Close codes a redial usually cures: the relay's bridge race (4510), a
+  /// relay forwarding failure (4509), a pre-ready buffer overflow (4506), and
+  /// a connection that went away or dropped without a close frame.
+  static let transientCloseCodes: Set<Int> = [1001, 1006, 4506, 4509, 4510]
+
+  static func failure(forCloseCode code: Int, reason: String?) -> AppleStreamSocketFailure {
+    AppleStreamSocketFailure(
+      message: message(forCloseCode: code, reason: reason),
+      transient: transientCloseCodes.contains(code)
+    )
+  }
+
+  static func failure(for error: Error) -> AppleStreamSocketFailure {
+    let nsError = error as NSError
+    let transient: Bool
+    switch (nsError.domain, nsError.code) {
+    case (NSURLErrorDomain, NSURLErrorNetworkConnectionLost), (NSURLErrorDomain, NSURLErrorTimedOut):
+      transient = true
+    case (NSPOSIXErrorDomain, Int(ECONNRESET)), (NSPOSIXErrorDomain, Int(ENOTCONN)):
+      transient = true
+    default:
+      transient = false
+    }
+    return AppleStreamSocketFailure(message: message(for: error), transient: transient)
   }
 
   /// The three close codes the brain actually sends.
@@ -883,7 +1034,7 @@ extension AppleStreamSocket: URLSessionWebSocketDelegate {
     let code = closeCode.rawValue
     Task { @MainActor [weak self] in
       guard let self, self.task === webSocketTask, !self.closed else { return }
-      self.onError?(Self.message(forCloseCode: code, reason: text))
+      self.report(Self.failure(forCloseCode: code, reason: text))
     }
   }
 }

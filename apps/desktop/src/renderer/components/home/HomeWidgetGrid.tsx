@@ -38,6 +38,7 @@ import {
 } from "./homeGridPack";
 import { WelcomeCardHead } from "../projects/ProjectWelcomeSidePanels";
 import { toLayoutPx } from "../../lib/webZoom";
+import { Banner } from "../ui/notice";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 
 /**
@@ -141,10 +142,21 @@ class WidgetBoundary extends Component<{ type: HomeWidgetType; children: ReactNo
     return (
       <section className="kit-card ade-home-card" aria-label={meta.title}>
         <WelcomeCardHead icon={meta.icon} title={meta.title} />
-        <div className="ade-home-empty" role="alert">
-          <span>This widget stopped working.</span>
-          <button type="button" className="kit-btn" onClick={() => this.setState({ error: null })}>Try again</button>
-        </div>
+        <Banner
+          layout="inline"
+          style={{ margin: 10 }}
+          model={{
+            id: `home-widget-crash-${this.props.type}`,
+            tone: "error",
+            title: "This widget stopped working.",
+            actions: [{ label: "Try again", onClick: () => this.setState({ error: null }) }],
+            report: {
+              surface: "home_widget",
+              code: `home_widget_${this.props.type}_crashed`,
+              technicalDetail: this.state.error.message,
+            },
+          }}
+        />
       </section>
     );
   }

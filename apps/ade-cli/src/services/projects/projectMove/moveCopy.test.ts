@@ -23,7 +23,7 @@ vi.mock("node:child_process", async (importOriginal) => {
   return { ...actual, execFile: run };
 });
 
-import { measureProject } from "./moveCopy";
+import { measureProject, writeCopyList } from "./moveCopy";
 
 const created: string[] = [];
 
@@ -83,3 +83,37 @@ describe.skipIf(process.platform !== "darwin")("measureProject", () => {
     expect((await measureProject(root)).measured).toBe(false);
   });
 });
+
+// DARWIN-GATE: the move copies with BSD `find`/`ditto`, macOS only.
+describe.skipIf(process.platform !== "darwin")("the move leaves out the Apple tools' DerivedData", () => {
+  it("lists neither the main checkout's nor a lane's DerivedData, and does not count them in the copy", async () => {
+    const root = tempProject();
+    const derived = [
+      path.join(root, ".ade", "cache", "ios-simulator", "DerivedData"),
+      path.join(root, ".ade", "worktrees", "lane-a", ".ade", "cache", "ios-simulator", "DerivedData"),
+    ];
+    for (const dir of derived) {
+      fs.mkdirSync(path.join(dir, "SourcePackages"), { recursive: true });
+      // SwiftPM's state names absolute paths; copied, it breaks the next build.
+      fs.writeFileSync(path.join(dir, "SourcePackages", "workspace-state.json"), Buffer.alloc(2 * 1024 * 1024));
+    }
+    const logs = path.join(root, ".ade", "worktrees", "lane-a", ".ade", "cache", "ios-simulator", "test-logs");
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, "run.log"), "kept");
+
+    const listFile = path.join(root, "..", `${path.basename(root)}-list.txt`);
+    created.push(listFile);
+    await writeCopyList(root, listFile, [], false);
+    const listed = fs.readFileSync(listFile, "utf8").split("\n").filter(Boolean);
+    expect(listed.some((entry) => entry.includes("DerivedData"))).toBe(false);
+    expect(listed).toContain("./.ade/worktrees/lane-a/.ade/cache/ios-simulator/test-logs/run.log");
+    expect(listed).toContain("./file.bin");
+
+    const sizes = await measureProject(root);
+    expect(sizes.measured).toBe(true);
+    if (!sizes.measured) return;
+    // 64 KB of project, not the 4 MB of build state beside it.
+    expect(sizes.copyBytes).toBeLessThan(1024 * 1024);
+  });
+});
+

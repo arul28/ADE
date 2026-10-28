@@ -4,11 +4,13 @@ import { ArrowSquareOut, Check, CircleNotch, Copy } from "@phosphor-icons/react"
 import { copyTextToClipboard } from "../../lib/launchPromptClipboard";
 import { friendlyMusicError, musicActions, readMusicLastError, useMusicLastError, useMusicState } from "./musicStore";
 import { SpotifyBrand } from "./musicParts";
+import { Banner } from "../ui/notice";
 import setupConsentUrl from "./assets/spotify-setup-consent.jpg";
 import setupDashboardUrl from "./assets/spotify-setup-dash.jpg";
 import setupApisUrl from "./assets/spotify-setup-apis.jpg";
 import setupRedirectUrl from "./assets/spotify-setup-redirect.jpg";
 import setupTermsUrl from "./assets/spotify-setup-terms.jpg";
+import { extractError } from "../../lib/format";
 
 const SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard";
 const isSpotifyClientId = (value: string) => /^[a-f\d]{32}$/i.test(value.trim());
@@ -148,7 +150,18 @@ export function SpotifyOnboarding() {
             <h2>Connect</h2>
             <p>Spotify opens in your browser and asks to let ADE in. Click <b>Agree</b>, then come back here.</p>
             <SetupShot src={setupConsentUrl} alt="Spotify's consent page listing what ADE may do, with the Agree button" />
-            {lastError ? <span className="ade-spotify-check is-error" role="alert">{lastError}</span> : null}
+            {lastError ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "spotify-connect-error",
+                  tone: "error",
+                  title: lastError,
+                  report: { surface: "spotify_connect" },
+                  dismiss: { onDismiss: musicActions.clearError },
+                }}
+              />
+            ) : null}
           </>
         );
     }
@@ -226,7 +239,7 @@ export function SpotifyDevices() {
   const refresh = React.useCallback(async () => {
     setError(null);
     try { setDevices(await window.ade!.music!.devices()); }
-    catch (error) { setError(friendlyMusicError(error instanceof Error ? error.message : String(error)) ?? "Couldn't load devices. Try again."); }
+    catch (error) { setError(friendlyMusicError(extractError(error)) ?? "Couldn't load devices. Try again."); }
   }, []);
   // ADE's own player is listed once, as this computer.
   const others = (devices ?? []).filter((device) => !isAdeSpotifyDevice(device));
@@ -256,7 +269,18 @@ export function SpotifyDevices() {
           {others.map((device) => <option key={device.id} value={device.id} disabled={device.isRestricted}>{device.name}{device.isRestricted ? " (restricted)" : ""}</option>)}
         </select>
       </label>
-      {error ? <span role="status" className="ade-spotify-check is-error">{error}</span> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "spotify-devices-error",
+            tone: "error",
+            title: error,
+            report: { surface: "spotify_devices" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
     </div>
   );
 }

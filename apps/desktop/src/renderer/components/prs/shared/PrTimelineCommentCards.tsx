@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import { useState, type ReactNode } from "react";
 import { CaretRight } from "@phosphor-icons/react";
 
@@ -10,6 +11,7 @@ import { PrReactionBar } from "./PrReactionBar";
 import { PrUserAvatar } from "./PrUserAvatar";
 import { PrCommentEditForm } from "./PrCommentEditForm";
 import { usePrCommentEdit } from "./usePrCommentEdit";
+import { Banner } from "../../ui/notice";
 
 function Card({
   author,
@@ -123,6 +125,19 @@ export function DescriptionContent({
   plain?: boolean;
 }) {
   const [reactionError, setReactionError] = useState<string | null>(null);
+  const onReactionError = (err: unknown) => setReactionError(extractError(err));
+  const reactionErrorBanner = reactionError ? (
+    <Banner
+      layout="inline"
+      model={{
+        id: "pr-description-reaction-error",
+        tone: "error",
+        title: reactionError,
+        report: { surface: "pr_reaction" },
+        dismiss: { onDismiss: () => setReactionError(null) },
+      }}
+    />
+  ) : null;
   if (plain) {
     return (
       <article data-testid="pr-description" className="px-1 pb-4 pt-1" style={{ borderBottom: `1px solid ${COLORS.borderMuted}` }}>
@@ -137,14 +152,10 @@ export function DescriptionContent({
             subjectId={event.subjectId}
             reactions={event.reactions}
             viewerLogin={viewerLogin}
-            onError={(err) => setReactionError(err instanceof Error ? err.message : String(err))}
+            onError={onReactionError}
           />
         </div>
-        {reactionError ? (
-          <div role="alert" className="text-[11px]" style={{ color: COLORS.danger }}>
-            {reactionError}
-          </div>
-        ) : null}
+        {reactionErrorBanner}
       </article>
     );
   }
@@ -160,13 +171,9 @@ export function DescriptionContent({
         subjectId={event.subjectId}
         reactions={event.reactions}
         viewerLogin={viewerLogin}
-        onError={(err) => setReactionError(err instanceof Error ? err.message : String(err))}
+        onError={onReactionError}
       />
-      {reactionError ? (
-        <div role="alert" className="text-[11px]" style={{ color: COLORS.danger }}>
-          {reactionError}
-        </div>
-      ) : null}
+      {reactionErrorBanner}
     </Card>
   );
 }
@@ -246,7 +253,7 @@ export function IssueCommentContent({
           subjectId={event.commentNodeId}
           reactions={event.reactions}
           viewerLogin={viewerLogin}
-          onError={(err) => setReactionError(err instanceof Error ? err.message : String(err))}
+          onError={(err) => setReactionError(extractError(err))}
         />
         {canEdit && !editing ? (
           <button
@@ -260,9 +267,15 @@ export function IssueCommentContent({
         ) : null}
       </div>
       {error ? (
-        <div role="alert" className="text-[11px]" style={{ color: COLORS.danger }}>
-          {error}
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "pr-comment-error",
+            tone: "error",
+            title: error,
+            report: { surface: "pr_comment" },
+          }}
+        />
       ) : null}
     </Card>
   );

@@ -36,7 +36,11 @@ import {
   type WindowsProcessFacts,
 } from "./common";
 import { parseCommandLine } from "../../../desktop/src/shared/shell";
-import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  resolveMachineAdeDir,
+  resolveMachineAdeLayout,
+  resolveReachableMachineRuntimeSocketPath,
+} from "../services/projects/machineLayout";
 import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
 import { BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE } from "../services/runtime/brainLoopWatchdog";
 import {
@@ -1457,7 +1461,12 @@ async function installWindowsServiceImpl(
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   const logPath = `${launcherPath}.log`;
   const machineLayout = resolveMachineAdeLayout(runtimeEnv, "win32");
+  // The name the new brain starts on, baked into the launcher, and the name
+  // the brain running now answers on: an older brain may sit on the pipe name
+  // an older ADE derived (see `resolveMachineEndpointNames`), and it must be
+  // reached to be checked, stopped and reaped.
   const socketPath = machineLayout.socketPath;
+  const runningSocketPath = resolveReachableMachineRuntimeSocketPath(runtimeEnv, "win32");
   // The supervisor loop doubles as this platform's wedge watchdog: it reads the
   // brain's heartbeat between wait slices and stops a brain that hangs while
   // staying alive. macOS gets the same protection from a separate
@@ -1542,7 +1551,7 @@ async function installWindowsServiceImpl(
       command: serviceCommand,
       launcherPath,
       pidPath,
-      socketPath,
+      socketPath: runningSocketPath,
       spawnSync: run,
       readPidRecord,
       readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
@@ -1590,7 +1599,7 @@ async function installWindowsServiceImpl(
       command: serviceCommand,
       launcherPath,
       pidPath,
-      socketPath,
+      socketPath: runningSocketPath,
       spawnSync: run,
       readPidRecord,
       readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
@@ -1614,7 +1623,7 @@ async function installWindowsServiceImpl(
         serviceName,
         action: "install",
         path: taskName,
-        message: `ADE per-user startup entry is installed; the channel brain is still starting on ${socketPath}: ${youngReadiness.diagnostic}`,
+        message: `ADE per-user startup entry is installed; the channel brain is still starting on ${runningSocketPath}: ${youngReadiness.diagnostic}`,
       };
     }
     // The young brain died while we waited: fall through and replace it.
@@ -1637,7 +1646,7 @@ async function installWindowsServiceImpl(
     valueName: taskName,
     launcherPath,
     pidPath,
-    brain: { socketPath, command: serviceCommand },
+    brain: { socketPath: runningSocketPath, command: serviceCommand },
   });
   if (!startupPlan.ok) {
     return {
@@ -1714,19 +1723,19 @@ async function installWindowsServiceImpl(
   // there, so it silently found nothing and the reap never happened.
   const staleScan = listStaleChannelServePids(run, {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: socketPath,
+    primarySocketPath: runningSocketPath,
   }, "win32");
   // A stale brain is force-killed only once it is proven to be this channel's: it
   // must name the channel socket itself, or answer on that endpoint. Any other
   // stale candidate is left running and reported, not claimed as taken over.
   const staleMatch = {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
-    primarySocketPath: socketPath,
+    primarySocketPath: runningSocketPath,
   };
   const unverifiedStalePids: number[] = [];
   for (const stalePid of staleScan.ok ? staleScan.pids : []) {
     const outcome = await stopWindowsBrainGracefully(run, {
-      socketPath,
+      socketPath: runningSocketPath,
       runtimePid: stalePid,
       isExpectedProcess: channelServeIdentity(staleMatch),
     });
@@ -1892,7 +1901,7 @@ function planWindowsUninstallStartupRemoval(
     launcherPath,
     pidPath,
     brain: {
-      socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
+      socketPath: resolveReachableMachineRuntimeSocketPath({ ...env, ...(serviceCommand.env ?? {}) }, "win32"),
       command: serviceCommand,
     },
   });
@@ -2159,7 +2168,7 @@ function getWindowsServiceStatusImpl(
           ?? "ADE per-user startup entry is installed, but the supervisor is not running.",
       };
     }
-    const socketPath = resolveMachineAdeLayout(runtimeEnv, "win32").socketPath;
+    const socketPath = resolveReachableMachineRuntimeSocketPath(runtimeEnv, "win32");
     const readiness = (deps.readinessProbe ?? defaultWindowsRuntimeReadiness)({
       command,
       launcherPath,

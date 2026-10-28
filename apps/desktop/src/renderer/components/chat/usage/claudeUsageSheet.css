@@ -12,12 +12,6 @@
   gap: 12px;
 }
 
-.ade-cu-error {
-  margin: 0;
-  font-size: 12px;
-  color: var(--kit-crit);
-}
-
 .ade-cu-muted {
   display: block;
   padding: 2px 0 4px;

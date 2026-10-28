@@ -1,0 +1,1 @@
+{ "name": "eval-app", "private": true, "scripts": { "dev": "vite --port 5173", "test": "vitest run" } }

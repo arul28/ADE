@@ -147,3 +147,93 @@ html[data-motion="reduced"] .ade-whats-new-glow > span::before { animation: none
 .ade-whats-new-buttons .kit-btn {
   gap: 6px;
 }
+
+/* The header mark: a box for the arrival to land on and to sheen. */
+.ade-whats-new-mark {
+  position: relative;
+  display: inline-flex;
+}
+.ade-whats-new-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 9px;
+}
+/* The version an update just brought, after the title. */
+.ade-whats-new-version {
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--color-muted-fg);
+}
+
+/*
+ * After an update (WhatsNewArrival.tsx). The logo leaves the boot splash and
+ * flies into the header in about 1.1 s; a veil in the page colour dissolves the
+ * splash, the window opens around the logo from 180ms, and the page, the
+ * footer and the title follow as the logo lands, so nothing sits under it. Only after an update:
+ * inside a project and from Help the dialog keeps its plain 180ms fade. Reduce motion
+ * never gets the arrive class.
+ */
+.ade-whats-new-veil {
+  position: fixed;
+  inset: 0;
+  background: var(--color-bg);
+  pointer-events: none;
+}
+.ade-whats-new-flight {
+  position: fixed;
+  transform-origin: 0 0;
+  pointer-events: none;
+  will-change: transform;
+}
+.ade-dialog-panel.ade-whats-new--arrive[data-state="open"] {
+  animation: ade-whats-new-arrive 640ms cubic-bezier(0.16, 1, 0.3, 1) 180ms both;
+}
+@keyframes ade-whats-new-arrive {
+  from { opacity: 0; transform: translateY(14px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+/* The first page waits for the logo to pass over it; `--intro` drops once a
+   page is turned. */
+.ade-whats-new--intro .ade-wnf-text,
+.ade-whats-new--intro .ade-rn { animation-delay: 980ms; }
+.ade-whats-new--intro .ade-wnf-media { animation-delay: 1080ms; }
+/* The title waits for the logo to land beside it. */
+.ade-whats-new--arrive .ade-whats-new-title {
+  animation: ade-whats-new-fade-up 460ms cubic-bezier(0.16, 1, 0.3, 1) 1120ms backwards;
+}
+.ade-whats-new--arrive .ade-whats-new-foot {
+  animation: ade-whats-new-fade-up 460ms cubic-bezier(0.16, 1, 0.3, 1) 1040ms backwards;
+}
+@keyframes ade-whats-new-fade-up {
+  from { opacity: 0; transform: translateY(5px); }
+  to { opacity: 1; transform: none; }
+}
+.ade-whats-new-mark[data-arrival="waiting"] { opacity: 0; }
+.ade-whats-new-mark[data-arrival="landed"] { animation: ade-whats-new-land 420ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+@keyframes ade-whats-new-land {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.1); }
+  100% { transform: scale(1); }
+}
+/* A light runs across the letters once the logo lands. */
+.ade-whats-new-mark[data-arrival="landed"]::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 38%, rgb(255 255 255 / 0.9) 50%, transparent 62%) no-repeat;
+  background-size: 260% 100%;
+  -webkit-mask: var(--wn-mark-mask) center / contain no-repeat;
+  mask: var(--wn-mark-mask) center / contain no-repeat;
+  animation: ade-whats-new-sheen 900ms ease-out 80ms both;
+  pointer-events: none;
+}
+@keyframes ade-whats-new-sheen {
+  0% { background-position: 120% 0; opacity: 1; }
+  85% { opacity: 1; }
+  100% { background-position: -20% 0; opacity: 0; }
+}

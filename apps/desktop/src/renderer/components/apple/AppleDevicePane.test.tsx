@@ -90,6 +90,8 @@ vi.mock("./appleRecording", async (importOriginal) => ({
 }));
 
 const { AppleDevicePane } = await import("./AppleDevicePane");
+const { DialogHost } = await import("../ui/dialog");
+const { __resetDialogRequestsForTests } = await import("../ui/dialog/confirm");
 const { APPLE_LOADING_RECHECK_MS, APPLE_START_GIVE_UP_MS } = await import("./useAppleDeviceStartTracker");
 const { expectNoHorizontalOverflow } = await import("./testLayout");
 const { useAppStore } = await import("../../state/appStore");
@@ -264,6 +266,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  __resetDialogRequestsForTests();
   cleanup();
   vi.clearAllMocks();
 });
@@ -420,10 +423,39 @@ describe("AppleDevicePane states", () => {
       await waitFor(() => expect(paneState()).toBe("stopped"));
       iosSimulator.deviceList = vi.fn(async () => ({ installed: [{ ...PRO, state: "Shutdown" }, MAX], lane: null }));
       fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
-      expect(screen.queryByText("Give up this device and pick another?")).toBeNull();
-      expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true }, null);
+      expect(screen.queryByText("Give up this device and pick another? It stays installed.")).toBeNull();
+      await waitFor(() => expect(iosSimulator.deviceDetach).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true, udid: "pro" }, null));
       expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
       await waitFor(() => expect(paneState()).toBe("no-device"));
+    });
+
+    /*
+     * A device ADE made is deleted by the cleanup pass a few minutes after a
+     * release, so that release asks first, and can keep it as a free simulator.
+     */
+    it("Choose another device on an ADE-made device says it will be deleted, and can keep it", async () => {
+      const { iosSimulator } = setup({
+        lane: { ...LANE_DEVICE, origin: "created" },
+        installed: [{ ...PRO, state: "Shutdown" }],
+        stream: "idle",
+      });
+      render(
+        <>
+          <AppleDevicePane sessionId="chat-1" laneId="lane-1" projectRoot="/repo" runtimePin={null} ignoreChatOwnership />
+          <DialogHost />
+        </>,
+      );
+      await waitFor(() => expect(paneState()).toBe("stopped"));
+      fireEvent.click(screen.getByRole("button", { name: "Choose another device" }));
+      await screen.findByText(/ADE deletes it, with its apps and data, in about 5 minutes/u);
+      expect(iosSimulator.deviceDetach).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByText(/Keep it as a free simulator instead/u));
+      fireEvent.click(screen.getByRole("button", { name: "Release" }));
+      await waitFor(() => expect(iosSimulator.deviceDetach).toHaveBeenCalledWith(
+        { laneId: "lane-1", chatSessionId: "chat-1", ignoreOwnership: true, udid: "pro", keep: true },
+        null,
+      ));
+      expect(iosSimulator.deviceDelete).not.toHaveBeenCalled();
     });
 
     it("a live device has neither the Off label nor the second choice", async () => {
@@ -541,7 +573,7 @@ describe("AppleDevicePane states", () => {
     await waitFor(() => expect(paneState()).toBe("live"));
     fireEvent.keyDown(screen.getByRole("button", { name: "More device actions" }), { key: "Enter" });
     fireEvent.click(screen.getByRole("menuitem", { name: "Switch device…" }));
-    expect(screen.getByText("Give up this device and pick another?")).toBeTruthy();
+    expect(screen.getByText("Give up this device and pick another? It stays installed.")).toBeTruthy();
     expect(document.querySelector("[role='dialog']")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Switch device" }));
     expect(iosSimulator.deviceDelete).toHaveBeenCalledWith(

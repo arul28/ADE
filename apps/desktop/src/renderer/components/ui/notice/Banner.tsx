@@ -1,5 +1,6 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useState, type CSSProperties, type ReactNode } from "react";
 import { NoticeActions, NoticeCloseButton, NoticeIcon, type NoticeAction } from "./NoticeParts";
+import { useNoticeFailure, type NoticeReport } from "./NoticeReport";
 import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "./noticeTones";
 
 /**
@@ -23,6 +24,11 @@ import { NOTICE_DOCKED_SURFACE, NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTon
  *                and "Not now".
  *
  * Feature code never styles a banner; it picks a tone, an icon, words, actions.
+ *
+ * Every banner that reports a failure (`error` tone, or any banner given a
+ * `report`) is the same template: a × even when the owner set none, a "Report"
+ * pill after the owner's actions, the raw error as one quiet line under the
+ * text that opens to the full error, and one Sentry log.
  */
 
 export type BannerLayout = "docked" | "floating" | "inline" | "suggestion";
@@ -49,8 +55,18 @@ export type BannerModel = {
   /** Secondary line. Wraps; in a floating pill it turns the pill into a card. */
   detail?: ReactNode;
   actions?: NoticeAction[];
-  /** `false`/omitted = not dismissable. */
+  /**
+   * `false`/omitted = not dismissable, except a failure banner (error tone or a
+   * `report`), which always gets a × that hides it until its text changes.
+   */
   dismiss?: BannerDismiss;
+  /**
+   * The failure behind this banner, for its error line, "Report" and Sentry.
+   * Error-tone banners get one from their own words; pass one to say more, to
+   * give a warning that is really a failure the same treatment, or `false` for
+   * an error that is the person's to fix (a field left empty).
+   */
+  report?: NoticeReport | false;
   /** Work is in flight (spinner in the icon tile). */
   busy?: boolean;
   /** Accessible name when `title` is not plain text. */
@@ -93,16 +109,49 @@ export function Banner({
   testId?: string;
 }): JSX.Element {
   if (layout === "suggestion") return <SuggestionCard model={model} style={style} testId={testId} />;
+  return <NoticeBanner model={model} layout={layout} onDurableDismiss={onDurableDismiss} style={style} testId={testId} />;
+}
+
+function NoticeBanner({
+  model,
+  layout,
+  onDurableDismiss,
+  style,
+  testId,
+}: {
+  model: BannerModel;
+  layout: Exclude<BannerLayout, "suggestion">;
+  onDurableDismiss?: (dismiss: { key: string; fingerprint: string }) => void;
+  style?: CSSProperties;
+  testId?: string;
+}): JSX.Element | null {
+  const failure = useNoticeFailure({
+    report: model.report,
+    tone: model.tone,
+    id: model.id,
+    title: model.title,
+    ariaLabel: model.ariaLabel,
+    detail: model.detail,
+    error: model.error,
+  });
+  const report = failure.report;
+  // A failure banner the owner made no way to close still closes: this exact
+  // failure stays hidden, and a different one shows.
+  const ownFingerprint = report ? `${report.headline}\u0000${report.technicalDetail ?? ""}` : null;
+  const [hiddenFingerprint, setHiddenFingerprint] = useState<string | null>(null);
+  if (ownFingerprint && !model.dismiss && hiddenFingerprint === ownFingerprint) return null;
   const tokens = noticeTone(model.tone);
   const floating = layout === "floating";
   // Docked banners share the inline wrapping row: in a narrow window the
   // actions drop under the text instead of crushing it.
   const inline = layout !== "floating";
-  const compactPill = floating && !model.detail && !model.extra && !model.error;
-  const hasBody = Boolean(model.detail || model.extra || model.error);
+  const compactPill = floating && !model.detail && !model.extra && !model.error && !report;
+  const hasBody = Boolean(model.detail || model.extra || model.error || failure.body);
+  const actions = failure.action ? [...(model.actions ?? []), failure.action] : model.actions;
   const name = model.ariaLabel ?? (typeof model.title === "string" ? model.title : "notice");
 
-  const dismiss = model.dismiss || null;
+  const dismiss: BannerDismiss | null = model.dismiss
+    || (ownFingerprint ? { onDismiss: () => setHiddenFingerprint(ownFingerprint) } : null);
   const handleDismiss = dismiss
     ? () => {
         if ("onDismiss" in dismiss) dismiss.onDismiss();
@@ -154,6 +203,7 @@ export function Banner({
           {model.error}
         </span>
       ) : null}
+      {failure.body}
     </div>
   );
 
@@ -194,13 +244,13 @@ export function Banner({
           }}
         >
           {text}
-          <NoticeActions actions={model.actions} tone={model.tone} size="sm" style={{ flexShrink: 0 }} />
+          <NoticeActions actions={actions} tone={model.tone} size="sm" style={{ flexShrink: 0 }} />
         </div>
       ) : (
         <>
           {text}
           <NoticeActions
-            actions={model.actions}
+            actions={actions}
             tone={model.tone}
             size="sm"
             style={{ flexShrink: 0, flexWrap: "nowrap", alignSelf: "center" }}

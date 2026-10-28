@@ -53,6 +53,7 @@ function issueAccessHint(access: GitHubIssueWriteAccess): string {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
 import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
 
 type TokenType = "classic" | "fine-grained" | "unknown";
 
@@ -258,7 +259,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         }
         setActionError(verification.message);
       })
-      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => setActionError(extractError(err)))
       .finally(() => setGithubBusy(false));
   };
 
@@ -273,7 +274,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
         setShowPatSetup(false);
         setSaveNotice(status.authSource === "gh" ? "Personal access token cleared. ADE is using gh auth." : "Personal access token cleared.");
       })
-      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => setActionError(extractError(err)))
       .finally(() => setGithubBusy(false));
   };
 
@@ -283,7 +284,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     window.ade.github
       .getStatus({ forceRefresh: true }, pin)
       .then((status) => setGithubStatus(status))
-      .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
+      .catch((err) => setActionError(extractError(err)))
       .finally(() => setGithubBusy(false));
   };
 
@@ -777,6 +778,8 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
             model={{
               id: "github-missing-scopes",
               tone: "error",
+              // The token's scopes are the person's to fix, not a failure to report.
+              report: false,
               title: (
                 <>
                   Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.

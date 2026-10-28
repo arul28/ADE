@@ -84,57 +84,5 @@ export function SettingsSectionShell({
   );
 }
 
-/**
- * A labelled on/off switch. Callers own the persisted value and pass it in.
- *
- * `disabled` keeps it in place but inert, for a build whose preload predates
- * the setting, so it does not pretend to work.
- */
-export function SettingsToggle({
-  checked,
-  onChange,
-  id,
-  disabled = false,
-}: {
-  checked: boolean;
-  onChange: (value: boolean) => void;
-  id: string;
-  disabled?: boolean;
-}) {
-  return (
-    <button
-      id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      style={{
-        position: "relative",
-        width: 36,
-        height: 20,
-        borderRadius: 10,
-        border: "none",
-        background: checked ? COLORS.accent : COLORS.outlineBorder,
-        cursor: disabled ? "not-allowed" : "pointer",
-        padding: 0,
-        flexShrink: 0,
-        opacity: disabled ? 0.5 : 1,
-        transition: "background 150ms ease",
-      }}
-    >
-      <span
-        style={{
-          position: "absolute",
-          top: 2,
-          left: checked ? 18 : 2,
-          width: 16,
-          height: 16,
-          borderRadius: 8,
-          background: COLORS.textPrimary,
-          transition: "left 150ms ease",
-        }}
-      />
-    </button>
-  );
-}
+/** The one settings switch; this path stays for the sections that import it from here. */
+export { SettingsToggle } from "./primitives/SettingsControls";

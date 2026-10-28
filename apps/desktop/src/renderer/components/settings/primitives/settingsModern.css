@@ -213,7 +213,6 @@
 .ade-modern-note[data-tone="crit"] { border-color: color-mix(in srgb, var(--kit-crit) 26%, transparent); background: color-mix(in srgb, var(--kit-crit) 8%, transparent); }
 .ade-modern-note[data-tone="crit"] > svg { color: var(--kit-crit); }
 .ade-modern-note[data-tone="ok"] > svg { color: var(--kit-ok); }
-.ade-modern-error { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-crit); }
 .ade-modern-warn { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-warn); }
 
 /* Text choice cards: `.ade-ap-choice` with a title and a hint instead of art. */

@@ -23,7 +23,6 @@ import {
   MagnifyingGlass,
   Stack,
   TreeStructure,
-  Warning,
   X,
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
@@ -42,6 +41,7 @@ import type {
 } from "../../../shared/types";
 import type { SearchResultItem } from "../../../shared/types/search";
 import { parseDeeplink } from "../../../shared/deeplinks";
+import { formatMachineVersions } from "../../../shared/machineVersions";
 import { extractError } from "../../lib/format";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueInSheet } from "../../lib/issueNavigation";
@@ -152,6 +152,7 @@ import {
   settingsTabLabel,
 } from "../settings/settingsManifest";
 import { isImeComposing } from "../../lib/imeComposition";
+import { InlineErrorNotice } from "../ui/notice";
 
 export type CommandPaletteIntent =
   | "default"
@@ -2687,10 +2688,12 @@ export function CommandPalette({
                     >
                       <div className="flex min-w-0 flex-1 items-center gap-2 text-[11px] text-[var(--color-muted-fg)]">
                         {browseError ? (
-                          <span className="flex items-center gap-1.5 text-[var(--color-danger,#F87171)]">
-                            <Warning size={12} weight="fill" />
-                            <span className="truncate">{browseError}</span>
-                          </span>
+                          <InlineErrorNotice
+                            id="command-palette-browse"
+                            message={browseError}
+                            report={{ surface: "command_palette_browse", headline: "Couldn't open that folder" }}
+                            onDismiss={() => setBrowseError(null)}
+                          />
                         ) : isCurrentProjectTarget ? (
                           <span>Already open.</span>
                         ) : (
@@ -3123,7 +3126,7 @@ function ProjectLocationChooser({
               </span>
               <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                 {isRemote
-                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${status.version}` : ""}`
+                  ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${formatMachineVersions({ brainVersion: status.version, appVersion: status.appVersion })}` : ""}`
                   : "Projects on this computer"}
               </span>
               {isRemote ? (

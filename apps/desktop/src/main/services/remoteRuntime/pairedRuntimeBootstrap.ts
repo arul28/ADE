@@ -110,6 +110,14 @@ function compatibilityError(error: unknown): PairedRuntimeCompatibilityError {
  * them used to hold the relay back by the full 10 s.
  */
 const LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 3_000;
+/**
+ * The same for a tailnet route. Tailscale answers in well under a second once
+ * its path is up, and a few seconds when it first has to go through a DERP
+ * relay; while the far brain restarts, `tailscale serve` still accepts the
+ * socket and the handshake hangs, which used to hold every later route back
+ * by the full 10 s.
+ */
+const TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS = 5_000;
 
 export async function bootstrapPairedRuntime(args: {
   target: RemoteRuntimeTarget;
@@ -239,7 +247,9 @@ export async function bootstrapPairedRuntime(args: {
         ...(candidate.kind === "relay" ? { correlationId } : {}),
         ...(candidate.kind === "lan" && hasFallback
           ? { connectTimeoutMs: LAN_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
-          : {}),
+          : candidate.kind === "tailnet" && hasFallback
+            ? { connectTimeoutMs: TAILNET_CONNECT_TIMEOUT_WITH_FALLBACK_MS }
+            : {}),
       });
     } catch (error) {
       if (error instanceof PairedRuntimeRelayAuthRequiredError) {
@@ -410,6 +420,7 @@ export async function bootstrapPairedRuntime(args: {
           target: updated,
           arch: updated.lastSeenArch ?? "unknown",
           version: initializeInfo.version,
+          appVersion: initializeInfo.desktopAppVersion,
           route: {
             kind: candidate.kind,
             endpoint: candidate.endpoint,

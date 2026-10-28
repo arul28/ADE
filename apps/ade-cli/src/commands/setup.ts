@@ -574,9 +574,30 @@ async function runDesktopStep(args: {
     return 0;
   }
 
+  // An app left on an older version than the brain is not "not installed":
+  // say what stays behind, so the gap is never silent.
+  const keptDetail = installed.version
+    ? `${installed.version} kept; ${releaseVersion ?? "a newer build"} is available`
+    : "not installed";
+
+  // macOS: an open app is never swapped underneath itself. It keeps running
+  // the old code from a replaced bundle, and opening the new one only brings
+  // the old one forward. The app's own update installs it and moves its
+  // background service along.
+  if (platform === "darwin" && installed.version && installed.path && fs.existsSync(installed.path)) {
+    const { isMacDesktopAppRunningAt } = await import("./macDesktopUpdate");
+    if (isMacDesktopAppRunningAt(installed.path)) {
+      step.state = "skipped";
+      step.detail = `ADE ${installed.version} is open; use Restart and install in ADE to move it to ${releaseVersion ?? "the latest build"}`;
+      step.location = installed.path;
+      step.nextAction = "Restart and install in ADE";
+      return 0;
+    }
+  }
+
   if (!interactive) {
     step.state = "skipped";
-    step.detail = "not installed";
+    step.detail = keptDetail;
     step.nextAction = "ade setup";
     return 0;
   }
@@ -587,7 +608,7 @@ async function runDesktopStep(args: {
   const choice = await ask(question, ["Yes", "No"]);
   if (choice !== 0) {
     step.state = "skipped";
-    step.detail = "not installed";
+    step.detail = keptDetail;
     step.nextAction = "ade setup";
     return 0;
   }

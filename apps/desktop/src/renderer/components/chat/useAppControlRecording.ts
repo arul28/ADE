@@ -92,7 +92,7 @@ export function useAppControlRecording({
     const api = window.ade?.appControl;
     if (!laneId || !api) return undefined;
     let cancelled = false;
-    if (enabled && typeof api.getRecordingStatus === "function") {
+    if (enabled && isAdeAvailable(api.getRecordingStatus)) {
       void api.getRecordingStatus({ laneId }, pinRef.current)
         .then((status) => {
           if (cancelled || !status) return;
@@ -232,7 +232,7 @@ export function useAppControlRecording({
   const openSettings = useCallback((kind: MacDesktopPermissionKind) => {
     const open = window.ade?.app?.openSystemSettingsPane;
     const failed = () => setError("Could not open System Settings on this Mac. Open Privacy & Security yourself.");
-    if (typeof open !== "function") {
+    if (!isAdeAvailable(open)) {
       failed();
       return;
     }

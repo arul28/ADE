@@ -317,7 +317,7 @@ struct WorkChatSummaryRenderContext: Equatable {
   let activeBackgroundTaskCount: Int?
   /// "Effort pending" / "Fast mode pending" / "Settings pending" while the host
   /// holds a setting change until background work ends; nil otherwise.
-  let pendingSettingsLabel: String?
+  let pendingSettings: WorkPendingSettingsChipModel?
   /// Live usage-limit resume state, already normalized (and back-filled from the
   /// deprecated `usageLimitParkedUntil` mirror for older hosts). Non-nil is the
   /// one and only reason the resume pill renders.
@@ -370,7 +370,7 @@ struct WorkChatSummaryRenderContext: Equatable {
       self.parentTitle = nil
       self.pendingInputItemId = nil
       self.activeBackgroundTaskCount = nil
-      self.pendingSettingsLabel = nil
+      self.pendingSettings = nil
       self.usageLimitResume = nil
       self.crossMachineHandoff = nil
       self.crossMachineBatchApproval = nil
@@ -415,7 +415,10 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.parentTitle = parentTitle
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
-    self.pendingSettingsLabel = workPendingSettingsAfterBackgroundShortLabel(summary.pendingSettingsAfterBackground)
+    self.pendingSettings = workPendingSettingsChip(
+      effortChange: summary.reasoningEffortChange,
+      heldSettings: summary.pendingSettingsAfterBackground
+    )
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval
@@ -3464,8 +3467,8 @@ private struct WorkChatComposerDraftInput: View {
     VStack(alignment: .leading, spacing: 0) {
       // Compact first is a pill in the chat's one pill row above this box
       // (`composerBadgeChipRow`).
-      if !isDictating, let pendingSettingsLabel = chatSummary.pendingSettingsLabel {
-        WorkPendingSettingsChip(label: pendingSettingsLabel)
+      if !isDictating, let pendingSettings = chatSummary.pendingSettings {
+        WorkPendingSettingsChip(model: pendingSettings)
       }
 
       ADEGlassComposerCard(

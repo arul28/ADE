@@ -23,7 +23,7 @@ export default function PerformanceAnnouncement({ close }: AnnouncementPageProps
       media={{
         kind: "images",
         width: 1568,
-        height: 618,
+        height: 1086,
         holdMs: 2_000,
         images: [
           { src: phone, alt: "iPhone app on slow 3G: ADE wins all 4 tests against T3 Code, including a 2.41 s cold start" },

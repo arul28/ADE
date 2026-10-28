@@ -6,6 +6,7 @@ import {
   permissionLevelRank,
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
+import { resolveCurrentCliEntry } from "./lib/cliDelegation";
 import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
@@ -294,6 +295,11 @@ type SessionState = {
     maxCalls: number;
     windowMs: number;
   };
+  /**
+   * Aborted when this connection closes. A call that waits on the caller (an
+   * Apple device lease in line) leaves its line when the caller is gone.
+   */
+  connectionSignal?: AbortSignal;
 };
 
 /** Chat actions only a user client may call; an agent caller is refused. */
@@ -687,6 +693,7 @@ const TOOL_SPECS: ToolSpec[] = [
         ownerId: { type: "string" },
         proof: { type: "boolean", default: false, description: "File the recording as reviewer-visible ADE proof. Set by `ade proof record`; leave false for your own look at the screen." },
         realScreen: { type: "boolean", default: false, description: "With `proof`, record the user's whole real screen instead of the lane's Mac Desktop display. Set by `ade proof record --real-screen`." },
+        plain: { type: "boolean", default: false, description: "With `proof` on a lane display, keep real time: no still stretches cut, no pointer or captions. Set by `ade proof record --plain`. A real-screen recording is always real time." },
         durationSec: { type: "number", minimum: 1, maximum: 120, default: 10 }
       }
     }
@@ -2803,11 +2810,15 @@ async function fileLaneDisplayProof(args: {
     }
     // The cap is a backstop: if this call dies mid-wait, the recorder still
     // stops and files itself instead of running for the default ten minutes.
+    // `plain` keeps real time: without it the recorder cuts still stretches,
+    // so a 36-second recording became "a 0:11 demo of 0:36".
+    const plain = toolArgs.plain === true;
     await service.startRecording({
       laneId,
       caption: title,
       chatSessionId: target.chatSessionId,
       maxSeconds: durationSec + 30,
+      ...(plain ? { plain: true } : {}),
     });
     await sleep(durationSec * 1000);
     const stopped = await service.stopRecording({ laneId, chatSessionId: target.chatSessionId });
@@ -2817,6 +2828,7 @@ async function fileLaneDisplayProof(args: {
     metadata = {
       absolutePath: filePath,
       durationSec,
+      plain,
       durationMs: stopped.durationMs ?? null,
       wallDurationMs: stopped.wallDurationMs ?? null,
       idleCutMs: stopped.idleCutMs ?? null,
@@ -3485,13 +3497,8 @@ function scopeCrossMachineMoveArgs(
 ): Record<string, unknown> {
   const { callerIsPerson, boundChatSessionId } = caller;
   const requestedSourceSessionId = asOptionalTrimmedString(rawArgs.sourceSessionId);
-  // ADE chats keep their parent in their own lineage (the chat service);
-  // session rows carry it only for tracked agent CLIs. The relation walk
-  // stops at 32 links and on any cycle.
-  const parentSessionIdFor = (sessionId: string) =>
-    runtime.agentChatService?.getChatParentSessionId?.(sessionId)
-      ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId
-      ?? null;
+  // The relation walk stops at 32 links and on any cycle.
+  const parentSessionIdFor = (sessionId: string) => directParentSessionId(runtime, sessionId);
   const relationTo = (sessionId: string | null | undefined) =>
     crossMachineMoveRelation(boundChatSessionId, sessionId, parentSessionIdFor);
 
@@ -3794,9 +3801,19 @@ function scopeChatAdeActionArgs(
     && requestedSessionId != null
     && callerChatSessionId != null
     && runtime.sessionService.get(requestedSessionId)?.chatSessionId === callerChatSessionId;
+  // A subagent's question is often answered by the agent that started it. That
+  // agent may take the subagent's hand back down; otherwise it stays raised
+  // (and holds the lane out of Focus) until the person opens the subagent.
+  // The service only lowers a hand an agent raised, never a person's.
+  const requestedDescendantAsk = action === "clearAsk"
+    && requestedSessionId != null
+    && crossMachineMoveRelation(callerChatSessionId, requestedSessionId, (sessionId) =>
+      runtime.agentChatService?.getChatParentSessionId?.(sessionId)
+        ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId
+        ?? null) === "descendant";
   if (
     !callerChatSessionId
-    || (requestedSessionId && requestedSessionId !== callerChatSessionId && !requestedOwnedTerminal)
+    || (requestedSessionId && requestedSessionId !== callerChatSessionId && !requestedOwnedTerminal && !requestedDescendantAsk)
   ) {
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
@@ -3813,6 +3830,18 @@ function ctoIdentityPatchTouchesCrossMachineAccess(patch: unknown): boolean {
   return isRecord(patch) && Object.prototype.hasOwnProperty.call(patch, "crossMachineEnabled");
 }
 
+/**
+ * A session's direct parent. ADE chats keep it in their own lineage (the chat
+ * service); session rows carry it only for tracked agent CLIs, so reading the
+ * row alone misses every chat subagent.
+ */
+function directParentSessionId(runtime: AdeRuntime, sessionId: string): string | null {
+  return asOptionalTrimmedString(
+    runtime.agentChatService?.getChatParentSessionId?.(sessionId)
+      ?? runtime.sessionService.get(sessionId)?.orchestrationParentSessionId,
+  ) ?? null;
+}
+
 function withTrustedAgentProvenance(
   runtime: AdeRuntime,
   session: SessionState,
@@ -3825,10 +3854,7 @@ function withTrustedAgentProvenance(
   // and for how long. Never trust the caller's copy; derive it from the bound
   // session and the target's persisted direct-parent relationship.
   stripHostAuthoredMessageProvenance(existingMetadata);
-  const targetSession = targetSessionId ? runtime.sessionService.get(targetSessionId) : null;
-  const targetParentSessionId = asOptionalTrimmedString(
-    targetSession?.orchestrationParentSessionId,
-  );
+  const targetParentSessionId = targetSessionId ? directParentSessionId(runtime, targetSessionId) : null;
   if (callerSessionId && targetParentSessionId === callerSessionId) {
     existingMetadata.spawnDispatch = {
       parentSessionId: callerSessionId,
@@ -4676,6 +4702,7 @@ const APPLE_AGENT_DRIVING_ACTIONS = new Set([
   "relaunchApp",
   "openUrl",
   "tap",
+  "longPress",
   "typeText",
   "drag",
   "swipe",
@@ -6252,10 +6279,7 @@ async function runTool(args: {
         && requestedSessionId !== callerSessionId;
       let legacyBlankChildKickoff = false;
       if (legacyCrossSessionSend) {
-        const targetSession = runtime.sessionService.get(requestedSessionId);
-        const targetParentSessionId = asOptionalTrimmedString(
-          targetSession?.orchestrationParentSessionId,
-        );
+        const targetParentSessionId = directParentSessionId(runtime, requestedSessionId);
         const agentChatService = runtime.agentChatService;
         if (targetParentSessionId === callerSessionId && agentChatService) {
           try {
@@ -6554,6 +6578,12 @@ async function runTool(args: {
         });
         if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
       }
+    }
+    if (domain === "ios_simulator" && action === "deviceLease" && !argsList && !hasScalarArg) {
+      // Set here, never taken from the caller: a killed `ade apple lease
+      // --wait` leaves the line instead of winning a turn nobody will use.
+      const { connectionSignal: _callerSupplied, ...leaseArgs } = scopedObjectArgs;
+      scopedObjectArgs = session.connectionSignal ? { ...leaseArgs, connectionSignal: session.connectionSignal } : leaseArgs;
     }
     try {
       if (!scopedResultHandled) {
@@ -8703,6 +8733,9 @@ export function createAdeRpcRequestHandler(args: {
     };
   };
 
+  const connectionAbort = new AbortController();
+  session.connectionSignal = connectionAbort.signal;
+
   /** File watches opened over this connection and not yet stopped. */
   const fileWatches = createFileWatchLedger();
   const noteFileWatchAction = (actionName: string, actionArgs: Record<string, unknown>, result: unknown): void => {
@@ -8755,7 +8788,11 @@ export function createAdeRpcRequestHandler(args: {
             normalizeAdeRuntimeRole(process.env.ADE_DEFAULT_ROLE),
           projectRoot: runtime.projectRoot,
           workspaceRoot: runtime.workspaceRoot ?? null,
-          pid: process.pid
+          pid: process.pid,
+          // What this brain runs (a SEA `ade`, or the cli.cjs it was started
+          // with), so an `ade` from another install can tell this brain is
+          // not its own and leave it alone (lib/brainVersionSkew.ts).
+          cliEntryPath: resolveCurrentCliEntry(),
         },
         capabilities: {
           actions: {
@@ -9186,6 +9223,7 @@ export function createAdeRpcRequestHandler(args: {
   // The connection is gone, and with it every client that could still send a
   // stop for the watches it opened here.
   handler.dispose = () => {
+    connectionAbort.abort();
     for (const ref of fileWatches.drain()) {
       try {
         runtime.fileService?.stopWatching(toRuntimeFileWatchArgs(ref.args), ref.clientId);

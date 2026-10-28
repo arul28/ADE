@@ -110,17 +110,21 @@ struct HubHeaderRow<Title: View>: View {
   let actions: HubToolbarActions
   @ViewBuilder var title: () -> Title
   @EnvironmentObject private var drawer: ActivityDrawerModel
+  @Environment(\.hubHeaderInline) private var inline
 
-  static var height: CGFloat { 48 }
+  /// Beside the clock (`hubHeaderInline`) the row is a size smaller so all of
+  /// it fits left of the status bar.
+  private var height: CGFloat { inline ? 40 : 48 }
+  private var spacing: CGFloat { inline ? 6 : 12 }
 
   var body: some View {
-    GlassEffectContainer(spacing: 12) {
-      HStack(spacing: 12) {
+    GlassEffectContainer(spacing: spacing) {
+      HStack(spacing: spacing) {
         // On a narrow phone the machine's name truncates; the icons have
         // fixed frames and keep theirs.
         title()
-          .frame(height: Self.height)
-          .padding(.horizontal, 10)
+          .frame(height: height)
+          .padding(.horizontal, inline ? 6 : 10)
           .glassEffect(.regular.interactive(), in: .capsule)
         Spacer(minLength: 0)
         HStack(spacing: 0) {
@@ -144,7 +148,7 @@ struct HubHeaderRow<Title: View>: View {
           icon("gearshape", action: actions.onOpenSettings)
             .accessibilityLabel("Settings")
         }
-        .padding(.horizontal, 4)
+        .padding(.horizontal, inline ? 0 : 4)
         .glassEffect(.regular.interactive(), in: .capsule)
         icon("plus", action: actions.onAdd)
           .glassEffect(.regular.interactive(), in: .circle)
@@ -152,14 +156,14 @@ struct HubHeaderRow<Title: View>: View {
           .accessibilityHint("Adds a project from one of your machines.")
       }
     }
-    .frame(height: Self.height)
+    .frame(height: height)
   }
 
   private func icon(_ symbol: String, badge: Int = 0, action: @escaping () -> Void) -> some View {
     Button(action: action) {
       Image(systemName: symbol)
-        .font(.system(size: 19, weight: .regular))
-        .frame(width: Self.height, height: Self.height)
+        .font(.system(size: inline ? 17 : 19, weight: .regular))
+        .frame(width: height, height: height)
         .contentShape(Rectangle())
         .overlay(alignment: .topTrailing) {
           if badge > 0 {
@@ -196,6 +200,40 @@ extension View {
   func hubHeaderClearsStatusBar() -> some View {
     modifier(HubStatusBarClearance())
   }
+}
+
+private struct HubHeaderInlineKey: EnvironmentKey {
+  static let defaultValue = false
+}
+
+extension EnvironmentValues {
+  /// The Hub's header sits in the status bar's band beside the clock (the
+  /// Duo's outer display, upright), so its row draws compact.
+  var hubHeaderInline: Bool {
+    get { self[HubHeaderInlineKey.self] }
+    set { self[HubHeaderInlineKey.self] = newValue }
+  }
+}
+
+/// The width of the empty band the status bar leaves on the leading side of
+/// a tall top inset, or nil where there is none. The Duo's outer display,
+/// upright, draws its clock and status in a block at the top trailing corner
+/// (reported as an occlusion) under a top inset deep enough for a header row,
+/// and leaves the rest of that band empty. Every other iPhone's top occlusion
+/// is the Dynamic Island, centred, with no row's height beside it.
+func hubStatusBandLeadingWidth(_ proxy: GeometryProxy) -> CGFloat? {
+  guard !proxy.isLandscapeIgnoringKeyboard, proxy.safeAreaInsets.top >= 64 else { return nil }
+  #if compiler(>=6.4)
+  guard #available(iOS 27.1, *) else { return nil }
+  let status = proxy.reservedRegions(kind: .occlusion).filter { region in
+    let frame = region.frame
+    return region.isActive && frame.minY < 0 && frame.maxY <= 1 && frame.minX > proxy.size.width * 0.4
+  }
+  guard let leading = status.map(\.frame.minX).min(), leading >= 220 else { return nil }
+  return leading
+  #else
+  return nil
+  #endif
 }
 
 @MainActor
@@ -328,6 +366,9 @@ struct HubConnectionStatus: Equatable {
   var spokenState: String
   /// A project switching in replaces the label with progress.
   var switchingProjectName: String?
+  /// Live machines, for the compact title's count (`HubHeaderRow` beside the
+  /// clock), which shows a machine glyph instead of the label.
+  var machineCount = 1
 
   var accessibilityLabel: String {
     if let switchingProjectName { return "Opening \(switchingProjectName)" }
@@ -388,7 +429,8 @@ func hubConnectionStatus(
     tone: tone,
     label: label,
     spokenState: spokenState,
-    switchingProjectName: switching
+    switchingProjectName: switching,
+    machineCount: liveCount
   )
 }
 
@@ -398,33 +440,68 @@ struct HubConnectionMenu: View {
   let status: HubConnectionStatus
   let machines: [DuoHomeMachine]
   let onOpenSettings: () -> Void
+  @Environment(\.hubHeaderInline) private var inline
 
   var body: some View {
     Menu {
       HubMachinesMenuContent(machines: machines, onOpenSettings: onOpenSettings)
     } label: {
-      // A narrow phone gives the machine's name the room: the wordmark goes
-      // before the name truncates ("ADE • Arul…").
-      ViewThatFits(in: .horizontal) {
-        labelRow(showsBrand: true)
-        labelRow(showsBrand: false)
+      if inline {
+        // Beside the clock there is room for the machine's glyph, not its
+        // name; the wordmark stays only while it fits.
+        ViewThatFits(in: .horizontal) {
+          compactLabel(showsBrand: true)
+          compactLabel(showsBrand: false)
+        }
+      } else {
+        // A narrow phone gives the machine's name the room: the wordmark goes
+        // before the name truncates ("ADE • Arul…").
+        ViewThatFits(in: .horizontal) {
+          labelRow(showsBrand: true)
+          labelRow(showsBrand: false)
+        }
       }
     }
     .accessibilityLabel(status.accessibilityLabel)
     .accessibilityHint("Shows your machines and connection settings.")
   }
 
+  private var brandMark: some View {
+    Image("BrandMark")
+      .resizable()
+      .renderingMode(.original)
+      .interpolation(.high)
+      .aspectRatio(contentMode: .fit)
+      .frame(width: 38, height: 21)
+      .accessibilityHidden(true)
+  }
+
+  /// The machines as the glyph the lane and Work chips use: the status dot,
+  /// a computer, and how many when there is more than one.
+  private func compactLabel(showsBrand: Bool) -> some View {
+    HStack(spacing: 6) {
+      if showsBrand { brandMark }
+      if status.switchingProjectName != nil {
+        ProgressView().controlSize(.mini)
+      } else {
+        ADEKitDot(tone: status.tone, size: 7)
+      }
+      Image(systemName: "desktopcomputer")
+        .font(.system(size: 16, weight: .medium))
+      if status.machineCount > 1 {
+        Text("\(status.machineCount)")
+          .font(.subheadline.weight(.semibold).monospacedDigit())
+      }
+    }
+    .foregroundStyle(ADEColor.textPrimary)
+    .lineLimit(1)
+    .fixedSize()
+    .padding(.horizontal, 4)
+  }
+
   private func labelRow(showsBrand: Bool) -> some View {
       HStack(spacing: 8) {
-        if showsBrand {
-          Image("BrandMark")
-            .resizable()
-            .renderingMode(.original)
-            .interpolation(.high)
-            .aspectRatio(contentMode: .fit)
-            .frame(width: 38, height: 21)
-            .accessibilityHidden(true)
-        }
+        if showsBrand { brandMark }
         Group {
           if let switching = status.switchingProjectName {
             HStack(spacing: 6) {

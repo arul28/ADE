@@ -8,7 +8,12 @@ import { resolveCurrentCliEntry } from "../lib/cliDelegation";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
-import { pendingSettingsAfterBackgroundShortLabel } from "../../../desktop/src/shared/chatTurnStatus";
+import {
+  pendingSettingsAfterBackgroundShortLabel,
+  reasoningEffortChangeLabel,
+  reasoningEffortChangeShortLabel,
+  settingsHeldBesideEffortChange,
+} from "../../../desktop/src/shared/chatTurnStatus";
 import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
@@ -2945,6 +2950,9 @@ function mentionRemoteCacheEntry(cache: Map<string, MentionRemoteCacheEntry>, la
   }
   return entry;
 }
+
+/** Center-pane width below which the footer shows an effort change as "High → Medium". */
+const FOOTER_FULL_EFFORT_CHANGE_MIN_WIDTH = 100;
 
 function useTerminalDimensions(): [number, number] {
   const read = (): [number, number] => [
@@ -5899,13 +5907,24 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     contextTokens: compactFirstState.offer.contextTokens,
     estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
   } : null, [compactFirstState]);
-  // An effort / fast-mode change the host holds until the chat's background
-  // work ends (desktop shows the same "Effort pending" chip in the composer).
+  // An effort the running work has not taken yet ("High now · Medium next
+  // turn") and a fast-mode change held until background work ends — the same
+  // chips desktop shows over the composer.
   const activePendingSettings = activeSession?.pendingSettingsAfterBackground;
-  const footerPendingSettingsLabel = useMemo(
-    () => activePendingSettings?.length ? pendingSettingsAfterBackgroundShortLabel(activePendingSettings) : null,
-    [activePendingSettings],
-  );
+  const activeEffortChange = activeSession?.reasoningEffortChange;
+  const activeEffortModelId = activeSession?.modelId ?? activeSession?.model ?? null;
+  // A narrow center pane gets the mobile form ("High → Medium"), so the
+  // footer row's truncation does not cut the change off.
+  const footerEffortChangeShort = centerWidth < FOOTER_FULL_EFFORT_CHANGE_MIN_WIDTH;
+  const footerPendingSettingsLabel = useMemo(() => {
+    const held = settingsHeldBesideEffortChange(activePendingSettings, activeEffortChange);
+    const formatEffortChange = footerEffortChangeShort ? reasoningEffortChangeShortLabel : reasoningEffortChangeLabel;
+    const parts = [
+      activeEffortChange ? formatEffortChange(activeEffortChange, activeEffortModelId) : null,
+      held.length ? pendingSettingsAfterBackgroundShortLabel(held) : null,
+    ].filter((part): part is string => part != null);
+    return parts.length ? parts.join(" · ") : null;
+  }, [activePendingSettings, activeEffortChange, activeEffortModelId, footerEffortChangeShort]);
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"

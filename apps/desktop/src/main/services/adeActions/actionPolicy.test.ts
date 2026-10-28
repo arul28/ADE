@@ -337,6 +337,11 @@ describe("ADE_ACTION_ACCESS", () => {
           problems.push(`${domain}.${action} is allowlisted but not declared read or write in shared/adeActionAccess.ts`);
         }
       }
+      // A live-only entry for an action that does not exist guards nothing.
+      const live = ADE_ACTION_ACCESS[domain]?.live;
+      for (const action of Array.isArray(live) ? live : []) {
+        if (!declared.has(action)) problems.push(`${domain}.${action} is marked live but not declared read or write`);
+      }
     }
     expect(problems).toEqual([]);
   });

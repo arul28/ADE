@@ -621,6 +621,107 @@ describe("durable socket lifecycle", () => {
     expect(pipe.deserializeAttachment()).toMatchObject({ established: true, epoch: controlEpoch });
   });
 
+  // The Apple device stream speaks first: its bytes reach the pipe socket
+  // while the brain's {t:"ready"} is still in flight on the control socket.
+  async function openEpochPairWithEarlyPipe(readyV2: boolean, durable = makeDoHarness()) {
+    const { durable: relay, state, storage } = durable;
+    await storage.put("secret", SECRET);
+    installAcceptSocketStub(relay, state);
+    const control = state.addSocket("control", undefined, Date.now(), { epoch: CONTROL_EPOCH });
+    return { relay, state, control, ...await openStreamPair(relay, state, control, readyV2) };
+  }
+
+  async function openStreamPair(relay: TunnelDurableObject, state: FakeState, control: FakeSocket, readyV2: boolean) {
+    await relay.fetch(new Request(
+      `https://relay.test/connect/${MACHINE_KEY}?kind=apple-stream&path=%2Fapple%2Fstream%2Ft${readyV2 ? "&ready=2" : ""}`,
+      { headers: { Upgrade: "websocket" } },
+    ));
+    const open = JSON.parse(String(control.sent.at(-1))) as { id: string };
+    await relay.fetch(await signedPipeRequest({ id: open.id, epoch: CONTROL_EPOCH }));
+    const ofRole = (role: string) => state.sockets.find((socket) => (
+      socket.tags.includes(role) && socket.tags.includes(`conn:${open.id}`)
+    ))!;
+    return { client: ofRole("client"), pipe: ofRole("pipe"), id: open.id };
+  }
+
+  it.each([false, true])("holds host bytes sent before ready and flushes them in order (ready-v2 client: %s)", async (readyV2) => {
+    const { relay, control, client, pipe, id } = await openEpochPairWithEarlyPipe(readyV2);
+    const config = new Uint8Array([1, 2, 3]).buffer;
+    // A keyframe of full-screen noise at the 20 Mb/s cap measured 1.9 MB.
+    const keyframe = new Uint8Array(2 * 1024 * 1024).buffer;
+
+    await relay.webSocketMessage(pipe as unknown as WebSocket, config);
+    await relay.webSocketMessage(pipe as unknown as WebSocket, '{"t":"stats"}');
+    await relay.webSocketMessage(pipe as unknown as WebSocket, keyframe);
+    expect(pipe.closes).toEqual([]);
+    expect(client.closes).toEqual([]);
+    const accepted = readyV2 ? [JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION })] : [];
+    expect(client.sent).toEqual(accepted);
+
+    await relay.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "ready", id, epoch: CONTROL_EPOCH }));
+    const ready = readyV2 ? [JSON.stringify({ t: "ready", v: RELAY_READY_VERSION })] : [];
+    expect(client.sent).toEqual([...accepted, ...ready, config, '{"t":"stats"}', keyframe]);
+
+    const delta = new Uint8Array([9]).buffer;
+    await relay.webSocketMessage(pipe as unknown as WebSocket, delta);
+    expect(client.sent.at(-1)).toBe(delta);
+    expect(pipe.deserializeAttachment()).toMatchObject({ established: true });
+    expect(pipe.deserializeAttachment()).not.toHaveProperty("pipeBuffered");
+  });
+
+  it.each([
+    { name: "overflows the pre-ready buffer", code: CLOSE_PRE_PIPE_BUFFER_OVERFLOW, reconstruct: false },
+    { name: "lost its pre-ready buffer to a reconstructed instance", code: CLOSE_FORWARD_FAILED, reconstruct: true },
+  ])("closes the pair, never forwarding a gap, when the pipe $name", async ({ code, reconstruct }) => {
+    const harness = makeDoHarness();
+    const { relay, state, control, client, pipe, id } = await openEpochPairWithEarlyPipe(true, harness);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    await relay.webSocketMessage(pipe as unknown as WebSocket, new ArrayBuffer(3 * 1024 * 1024));
+    const next = reconstruct
+      ? new TunnelDurableObject(state as unknown as DurableObjectState, {} as TunnelRelayEnv)
+      : relay;
+    if (reconstruct) {
+      await next.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "ready", id, epoch: CONTROL_EPOCH }));
+    } else {
+      await next.webSocketMessage(pipe as unknown as WebSocket, new ArrayBuffer(2 * 1024 * 1024));
+    }
+    log.mockRestore();
+
+    expect(client.closes).toEqual([{ code, reason: expect.stringContaining("pre-ready pipe buffer") }]);
+    expect(pipe.closes).toEqual([{ code, reason: expect.stringContaining("pre-ready pipe buffer") }]);
+    expect(client.sent).toEqual([JSON.stringify({ t: "accepted", v: RELAY_READY_VERSION })]);
+    expect(client.deserializeAttachment()).not.toMatchObject({ established: true });
+  });
+
+  it("bounds pre-ready pipe bytes across every tunnel of the object, and frees them once a pair is ready", async () => {
+    const harness = makeDoHarness();
+    const { relay, state, control, client, pipe, id } = await openEpochPairWithEarlyPipe(false, harness);
+    const log = vi.spyOn(console, "log").mockImplementation(() => {});
+    const burst = () => new ArrayBuffer(3 * 1024 * 1024);
+    await relay.webSocketMessage(pipe as unknown as WebSocket, burst());
+    const others = [];
+    for (let i = 0; i < 4; i += 1) {
+      const pair = await openStreamPair(relay, state, control, false);
+      await relay.webSocketMessage(pair.pipe as unknown as WebSocket, burst());
+      others.push(pair);
+    }
+    expect([pipe, ...others.map((pair) => pair.pipe)].flatMap((socket) => socket.closes)).toEqual([]);
+
+    // 15 MiB held: one more 3 MiB burst would pass the object's total.
+    const over = await openStreamPair(relay, state, control, false);
+    await relay.webSocketMessage(over.pipe as unknown as WebSocket, burst());
+    expect(over.client.closes).toEqual([{ code: CLOSE_PRE_PIPE_BUFFER_OVERFLOW, reason: "pre-ready pipe buffer overflow" }]);
+    expect(over.pipe.closes).toEqual([{ code: CLOSE_PRE_PIPE_BUFFER_OVERFLOW, reason: "pre-ready pipe buffer overflow" }]);
+
+    // A ready pair hands its bytes to the client and gives its share back.
+    await relay.webSocketMessage(control as unknown as WebSocket, JSON.stringify({ t: "ready", id, epoch: CONTROL_EPOCH }));
+    expect(client.sent).toHaveLength(1);
+    const after = await openStreamPair(relay, state, control, false);
+    await relay.webSocketMessage(after.pipe as unknown as WebSocket, burst());
+    log.mockRestore();
+    expect(after.pipe.closes).toEqual([]);
+  });
+
   it.each([
     { name: "lost in-memory marker data", options: { epoch: LEGACY_CONTROL_EPOCH, legacyBuffered: true } },
     { name: "pre-deploy unknown attachment", options: { omitEpoch: true } },

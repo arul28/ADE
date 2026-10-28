@@ -196,18 +196,26 @@ missing or malformed file contributes nothing.
 |---|---|---|
 | Claude | `~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` when set) | `mcpServers`, and `projects[<path>].mcpServers` for the open project |
 | Codex | `~/.codex/config.toml` (`$CODEX_HOME`) | `[mcp_servers.<name>]` tables with their `env` and `http_headers` sub-tables |
+| Copilot | `~/.copilot/mcp-config.json` (`$COPILOT_HOME`), where `copilot mcp add` writes | `mcpServers` |
 | Cursor | `~/.cursor/mcp.json` | `mcpServers` |
 | OpenCode | `~/.config/opencode/opencode.json` or `.jsonc` (`$XDG_CONFIG_HOME`) | `mcp` |
-| Droid | `~/.factory/mcp.json` | `mcpServers` |
+| Droid | `<FACTORY_HOME_OVERRIDE or ~>/.factory/mcp.json` | `mcpServers` |
 | Pi | `<Pi agent dir>/mcp.json`: `$PI_CODING_AGENT_DIR` when set, else `~/.pi/agent` (the directory ADE's Pi chats run on) | `mcpServers` |
+| Muse | `$XDG_CONFIG_HOME/muse/settings.json` (`~/.config/muse`) | `mcpServers` |
+| Qwen | `<QWEN_HOME>/settings.json` | `mcpServers`, Gemini's shape: `httpUrl` is streamable HTTP, a `url` with no `type` is SSE |
+| Kimi | `<KIMI_CODE_HOME>/mcp.json` | `mcpServers` |
+| Grok | `<GROK_HOME>/config.toml` | `[mcp_servers.<name>]` tables, read like Codex's |
+| Devin | `mcp_config.json`, `mcp_config.local.json`, `config.json`, `config.local.json` under `~/.config/devin` (`%APPDATA%\devin`) | `mcpServers` |
+| Antigravity | `~/.gemini/config/mcp_config.json` | `mcpServers` |
 
-Muse Code is not scanned. A Muse chat still receives the registry's servers;
-only importing servers from Muse's own config files is missing.
+An entry may name its transport in `type` or `transport`, and its address in
+`url`, `httpUrl` (always streamable HTTP) or `serverUrl` (Antigravity, Devin).
 
-Pi's project file (`.pi/mcp.json`) is not scanned: it comes with the
-repository. An env or header value that is a Pi reference (`${NAME}`, or a
-`!command` that prints the value) imports as written: the vault gets the
-reference text, not what Pi would resolve it to.
+A project's own files (`.mcp.json`, `.github/mcp.json`, `.pi/mcp.json` and the
+like) are not scanned: they come with the repository. A server defined only
+there is added with **Add**. An env or header value that is a Pi reference
+(`${NAME}`, or a `!command` that prints the value) imports as written: the
+vault gets the reference text, not what Pi would resolve it to.
 
 The same name in two providers is one row; the first definition found wins
 (the order above) and the others add their provider to the row. A name the
@@ -220,7 +228,7 @@ Codex can name the env variable a token is read from (`bearer_token_env_var`,
 from the desktop's own environment; when it is not set there, the header is
 imported with no value and the row shows it as missing.
 
-The Codex reader is not a full TOML parser. It reads table headers and
+The Codex and Grok reader is not a full TOML parser. It reads table headers and
 `key = value` lines under `mcp_servers`, which is how Codex writes them. A
 server declared only as an inline `mcp_servers = { ... }` table is not found.
 
@@ -236,8 +244,8 @@ Decided at launch by `resolveMcpRegistryForLaunch`
 | Codex | Every server that is on, except SSE ones. Codex has no SSE client. |
 | Pi | Every server that is on, except SSE ones (Pi has no legacy SSE client). The chat worker registers them in Pi's own MCP support (`pi.registerMcpServer`), values over the worker IPC only; the servers in Pi's own `mcp.json` load too. None in plan mode or a side chat. MCP calls ask in the modes where `bash` asks and in edit mode; full access runs them. See [Agent Routing › Pi MCP servers](../chat/agent-routing.md#pi-mcp-servers). |
 | Kimi | Every server that is on (stdio, HTTP and SSE), through ACP `session/new`. The servers in Kimi's own config also load, and a same-named one there wins. |
-| Copilot | ADE's own servers and the registry's, through the SDK's `mcpServers`. Servers the user configured in their Copilot config still run in interactive chats. ADE hands a registry sign-in to Copilot, so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
-| Grok, Qwen, Devin, Antigravity | None yet. |
+| Copilot | None of the registry's servers yet (`registryMcpSupport` has no Copilot row). Servers in the user's own Copilot config run in interactive chats, and when one asks for a sign-in ADE hands over the registry's sign-in for the same URL (matched ignoring host case, a default port and a trailing slash), so Copilot does not open a browser for it. See [Copilot SDK provider › MCP servers](../chat/copilot-sdk-provider.md#mcp-servers). |
+| Grok, Qwen, Devin, Antigravity | None yet. Their configs are still scanned, so their servers can be imported for the other agents. |
 | Personal chats, side jobs, SDK chats | None. The light session profile and strict MCP chats decide their own servers. |
 
 A change reaches chats started after it. A running chat keeps what it started

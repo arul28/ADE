@@ -80,6 +80,8 @@ export function UpdateImpactSummary({ impact, label }: { impact: UpdateImpact; l
 }
 
 function machineLabel(machine: ConnectedMachine): string {
+  // Both versions when the app and brain there drift ("1.2.123 · brain 1.2.125").
+  if (machine.versionLabel && machine.versionLabel !== machine.version) return `${machine.name} · ${machine.versionLabel}`;
   return machine.version ? `${machine.name} · ${updateVersionLabel(machine.version, "")}` : machine.name;
 }
 

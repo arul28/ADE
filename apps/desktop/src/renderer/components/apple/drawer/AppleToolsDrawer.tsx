@@ -4,8 +4,8 @@ import type { AppleLaneDevice, OpenProjectBinding } from "../../../../shared/typ
 import { cn } from "../../ui/cn";
 import { PaneTooltip } from "../../ui/PaneTooltip";
 import { describeAppleError } from "../appleErrors";
+import { Banner } from "../../ui/notice";
 import {
-  DRAWER_GHOST_BUTTON,
   DRAWER_ICON_BUTTON,
   Group,
   isAppleDrawerGroupId,
@@ -154,7 +154,6 @@ export function AppleToolsDrawer({
   const scope = useMemo<AppleDrawerScope>(() => ({ laneId, deviceUdid: device.udid, chatSessionId: null }), [device.udid, laneId]);
   const actions = useAppleDrawerActions({ scope, pinRef, visible });
   const [foregroundApp, setForegroundApp] = useState<string | null>(null);
-  const [showDetail, setShowDetail] = useState(false);
   const group = useAppleDrawerGroup(chatSessionId);
   const reportError = actions.reportError;
 
@@ -194,8 +193,6 @@ export function AppleToolsDrawer({
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [device.udid, laneId, reportError, wantsForeground]);
 
-  useEffect(() => { setShowDetail(false); }, [actions.error]);
-
   const ctx: AppleDrawerContext = {
     scope,
     device,
@@ -226,28 +223,18 @@ export function AppleToolsDrawer({
       </div>
       <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
         {described ? (
-          <div
-            role="alert"
-            className="flex min-w-0 flex-col gap-1 border-b border-border bg-[color-mix(in_srgb,var(--color-error)_10%,var(--color-surface))] px-3 py-2 text-xs text-[var(--color-error)]"
-            data-testid="apple-drawer-error"
-          >
-            <div className="flex min-w-0 flex-nowrap items-center gap-2">
-              <span className="min-w-0 flex-1 break-words">{described.sentence}</span>
-              {described.detail ? (
-                <button type="button" className={cn(DRAWER_GHOST_BUTTON, "h-5 px-1.5 text-[11px]")} onClick={() => setShowDetail((value) => !value)}>
-                  Details
-                </button>
-              ) : null}
-              <PaneTooltip label="Dismiss" side="bottom">
-                <button type="button" className={cn(DRAWER_ICON_BUTTON, "h-5 w-5 shrink-0")} aria-label="Dismiss" onClick={actions.clearError}>
-                  <X size={12} aria-hidden="true" />
-                </button>
-              </PaneTooltip>
-            </div>
-            {showDetail && described.detail ? (
-              <pre className="whitespace-pre-wrap break-words font-mono text-[11px] text-fg/70">{described.detail}</pre>
-            ) : null}
-          </div>
+          <Banner
+            layout="inline"
+            testId="apple-drawer-error"
+            style={{ margin: 8 }}
+            model={{
+              id: "apple-drawer-error",
+              tone: "error",
+              title: described.sentence,
+              report: { surface: "apple_tools_drawer", technicalDetail: described.detail ?? null },
+              dismiss: { label: "Dismiss", onDismiss: actions.clearError },
+            }}
+          />
         ) : null}
         {actions.settings === null && !described && visible ? (
           <div className="flex items-center gap-2 px-3 py-3 text-xs text-muted-fg">

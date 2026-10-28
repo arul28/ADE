@@ -20,7 +20,8 @@ import {
   PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
-import { Banner } from "../ui/notice/Banner";
+import { Banner, type BannerModel } from "../ui/notice/Banner";
+import { noticeKindModel, type NoticeKind } from "../ui/notice/noticeKind";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import { LaneEmojiGlyph } from "./LaneEmojiGlyph";
 import type {
@@ -261,7 +262,16 @@ function ManageLaneRenameControls({
         <div className="text-xs text-red-300">A lane named &quot;{duplicateLane.name}&quot; already exists.</div>
       ) : null}
       {renameError ? (
-        <div className="text-xs text-red-300">{renameError}</div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "manage-lane-rename-error",
+            tone: "error",
+            title: renameError,
+            report: { surface: "manage_lane_rename" },
+            dismiss: { onDismiss: () => setRenameError(null) },
+          }}
+        />
       ) : null}
     </div>
   );
@@ -328,6 +338,19 @@ function ManageLaneHeaderDetails({
       </dl>
     </div>
   );
+}
+
+/**
+ * What a lane archive/delete left to say: ADE failing (`failure`), or the
+ * person's or the machine's state (`status`: a cancelled delete, an offline
+ * machine). A delete that finished with leftovers is a `status` that still
+ * offers Report (`reportable`).
+ */
+export type LaneActionError = { message: string; kind: NoticeKind; reportable?: boolean };
+
+export function laneActionErrorTone(error: LaneActionError): Pick<BannerModel, "tone" | "report"> {
+  const report = { surface: "lane_action", technicalDetail: error.message };
+  return noticeKindModel(error.kind, error.kind === "failure" || error.reportable ? report : undefined);
 }
 
 export type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
@@ -444,7 +467,7 @@ export function ManageLaneDialog({
   chatSessionCount?: number;
   laneActionBusy: boolean;
   laneActionStatus: string | null;
-  laneActionError: string | null;
+  laneActionError: LaneActionError | null;
   laneActionKind?: "delete" | "archive" | null;
   /** Resolves true when every lane was archived. */
   onArchive: () => Promise<boolean>;
@@ -922,9 +945,9 @@ export function ManageLaneDialog({
                 <Banner
                   model={{
                     id: "lane-action-error",
-                    tone: "error",
-                    ariaLabel: laneActionError,
-                    title: <span style={{ whiteSpace: "pre-wrap" }}>{laneActionError}</span>,
+                    ...laneActionErrorTone(laneActionError),
+                    ariaLabel: laneActionError.message,
+                    title: <span style={{ whiteSpace: "pre-wrap" }}>{laneActionError.message}</span>,
                   }}
                   layout="inline"
                   style={{ marginTop: 12 }}
@@ -1301,7 +1324,17 @@ function AppearanceSection({
         </div>
       </div>
       {error ? (
-        <div className="mt-2 text-xs text-red-300">{error}</div>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 8 }}
+          model={{
+            id: "manage-lane-appearance-error",
+            tone: "error",
+            title: error,
+            report: { surface: "manage_lane_appearance" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
       {busy || disabled ? (
         <div className="sr-only" role="status">Updating</div>
@@ -1510,7 +1543,19 @@ function StackPositionSection({
         placeholder={defaultBaseBranch ? defaultBaseBranch.replace(/^refs\/heads\//, "") : "branch-name"}
       />
 
-      {error ? <div className="mt-2 text-xs text-red-300">{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          style={{ marginTop: 8 }}
+          model={{
+            id: "manage-lane-stack-error",
+            tone: "error",
+            title: error,
+            report: { surface: "manage_lane_stack_position" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
       {success ? <div className="mt-2 text-xs text-emerald-300">{success}</div> : null}
 
       <div className="mt-4">

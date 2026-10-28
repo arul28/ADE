@@ -599,6 +599,16 @@ public actor DeviceSession {
     public func screenshot(path: String) async throws -> (width: Int, height: Int) {
         guard let engine else { throw SessionError.notCapturing }
 
+        // A foldable right after a fold: the guest can have lit the other
+        // panel before the posture watcher moved the capture to it, and the
+        // old panel then sends nothing. Follow the live panel now rather than
+        // time out on the dark one (ledger #2).
+        if await isFoldable(),
+           let live = await DevicePosture.displays(udid: udid).first(where: \.active),
+           live.screenID != activeScreenID {
+            _ = await applyActiveScreen(live.screenID)
+        }
+
         let jpeg = try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Data, Error>) in
             Task {
                 let box = OneShot(continuation: continuation)
@@ -606,9 +616,11 @@ public actor DeviceSession {
                     await box.deliver(data)
                 }
                 await box.setUnsubscribe(unsubscribe)
-                // The capture layer re-emits at a 5 fps idle floor, so a frame
-                // always arrives on a still screen; a second is generous.
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                // The capture layer re-emits at a 5 fps idle floor, so a still
+                // screen sends a frame within 200 ms. The rest of the wait is
+                // for a panel switch still settling (the capture restarts on
+                // the new panel), which used to fail at one second.
+                try? await Task.sleep(nanoseconds: Self.firstFrameWaitNanoseconds)
                 await box.timeout()
             }
         }
@@ -632,6 +644,9 @@ public actor DeviceSession {
         }
         return (image.width, image.height)
     }
+
+    /// How long `screenshot` waits for its frame.
+    static let firstFrameWaitNanoseconds: UInt64 = 4_000_000_000
 
     /// Resumes a continuation exactly once, whichever of the frame or the
     /// timeout gets there first, and unsubscribes either way.
@@ -664,7 +679,9 @@ public actor DeviceSession {
         func timeout() async {
             guard let continuation else { return }
             self.continuation = nil
-            continuation.resume(throwing: SessionError.screenshotFailed("No frame arrived within a second."))
+            continuation.resume(throwing: SessionError.screenshotFailed(
+                "No frame arrived within \(DeviceSession.firstFrameWaitNanoseconds / 1_000_000_000) seconds. If the device just folded or turned, its panel may still be switching; try again, or use screenshot."
+            ))
             await unsubscribe?()
             unsubscribe = nil
         }

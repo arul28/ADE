@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Broom } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import type { StorageItem } from "../../../../shared/types/storage";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { relativeWhen } from "../../../lib/format";
 import { Banner } from "../../ui/notice";
 import { formatMeasuredBytes } from "../../settings/storage/storageView";
@@ -48,12 +49,12 @@ export function LaneBuildOutputNotice({
 
   useEffect(() => {
     setRemoved(null);
-    if (!active || typeof window.ade?.storage?.laneBuildOutputRemoved !== "function") return;
+    if (!active || !isAdeAvailable(window.ade?.storage?.laneBuildOutputRemoved)) return;
     let cancelled = false;
     let showing = false;
     const refresh = () => {
       const read = window.ade?.storage?.laneBuildOutputRemoved;
-      if (typeof read !== "function") return;
+      if (!isAdeAvailable(read)) return;
       read(laneId, pin)
         .then((next) => {
           if (cancelled) return;

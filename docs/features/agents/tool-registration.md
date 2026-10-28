@@ -146,7 +146,10 @@ context environment variables. The `identity.role` field in
 not grant access by itself. Direct headless CLI mode sets
 `ADE_DEFAULT_ROLE` from `--role`, and socket-backed launchers restart
 stale runtimes when the runtime's reported `runtimeInfo.defaultRole`
-does not match the requested role.
+cannot serve the requested role. A command running inside the brain cannot
+restart that brain: if its role is compatible, the command uses it despite a
+build or version mismatch and warns on stderr; otherwise it fails rather than
+opening a separate headless runtime.
 
 The initialize response advertises the runtime contract used by clients
 to detect stale runtimes:
@@ -308,6 +311,25 @@ the stable brain from an Alpha chat. The hash covers the entry, runtime, socket
 and home, so two brains sharing one CLI entry never share a shim. An explicit
 `--socket <path>` still wins. The brain also sets `ADE_CLI_ENTRY_PATH` next to
 the shim, to name the CLI entry that the shim runs.
+For a standalone brain, that entry is the brain's own executable. On Windows
+the brain writes both an `ade.cmd` shim and an extensionless Git Bash shim.
+
+A standalone brain (a Node SEA, `~/.ade/bin/ade serve`) is its own CLI entry:
+its `argv[1]` is the literal `cli.cjs`, so `createHeadlessAdeCliAgentEnv` uses
+`process.execPath` and the shim execs that binary.
+
+On Windows `ADE_CLI_PATH` is never a batch file when ADE can avoid it: cmd.exe
+ends a command at its first line feed, so `ade.cmd` cut every multi-line
+`--prompt` or `--text`. For the app's brain (`ADE.exe …\cli.cjs`) it is a copy
+of `ade-cli-launcher.exe` (`apps/desktop/native/ADECliLauncherWin`) at
+`<shim>\launcher\ade.exe`, beside an `ade.launch` file naming the runtime, the
+entry and the env (`apps/desktop/src/main/services/cli/windowsCliLauncher.ts`);
+the launcher passes the rest of its command line on verbatim. It keeps what `ade.cmd` did: the Node compile cache under `<ADE_HOME>\cache\node-compile` (unless the caller set or disabled one), and real Node (`ADE_CLI_NODE`, or a Node 22+ on PATH) for `ade code`, since Electron run as Node has no TTY on Windows. Ctrl+C reaches the CLI. The desktop
+writes the same launcher under userData for the agents it starts. For a
+standalone `ade.exe` brain it is that exe, with its folder on `PATH`. `ade.cmd`
+stays on `PATH` for people typing `ade` in cmd or PowerShell; it sets
+`ADE_CLI_VIA_CMD=1`, and the CLI prints a one-line note when an inline
+`--prompt`/`--text` came through it.
 
 A shell rc file that rebuilds `PATH` can drop the shim directory, so a plain
 `ade` can resolve to an older install. For that case, every `ade` run first

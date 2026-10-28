@@ -228,7 +228,6 @@
 
 .ade-ap-range { width: 120px; accent-color: var(--color-fg); }
 .ade-ap-range-value { font-size: 11px; color: var(--color-muted-fg); width: 30px; }
-.ade-ap-error { margin: 0; font-size: 12px; color: var(--color-error); }
 
 /* ── rows ───────────────────────────────────────────────────────────── */
 

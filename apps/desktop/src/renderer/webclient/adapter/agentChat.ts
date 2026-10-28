@@ -48,7 +48,8 @@ import type {
 } from "../../../shared/threadComments";
 import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
+import type { CommandCallOptions } from "./infra/commandCaller";
+import { requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
 import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
@@ -186,6 +187,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
 
   function callRequiredRead<T>(action: string, args: unknown): Promise<T> {
     return callRequired<T>(action, args, "Chat history", true);
+  }
+
+  /** A large one-off read: not kept as the reconnect fallback (see `retainLastRead`). */
+  function callLargeRead<T>(action: string, args: unknown, fallback: CommandCallOptions<T>["fallback"]): Promise<T> {
+    return commands.call<T>(action, asRecord(args), { fallback, retainLastRead: false });
   }
 
   function callRequiredMutation<T>(action: string, args: unknown): Promise<T> {
@@ -664,7 +670,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getImageDataUrl: async (path: string, pin?: RuntimePinArg) => {
       guardPin("getImageDataUrl", pin);
-      return { dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" };
+      // Chat attachments live in `.ade/attachments`, outside the artifact
+      // file-request jail. Use the chat command that owns those paths instead.
+      return await callLargeRead<{ dataUrl: string }>("chat.getImageDataUrl", { path }, () => {
+        // Reject, never `{ dataUrl: "" }`: the attachment reader caches a
+        // resolved answer, so an empty one would outlive the reconnect.
+        throw new Error("Image previews are unavailable on the connected ADE host.");
+      });
     },
     resolveSmartLinkPreview: (args: unknown) => {
       const record = asRecord(args);
@@ -718,12 +730,15 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
         : commands.hasAction("agentChat.getEventHistoryPage")
           ? "agentChat.getEventHistoryPage"
           : "chat.getChatEventHistoryPage";
-      return await callRequiredRead(
+      return await callLargeRead(
         historyPageAction,
         {
           ...record,
           maxBytes: WEB_CHAT_HISTORY_PAGE_BYTES,
-        }
+        },
+        () => {
+          throw new Error(`Chat history action '${historyPageAction}' is unavailable on the connected ADE host.`);
+        },
       );
     },
     codex: {

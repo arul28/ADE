@@ -361,13 +361,6 @@
   background: var(--gate-chip-hover);
 }
 
-.ade-glass-error {
-  margin-top: 14px;
-  font-size: 12px;
-  line-height: 1.5;
-  color: var(--color-danger, var(--color-error, #f43f5e));
-}
-
 /* "Continue to your work" sits under the card as a small frosted pill. */
 .ade-gate-continue {
   display: inline-flex;

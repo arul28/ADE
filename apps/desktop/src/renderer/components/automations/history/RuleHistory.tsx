@@ -4,6 +4,7 @@ import type { AutomationRun, AutomationRunDetail, OpenProjectBinding } from "../
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { extractError } from "../shared";
 import { RunRow } from "./RunRow";
 import { RunDetail } from "./RunDetail";
@@ -111,7 +112,18 @@ export function RuleHistory({
             </Button>
           </div>
           {error ? (
-            <div className="mt-3 rounded-lg border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-200">{error}</div>
+            <Banner
+              layout="inline"
+              style={{ marginTop: 12 }}
+              model={{
+                id: "automation-history-error",
+                // The owning machine being offline is a state, not a failure.
+                tone: error === offlineMessage ? "warning" : "error",
+                title: error,
+                report: error === offlineMessage ? false : { surface: "automation_rule_history" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
           ) : null}
         </div>
 

@@ -36,3 +36,13 @@ export function floatingLayerBusy(): boolean {
 export function launchGateOpen(): boolean {
   return document.querySelector(".ade-gate") != null;
 }
+
+/**
+ * Marks a notice that floats over the page (a toast, the Tip card, a floating
+ * banner). The built-in browser's page is a native view drawn above the whole
+ * window, so it hides itself while one of these overlaps it; without the mark
+ * the page covered the notice and its buttons.
+ */
+export const FLOATS_OVER_BROWSER_ATTR = "data-ade-floats-over-browser";
+/** Spread onto the notice's pointer-enabled root. */
+export const FLOATS_OVER_BROWSER_PROPS = { [FLOATS_OVER_BROWSER_ATTR]: "" } as const;

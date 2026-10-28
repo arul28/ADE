@@ -2,9 +2,11 @@ import React, { useEffect, useRef, useState } from "react";
 import type { PDFDocumentProxy } from "pdfjs-dist";
 import { CaretLeft, CaretRight, MagnifyingGlassMinus, MagnifyingGlassPlus } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
+import { Banner } from "../../../ui/notice";
 import { streamFileBytes } from "../streamBytes";
 import { loadPdfjs } from "./pdfLoader";
 import type { ViewerProps } from "./types";
+import { extractError } from "../../../../lib/format";
 
 const MAX_PDF_STREAM_BYTES = 25 * 1024 * 1024;
 
@@ -45,7 +47,7 @@ export function PdfViewer({ files, workspaceId, tab }: ViewerProps) {
         setLoading(false);
       } catch (err) {
         if (!cancelled) {
-          setError(err instanceof Error ? err.message : String(err));
+          setError(extractError(err));
           setLoading(false);
         }
       }
@@ -118,7 +120,17 @@ export function PdfViewer({ files, workspaceId, tab }: ViewerProps) {
       </div>
       <div className="flex min-h-0 flex-1 items-start justify-center overflow-auto p-4" onWheel={onWheel}>
         {error ? (
-          <div className="mt-8 text-sm" style={{ color: COLORS.danger }}>Failed to render PDF: {error}</div>
+          <Banner
+            layout="inline"
+            style={{ marginTop: 32, maxWidth: 480 }}
+            model={{
+              id: "files-pdf-render-error",
+              tone: "error",
+              title: "Failed to render PDF",
+              detail: error,
+              report: { surface: "files_pdf_render", technicalDetail: error },
+            }}
+          />
         ) : loading ? (
           <div className="mt-8 text-sm" style={{ color: COLORS.textDim }}>Loading PDF…</div>
         ) : (

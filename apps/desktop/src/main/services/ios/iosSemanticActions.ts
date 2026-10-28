@@ -288,23 +288,124 @@ function matchesCriterion(element: IosScreenElement, criterion: QueryCriterion):
 }
 
 /**
+ * True for an element ADE inferred rather than read from the screen: a
+ * SwiftUI tab placed from the source's `.tabItem` labels and the Tab Bar's
+ * frame (`synthesizeSwiftUITabBarElements`). Its frame is a guess.
+ */
+export function isInferredElement(element: IosScreenElement): boolean {
+  return element.metadata?.synthetic === true;
+}
+
+/**
+ * True for an element of an iPadOS window the helper could not place on the
+ * screen (`ADEUnplaced`): its frame is still relative to its window, so a tap
+ * at its centre lands somewhere else.
+ */
+export function isUnplacedElement(element: IosScreenElement): boolean {
+  return element.metadata?.ADEUnplaced === true;
+}
+
+/** Roles a person acts on, as the helper and the inspector spell them. */
+const ACTIONABLE_ROLE = /button|link|cell|tabitem|menuitem|switch|toggle|checkbox|radio|slider|stepper|segment|popup|combobox|textfield|searchfield|textarea|incrementor/i;
+
+function isActionable(element: IosScreenElement): boolean {
+  return [element.role, element.elementType].some((value) => Boolean(value && ACTIONABLE_ROLE.test(value)));
+}
+
+function frameContains(outer: IosInspectableFrame, inner: IosInspectableFrame): boolean {
+  const slack = 0.5;
+  return inner.x >= outer.x - slack
+    && inner.y >= outer.y - slack
+    && inner.x + inner.width <= outer.x + outer.width + slack
+    && inner.y + inner.height <= outer.y + outer.height + slack
+    && outer.width * outer.height > inner.width * inner.height;
+}
+
+/** Why a match sorted where it did, for the "tapped #k" note. */
+type MatchRank = { layer: number; insideActionable: number; inferred: number };
+
+function rankOf(element: IosScreenElement, matches: IosScreenElement[]): MatchRank {
+  const frame = tapFrameOf(element);
+  // Text or an image inside another match a person acts on (the button that
+  // holds it): the button is the target, and its centre is where its own tap
+  // lands, not wherever the text happens to sit.
+  const insideActionable = !isActionable(element) && frame !== null && matches.some((other) => {
+    if (other === element || !isActionable(other) || isInferredElement(other)) return false;
+    const outer = tapFrameOf(other);
+    return outer !== null && frameContains(outer, frame);
+  });
+  return {
+    layer: element.layer === "app" ? 0 : 1,
+    insideActionable: insideActionable ? 1 : 0,
+    // Last of all: a frame ADE guessed is never preferred to one it read.
+    inferred: isInferredElement(element) || isUnplacedElement(element) ? 1 : 0,
+  };
+}
+
+/**
  * Orders the matches so the most useful element comes first.
  *
- * The snapshot order stays, with one exception: an element of the `app` layer
- * moves ahead of an element of the `accessibility` layer. An app-layer element
- * carries the source file and the source line, so it tells the agent which code
- * to edit after the action.
+ * The snapshot order stays (smallest first), with three exceptions, in this
+ * order of weight:
+ *
+ * - an element ADE inferred (a SwiftUI tab placed from source) goes after
+ *   every element read from the screen, because its frame is a guess;
+ * - an element of the `app` layer moves ahead of the `accessibility` layer.
+ *   It carries the source file and line, so it tells the agent which code to
+ *   edit after the action;
+ * - text or an image that sits inside another match a person acts on (a
+ *   Button, a cell, a link) goes after that element, so `--text-match` taps
+ *   the tile rather than the caption inside it.
  */
 function orderMatches(matches: IosScreenElement[]): IosScreenElement[] {
   return matches
-    .map((element, position) => ({ element, position }))
+    .map((element, position) => ({ element, position, rank: rankOf(element, matches) }))
     .sort((a, b) => {
-      const rankA = a.element.layer === "app" ? 0 : 1;
-      const rankB = b.element.layer === "app" ? 0 : 1;
-      if (rankA !== rankB) return rankA - rankB;
+      if (a.rank.inferred !== b.rank.inferred) return a.rank.inferred - b.rank.inferred;
+      if (a.rank.layer !== b.rank.layer) return a.rank.layer - b.rank.layer;
+      if (a.rank.insideActionable !== b.rank.insideActionable) return a.rank.insideActionable - b.rank.insideActionable;
       return a.position - b.position;
     })
     .map((entry) => entry.element);
+}
+
+/**
+ * One sentence on which of several matches an action took, and why, so an
+ * agent whose tap did nothing can see that it hit the wrong one and name the
+ * right one with `--index`. Null for a single match.
+ */
+export function describeMatchChoice(
+  outcome: Pick<ElementMatchOutcome, "matches" | "selected">,
+  query: IosSimulatorElementQuery,
+): string | null {
+  const { matches, selected } = outcome;
+  if (!selected || matches.length < 2) return null;
+  const index = Math.max(0, matches.indexOf(selected));
+  const others = matches.filter((element) => element !== selected);
+  const selectedRank = rankOf(selected, matches);
+  let why: string;
+  if (query.index != null && query.index > 0) {
+    why = `--index ${query.index} chose it`;
+  } else if (others.some((other) => isInferredElement(other)) && !isInferredElement(selected)) {
+    why = "it was read from the screen; the other matches are inferred from source";
+  } else if (selected.layer === "app" && others.some((other) => other.layer !== "app")) {
+    why = "it is the app's own element, with its source file";
+  } else if (others.some((other) => rankOf(other, matches).insideActionable === 1) && selectedRank.insideActionable === 0 && isActionable(selected)) {
+    why = "it is the control that holds the matching text";
+  } else {
+    why = "it comes first in the snapshot's order (smallest first)";
+  }
+  const listed = matches.slice(0, 4).map((element, position) => {
+    const point = elementTapPoint(element);
+    const where = point ? ` at ${point.x},${point.y}` : "";
+    const name = nonEmpty(element.label) ?? nonEmpty(element.value) ?? nonEmpty(element.role) ?? "element";
+    const inferred = isInferredElement(element) ? " (inferred)" : "";
+    return `#${position} ${JSON.stringify(name)}${where}${inferred}`;
+  });
+  const more = matches.length > listed.length ? `, and ${matches.length - listed.length} more` : "";
+  const next = index + 1 < matches.length ? index + 1 : 0;
+  return `${matches.length} elements match; used #${index} because ${why}. Matches: ${listed.join(", ")}${more}. `
+    + `Pick another with --index ${next}.`;
 }
 
 /**

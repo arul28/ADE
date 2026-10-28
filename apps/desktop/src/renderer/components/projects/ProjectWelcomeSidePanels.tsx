@@ -37,6 +37,7 @@ import type { WebMachineEntry } from "../../webclient/workspace/webWorkspaceMode
 import { welcomeRelativeTime } from "./ProjectWelcomeWebRows";
 import "../activity/Activity.css";
 import { humanizeProvider } from "../usage/usageProviderNames";
+import { Banner } from "../ui/notice";
 
 // ---------------------------------------------------------------------------
 // The welcome page's data: chats that are still running, usage limits and
@@ -167,9 +168,17 @@ export function RunningList({ items, onMore }: { items: AttentionItem[]; onMore?
       })}
     </FitList>
       {error ? (
-        <div className="ade-welcome-empty" role="alert" style={{ color: "var(--color-error)" }}>
-          {error}
-        </div>
+        <Banner
+          layout="inline"
+          style={{ marginTop: 6 }}
+          model={{
+            id: "welcome-activity-open-error",
+            tone: "error",
+            title: error,
+            report: { surface: "welcome_activity_open" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
     </>
   );

@@ -69,6 +69,7 @@ import {
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../desktop/src/shared/accountDirectory";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { parseChatLaunchArgs } from "../../desktop/src/main/services/chat/chatLaunchArgs";
@@ -7592,6 +7593,38 @@ describe("ADE CLI", () => {
       expect(requests.some((request) => request.method === "projects.add")).toBe(false);
     } finally {
       stop?.();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails instead of opening a headless runtime when its own brain cannot serve the requested role", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-own-brain-"));
+    vi.stubEnv("ADE_HOME", root);
+    vi.stubEnv("ADE_RUNTIME_SOCKET_PATH", "");
+    vi.stubEnv("ADE_RPC_SOCKET_PATH", "");
+    vi.stubEnv("ADE_RPC_URL", "");
+    vi.stubEnv("ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION", "");
+    vi.stubEnv("ADE_DISABLE_RUNTIME_SERVICE_INSTALL", "1");
+    const requests: string[] = [];
+    const stop = await startHeadlessRpcSocketServer({
+      socketPath: resolveMachineAdeLayout().socketPath,
+      createHandler: () => (async (request: any) => {
+        requests.push(request.method);
+        if (request.method === "ade/initialize") return { runtimeInfo: {
+          version: "0.0.0", defaultRole: "agent", pid: process.pid,
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL, protocolVersion: RUNTIME_COMPAT_LEVEL,
+        } };
+        throw new Error(`Unexpected method: ${request.method}`);
+      }) as any,
+    });
+    try {
+      await expect(runCli(["--project-root", root, "--role", "cto", "chat", "list"]))
+        .rejects.toThrow(/default role agent cannot serve CLI role cto/);
+      expect(requests).toContain("ade/initialize");
+      expect(requests).not.toContain("shutdown");
+    } finally {
+      stop?.();
+      vi.unstubAllEnvs();
       fs.rmSync(root, { recursive: true, force: true });
     }
   });

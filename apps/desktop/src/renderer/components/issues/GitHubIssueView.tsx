@@ -5,6 +5,7 @@ import { LinearAssigneeAvatar } from "../app/LinearIssueBrowserRows";
 import { PickerMenu, githubLabelOptions, githubPersonOptions, type PickerOption } from "./IssuePickerMenu";
 import { GitHubIssueStateIcon, githubIssueStateLabel } from "../lanes/githubBrand";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { EditableIssueBody, EditableIssueTitle, IssueCommentComposer } from "./issueEditing";
 import { IssueMarkdown } from "./issueMarkdown";
 import { formatIssueDate } from "./LinearIssueView";
@@ -180,7 +181,15 @@ function Activity({
           ) : loading ? (
             <div className="text-[11px] text-[color:var(--kit-text-3)]">Loading comments…</div>
           ) : error ? (
-            <div className="text-[11px] text-[color:var(--kit-crit)]">{error}</div>
+            <Banner
+              layout="inline"
+              model={{
+                id: "github-issue-comments-error",
+                tone: "error",
+                title: error,
+                report: { surface: "github_issue_comments" },
+              }}
+            />
           ) : (
             (comments ?? []).map((comment) => (
               <article key={comment.id} className="flex gap-2.5">

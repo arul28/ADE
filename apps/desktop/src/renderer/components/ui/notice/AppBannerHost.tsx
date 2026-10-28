@@ -1,6 +1,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { CaretRight } from "@phosphor-icons/react";
 import { useBannerDismissals } from "../../../lib/bannerDismiss";
+import { FLOATS_OVER_BROWSER_PROPS } from "../overlayState";
 import { Z_LAYERS } from "../zLayers";
 import { Banner, isDurableDismiss } from "./Banner";
 import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
@@ -135,7 +136,7 @@ export function AppBannerHost(): JSX.Element | null {
           }}
         >
           {floating.map((entry) => (
-            <div key={entry.id} style={{ pointerEvents: "auto", maxWidth: "100%" }}>
+            <div key={entry.id} {...FLOATS_OVER_BROWSER_PROPS} style={{ pointerEvents: "auto", maxWidth: "100%" }}>
               <Banner model={entry.model} layout="floating" onDurableDismiss={handleDurableDismiss} />
             </div>
           ))}

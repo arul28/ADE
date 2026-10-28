@@ -44,6 +44,8 @@ import {
   type PiProviderRow,
 } from "./piProviderRow";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
 
 export function getPiTone(
   connection: AiProviderConnectionStatus | null | undefined,
@@ -609,7 +611,7 @@ export function PiProvidersPanel({
       setProviders(listed);
       setProvidersError(null);
     } catch (err) {
-      setProvidersError(err instanceof Error ? err.message : String(err));
+      setProvidersError(extractError(err));
     } finally {
       setLoadingProviders(false);
     }
@@ -757,7 +759,7 @@ export function PiProvidersPanel({
     } catch (err) {
       if (!isCurrentAttempt()) return;
       // The call itself failed, which the status stream would never report.
-      settle(providerId, false, err instanceof Error ? err.message : String(err));
+      settle(providerId, false, extractError(err));
     } finally {
       // A second sign-in may already own these, so only this attempt's own
       // state is torn down here.
@@ -784,7 +786,7 @@ export function PiProvidersPanel({
       }, pin);
       if (!result.ok) fail(result.error ?? "Pi did not accept that answer.");
     } catch (err) {
-      fail(err instanceof Error ? err.message : String(err));
+      fail(extractError(err));
     }
   };
 
@@ -857,9 +859,17 @@ export function PiProvidersPanel({
       </div>
 
       {providersError ? (
-        <div role="alert" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.danger }}>
-          Could not list Pi providers: {providersError}
-        </div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "pi-providers-list-error",
+            tone: "error",
+            title: "Could not list Pi providers",
+            detail: providersError,
+            report: { surface: "pi_providers_list", technicalDetail: providersError },
+            dismiss: { onDismiss: () => setProvidersError(null) },
+          }}
+        />
       ) : null}
 
       <PiSignInFlowCard

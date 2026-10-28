@@ -2,6 +2,7 @@ import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeI
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
+import { buildHistoryExport } from "../../../shared/historyExport";
 import { execFile } from "node:child_process";
 import type { MachineResetOptions, MachineResetPlan } from "../../../shared/types/machineReset";
 import { planMachineResetFromDesktop, startMachineResetFromDesktop } from "../runtime/machineResetLauncher";
@@ -1488,11 +1489,6 @@ function clampLayout(layout: DockLayout): DockLayout {
     out[k] = Math.max(0, Math.min(100, v));
   }
   return out;
-}
-
-function escapeCsvCell(value: string | null | undefined): string {
-  const input = value ?? "";
-  return /[",\r\n]/.test(input) ? `"${input.replace(/"/g, "\"\"")}"` : input;
 }
 
 const AI_USAGE_FEATURE_KEYS: AiFeatureKey[] = [
@@ -10592,6 +10588,7 @@ export function registerIpc({
     ensureIosSimulator().recordingsTotalBytes(arg));
 
   ipcMain.handle(IPC.iosSimulatorTap, async (_event, arg) => ensureIosSimulator().tap(arg));
+  ipcMain.handle(IPC.iosSimulatorLongPress, async (_event, arg) => ensureIosSimulator().longPress(arg));
 
   ipcMain.handle(IPC.iosSimulatorPressButton, async (_event, arg) => ensureIosSimulator().pressButton(arg));
 
@@ -13728,10 +13725,15 @@ export function registerIpc({
       typeof exportProject?.rootPath === "string" && exportProject.rootPath.trim()
         ? exportProject.rootPath.trim()
         : ctx.project.rootPath;
-    const projectSlug = projectDisplayName.replace(/[^a-zA-Z0-9._-]+/g, "_");
-    const dateStamp = exportedAt.slice(0, 10);
+    const { content, fileName } = buildHistoryExport({
+      format,
+      rows: filteredRows,
+      exportedAt,
+      project: { rootPath: projectRoot, displayName: projectDisplayName },
+      filters: { laneId, kind, status },
+    });
     const defaultDir = fs.existsSync(projectRoot) ? projectRoot : app.getPath("documents");
-    const defaultPath = path.join(defaultDir, `ade-history-${projectSlug}-${dateStamp}.${format}`);
+    const defaultPath = path.join(defaultDir, fileName);
 
     const win = BrowserWindow.fromWebContents(event.sender) ?? undefined;
     const result = win
@@ -13756,61 +13758,6 @@ export function registerIpc({
 
     if (result.canceled || !result.filePath) {
       return { cancelled: true };
-    }
-
-    let content = "";
-    if (format === "json") {
-      content = `${JSON.stringify(
-        {
-          exportedAt,
-          project: {
-            rootPath: projectRoot,
-            displayName: projectDisplayName
-          },
-          filters: {
-            laneId: laneId ?? null,
-            kind: kind ?? null,
-            status: status ?? "all"
-          },
-          rowCount: filteredRows.length,
-          rows: filteredRows
-        },
-        null,
-        2
-      )}\n`;
-    } else {
-      const headers = [
-        "id",
-        "laneId",
-        "laneName",
-        "kind",
-        "status",
-        "startedAt",
-        "endedAt",
-        "preHeadSha",
-        "postHeadSha",
-        "metadataJson"
-      ];
-      const lines = [headers.join(",")];
-      for (const row of filteredRows) {
-        lines.push(
-          [
-            row.id,
-            row.laneId,
-            row.laneName,
-            row.kind,
-            row.status,
-            row.startedAt,
-            row.endedAt,
-            row.preHeadSha,
-            row.postHeadSha,
-            row.metadataJson
-          ]
-            .map((value) => escapeCsvCell(value == null ? "" : String(value)))
-            .join(",")
-        );
-      }
-      content = `${lines.join("\n")}\n`;
     }
 
     fs.writeFileSync(result.filePath, content, "utf8");

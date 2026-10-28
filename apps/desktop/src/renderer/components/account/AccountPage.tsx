@@ -45,6 +45,8 @@ import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSecti
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
 import { useSignInFlow } from "./useSignInFlow";
+import { Banner } from "../ui/notice";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 export { describeThisComputerMissing } from "./YourMacsCard";
 
@@ -126,7 +128,7 @@ export function SignInCard({
         gap: 14,
       }}
     >
-      <img src="./logo.png" alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
+      <AdeWordmark alt="ADE" style={{ height: 30, opacity: 0.95 }} draggable={false} />
       <div
         style={cardStyle({
           padding: 28,
@@ -579,7 +581,18 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
       <ModernSection group="Account" title="Session">
         <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
       </ModernSection>
-      {signOutError ? <p role="alert" className="ade-acct-error">{signOutError}</p> : null}
+      {signOutError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "account-sign-out-error",
+            tone: "error",
+            title: signOutError,
+            report: { surface: "account_sign_out" },
+            dismiss: { onDismiss: () => setSignOutError(null) },
+          }}
+        />
+      ) : null}
     </ModernPage>
   );
 

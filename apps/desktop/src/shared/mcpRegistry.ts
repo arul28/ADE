@@ -164,6 +164,27 @@ export function mcpSecretVaultKeyPrefix(serverName: string): string {
 }
 
 /**
+ * True when two server URLs name the same endpoint. A provider reports the
+ * URL from its own config, which may differ from the saved one in host case,
+ * a default port or a trailing slash; a sign-in must still be found for it.
+ */
+export function sameMcpServerUrl(left: string | null | undefined, right: string | null | undefined): boolean {
+  const key = (value: string | null | undefined): string => {
+    const text = value?.trim() ?? "";
+    try {
+      const url = new URL(text);
+      url.hash = "";
+      if (url.pathname.length > 1) url.pathname = url.pathname.replace(/\/+$/, "");
+      return url.toString();
+    } catch {
+      return text;
+    }
+  };
+  const a = key(left);
+  return a.length > 0 && a === key(right);
+}
+
+/**
  * Where a server's browser sign-in is kept: one vault item holding a
  * {@link McpOAuthToken} as JSON. It is not one of the server's named values,
  * so the page never asks for it as a missing secret.

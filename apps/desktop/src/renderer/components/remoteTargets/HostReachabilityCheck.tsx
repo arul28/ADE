@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 import { outlineButton } from "../lanes/laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { extractError } from "../../lib/format";
 import type { HostReachabilityReport } from "../../../shared/connectionDiagnosis";
 import { DiagnosisList, DiagnosisRow, DiagnosisSectionHead } from "./DiagnosisRows";
@@ -83,7 +84,17 @@ function ReachabilityRows({ report }: { report: HostReachabilityReport }) {
 }
 
 function ErrorLine({ error }: { error: string }) {
-  return <div role="status" style={{ ...helperTextStyle, color: "var(--kit-crit)" }}>{error}</div>;
+  return (
+    <Banner
+      layout="inline"
+      model={{
+        id: "host-reachability-error",
+        tone: "error",
+        title: error,
+        report: { surface: "host_reachability_check" },
+      }}
+    />
+  );
 }
 
 /**

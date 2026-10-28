@@ -3,6 +3,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { signalProcessGroup, isRecord } from "../shared/utils";
+import {
+  formatNativeHelperSearch,
+  spotlightNativeHelperCandidate,
+  standaloneNativeHelperCandidates,
+  withSpotlightFallback,
+} from "../native/nativeHelperPaths";
 
 /**
  * Supervisor and NDJSON client for the vendored simulator helper
@@ -76,6 +82,8 @@ export type SimHelperClient = SimHelperTransport & {
   pid(): number | null;
   /** The protocol version the running helper announced, or null. */
   protocolVersion(): number | null;
+  /** The protocol of a helper this client refused (see `simHelperProtocolMessage`), or null. */
+  refusedProtocol(): number | null;
   /** Whether a binary exists at `binaryPath` right now. */
   exists(): boolean;
   dispose(): void;
@@ -144,6 +152,11 @@ export function simHelperExecutableCandidates(input: {
   /** Repo/app roots to search for the dev drops. */
   searchRoots?: string[];
   env?: NodeJS.ProcessEnv;
+  /**
+   * Tried after everything above: the standalone brain's runtime archive,
+   * then the installed ADE app (`standaloneNativeHelperCandidates`).
+   */
+  fallbackCandidates?: readonly string[];
 }): string[] {
   const candidates: string[] = [];
   const override = input.env?.ADE_SIM_HELPER_PATH?.trim();
@@ -158,6 +171,7 @@ export function simHelperExecutableCandidates(input: {
       candidates.push(path.join(root, "apps", "desktop", "native", "ADESimHelper", relative));
     }
   }
+  candidates.push(...(input.fallbackCandidates ?? []));
   return Array.from(new Set(candidates));
 }
 
@@ -177,24 +191,89 @@ function ancestorDirectories(start: string, depth = 8): string[] {
 /**
  * The helper binary this process should use.
  *
- * Returns the first candidate that exists, or — when none does — the packaged
- * path, so `status` can report a concrete absent path instead of an empty
- * string and the error says which file is missing.
+ * Electron and a dev checkout find it in their own resources. A standalone
+ * brain (`~/.ade/bin/ade serve`, a Node SEA with no resources) looks beside
+ * its executable, then in its runtime archive (`<ADE_RUNTIME_ROOT>/native`,
+ * the brain's own build), then in the installed ADE app, and last in the app
+ * Spotlight finds by the channel's bundle id.
+ *
+ * Returns the first candidate that exists, or — when none does — the first
+ * candidate, so `status` reports a concrete absent path; `simHelperSearchSummary`
+ * names every place that was searched.
  */
 export function resolveSimHelperExecutablePath(input: {
   resourcesPath?: string | null;
   searchRoots?: string[];
   env?: NodeJS.ProcessEnv;
   exists?: (candidate: string) => boolean;
+  /** Defaults to the standalone brain's runtime archive and installed app. */
+  fallbackCandidates?: readonly string[];
+  /**
+   * Asked only when no candidate exists: the helper in the app Spotlight finds
+   * by the channel's bundle id (`spotlightNativeHelperCandidate`).
+   */
+  spotlight?: () => string | null;
 } = {}): string {
   const exists = input.exists ?? fileIsUsable;
-  const searchRoots = input.searchRoots ?? ancestorDirectories(moduleDir);
+  const env = input.env ?? process.env;
+  const searchRoots = input.searchRoots ?? Array.from(new Set([
+    ...ancestorDirectories(moduleDir),
+    // A SEA's module dir may not be its executable's: `~/.ade/bin/resources/native`.
+    ...ancestorDirectories(path.dirname(process.execPath), 2),
+  ]));
   const candidates = simHelperExecutableCandidates({
     resourcesPath: input.resourcesPath ?? (typeof process.resourcesPath === "string" ? process.resourcesPath : null),
     searchRoots,
-    env: input.env ?? process.env,
+    env,
+    fallbackCandidates: input.fallbackCandidates
+      ?? standaloneNativeHelperCandidates({ binaryName: HELPER_EXECUTABLE_NAME, prefer: "runtime", env }),
   });
-  return candidates.find((candidate) => exists(candidate)) ?? candidates[0] ?? "";
+  const searched = withSpotlightFallback(
+    candidates,
+    exists,
+    input.spotlight ?? (() => spotlightNativeHelperCandidate(HELPER_EXECUTABLE_NAME, env)),
+  );
+  lastSimHelperSearch = searched;
+  return searched.find((candidate) => exists(candidate)) ?? searched[0] ?? "";
+}
+
+let lastSimHelperSearch: string[] = [];
+
+/** Every place the last `resolveSimHelperExecutablePath` looked, as one sentence. */
+export function simHelperSearchSummary(): string | null {
+  return lastSimHelperSearch.length === 0 ? null : formatNativeHelperSearch(HELPER_EXECUTABLE_NAME, lastSimHelperSearch);
+}
+
+/** The helper protocol this client speaks (`SimHelperProtocol.version` in Protocol.swift). */
+export const SIM_HELPER_PROTOCOL_VERSION = 1;
+
+/** The one line ADE says when no helper binary is on disk. */
+export function simHelperMissingMessage(binaryPath: string): string {
+  return [
+    `The simulator helper is not installed on this Mac (expected at ${binaryPath}).`,
+    simHelperSearchSummary(),
+    "Install or update ADE.app on this Mac, or run `ade brain update`, then restart the ADE brain.",
+    "In a source checkout, run `npm run build:sim-helper` in apps/desktop.",
+  ].filter(Boolean).join(" ");
+}
+
+/** The one line ADE says when the helper on disk speaks another protocol. */
+export function simHelperProtocolMessage(binaryPath: string, protocol: number): string {
+  const newer = protocol > SIM_HELPER_PROTOCOL_VERSION;
+  return `The simulator helper at ${binaryPath} speaks protocol ${protocol}, and this ADE brain speaks protocol ${SIM_HELPER_PROTOCOL_VERSION}. `
+    + (newer
+      ? "The helper is newer than the brain: run `ade brain update` (or update ADE.app if it runs the brain), then restart the brain."
+      : "The helper is older than the brain: update ADE.app on this Mac (or run `ade brain update`), then restart the brain.");
+}
+
+/** Size and mtime: enough to tell that a refused helper binary was replaced. */
+function binaryStamp(binaryPath: string): string | null {
+  try {
+    const stat = fs.statSync(binaryPath);
+    return `${stat.size}:${stat.mtimeMs}`;
+  } catch {
+    return null;
+  }
 }
 
 type PendingRequest = {
@@ -222,6 +301,14 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
   let stableTimer: NodeJS.Timeout | null = null;
   let disposed = false;
   let nextRequestId = 1;
+  /**
+   * The protocol a refused helper announced, and the binary it came from. A
+   * helper that speaks another protocol is stopped at its `ready` line and not
+   * restarted until that file changes: retrying the same binary can only
+   * refuse again, and talking to it would mis-parse its replies.
+   */
+  let incompatibleProtocol: number | null = null;
+  let incompatibleBinaryStamp: string | null = null;
 
   const emit = (event: SimHelperEventPayload): void => {
     for (const listener of [...listeners]) {
@@ -257,8 +344,15 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     if (!isRecord(parsed) || typeof parsed.type !== "string") return;
     const type = parsed.type;
     if (type === "ready") {
+      const announced = typeof parsed.protocol === "number" ? parsed.protocol : null;
+      // A helper with no protocol field predates nothing ADE ships (v1 always
+      // sent it), so only a different number is refused.
+      if (announced != null && announced !== SIM_HELPER_PROTOCOL_VERSION) {
+        refuseIncompatibleHelper(announced);
+        return;
+      }
       ready = true;
-      helperProtocol = typeof parsed.protocol === "number" ? parsed.protocol : null;
+      helperProtocol = announced;
       helperPid = typeof parsed.pid === "number" ? parsed.pid : child?.pid ?? null;
       options.logger.info("sim_helper.ready", { pid: helperPid, protocol: helperProtocol });
       emit({ type, ...parsed });
@@ -282,6 +376,31 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     // the service subscribes to, so it is answered above and broadcast here.
     // An unknown `record-*` event (unit 2C's) has no id and only lands here.
     if (type !== "ok" && type !== "error") emit({ type, ...parsed });
+  };
+
+  /** Stop a helper that announced another protocol, and keep it stopped. */
+  const refuseIncompatibleHelper = (announced: number): void => {
+    const message = simHelperProtocolMessage(options.binaryPath, announced);
+    options.logger.warn?.("sim_helper.protocol_incompatible", {
+      binaryPath: options.binaryPath,
+      helperProtocol: announced,
+      expectedProtocol: SIM_HELPER_PROTOCOL_VERSION,
+    });
+    incompatibleProtocol = announced;
+    incompatibleBinaryStamp = binaryStamp(options.binaryPath);
+    const active = child;
+    // Cleared first: the exit handler ignores a child that is no longer the
+    // live one, so this stop schedules no restart.
+    child = null;
+    ready = false;
+    helperPid = null;
+    helperProtocol = null;
+    if (stableTimer) {
+      clearTimeout(stableTimer);
+      stableTimer = null;
+    }
+    failPending(new SimHelperError(APPLE_HELPER_UNAVAILABLE_CODE, message));
+    if (active) stopChild(active);
   };
 
   const consumeStdout = (chunk: string): void => {
@@ -325,6 +444,12 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     if (!fileIsUsable(options.binaryPath)) {
       options.logger.warn?.("sim_helper.binary_missing", { binaryPath: options.binaryPath });
       return false;
+    }
+    if (incompatibleProtocol != null) {
+      if (binaryStamp(options.binaryPath) === incompatibleBinaryStamp) return false;
+      // The file was replaced (an app or brain update): try the new one.
+      incompatibleProtocol = null;
+      incompatibleBinaryStamp = null;
     }
     let spawned: ChildProcess;
     try {
@@ -436,9 +561,11 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     if (!active || !active.stdin?.writable) {
       return Promise.reject(new SimHelperError(
         APPLE_HELPER_UNAVAILABLE_CODE,
-        fileIsUsable(options.binaryPath)
-          ? "The simulator helper is not running yet. Try again in a moment."
-          : `The simulator helper binary is missing at ${options.binaryPath}. Run \`npm run build:sim-helper\` in apps/desktop.`,
+        incompatibleProtocol != null
+          ? simHelperProtocolMessage(options.binaryPath, incompatibleProtocol)
+          : fileIsUsable(options.binaryPath)
+            ? "The simulator helper is not running yet. Try again in a moment."
+            : simHelperMissingMessage(options.binaryPath),
       ));
     }
     const id = `r${nextRequestId++}`;
@@ -479,6 +606,10 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     ready = false;
     failPending(new SimHelperError(APPLE_HELPER_UNAVAILABLE_CODE, "The simulator helper client has been disposed."));
     if (!active) return;
+    stopChild(active);
+  };
+
+  function stopChild(active: ChildProcess): void {
     // In-band quit first so the helper tears its capture sessions down; the
     // kill is the backstop for a helper wedged inside CoreSimulator.
     try {
@@ -506,7 +637,7 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
       }
     }, GRACEFUL_SHUTDOWN_MS);
     killTimer.unref?.();
-  };
+  }
 
   return {
     get binaryPath() {
@@ -523,6 +654,7 @@ export function createSimHelperClient(options: SimHelperClientOptions): SimHelpe
     isReady: () => ready,
     pid: () => helperPid,
     protocolVersion: () => helperProtocol,
+    refusedProtocol: () => incompatibleProtocol,
     exists: () => fileIsUsable(options.binaryPath),
     dispose,
   };

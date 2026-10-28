@@ -146,9 +146,10 @@ describe("ChatContinuityRecoveryCard", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /retry original thread/i }));
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toMatch(/original session is no longer available/i);
-    // The failure line stays amber and actionable — the buttons come back.
+    // A missing session is the chat's state, not ADE failing: it warns
+    // (amber, no Report) and stays actionable — the buttons come back.
+    expect(await screen.findByText(/original session is no longer available/i)).toBeTruthy();
+    expect(screen.queryByRole("alert")).toBeNull();
     expect(screen.getByRole("button", { name: /retry original thread/i })).toHaveProperty("disabled", false);
   });
 

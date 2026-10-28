@@ -36,7 +36,11 @@ import type {
 } from "../../../shared/types";
 import { isBackgroundItemBlocked } from "../../../shared/types/core";
 import { APP_FALLBACK_REFUSED_FAILURES, appFallbackReason, type AppFallbackReason } from "./appFallbackPolicy";
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import {
+  resolveMachineAdeLayout,
+  resolveMachineEndpointNames,
+  resolveReachableMachineRuntimeSocketPath,
+} from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { resolveMovedProjectRoot } from "../../../../../ade-cli/src/services/projects/projectMove/moveJournal";
 import { requestAdeRuntimeShutdown } from "../../../../../ade-cli/src/serviceManager/runtimeShutdownRequest";
 import {
@@ -270,12 +274,23 @@ function defaultChannelRuntimeSocketPaths(): Set<string> {
     ADE_PACKAGE_CHANNEL: _ignoredPackageChannel,
     ...channelEnv
   } = process.env;
-  return new Set([".ade", ".ade-alpha", ".ade-beta"].map((homeName) =>
-    resolveMachineAdeLayout({
+  // Every name each channel's brain answers on: on Windows that includes the
+  // pipe names an older ADE derived (`resolveMachineEndpointNames`).
+  return new Set([".ade", ".ade-alpha", ".ade-beta"].flatMap((homeName) =>
+    resolveMachineEndpointNames({
       ...channelEnv,
       ADE_HOME: path.join(os.homedir(), homeName),
-    }).socketPath
+    }).runtime
   ).map(normalizeComparableSocketPath));
+}
+
+/**
+ * The machine brain endpoint to dial: the env override, else this machine's
+ * brain name, or on Windows an older pipe name when only an older brain
+ * listens on one (`resolveReachableMachineRuntimeSocketPath`).
+ */
+function machineRuntimeSocketPathToDial(): string {
+  return process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveReachableMachineRuntimeSocketPath();
 }
 
 function isPrimaryMachineRuntimeSocketPath(
@@ -1854,7 +1869,7 @@ export class LocalRuntimeConnectionPool {
       });
       return;
     }
-    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+    const socketPath = machineRuntimeSocketPathToDial();
     const runningProbe = await this.probeRuntimeCompatibility(socketPath);
     const runningCompatibilityError = runningProbe?.error ?? null;
     if (
@@ -1862,7 +1877,7 @@ export class LocalRuntimeConnectionPool {
       && runningProbe
       && runningProbe.compatibleNewer
     ) {
-      this.clearVersionSkewStatus();
+      this.clearVersionSkewStatus(runningProbe.runtimeInfo.version);
       this.serviceInstallStatus = {
         state: "skipped",
         attempted: false,
@@ -2908,11 +2923,16 @@ export class LocalRuntimeConnectionPool {
     };
   }
 
-  private clearVersionSkewStatus(): void {
+  /**
+   * No skew to report. `runtimeVersion` stays the brain's real version when it
+   * is known: a compatible newer brain is accepted without a skew, and About
+   * and "This machine" must still show what it runs, not this app's version.
+   */
+  private clearVersionSkewStatus(runtimeVersion: string | null = null): void {
     this.versionSkewStatus = {
       state: "none",
       appVersion: this.appVersion,
-      runtimeVersion: null,
+      runtimeVersion: runtimeVersion?.trim() || null,
       message: null,
       updatedAt: new Date().toISOString(),
     };
@@ -3089,8 +3109,7 @@ export class LocalRuntimeConnectionPool {
    * reports, which is a unix socket on macOS/Linux and a named pipe on Windows.
    */
   async probeMachineRuntimeIdentity(): Promise<MachineRuntimeIdentity> {
-    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim()
-      || resolveMachineAdeLayout().socketPath;
+    const socketPath = machineRuntimeSocketPathToDial();
     const expectedBuildHash = computeLocalRuntimeBuildHash();
     const probe = await this.probeRuntimeCompatibility(socketPath);
     if (!probe) {
@@ -3243,7 +3262,7 @@ export class LocalRuntimeConnectionPool {
       || this.serviceInstallStatus.state === "installed"
       || this.connection
     ) return;
-    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || resolveMachineAdeLayout().socketPath;
+    const socketPath = machineRuntimeSocketPathToDial();
     try {
       await this.connect(() => this.startAppFallback(socketPath, reason));
     } catch (error) {
@@ -3308,7 +3327,7 @@ export class LocalRuntimeConnectionPool {
 
   private async createConnection(): Promise<LocalRuntimeConnection> {
     const layout = resolveMachineAdeLayout();
-    const socketPath = process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || layout.socketPath;
+    const socketPath = machineRuntimeSocketPathToDial();
     const existing = await this.tryConnect(socketPath);
     if (existing) return existing;
     // The probe above can spend seconds on an unreachable endpoint, and a quit
@@ -3902,7 +3921,7 @@ export class LocalRuntimeConnectionPool {
       throw compatibilityError;
     }
     if (!options.preserveVersionSkew) {
-      this.clearVersionSkewStatus();
+      this.clearVersionSkewStatus(runtimeInfo.version);
     }
     this.setActiveClient(client);
     this.noteConnectedRuntime(options.isMachineService === true);

@@ -4,6 +4,7 @@ import {
   type AutoUpdatePreferences,
 } from "../../../shared/types";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 
 /**
  * The two update-install preferences, as rows of one panel.
@@ -55,7 +56,7 @@ export function AutoUpdatesControls() {
       <ModernRow
         anchor="auto-updates"
         title="Install ADE updates automatically"
-        hint="ADE restarts after a countdown you can cancel. Off: install from the top-right control."
+        hint="ADE restarts after a countdown you can cancel, and quitting ADE installs it when no agent is running. Off: install from the top-right control."
         control={
           <SettingsToggle
             label="Install ADE updates automatically"
@@ -65,7 +66,18 @@ export function AutoUpdatesControls() {
           />
         }
       >
-        {error ? <p role="alert" className="ade-modern-error">{error}</p> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "auto-updates-error",
+              tone: "error",
+              title: error,
+              report: { surface: "auto_updates_settings" },
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
+        ) : null}
       </ModernRow>
 
       {/* Only meaningful once automatic installs are on — it qualifies when the

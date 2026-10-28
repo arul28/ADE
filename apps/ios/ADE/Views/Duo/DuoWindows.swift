@@ -72,7 +72,7 @@ struct DuoWindowPresentations: ViewModifier {
     }
     .animation(motion, value: activityColumn && syncService.attentionDrawerPresented)
     .onGeometryChange(for: Bool.self) { proxy in
-      proxy.size.width > proxy.size.height
+      proxy.isLandscapeIgnoringKeyboard
     } action: { landscape in
       isLandscape = landscape
     }
@@ -200,8 +200,8 @@ struct DuoSettingsSplit<Sidebar: View, Landing: View>: View {
   @State private var selection: String?
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
-      if size.width > size.height {
+    DuoLocalFoldReader { fold, size, landscape in
+      if landscape {
         NavigationSplitView(columnVisibility: .constant(.all)) {
           sidebar()
             .navigationSplitViewColumnWidth(sidebarWidth(fold: fold, size: size))
@@ -276,8 +276,8 @@ struct DuoLinearWindow<IssueList: View, Destination: View>: View {
   @State private var listPath: [LinearRoute] = []
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
-      if size.width > size.height {
+    DuoLocalFoldReader { fold, size, landscape in
+      if landscape {
         NavigationSplitView(columnVisibility: .constant(.all)) {
           issuesColumn
             .navigationSplitViewColumnWidth(leadingWidth(fold: fold, size: size))

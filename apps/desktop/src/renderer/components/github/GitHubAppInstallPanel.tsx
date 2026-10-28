@@ -822,7 +822,7 @@ const deviceCodeStyle: CSSProperties = {
   padding: "6px 8px",
   borderRadius: 6,
   border: `1px solid ${COLORS.borderMuted}`,
-  background: "color-mix(in srgb, var(--color-bg-panel) 86%, transparent)",
+  background: "color-mix(in srgb, var(--color-card) 86%, transparent)",
   cursor: "pointer",
 };
 

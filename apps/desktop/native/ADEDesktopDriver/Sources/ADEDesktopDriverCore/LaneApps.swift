@@ -447,6 +447,68 @@ public final class LaunchedAppRegistry: @unchecked Sendable {
 }
 
 // ---------------------------------------------------------------------------
+// Matching an app by what the caller calls it
+// ---------------------------------------------------------------------------
+
+/// Which of a lane's apps `quit <name>` means.
+///
+/// `windows` showed "FL Studio 2025" as the lane's own app while `quit "FL
+/// Studio"` said the lane did not open it: the quit compared one recorded name
+/// (which can be the document path a launch was given) with an exact,
+/// lowercased match. Here every name an app goes by counts, case and a
+/// trailing ".app" ignored, and a prefix is enough when it names one app.
+public enum LaneAppMatch {
+    public struct Candidate: Equatable, Sendable {
+        public let pid: Int32
+        /// Every name the app goes by: the launch's, the running app's
+        /// localized name, its bundle name, its window owner name.
+        public let names: [String]
+        public let bundleId: String?
+
+        public init(pid: Int32, names: [String], bundleId: String?) {
+            self.pid = pid
+            self.names = names
+            self.bundleId = bundleId
+        }
+    }
+
+    public enum Outcome: Equatable, Sendable {
+        /// Indices into the candidates, in order.
+        case matched([Int])
+        /// A prefix that fits more than one app: indices of every fit.
+        case ambiguous([Int])
+        case none
+    }
+
+    static func normalize(_ value: String) -> String {
+        var text = value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if text.hasSuffix(".app") { text = String(text.dropLast(4)) }
+        return text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+
+    /// `needle` nil or blank matches every candidate.
+    public static func match(_ needle: String?, in candidates: [Candidate]) -> Outcome {
+        let wanted = normalize(needle ?? "")
+        guard !wanted.isEmpty else { return candidates.isEmpty ? .none : .matched(Array(candidates.indices)) }
+        let exact = candidates.indices.filter { index in
+            let candidate = candidates[index]
+            return String(candidate.pid) == wanted
+                || candidate.bundleId.map { $0.lowercased() == wanted } == true
+                || candidate.names.contains { normalize($0) == wanted }
+        }
+        if !exact.isEmpty { return .matched(exact) }
+        let prefixed = candidates.indices.filter { index in
+            candidates[index].names.contains { normalize($0).hasPrefix(wanted) }
+        }
+        guard !prefixed.isEmpty else { return .none }
+        // Two instances of one app are one app; two different apps are a
+        // question the caller has to answer.
+        let apps = Set(prefixed.map { candidates[$0].bundleId ?? "pid:\(candidates[$0].pid)" })
+        return apps.count == 1 ? .matched(prefixed) : .ambiguous(prefixed)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Release
 // ---------------------------------------------------------------------------
 

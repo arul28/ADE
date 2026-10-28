@@ -672,3 +672,80 @@ export function formatMachinesRoster(value: unknown): string {
     { fullColumns: ["key"] },
   );
 }
+
+/** How long a "which machine has this chat" lookup may delay an error. */
+const CHAT_LOOKUP_BUDGET_MS = 6_000;
+
+/**
+ * The other machine on the account that holds `sessionId`, for the "not
+ * found" error of a chat command that named no machine. It asks each online
+ * machine for the chat's summary (one small read each, in parallel) and gives
+ * up after a few seconds, so a dark or slow machine only costs the generic
+ * hint. Null when no machine answered with the chat, or the roster is
+ * unavailable (signed out, offline).
+ *
+ * Never asked under ADE MCP (`ADE_REMOTE_MCP_SCOPE`): its connection reaches
+ * only this computer, and another machine's owner may have ADE MCP off.
+ */
+export async function locateChatOnOtherMachines(
+  sessionId: string,
+  plan: CliPlan & { kind: "execute" },
+  options: GlobalOptions,
+  budgetMs = CHAT_LOOKUP_BUDGET_MS,
+): Promise<{ machineName: string; machineKey: string } | null> {
+  if (process.env.ADE_REMOTE_MCP_SCOPE?.trim()) return null;
+  const single: GlobalOptions = { ...options, allMachines: false, machine: null };
+  let timer: NodeJS.Timeout | null = null;
+  const deadline = new Promise<null>((resolve) => {
+    timer = setTimeout(() => resolve(null), budgetMs);
+    timer.unref?.();
+  });
+  const lookup = (async () => {
+    const roster = await withMachineBrain(single, (client) => client.request("machines.list", { includeProjects: false }));
+    if (!isRecord(roster) || roster.state !== "ok" || !Array.isArray(roster.machines)) return null;
+    const others = roster.machines
+      .filter(isRecord)
+      .filter((machine) => machine.isThisMachine !== true && machine.online === true)
+      .flatMap((machine) => {
+        const machineKey = asString(machine.machineKey);
+        return machineKey ? [{ machineKey, machineName: asString(machine.name) ?? machineKey }] : [];
+      });
+    if (!others.length) return null;
+    // The first machine that answers with the chat wins; a machine that fails
+    // or does not have it never rejects the race.
+    return await new Promise<{ machineName: string; machineKey: string } | null>((resolve) => {
+      let pending = others.length;
+      for (const machine of others) {
+        executePlan(plan, { ...single, machine: machine.machineKey }).then(
+          (value) => {
+            if (summaryNamesChat(value, sessionId)) resolve(machine);
+            else if (--pending === 0) resolve(null);
+          },
+          () => {
+            if (--pending === 0) resolve(null);
+          },
+        );
+      }
+    });
+  })().catch(() => null);
+  try {
+    return await Promise.race([lookup, deadline]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * Whether a `chat show` answer is that chat. The answer may arrive wrapped in
+ * a tool or action envelope; a missing chat answers null or an error envelope.
+ */
+function summaryNamesChat(value: unknown, sessionId: string): boolean {
+  let current: unknown = value;
+  for (let depth = 0; depth < 4 && isRecord(current); depth += 1) {
+    if (current.isError === true || current.ok === false) return false;
+    const id = asString(current.sessionId) ?? asString(current.id);
+    if (id) return id === sessionId;
+    current = current.result ?? current.structuredContent ?? null;
+  }
+  return false;
+}

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { INPUT_CLASS_NAME } from "../lanes/laneDialogTokens";
 import { MacDesktopRowAction } from "./macDesktopWindowList";
 
@@ -104,7 +105,17 @@ export function LinuxDesktopOpenApp({
         ))}
       </div>
       {error ? (
-        <div className="px-4 pt-3 text-[11.5px] text-[var(--color-error)]" role="alert">{error}</div>
+        <Banner
+          layout="inline"
+          style={{ margin: "12px 16px 0" }}
+          model={{
+            id: "linux-desktop-open-app-error",
+            tone: "error",
+            title: error,
+            report: { surface: "linux_desktop_open_app" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
       ) : null}
     </div>
   );

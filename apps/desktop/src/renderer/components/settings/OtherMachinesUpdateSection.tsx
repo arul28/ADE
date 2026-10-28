@@ -16,6 +16,7 @@ import {
   type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
+import { Banner } from "../ui/notice";
 
 /**
  * The connected machines, kept current by main's connection snapshot. Null
@@ -119,7 +120,7 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
               title={machine.name}
               hint={(
                 <>
-                  {machine.version ? <>ADE <span className="kit-num">{machine.version}</span></> : "Version unknown"}
+                  {machine.version ? <>ADE <span className="kit-num">{machine.versionLabel ?? machine.version}</span></> : "Version unknown"}
                   {behindIds.has(machine.id) && newestVersion
                     ? <> · <span className="kit-num">{newestVersion}</span> available</>
                     : null}
@@ -139,10 +140,20 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
                 <span className="kit-tag" data-tone="ok">Up to date</span>
               ) : undefined}
             >
-              {status ? (
-                <div role="status" className={status.ok ? "ade-ap-rowhint" : "ade-modern-error"}>
+              {status?.ok ? (
+                <div role="status" className="ade-ap-rowhint">
                   {status.message}
                 </div>
+              ) : status ? (
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: `machine-update-error-${machine.id}`,
+                    tone: "error",
+                    title: status.message,
+                    report: { surface: "machine_update" },
+                  }}
+                />
               ) : null}
             </ModernRow>
           );

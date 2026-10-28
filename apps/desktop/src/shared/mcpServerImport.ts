@@ -53,17 +53,24 @@ function stringList(value: unknown): string[] {
 /**
  * One config entry as a server, or null when it is not one.
  *
- * Accepts the shapes in use today: Claude / Cursor / Droid (`command`, `args`,
- * `env`, or `url`, `headers`, with an optional `type`), OpenCode (`type:
- * "local"` with `command` as one list and `environment`; `type: "remote"`),
- * and Codex's table once read from TOML (`http_headers`).
+ * Accepts the shapes in use today: Claude / Cursor / Droid / Copilot / Kimi
+ * (`command`, `args`, `env`, or `url`, `headers`, with an optional `type` or
+ * `transport`), OpenCode (`type: "local"` with `command` as one list and
+ * `environment`; `type: "remote"`), Gemini-style Qwen (`httpUrl` for
+ * streamable HTTP), Antigravity / Devin (`serverUrl`), and Codex's or Grok's
+ * table once read from TOML (`http_headers`).
  */
 export function mcpServerDefinitionFromConfig(name: string, raw: unknown): McpServerDefinition | null {
   if (!isRecord(raw)) return null;
-  const type = typeof raw.type === "string" ? raw.type.trim().toLowerCase() : "";
+  const typeField = typeof raw.type === "string" ? raw.type : typeof raw.transport === "string" ? raw.transport : "";
+  const httpUrl = typeof raw.httpUrl === "string" ? raw.httpUrl.trim() : "";
+  // `httpUrl` is streamable HTTP by definition, whatever its path looks like.
+  const type = httpUrl ? "http" : typeField.trim().toLowerCase().replace(/^streamable[-_]?http$/, "http");
   const env = { ...stringMap(raw.environment), ...stringMap(raw.env) };
   const headers = { ...stringMap(raw.http_headers), ...stringMap(raw.headers) };
-  const url = typeof raw.url === "string" ? raw.url.trim() : "";
+  const url = httpUrl
+    || (typeof raw.url === "string" ? raw.url.trim() : "")
+    || (typeof raw.serverUrl === "string" ? raw.serverUrl.trim() : "");
   const commandList = Array.isArray(raw.command) ? stringList(raw.command) : null;
   const command = commandList ? (commandList[0] ?? "").trim() : typeof raw.command === "string" ? raw.command.trim() : "";
   const args = commandList ? commandList.slice(1) : stringList(raw.args);

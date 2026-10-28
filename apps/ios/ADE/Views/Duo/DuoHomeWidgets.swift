@@ -128,8 +128,8 @@ struct DuoTwoPages<First: View, Second: View>: View {
   @ViewBuilder var second: () -> Second
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
-      let sideBySide = size.width > size.height || (sideBySideWhenUpright && !fold.isStacked)
+    DuoLocalFoldReader { fold, size, landscape in
+      let sideBySide = landscape || (sideBySideWhenUpright && !fold.isStacked)
       switch fold {
       case .sideBySide(let rect) where sideBySide:
         let lead = max(0, min(rect.minX, size.width))

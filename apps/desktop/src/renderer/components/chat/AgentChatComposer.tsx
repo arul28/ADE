@@ -183,6 +183,11 @@ import {
   pastedTextChipLabel,
   pastedTextLineCount,
 } from "../../../shared/pastedTextAttachment";
+import {
+  draftAttachmentPastedLines,
+  draftAttachmentSource,
+  rememberDraftAttachmentSource,
+} from "./draftAttachmentSources";
 import { ChatComposerShell } from "./ChatComposerShell";
 import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
@@ -3987,6 +3992,13 @@ function AgentChatComposerImpl({
               attachmentOwnerBinding,
             );
             staged = { path: stagedPath, mimeType: file.type || null, previewDataUrl: null };
+            rememberDraftAttachmentSource(stagedPath, {
+              kind: "local",
+              // Staged on this computer, the copy is a snapshot: a later edit
+              // or delete of the original cannot change what moves.
+              sourcePath: attachmentOwnerBinding?.kind === "local" ? stagedPath : plan.sourcePath,
+              filename: normalizeImageAttachmentFilename(sourceAttachmentName, file.type),
+            });
           } else {
             staged = await stageAttachmentBytesFromFile({
               api: agentChatApiRef.current,
@@ -4014,7 +4026,15 @@ function AgentChatComposerImpl({
           }
           rememberAttachmentSize(staged.path, file.size);
           const pastedLineCount = pastedTextFilesRef.current.get(file);
-          if (pastedLineCount != null) pastedTextLineCountsRef.current.set(staged.path, pastedLineCount);
+          if (pastedLineCount != null) {
+            pastedTextLineCountsRef.current.set(staged.path, pastedLineCount);
+            // The line count rides with the bytes, so the chip still reads
+            // "Pasted · N lines" after the draft moves to another machine.
+            const source = draftAttachmentSource(staged.path);
+            if (source?.kind === "bytes") {
+              rememberDraftAttachmentSource(staged.path, { ...source, pastedLines: pastedLineCount });
+            }
+          }
           onAddAttachment({
             path: staged.path,
             type: attachmentType,
@@ -4728,7 +4748,9 @@ function AgentChatComposerImpl({
     label: AttachmentLabel,
   ) => {
     chip.dataset.composerChipText = label.token;
-    const pastedLines = label.kind === "file" ? pastedTextLineCountsRef.current.get(attachment.path) : undefined;
+    const pastedLines = label.kind === "file"
+      ? pastedTextLineCountsRef.current.get(attachment.path) ?? draftAttachmentPastedLines(attachment.path) ?? undefined
+      : undefined;
     const display = pastedLines != null
       ? pastedTextChipLabel(pastedLines)
       : `${label.kind === "image" ? "Image" : "File"} ${label.ordinal}`;
@@ -8012,46 +8034,49 @@ function AgentChatComposerImpl({
               </div>
             ) : null}
             {attachError ? (
-              <div className="flex items-center gap-1.5 px-3">
-                <span className="text-[length:calc(var(--chat-font-size)*10/14)] text-red-300/75">{attachError}</span>
-                {onUseThisComputer && attachError === attachmentPersistenceUnavailableReason ? (
-                  <button
-                    type="button"
-                    className="shrink-0 rounded px-1 text-[length:calc(var(--chat-font-size)*10/14)] text-red-200/80 underline underline-offset-2 transition-colors hover:text-red-100"
-                    onClick={() => {
-                      onUseThisComputer();
+              <Banner
+                layout="inline"
+                style={{ margin: "0 12px" }}
+                model={{
+                  id: "chat-composer-attach-error",
+                  tone: "error",
+                  title: attachError,
+                  actions: [
+                    ...(onUseThisComputer && attachError === attachmentPersistenceUnavailableReason
+                      ? [{
+                          label: "Use this computer",
+                          onClick: () => {
+                            onUseThisComputer();
+                            setAttachError(null);
+                          },
+                        }]
+                      : []),
+                    ...(attachRetryFiles?.length
+                      ? [{
+                          label: "Try again",
+                          onClick: () => {
+                            const files = attachRetryFiles;
+                            setAttachRetryFiles(null);
+                            setAttachError(null);
+                            void addFileAttachments(files);
+                          },
+                        }]
+                      : []),
+                  ],
+                  // Attachments that can't be stored on that machine are a setup
+                  // choice, not a failure for ADE to hear about.
+                  report: attachError === attachmentPersistenceUnavailableReason
+                    ? false
+                    : { surface: "chat_composer_attach" },
+                  dismiss: {
+                    label: "Dismiss error",
+                    onDismiss: () => {
                       setAttachError(null);
-                    }}
-                  >
-                    Use this computer
-                  </button>
-                ) : null}
-                {attachRetryFiles?.length ? (
-                  <button
-                    type="button"
-                    className="shrink-0 rounded px-1 text-[length:calc(var(--chat-font-size)*10/14)] text-red-200/80 underline underline-offset-2 transition-colors hover:text-red-100"
-                    onClick={() => {
-                      const files = attachRetryFiles;
                       setAttachRetryFiles(null);
-                      setAttachError(null);
-                      void addFileAttachments(files);
-                    }}
-                  >
-                    Try again
-                  </button>
-                ) : null}
-                <button
-                  type="button"
-                  aria-label="Dismiss error"
-                  className="shrink-0 rounded p-0.5 text-red-300/60 hover:text-red-200/80 transition-colors"
-                  onClick={() => {
-                    setAttachError(null);
-                    setAttachRetryFiles(null);
-                  }}
-                >
-                  <X size={10} weight="bold" />
-                </button>
-              </div>
+                    },
+                  },
+                }}
+              />
             ) : null}
             {attachNotice ? (
               <div className="flex items-center gap-2 px-3" role="status">

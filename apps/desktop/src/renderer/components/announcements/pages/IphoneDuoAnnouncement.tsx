@@ -1,7 +1,7 @@
 import { AppleLogo, Cube, DeviceMobileCamera, SlidersHorizontal } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import gif from "./assets/iphone-duo.gif";
+import video from "./assets/iphone-duo.mp4";
 import still from "./assets/iphone-duo-still.webp";
 
 /** iPhone Duo, the foldable, in ADE's iOS simulator. */
@@ -17,11 +17,12 @@ export default function IphoneDuoAnnouncement({ close }: AnnouncementPageProps) 
         { icon: <Cube size={14} weight="fill" />, label: "3D view" },
         { icon: <DeviceMobileCamera size={14} weight="fill" />, label: "Cover screen" },
       ]}
+      action={{ tipId: "ios-simulator", label: "Open the simulator" }}
       media={{
-        gif,
+        video,
         still,
-        width: 600,
-        height: 575,
+        width: 1600,
+        height: 1060,
         alt: "An app on iPhone Duo in ADE's simulator, turning in 3D and folding as the hinge slider moves",
       }}
     />

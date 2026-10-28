@@ -182,6 +182,9 @@ export const APPLE_AGENT_ACTIONS = [
   "deviceLease",
   "deviceLeaseRelease",
   "deviceLeaseStatus",
+  /* Whether agent input on this lane starts a recording by itself. */
+  "getAutoRecord",
+  "setAutoRecord",
 
   /* Simulator runtimes: what is installed, and fetch the one this Xcode
      expects. Removing one is the person's call (APPLE_USER_ONLY_ACTIONS). */
@@ -213,8 +216,10 @@ export const APPLE_AGENT_ACTIONS = [
   "getStreamStatus",
   "frame",
 
-  /* The app. */
+  /* The app. `installApp` builds once and installs on any of the lane's
+     devices, its extras included, without touching the lane device's session. */
   "launch",
+  "installApp",
   "relaunchApp",
   "terminateApp",
   "uninstallApp",
@@ -225,6 +230,8 @@ export const APPLE_AGENT_ACTIONS = [
   /* Input. `drag` with a duration is the scroll: a drag with no duration reads
      as a flick and scrolls nothing. */
   "tap",
+  /* A press held at one point (context menus), begin and end with a hold between. */
+  "longPress",
   "typeText",
   /* A real key press with modifiers (arrows, escape, ⌘F), not typed text. */
   "pressKey",
@@ -234,6 +241,8 @@ export const APPLE_AGENT_ACTIONS = [
   "pressButton",
   "rotate",
   "selectPoint",
+  /* iPad windows (windowed mode): size, halves, Fill & Arrange, Slide Over. */
+  "windowLayout",
 
   /* Reading the screen by name rather than by pixel. */
   "getScreenSnapshot",
@@ -807,6 +816,8 @@ export type IosSimulatorPoint = {
   laneId?: string | null;
   x: number;
   y: number;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorDragArgs = {
@@ -820,6 +831,8 @@ export type IosSimulatorDragArgs = {
   durationMs?: number | null;
   delta?: number | null;
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /**
@@ -912,6 +925,21 @@ export type IosScreenSnapshotProvider = {
   elementCount?: number;
   error?: string | null;
   generatedAt?: string | null;
+  /**
+   * The accessibility walk stopped at one of the helper's caps (500 elements,
+   * depth 80, 600 grid probe points), so elements past it are missing from
+   * the snapshot and from every query. `truncatedBy` names the caps hit.
+   */
+  truncated?: boolean;
+  truncatedBy?: string[];
+  /** The caps the walk ran under, by the names `truncatedBy` uses. */
+  limits?: Record<string, number>;
+  /**
+   * An iPadOS window could not be placed on the screen, so its elements'
+   * frames are still relative to it (each says `metadata.ADEUnplaced`), and
+   * `tap-element` refuses them.
+   */
+  unplaced?: boolean;
 };
 
 export type IosScreenSnapshotArgs = {
@@ -1433,6 +1461,8 @@ export type IosSimulatorOpenUrlArgs = IosSimulatorDeviceArgs & {
   url: string;
   /** A deeplink a person opened from a viewer never starts an auto-recording. */
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorAppLifecycleArgs = IosSimulatorDeviceArgs & {
@@ -1497,6 +1527,12 @@ export type IosSimulatorLogRow = {
   category: string | null;
   message: string;
   command?: string | null;
+  /**
+   * The device the row is about. A `device` row is the followed device's; an
+   * `ade` row names the device the action drove, so a lane's log read for one
+   * device leaves out what ADE did on its other devices.
+   */
+  deviceUdid?: string | null;
 };
 
 export type IosSimulatorEventLogArgs = IosSimulatorDeviceArgs & {
@@ -1514,6 +1550,13 @@ export type IosSimulatorEventLogPage = {
   /** Rows dropped from the head of the ring since the last read. */
   dropped: number;
   lastError: string | null;
+  /** The `log stream` predicate the running stream filters by. */
+  predicate?: string | null;
+  /**
+   * Set when the stream has run a while and no app row arrived: what the
+   * filter keeps, and how to widen it (`--process`, `--subsystem`).
+   */
+  hint?: string | null;
 };
 
 export type IosSimulatorStartEventLogArgs = IosSimulatorDeviceArgs & {
@@ -1526,6 +1569,18 @@ export type IosSimulatorStartEventLogArgs = IosSimulatorDeviceArgs & {
    * log must not be handed the device's.
    */
   bundleId: string;
+  /**
+   * The `os_log` subsystem prefix to keep, in place of the bundle id. For an
+   * app that logs under another name (`com.acme.app` while its bundle id is
+   * `com.acme.app.dev`).
+   */
+  subsystem?: string | null;
+  /**
+   * The process to keep, in place of the app's executable. By default ADE
+   * keeps the app's own process (its installed `CFBundleExecutable`) as well
+   * as the subsystem, so `NSLog` and a `Logger` under any subsystem arrive.
+   */
+  process?: string | null;
   /** The chat that owns the device session, when one is open. */
   chatSessionId?: string | null;
   /** Take the event log from a chat that owns the device session. */
@@ -1591,7 +1646,18 @@ export type IosSimulatorElementActionResult = {
    * accessibility snapshot per tap, so the reason names the command to run.
    */
   effect: ComputerUseActionEffect;
+  /**
+   * `fill-element` only: the field read back after typing. `verified` — it
+   * holds the text; `not-seen` — it was found and does not (focus never
+   * arrived, or the app dropped the text); `unknown` — it cannot be told (a
+   * secure field, the field moved, an older helper).
+   */
+  typed?: IosSimulatorTypedCheck;
+  /** What the read-back saw, in one sentence. */
+  typedDetail?: string | null;
 };
+
+export type IosSimulatorTypedCheck = "verified" | "not-seen" | "unknown";
 
 export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
   projectRoot?: string | null;
@@ -1599,12 +1665,38 @@ export type IosSimulatorFindElementArgs = IosSimulatorDeviceArgs & {
   query: IosSimulatorElementQuery;
 };
 
-export type IosSimulatorTapElementArgs = IosSimulatorFindElementArgs;
+export type IosSimulatorTapElementArgs = IosSimulatorFindElementArgs & {
+  /** Hold the finger down this long: a long press on the element (context menus). */
+  holdMs?: number | null;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
+};
+
+/** A press held at one point: what opens a context menu or starts a drag-to-reorder. */
+export type IosSimulatorLongPressArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  x: number;
+  y: number;
+  /** How long the finger stays down. Defaults to 1000 ms, clamped to 100–5000. */
+  durationMs?: number | null;
+  source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
+};
+
+/** How long a long press holds when the caller names no duration, and its bounds. */
+export const APPLE_LONG_PRESS_DEFAULT_MS = 1_000;
+export const APPLE_LONG_PRESS_MIN_MS = 100;
+export const APPLE_LONG_PRESS_MAX_MS = 5_000;
 
 export type IosSimulatorFillElementArgs = IosSimulatorFindElementArgs & {
   text: string;
   /** Tap the element first so the keyboard targets it. Defaults to true. */
   focusFirst?: boolean | null;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type IosSimulatorWaitForElementArgs = IosSimulatorFindElementArgs & {
@@ -1776,6 +1868,14 @@ export type AppleLaneDevice = {
    * never streamed in the pane. Absent on the lane's device.
    */
   extra?: boolean;
+  /**
+   * Only on a `deviceDetach` answer for a device ADE made: the earliest time
+   * the cleanup pass may delete it (it runs every 15 minutes, so up to 15
+   * minutes later). A lane that attaches it before then keeps it.
+   */
+  deletesAfter?: string | null;
+  /** Only on a `deviceDetach` answer: the person kept it as a free simulator, so nothing deletes it. */
+  kept?: boolean;
 };
 
 /** How many extra devices one lane may hold beside its own (an iPad next to an iPhone Duo). */
@@ -1880,14 +1980,36 @@ export type AppleRuntimeEntry = {
 };
 
 /**
- * The runtime this Xcode's SDK expects but the Mac does not have, and the
- * device models only it can run (the iPhone Duo on Xcode 27.1).
+ * One runtime the Mac lacks, named from what its models need: on Xcode 27.1
+ * the Duo needs iOS 27.1, and every other iPhone needs iOS 27.0 (27.1 runs
+ * only the Duo).
+ */
+export type AppleMissingRuntimeGroup = {
+  version: string;
+  /** `iOS 27.0`. */
+  name: string;
+  /**
+   * The version to pin when installing for these models (`runtimes install
+   * --version`), or null to let Xcode fetch what its SDK needs (no pin). Set
+   * only when ADE knows the SDK's own runtime does not run them.
+   */
+  installVersion: string | null;
+  deviceTypes: AppleSimulatorDeviceType[];
+};
+
+/**
+ * The runtimes this Xcode can simulate but the Mac does not have, and the
+ * device models only they can run. `version`, `name` and `deviceTypes` cover
+ * every group (`name` is "iOS 27.0 and iOS 27.1" when two are missing);
+ * `runtimes` splits them per version.
  */
 export type AppleMissingRuntime = {
   platform: string;
   version: string;
   name: string;
   deviceTypes: AppleSimulatorDeviceType[];
+  /** Per version, oldest first. Absent from an older brain. */
+  runtimes?: AppleMissingRuntimeGroup[];
 };
 
 export type AppleRuntimeInstallPhase = "checking" | "preparing" | "downloading" | "installing" | "done" | "failed" | "cancelled";
@@ -1980,10 +2102,13 @@ export type AppleRuntimeDeleteResult = {
  *   it. `deviceCleanup` deletes it.
  * - `ade-other-project`: ADE made it for another project. That project's
  *   cleanup owns it.
+ * - `ade-kept`: ADE made it, and the person released it and chose to keep it
+ *   as a free simulator. No cleanup deletes it; the person does, or a lane
+ *   attaches it again.
  * - `unknown`: no marker and no lane. It may be the user's, Xcode's, or an ADE
  *   device made before markers existed. Only the user deletes it.
  */
-export type AppleSimulatorOwnership = "lane" | "ade-orphan" | "ade-other-project" | "unknown";
+export type AppleSimulatorOwnership = "lane" | "ade-orphan" | "ade-other-project" | "ade-kept" | "unknown";
 
 export type AppleSimulatorOwnershipInfo = {
   udid: string;
@@ -1992,6 +2117,12 @@ export type AppleSimulatorOwnershipInfo = {
   markerLaneId: string | null;
   /** The name looks like an ADE device (`ADE · …`, `ADE …`) but it has no marker. */
   looksLikeAde: boolean;
+  /**
+   * A released ADE device (`ade-orphan` with a detach stamp): the earliest
+   * time the cleanup pass deletes it. Starting it from the picker takes it
+   * back for the lane before then.
+   */
+  deletesAfter?: string | null;
 };
 
 /** `deviceCleanup`: what one pass found and did. */
@@ -2059,14 +2190,145 @@ export type AppleRunTestsResult = {
   resultBundlePath: string | null;
   /** The whole `xcodebuild` output. */
   logPath: string;
-  /** The run's total `Executed N tests, with M failures`, when xcodebuild printed it. */
+  /**
+   * Tests run: XCTest's run-wide `Executed N tests, with M failures` plus
+   * Swift Testing's `Test run with N tests`, when xcodebuild printed either.
+   */
   testsExecuted: number | null;
   testsFailed: number | null;
-  /** `with K tests skipped`, from the same total line; 0 when it names none. */
+  /** `with K tests skipped`, from the same total lines; 0 when they name none. */
   testsSkipped?: number | null;
   /** The failing test names and the last lines that matter. */
   summary: string;
+  /** One entry per failing test (XCTest and Swift Testing), in log order. Absent from an older brain. */
+  failures?: AppleTestFailure[];
   durationMs: number;
+};
+
+/**
+ * A failing test read from the log. `test` is `Module/Class/method` for
+ * XCTest (what `--only` takes) and the test's name for Swift Testing.
+ */
+export type AppleTestFailure = {
+  test: string;
+  file: string | null;
+  line: number | null;
+  message: string;
+};
+
+/**
+ * `windowLayout` (`ade apple window`): the front app's window on an iPad in
+ * windowed mode (iPadOS 26+). `size` drags the window's resize grabber;
+ * the others are the window's own Move & Resize / Fill & Arrange menu (a long
+ * press on its green Zoom button). Every action is checked against the
+ * window frame the accessibility tree reports afterwards.
+ */
+export type AppleWindowLayoutAction =
+  | "status"
+  | "size"
+  | "move"
+  | "fill"
+  | "left"
+  | "right"
+  | "top"
+  | "bottom"
+  | "split"
+  | "thirds"
+  | "quarters"
+  | "slide-over";
+
+export const APPLE_WINDOW_LAYOUT_ACTIONS: readonly AppleWindowLayoutAction[] = [
+  "status", "size", "move", "fill", "left", "right", "top", "bottom", "split", "thirds", "quarters", "slide-over",
+];
+
+/** The front app is not in a resizable window (an iPhone, or an iPad set to Full Screen Apps). */
+export const APPLE_WINDOWING_UNAVAILABLE_CODE = "APPLE_WINDOWING_UNAVAILABLE";
+
+export type AppleWindowLayoutArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  deviceUdid?: string | null;
+  action?: AppleWindowLayoutAction | null;
+  /** Points, with `size`. */
+  width?: number | null;
+  height?: number | null;
+  /** Points, with `move`: where the window's top-left corner goes. */
+  x?: number | null;
+  y?: number | null;
+  agentCaller?: boolean | null;
+};
+
+export type AppleWindowFrame = { x: number; y: number; width: number; height: number };
+
+export type AppleWindowLayoutResult = {
+  deviceUdid: string;
+  action: AppleWindowLayoutAction;
+  /** The app the window belongs to (from its window controls). */
+  bundleId: string | null;
+  appName: string | null;
+  /** The screen in points, as the snapshot reads it. */
+  screen: { width: number; height: number };
+  before: AppleWindowFrame | null;
+  after: AppleWindowFrame | null;
+  /** The window ended where the action asked, within `tolerance` points. Always true for `status`. */
+  applied: boolean;
+  tolerance: number;
+  /** Why `applied` is false, in a sentence. */
+  reason?: string | null;
+  /** The drags a `size` took (each one corrects the last). */
+  attempts?: number;
+  /**
+   * `placed`: the frame is the Application element's screen frame, as the
+   * helper placed the window. `inferred`: the helper could not place it, so
+   * the frame comes from the window's controls and resize grabber.
+   */
+  frameSource?: "placed" | "inferred";
+  /** The layout landed, but not exactly as the slot is drawn (the app's minimum size outgrew it), and how. */
+  note?: string | null;
+  /** With `status`: points of the window past each screen edge, when any. */
+  offScreen?: { left: number; top: number; right: number; bottom: number } | null;
+};
+
+/**
+ * `installApp` (`ade apple install --device <udid|name>`): put the lane's app
+ * on one of its devices, usually an extra, without touching the lane device's
+ * session, stream or claim. Builds into the lane's DerivedData (incremental,
+ * so a build the lane already has is reused), or with `build: false` installs
+ * the product the lane last built.
+ */
+export type AppleInstallAppArgs = {
+  laneId?: string | null;
+  chatSessionId?: string | null;
+  /** The lane's device or one of its extras (udid or name). Default: the lane's device. */
+  deviceUdid?: string | null;
+  projectRoot?: string | null;
+  targetId?: string | null;
+  bundleId?: string | null;
+  appBundlePath?: string | null;
+  /** Default Debug. */
+  configuration?: string | null;
+  /** False: install the lane's last build of this configuration, never build. */
+  build?: boolean | null;
+  /** Start the app after the install. */
+  launch?: boolean | null;
+  /** Launch arguments, with `launch`. */
+  arguments?: string[] | null;
+  agentCaller?: boolean | null;
+};
+
+export type AppleInstallAppResult = {
+  deviceUdid: string;
+  deviceName: string;
+  /** The device is one of the lane's extras. */
+  extra: boolean;
+  bundleId: string;
+  appBundlePath: string | null;
+  configuration: string;
+  built: boolean;
+  installed: boolean;
+  launched: boolean;
+  /** The app's pid after `launch`, when simctl printed one. */
+  pid?: number | null;
 };
 
 export type AppleDeviceAttachArgs = {
@@ -2229,8 +2491,19 @@ export type AppleDeviceDeleteArgs = {
 };
 
 /**
- * `deviceDetach`: the lane gives up its device; the simulator stays installed.
- * Same single-owner rule as `deviceStop`: refused while another chat owns the
+ * How long a device ADE made and a lane let go of is safe from the cleanup
+ * pass (its marker's grace): a lane can still pick it again until then.
+ */
+export const APPLE_RELEASED_DEVICE_GRACE_MS = 5 * 60_000;
+
+/** How often the cleanup pass runs, so a released device is gone within the grace plus this. */
+export const APPLE_DEVICE_CLEANUP_INTERVAL_MS = 15 * 60_000;
+
+/**
+ * `deviceDetach`: the lane gives up its device. A device the user attached
+ * stays installed. A device ADE made becomes a leftover that the cleanup pass
+ * deletes after the grace (`APPLE_RELEASED_DEVICE_GRACE_MS`) unless a lane attaches it again
+ * (`deletesAfter` on the answer). Same single-owner rule as `deviceStop`: refused while another chat owns the
  * lane's session, unless `force` or `ignoreOwnership` is passed.
  */
 export type AppleDeviceDetachArgs = {
@@ -2249,6 +2522,13 @@ export type AppleDeviceDetachArgs = {
   force?: boolean | null;
   /** Detach for whoever is running, without claiming to be them (the Work pane). */
   ignoreOwnership?: boolean | null;
+  /**
+   * A device ADE made: keep it as a free simulator instead of letting the
+   * cleanup pass delete it after the grace. The person's choice (the release
+   * confirmation's checkbox, `device-detach --keep`). No effect on an
+   * attached simulator, which always stays.
+   */
+  keep?: boolean | null;
   /** Set by the RPC server for agent callers; see `AppleDeviceAttachArgs.agentCaller`. */
   agentCaller?: boolean | null;
 };
@@ -2336,6 +2616,8 @@ export type IosSimulatorPressKeyArgs = {
   /** Held while the key is pressed: cmd, shift, alt, ctrl. */
   modifiers?: string[] | null;
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 /** `devicePromote` refused: the lane's current device is in use. */
@@ -2450,6 +2732,8 @@ export type AppleScrollArgs = {
    * human scroll would look like agent input and start an auto-recording.
    */
   source?: AppleInputSource;
+  /** `--no-record`: this input never STARTS an automatic recording (one already running still shows it). */
+  noRecord?: boolean | null;
 };
 
 export type AppleScrollResult = {

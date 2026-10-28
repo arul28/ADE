@@ -24,6 +24,7 @@
 #   - the installer's process (InstallerPath)      -> "Installing"
 #   - install-steps.log lines written after start  -> the named setup step
 #   - a new ADE.exe from AppExe with a window      -> done, close
+#     (an install on quit: any new ADE.exe once the installer is done)
 # When the installer is gone and no new ADE appears, it says so and offers to
 # open ADE, instead of leaving the person with nothing.
 #
@@ -51,6 +52,13 @@ $InstallerPath = Read-ConfigString "installerPath"
 $StepsLogPath = Read-ConfigString "stepsLogPath"
 $ParentPid = [int](Read-ConfigString "parentPid" "0")
 $LogPath = Read-ConfigString "logPath"
+# The person quit ADE and the quit installed this update. The ADE the installer
+# opens finishes the install with no window and closes again, so a new ADE.exe
+# starting once the installer is done is the end here, not a window. A focus
+# request ends this mode: the person opened ADE meanwhile, so the ADE the
+# installer opens shows a window, and this one waits for it as it would after
+# any install.
+$QuitInstall = $config.quitInstall -eq $true
 # Past this, whatever is happening is not an update finishing.
 $TimeoutSeconds = 600
 # Grace after the installer exits for the new ADE to put up a window, and after
@@ -308,6 +316,10 @@ $timer.Add_Tick({
     if (Test-Path -LiteralPath "$HeartbeatPath.focus") {
       Remove-Item -LiteralPath "$HeartbeatPath.focus" -Force -ErrorAction SilentlyContinue
       Write-ProgressLog "focus_requested"
+      if ($QuitInstall) {
+        $script:QuitInstall = $false
+        Write-ProgressLog "quit_install_opened_by_person"
+      }
       if ($window.WindowState -eq "Minimized") { $window.WindowState = "Normal" }
       $window.Activate() | Out-Null
     }
@@ -380,6 +392,12 @@ $timer.Add_Tick({
     if ($opening -and -not $state.openingLogged) {
       $state.openingLogged = $true
       Write-ProgressLog "app_started" ("pid=" + (($newApps | ForEach-Object { $_.Id }) -join ","))
+    }
+    if ($opening -and $QuitInstall) {
+      Write-ProgressLog "quit_install_app_started" "version=$(Get-InstalledVersion)"
+      $state.done = $true
+      $window.Close()
+      return
     }
     if ($parentAlive) {
       $state.phase = "closing"

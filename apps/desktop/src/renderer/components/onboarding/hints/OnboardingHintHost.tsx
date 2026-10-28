@@ -32,7 +32,7 @@ import {
   type Box,
   type Frame,
 } from "../tour/anchorGeometry";
-import { modalOpen } from "../../ui/overlayState";
+import { FLOATS_OVER_BROWSER_PROPS, modalOpen } from "../../ui/overlayState";
 import { TourCursorMotion, type Point } from "../tour/tourCursor";
 import "./onboardingHints.css";
 
@@ -295,6 +295,7 @@ function OnboardingHintOverlay({ def, anchor }: { def: OnboardingHintDef; anchor
                 ref={cardRef}
                 className="kit-card ade-onboarding-hint-card"
                 data-float="true"
+                {...FLOATS_OVER_BROWSER_PROPS}
                 aria-labelledby={titleId}
               >
                 <div className="ade-onboarding-hint-card-top">

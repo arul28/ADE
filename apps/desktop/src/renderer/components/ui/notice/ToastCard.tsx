@@ -7,7 +7,9 @@ import {
   NoticeIcon,
   type NoticeAction,
 } from "./NoticeParts";
+import { FLOATS_OVER_BROWSER_PROPS } from "../overlayState";
 import { NOTICE_FLOAT_SURFACE, noticeTone, type NoticeTone } from "./noticeTones";
+import { useNoticeFailure, type NoticeReport } from "./NoticeReport";
 
 /**
  * ADE's one toast card — the bottom-right stack's only look. A lane event, a
@@ -51,6 +53,12 @@ export type ToastCardModel = {
   error?: string;
   busy?: boolean;
   actions?: ToastCardAction[];
+  /**
+   * The raw error line and "Report" for the failure behind this toast. Error
+   * toasts get one from their own words; `false` turns it off. (The store
+   * logs error toasts to Sentry when they are shown.)
+   */
+  report?: NoticeReport | false;
   /** Default true. */
   dismissible?: boolean;
   /** Accessible name for the close button, defaults to `Dismiss: <title>`. */
@@ -79,12 +87,25 @@ export function ToastCard({
   const tokens = noticeTone(model.tone);
   const titleText = typeof model.title === "string" ? model.title : "notification";
   const hasHead = Boolean(model.badge || model.eyebrow);
+  const failure = useNoticeFailure({
+    report: model.report,
+    tone: model.tone,
+    id: "toast",
+    title: model.title,
+    detail: model.message,
+    error: model.error,
+    logged: true,
+  });
+  const actions: ToastCardAction[] | undefined = failure.action
+    ? [...(model.actions ?? []), { ...failure.action, keepOpen: true }]
+    : model.actions;
 
   return (
     <div
       role={model.tone === "error" ? "alert" : "status"}
       data-notice-tone={model.tone}
       data-testid={testId}
+      {...FLOATS_OVER_BROWSER_PROPS}
       className={className}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
@@ -188,8 +209,9 @@ export function ToastCard({
               {model.error}
             </div>
           ) : null}
+          {failure.body}
           <NoticeActions
-            actions={model.actions}
+            actions={actions}
             tone={model.tone}
             size="md"
             onAfterClick={onAction}

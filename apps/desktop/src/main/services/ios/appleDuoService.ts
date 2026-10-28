@@ -70,6 +70,13 @@ export type AppleDuoServiceDeps<Runtime extends { key: string | null }> = {
   nowIso: () => string;
   /** Where screenshots are cached under a lane root. */
   screenshotSegments: readonly string[];
+  /**
+   * Whether the device's CoreSimulator type folds (`appleDeviceTypeSupportsDuo`
+   * on its type identifier), or null when the type could not be read. A Duo
+   * whose posture read fails right after a fold is still a Duo: it is never
+   * cached as rigid, and its screenshot keeps `--display`.
+   */
+  deviceSupportsDuo?: (udid: string) => Promise<boolean | null>;
 };
 
 /** Both Duo App Store screenshots fold the simulator twice and wait for each panel. */
@@ -86,6 +93,13 @@ const APP_STORE_FOLD_SETTLE_MS = 8_000;
 const FOLD_FIRST_READ_MS = 600;
 /** A Duo still coming up can answer "no hinge": how long that answer is trusted. */
 const NOT_FOLDABLE_RECHECK_MS = 10_000;
+/**
+ * A Duo's posture read right after a fold can fail or name no live panel
+ * while the guest switches: read again this many times, this far apart,
+ * before falling back to the last panel it named.
+ */
+const DUO_POSTURE_RETRIES = 3;
+const DUO_POSTURE_RETRY_MS = 250;
 /** iOS animates into the new panel's layout after it switches. */
 const LAYOUT_SETTLE_MS = 1_200;
 /**
@@ -167,8 +181,16 @@ async function writeNoFollow(filePath: string, bytes: Buffer): Promise<void> {
 }
 
 export function createAppleDuoService<Runtime extends { key: string | null }>(deps: AppleDuoServiceDeps<Runtime>) {
-  const readPosture = async (deviceUdid: string): Promise<AppleDevicePosture> =>
-    parseHelperPosture(await deps.helperSend({ type: "posture-get", udid: deviceUdid }));
+  /** The last posture each foldable answered with a live panel: the fallback while a read fails. */
+  const lastPanelPosture = new Map<string, AppleDevicePosture>();
+  const notePosture = (udid: string, posture: AppleDevicePosture): void => {
+    if (posture.supported && typeof posture.activeScreenId === "number") lastPanelPosture.set(udid, posture);
+  };
+  const readPosture = async (deviceUdid: string): Promise<AppleDevicePosture> => {
+    const posture = parseHelperPosture(await deps.helperSend({ type: "posture-get", udid: deviceUdid }));
+    notePosture(deviceUdid, posture);
+    return posture;
+  };
 
   /**
    * Fold, then read the pose back once it has settled, so the answer is what
@@ -214,6 +236,11 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
       await sleep(200);
       previous = posture;
       posture = await readPosture(deviceUdid);
+    }
+    // A fold whose reads never named the panel it lands on: the panel the
+    // pose lights is the best fallback for the screenshots that follow.
+    if (applied && expected?.screenId != null && typeof posture.activeScreenId !== "number") {
+      notePosture(deviceUdid, { ...posture, supported: true, activeScreenId: expected.screenId });
     }
     return { applied, posture };
   };
@@ -366,14 +393,39 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
    * A foldable's posture, or null for a device without a hinge (cached, so a
    * rigid device pays the CoreDevice lookup once per 10 s, not on every call)
    * or one whose posture could not be read (logged under `event`).
+   *
+   * A device whose TYPE folds (the iPhone Duo) is never cached as rigid: right
+   * after a fold its read can fail, answer "no hinge" or name no live panel
+   * while the guest switches, and caching that dropped `--display` from every
+   * screenshot for 10 s, so `simctl` shot the cover (ledger #2). It is read
+   * again a few times, then answered from the last panel it named.
    */
   const foldablePosture = async (udid: string, event: string): Promise<AppleDevicePosture | null> => {
-    const no = notFoldableAt.get(udid);
-    if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return null;
-    const posture = await readPosture(udid).catch((cause: unknown) => {
-      deps.logger.warn(event, { udid, error: cause instanceof Error ? cause.message : String(cause) });
-      return null;
-    });
+    const duoType = deps.deviceSupportsDuo ? await deps.deviceSupportsDuo(udid).catch(() => null) : null;
+    if (duoType !== true) {
+      const no = notFoldableAt.get(udid);
+      if (no !== undefined && Date.now() - no < NOT_FOLDABLE_RECHECK_MS) return null;
+    }
+    const attempts = duoType === true ? DUO_POSTURE_RETRIES : 1;
+    let posture: AppleDevicePosture | null = null;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      if (attempt > 0) await sleep(DUO_POSTURE_RETRY_MS);
+      posture = await readPosture(udid).catch((cause: unknown) => {
+        deps.logger.warn(event, { udid, attempt, error: cause instanceof Error ? cause.message : String(cause) });
+        return null;
+      });
+      if (posture?.supported && typeof posture.activeScreenId === "number") break;
+      if (posture && !posture.supported && duoType !== true) break;
+    }
+    if (duoType === true) {
+      if (posture?.supported && typeof posture.activeScreenId === "number") return posture;
+      const last = lastPanelPosture.get(udid) ?? null;
+      if (last) {
+        deps.logger.warn(`${event}_fallback`, { udid, activeScreenId: last.activeScreenId });
+        return last;
+      }
+      return posture?.supported ? posture : null;
+    }
     if (!posture) return null;
     if (posture.supported) notFoldableAt.delete(udid);
     else notFoldableAt.set(udid, Date.now());
@@ -623,6 +675,8 @@ export function createAppleDuoService<Runtime extends { key: string | null }>(de
   return {
     attachRenderProof,
     readPosture,
+    /** A posture the helper's watcher reported: the fallback panel for a read that fails. */
+    notePosture,
     foldablePosture,
     rotate,
     screenshotDisplayArgs,

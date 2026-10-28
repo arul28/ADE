@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Banner } from "./Banner";
 import { useAppBannerEntries, type AppBannerEntry } from "./appBannerStore";
-import { floatingLayerBusy } from "../overlayState";
+import { FLOATS_OVER_BROWSER_PROPS, floatingLayerBusy } from "../overlayState";
 
 /**
  * Situational suggestions (`useAppBanner(model, { placement: "suggestion" })`)
@@ -60,7 +60,7 @@ export function useVisibleAppSuggestion(): AppBannerEntry | null {
 
 export function AppSuggestionCard({ entry }: { entry: AppBannerEntry }): JSX.Element {
   return (
-    <div data-testid="app-suggestion" style={{ pointerEvents: "auto" }}>
+    <div data-testid="app-suggestion" {...FLOATS_OVER_BROWSER_PROPS} style={{ pointerEvents: "auto" }}>
       <Banner model={entry.model} layout="suggestion" />
     </div>
   );

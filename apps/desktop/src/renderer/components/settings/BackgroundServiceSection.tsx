@@ -4,6 +4,8 @@ import { pluralCount } from "../../../shared/formatting";
 import { agentsAre } from "../../../shared/quitPromptModel";
 import { confirmDialog } from "../ui/dialog";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
+import { extractError } from "../../lib/format";
 
 const OTHER_PROJECTS_NOTE = "Other work may also be running, such as agents in projects that aren't open in ADE.";
 
@@ -111,7 +113,7 @@ export function BackgroundServiceSection() {
         void refresh();
       }
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
+      setError(extractError(cause));
     } finally {
       setStopping(false);
     }
@@ -127,7 +129,7 @@ export function BackgroundServiceSection() {
       <ModernRows>
         <ModernRow
           title="Status"
-          hint={error ? <span style={{ color: "var(--color-error)" }}>{error}</span> : statusLine(summary)}
+          hint={statusLine(summary)}
           control={summary?.manageable ? (
             <button
               type="button"
@@ -138,7 +140,20 @@ export function BackgroundServiceSection() {
               {stopping ? "Stopping…" : "Stop and quit ADE"}
             </button>
           ) : null}
-        />
+        >
+          {error ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "background-service-stop-error",
+                tone: "error",
+                title: error,
+                report: { surface: "background_service_stop" },
+                dismiss: { onDismiss: () => setError(null) },
+              }}
+            />
+          ) : null}
+        </ModernRow>
         {api.setAskBeforeQuit ? (
           <ModernRow
             anchor="quit-confirmation"

@@ -32,6 +32,7 @@ import {
   type ResolvedAdeThemePalette,
 } from "../../../shared/theme";
 import { ModernRow, ModernSection, SettingsColumn, SettingsSectionAction, SettingsSelect, SettingsToggle } from "./primitives";
+import { Banner } from "../ui/notice";
 import { TerminalSettings } from "./AppearanceTerminal";
 import { ThemeGallery, useThemeMode, type ThemeMode } from "./ThemeGallery";
 import { ThemeCustomizer } from "./ThemeCustomizer";
@@ -51,6 +52,7 @@ import {
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import "./AppearanceSection.css";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /**
  * Appearance settings.
@@ -526,7 +528,18 @@ function BackgroundPicker() {
         />
       </div>
 
-      {error ? <p className="ade-ap-error">{error}</p> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "appearance-scene-add-error",
+            tone: "error",
+            title: error,
+            report: { surface: "appearance_scene_add" },
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
 
       {scenePrefs.mode === "shuffle" ? (
         <ShuffleOptions
@@ -826,7 +839,7 @@ function AppearancePreview() {
           <span className="ade-ap-preview-tab" data-dim="true">New tab</span>
         </div>
         <div className="ade-ap-preview-hero">
-          {scene.kind === "image" && scene.showImage ? null : <img src="./logo.png" alt="" className="ade-ap-preview-logo" draggable={false} />}
+          {scene.kind === "image" && scene.showImage ? null : <AdeWordmark alt="" className="ade-ap-preview-logo" draggable={false} />}
           <div className="ade-ap-preview-composer">
             <span className="ade-ap-preview-placeholder">Describe a task…</span>
             <div className="ade-ap-preview-composer-row">

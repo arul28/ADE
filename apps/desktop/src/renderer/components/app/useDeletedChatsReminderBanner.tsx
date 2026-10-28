@@ -1,5 +1,6 @@
 import { ChatsCircle } from "@phosphor-icons/react";
 import type { DeletedLaneChatsSummary } from "../../../shared/types/storage";
+import { isAdeAvailable } from "../../lib/adeAvailability";
 import { formatBytes } from "../../lib/format";
 import { useSnoozedReminderBanner } from "./useSnoozedReminderBanner";
 
@@ -46,7 +47,7 @@ export function useDeletedChatsReminderBanner({
     snoozeMs: 14 * 24 * 3_600_000,
     firstCheckDelayMs: 45_000,
     recheckIntervalMs: 6 * 3_600_000,
-    read: typeof window.ade?.storage?.deletedLaneChatsSummary === "function" ? readSummary : null,
+    read: isAdeAvailable(window.ade?.storage?.deletedLaneChatsSummary) ? readSummary : null,
     qualifies: deletedChatsWorthReminding,
     icon: <ChatsCircle size={13} weight="bold" />,
     title: deletedChatsReminderTitle,

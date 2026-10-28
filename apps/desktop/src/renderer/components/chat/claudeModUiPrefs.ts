@@ -1,10 +1,28 @@
 import { useSyncExternalStore } from "react";
-import { readPersistedFlag, writePersistedFlag } from "../shared/persistedFlag";
 
 /** Two choices a person makes about mod UI, kept in this window's storage. */
 const PREFIX = "ade.chat.claudeModUi.";
 const COLLAPSED = "collapsed";
 const OFFER_DISMISSED = "promptDismissed";
+
+// Same "1"/"0" encoding as `shared/persistedFlag`, kept local on purpose: the
+// bundler places that helper in the diff viewer's chunk, so importing it here
+// made every chat open load the whole diff viewer (~255 KB) for two flags.
+function readPersistedFlag(prefix: string, key: string): boolean {
+  try {
+    return window.localStorage.getItem(`${prefix}${key}`) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function writePersistedFlag(prefix: string, key: string, value: boolean): void {
+  try {
+    window.localStorage.setItem(`${prefix}${key}`, value ? "1" : "0");
+  } catch {
+    // A blocked storage write is not worth failing the toggle over.
+  }
+}
 
 const listeners = new Set<() => void>();
 

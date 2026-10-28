@@ -6,6 +6,7 @@ import { useWidgetPreview, useWidgetSpan, useWidgetVisible } from "../HomeWidget
 import { WeatherGlyph, weatherKind, weatherLabel } from "./WeatherGlyph";
 import { WelcomeCardHead } from "../../projects/ProjectWelcomeSidePanels";
 import { FitList } from "../HomeFitList";
+import { Banner } from "../../ui/notice";
 import type { HomeWidgetProps } from "../homeWidgetRegistry";
 import { usePolling } from "../../../hooks/usePolling";
 import "../homeWidgets.css";
@@ -239,7 +240,19 @@ function PlacePicker({
           Use my location
         </button>
       ) : null}
-      {error ? <div className="ade-hw-note" role="alert">{error}</div> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            // The weather service being out of reach is not an ADE failure.
+            id: "home-weather-place-search-error",
+            tone: "warning",
+            title: error,
+            report: false,
+            dismiss: { onDismiss: () => setError(null) },
+          }}
+        />
+      ) : null}
       {results && results.length === 0 ? <div className="ade-hw-note">No places match.</div> : null}
       {results && results.length > 0 ? (
         <div className="ade-hw-results" role="list">
@@ -360,7 +373,16 @@ export default function ClockWeatherWidget({ item }: HomeWidgetProps) {
         ) : !place ? (
           <div className="ade-home-empty"><span>Finding your city…</span></div>
         ) : error && !weather ? (
-          <div className="ade-home-empty" role="alert"><span>{error}</span></div>
+          <Banner
+            layout="inline"
+            style={{ margin: 10 }}
+            model={{
+              id: "home-weather-error",
+              tone: "warning",
+              title: error,
+              report: false,
+            }}
+          />
         ) : !weather || !kind ? (
           <div className="ade-home-empty"><span>Reading the weather…</span></div>
         ) : (

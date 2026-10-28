@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import type { AppleLaneDevice } from "../../../shared/types/iosSimulator";
 import { isAdeOwnedLaneDevice } from "../../../shared/types/iosSimulator";
@@ -41,6 +42,99 @@ const UNINSTALL_SETTLE_MS = 5_000;
 /** Where `ade apple` builds and tests put DerivedData for one build root (a lane worktree). */
 export function appleLaneDerivedDataPath(buildRoot: string): string {
   return path.resolve(buildRoot, ".ade", "cache", "ios-simulator", "DerivedData");
+}
+
+/**
+ * Drop package state in a lane's DerivedData that names another folder, before
+ * xcodebuild reads it.
+ *
+ * DerivedData copied from elsewhere (a project move before moves left it out,
+ * or a folder copied by hand) keeps SwiftPM's `SourcePackages/
+ * workspace-state.json`, whose absolute paths name the old place. The next
+ * build then fails with "There is no XCFramework found at <old path>". Only
+ * that state goes (and `info.plist`, whose `WorkspacePath` names the old
+ * project): the build products, the package checkouts and the artifacts stay,
+ * so the build resolves again without fetching everything.
+ *
+ * Stale when a path in the state points into some other DerivedData's
+ * `SourcePackages`, or is outside both this DerivedData and the build root and
+ * no longer exists. Best effort: a read that fails changes nothing.
+ */
+export function healMovedDerivedData(
+  derivedDataPath: string,
+  buildRoot: string,
+  logger?: ReleaseLogger,
+): { dropped: string[] } {
+  const dropped: string[] = [];
+  // Compared through real paths: /tmp is /private/tmp on a Mac, and a
+  // project opened through a symlink names the same folder two ways.
+  const real = (value: string): string => {
+    let existing = path.resolve(value);
+    const rest: string[] = [];
+    while (!fs.existsSync(existing) && path.dirname(existing) !== existing) {
+      rest.unshift(path.basename(existing));
+      existing = path.dirname(existing);
+    }
+    try {
+      return path.join(fs.realpathSync.native(existing), ...rest);
+    } catch {
+      return path.resolve(value);
+    }
+  };
+  const dd = real(derivedDataPath);
+  const root = real(buildRoot);
+  const inside = (candidate: string, parent: string) => {
+    const relative = path.relative(parent, candidate);
+    return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  };
+  const sourcePackages = path.join(dd, "SourcePackages");
+  const statePath = path.join(sourcePackages, "workspace-state.json");
+  const stalePath = (value: string): boolean => {
+    if (!path.isAbsolute(value)) return false;
+    const resolved = real(value);
+    if (/[\\/]SourcePackages([\\/]|$)/u.test(resolved) && !inside(resolved, sourcePackages)) return true;
+    if (inside(resolved, dd) || inside(resolved, root)) return false;
+    return !fs.existsSync(value);
+  };
+  try {
+    const raw = fs.readFileSync(statePath, "utf8");
+    const paths: string[] = [];
+    const walk = (value: unknown, key: string | null) => {
+      if (typeof value === "string") {
+        if (key === "path" || key === "location") paths.push(value);
+        return;
+      }
+      if (Array.isArray(value)) {
+        for (const each of value) walk(each, key);
+        return;
+      }
+      if (value && typeof value === "object") {
+        for (const [childKey, child] of Object.entries(value)) walk(child, childKey);
+      }
+    };
+    walk(JSON.parse(raw), null);
+    const stale = paths.find(stalePath);
+    if (stale) {
+      fs.rmSync(statePath, { force: true });
+      dropped.push(statePath);
+      logger?.info("ios_simulator.derived_data_package_state_dropped", { derivedDataPath: dd, stalePath: stale });
+    }
+  } catch {
+    // No state yet, or unreadable: xcodebuild writes a fresh one.
+  }
+  const infoPath = path.join(dd, "info.plist");
+  try {
+    const info = fs.readFileSync(infoPath, "utf8");
+    const workspace = /<key>WorkspacePath<\/key>\s*<string>([^<]+)<\/string>/u.exec(info)?.[1];
+    if (workspace && path.isAbsolute(workspace) && !inside(real(workspace), root)) {
+      fs.rmSync(infoPath, { force: true });
+      dropped.push(infoPath);
+      logger?.info("ios_simulator.derived_data_info_dropped", { derivedDataPath: dd, workspacePath: workspace });
+    }
+  } catch {
+    // No info.plist (or binary and unreadable as text): nothing to drop.
+  }
+  return { dropped };
 }
 
 /**

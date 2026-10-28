@@ -238,7 +238,7 @@ export function AboutSection() {
   // snapshot has its own surface in the top bar.
   const checkFailure = !isDev && updateSnapshot.status !== "error" ? updateSnapshot.checkFailure ?? null : null;
   // With an update downloaded, one note covers both facts, so the plain
-  // "Will update when the app restarts" note steps aside.
+  // "Downloaded, not installed yet" note steps aside.
   const checkFailedWithDownload = checkFailure != null && restartPending && updateSnapshot.status === "ready";
   const failureNote = checkFailure
     ? checkFailureNote({
@@ -371,7 +371,10 @@ export function AboutSection() {
         {restartPending && !checkFailedWithDownload ? (
           <div className="ade-modern-note" data-tone="warn">
             <WarningCircle size={14} weight="fill" />
-            <span>Will update when the app restarts</span>
+            {/* Not "when the app restarts": a quit installs only with automatic
+                install on and nothing running (installOnQuit.ts), and saying
+                more let people believe any quit had updated them. */}
+            <span>Downloaded, not installed yet. Use Restart and install. With automatic install on, quitting ADE also installs it when no agent is running.</span>
           </div>
         ) : null}
 

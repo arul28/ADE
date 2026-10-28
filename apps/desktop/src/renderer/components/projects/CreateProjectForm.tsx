@@ -25,6 +25,7 @@ import {
   fgTint,
 } from "../lanes/laneDesignTokens";
 import { isImeComposing } from "../../lib/imeComposition";
+import { Banner } from "../ui/notice";
 
 export type CreateProjectFormProps = {
   onCancel: () => void;
@@ -348,7 +349,17 @@ export function CreateProjectForm({
         </div>
       </Field>
 
-      {error ? <InlineHint tone="danger">{error}</InlineHint> : null}
+      {error ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "create-project-error",
+            tone: "error",
+            title: error,
+            report: { surface: "create_project" },
+          }}
+        />
+      ) : null}
 
       <div
         style={{

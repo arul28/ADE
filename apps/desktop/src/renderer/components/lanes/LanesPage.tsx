@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LaneDiffMode } from "../../../shared/types";
 import { useLocation, useNavigate } from "react-router-dom";
-import { X } from "@phosphor-icons/react";
 import {
   selectActiveProjectRoot,
   selectActiveProjectStateKey,
@@ -11,7 +10,9 @@ import {
 } from "../../state/appStore";
 import { isTypingTarget } from "../../lib/typingTarget";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { extractError } from "../../lib/format";
 import { COLORS, primaryButton } from "./laneDesignTokens";
+import { Banner } from "../ui/notice";
 import { useLaneAgents, type LaneAgent } from "./laneAgents";
 import { useStartChatInLane } from "../../hooks/useStartChatInLane";
 import {
@@ -24,7 +25,14 @@ import {
 } from "../../lib/launchedLanesHighlight";
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
-import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection, type ManageLaneTab } from "./ManageLaneDialog";
+import {
+  ManageLaneDialog,
+  EMPTY_LANE_DELETE_SELECTION,
+  laneActionErrorTone,
+  type LaneActionError,
+  type LaneDeleteSelection,
+  type ManageLaneTab,
+} from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { Dialog } from "../ui/dialog";
@@ -208,9 +216,9 @@ function formatLaneDeleteProgressError(progress: LaneDeleteProgress, laneName: s
   return `${laneName} delete failed.`;
 }
 
-function formatLaneDeleteWarningMessages(messagesByLaneId: Map<string, string>): string | null {
+function laneDeleteWarnings(messagesByLaneId: Map<string, string>): LaneActionError | null {
   const messages = [...messagesByLaneId.values()];
-  return messages.length > 0 ? messages.join("\n") : null;
+  return messages.length > 0 ? { message: messages.join("\n"), kind: "status", reportable: true } : null;
 }
 
 /* ---- Component ---- */
@@ -365,7 +373,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [deleteForce, setDeleteForce] = useState(false);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
-  const [laneActionError, setLaneActionError] = useState<string | null>(null);
+  const [laneActionError, setLaneActionError] = useState<LaneActionError | null>(null);
   const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
   const deleteProgressByLaneId = useAppStore((s) => s.laneDeleteProgressByLaneId);
   const setDeleteProgressByLaneId = useAppStore((s) => s.setLaneDeleteProgressByLaneId);
@@ -735,7 +743,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           }
         })
         .catch((err) => {
-          setLaneActionError(`Lane was deleted, but refresh failed: ${err instanceof Error ? err.message : String(err)}`);
+          setLaneActionError({ message: `Lane was deleted, but refresh failed: ${extractError(err)}`, kind: "failure" });
         });
     }, LANE_DELETE_REFRESH_DEBOUNCE_MS);
   }, [refreshLanes]);
@@ -775,8 +783,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
         setLaneActionError(
           overallStatus === "cancelled"
-            ? `${laneName} delete was cancelled.`
-            : formatLaneDeleteProgressError(event.progress, laneName),
+            ? { message: `${laneName} delete was cancelled.`, kind: "status" }
+            : { message: formatLaneDeleteProgressError(event.progress, laneName), kind: "failure" },
         );
         return;
       }
@@ -790,10 +798,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (overallStatus === "completed_with_warnings") {
         const laneName = lanesByIdRef.current?.get(laneId)?.name ?? laneId;
         laneDeleteWarningMessagesRef.current.set(laneId, formatLaneDeleteProgressError(event.progress, laneName));
-        setLaneActionError(formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current));
+        setLaneActionError(laneDeleteWarnings(laneDeleteWarningMessagesRef.current));
       } else {
         laneDeleteWarningMessagesRef.current.delete(laneId);
-        const remainingWarnings = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
+        const remainingWarnings = laneDeleteWarnings(laneDeleteWarningMessagesRef.current);
         // Rebuild from the tracked warnings only: every delete warning we show
         // is mirrored into laneDeleteWarningMessagesRef, so this clears a stale
         // one without nulling an unrelated standing error.
@@ -1170,7 +1178,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       .then((result) => {
         if (!result.cancelled) showRefusal(result.reason ?? "The delete is past the point where it can stop.");
       })
-      .catch((error: unknown) => showRefusal(stripElectronErrorWrapper(error instanceof Error ? error.message : String(error))));
+      .catch((error: unknown) => showRefusal(stripElectronErrorWrapper(extractError(error))));
   }, [foreignRowByKeyRef]);
 
   // The overview's "…" button opens the same menu, just under the button.
@@ -1259,7 +1267,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setManageOpen(false);
       return true;
     } catch (err) {
-      setLaneActionError(err instanceof Error ? err.message : String(err));
+      setLaneActionError({ message: extractError(err), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);
@@ -1289,7 +1297,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           await window.ade.lanes.archive({ laneId: target.laneId }, ...pinArg(target.pin));
           if (target.machineId && target.pin) touchedMachineIds.add(target.machineId);
         } catch (err) {
-          errors.push(`${lane.name}: ${err instanceof Error ? err.message : String(err)}`);
+          errors.push(`${lane.name}: ${extractError(err)}`);
         }
       }
       for (const machineId of touchedMachineIds) requestCrossMachineLanesForMachine(machineId);
@@ -1374,8 +1382,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           }
           refreshLaneIds.push(progress.laneId);
         }
-        const warningMessage = formatLaneDeleteWarningMessages(laneDeleteWarningMessagesRef.current);
-        if (warningMessage) setLaneActionError(warningMessage);
+        const warnings = laneDeleteWarnings(laneDeleteWarningMessagesRef.current);
+        if (warnings) setLaneActionError(warnings);
         queueLaneDeleteRefresh(refreshLaneIds);
       })
       .catch((error) => {
@@ -1471,7 +1479,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           if (result.status === "fulfilled") return;
           const lane = result.lane;
           blockedLaneIds.add(lane.id);
-          errors.push(`${lane.name}: ${stripElectronErrorWrapper(result.reason instanceof Error ? result.reason.message : String(result.reason))}`);
+          errors.push(`${lane.name}: ${stripElectronErrorWrapper(extractError(result.reason))}`);
           setDeleteProgressByLaneId((prev) => {
             const next = { ...prev };
             delete next[lane.id];
@@ -1480,7 +1488,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         });
       }
       if (errors.length > 0) {
-        setLaneActionError(errors.join("\n"));
+        setLaneActionError({ message: errors.join("\n"), kind: "failure" });
       }
     })();
   };
@@ -1585,7 +1593,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         console.error("Lane refresh failed:", refreshErr);
       }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+      const message = extractError(err);
       setRebaseSuggestionError(message);
       if (!pinned) navigate("/prs?tab=workflows&workflow=rebase");
     }
@@ -1649,7 +1657,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (previous) {
         patchLaneSnapshot(laneId, (snapshot) => (snapshot.rebaseSuggestion == null ? { ...snapshot, rebaseSuggestion: previous } : snapshot));
       }
-      setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
+      setRebaseSuggestionError(extractError(err));
     }
   };
 
@@ -1663,7 +1671,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       if (previous) {
         patchLaneSnapshot(laneId, (snapshot) => (snapshot.autoRebaseStatus == null ? { ...snapshot, autoRebaseStatus: previous } : snapshot));
       }
-      setRebaseSuggestionError(err instanceof Error ? err.message : String(err));
+      setRebaseSuggestionError(extractError(err));
     }
   };
 
@@ -2124,7 +2132,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!row || row.lane.laneType === "primary") return false;
     const reason = machineBlockedReason(row);
     if (reason || !row.pin) {
-      setLaneActionError(reason ?? `${row.machineName} is unavailable`);
+      setLaneActionError({ message: reason ?? `${row.machineName} is unavailable`, kind: "status" });
       return false;
     }
     const target = { ...row, pin: row.pin };
@@ -2139,7 +2147,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
       return true;
     } catch (err) {
-      setLaneActionError(err instanceof Error ? err.message : String(err));
+      setLaneActionError({ message: extractError(err), kind: "failure" });
       return false;
     } finally {
       setLaneActionBusy(false);
@@ -2162,7 +2170,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!row || row.lane.laneType === "primary") return;
     const reason = machineBlockedReason(row);
     if (reason || !row.pin) {
-      setLaneActionError(reason ?? `${row.machineName} is unavailable`);
+      setLaneActionError({ message: reason ?? `${row.machineName} is unavailable`, kind: "status" });
       return;
     }
     const target = { ...row, pin: row.pin };
@@ -2201,7 +2209,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         }
         showToast({
           title: `Could not delete ${target.lane.name}`,
-          message: stripElectronErrorWrapper(error instanceof Error ? error.message : String(error)),
+          message: stripElectronErrorWrapper(extractError(error)),
           tone: "error",
           durationMs: 0,
         });
@@ -2357,24 +2365,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         {detailLane && detailLaneId ? (
           <>
             {laneActionError ? (
-              <div
-                className="flex shrink-0 items-center gap-2 px-4 py-1.5 text-[11.5px]"
-                style={{ color: COLORS.danger, background: "color-mix(in srgb, var(--color-error) 8%, transparent)" }}
-                title={laneActionError}
-              >
-                <span className="min-w-0 flex-1 truncate">{laneActionError.split(/\r?\n/)[0]?.trim() || "Lane action failed"}</span>
-                <button
-                  type="button"
-                  className="shrink-0"
-                  onClick={() => {
-                    laneDeleteWarningMessagesRef.current.clear();
-                    setLaneActionError(null);
-                  }}
-                  aria-label="Dismiss"
-                >
-                  <X size={11} />
-                </button>
-              </div>
+              <Banner
+                layout="inline"
+                style={{ margin: "6px 16px", flexShrink: 0 }}
+                model={{
+                  id: "lane-action-error",
+                  ...laneActionErrorTone(laneActionError),
+                  title: laneActionError.message.split(/\r?\n/)[0]?.trim() || "Lane action failed",
+                  dismiss: {
+                    onDismiss: () => {
+                      laneDeleteWarningMessagesRef.current.clear();
+                      setLaneActionError(null);
+                    },
+                  },
+                }}
+              />
             ) : null}
             {detailForeignRow ? (
               machineBlockedReason(detailForeignRow) ? (

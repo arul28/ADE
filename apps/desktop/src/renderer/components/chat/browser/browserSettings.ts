@@ -7,6 +7,7 @@ import {
   type BuiltInBrowserSettings,
   type BuiltInBrowserSettingsPatch,
 } from "../../../../shared/types/builtInBrowser";
+import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { createBridgeSnapshotStore } from "./createBridgeSnapshotStore";
 
 type BrowserSettingsApi = {
@@ -20,7 +21,7 @@ function api(): BrowserSettingsApi | null {
     | Partial<BrowserSettingsApi>
     | null
     | undefined;
-  return candidate && typeof candidate.get === "function" ? (candidate as BrowserSettingsApi) : null;
+  return isAdeAvailable(candidate) && isAdeAvailable(candidate.get) ? (candidate as BrowserSettingsApi) : null;
 }
 
 function isSettings(value: unknown): value is BuiltInBrowserSettings {

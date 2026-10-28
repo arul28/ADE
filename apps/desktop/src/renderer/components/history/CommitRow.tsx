@@ -17,6 +17,10 @@ import { copyText } from "./historyClipboard";
 import type { CommitColumns } from "./commitViewPrefs";
 import { fgTint } from "../lanes/laneDesignTokens";
 
+// Commits off the focused lane fade back. Light pages fade less: their muted
+// text starts closer to the page colour.
+const MUTED_ROW = "opacity-[var(--ade-dim-row-opacity)]";
+
 function AuthorAvatar({ name, email }: { name: string; email?: string }) {
   const [failed, setFailed] = useState(false);
   const url = failed ? null : githubAvatarForEmail(email);
@@ -169,7 +173,7 @@ export const CommitRow = React.memo(function CommitRow({
     >
       {selected ? <span aria-hidden className="absolute bottom-1 left-0 top-1 w-[2px] rounded-r bg-[var(--color-accent)]" /> : null}
       <span className="shrink-0" style={{ width: graphWidth }} />
-      <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", muted && !selected ? "opacity-[0.62]" : null)}>
+      <span className={cn("flex min-w-0 flex-1 items-center gap-1.5", muted && !selected ? MUTED_ROW : null)}>
         {badges && badges.length > 0 ? (
           <CommitRefBadges
             badges={badges}
@@ -215,7 +219,7 @@ export const CommitRow = React.memo(function CommitRow({
       </span>
       {columns.author && !compact && author !== "hidden" ? (
         <span
-          className={cn("flex shrink-0 items-center gap-1.5 overflow-hidden", medium ? "w-4" : "w-[132px]", muted && !selected ? "opacity-[0.62]" : null)}
+          className={cn("flex shrink-0 items-center gap-1.5 overflow-hidden", medium ? "w-4" : "w-[132px]", muted && !selected ? MUTED_ROW : null)}
           title={commit.authorEmail ? `${commit.authorName} <${commit.authorEmail}>` : commit.authorName}
         >
           {author === "shown" ? (
@@ -228,7 +232,7 @@ export const CommitRow = React.memo(function CommitRow({
       ) : null}
       {columns.date ? (
         <span
-          className={cn("w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-muted-fg/70", muted && !selected ? "opacity-[0.62]" : null)}
+          className={cn("w-[52px] shrink-0 text-right text-[11.5px] tabular-nums text-muted-fg/70", muted && !selected ? MUTED_ROW : null)}
           title={new Date(commit.authoredAt).toLocaleString()}
         >
           {shortWhen(commit.authoredAt)}

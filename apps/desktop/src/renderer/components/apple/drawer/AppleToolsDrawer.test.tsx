@@ -164,16 +164,16 @@ describe("AppleToolsDrawer", () => {
     expect(iosSimulator.getDeviceSettings).toHaveBeenCalledTimes(2);
   });
 
-  it("shows a refused action as a plain sentence with Details, never the raw IPC text, and dismisses it", async () => {
+  it("shows a refused action as a plain sentence, the raw IPC text behind its error line, and dismisses it", async () => {
     const { iosSimulator } = installAdeMock();
     iosSimulator.setAppearance.mockRejectedValue(new Error("Error invoking remote method 'ade.iosSimulator.setAppearance': Error: Device not booted (state: Shutdown)"));
     render(<AppleToolsDrawer {...props()} />);
     await waitFor(() => expect((screen.getByRole("button", { name: "Dark" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Dark" }));
     const banner = await screen.findByRole("alert");
-    expect(banner.textContent).toContain("The device is off.");
-    expect(banner.textContent).not.toContain("Error invoking remote method");
-    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    expect(screen.getByText("The device is off.")).toBeTruthy();
+    expect(banner.querySelector("pre")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Device not booted/ }));
     expect(banner.querySelector("pre")?.textContent).toContain("Error invoking remote method");
     fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
     await waitFor(() => expect(screen.queryByRole("alert")).toBeNull());

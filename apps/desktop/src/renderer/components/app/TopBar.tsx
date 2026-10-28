@@ -121,6 +121,7 @@ import { useAccountStatus } from "../../lib/account";
 import { fixedFrameOf, fixedRect, fixedViewport } from "../../lib/webZoom";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 import { useProjectTabStripOverflow } from "./useProjectTabStripOverflow";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 // Hosted-client only: kept out of the desktop bundle's critical path, and out
 // of the desktop bundle's dependency graph for the sync client entirely.
@@ -508,7 +509,7 @@ function HeaderStatusMenu({
         panelRef={menuRef}
         title="Connections and usage"
         bare
-        width="w-max min-w-[220px] max-w-[calc(100vw-16px)]"
+        width="w-max min-w-[220px] max-w-[calc(100vw_/_var(--ade-web-zoom-factor,1)_-_16px)]"
         panelStyle={menuPos ? {
           top: menuPos.top,
           right: menuPos.right,
@@ -2126,8 +2127,7 @@ export function TopBar({
       ) : null}
 
       {/* Branding */}
-      <img
-        src="./logo.png"
+      <AdeWordmark
         alt="ADE"
         className="shrink-0 select-none"
         style={{ height: 20 }}
@@ -2541,8 +2541,7 @@ export function TopBar({
                       className="animate-spin"
                     />
                   ) : (
-                    <img
-                      src="./logo.png"
+                    <AdeWordmark
                       alt=""
                       style={{ height: 16, width: 34, objectFit: "contain" }}
                       draggable={false}
@@ -2731,7 +2730,7 @@ export function TopBar({
         bare
         panelRef={connectionsPanelRef}
         title="Connections"
-        width="w-[min(560px,calc(100vw-24px))]"
+        width="w-[min(560px,calc(100vw_/_var(--ade-web-zoom-factor,1)_-_24px))]"
         onClose={closeConnections}
       >
         <ConnectionsPanel

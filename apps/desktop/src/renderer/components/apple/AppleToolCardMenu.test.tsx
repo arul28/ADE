@@ -3,6 +3,8 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AppleToolCardMenu } from "./AppleToolCardMenu";
+import { DialogHost } from "../ui/dialog";
+import { __resetDialogRequestsForTests } from "../ui/dialog/confirm";
 import type { AppleLaneDeviceCard } from "./useAppleLaneDeviceCard";
 
 const OFF_CLONE: AppleLaneDeviceCard = {
@@ -28,20 +30,26 @@ beforeEach(() => {
   (window as unknown as { ade: unknown }).ade = { iosSimulator: ios };
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  __resetDialogRequestsForTests();
+  cleanup();
+});
 
 function renderMenu(over: Partial<AppleLaneDeviceCard> = {}) {
   const onOpenTool = vi.fn();
   const onMutated = vi.fn();
   const { container } = render(
-    <AppleToolCardMenu
-      device={{ ...OFF_CLONE, ...over }}
-      laneId="lane-1"
-      chatSessionId="chat-1"
-      runtimePin={null}
-      onOpenTool={onOpenTool}
-      onMutated={onMutated}
-    />,
+    <>
+      <AppleToolCardMenu
+        device={{ ...OFF_CLONE, ...over }}
+        laneId="lane-1"
+        chatSessionId="chat-1"
+        runtimePin={null}
+        onOpenTool={onOpenTool}
+        onMutated={onMutated}
+      />
+      <DialogHost />
+    </>,
   );
   const trigger = container.querySelector("[data-apple-tool-card-menu]") as HTMLElement;
   // jsdom has no PointerEvent, so Radix's pointerdown open never fires; Enter
@@ -60,7 +68,7 @@ describe("AppleToolCardMenu", () => {
     open();
 
     expect(screen.getByText("Boot device")).toBeTruthy();
-    expect(screen.getByText("Release device")).toBeTruthy();
+    expect(screen.getByText("Release device…")).toBeTruthy();
     expect(screen.getByText("Delete device…")).toBeTruthy();
   });
 
@@ -79,8 +87,8 @@ describe("AppleToolCardMenu", () => {
     expect(onMutated).toHaveBeenCalledTimes(1);
   });
 
-  it("releases an off device in one click, lane-scoped", async () => {
-    const { open } = renderMenu();
+  it("releases an attached simulator in one click, lane-scoped", async () => {
+    const { open } = renderMenu({ origin: "attached" });
     open();
 
     fireEvent.click(screen.getByText("Release device"));
@@ -89,6 +97,34 @@ describe("AppleToolCardMenu", () => {
       { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true },
       null,
     ));
+  });
+
+  it.each([
+    { keep: false, expected: { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true } },
+    { keep: true, expected: { laneId: "lane-1", udid: "udid-e", chatSessionId: "chat-1", ignoreOwnership: true, keep: true } },
+  ])("says an ADE device is deleted after release before releasing it (keep: $keep)", async ({ keep, expected }) => {
+    const { open } = renderMenu();
+    open();
+
+    fireEvent.click(screen.getByText("Release device…"));
+    // Nothing is released until the person has read what happens next.
+    await screen.findByText(/ADE deletes it, with its apps and data, in about 5 minutes/u);
+    expect(ios.deviceDetach).not.toHaveBeenCalled();
+    if (keep) fireEvent.click(screen.getByText(/Keep it as a free simulator instead/u));
+    fireEvent.click(screen.getByRole("button", { name: "Release" }));
+
+    await waitFor(() => expect(ios.deviceDetach).toHaveBeenCalledWith(expected, null));
+  });
+
+  it("releases nothing when the ADE device's release is cancelled", async () => {
+    const { open } = renderMenu();
+    open();
+
+    fireEvent.click(screen.getByText("Release device…"));
+    await screen.findByText(/ADE deletes it/u);
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    await waitFor(() => expect(screen.queryByText(/ADE deletes it/u)).toBeNull());
+    expect(ios.deviceDetach).not.toHaveBeenCalled();
   });
 
   it("deletes a clone only after the confirmation row; a second click on the disabled row cannot delete", async () => {
@@ -111,7 +147,7 @@ describe("AppleToolCardMenu", () => {
   });
 
   it("opens a running device instead of booting, and confirms before releasing a live session", async () => {
-    const { open } = renderMenu({ state: "running" });
+    const { open } = renderMenu({ state: "running", origin: "attached" });
     open();
 
     expect(screen.getByText("Open in Apple Development")).toBeTruthy();
@@ -133,7 +169,7 @@ describe("AppleToolCardMenu", () => {
 
   it("re-enables the trigger when a mutation rejects", async () => {
     ios.deviceDetach.mockRejectedValueOnce(new Error("owned by another session"));
-    const { open, trigger } = renderMenu();
+    const { open, trigger } = renderMenu({ origin: "attached" });
     open();
 
     fireEvent.click(screen.getByText("Release device"));
@@ -146,7 +182,7 @@ describe("AppleToolCardMenu", () => {
     ios.deviceDetach.mockImplementationOnce(() => {
       throw new Error("iosSimulator is not available here");
     });
-    const { open, trigger } = renderMenu();
+    const { open, trigger } = renderMenu({ origin: "attached" });
     open();
 
     fireEvent.click(screen.getByText("Release device"));

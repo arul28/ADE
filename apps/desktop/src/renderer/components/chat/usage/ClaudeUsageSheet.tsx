@@ -21,8 +21,9 @@ import {
 } from "../../../../shared/claudeUsageReport";
 import { resolveModelDescriptor } from "../../../../shared/modelRegistry";
 import { modelMentionEffortLabel } from "../../../../shared/modelMentions";
-import { formatDurationMs, formatSpend } from "../../../lib/format";
+import { extractError, formatDurationMs, formatSpend } from "../../../lib/format";
 import { Dialog } from "../../ui/dialog";
+import { Banner } from "../../ui/notice";
 import { useAgentChatApi } from "../agentChatApi";
 import { showToast } from "../../app/toast/toastStore";
 import { ClaudeLogo } from "../../terminals/ToolLogos";
@@ -39,10 +40,6 @@ const PLAN_LABELS: Record<string, string> = {
   team: "Team",
   enterprise: "Enterprise",
 };
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 function modelName(model: string): string {
   return resolveModelDescriptor(model)?.displayName ?? model;
@@ -149,7 +146,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
       })
       .catch((loadError: unknown) => {
         if (request !== requestRef.current) return;
-        setError(errorText(loadError));
+        setError(extractError(loadError));
       })
       .finally(() => {
         if (request === requestRef.current) setLoading(false);
@@ -165,7 +162,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
       .catch((scanError: unknown) => {
         if (request !== requestRef.current) return;
         setBehaviors(null);
-        setBehaviorsError(errorText(scanError));
+        setBehaviorsError(extractError(scanError));
       });
   }, [sessionId]);
 
@@ -213,7 +210,7 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
       });
       onOpenChange(false);
     } catch (fixError) {
-      setError(errorText(fixError));
+      setError(extractError(fixError));
     } finally {
       setFixing(false);
     }
@@ -240,7 +237,18 @@ export const ClaudeUsageSheet = memo(function ClaudeUsageSheet({
       testId="claude-usage-sheet"
     >
       <div className="ade-cu-body">
-        {error ? <p className="ade-cu-error" role="alert">{error}</p> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "claude-usage-error",
+              tone: "error",
+              title: error,
+              report: { surface: "claude_usage_sheet" },
+              dismiss: { onDismiss: () => setError(null) },
+            }}
+          />
+        ) : null}
 
         <section className="kit-card">
           <header className="kit-card-head">

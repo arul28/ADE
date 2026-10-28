@@ -1,3 +1,4 @@
+import { extractError } from "../../../lib/format";
 import React from "react";
 import { usePrRuntimePin } from "../state/prMachines";
 import { pinArg } from "../../../state/laneMachineRouting";
@@ -31,7 +32,6 @@ import type { AgentChatSessionSummary, MergeMethod, PrStatus, PrWithConflicts } 
 import { cn } from "../../ui/cn";
 import { COLORS } from "../../lanes/laneDesignTokens";
 import { copyTextToClipboard } from "../../../lib/launchPromptClipboard";
-import { formatError } from "./prFormatters";
 import { MENU_CONTENT_CLASS, MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_SEPARATOR_CLASS } from "../../ui/paneMenuTokens";
 import { confirmDialog } from "../../ui/dialog";
 import {
@@ -152,7 +152,7 @@ export function usePrActionsMenu(context: PrActionsContext) {
       await action();
       await onChanged?.();
     } catch (error) {
-      onError?.(formatError(error));
+      onError?.(extractError(error));
     } finally {
       setBusy(null);
     }

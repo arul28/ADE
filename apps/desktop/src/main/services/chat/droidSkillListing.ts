@@ -23,11 +23,13 @@ const PER_TURN_SKILL_DESC_CHARS = 90;
 /**
  * The skill roots Droid finds without ADE's help.
  *
- * Factory's docs name only `.factory/skills`, in the project and in the home
- * directory. Droid does not read `.claude/skills` or `.agents/skills`, so a
- * project's own skills (and the user's) never reach a Droid chat unless ADE
- * lists them. `alreadyNamedRoots` are roots the prompt names elsewhere (ADE's
- * bundled skills), so they are not listed a second time.
+ * Droid reads `skills/` under `.factory`, and also under `.agents` and
+ * `.agent` (its "project (.agents)" and "user (.agents)" sources, in the
+ * project and in the home directory; checked in the 0.244.0 binary and in
+ * Factory's skills docs). It does not read `.claude/skills`, so those skills
+ * never reach a Droid chat unless ADE lists them. `alreadyNamedRoots` are
+ * roots the prompt names elsewhere (ADE's bundled skills), so they are not
+ * listed a second time.
  */
 function droidNativeSlashCommandRoots(
   cwd: string,
@@ -35,10 +37,11 @@ function droidNativeSlashCommandRoots(
   home: string = os.homedir(),
 ): NativeSlashCommandRoots {
   const configRoots = [path.resolve(cwd, ".factory"), path.resolve(home, ".factory")];
+  const agentRoots = [".agents", ".agent"].flatMap((dir) => [path.resolve(cwd, dir), path.resolve(home, dir)]);
   return {
     commandRoots: configRoots.map((root) => path.join(root, "commands")),
     skillRoots: [
-      ...configRoots.map((root) => path.join(root, "skills")),
+      ...[...configRoots, ...agentRoots].map((root) => path.join(root, "skills")),
       ...alreadyNamedRoots.map((root) => path.resolve(root)),
     ],
   };
@@ -88,8 +91,8 @@ const cachedListing = createSlashCommandListingCache<string[]>();
 
 /**
  * The lines that tell a Droid chat in `cwd` which of the project's and the
- * user's commands and skills exist: Droid reads only `.factory/skills`, so the
- * ones in `.claude/skills` and `.agents/skills` are listed for it, as they are
+ * user's commands and skills exist: Droid reads `.factory`, `.agents` and
+ * `.agent` skills itself, so only the ones in `.claude/skills` are listed, as
  * for Claude. Skills that opt out of model invocation are left out, and so is
  * everything under `alreadyNamedRoots`. Empty when there is nothing to add, or
  * when the files could not be read.

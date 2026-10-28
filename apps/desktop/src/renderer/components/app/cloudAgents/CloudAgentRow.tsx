@@ -15,6 +15,7 @@ import {
 } from "@phosphor-icons/react";
 import type { CloudAgent, CloudAgentCapabilities, CloudAgentModelOption } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
+import { Banner } from "../../ui/notice";
 import { AnchoredMenu } from "../../ui/AnchoredMenu";
 import { Z_LAYERS } from "../../ui/zLayers";
 import { STATUS_TONE, modelLabel, relativeAge, type CloudProviderBrand } from "./cloudAgentsModel";
@@ -180,7 +181,18 @@ export function CloudAgentRow({
           ) : null}
         </div>
 
-        {error ? <div className="mt-1.5 text-[11.5px] text-red-300/90">{error}</div> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            style={{ marginTop: 6 }}
+            model={{
+              id: `cloud-agent-row-error-${agent.id}`,
+              tone: "error",
+              title: error,
+              report: { surface: "cloud_agent_row" },
+            }}
+          />
+        ) : null}
       </div>
 
       {/* Actions: over the status/age slot on hover, always on keyboard focus. */}

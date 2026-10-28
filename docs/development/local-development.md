@@ -678,6 +678,14 @@ Create the certificate once:
 Then remove ADE Alpha or ADE Beta from Screen Recording and from Accessibility,
 add it back once, and the grants are stored against the new requirement.
 
+The dev launcher (`npm run dev:desktop`) signs the lane's Electron in
+`node_modules` the same way (`apps/desktop/scripts/sign-dev-electron.cjs`): the
+`ADE Local` certificate, else the first `Apple Development:` identity, never
+Developer ID. Ad-hoc Electron is trusted by its cdhash, so every Electron
+upgrade made macOS ask for the login Keychain password again, and the dev app
+waited on that prompt at start. Signed, "Always Allow" holds across upgrades.
+`ADE_DEV_SIGN=0` skips it; `ADE_DEV_SIGN_IDENTITY` picks the identity.
+
 The packager uses the certificate automatically when an identity named exactly
 `ADE Local` is present. To use another certificate, or a specific SHA-1 hash,
 pass `--sign "<identity>"` or set `ADE_CHANNEL_SIGN_IDENTITY`. Developer ID

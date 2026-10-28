@@ -496,6 +496,7 @@ export function ProjectWelcomePage() {
       event.preventDefault();
       dragDepthRef.current = 0;
       setIsDragOver(false);
+      if (isWebClientMode()) return;
       const file = event.dataTransfer.files?.[0];
       if (!file) return;
       try {
@@ -745,11 +746,16 @@ export function ProjectWelcomePage() {
         // Only a folder from outside; a widget being moved in edit mode is not one.
         if (!event.dataTransfer.types.includes("Files")) return;
         event.preventDefault();
+        // The web client cannot turn a dropped folder into a path on the
+        // connected machine, so it shows no drop target.
+        if (isWebClientMode()) return;
         dragDepthRef.current += 1;
         setIsDragOver(true);
       }}
       onDragOver={(event) => {
         if (!event.dataTransfer.types.includes("Files")) return;
+        // Accept the drop so its handler can cancel browser navigation. Web
+        // mode leaves the folder untouched because it cannot resolve a host path.
         event.preventDefault();
         event.dataTransfer.dropEffect = "copy";
       }}

@@ -7,9 +7,16 @@ const claudeSdk = vi.hoisted(() => ({
   messages: [] as Array<Record<string, unknown>>,
   /** Holds the query open before its result, so a test can act mid-turn. */
   gate: null as null | { reached: () => void; open: Promise<void> },
+  /** The CLI's live settings control; null is a process that does not offer it. */
+  applyFlagSettings: null as null | ((settings: Record<string, unknown>) => Promise<void>),
+  /** Keep the stream open after the result until close(), as a live process does. */
+  holdOpen: false,
 }));
 
 function makeClaudeQuery(messages: Array<Record<string, unknown>>) {
+  let closeStream = () => {};
+  const closed = new Promise<void>((resolve) => { closeStream = resolve; });
+  const holdOpen = claudeSdk.holdOpen;
   const iterator = (async function* () {
     for (const message of messages) yield message;
     if (claudeSdk.gate) {
@@ -23,9 +30,11 @@ function makeClaudeQuery(messages: Array<Record<string, unknown>>) {
       session_id: "sdk-query-lifecycle",
       usage: { input_tokens: 1, output_tokens: 1 },
     };
+    if (holdOpen) await closed;
   })();
   return Object.assign(iterator, {
-    close: vi.fn(),
+    ...(claudeSdk.applyFlagSettings ? { applyFlagSettings: claudeSdk.applyFlagSettings } : {}),
+    close: vi.fn(() => closeStream()),
     interrupt: vi.fn(async () => undefined),
     stopTask: vi.fn(async () => undefined),
     setPermissionMode: vi.fn(async () => undefined),
@@ -184,7 +193,7 @@ function createHarness(messages: Array<Record<string, unknown>>) {
     setSummary: vi.fn(),
     setResumeCommand: vi.fn(),
     upsertClaudeSessionPointer: vi.fn((pointer: Record<string, any>) => {
-      const next = { ...claudePointers.get(pointer.chatSessionId), ...pointer };
+      const next = { tags: [], ...claudePointers.get(pointer.chatSessionId), ...pointer };
       if (pointer.chatSessionId) claudePointers.set(pointer.chatSessionId, next);
       return next;
     }),
@@ -282,6 +291,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(tempRoot, ".ade", "transcripts", "chat"), { recursive: true });
   vi.spyOn(os, "homedir").mockReturnValue(tempRoot);
   claudeSdk.gate = null;
+  claudeSdk.applyFlagSettings = null;
+  claudeSdk.holdOpen = false;
   vi.clearAllMocks();
 });
 
@@ -327,12 +338,54 @@ describe("Claude query lifecycle", () => {
     await resetReasoningEffort(service, session.id);
 
     // A reset would end the process and the background task with it, so the
-    // reset stays pending until the background work is gone.
-    expect(reaper.reapForSession).not.toHaveBeenCalledWith(
-      session.id,
-      expect.stringMatching(/^claude_/),
-    );
+    // reset stays pending until the background work is gone. (This mock's
+    // stream ends after its turn, which a live process kept for background
+    // work does not, so only the reset's own reap is ruled out.)
+    expect(reaper.reapForSession).not.toHaveBeenCalledWith(session.id, "claude_session_reset");
     expect(lifecycleRestartNotices(events)).toHaveLength(0);
+  });
+
+  // The running process takes the new effort itself when it can, so nothing
+  // waits and nothing restarts; when it refuses, the change waits for the
+  // background work and the summary says which effort is still running.
+  it.each([
+    { name: "applies it live", applyFlagSettings: async () => undefined, deferred: false },
+    {
+      name: "defers it and reports the running effort when the process refuses",
+      applyFlagSettings: async () => { throw new Error("unsupported"); },
+      deferred: true,
+    },
+  ])("an effort change during background work $name", async ({ applyFlagSettings, deferred }) => {
+    const live = vi.fn(applyFlagSettings);
+    claudeSdk.applyFlagSettings = live;
+    claudeSdk.holdOpen = true;
+    const { service, events, reaper, session } = await createDrivenSession([
+      {
+        type: "system",
+        subtype: "background_tasks_changed",
+        tasks: [{ task_id: "background-task-1", task_type: "local_bash", description: "Run the verification suite" }],
+      },
+      {
+        type: "system",
+        subtype: "task_started",
+        task_id: "background-task-1",
+        task_type: "local_bash",
+        description: "Run the verification suite",
+        command: "npm test",
+      },
+    ]);
+    const running = (await service.getSessionSummary(session.id))?.reasoningEffort ?? null;
+    expect(running).not.toBe("low");
+
+    await service.updateSession({ sessionId: session.id, reasoningEffort: "low" });
+
+    expect(live).toHaveBeenCalledWith({ effortLevel: "low", ultracode: false });
+    expect(reaper.reapForSession).not.toHaveBeenCalledWith(session.id, "claude_session_reset");
+    expect(lifecycleRestartNotices(events)).toHaveLength(0);
+    const summary = await service.getSessionSummary(session.id);
+    expect(summary?.reasoningEffortChange).toEqual(
+      deferred ? { current: running, next: "low", appliesAfter: "background" } : undefined,
+    );
   });
 
   // A chat waiting on background work it then loses must be told once, and

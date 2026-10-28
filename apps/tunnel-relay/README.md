@@ -149,6 +149,16 @@ What the relay's position does **not** grant:
   instead of silently losing a protocol frame. Ready-v2 phones do not send ADE
   frames until the relay confirms the pipe and local bridge are ready, so their
   first frame never depends on volatile DO memory.
+- Host frames that reach a pipe before its pair is ready are held in DO memory
+  (in order; 64 frames / 4 MiB per pipe, 16 MiB across every pipe of one
+  machine) and sent to the phone right after its `{t:"ready"}`. 4 MiB fits the
+  stream's first config + keyframe with margin: real screens measured 30-190
+  KB, full-screen noise (the worst case) 1.1-1.9 MB on an iPhone 17 Pro and up
+  to 1.3 MB on the iPhone Duo's inner panel. The brain's own pre-open buffer
+  matches it (`MAX_PENDING_TUNNEL_BYTES`). This is the Apple device stream: its loopback socket
+  speaks first, so its config and keyframe can reach the pipe before the
+  brain's `ready` reaches the control socket. A lost buffer (hibernation) or an
+  overflow closes the pair instead of forwarding a stream with a gap in it.
 
 Treat the relay like any other network hop you don't fully control: fine for
 transport, not a place to rely on for confidentiality until E2E payload
@@ -173,9 +183,9 @@ protocol control frames handled at the Cloudflare edge: they do not become JSON
 | `4501` | phone `/connect` | Host unavailable: no usable control socket or local sync listener |
 | `4502` | pipe/phone | Idle > 10 min, closed by the alarm sweep |
 | `4503` | phone `/connect` | Machine already at 16 concurrent tunnels |
-| `4504` | pipe | Pipe arrived but its phone had already disconnected |
+| `4504` | pipe | Pipe arrived, or sent pre-ready data, after its phone had disconnected |
 | `4505` | host control | Replaced by a newer host control socket |
-| `4506` | phone `/connect` | Pre-pipe frame buffer exceeded 64 frames or 256 KiB |
+| `4506` | phone/pipe | Pre-ready buffer exceeded its cap: phone side 64 frames / 256 KiB; pipe side 64 frames / 4 MiB per pipe or 16 MiB per machine |
 | `4507` | phone/pipe | Brain rejected the open because bridge validation/setup failed |
 | `4508` | pipe | Pipe epoch or id did not match a pending client |
 | `4509` | phone/pipe | One side could not receive a forwarded frame |

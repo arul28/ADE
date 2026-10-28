@@ -65,6 +65,7 @@ describe("simHelperClient binary resolution", () => {
       searchRoots: [],
       env: {},
       exists: () => false,
+      spotlight: () => null,
     });
 
     expect(resolved).toBe("/res/native/ade-sim-helper");
@@ -194,6 +195,36 @@ describe("simHelperClient protocol", () => {
       child.writeLine({ type: "record-stopped", udid: "device-1", path: "/tmp/a.mp4" });
       await vi.waitFor(() => expect(seen).toContain("record-stopped"));
       expect(seen).toContain("ready");
+    } finally {
+      client.dispose();
+    }
+  });
+
+  it("stops a helper that speaks another protocol and does not restart it", async () => {
+    // A standalone brain may find an ADE.app helper from another release. A
+    // helper on another protocol would mis-parse every command; it is stopped
+    // at its ready line, every waiting command fails with the reason, and the
+    // same binary is not spawned again.
+    const child = fakeHelperProcess();
+    const spawnHelper = vi.fn(() => child);
+    const client = createSimHelperClient({
+      binaryPath: __filename,
+      logger: noopLogger,
+      platform: "darwin",
+      restartDelayMs: 1,
+      spawnHelper,
+    });
+
+    try {
+      const pending = client.send({ type: "list-devices" });
+      await vi.waitFor(() => expect(child.lines()).toHaveLength(1));
+      child.writeLine({ type: "ready", protocol: 2, pid: 5150 });
+
+      await expect(pending).rejects.toMatchObject({ code: APPLE_HELPER_UNAVAILABLE_CODE, message: expect.stringContaining("protocol 2") });
+      expect(client.isReady()).toBe(false);
+      expect(client.refusedProtocol()).toBe(2);
+      await expect(client.send({ type: "list-devices" })).rejects.toMatchObject({ message: expect.stringContaining("protocol 2") });
+      expect(spawnHelper).toHaveBeenCalledTimes(1);
     } finally {
       client.dispose();
     }

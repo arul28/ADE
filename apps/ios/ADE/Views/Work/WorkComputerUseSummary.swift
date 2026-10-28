@@ -424,6 +424,7 @@ private let cuVerbs: [String: CUVerbSpec] = [
   "right-click": .init(past: "Right-clicked", progressive: "Right-clicking", infinitive: "right-click", target: .element),
   "tap": .init(past: "Tapped", progressive: "Tapping", infinitive: "tap", target: .element),
   "tap-element": .init(past: "Tapped", progressive: "Tapping", infinitive: "tap", target: .element),
+  "long-press": .init(past: "Long-pressed", progressive: "Long-pressing", infinitive: "long-press", target: .element),
   "hover": .init(past: "Hovered over", progressive: "Hovering over", infinitive: "hover over", target: .element),
   "drag": .init(past: "Dragged", progressive: "Dragging", infinitive: "drag", target: .element),
   "swipe": .init(past: "Swiped", progressive: "Swiping", infinitive: "swipe", target: .direction),

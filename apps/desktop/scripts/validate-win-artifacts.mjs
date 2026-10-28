@@ -637,6 +637,7 @@ async function validatePackagedRuntime(appDir) {
   const captureHelperExePath = path.join(resourcesPath, "native", "ade-capture-helper.exe");
   const desktopDriverExePath = path.join(resourcesPath, "native", "ade-desktop-driver.exe");
   const nowPlayingExePath = path.join(resourcesPath, "native", "ade-now-playing.exe");
+  const cliLauncherExePath = path.join(resourcesPath, "native", "ade-cli-launcher.exe");
   const musicHostExePath = path.join(resourcesPath, "native", "ade-music-host", "ade-music-host.exe");
   const bundledAdeCliFiles = resolveBundledAdeCliFiles();
   assertRequiredBundledAdeCliFiles(bundledAdeCliFiles);
@@ -674,6 +675,13 @@ async function validatePackagedRuntime(appDir) {
     console.warn("[validate-win-artifacts] Local test build without the Now Playing helper (ADE_SKIP_NOW_PLAYING_BUILD=1).");
   } else {
     await assertPathExists(nowPlayingExePath, "packaged Windows Now Playing helper");
+  }
+  // ADE_CLI_PATH names this launcher on Windows so a multi-line --prompt is
+  // not cut by cmd.exe; without it ADE falls back to ade.cmd and warns.
+  if (isLocalWindowsTestBuild && process.env.ADE_SKIP_CLI_LAUNCHER_BUILD === "1") {
+    console.warn("[validate-win-artifacts] Local test build without the CLI launcher (ADE_SKIP_CLI_LAUNCHER_BUILD=1).");
+  } else {
+    await assertPathExists(cliLauncherExePath, "packaged Windows ADE CLI launcher");
   }
   if (isLocalWindowsTestBuild && process.env.ADE_SKIP_MUSIC_HOST_BUILD === "1") {
     console.warn("[validate-win-artifacts] Local test build without the music player host (ADE_SKIP_MUSIC_HOST_BUILD=1).");
@@ -1021,6 +1029,11 @@ async function validateReleaseArtifacts() {
   await validateAuthenticodeSignature(
     path.join(appDir, "resources", "native", "ade-now-playing.exe"),
     "Windows Now Playing helper",
+    expectedIdentity,
+  );
+  await validateAuthenticodeSignature(
+    path.join(appDir, "resources", "native", "ade-cli-launcher.exe"),
+    "Windows ADE CLI launcher",
     expectedIdentity,
   );
   await validateAuthenticodeSignature(

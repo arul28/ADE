@@ -55,6 +55,12 @@ const PROVIDER_NAME: Record<string, string> = {
   opencode: "OpenCode",
   pi: "Pi",
   kimi: "Kimi",
+  copilot: "Copilot",
+  muse: "Muse",
+  qwen: "Qwen",
+  grok: "Grok",
+  devin: "Devin",
+  antigravity: "Antigravity",
 };
 
 function providerName(id: string): string {

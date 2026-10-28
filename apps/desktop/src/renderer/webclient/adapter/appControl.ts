@@ -372,8 +372,6 @@ export function createAppControlNamespace(infra: AdapterInfra): AppControlWebApi
   });
 
   return {
-    // The literal action strings are scanned by
-    // `adapter/__tests__/hostCommandContract.test.ts`; keep them inline.
     getStatus,
     onEvent: (listener) => {
       listeners.add(listener);

@@ -34,6 +34,7 @@ import {
   MENU_LABEL_CLASS,
 } from "../ui/paneMenuTokens";
 import { cn } from "../ui/cn";
+import { Banner } from "../ui/notice";
 import { isImeComposing } from "../../lib/imeComposition";
 
 /**
@@ -236,7 +237,7 @@ function Toggle({
     >
       <span
         className={cn(
-          "absolute top-[1px] h-[10px] w-[10px] rounded-full bg-white/85 transition-all",
+          "absolute top-[1px] h-[10px] w-[10px] rounded-full bg-white/85 shadow-[0_1px_2px_rgba(0,0,0,0.3)] transition-all",
           checked ? "left-[12px]" : "left-[1px]",
         )}
       />
@@ -577,7 +578,16 @@ export function IosSimToolsColumn({
         {logOpen ? (
           <div className="max-h-48 overflow-y-auto px-0.5" data-testid="ios-event-log">
             {logError ? (
-              <div className="py-1 font-sans text-[10px] text-rose-200/70">{logError}</div>
+              <Banner
+                layout="inline"
+                style={{ margin: "4px 0" }}
+                model={{
+                  id: "ios-sim-event-log-error",
+                  tone: "error",
+                  title: logError,
+                  report: { surface: "ios_sim_event_log" },
+                }}
+              />
             ) : null}
             {logDropped > 0 ? (
               <div className="py-1 font-sans text-[10px] text-amber-200/60">

@@ -10,6 +10,7 @@ import {
 } from "../../../shared/types/chat";
 import type { OpenProjectBinding } from "../../../shared/types/core";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { rememberDraftAttachmentSource } from "./draftAttachmentSources";
 
 export type AttachmentStagingPlan =
   /** Send only the path; the bytes never enter the renderer. */
@@ -175,5 +176,7 @@ export async function stageAttachmentBytesFromFile(args: {
     previewDataUrl = `data:${converted.mimeType};base64,${converted.data}`;
   }
   const { path } = await (args.api ?? window.ade.agentChat).saveTempAttachment({ data, filename }, args.pin);
+  // Kept so a draft that moves to another machine can save it there again.
+  rememberDraftAttachmentSource(path, { kind: "bytes", data, filename });
   return { path, mimeType, previewDataUrl };
 }

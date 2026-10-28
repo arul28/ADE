@@ -21,6 +21,7 @@ import {
   useFloatingPlayerCapture,
 } from "../shared/FloatingPlayer";
 import { showToast } from "../app/toast/toastStore";
+import { Banner } from "../ui/notice";
 import { useAppleRecordings } from "./appleRecording";
 import { useAppleDeviceInput } from "./useAppleDeviceInput";
 import { describeAppleError, isAppleDeviceOffError } from "./appleErrors";
@@ -411,7 +412,18 @@ function AppleMiniPlayerFrameView({
               {starting ? "Starting…" : "Start"}
             </button>
           ) : null}
-          {startError ? <p className="font-sans text-[11px] text-muted-fg">{startError}</p> : null}
+          {startError ? (
+            <Banner
+              layout="inline"
+              model={{
+                id: "apple-device-mini-start-error",
+                tone: "error",
+                title: startError,
+                report: { surface: "apple_device_mini_player_start" },
+                dismiss: { onDismiss: () => setStartError(null) },
+              }}
+            />
+          ) : null}
         </div>
       ) : null}
     </FloatingPlayerShell>

@@ -1288,6 +1288,24 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("rejects an unavailable auto-handoff rule list instead of presenting an empty rule set", async () => {
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.automations.list()).rejects.toThrow("automations.list");
+    expect(fake.commandCalls.filter((call) => call.action === "automations.list")).toHaveLength(0);
+
+    fake.descriptors = descriptors(["automations.list"]);
+    fake.commandErrors.set(
+      "automations.list",
+      Object.assign(new Error("host unavailable"), { code: "host_unavailable" }),
+    );
+    await expect(adapter.ade.automations.list()).rejects.toThrow("host unavailable");
+    expect(fake.commandCalls.filter((call) => call.action === "automations.list")).toHaveLength(1);
+
+    adapter.dispose();
+  });
+
   it("an authoritative session list reads the host, not the mirror, while a lifecycle write is pending", async () => {
     fake.descriptors = descriptors(LIFECYCLE_DESCRIPTORS);
     fake.commandResults.set("work.listSessions", [{ id: "terminal-1", ptyId: "pty-1" }]);
@@ -2904,6 +2922,43 @@ describe("createAdeWebAdapter", () => {
 
     expect(fake.commandCalls).toHaveLength(0);
     expect(fake.terminalSubscribeCalls).toHaveLength(0);
+    adapter.dispose();
+  });
+
+  it("rejects an async PR call for a foreign pin and throws synchronously for its subscription", async () => {
+    const pin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    expect(() => adapter.ade.prs.onAiResolutionEvent(() => undefined, pin))
+      .toThrow(/cross-machine web routing is not implemented/);
+    expect(fake.commandCalls).toHaveLength(0);
+
+    adapter.dispose();
+  });
+
+  it("does not reuse a large history page as a reconnect fallback", async () => {
+    const action = "agentChat.getEventHistoryPage";
+    const args = { sessionId: "chat-large-page", beforeOffset: 50, maxBytes: 1024 };
+    fake.descriptors = descriptors([action]);
+    fake.commandResults.set(action, { sessionId: args.sessionId, events: [], truncated: false, sessionFound: true });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.agentChat.getEventHistoryPage(args)).resolves.toMatchObject({ sessionId: args.sessionId });
+    fake.commandErrors.set(action, Object.assign(new Error("host unavailable"), { code: "host_unavailable" }));
+    await expect(adapter.ade.agentChat.getEventHistoryPage(args)).rejects.toThrow("host unavailable");
+    expect(fake.commandCalls.filter((call) => call.action === action)).toHaveLength(2);
+
     adapter.dispose();
   });
 

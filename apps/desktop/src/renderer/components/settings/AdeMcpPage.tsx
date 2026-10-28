@@ -445,7 +445,18 @@ export function AdeMcpPage() {
         </ModernSection>
       ) : null}
 
-      {actionError ? <span role="alert" className="ade-modern-error">{actionError}</span> : null}
+      {actionError ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "ade-mcp-action-error",
+            tone: "error",
+            title: actionError,
+            report: { surface: "ade_mcp_action" },
+            dismiss: { onDismiss: () => setActionError(null) },
+          }}
+        />
+      ) : null}
 
       {activityError ? (
         <Banner

@@ -123,7 +123,8 @@
 }
 
 /* A recording: as wide as it can be at full height, but never wider than the half. */
-img.ade-wnf-plate {
+img.ade-wnf-plate,
+video.ade-wnf-plate {
   width: min(100cqw, 100cqh * var(--wnf-ratio, 1.4));
   max-width: 100%;
   height: auto;

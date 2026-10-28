@@ -100,6 +100,7 @@ describe("brain update command", () => {
         platform: "darwin",
         arch: "arm64",
         currentVersion: "1.2.12",
+        applicationsDirs: [],
       },
     );
 
@@ -211,6 +212,7 @@ describe("brain update command", () => {
         env: { ADE_HOME: root },
         platform: "darwin",
         arch: "arm64",
+        applicationsDirs: [],
         tmpDir: async () => tmp,
         downloadFile: async (url, outPath) => {
           if (url.endsWith("/SHA256SUMS")) {
@@ -688,6 +690,179 @@ describe("brain update command", () => {
       target: "linux-arm64",
       error: expect.stringContaining("checksum mismatch"),
     });
+  });
+});
+
+// A Mac with the ADE app in an Applications folder. Each bundle carries a real
+// Info.plist with its version and a marker ("old" or "new"). The process
+// boundary is faked: ditto expands the archive into a bundle marked "new",
+// codesign answers by marker, ps lists what runs, and the service commands are
+// recorded.
+describe("brain update on a Mac with the ADE app installed", () => {
+  type MacScenario = {
+    label: string;
+    installedVersion: string;
+    appOpen?: boolean;
+    stagedTeam?: string;
+    badArchiveChecksum?: boolean;
+    newAppServiceFails?: boolean;
+    ok: boolean;
+    appAfter: "old" | "new";
+    serviceCalls: Array<"stop" | "app_start" | "standalone_install">;
+    standalonePromoted: boolean;
+  };
+
+  it.each<MacScenario>([
+    {
+      label: "installs the app over a closed older one and runs the brain on it",
+      installedVersion: "1.2.12",
+      ok: true,
+      appAfter: "new",
+      serviceCalls: ["stop", "app_start"],
+      standalonePromoted: true,
+    },
+    {
+      label: "moves only the service onto an app already on the target",
+      installedVersion: "1.2.13",
+      ok: true,
+      appAfter: "old",
+      serviceCalls: ["app_start"],
+      standalonePromoted: true,
+    },
+    {
+      label: "changes nothing when the download is signed by another team",
+      installedVersion: "1.2.12",
+      stagedTeam: "OTHERTEAM",
+      ok: false,
+      appAfter: "old",
+      serviceCalls: [],
+      standalonePromoted: false,
+    },
+    {
+      label: "changes nothing when the archive fails the feed checksum",
+      installedVersion: "1.2.12",
+      badArchiveChecksum: true,
+      ok: false,
+      appAfter: "old",
+      serviceCalls: [],
+      standalonePromoted: false,
+    },
+    {
+      label: "changes nothing while the app is open and not answering",
+      installedVersion: "1.2.12",
+      appOpen: true,
+      ok: false,
+      appAfter: "old",
+      serviceCalls: [],
+      standalonePromoted: false,
+    },
+    {
+      label: "puts the old app and its service back when the new one's service fails",
+      installedVersion: "1.2.12",
+      newAppServiceFails: true,
+      ok: false,
+      appAfter: "old",
+      serviceCalls: ["stop", "app_start", "app_start"],
+      standalonePromoted: false,
+    },
+  ])("$label", async (scenario) => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const appsDir = path.join(root, "Applications");
+    const appPath = path.join(appsDir, "ADE.app");
+    const appExe = path.join(appPath, "Contents", "MacOS", "ADE");
+    const appCli = path.join(appPath, "Contents", "Resources", "ade-cli", "cli.cjs");
+    const standalone = path.join(root, "bin", "ade");
+    fs.mkdirSync(tmp, { recursive: true });
+    const makeBundle = (bundlePath: string, marker: "old" | "new") => {
+      fs.mkdirSync(path.join(bundlePath, "Contents", "MacOS"), { recursive: true });
+      fs.mkdirSync(path.join(bundlePath, "Contents", "Resources", "ade-cli"), { recursive: true });
+      const version = marker === "new" ? "1.2.13" : scenario.installedVersion;
+      fs.writeFileSync(path.join(bundlePath, "Contents", "Info.plist"), [
+        "<plist><dict>",
+        "<key>CFBundleExecutable</key><string>ADE</string>",
+        "<key>CFBundleIdentifier</key><string>com.ade.desktop</string>",
+        `<key>CFBundleShortVersionString</key><string>${version}</string>`,
+        "</dict></plist>",
+      ].join(""));
+      fs.writeFileSync(path.join(bundlePath, "marker"), marker);
+    };
+    makeBundle(appPath, "old");
+    fs.mkdirSync(path.dirname(standalone), { recursive: true });
+    fs.writeFileSync(standalone, "old-standalone");
+
+    const zipBytes = "app-archive-bytes";
+    const zipSha512 = createHash("sha512").update(scenario.badArchiveChecksum ? "something else" : zipBytes).digest("base64");
+    const markerOf = (bundlePath: string) => fs.readFileSync(path.join(bundlePath, "marker"), "utf8");
+    const serviceCalls: string[] = [];
+
+    const result = await runBrainUpdateCommand(["update", "--version", "v1.2.13", "--foreground"], {
+      env: { ADE_HOME: root },
+      platform: "darwin",
+      arch: "arm64",
+      tmpDir: async () => tmp,
+      applicationsDirs: [appsDir],
+      downloadFile: async (url, outPath) => {
+        if (url.endsWith("/SHA256SUMS")) {
+          fs.writeFileSync(outPath, checksumFileFor("darwin-arm64", "https://github.com/arul28/ADE/releases/download/v1.2.13/ade-darwin-arm64"));
+        } else if (url.endsWith("/latest-mac.yml")) {
+          fs.writeFileSync(outPath, [
+            "version: 1.2.13",
+            "files:",
+            "  - url: ADE-1.2.13-arm64.zip",
+            `    sha512: ${zipSha512}`,
+            "path: ADE-1.2.13-arm64.zip",
+            `sha512: ${zipSha512}`,
+            "",
+          ].join("\n"));
+        } else if (url.endsWith(".zip")) {
+          fs.writeFileSync(outPath, zipBytes);
+        } else {
+          fs.writeFileSync(outPath, url.endsWith(".tar.gz") ? "archive" : url);
+        }
+      },
+      execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+      runCommand: (command, args) => {
+        const ok = (stdout = "", stderr = "") => ({ status: 0, stdout, stderr });
+        if (isTarCommand(command)) return extractRuntimeFixture(command, args);
+        if (command === "/bin/ps") {
+          return ok(`${appExe} ${appCli} serve\n${scenario.appOpen ? `${appExe}\n` : ""}`);
+        }
+        if (command === "/usr/bin/ditto") {
+          makeBundle(path.join(args[args.length - 1] ?? "", "ADE.app"), "new");
+          return ok();
+        }
+        if (command === "/usr/bin/codesign") {
+          const bundlePath = args[args.length - 1] ?? "";
+          if (args[0] === "--verify") return ok();
+          const team = markerOf(bundlePath) === "new" ? scenario.stagedTeam ?? "TEAM1" : "TEAM1";
+          return ok("", `Identifier=com.ade.desktop\nTeamIdentifier=${team}\n`);
+        }
+        if (args.includes("--uninstall-service")) {
+          serviceCalls.push("stop");
+          return ok();
+        }
+        if (args.includes("--install-service")) {
+          serviceCalls.push("standalone_install");
+          return ok();
+        }
+        if (command === appExe && args.includes("brain") && args.includes("start")) {
+          serviceCalls.push("app_start");
+          if (scenario.newAppServiceFails && markerOf(appPath) === "new") {
+            return { status: 1, stdout: JSON.stringify({ message: "service did not answer" }), stderr: "" };
+          }
+          return ok(JSON.stringify({ ok: true }));
+        }
+        return ok();
+      },
+    });
+
+    expect(result).toMatchObject({ ok: scenario.ok });
+    expect(markerOf(appPath)).toBe(scenario.appAfter);
+    expect(serviceCalls).toEqual(scenario.serviceCalls);
+    expect(fs.readFileSync(standalone, "utf8") !== "old-standalone").toBe(scenario.standalonePromoted);
+    // No staging leftovers beside the app, whatever happened.
+    expect(fs.readdirSync(appsDir)).toEqual(["ADE.app"]);
   });
 });
 

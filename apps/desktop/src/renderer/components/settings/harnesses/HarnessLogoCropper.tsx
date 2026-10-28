@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
+import { Banner } from "../../ui/notice";
 
 /**
  * Crop an uploaded image into the round mark a preset shows.
@@ -187,9 +188,16 @@ export function HarnessLogoCropper({
       </label>
 
       {error ? (
-        <p role="alert" style={{ margin: 0, fontSize: 11, color: COLORS.danger, textAlign: "center", maxWidth: 260 }}>
-          {error}
-        </p>
+        <Banner
+          layout="inline"
+          style={{ maxWidth: 320 }}
+          model={{
+            id: "harness-logo-crop-error",
+            tone: "error",
+            title: error,
+            report: { surface: "harness_logo_crop" },
+          }}
+        />
       ) : null}
 
       <div style={{ display: "flex", gap: 8 }}>

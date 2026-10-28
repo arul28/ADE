@@ -4,6 +4,7 @@ import { accountMachineDisplayName, accountMachineEndpointHost } from "../../../
 import { findMachineByMentionId } from "../../../shared/accountMachineSnapshot";
 import { ROUTE_LABELS } from "../remoteTargets/ConnectionRouteDetails";
 import { accountMachinePresence, connectedMachineIds, isMachineConnected } from "../../../shared/machinePresence";
+import { formatMachineVersions } from "../../../shared/machineVersions";
 import type { AdeAccountMachine } from "../../../shared/types/account";
 import { fetchAccountMachines } from "../../lib/account";
 import { relativeWhen } from "../../lib/format";
@@ -94,7 +95,10 @@ export function useMachineFacts(machineKey: string | null): MachineFacts | null 
       presence: presenceLabel,
       presenceState: presence,
       thisComputer: Boolean(thisMachineKey && thisMachineKey === key),
-      version: connection?.version ?? connection?.target.runtimeBinaryVersion ?? null,
+      // One version, or both when its app and brain drift.
+      version: connection?.version
+        ? formatMachineVersions({ brainVersion: connection.version, appVersion: connection.appVersion })
+        : connection?.target.runtimeBinaryVersion ?? null,
       route: isConnected ? (route ? ROUTE_LABELS[route.kind] : "Connected") : presenceLabel,
       latency: typeof route?.latencyMs === "number" ? `${Math.round(route.latencyMs)} ms` : null,
       address,

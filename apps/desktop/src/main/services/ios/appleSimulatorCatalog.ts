@@ -50,6 +50,12 @@ export type SimctlListedDevice = {
   runtimeIdentifier: string;
   isAvailable: boolean;
   deviceTypeIdentifier: string | null;
+  /**
+   * When CoreSimulator last booted or used it (`lastBootedAt`, or
+   * `lastUsedAt` on newer Xcodes), in ms; null when it says neither. Set
+   * by a boot outside ADE too (a raw `simctl boot`).
+   */
+  lastBootedAtMs?: number | null;
 };
 
 type SimctlListDevicesJson = {
@@ -60,6 +66,8 @@ type SimctlListDevicesJson = {
     isAvailable?: boolean;
     availabilityError?: string;
     deviceTypeIdentifier?: unknown;
+    lastBootedAt?: unknown;
+    lastUsedAt?: unknown;
   }>>;
 };
 
@@ -87,10 +95,21 @@ export function parseSimctlDevices(stdout: string): Map<string, SimctlListedDevi
         runtimeIdentifier: runtimeKey,
         isAvailable: device.isAvailable !== false && !device.availabilityError,
         deviceTypeIdentifier: typeof device.deviceTypeIdentifier === "string" ? device.deviceTypeIdentifier : null,
+        lastBootedAtMs: simctlTimeMs(device.lastBootedAt, device.lastUsedAt),
       });
     }
   }
   return all;
+}
+
+/** The newest of simctl's ISO times, in ms, or null when none parses. */
+function simctlTimeMs(...values: unknown[]): number | null {
+  let best: number | null = null;
+  for (const value of values) {
+    const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    if (Number.isFinite(ms) && (best === null || ms > best)) best = ms;
+  }
+  return best;
 }
 
 /** The installed, available simulators in `simctl list devices` output, for the picker. */

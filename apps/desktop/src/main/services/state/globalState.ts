@@ -61,6 +61,12 @@ export type PendingInstallUpdate = {
   /** "Update & restart" was pressed on another machine (see `remoteUpdateInstall`). */
   requestedRemotely?: boolean;
   /**
+   * The install ran because the person quit ADE with automatic install on. The
+   * launch that lands it restarts the background service on the new build
+   * with no window, then closes again (see `installOnQuit.ts`).
+   */
+  closeAfterInstall?: boolean;
+  /**
    * Chats ADE armed a "continue" row for before this install, when the user
    * asked for it. Written by the quit that installs and read by the launch that
    * lands it, so the post-update notice can name what came back.

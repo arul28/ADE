@@ -167,7 +167,7 @@ Manage the service from the CLI:
 ade brain start                   # enable/load the login service
 ade brain stop                    # disable/unload the login service
 ade brain status --text           # endpoint state, service state, sync state, project-host readiness
-ade brain update --text           # stage/apply the latest standalone brain release and restart the service
+ade brain update --text           # stage/apply the latest standalone brain release and restart the service (on macOS the installed ADE app moves to the same version)
 ade brain update status --text    # last headless update state
 ade brain restart                 # re-exec after an app update
 
@@ -570,6 +570,7 @@ ade lane drift resolve --lane lane-id --switch-back        # put the worktree ba
 ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
 ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
 ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
+ade lanes rename lane-id --name "OAuth refactor"            # rename the lane; its branch keeps its name
 ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
 ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
 ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files

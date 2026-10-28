@@ -6688,6 +6688,7 @@ function registerMacDesktopPaneRemoteCommands(
       laneId: requireString(payload.laneId, "macDesktop.open requires laneId."),
       target: requireString(payload.target, "macDesktop.open requires target."),
       args: Array.isArray(rawArgs) ? rawArgs.map((entry) => String(entry)) : null,
+      ...(asOptionalBoolean(payload.newInstance) ? { newInstance: true } : {}),
     });
   });
 
@@ -6732,6 +6733,8 @@ function registerMacDesktopPaneRemoteCommands(
       laneId: requireString(payload.laneId, "macDesktop.startRecording requires laneId."),
       caption: asTrimmedString(payload.caption),
       fps: asOptionalNumber(payload.fps) ?? null,
+      // `plain` is the current name, `keepIdle` the old one; both keep real time.
+      plain: asOptionalBoolean(payload.plain) ?? null,
       keepIdle: asOptionalBoolean(payload.keepIdle) ?? null,
       maxSeconds: asOptionalNumber(payload.maxSeconds) ?? null,
       ...chatSessionId(payload),
@@ -7956,10 +7959,10 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
   // change made from the web client resolved to its fallback and persisted
   // nothing while the UI reported success.
   //
-  // `ai.storeApiKey` is deliberately NOT registered: the web adapter redacts
-  // the key before sending (`webclient/adapter/misc.ts`), so a handler here
-  // would persist the literal placeholder as the provider's key. Adding a key
-  // stays a desktop-only operation, and the web control says so.
+  // `ai.storeApiKey` is deliberately NOT registered: a secret never leaves
+  // the browser, so the web adapter rejects the save itself
+  // (`webclient/adapter/misc.ts`). Adding a key stays a desktop-only
+  // operation, and the web control says so.
   // Jev answers like the desktop action: null is "use your own logic", never an error.
   register("ai.jevDecide", { viewerAllowed: true }, async (payload) =>
     args.jevService ? args.jevService.decide(payload as unknown as Parameters<JevService["decide"]>[0]) : null);

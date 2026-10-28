@@ -144,10 +144,21 @@ function MusicPageContent() {
   if (!hasState) {
     return (
       <MusicFrame>
-        <div className="ade-music-center">{lastError ? <section className="ade-music-gate">
-          <h1>Couldn't load Music</h1><p>{lastError}</p>
-          <button type="button" className="kit-btn" onClick={() => void musicActions.refresh()}>Try again</button>
-        </section> : <CircleNotch size={20} className="animate-spin text-muted-fg" />}</div>
+        <div className="ade-music-center">{lastError ? (
+          <Banner
+            layout="inline"
+            style={{ maxWidth: 420 }}
+            model={{
+              id: "music-load-error",
+              tone: "error",
+              title: "Couldn't load Music",
+              detail: lastError,
+              actions: [{ label: "Try again", onClick: () => void musicActions.refresh() }],
+              report: { surface: "music_load", technicalDetail: lastError },
+              dismiss: { onDismiss: musicActions.clearError },
+            }}
+          />
+        ) : <CircleNotch size={20} className="animate-spin text-muted-fg" />}</div>
       </MusicFrame>
     );
   }
@@ -183,7 +194,18 @@ function MusicPageContent() {
             <span className="ade-music-gate-glyph is-muted"><WarningCircle size={30} weight="fill" /></span>
             <h1>{`${providerName} isn't available right now`}</h1>
             <p>{message ?? "ADE couldn't reach its music service."}</p>
-            {lastError ? <p role="alert">{lastError}</p> : null}
+            {lastError ? (
+              <Banner
+                layout="inline"
+                model={{
+                  id: "music-unavailable-error",
+                  tone: "error",
+                  title: lastError,
+                  report: { surface: "music_unavailable" },
+                  dismiss: { onDismiss: musicActions.clearError },
+                }}
+              />
+            ) : null}
             {provider === "spotify" ? <SpotifySetup /> : null}
             <button type="button" className="kit-btn" onClick={() => void musicActions.refresh()}>
               <ArrowClockwise size={13} /> Try again
@@ -281,6 +303,7 @@ function MusicPageContent() {
                   onClick: musicActions.retry,
                 }],
                 dismiss: lastError ? { onDismiss: musicActions.clearError } : false,
+                report: lastError ? { surface: "music" } : false,
               }}
             />
           ) : null}

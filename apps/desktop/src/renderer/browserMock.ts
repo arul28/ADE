@@ -6271,6 +6271,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           state: "connected",
           arch: "darwin-arm64",
           version: "0.0.0-browser",
+          // `?mockMachineDrift`: the Studio's brain was updated alone, its app was not.
+          ...(browserMockFlag("mockMachineDrift") ? { appVersion: "0.0.0-app" } : {}),
           route: { kind: "tailnet", endpoint: "100.64.0.2" },
           capabilities: {
             projects: true,
@@ -8527,6 +8529,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
       tap: resolved({ ok: true as const }),
+      longPress: resolved({ ok: true as const, action: "long-press" as const, durationMs: 1000 }),
       typeText: resolved({ ok: true as const }),
       drag: resolved({ ok: true as const }),
       swipe: resolved({ ok: true as const }),

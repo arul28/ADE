@@ -5,9 +5,11 @@
 import { ArrowsClockwise } from "@phosphor-icons/react";
 import React, { useCallback, useEffect, useState } from "react";
 import { COLORS, SANS_FONT, SECTION_LABEL_STYLE, outlineButton } from "../../../lanes/laneDesignTokens";
+import { Banner } from "../../../ui/notice";
 import type { AgentChatCodexPlugin } from "../../../../../shared/types";
 import type { ProvidersViewContext } from "../types";
 import { useSettingsMachineScope } from "../../SettingsMachineScope";
+import { extractError } from "../../../../lib/format";
 
 function originLabel(origin: AgentChatCodexPlugin["origin"]): string {
   switch (origin) {
@@ -37,7 +39,7 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
       setPlugins(await window.ade.agentChat.listCodexPlugins({}, pin));
     } catch (err: unknown) {
       setPlugins(null);
-      setError(err instanceof Error ? err.message : String(err));
+      setError(extractError(err));
     } finally {
       setRefreshing(false);
     }
@@ -64,7 +66,15 @@ export function CodexBody(_props: { ctx: ProvidersViewContext }) {
         Installed Codex plugins from a live Codex chat. ADE lists them; it does not install or toggle them.
       </div>
       {error ? (
-        <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.danger }}>{error}</div>
+        <Banner
+          layout="inline"
+          model={{
+            id: "codex-plugins-error",
+            tone: "error",
+            title: error,
+            report: { surface: "codex_plugins_list" },
+          }}
+        />
       ) : plugins == null ? (
         <div style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>Loading…</div>
       ) : plugins.length === 0 ? (
