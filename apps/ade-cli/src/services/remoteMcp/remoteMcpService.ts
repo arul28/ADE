@@ -1,7 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
-import { AccountAttestationError, verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
-import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
+import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import {
   captureAdeMcpAnalytics,
   type FeatureAnalytics,
@@ -38,36 +36,29 @@ import {
   REMOTE_MCP_VIA_HEADER,
   type RemoteMcpCallContext,
   type RemoteMcpDirectoryMachine,
+  type RemoteMcpRosterMachine,
 } from "./remoteMcpForward";
 import {
-  AUTHORIZE_PAGE_HEADERS,
-  buildRedirect,
-  createRemoteMcpAuthorizationState,
-  decodeClientId,
-  parseAuthorizeRequest,
-  type AuthorizeRequest,
-  redirectDisplayHost,
-  registerClient,
-  renderConsentPage,
-  renderSignInPage,
-  type SignedInAccount,
-  renderMessagePage,
-  scopeToOAuth,
-  verifyPkce,
-} from "./remoteMcpOAuth";
+  header,
+  json,
+  withoutTrailingSlash,
+  type RemoteMcpHttpRequest,
+  type RemoteMcpHttpResponse,
+  type RemoteMcpRelayEndpoint,
+} from "./remoteMcpHttp";
+import { createRemoteMcpOAuthRoutes, type RemoteMcpAccountAccess } from "./remoteMcpOAuthRoutes";
 import {
   createRemoteMcpStore,
   markLegacyRemoteMcpFileMigrated,
   readLegacyRemoteMcpFile,
   REMOTE_MCP_ACCOUNT_SECRET_KEY,
+  REMOTE_MCP_SAVE_FAILED,
   REMOTE_MCP_TOKEN_PREFIX,
   REMOTE_MCP_VAULT_KIND,
   REMOTE_MCP_VAULT_SCOPE,
   type RemoteMcpVault,
 } from "./remoteMcpStore";
 import { createRemoteMcpProtocol, type JsonRpcMessage, type RemoteMcpProject } from "./remoteMcpProtocol";
-
-export { MAX_CONCURRENT_REMOTE_RUNS, MAX_CONCURRENT_RUNS_PER_CONNECTION, type RemoteMcpProject } from "./remoteMcpProtocol";
 
 /**
  * ADE MCP: one MCP server for the person's ADE account, reached through ADE
@@ -77,40 +68,16 @@ export { MAX_CONCURRENT_REMOTE_RUNS, MAX_CONCURRENT_RUNS_PER_CONNECTION, type Re
  * account address, answered by any serving computer of the account) or
  * `/m/<endpointKey>/` (this computer only) over the brain's existing control
  * socket, and returns whatever this answers. All of it happens here: the MCP
- * protocol, OAuth sign-in, token checks against this computer's copy of the
- * account vault, running the `ade` command, and sending a call on to another
- * computer of the account. The Worker stores nothing and can mint nothing.
+ * protocol, OAuth sign-in (remoteMcpOAuthRoutes.ts), token checks against
+ * this computer's copy of the account vault, running the `ade` command, and
+ * sending a call on to another computer of the account. The Worker stores
+ * nothing and can mint nothing.
  *
  * Off by default, for the whole account (`ade_mcp.enabled`). This computer
  * serves when it is signed in, the account has it on, it is not left out, the
  * account secret exists and it has a relay identity. Otherwise the brain
  * tells the relay so, and the relay answers 404 without waking this computer.
  */
-
-export type RemoteMcpHttpRequest = {
-  method: string;
-  /** Path under the machine prefix, with query, e.g. `/oauth/authorize?…`. */
-  path: string;
-  headers: Record<string, string>;
-  body: string | null;
-  /** Set by the relay when the request came on the account address. */
-  mount?: { kind: "account"; key: string };
-};
-
-export type RemoteMcpHttpResponse = {
-  status: number;
-  headers: Record<string, string>;
-  body: string;
-};
-
-export type RemoteMcpRelayEndpoint = {
-  relayUrl: string;
-  /** This computer's relay machine key: its id in the account directory and settings. */
-  machineKey: string;
-  /** The key in the per-machine URL; not the relay key (see mcpEndpointKeyFor). */
-  endpointKey: string;
-  connected: boolean;
-};
 
 const MAX_REQUEST_BODY_CHARS = 1024 * 1024;
 /** A token this computer does not know triggers at most one vault pull per this long. */
@@ -127,54 +94,13 @@ const IDLE_VAULT_FRESHNESS_MS = 5 * 60_000;
 const LAST_USED_PUBLISH_INTERVAL_MS = 10 * 60_000;
 /** How often the service re-reads its account state when nothing pokes it. */
 const REFRESH_INTERVAL_MS = 30_000;
-/** Pending web sign-ins remember which address (account or machine) they began on. */
-const SIGN_IN_ISSUER_TTL_MS = 15 * 60_000;
-const MAX_SIGN_IN_ISSUERS = 64;
-
-function withoutTrailingSlash(url: string): string {
-  return url.replace(/\/+$/, "");
-}
-
-function json(status: number, value: unknown, headers: Record<string, string> = {}): RemoteMcpHttpResponse {
-  return {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", ...headers },
-    body: JSON.stringify(value),
-  };
-}
-
-function html(status: number, body: string): RemoteMcpHttpResponse {
-  return { status, headers: { ...AUTHORIZE_PAGE_HEADERS }, body };
-}
-
-function redirect(location: string): RemoteMcpHttpResponse {
-  return { status: 302, headers: { location, "cache-control": "no-store", "referrer-policy": "no-referrer" }, body: "" };
-}
-
-function header(request: RemoteMcpHttpRequest, name: string): string {
-  const wanted = name.toLowerCase();
-  for (const [key, value] of Object.entries(request.headers)) {
-    if (key.toLowerCase() === wanted) return value;
-  }
-  return "";
-}
-
-function parseForm(request: RemoteMcpHttpRequest): URLSearchParams {
-  const type = header(request, "content-type").toLowerCase();
-  if (type.includes("application/json")) {
-    try {
-      const parsed = JSON.parse(request.body ?? "{}") as Record<string, unknown>;
-      const params = new URLSearchParams();
-      for (const [key, value] of Object.entries(parsed ?? {})) {
-        if (typeof value === "string") params.set(key, value);
-      }
-      return params;
-    } catch {
-      return new URLSearchParams();
-    }
-  }
-  return new URLSearchParams(request.body ?? "");
-}
+/** This computer's entry is rewritten (after a pull) at most this often while it differs. */
+const ENTRY_PUBLISH_MIN_INTERVAL_MS = 60_000;
+/**
+ * A request that reaches a computer which stopped serving means the relay
+ * still routes to it; it is told again at most this often.
+ */
+const NOT_SERVING_REANNOUNCE_INTERVAL_MS = 10_000;
 
 export type RemoteMcpService = ReturnType<typeof createRemoteMcpService>;
 
@@ -194,11 +120,7 @@ export function createRemoteMcpService(args: {
    * The ADE account this computer is signed in to, and how to check one: the
    * same Clerk client and attestation the relay's phone hellos use.
    */
-  account: {
-    signedIn: () => SignedInAccount | null;
-    oauth: () => { issuer: string; clientId: string } | null;
-    attestation: () => AccountAttestationConfig | null;
-  };
+  account: RemoteMcpAccountAccess;
   /** This computer's copy of the account vault: the account secret and the connections. */
   vault: RemoteMcpVault;
   /** This computer's copy of the account settings: on/off and the computers. */
@@ -211,10 +133,14 @@ export function createRemoteMcpService(args: {
   const now = args.now ?? Date.now;
   const lastUsedHere = new Map<string, number>();
   const lastUsedPublished = new Map<string, number>();
+  let relayEndpoint: () => RemoteMcpRelayEndpoint | null = () => null;
   const store = createRemoteMcpStore({
     vault: args.vault,
     logger: args.logger,
     now: () => new Date(now()),
+    machineName: (machineKey) => (machineKey === relayEndpoint()?.machineKey
+      ? args.machineName()
+      : readRemoteMcpMachineEntry(args.settings, machineKey)?.name || null),
     lastUsedAt: (id) => {
       const here = lastUsedHere.get(id);
       const account = readRemoteMcpLastUsed(args.settings, id);
@@ -224,15 +150,13 @@ export function createRemoteMcpService(args: {
     },
   });
   const activity = createRemoteMcpActivityLog({ filePath: args.activityPath, logger: args.logger });
-  const authorization = createRemoteMcpAuthorizationState();
   const stateListeners = new Set<(enabled: boolean) => void>();
-  let relayEndpoint: () => RemoteMcpRelayEndpoint | null = () => null;
   let analytics: FeatureAnalytics | null = null;
   // The computer that forwarded the call being handled, for the activity log.
   const viaContext = new AsyncLocalStorage<string | null>();
 
   const warn = (event: string, error: unknown, data: Record<string, unknown> = {}): void => {
-    args.logger?.warn?.(event, { ...data, error: error instanceof Error ? error.message : String(error) });
+    args.logger?.warn?.(event, { ...data, error: getErrorMessage(error) });
   };
 
   // ── Account state ─────────────────────────────────────────────────────────
@@ -301,6 +225,20 @@ export function createRemoteMcpService(args: {
     notifyState();
   };
 
+  let notServingReannouncedAt = 0;
+  /**
+   * The relay sent a request here while this computer does not serve it
+   * (stopped serving, or an old account key): tell the relay now rather than
+   * on the next refresh, so it drops this computer from the account at once.
+   */
+  const announceNotServing = (): void => {
+    const before = announced;
+    announceIfChanged();
+    if (announced !== before || now() - notServingReannouncedAt < NOT_SERVING_REANNOUNCE_INTERVAL_MS) return;
+    notServingReannouncedAt = now();
+    notifyState();
+  };
+
   let secretInFlight: Promise<string> | null = null;
   /**
    * The account secret, made by the first computer that turns ADE MCP on.
@@ -320,7 +258,7 @@ export function createRemoteMcpService(args: {
       }
       const minted = mintRemoteMcpAccountSecret();
       if (!args.vault.set(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND, REMOTE_MCP_ACCOUNT_SECRET_KEY, minted)) {
-        throw new Error("ADE couldn't save ADE MCP to your ADE account: the signed-in account changed. Try again.");
+        throw new Error(REMOTE_MCP_SAVE_FAILED);
       }
       args.logger?.info?.("remote_mcp.account_secret_created", {});
       return minted;
@@ -344,7 +282,7 @@ export function createRemoteMcpService(args: {
     const same = (entry: ReturnType<typeof readRemoteMcpMachineEntry>) => Boolean(entry
       && entry.name === desired.name && entry.endpointKey === desired.endpointKey && entry.version === desired.version);
     if (same(readRemoteMcpMachineEntry(args.settings, endpoint.machineKey))) return;
-    if (now() - lastEntryPublishAt < 60_000) return;
+    if (now() - lastEntryPublishAt < ENTRY_PUBLISH_MIN_INTERVAL_MS) return;
     lastEntryPublishAt = now();
     await args.settings.sync().catch((error) => warn("remote_mcp.settings_sync_failed", error));
     const existing = readRemoteMcpMachineEntry(args.settings, endpoint.machineKey);
@@ -362,9 +300,11 @@ export function createRemoteMcpService(args: {
   let legacyMigrated = false;
   /**
    * Copies the per-computer connections from before accounts into the vault,
-   * with the same ids and hashes so their tokens keep working, and carries the
-   * old on/off over unless the account already has its own. Waits for a
-   * sign-in and a reachable vault; the legacy file is emptied only after.
+   * with the same ids and hashes so their tokens keep working, each kept to
+   * this computer (`onlyMachine`): a token that reached one computer must not
+   * start reaching every one. Carries the old on/off over unless the account
+   * already has its own. Waits for a sign-in, this computer's relay identity
+   * and a reachable vault; the legacy file is emptied only after.
    */
   const migrateLegacy = async (): Promise<void> => {
     if (legacyMigrated) return;
@@ -373,12 +313,13 @@ export function createRemoteMcpService(args: {
       legacyMigrated = true;
       return;
     }
-    if (!signedIn()) return;
+    const machineKey = relayEndpoint()?.machineKey;
+    if (!signedIn() || !machineKey) return;
     if (await args.vault.sync() !== "ready") return;
     let copied = 0;
     for (const connection of legacy.connections) {
       if (store.has(connection.id)) continue;
-      store.importConnection(connection);
+      store.importConnection(connection, machineKey);
       copied += 1;
       if (connection.lastUsedAt && !readRemoteMcpLastUsed(args.settings, connection.id)) {
         args.settings.set(REMOTE_MCP_SETTINGS_SCOPE, remoteMcpLastUsedKey(connection.id), connection.lastUsedAt);
@@ -497,6 +438,7 @@ export function createRemoteMcpService(args: {
     listAccountMachines: args.listAccountMachines ?? (async () => null),
     fetchImpl: args.fetchImpl,
     now,
+    logger: args.logger,
   });
 
   const protocol = createRemoteMcpProtocol({
@@ -571,263 +513,31 @@ export function createRemoteMcpService(args: {
 
   // ── OAuth ─────────────────────────────────────────────────────────────────
 
-  // A web sign-in can begin on the account address but always comes back to
-  // this computer (the Clerk state names its endpoint key). The `iss` an app
-  // gets back must be the issuer it started with, so remember it per sign-in.
-  const signInIssuers = new Map<string, { issuer: string; at: number }>();
-  const rememberIssuer = (nonce: string, issuer: string): void => {
-    for (const [key, value] of signInIssuers) {
-      if (now() - value.at > SIGN_IN_ISSUER_TTL_MS || signInIssuers.size >= MAX_SIGN_IN_ISSUERS) signInIssuers.delete(key);
-    }
-    signInIssuers.set(nonce, { issuer, at: now() });
-  };
-  const issuerFor = (nonce: string, fallback: string): string => signInIssuers.get(nonce)?.issuer ?? fallback;
-
-  const protectedResourceMetadata = (serverBase: string, accountMount: boolean) => ({
-    resource: `${serverBase}/mcp`,
-    authorization_servers: [serverBase],
-    bearer_methods_supported: ["header"],
-    scopes_supported: ["ade:read", "ade:write"],
-    resource_name: accountMount ? "ADE" : `ADE on ${args.machineName()}`,
-  });
-
-  const authorizationServerMetadata = (serverBase: string) => ({
-    issuer: serverBase,
-    authorization_endpoint: `${serverBase}/oauth/authorize`,
-    token_endpoint: `${serverBase}/oauth/token`,
-    registration_endpoint: `${serverBase}/oauth/register`,
-    response_types_supported: ["code"],
-    response_modes_supported: ["query"],
-    grant_types_supported: ["authorization_code"],
-    code_challenge_methods_supported: ["S256"],
-    token_endpoint_auth_methods_supported: ["none"],
-    scopes_supported: ["ade:read", "ade:write"],
-    authorization_response_iss_parameter_supported: true,
-  });
-
-  const expiredSignIn = (): RemoteMcpHttpResponse =>
-    html(400, renderMessagePage("This sign-in expired", "Go back to the app and connect again."));
-
-  /** Where ADE sign-in sends the person back: the relay's one fixed callback. */
-  const accountCallbackUrl = (): string | null => {
-    const endpoint = relayEndpoint();
-    return endpoint ? `${withoutTrailingSlash(endpoint.relayUrl)}/oauth/callback` : null;
-  };
-
-  const denyToApp = (authRequest: AuthorizeRequest, serverBase: string): RemoteMcpHttpResponse =>
-    redirect(buildRedirect(authRequest.redirectUri, {
-      error: "access_denied",
-      error_description: "The person cancelled.",
-      state: authRequest.state,
-      iss: serverBase,
-    }));
-
-  // Step 1: the app sends the person here; "Continue with ADE" starts the ADE sign-in.
-  const handleAuthorize = (request: RemoteMcpHttpRequest, query: URLSearchParams, serverBase: string): RemoteMcpHttpResponse => {
-    const isPost = request.method === "POST";
-    if (!isPost && request.method !== "GET") return json(405, { error: "Method not allowed." });
-    const params = isPost ? parseForm(request) : query;
-    const parsed = parseAuthorizeRequest(params);
-    if (!parsed.ok) {
-      if (parsed.kind === "page") return html(400, renderMessagePage("Can't connect this app", parsed.message));
-      return redirect(buildRedirect(parsed.redirectUri, {
-        error: parsed.error,
-        error_description: parsed.description,
-        state: parsed.state,
-        iss: serverBase,
-      }));
-    }
-    const authRequest = parsed.request;
-    const machineName = args.machineName();
-    const oauth = args.account.oauth();
-    const callbackUrl = accountCallbackUrl();
-    const endpoint = relayEndpoint();
-    const ready = oauth && args.account.attestation() && callbackUrl && endpoint
-      ? { oauth, callbackUrl, endpoint }
-      : null;
-    const unavailable = !args.account.signedIn()
-      ? `${machineName} isn't signed in to an ADE account. Sign in to ADE on it, then try again.`
-      : !ready
-        ? `${machineName} can't check ADE sign-ins right now. Update ADE on it, then try again.`
-        : null;
-    if (!isPost) return html(200, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
-    if (params.get("decision") === "deny") return denyToApp(authRequest, serverBase);
-    if (unavailable || !ready) {
-      return html(409, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
-    }
-    const { nonce, accountChallenge } = authorization.beginSignIn(authRequest);
-    rememberIssuer(nonce, serverBase);
-    const signIn = new URL(`${withoutTrailingSlash(ready.oauth.issuer)}/oauth/authorize`);
-    signIn.searchParams.set("response_type", "code");
-    signIn.searchParams.set("client_id", ready.oauth.clientId);
-    signIn.searchParams.set("redirect_uri", ready.callbackUrl);
-    signIn.searchParams.set("code_challenge", accountChallenge);
-    signIn.searchParams.set("code_challenge_method", "S256");
-    // The relay routes the callback back to this machine by the key before the dot.
-    signIn.searchParams.set("state", `${ready.endpoint.endpointKey}.${nonce}`);
-    signIn.searchParams.set("scope", "openid profile email");
-    return redirect(signIn.toString());
-  };
-
-  /** Redeems ADE's sign-in code here, with a verifier only this computer holds. */
-  const exchangeAccountCode = async (code: string, verifier: string): Promise<string> => {
-    const oauth = args.account.oauth();
-    const callbackUrl = accountCallbackUrl();
-    if (!oauth || !callbackUrl) throw new Error("ADE sign-in isn't configured on this computer.");
-    const response = await fetch(`${withoutTrailingSlash(oauth.issuer)}/oauth/token`, {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({
-        grant_type: "authorization_code",
-        code,
-        code_verifier: verifier,
-        client_id: oauth.clientId,
-        redirect_uri: callbackUrl,
-      }).toString(),
-      signal: AbortSignal.timeout(10_000),
-    });
-    const body = await response.json().catch(() => null) as { access_token?: unknown } | null;
-    if (!response.ok || typeof body?.access_token !== "string") throw new Error(`ADE sign-in answered ${response.status}.`);
-    return body.access_token;
-  };
-
-  // Step 2: back from ADE sign-in. Check the account, then ask for access.
-  const handleAccountCallback = async (query: URLSearchParams, serverBase: string): Promise<RemoteMcpHttpResponse> => {
-    const state = query.get("state") ?? "";
-    const nonce = state.slice(state.indexOf(".") + 1);
-    const pending = nonce ? authorization.pendingAccountStep(nonce) : null;
-    if (!pending) {
-      return expiredSignIn();
-    }
-    const { request: authRequest } = pending;
-    const issuer = issuerFor(nonce, serverBase);
-    if (query.get("error") || !query.get("code")) {
-      authorization.forget(nonce);
-      return denyToApp(authRequest, issuer);
-    }
-    const owner = args.account.signedIn();
-    const attestation = args.account.attestation();
-    if (!owner || !attestation) {
-      authorization.forget(nonce);
-      return html(409, renderMessagePage("Can't connect", `${args.machineName()} isn't signed in to an ADE account.`));
-    }
-    try {
-      const token = await exchangeAccountCode(query.get("code")!, pending.accountVerifier);
-      await verifyClerkAccountAttestation({ token, expectedUserId: owner.userId, config: attestation });
-    } catch (error) {
-      authorization.forget(nonce);
-      const mismatch = error instanceof AccountAttestationError && error.code === "account_mismatch";
-      args.logger?.warn?.("remote_mcp.account_sign_in_failed", {
-        reason: error instanceof AccountAttestationError ? error.code : "exchange_failed",
+  const oauthRoutes = createRemoteMcpOAuthRoutes({
+    machineName: args.machineName,
+    account: args.account,
+    relayEndpoint: () => relayEndpoint(),
+    machineBase: base,
+    connectApp: (input) => {
+      const created = store.create({ kind: "app", ...input });
+      captureAdeMcpAnalytics({ analytics, surface: "api", action: "app_connected", outcome: "completed" });
+      args.logger?.info?.("remote_mcp.app_connected", {
+        connectionId: created.connection.id,
+        scope: created.connection.scope,
+        redirectHost: created.connection.redirectHost,
       });
-      return html(mismatch ? 403 : 502, renderMessagePage(
-        mismatch ? "Different ADE account" : "Couldn't check your sign-in",
-        mismatch
-          ? `${args.machineName()} belongs to ${owner.email ?? "another ADE account"}. Sign in with that account to connect apps to it.`
-          : "ADE couldn't confirm your sign-in. Go back to the app and try again.",
-      ));
-    }
-    const csrf = authorization.markSignedIn(nonce, owner);
-    if (!csrf) return expiredSignIn();
-    return html(200, renderConsentPage({
-      request: authRequest,
-      machineName: args.machineName(),
-      account: owner,
-      nonce,
-      csrf,
-      // The pending sign-in lives on this computer: post back to it, not the account address.
-      consentPath: `${base() ?? serverBase}/oauth/consent`,
-    }));
-  };
-
-  // Step 3: the person chose the access and allowed it.
-  const handleConsent = (request: RemoteMcpHttpRequest, serverBase: string): RemoteMcpHttpResponse => {
-    if (request.method !== "POST") return json(405, { error: "Method not allowed." });
-    const params = parseForm(request);
-    const nonce = params.get("nonce") ?? "";
-    const taken = authorization.takeConsent(nonce, params.get("csrf") ?? "");
-    if (!taken) return expiredSignIn();
-    const issuer = issuerFor(nonce, serverBase);
-    signInIssuers.delete(nonce);
-    const { request: authRequest } = taken;
-    if (params.get("decision") !== "allow") return denyToApp(authRequest, issuer);
-    const scope: RemoteMcpScope = params.get("access") === "read" ? "read" : "write";
-    const code = authorization.issueAuthCode({
-      clientId: authRequest.clientId,
-      redirectUri: authRequest.redirectUri,
-      codeChallenge: authRequest.codeChallenge,
-      scope,
-      clientName: authRequest.client.clientName,
-    });
-    return redirect(buildRedirect(authRequest.redirectUri, { code, state: authRequest.state, iss: issuer }));
-  };
-
-  const handleToken = (request: RemoteMcpHttpRequest): RemoteMcpHttpResponse => {
-    if (request.method !== "POST") return json(405, { error: "invalid_request" });
-    const params = parseForm(request);
-    const fail = (error: string, description: string, status = 400) =>
-      json(status, { error, error_description: description });
-    if (params.get("grant_type") !== "authorization_code") {
-      return fail("unsupported_grant_type", "Only authorization_code is supported.");
-    }
-    const pending = authorization.takeAuthCode(params.get("code") ?? "");
-    if (!pending) return fail("invalid_grant", "The authorization code is unknown, used, or expired.");
-    const clientId = params.get("client_id");
-    if (clientId && clientId !== pending.clientId) return fail("invalid_grant", "The code was issued to another client.");
-    const redirectUri = params.get("redirect_uri");
-    if (redirectUri && redirectUri !== pending.redirectUri) return fail("invalid_grant", "redirect_uri does not match.");
-    if (!verifyPkce(params.get("code_verifier") ?? "", pending.codeChallenge)) {
-      return fail("invalid_grant", "PKCE verification failed.");
-    }
-    if (!decodeClientId(pending.clientId)) return fail("invalid_client", "Unknown client.");
-    let created: ReturnType<typeof store.create>;
-    try {
-      created = store.create({
-        kind: "app",
-        label: pending.clientName,
-        scope: pending.scope,
-        redirectHost: redirectDisplayHost(pending.redirectUri),
-        clientKey: createHash("sha256").update(pending.clientId, "utf8").digest("hex"),
-      });
-    } catch (error) {
-      return fail("invalid_request", error instanceof Error ? error.message : String(error));
-    }
-    captureAdeMcpAnalytics({ analytics, surface: "api", action: "app_connected", outcome: "completed" });
-    args.logger?.info?.("remote_mcp.app_connected", {
-      connectionId: created.connection.id,
-      scope: created.connection.scope,
-      redirectHost: created.connection.redirectHost,
-    });
-    return json(200, {
-      access_token: created.token,
-      token_type: "Bearer",
-      scope: scopeToOAuth(created.connection.scope),
-    });
-  };
-
-  const handleRegister = (request: RemoteMcpHttpRequest): RemoteMcpHttpResponse => {
-    if (request.method !== "POST") return json(405, { error: "invalid_request" });
-    let body: unknown;
-    try {
-      body = JSON.parse(request.body ?? "");
-    } catch {
-      return json(400, { error: "invalid_client_metadata", error_description: "Send JSON." });
-    }
-    const result = registerClient(body);
-    if (!result.ok) return json(400, { error: result.error, error_description: result.description });
-    return json(201, {
-      client_id: result.clientId,
-      client_id_issued_at: Math.floor(Date.now() / 1000),
-      client_name: result.client.clientName,
-      redirect_uris: result.client.redirectUris,
-      grant_types: ["authorization_code"],
-      response_types: ["code"],
-      token_endpoint_auth_method: "none",
-    });
-  };
+      return created;
+    },
+    logger: args.logger,
+    fetchImpl: args.fetchImpl,
+    now,
+  });
 
   const handleHttp = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
-    const off = () => json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." });
+    const off = () => {
+      announceNotServing();
+      return json(404, { error: "ade_mcp_off", error_description: "ADE MCP is off on this computer." });
+    };
     if (!serving()) return off();
     const accountMount = request.mount?.kind === "account";
     // The account address is answered only for this computer's own account.
@@ -842,28 +552,9 @@ export function createRemoteMcpService(args: {
       return json(400, { error: "Bad path." });
     }
     const route = url.pathname.replace(/\/+$/, "") || "/";
-    switch (route) {
-      case "/mcp":
-        return await handleMcp(request, serverBase, accountMount);
-      case "/.well-known/oauth-protected-resource":
-      case "/.well-known/oauth-protected-resource/mcp":
-        return json(200, protectedResourceMetadata(serverBase, accountMount), { "cache-control": "max-age=300" });
-      case "/.well-known/oauth-authorization-server":
-      case "/.well-known/openid-configuration":
-        return json(200, authorizationServerMetadata(serverBase), { "cache-control": "max-age=300" });
-      case "/oauth/register":
-        return handleRegister(request);
-      case "/oauth/authorize":
-        return handleAuthorize(request, url.searchParams, serverBase);
-      case "/oauth/account-callback":
-        return await handleAccountCallback(url.searchParams, serverBase);
-      case "/oauth/consent":
-        return handleConsent(request, serverBase);
-      case "/oauth/token":
-        return handleToken(request);
-      default:
-        return json(404, { error: "not_found" });
-    }
+    if (route === "/mcp") return await handleMcp(request, serverBase, accountMount);
+    return await oauthRoutes.handle(route, request, url.searchParams, serverBase, accountMount)
+      ?? json(404, { error: "not_found" });
   };
 
   // ── Settings ──────────────────────────────────────────────────────────────
@@ -876,21 +567,21 @@ export function createRemoteMcpService(args: {
   const getStatus = async (): Promise<RemoteMcpStatus> => {
     const endpoint = relayEndpoint();
     const isSignedIn = signedIn();
-    let machineList: RemoteMcpStatus["machines"] = [];
+    let roster: RemoteMcpRosterMachine[] = [];
     if (isSignedIn) {
       try {
-        machineList = (await machines.roster()).map((machine) => ({
-          machineKey: machine.machineKey,
-          name: machine.name,
-          included: machine.included,
-          supported: machine.supported,
-          online: machine.online,
-          isThisMachine: machine.isThisMachine,
-        }));
+        roster = await machines.roster();
       } catch (error) {
         warn("remote_mcp.roster_failed", error);
       }
     }
+    const rosterNames = new Map(roster.map((machine) => [machine.machineKey, machine.name]));
+    // A connection kept to one computer is shown with that computer's roster name.
+    const connections = (isSignedIn ? store.list() : []).map((connection) => {
+      const only = connection.onlyMachine;
+      const name = only ? rosterNames.get(only.machineKey) : undefined;
+      return only && name ? { ...connection, onlyMachine: { ...only, name } } : connection;
+    });
     return {
       enabled: accountOn(),
       signedIn: isSignedIn,
@@ -898,8 +589,8 @@ export function createRemoteMcpService(args: {
       relayConnected: endpoint?.connected === true,
       machineName: args.machineName(),
       thisMachineServing: serving(),
-      machines: machineList,
-      connections: isSignedIn ? store.list() : [],
+      machines: roster.map(({ endpointKey: _endpointKey, version: _version, ...machine }) => machine),
+      connections,
     };
   };
 
@@ -914,8 +605,6 @@ export function createRemoteMcpService(args: {
       throw new Error("Sign in to ADE on this computer first: ADE MCP belongs to your ADE account.");
     }
   };
-
-  const SETTINGS_REJECTED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
 
   /** The settings store uploads on its next tick; a person's change should reach the other computers now. */
   const pushSettings = (): void => {
@@ -955,7 +644,7 @@ export function createRemoteMcpService(args: {
       requireSignedIn();
       if (input.enabled) await ensureAccountSecret();
       if (!args.settings.set(REMOTE_MCP_SETTINGS_SCOPE, REMOTE_MCP_ENABLED_KEY, input.enabled)) {
-        throw new Error(SETTINGS_REJECTED);
+        throw new Error(REMOTE_MCP_SAVE_FAILED);
       }
       captureAdeMcpAnalytics({
         analytics,
@@ -975,20 +664,14 @@ export function createRemoteMcpService(args: {
       requireSignedIn();
       // Settings passes the key; `ade mcp machine` may pass a name.
       let machineKey = isRemoteMcpMachineKey(input.machineKey) ? input.machineKey : null;
-      const roster = await machines.roster();
       if (!machineKey && typeof input.machine === "string" && input.machine.trim()) {
-        const wanted = input.machine.trim().toLowerCase();
-        const matches = roster.filter((machine) => machine.machineKey === wanted || machine.name.toLowerCase() === wanted);
-        if (matches.length > 1) throw new Error(`More than one computer is called "${input.machine.trim()}". Pass its key instead.`);
-        machineKey = matches[0]?.machineKey ?? null;
-        if (!machineKey) {
-          const names = roster.map((machine) => machine.name).join(", ") || "none";
-          throw new Error(`No computer "${input.machine.trim()}" on this ADE account. Computers: ${names}.`);
-        }
+        const resolved = await machines.resolve(input.machine);
+        if (resolved.kind === "error") throw new Error(resolved.message);
+        machineKey = resolved.kind === "here" ? resolved.machine.key || null : resolved.machine.machineKey;
       }
       if (!machineKey) throw new Error("Pass the computer's machineKey (see getStatus).");
       const existing = readRemoteMcpMachineEntry(args.settings, machineKey);
-      const listed = roster.find((machine) => machine.machineKey === machineKey) ?? null;
+      const listed = (await machines.roster()).find((machine) => machine.machineKey === machineKey) ?? null;
       if (!existing && !listed) throw new Error("That computer isn't on this ADE account.");
       // A computer that never published gets a stub; it fills in the rest and keeps `included`.
       const ok = writeRemoteMcpMachineEntry(args.settings, {
@@ -999,7 +682,7 @@ export function createRemoteMcpService(args: {
         included: input.included,
         updatedAt: new Date(now()).toISOString(),
       });
-      if (!ok) throw new Error(SETTINGS_REJECTED);
+      if (!ok) throw new Error(REMOTE_MCP_SAVE_FAILED);
       args.logger?.info?.("remote_mcp.machine_included_changed", { machineKey, included: input.included });
       pushSettings();
       announceIfChanged();

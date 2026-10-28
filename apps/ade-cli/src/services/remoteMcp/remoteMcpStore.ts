@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
-import { writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
+import { getErrorMessage, isEnoentError, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import { securePrivatePath } from "../../lib/trustedWindowsTools";
 import type { AccountVaultStore } from "../account/accountVaultStore";
 import {
@@ -9,6 +9,7 @@ import {
   type RemoteMcpConnectionSummary,
   type RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
+import { isRemoteMcpMachineKey } from "./remoteMcpAccount";
 
 /**
  * The account's ADE MCP connections, kept in the account vault so a token
@@ -21,17 +22,24 @@ import {
  * see `remoteMcpService.authenticate`).
  *
  * Before accounts, each computer kept its own `<secrets>/remote-mcp.json`.
- * `readLegacyRemoteMcpFile` reads it once for the migration into the vault.
+ * `readLegacyRemoteMcpFile` reads it once for the migration into the vault;
+ * a connection copied from it keeps the computer it was made on
+ * (`machineKey`), so it does not start reaching every computer of the account.
  */
 
 /**
- * The stored record: what Settings and the CLI see, plus the token's hash and,
- * for an app, which registration it signed in with.
+ * The stored record: what Settings and the CLI see, plus the token's hash, for
+ * an app which registration it signed in with, and for a connection made
+ * before accounts the one computer it may reach.
  */
-export type RemoteMcpConnection = RemoteMcpConnectionSummary & { tokenHash: string; clientKey?: string };
+type RemoteMcpConnection = Omit<RemoteMcpConnectionSummary, "onlyMachine"> & {
+  tokenHash: string;
+  clientKey?: string;
+  machineKey?: string;
+};
 
-export const MAX_REMOTE_MCP_CONNECTIONS = 50;
-export const MAX_REMOTE_MCP_LABEL_CHARS = 60;
+const MAX_REMOTE_MCP_CONNECTIONS = 50;
+const MAX_REMOTE_MCP_LABEL_CHARS = 60;
 export const REMOTE_MCP_TOKEN_PREFIX = "ade_mcp_";
 
 export const REMOTE_MCP_VAULT_SCOPE = "all";
@@ -39,10 +47,13 @@ export const REMOTE_MCP_VAULT_KIND = "ade_mcp";
 export const REMOTE_MCP_ACCOUNT_SECRET_KEY = "account-secret";
 const CONNECTION_KEY_PREFIX = "connection:";
 
+/** A write the account stores refused because the signed-in account changed under it. */
+export const REMOTE_MCP_SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
+
 /** The slice of the account vault ADE MCP uses. */
 export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync">;
 
-export function hashRemoteMcpToken(token: string): string {
+function hashRemoteMcpToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
 }
 
@@ -76,12 +87,20 @@ function parseConnection(value: unknown): RemoteMcpConnection | null {
     lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
     redirectHost: typeof record.redirectHost === "string" ? record.redirectHost.slice(0, 253) : null,
     ...(typeof record.clientKey === "string" && /^[a-f0-9]{64}$/.test(record.clientKey) ? { clientKey: record.clientKey } : {}),
+    ...(isRemoteMcpMachineKey(record.machineKey) ? { machineKey: record.machineKey } : {}),
   };
 }
 
-export function summarizeRemoteMcpConnection(connection: RemoteMcpConnection): RemoteMcpConnectionSummary {
-  const { tokenHash: _tokenHash, clientKey: _clientKey, ...summary } = connection;
-  return summary;
+/** What Settings and the CLI see: no hash or registration, and the one computer by name when there is one. */
+function summarizeRemoteMcpConnection(
+  connection: RemoteMcpConnection,
+  machineName: (machineKey: string) => string | null,
+): RemoteMcpConnectionSummary {
+  const { tokenHash: _tokenHash, clientKey: _clientKey, machineKey, ...summary } = connection;
+  return {
+    ...summary,
+    onlyMachine: machineKey ? { machineKey, name: machineName(machineKey) || machineKey.slice(0, 8) } : null,
+  };
 }
 
 /** The vault value: everything but `lastUsedAt`, which each computer keeps itself. */
@@ -92,16 +111,12 @@ function vaultValue(connection: RemoteMcpConnection): string {
 
 type StoreLogger = { warn?: (event: string, data?: Record<string, unknown>) => void };
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-const SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
-
 export function createRemoteMcpStore(args: {
   vault: RemoteMcpVault;
   /** When the connection was last used, newest across the account; null if never. */
   lastUsedAt: (id: string) => string | null;
+  /** A computer's name for a connection kept to one computer; null when unknown. */
+  machineName: (machineKey: string) => string | null;
   logger?: StoreLogger;
   now?: () => Date;
 }) {
@@ -125,7 +140,7 @@ export function createRemoteMcpStore(args: {
         try {
           connection = raw ? parseConnection(JSON.parse(raw)) : null;
         } catch (error) {
-          args.logger?.warn?.("remote_mcp.connection_unreadable", { key: row.key, error: errorMessage(error) });
+          args.logger?.warn?.("remote_mcp.connection_unreadable", { key: row.key, error: getErrorMessage(error) });
           connection = null;
         }
         // The key names the record; a value claiming another id is not trusted.
@@ -138,8 +153,11 @@ export function createRemoteMcpStore(args: {
     return out.sort((left, right) => left.createdAt.localeCompare(right.createdAt));
   };
 
+  const summarize = (connection: RemoteMcpConnection): RemoteMcpConnectionSummary =>
+    summarizeRemoteMcpConnection(connection, args.machineName);
+
   const withLastUsed = (connection: RemoteMcpConnection): RemoteMcpConnectionSummary => ({
-    ...summarizeRemoteMcpConnection(connection),
+    ...summarize(connection),
     lastUsedAt: args.lastUsedAt(connection.id) ?? connection.lastUsedAt ?? null,
   });
 
@@ -150,7 +168,7 @@ export function createRemoteMcpStore(args: {
       `${CONNECTION_KEY_PREFIX}${connection.id}`,
       vaultValue(connection),
     );
-    if (!ok) throw new Error(SAVE_FAILED);
+    if (!ok) throw new Error(REMOTE_MCP_SAVE_FAILED);
   };
 
   const drop = (id: string): boolean =>
@@ -166,9 +184,12 @@ export function createRemoteMcpStore(args: {
       return read().some((entry) => entry.id === id);
     },
 
-    /** Copies a connection as it is (same id and hash), for the legacy migration. */
-    importConnection(connection: RemoteMcpConnection): void {
-      save(connection);
+    /**
+     * Copies a connection as it is (same id and hash), for the legacy
+     * migration, kept to the computer it was made on.
+     */
+    importConnection(connection: RemoteMcpConnection, machineKey: string): void {
+      save({ ...connection, machineKey });
     },
 
     /** Makes a connection and returns its token, which is not kept anywhere. */
@@ -206,7 +227,7 @@ export function createRemoteMcpStore(args: {
       };
       save(connection);
       for (const old of replaced) drop(old.id);
-      return { token, connection: summarizeRemoteMcpConnection(connection) };
+      return { token, connection: summarize(connection) };
     },
 
     update(id: string, patch: { scope?: RemoteMcpScope; label?: string }): RemoteMcpConnectionSummary {
@@ -223,7 +244,7 @@ export function createRemoteMcpStore(args: {
 
     remove(id: string): boolean {
       if (!read().some((entry) => entry.id === id)) return false;
-      if (!drop(id)) throw new Error(SAVE_FAILED);
+      if (!drop(id)) throw new Error(REMOTE_MCP_SAVE_FAILED);
       return true;
     },
 
@@ -241,11 +262,9 @@ export function createRemoteMcpStore(args: {
   };
 }
 
-export type RemoteMcpStore = ReturnType<typeof createRemoteMcpStore>;
-
 // ── The per-computer file from before accounts ─────────────────────────────
 
-export type LegacyRemoteMcpFile = {
+type LegacyRemoteMcpFile = {
   enabled: boolean;
   connections: RemoteMcpConnection[];
   /** Set once its contents went to the account. */
@@ -257,7 +276,9 @@ export function readLegacyRemoteMcpFile(filePath: string, logger?: StoreLogger):
   let text: string;
   try {
     text = fs.readFileSync(filePath, "utf8");
-  } catch {
+  } catch (error) {
+    // No file is the usual case; anything else (permissions, a directory) is worth a line.
+    if (!isEnoentError(error)) logger?.warn?.("remote_mcp.legacy_store_unreadable", { error: getErrorMessage(error) });
     return null;
   }
   try {
@@ -271,7 +292,7 @@ export function readLegacyRemoteMcpFile(filePath: string, logger?: StoreLogger):
       migratedAt: typeof parsedFile.migratedAt === "string" ? parsedFile.migratedAt : null,
     };
   } catch (error) {
-    logger?.warn?.("remote_mcp.legacy_store_unreadable", { error: errorMessage(error) });
+    logger?.warn?.("remote_mcp.legacy_store_unreadable", { error: getErrorMessage(error) });
     return null;
   }
 }

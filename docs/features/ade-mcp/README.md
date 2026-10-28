@@ -43,7 +43,7 @@ calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 | `apps/desktop/src/main/services/adeActions/actionPolicy.ts`, `apps/desktop/src/shared/adeActionAccess.ts` | `remote_mcp` is CTO-only; its writes are user-only (desktop clients); `createToken` is secret-bearing. |
 | `apps/desktop/src/shared/types/remoteMcp.ts` | Wire types shared by the brain, preload and Settings. |
 | `apps/desktop/src/renderer/components/settings/AdeMcpPage.tsx` | Settings → You → ADE MCP, the account's page. It calls this desktop's own brain with no pin: everything on it is the account's except Activity, which is this computer's. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpApps.ts`, `remoteMcpAppSource.ts` | The MCP App: one self-contained HTML view (`ui://ade/app-<hash>.html`) and the `_meta.ui` the tools carry. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpApps.ts`, `remoteMcpApp/` | The MCP App: one self-contained HTML view (`ui://ade/app-<hash>.html`) and the `_meta.ui` the tools carry. Its source is the TypeScript modules and `app.css` in `remoteMcpApp/` (entry `app.ts`); `npm run mcp-app:build` (`scripts/generate-remote-mcp-app.mjs`, an esbuild bundle) writes `app.generated.ts`, and `mcp-app:check` (run by `pretest`) fails when it is stale. |
 
 ## Account server
 
@@ -412,15 +412,16 @@ the conversation instead of JSON. Hosts that don't get the same text and
 `structuredContent` as before.
 
 - One self-contained HTML app serves every view: `ui://ade/app-<hash>.html`,
-  `text/html;profile=mcp-app`, no network, no CDN, about 57 KB. The hash
+  `text/html;profile=mcp-app`, no network, no CDN, about 44 KB. The hash
   changes with the HTML, so a host that caches resources gets the new view;
   `resources/read` answers any `ui://ade/app*.html` with today's HTML.
 - Tools with a view carry `_meta.ui.resourceUri` (and the older flat
   `ui/resourceUri`): `inbox`, `chat_list`, `chat_read`, `chat_respond`,
   `chat_send`, `chat_start`, `prs_list`, `prs_show`, `prs_checks`,
   `lanes_list`, `diff_changes`, `diff_patch`, `usage_limits`, `machines_list`.
-  The view picks itself from the host's tool name, else from the result's
-  shape; anything unknown is a key/value card, never a blank frame.
+  The view picks itself from the host's tool name, else from
+  `structuredContent.view`; anything unknown is a key/value card, never a
+  blank frame. Provider colours come from `PROVIDER_COLOR_TABLE`.
 - The inbox view answers in place: its option, Approve and Deny buttons call
   `chat_respond` (or `chat_send` for an `ask`) through the host, with the
   card's own `project` and `machine`, and show the answered state. Read-only
@@ -478,8 +479,19 @@ machine's server has.
   does); a computer on a custom `ADE_TUNNEL_RELAY_URL` can answer its own
   calls but not be forwarded to from the others.
 - Deploy order: push relay (`ade_mcp` vault kind) first, then the tunnel relay,
-  then ADE. An older push relay refuses the `ade_mcp` rows, so connections stay
-  on the computer that made them until it is deployed.
+  then ADE. An older push relay refuses a whole batch for a kind it does not
+  know, so the vault uploads `ade_mcp` rows in their own batch
+  (`NEWER_VAULT_KINDS`): against an older Worker only those rows wait (and the
+  connections stay on the computer that made them); every other credential
+  keeps syncing.
+- Connections imported from a computer's own ADE MCP (before it covered the
+  account) keep reaching only that computer (`onlyMachine`); reconnecting the
+  app makes an account-wide one.
+- The `ade_mcp` vault kind and the `ade_mcp.*` account settings are written
+  only by the ADE MCP service, in process. The `account_vault` and
+  `account_settings` actions refuse them for every caller, so no agent or
+  connected app can mint a token, read the account secret, or point a
+  computer's entry somewhere else.
 
 ## Cost
 

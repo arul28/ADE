@@ -6,7 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey } from "jose";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { createRemoteMcpService, type RemoteMcpHttpRequest } from "./remoteMcpService";
+import type { RemoteMcpHttpRequest } from "./remoteMcpHttp";
+import { createRemoteMcpService } from "./remoteMcpService";
 
 /**
  * Signing an MCP app in with the person's ADE account, through the service's

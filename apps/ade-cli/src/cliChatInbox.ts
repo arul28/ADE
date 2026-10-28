@@ -30,7 +30,7 @@ const MAX_DETAILED_CHATS = 12;
 const MAX_TEXT_CHARS = 600;
 const MAX_OPTIONS = 12;
 
-export type ChatInboxKind = "question" | "approval" | "plan" | "ask";
+type ChatInboxKind = "question" | "approval" | "plan" | "ask";
 
 export type ChatInboxQuestion = {
   id: string;
@@ -142,12 +142,23 @@ function respondCommands(sessionId: string, itemId: string, kind: ChatInboxKind,
   return [`${base} --text "<answer>"`];
 }
 
+/** A pending-input row as the brain sends it, with the fields this reads. */
+function isPendingInputRequest(row: JsonObject): row is JsonObject & PendingInputRequest {
+  return typeof row.requestId === "string" && typeof row.kind === "string";
+}
+
+/** An inbox item, from this computer or merged from another. */
+function isInboxItem(row: JsonObject): row is JsonObject & ChatInboxItem {
+  return typeof row.sessionId === "string" && typeof row.kind === "string" && typeof row.text === "string"
+    && Array.isArray(row.respond);
+}
+
 function chatLink(sessionId: string, laneId: string): string {
   return buildDeeplink({ kind: "session", sessionId, ...(laneId ? { laneId } : {}) });
 }
 
 /** The result of `ade chat inbox`, from its steps' values. */
-export function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
+function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[] } {
   const detailed = chatsWithCards(values);
   const items: ChatInboxItem[] = [];
   for (const row of waitingChats(values)) {
@@ -165,7 +176,7 @@ export function chatInboxFromValues(values: JsonObject): { items: ChatInboxItem[
     const index = detailed.indexOf(row);
     const listed = index >= 0 ? unwrapActionEnvelope(values[`pending${index}`]) : null;
     const requests = isRecord(listed) && listed.ok !== false
-      ? firstArray(listed, ["requests"]) as unknown as PendingInputRequest[]
+      ? firstArray(listed, ["requests"]).filter(isPendingInputRequest)
       : [];
     for (const request of requests) {
       const requestId = pendingInputItemId(request);
@@ -252,10 +263,10 @@ function ago(iso: string | null): string | null {
 }
 
 /** `--text`: one block per item, grouped under its chat. Rows merged from other machines lead with the machine. */
-export function formatChatInbox(value: unknown): string {
+function formatChatInbox(value: unknown): string {
   const rows = firstArray(value, ["items"]);
   const unavailable = rows.filter((row) => asString(row.unavailable));
-  const items = rows.filter((row) => !asString(row.unavailable)) as unknown as Array<ChatInboxItem & JsonObject>;
+  const items = rows.filter((row) => !asString(row.unavailable)).filter(isInboxItem);
   const lines: string[] = [];
   if (items.length === 0) lines.push("Nothing needs you.");
   else lines.push(`${items.length === 1 ? "1 thing needs" : `${items.length} things need`} you:`);

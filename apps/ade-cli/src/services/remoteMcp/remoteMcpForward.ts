@@ -1,3 +1,4 @@
+import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import type { RemoteMcpMachine } from "../../../../desktop/src/shared/types/remoteMcp";
 import {
   isRemoteMcpEnabledForAccount,
@@ -40,16 +41,14 @@ export type RemoteMcpCallContext = {
   accountMount: boolean;
 };
 
-export type RemoteMcpMachineRef = { key: string; name: string };
+type RemoteMcpMachineRef = { key: string; name: string };
 
 export type RemoteMcpRosterMachine = RemoteMcpMachine & {
   endpointKey: string | null;
   version: string | null;
-  /** Included, running this code, online (or unknown), and ADE MCP on for the account. */
-  serving: boolean;
 };
 
-export type RemoteMcpResolvedMachine =
+type RemoteMcpResolvedMachine =
   | { kind: "here"; machine: RemoteMcpMachineRef }
   | { kind: "remote"; machine: RemoteMcpRosterMachine }
   | { kind: "error"; message: string };
@@ -76,15 +75,13 @@ export type RemoteMcpDirectoryMachine = { machineKey: string; name: string | nul
 const DIRECTORY_TTL_MS = 15_000;
 const DIRECTORY_FAILURE_TTL_MS = 5_000;
 const DIRECTORY_TIMEOUT_MS = 8_000;
-const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
+/** The MCP protocol version this server answers with when a client names none it knows. */
+export const REMOTE_MCP_DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 export const REMOTE_MCP_VIA_HEADER = "x-ade-mcp-via";
 
-function errorText(text: string): RemoteMcpToolResult {
+/** A tool result that failed, with one sentence for the model. */
+export function toolError(text: string): RemoteMcpToolResult {
   return { content: [{ type: "text", text }], isError: true };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** A machine name for a header: plain ASCII, so any HTTP stack carries it. */
@@ -115,6 +112,7 @@ export function createRemoteMcpMachineRouter(deps: {
   listAccountMachines: () => Promise<RemoteMcpDirectoryMachine[] | null>;
   fetchImpl?: typeof fetch;
   now?: () => number;
+  logger?: { warn?: (event: string, data?: Record<string, unknown>) => void };
 }): RemoteMcpMachineRouter {
   const now = deps.now ?? Date.now;
   let directory: { at: number; ttl: number; machines: RemoteMcpDirectoryMachine[] | null } | null = null;
@@ -132,7 +130,8 @@ export function createRemoteMcpMachineRouter(deps: {
             timer.unref?.();
           }),
         ]);
-      } catch {
+      } catch (error) {
+        deps.logger?.warn?.("remote_mcp.directory_read_failed", { error: getErrorMessage(error) });
         machines = null;
       }
       directory = { at: now(), ttl: machines ? DIRECTORY_TTL_MS : DIRECTORY_FAILURE_TTL_MS, machines };
@@ -214,9 +213,9 @@ export function createRemoteMcpMachineRouter(deps: {
 
   const forward: RemoteMcpMachineRouter["forward"] = async (machine, call, context, timeoutMs) => {
     const relay = deps.relayUrl()?.replace(/\/+$/, "");
-    if (!relay) return errorText(`This computer has no relay address yet, so it can't reach ${machine.name}.`);
-    if (!context.bearer) return errorText(`This call has no token to send on to ${machine.name}.`);
-    if (!machine.endpointKey) return errorText(unavailableReason(machine) ?? `${machine.name} can't take calls.`);
+    if (!relay) return toolError(`This computer has no relay address yet, so it can't reach ${machine.name}.`);
+    if (!context.bearer) return toolError(`This call has no token to send on to ${machine.name}.`);
+    if (!machine.endpointKey) return toolError(unavailableReason(machine) ?? `${machine.name} can't take calls.`);
     const fetchImpl = deps.fetchImpl ?? fetch;
     let response: Response;
     let body: string;
@@ -227,7 +226,7 @@ export function createRemoteMcpMachineRouter(deps: {
           authorization: `Bearer ${context.bearer}`,
           "content-type": "application/json",
           accept: "application/json",
-          "mcp-protocol-version": context.protocolVersion || DEFAULT_PROTOCOL_VERSION,
+          "mcp-protocol-version": context.protocolVersion || REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
           // Cloudflare's bot check refuses some default library agents (error 1010).
           "user-agent": `ADE/${remoteMcpAdeVersion()} (ADE MCP forward)`,
           [REMOTE_MCP_VIA_HEADER]: encodeViaHeader(thisMachine().name),
@@ -239,9 +238,9 @@ export function createRemoteMcpMachineRouter(deps: {
     } catch (error) {
       const name = error instanceof Error ? error.name : "";
       if (name === "TimeoutError" || name === "AbortError") {
-        return errorText(`${machine.name} didn't answer within ${Math.round(timeoutMs / 1000)}s. It may still be running the call.`);
+        return toolError(`${machine.name} didn't answer within ${Math.round(timeoutMs / 1000)}s. It may still be running the call.`);
       }
-      return errorText(`Couldn't reach ${machine.name}: ${errorMessage(error)}.`);
+      return toolError(`Couldn't reach ${machine.name}: ${getErrorMessage(error)}.`);
     }
     let parsed: Record<string, unknown> | null = null;
     try {
@@ -255,28 +254,28 @@ export function createRemoteMcpMachineRouter(deps: {
       case 200:
         break;
       case 401:
-        return errorText(
+        return toolError(
           `ADE on ${machine.name} didn't accept this connection. If ${machine.name} runs an older ADE, update ADE there; `
           + "if it was just set up, try again in a minute.",
         );
       case 404:
-        return errorText(relayError === "ade_mcp_off"
+        return toolError(relayError === "ade_mcp_off"
           ? `ADE MCP is off on ${machine.name}, or it is left out of ADE MCP. The person can change that in Settings → ADE MCP.`
           : `ADE on ${machine.name} is older and can't take account calls yet. Update ADE there.`);
       case 429:
-        return errorText(`${machine.name} is busy with other ADE MCP calls. Wait a moment, then retry.`);
+        return toolError(`${machine.name} is busy with other ADE MCP calls. Wait a moment, then retry.`);
       case 503:
-        return errorText(`${machine.name} is offline right now. Try again when it is awake.`);
+        return toolError(`${machine.name} is offline right now. Try again when it is awake.`);
       default:
-        return errorText(`${machine.name} answered ${response.status}${relayError ? ` (${relayError})` : ""}.`);
+        return toolError(`${machine.name} answered ${response.status}${relayError ? ` (${relayError})` : ""}.`);
     }
     const rpcError = parsed?.error && typeof parsed.error === "object" ? parsed.error as { message?: unknown } : null;
     if (rpcError) {
-      return errorText(`ADE on ${machine.name} refused the call: ${typeof rpcError.message === "string" ? rpcError.message : "unknown error"}.`);
+      return toolError(`ADE on ${machine.name} refused the call: ${typeof rpcError.message === "string" ? rpcError.message : "unknown error"}.`);
     }
     const result = parsed?.result;
     if (!result || typeof result !== "object" || !Array.isArray((result as { content?: unknown }).content)) {
-      return errorText(`ADE on ${machine.name} sent an answer this computer can't read.`);
+      return toolError(`ADE on ${machine.name} sent an answer this computer can't read.`);
     }
     return result as RemoteMcpToolResult;
   };

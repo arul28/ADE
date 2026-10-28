@@ -26,6 +26,11 @@ export type RemoteMcpConnectionSummary = {
   lastUsedAt: string | null;
   /** The redirect host an app signed in from, shown next to its name. */
   redirectHost: string | null;
+  /**
+   * A connection made for one computer before ADE MCP covered the account
+   * keeps reaching only that computer; null reaches every included one.
+   */
+  onlyMachine: { machineKey: string; name: string } | null;
 };
 
 /** One of the account's computers, as ADE MCP sees it. */
@@ -41,6 +46,8 @@ export type RemoteMcpMachine = {
   supported: boolean;
   /** From the account directory; null when it could not be read. */
   online: boolean | null;
+  /** On, included, joined and not known to be offline: it can answer calls. */
+  serving: boolean;
   isThisMachine: boolean;
 };
 

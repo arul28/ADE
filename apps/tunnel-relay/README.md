@@ -142,6 +142,14 @@ computer holding the pending sign-in.
   for another account removes the machine from the account it joined before. A
   control socket that closes does not leave: an offline computer is skipped.
   Membership messages are applied one at a time, in the order sent.
+- **Retries.** A join or leave the account object fails is not lost: an
+  account still to leave stays in the machine object's storage
+  (`mcpAccountLeaving`), and while the control socket stays open the machine
+  object's alarm retries both every 60s until they take (the brain sends
+  `mcp_state` only on control open and change). The next `mcp_state` retries
+  them too. A machine object sent an account request for an account it is not
+  on leaves that account (or, when it is the one its brain asked for, retries
+  the join).
 - **The account object** stores `members` (machine relay keys, at most 32, most
   recent registration last; the oldest drops out past 32) and `front` (the
   machine that last answered). Internal paths, never routed publicly:
@@ -279,7 +287,9 @@ in the dashboard (Workers → **ade-tunnel-relay** → Logs) and stream live via
 logged — never per-frame, so a busy tunnel stays cheap: `host_registered`,
 `connect_rejected` (`reason: host_offline | too_many | bridge_rejected`), `auth_failed`
 (`role: host | pipe`), `mcp_account_joined` / `mcp_account_left` (machine and
-account key prefixes only), `mcp_account_rejected` (`reason: bad_secret`, never
+account key prefixes only), `mcp_account_add_failed` / `mcp_account_remove_failed`
+(prefixes and the status or error name), `mcp_account_front_failed` (recording
+the account's front), `mcp_account_rejected` (`reason: bad_secret`, never
 the secret), `mcp_account_sync_failed`, `cloudflare_transient` (a Durable Object restarting under
 Cloudflare: "storage is no longer accessible", "instance is no longer active",
 "internal error; reference = …"). The Worker retries such a failure once on a

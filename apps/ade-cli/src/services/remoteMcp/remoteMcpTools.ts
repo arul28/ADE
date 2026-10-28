@@ -1,4 +1,6 @@
 import { buildDeeplink } from "../../../../desktop/src/shared/deeplinks";
+import type { RemoteMcpToolResult } from "./remoteMcpForward";
+import { MAX_OUTPUT_BYTES, type RemoteRunResult } from "./remoteMcpRunner";
 
 /**
  * ADE MCP's typed tools: named inputs a client can check before calling. Each
@@ -12,16 +14,17 @@ import { buildDeeplink } from "../../../../desktop/src/shared/deeplinks";
  * model needs (the CLI's own lists can run past a megabyte); `next` is the
  * next step, written where the model decides it, instead of as a rule in the
  * tool text. The `result` shape of each tool is noted beside it; the ADE MCP
- * app renders these, so keep them stable.
+ * app renders these (it reads `structuredContent.view`, the tool's name, to
+ * pick how), so keep them stable.
  *
  * Text here is paid for by every connected app before it does anything, and
  * the budget test (remoteMcpContextBudget.test.ts) holds it: state each rule
  * once, where it is read.
  */
 
-export type TypedToolInput = Record<string, unknown>;
+type TypedToolInput = Record<string, unknown>;
 
-export type TypedToolBuild = { argv: string[] } | { error: string };
+type TypedToolBuild = { argv: string[] } | { error: string };
 
 export type TypedTool = {
   name: string;
@@ -34,6 +37,10 @@ export type TypedTool = {
   write?: true;
   /** Answers for the whole computer, so it takes no `project`. */
   machineWide?: true;
+  /** A list that takes `machine: "all"`: one row per computer of the account. */
+  fanOut?: true;
+  /** The ADE MCP app (remoteMcpApps.ts) can draw its result. */
+  view?: true;
   /**
    * Without `project`, runs in each of the computer's recent projects and
    * merges the shaped results; with `project`, runs in that one only.
@@ -66,9 +73,13 @@ const LIMIT = (max: number, fallback: number) => ({
 
 const LARGE_OUTPUT_BYTES = 8 * 1024 * 1024;
 
-function text(input: TypedToolInput, key: string): string | null {
-  const value = input[key];
+/** A string with something in it, trimmed; null for anything else. */
+export function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function text(input: TypedToolInput, key: string): string | null {
+  return nonEmptyString(input[key]);
 }
 
 function integer(input: TypedToolInput, key: string, fallback: number, max: number): number {
@@ -133,10 +144,6 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): Record<
   return out;
 }
 
-function str(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
-}
-
 function timestamp(value: unknown): number {
   const parsed = typeof value === "string" ? Date.parse(value) : NaN;
   return Number.isFinite(parsed) ? parsed : 0;
@@ -166,11 +173,18 @@ const PR_STATES = ["open", "closed", "merged", "all"] as const;
 // "until it is done" and waited out the clock on a chat that went idle.
 const WAIT_TARGETS = ["idle", "active", "awaiting-input"] as const;
 const DECISIONS = { approve: "--approve", approve_for_session: "--approve-session", deny: "--deny" } as const;
+/** A `decision` chat_respond knows; own keys only, so `toString` or `__proto__` is not one. */
+function isDecision(value: unknown): value is keyof typeof DECISIONS {
+  return typeof value === "string" && Object.hasOwn(DECISIONS, value);
+}
 const MAX_WAIT_SECONDS = 300;
 /** How long chat_start waits for the new lane to be set up and the agent to start. */
 const START_WAIT_SECONDS = 90;
 
 const WAITS_ON_PERSON = "It waits on the person: see inbox.";
+
+/** Lists the computers of the account; answered by the protocol, not a command. */
+export const MACHINES_TOOL_NAME = "machines_list";
 
 export const TYPED_TOOLS: readonly TypedTool[] = [
   // result: [{ projectId, displayName, rootPath, lastOpenedAt, exists, gitOriginUrl }]
@@ -179,6 +193,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     title: "List projects",
     description: "Projects on this computer, last opened first.",
     machineWide: true,
+    fanOut: true,
     properties: {},
     build: () => ({ argv: ["projects", "list", "--json"] }),
     shape: (value) => records(value)
@@ -190,6 +205,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "lanes_list",
     title: "List lanes",
     description: "The project's lanes (git worktrees): id, branch, status.",
+    fanOut: true,
+    view: true,
     properties: {
       include_archived: { type: "boolean", description: "Include archived lanes." },
     },
@@ -273,6 +290,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "diff_changes",
     title: "List a lane's changed files",
     description: "A lane's changed files: staged and unstaged, or with `branch`, everything since its base.",
+    view: true,
     properties: {
       lane: LANE,
       branch: { type: "boolean", description: "Compare the whole branch with its base." },
@@ -289,6 +307,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "diff_patch",
     title: "Show a file's diff",
     description: "One changed file's patch in a lane. A new (untracked) file has none: use files_read.",
+    view: true,
     properties: {
       lane: LANE,
       path: RELATIVE_PATH,
@@ -326,6 +345,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "prs_list",
     title: "List pull requests",
     description: "The project's pull requests, newest first, with checks and review state.",
+    view: true,
     properties: {
       state: { type: "string", enum: [...PR_STATES], description: "Default open." },
       lane: { ...LANE, description: "Only this lane's." },
@@ -351,6 +371,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "prs_show",
     title: "Show a pull request",
     description: "One pull request: body, labels, reviewers, linked issues.",
+    view: true,
     properties: { pr: PR },
     required: ["pr"],
     build: (input) => {
@@ -364,6 +385,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "prs_checks",
     title: "Checks of a pull request",
     description: "A pull request's CI checks: each one's status and link, plus counts.",
+    view: true,
     properties: { pr: PR },
     required: ["pr"],
     build: (input) => {
@@ -378,6 +400,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_list",
     title: "List chats",
     description: "Agent chats, most recently active first.",
+    fanOut: true,
+    view: true,
     properties: {
       lane: { ...LANE, description: "Only this lane's." },
       include_archived: { type: "boolean", description: "Include archived chats." },
@@ -395,13 +419,14 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     shape: (value, input) => records(value, ["sessions", "chats"])
       .sort((a, b) => timestamp(b.lastActivityAt) - timestamp(a.lastActivityAt))
       .slice(0, integer(input, "limit", 30, 200))
-      .map((chat) => ({ ...pick(chat, CHAT_FIELDS), link: chatLink(str(chat.sessionId), str(chat.laneId)) })),
+      .map((chat) => ({ ...pick(chat, CHAT_FIELDS), link: chatLink(nonEmptyString(chat.sessionId), nonEmptyString(chat.laneId)) })),
   },
   // result: the CLI's transcript read (messages, newest last)
   {
     name: "chat_read",
     title: "Read a chat",
     description: "A chat's latest messages.",
+    view: true,
     properties: {
       session: SESSION,
       limit: LIMIT(100, 20),
@@ -436,7 +461,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     // The CLI exits 1 for idle and 2 for blocked, for scripts; both are answers here.
     okExitCodes: [0, 1, 2],
     next: (result) => {
-      const phase = isRecord(result) ? str(result.phase) : null;
+      const phase = isRecord(result) ? nonEmptyString(result.phase) : null;
       if (phase === "blocked") return WAITS_ON_PERSON;
       if (phase === "running" || phase === "waiting") return "Still working. chat_wait returns when it is done.";
       return null;
@@ -488,6 +513,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     description: "Subscription usage left on this computer, per account: percent left per window (5-hour, weekly, "
       + "monthly), reset time, whether the pace lasts, and the account id to start a chat on.",
     machineWide: true,
+    fanOut: true,
+    view: true,
     properties: {
       provider: {
         type: "string",
@@ -508,6 +535,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "inbox",
     title: "What waits on you",
     description: "Questions and approvals chats wait on the person for, with their options. Every recent project unless `project` is given.",
+    fanOut: true,
+    view: true,
     properties: {},
     build: () => ({ argv: ["chat", "inbox", "--json"] }),
     shape: (value) => ({ items: records(value, ["items"]).map((item) => pick(item, INBOX_FIELDS)) }),
@@ -532,6 +561,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_respond",
     title: "Answer a chat",
     description: "Answers a chat's question or approval.",
+    view: true,
     write: true,
     properties: {
       session: SESSION,
@@ -565,7 +595,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       }
       const reply = text(input, "text");
       if (reply) argv.push(freeText("--text", reply));
-      const decision = typeof input.decision === "string" ? DECISIONS[input.decision as keyof typeof DECISIONS] : undefined;
+      const decision = isDecision(input.decision) ? DECISIONS[input.decision] : undefined;
       if (input.decision !== undefined && !decision) return { error: `\`decision\` is one of ${Object.keys(DECISIONS).join(", ")}.` };
       if (decision) argv.push(decision);
       if (argv.length === 3 + (request.value ? 1 : 0)) {
@@ -574,14 +604,15 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       return { argv: [...argv, "--json"] };
     },
     shape: (value, input) => {
-      const record = isRecord(unwrap(value)) ? unwrap(value) as Record<string, unknown> : {};
-      const sessionId = str(record.sessionId) ?? text(input, "session");
+      const unwrapped = unwrap(value);
+      const record = isRecord(unwrapped) ? unwrapped : {};
+      const sessionId = nonEmptyString(record.sessionId) ?? text(input, "session");
       return {
         sessionId,
-        requestId: str(record.itemId),
-        decision: str(record.decision),
-        ...(str(record.kind) ? { kind: str(record.kind) } : {}),
-        ...(str(record.title) ? { title: str(record.title) } : {}),
+        requestId: nonEmptyString(record.itemId),
+        decision: nonEmptyString(record.decision),
+        ...(nonEmptyString(record.kind) ? { kind: nonEmptyString(record.kind) } : {}),
+        ...(nonEmptyString(record.title) ? { title: nonEmptyString(record.title) } : {}),
         link: chatLink(sessionId, null),
       };
     },
@@ -592,7 +623,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         : record.decision === "accept_for_session"
           ? "Approved for the rest of the chat"
           : record.kind === "approval" || record.kind === "permissions" || record.kind === "plan_approval" ? "Approved" : "Answered";
-      const title = str(record.title)?.replace(/[.?!:]+$/, "");
+      const title = nonEmptyString(record.title)?.replace(/[.?!:]+$/, "");
       return `${verb}${title ? `: ${title}` : ""}. The chat goes on; chat_wait returns when it is done.`;
     },
   },
@@ -601,6 +632,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_send",
     title: "Message a chat",
     description: "Sends a message to a chat. Mid-turn, it steers the turn.",
+    view: true,
     write: true,
     properties: {
       session: SESSION,
@@ -615,12 +647,13 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       return { argv: ["chat", "send", session.value, freeText("--text", message), "--json"] };
     },
     shape: (value, input) => {
-      const record = isRecord(unwrap(value)) ? unwrap(value) as Record<string, unknown> : {};
-      const sessionId = str(record.sessionId) ?? text(input, "session");
+      const unwrapped = unwrap(value);
+      const record = isRecord(unwrapped) ? unwrapped : {};
+      const sessionId = nonEmptyString(record.sessionId) ?? text(input, "session");
       return {
         sessionId,
-        delivery: str(record.delivery),
-        routedAction: str(record.routedAction),
+        delivery: nonEmptyString(record.delivery),
+        routedAction: nonEmptyString(record.routedAction),
         link: chatLink(sessionId, null),
       };
     },
@@ -631,6 +664,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     name: "chat_start",
     title: "Start a chat",
     description: "Starts an agent chat on a new lane with a prompt.",
+    view: true,
     write: true,
     properties: {
       prompt: { type: "string", description: "What the agent should do." },
@@ -660,15 +694,15 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     shape: (value) => {
       const record = isRecord(value) ? value : {};
       const launch = isRecord(record.launch) ? record.launch : record;
-      const sessionId = str(launch.sessionId) ?? str(record.launchId);
-      const laneId = str(launch.laneId);
-      const error = str(launch.error) ?? (record.ok === false && record.error !== "timed_out" ? str(record.error) : null);
+      const sessionId = nonEmptyString(launch.sessionId) ?? nonEmptyString(record.launchId);
+      const laneId = nonEmptyString(launch.laneId);
+      const error = nonEmptyString(launch.error) ?? (record.ok === false && record.error !== "timed_out" ? nonEmptyString(record.error) : null);
       return {
         sessionId,
         laneId,
-        lane: str(launch.laneName),
-        title: str(launch.title),
-        phase: str(record.phase) ?? str(launch.phase),
+        lane: nonEmptyString(launch.laneName),
+        title: nonEmptyString(launch.title),
+        phase: nonEmptyString(record.phase) ?? nonEmptyString(launch.phase),
         ...(error ? { error } : {}),
         link: chatLink(sessionId, laneId),
       };
@@ -684,4 +718,76 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
 
 export function findTypedTool(name: unknown): TypedTool | null {
   return TYPED_TOOLS.find((tool) => tool.name === name) ?? null;
+}
+
+/** The tools whose results the ADE MCP app draws: those marked `view`, and machines_list. */
+export const TOOLS_WITH_VIEWS: ReadonlySet<string> = new Set([
+  ...TYPED_TOOLS.filter((tool) => tool.view).map((tool) => tool.name),
+  MACHINES_TOOL_NAME,
+]);
+
+// ── Results ────────────────────────────────────────────────────────────────
+
+/** A command's output as a model reads it: stdout, stderr, and why it stopped. */
+export function toolText(result: RemoteRunResult, outputLimitBytes = MAX_OUTPUT_BYTES): string {
+  const parts: string[] = [];
+  const stdout = result.stdout.trimEnd();
+  const stderr = result.stderr.trimEnd();
+  if (stdout) parts.push(stdout);
+  if (stderr) parts.push(stdout ? `stderr:\n${stderr}` : stderr);
+  if (result.truncated) {
+    parts.push(`[Output was cut off at ${Math.round(outputLimitBytes / 1024)} KB. Narrow the command, e.g. with --text, filters or --limit.]`);
+  }
+  if (result.timedOut) parts.push(`[Stopped: the command ran past its time limit after ${Math.round(result.durationMs / 1000)}s.]`);
+  else if (result.exitCode !== 0) parts.push(`[exit code ${result.exitCode ?? "unknown"}]`);
+  return parts.join("\n\n") || "(no output)";
+}
+
+/** A typed tool's run, parsed and shaped; null when it failed or its output is not whole JSON. */
+export function parseTypedRun(tool: TypedTool, input: TypedToolInput, run: RemoteRunResult): { value: unknown } | null {
+  const answered = !run.timedOut && !run.truncated && (tool.okExitCodes ?? [0]).includes(run.exitCode ?? -1);
+  if (!answered) return null;
+  try {
+    const parsed: unknown = JSON.parse(run.stdout);
+    return { value: tool.shape ? tool.shape(parsed, input) : parsed };
+  } catch {
+    return null;
+  }
+}
+
+type TypedResultFrame = {
+  /** The first text line: which project (or projects) the result is from. */
+  headLine: string;
+  /** `structuredContent.project`; null when the result spans projects or none is open. */
+  project: Record<string, unknown> | null;
+};
+
+/** A typed tool's answer from its shaped result: the next step, the text, and `structuredContent`. */
+export function shapedToolResult(
+  tool: TypedTool,
+  input: TypedToolInput,
+  value: unknown,
+  frame: TypedResultFrame,
+): RemoteMcpToolResult {
+  // The next step rides in the result, where the model decides it.
+  const next = tool.next?.(value, input) ?? null;
+  return {
+    content: [{ type: "text", text: `${frame.headLine}\n${JSON.stringify(value)}${next ? `\nNext: ${next}` : ""}` }],
+    structuredContent: { view: tool.name, project: frame.project, result: value, ...(next ? { next } : {}) },
+    isError: false,
+  };
+}
+
+/** A typed tool's answer from one run: the shaped result, or the command's own output when it failed. */
+export function buildTypedToolResult(
+  tool: TypedTool,
+  input: TypedToolInput,
+  run: RemoteRunResult,
+  frame: TypedResultFrame,
+): RemoteMcpToolResult {
+  const parsed = parseTypedRun(tool, input, run);
+  if (!parsed) {
+    return { content: [{ type: "text", text: `${frame.headLine}\n${toolText(run, tool.maxOutputBytes)}` }], isError: true };
+  }
+  return shapedToolResult(tool, input, parsed.value, frame);
 }

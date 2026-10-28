@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { ensurePrivateDirectory } from "../../lib/trustedWindowsTools";
+import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import type { RemoteMcpActivityEntry } from "../../../../desktop/src/shared/types/remoteMcp";
 
 /**
@@ -47,7 +48,7 @@ export function createRemoteMcpActivityLog(args: {
       } catch (error) {
         // The log is a convenience for the person; a full disk must not fail the call.
         args.logger?.warn?.("remote_mcp.activity_write_failed", {
-          error: error instanceof Error ? error.message : String(error),
+          error: getErrorMessage(error),
         });
       }
     },

@@ -5,6 +5,6 @@
   "description": "How real models use ADE MCP's tools. See README.md.",
   "scripts": {
     "eval": "node ../../apps/ade-cli/node_modules/tsx/dist/cli.mjs run.ts",
-    "typecheck": "../../apps/ade-cli/node_modules/.bin/tsc -p tsconfig.json"
+    "typecheck": "node ../../apps/ade-cli/node_modules/typescript/bin/tsc -p tsconfig.json"
   }
 }

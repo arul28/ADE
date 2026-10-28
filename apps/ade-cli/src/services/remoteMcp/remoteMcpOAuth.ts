@@ -37,7 +37,7 @@ const SIGN_IN_TTL_MS = 10 * 60_000;
 const MAX_PENDING_SIGN_INS = 20;
 const AUTH_CODE_TTL_MS = 2 * 60_000;
 
-export type RegisteredClient = {
+type RegisteredClient = {
   redirectUris: string[];
   clientName: string;
 };
@@ -47,7 +47,7 @@ export function scopeToOAuth(scope: RemoteMcpScope): string {
 }
 
 /** A requested OAuth scope string → our scope. Asking for nothing means full access. */
-export function scopeFromOAuth(value: string | null | undefined): RemoteMcpScope {
+function scopeFromOAuth(value: string | null | undefined): RemoteMcpScope {
   const words = (value ?? "").split(/\s+/).filter(Boolean);
   if (words.length === 0) return "write";
   return words.includes("ade:write") ? "write" : "read";
@@ -59,7 +59,7 @@ export function scopeFromOAuth(value: string | null | undefined): RemoteMcpScope
  * private-use schemes (`cursor://`, `vscode://`). Never a scheme that runs or
  * reads anything in the browser.
  */
-export function isAllowedRedirectUri(value: string): boolean {
+function isAllowedRedirectUri(value: string): boolean {
   if (value.length === 0 || value.length > MAX_REDIRECT_URI_CHARS) return false;
   let url: URL;
   try {
@@ -94,7 +94,7 @@ function cleanClientName(value: unknown): string {
   return cleanRemoteMcpLabel(value, "AI app");
 }
 
-export type RegistrationResult =
+type RegistrationResult =
   | { ok: true; clientId: string; client: RegisteredClient }
   | { ok: false; error: string; description: string };
 
@@ -168,7 +168,7 @@ export type AuthorizeRequest = {
   requestedScope: RemoteMcpScope;
 };
 
-export type AuthorizeParse =
+type AuthorizeParse =
   | { ok: true; request: AuthorizeRequest }
   /** Shown on our page: the redirect URI is not trusted, so nothing is sent to it. */
   | { ok: false; kind: "page"; message: string }

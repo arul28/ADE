@@ -16,20 +16,22 @@ import type { AccountSettingsStore } from "../account/accountSettingsStore";
  */
 
 export const REMOTE_MCP_SETTINGS_SCOPE = "all";
-export const REMOTE_MCP_ENABLED_KEY = "ade_mcp.enabled";
-const MACHINE_ENTRY_PREFIX = "ade_mcp.machine.";
-const LAST_USED_PREFIX = "ade_mcp.lastUsed.";
-const MACHINE_KEY_PATTERN = /^[a-f0-9]{32,64}$/;
-const ENDPOINT_KEY_PATTERN = /^[a-f0-9]{32,64}$/;
+/** Every ADE MCP account setting starts with this; only the remote MCP service writes them. */
+export const REMOTE_MCP_SETTINGS_PREFIX = "ade_mcp.";
+export const REMOTE_MCP_ENABLED_KEY = `${REMOTE_MCP_SETTINGS_PREFIX}enabled`;
+const MACHINE_ENTRY_PREFIX = `${REMOTE_MCP_SETTINGS_PREFIX}machine.`;
+const LAST_USED_PREFIX = `${REMOTE_MCP_SETTINGS_PREFIX}lastUsed.`;
+/** A relay machine key, per-machine endpoint key or account key: lowercase hex. */
+export const REMOTE_MCP_KEY_PATTERN = /^[a-f0-9]{32,64}$/;
 
 /** The slice of the account settings store ADE MCP uses. */
 export type RemoteMcpSettings = Pick<AccountSettingsStore, "list" | "get" | "set" | "remove" | "sync">;
 
-export const remoteMcpMachineEntryKey = (machineKey: string): string => `${MACHINE_ENTRY_PREFIX}${machineKey}`;
+const remoteMcpMachineEntryKey = (machineKey: string): string => `${MACHINE_ENTRY_PREFIX}${machineKey}`;
 export const remoteMcpLastUsedKey = (connectionId: string): string => `${LAST_USED_PREFIX}${connectionId}`;
 
 export function isRemoteMcpMachineKey(value: unknown): value is string {
-  return typeof value === "string" && MACHINE_KEY_PATTERN.test(value);
+  return typeof value === "string" && REMOTE_MCP_KEY_PATTERN.test(value);
 }
 
 /** A fresh account secret: 32 random bytes, base64url. */
@@ -55,7 +57,7 @@ export function deriveRemoteMcpAccountKey(secret: string): string {
  * One computer's entry. The owner writes name, endpointKey and version; any
  * computer may flip `included` from Settings, and the owner keeps it.
  */
-export type RemoteMcpMachineEntry = {
+type RemoteMcpMachineEntry = {
   machineKey: string;
   name: string;
   /** Empty when another computer excluded this one before it ever published. */
@@ -68,7 +70,7 @@ export type RemoteMcpMachineEntry = {
 function parseMachineEntry(machineKey: string, value: unknown): RemoteMcpMachineEntry | null {
   if (!isRemoteMcpMachineKey(machineKey) || !value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
-  const endpointKey = typeof record.endpointKey === "string" && ENDPOINT_KEY_PATTERN.test(record.endpointKey)
+  const endpointKey = typeof record.endpointKey === "string" && REMOTE_MCP_KEY_PATTERN.test(record.endpointKey)
     ? record.endpointKey
     : "";
   return {

@@ -78,10 +78,6 @@ function usedText(iso: string | null): string {
   return `used ${new Date(at).toLocaleDateString()}`;
 }
 
-function isStatus(value: unknown): value is RemoteMcpStatus {
-  return Boolean(value) && typeof value === "object" && Array.isArray((value as RemoteMcpStatus).machines);
-}
-
 function CopyButton({ value, label, children = "Copy" }: { value: string; label: string; children?: string }) {
   const [copied, setCopied] = useState(false);
   return (
@@ -178,10 +174,8 @@ function machineState(machine: RemoteMcpMachine, status: RemoteMcpStatus): Machi
 
 /** Whether any computer can answer the account URL right now. */
 function anyComputerAnswering(status: RemoteMcpStatus): boolean {
-  const here = status.thisMachineServing && status.relayConnected;
-  if (here) return true;
-  return status.machines.some((machine) =>
-    !machine.isThisMachine && machine.included && machine.supported && machine.online === true);
+  if (status.thisMachineServing && status.relayConnected) return true;
+  return status.machines.some((machine) => !machine.isThisMachine && machine.serving);
 }
 
 export function AdeMcpPage() {
@@ -254,21 +248,15 @@ export function AdeMcpPage() {
     }
   }, [busy]);
 
-  /** Take the status an action answers with, or read it again when it answers something else. */
-  const settle = useCallback(async (result: unknown) => {
-    if (isStatus(result)) {
-      if (mounted.current) setStatus(result);
-      return;
-    }
-    await load();
-  }, [load]);
-
+  // Both actions answer with the account's status.
   const setEnabled = (enabled: boolean) => void run(async () => {
-    await settle(await call<unknown>("setEnabled", { enabled }));
+    const next = await call<RemoteMcpStatus>("setEnabled", { enabled });
+    if (mounted.current) setStatus(next);
   }, "ADE couldn't change that.");
 
   const setIncluded = (machine: RemoteMcpMachine, included: boolean) => void run(async () => {
-    await settle(await call<unknown>("setMachineIncluded", { machineKey: machine.machineKey, included }));
+    const next = await call<RemoteMcpStatus>("setMachineIncluded", { machineKey: machine.machineKey, included });
+    if (mounted.current) setStatus(next);
   }, `ADE couldn't change ${machine.name}.`);
 
   const openTokenForm = () => {
@@ -407,7 +395,6 @@ export function AdeMcpPage() {
           ) : null}
           {enabled && status?.serverUrl ? (
             <ModernRow
-              anchor="ade-mcp-connect"
               title="Connect an app"
               hint="Pick the app. You choose read only or read & write when it signs in."
             >
@@ -449,7 +436,7 @@ export function AdeMcpPage() {
         </ModernRows>
       </ModernSection>
 
-      {enabled ? (
+      {enabled && status ? (
         <ModernSection
           group="ADE MCP"
           anchor="ade-mcp-computers"
@@ -458,7 +445,7 @@ export function AdeMcpPage() {
         >
           <ModernRows>
             {machines.length ? machines.map((machine) => {
-              const state = machineState(machine, status!);
+              const state = machineState(machine, status);
               return (
                 <ModernRow
                   key={machine.machineKey}
@@ -571,8 +558,10 @@ export function AdeMcpPage() {
                   )}
                   hint={[
                     connection.kind === "token" ? `Token …${connection.tokenHint}` : connection.redirectHost ?? "App",
+                    // Made for one computer before ADE MCP covered the account.
+                    connection.onlyMachine ? `${connection.onlyMachine.name} only. Reconnect to reach every computer` : null,
                     usedText(connection.lastUsedAt),
-                  ].join(" · ")}
+                  ].filter(Boolean).join(" · ")}
                   control={(
                     <>
                       <SettingsSegmented

@@ -1,16 +1,22 @@
 /**
  * A stdio MCP server that looks like ADE MCP to the model under test: the
- * REAL instructions and tool list (built from source by the real protocol),
- * and tool results built the way the real server builds them — the real
- * argument checks, command policy, trimming and `next` hints — over scripted
- * command output instead of a running ADE.
+ * real instructions and tool list (from the real protocol), and typed tool
+ * results from the real result builder (`buildTypedToolResult`) over a
+ * scripted command run instead of a running ADE. The real argument checks and
+ * command policy run first, so what ADE refuses is refused here too.
  *
  *   tsx fakeServer.ts --cases cases.ndjson --case <id> --log <calls.ndjson>
  */
 import fs from "node:fs";
 import readline from "node:readline";
+import type { RemoteMcpMachineRouter } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpForward";
 import { createRemoteMcpProtocol } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol";
-import { findTypedTool } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpTools";
+import type { RemoteRunResult } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpRunner";
+import {
+  buildTypedToolResult,
+  findTypedTool,
+  MACHINES_TOOL_NAME,
+} from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpTools";
 import { checkRemoteAdeCommand, splitCommandLine } from "../../apps/ade-cli/src/services/remoteMcp/remoteMcpCommandPolicy";
 import type { RemoteMcpConnectionSummary } from "../../apps/desktop/src/shared/types/remoteMcp";
 import { DEFAULT_RESULTS, MACHINES, PROJECTS, type Input } from "./fixtures";
@@ -33,7 +39,7 @@ const connection = { id: "eval", label: "eval", scope } as RemoteMcpConnectionSu
 
 // The account's computers, so the tool list carries `machine` the way a
 // signed-in brain serves it (the router is only read for its shape here).
-const machineRouter = {
+const machineRouter: RemoteMcpMachineRouter = {
   thisMachine: () => ({ key: MACHINES[0]!.key, name: MACHINES[0]!.name }),
   roster: async () => [],
   resolve: async () => ({ kind: "error", message: "" }),
@@ -44,9 +50,8 @@ const protocol = createRemoteMcpProtocol({
   machineName: () => MACHINES[0]!.name,
   listProjects: () => PROJECTS.map(({ projectId, displayName, rootPath, lastOpenedAt }) => ({ projectId, displayName, rootPath, lastOpenedAt })),
   record: () => {},
-  // Older protocol builds take no router; the extra key is then ignored.
-  ...({ machines: machineRouter } as Record<string, unknown>),
-} as Parameters<typeof createRemoteMcpProtocol>[0]);
+  machines: machineRouter,
+});
 
 const LANE_IDS = new Set(["lane-main", "lane-fix-login", "lane-deps", "lane-new"]);
 const SESSION_IDS = new Set(["chat-login", "chat-deps", "chat-new"]);
@@ -74,6 +79,11 @@ function projectFor(input: Input): typeof PROJECTS[number] | { error: string } {
 
 const errorResult = (text: string) => ({ content: [{ type: "text", text }], isError: true });
 
+/** What the CLI would have printed: scripted stdout, or a failure on stderr. */
+function scriptedRun(stdout: string, exitCode = 0, stderr = ""): RemoteRunResult {
+  return { exitCode, stdout, stderr, timedOut: false, truncated: false, durationMs: 0 };
+}
+
 function callTool(name: string, rawInput: Input): Record<string, unknown> {
   const { machine, ...input } = rawInput;
   let machineLine = "";
@@ -84,9 +94,12 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
     }
     if (target && !target.isThisMachine) machineLine = `[machine: ${target.name}]\n`;
   }
-  if (name === "machines_list") {
+  if (name === MACHINES_TOOL_NAME) {
     const result = scripted(name, input);
-    return { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: { result } };
+    return {
+      content: [{ type: "text", text: JSON.stringify(result) }],
+      structuredContent: { view: MACHINES_TOOL_NAME, ...(result && typeof result === "object" ? result : {}) },
+    };
   }
   const project = projectFor(input);
   if ("error" in project) return errorResult(project.error);
@@ -111,29 +124,20 @@ function callTool(name: string, rawInput: Input): Record<string, unknown> {
     const hit = (evalCase!.ade ?? []).find((entry) => new RegExp(entry.match, "i").test(line));
     return { content: [{ type: "text", text: `${projectLine}\n${hit?.text ?? "(no output)"}` }], isError: Boolean(hit?.isError) };
   }
+  const frame = { headLine: projectLine, project: { id: project.projectId, name: project.displayName, path: project.rootPath } };
   // The CLI takes ids, not names: an unknown one fails the way ADE fails it.
   if (typeof input.lane === "string" && !LANE_IDS.has(input.lane)) {
-    return errorResult(`${projectLine}\nade: Lane not found: ${input.lane}\n[exit code 1]`);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Lane not found: ${input.lane}`), frame);
   }
   if (typeof input.session === "string" && !SESSION_IDS.has(input.session)) {
-    return errorResult(`${projectLine}\nade: Chat session '${input.session}' was not found.\n[exit code 1]`);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, `ade: Chat session '${input.session}' was not found.`), frame);
   }
   const output = scripted(name, input);
   if (output === undefined) return errorResult(`${projectLine}\n(the eval has no scripted output for ${name})`);
   if (output && typeof output === "object" && "$error" in output) {
-    return errorResult(`${projectLine}\n${String((output as { $error: unknown }).$error)}`);
+    return buildTypedToolResult(typed, input, scriptedRun("", 1, String((output as { $error: unknown }).$error)), frame);
   }
-  const value = typed.shape ? typed.shape(output, input) : output;
-  const next = typed.next?.(value, input) ?? null;
-  return {
-    content: [{ type: "text", text: `${projectLine}\n${JSON.stringify(value)}${next ? `\nNext: ${next}` : ""}` }],
-    structuredContent: {
-      project: { id: project.projectId, name: project.displayName, path: project.rootPath },
-      result: value,
-      ...(next ? { next } : {}),
-    },
-    isError: false,
-  };
+  return buildTypedToolResult(typed, input, scriptedRun(JSON.stringify(output)), frame);
 }
 
 const lines = readline.createInterface({ input: process.stdin });

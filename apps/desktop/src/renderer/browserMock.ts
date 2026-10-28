@@ -1411,10 +1411,10 @@ const browserMockRemoteMcp = (() => {
   const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
   const serverUrl = "https://relay.ade.dev/a/3f9c2a71d04e8b6655c1e0a9f7d2b3c4a5e6f708/mcp";
   const connections: RemoteMcpConnectionSummary[] = [
-    { id: "c1", kind: "app", label: "Claude", scope: "write", tokenHint: "q8Zt", createdAt: minutesAgo(9_000), lastUsedAt: minutesAgo(4), redirectHost: "claude.ai" },
-    { id: "c2", kind: "app", label: "ChatGPT", scope: "read", tokenHint: "M2kd", createdAt: minutesAgo(6_000), lastUsedAt: minutesAgo(190), redirectHost: "chatgpt.com" },
-    { id: "c3", kind: "app", label: "Cursor", scope: "write", tokenHint: "7yPw", createdAt: minutesAgo(3_000), lastUsedAt: null, redirectHost: "cursor.com" },
-    { id: "c4", kind: "token", label: "Nightly script", scope: "read", tokenHint: "aT3f", createdAt: minutesAgo(20_000), lastUsedAt: minutesAgo(5_000), redirectHost: null },
+    { id: "c1", kind: "app", label: "Claude", scope: "write", tokenHint: "q8Zt", createdAt: minutesAgo(9_000), lastUsedAt: minutesAgo(4), redirectHost: "claude.ai", onlyMachine: null },
+    { id: "c2", kind: "app", label: "ChatGPT", scope: "read", tokenHint: "M2kd", createdAt: minutesAgo(6_000), lastUsedAt: minutesAgo(190), redirectHost: "chatgpt.com", onlyMachine: null },
+    { id: "c3", kind: "app", label: "Cursor", scope: "write", tokenHint: "7yPw", createdAt: minutesAgo(3_000), lastUsedAt: null, redirectHost: "cursor.com", onlyMachine: null },
+    { id: "c4", kind: "token", label: "Nightly script", scope: "read", tokenHint: "aT3f", createdAt: minutesAgo(20_000), lastUsedAt: minutesAgo(5_000), redirectHost: null, onlyMachine: { machineKey: "m-mini", name: "Mac mini" } },
   ];
   const status: RemoteMcpStatus = {
     enabled: mode === "on",
@@ -1424,9 +1424,9 @@ const browserMockRemoteMcp = (() => {
     machineName: "Arul's MacBook Pro",
     thisMachineServing: mode === "on",
     machines: mode === "signedout" ? [] : [
-      { machineKey: "m-this", name: "Arul's MacBook Pro", included: true, supported: true, online: true, isThisMachine: true },
-      { machineKey: "m-mini", name: "Mac mini", included: true, supported: true, online: false, isThisMachine: false },
-      { machineKey: "m-pc", name: "Studio PC", included: true, supported: false, online: true, isThisMachine: false },
+      { machineKey: "m-this", name: "Arul's MacBook Pro", included: true, supported: true, online: true, serving: mode === "on", isThisMachine: true },
+      { machineKey: "m-mini", name: "Mac mini", included: true, supported: true, online: false, serving: false, isThisMachine: false },
+      { machineKey: "m-pc", name: "Studio PC", included: true, supported: false, online: true, serving: false, isThisMachine: false },
     ],
     connections: mode === "on" ? connections : [],
   };
@@ -1438,6 +1438,8 @@ const browserMockRemoteMcp = (() => {
     { at: minutesAgo(31), connectionId: "c2", label: "ChatGPT", scope: "read", command: "lanes create fix-login", outcome: "refused", exitCode: null, durationMs: 3, detail: "Read-only connection." },
     { at: minutesAgo(48), connectionId: "c4", label: "Nightly script", scope: "read", command: "usage limits --json", outcome: "timeout", exitCode: null, durationMs: 60_000 },
   ];
+  const servingOf = (machine: RemoteMcpStatus["machines"][number]): boolean =>
+    status.enabled && machine.included && machine.supported && machine.online !== false;
   const snapshot = (): RemoteMcpStatus => ({
     ...status,
     machines: status.machines.map((machine) => ({ ...machine })),
@@ -1455,11 +1457,15 @@ const browserMockRemoteMcp = (() => {
         status.enabled = args.enabled === true;
         status.serverUrl = status.enabled ? serverUrl : status.serverUrl;
         status.thisMachineServing = status.enabled && (status.machines.find((m) => m.isThisMachine)?.included ?? true);
+        for (const machine of status.machines) {
+          machine.serving = servingOf(machine);
+        }
         return snapshot();
       case "setMachineIncluded": {
         const machine = status.machines.find((m) => m.machineKey === args.machineKey);
         if (!machine) throw new Error("That computer isn't on your account.");
         machine.included = args.included === true;
+        machine.serving = servingOf(machine);
         if (machine.isThisMachine) status.thisMachineServing = status.enabled && machine.included;
         return snapshot();
       }
@@ -1474,6 +1480,7 @@ const browserMockRemoteMcp = (() => {
           createdAt: new Date().toISOString(),
           lastUsedAt: null,
           redirectHost: null,
+          onlyMachine: null,
         };
         status.connections.push(connection);
         return { token, connection, serverUrl: status.serverUrl };

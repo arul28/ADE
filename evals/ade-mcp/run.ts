@@ -10,6 +10,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { resolveExecutableCandidatesFromKnownLocations } from "../../apps/desktop/src/main/services/ai/cliExecutableResolver";
+import {
+  preferNativeExecutablePath,
+  resolveCliSpawnInvocation,
+} from "../../apps/desktop/src/main/services/shared/processExecution";
+import { signalChildProcessTree } from "../../apps/desktop/src/main/services/shared/utils";
 import { grade, type Grading, type ToolCall } from "./graders";
 
 export type EvalCase = {
@@ -69,6 +75,16 @@ function cleanEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
+/**
+ * How to start `claude` here: its native binary when one is installed. On
+ * Windows an npm `claude.cmd` shim cannot be spawned directly, so it goes
+ * through cmd.exe the way ADE starts any `.cmd` (`resolveCliSpawnInvocation`).
+ */
+function claudeInvocation(args: string[], env: NodeJS.ProcessEnv) {
+  const candidates = resolveExecutableCandidatesFromKnownLocations("claude", env).map((candidate) => candidate.path);
+  return resolveCliSpawnInvocation(preferNativeExecutablePath(candidates) ?? "claude", args, env);
+}
+
 async function runOne(evalCase: EvalCase, model: string, sample: number, outDir: string): Promise<RunResult> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-eval-"));
   const logPath = path.join(dir, "calls.ndjson");
@@ -100,7 +116,15 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
   const lines: string[] = [];
   const stderr: string[] = [];
   const exit = await new Promise<{ code: number | null; timedOut: boolean }>((resolve) => {
-    const child = spawn("claude", args, { cwd: dir, env: cleanEnv(), stdio: ["ignore", "pipe", "pipe"] });
+    const env = cleanEnv();
+    const invocation = claudeInvocation(args, env);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd: dir,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    });
     let buffer = "";
     child.stdout.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
@@ -110,9 +134,16 @@ async function runOne(evalCase: EvalCase, model: string, sample: number, outDir:
     });
     child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk.toString("utf8")));
     const timer = setTimeout(() => {
-      child.kill("SIGKILL");
+      // The whole tree: on Windows a `.cmd` shim leaves `claude` under cmd.exe.
+      signalChildProcessTree(child, "SIGKILL");
       resolve({ code: null, timedOut: true });
     }, RUN_TIMEOUT_MS);
+    // `claude` missing or not startable: a failed case, not a crashed run.
+    child.on("error", (error) => {
+      clearTimeout(timer);
+      stderr.push(`spawn failed: ${error.message}`);
+      resolve({ code: null, timedOut: false });
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
       if (buffer.trim()) lines.push(buffer);

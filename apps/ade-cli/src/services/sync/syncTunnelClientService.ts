@@ -19,7 +19,8 @@ import {
   type RelaySelfProbeResult,
 } from "./syncRelaySelfProbe";
 import { SYNC_RELAY_BRIDGE_PROOF_HEADER } from "./sharedSyncListener";
-import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpService";
+import type { RemoteMcpHttpRequest, RemoteMcpHttpResponse } from "../remoteMcp/remoteMcpHttp";
+import { REMOTE_MCP_KEY_PATTERN } from "../remoteMcp/remoteMcpAccount";
 
 type Logger = {
   info?: (event: string, data?: Record<string, unknown>) => void;
@@ -368,7 +369,7 @@ function parseControlHttpMessage(parsed: Record<string, unknown>): ControlHttpMe
   let accountMount: { kind: "account"; key: string } | null = null;
   if (mount !== undefined && mount !== null) {
     const record = typeof mount === "object" && !Array.isArray(mount) ? mount as Record<string, unknown> : {};
-    if (record.kind !== "account" || typeof record.key !== "string" || !/^[a-f0-9]{32,64}$/.test(record.key)) return rejected;
+    if (record.kind !== "account" || typeof record.key !== "string" || !REMOTE_MCP_KEY_PATTERN.test(record.key)) return rejected;
     accountMount = { kind: "account", key: record.key };
   }
   const cleanHeaders: Record<string, string> = {};
@@ -398,7 +399,7 @@ export type TunnelRemoteMcpHost = {
    * address, else null. Sent in `mcp_state.account`; the relay derives the
    * account key from it.
    */
-  accountSecret?(): string | null;
+  accountSecret(): string | null;
   onEnabledChange(listener: (enabled: boolean) => void): () => void;
   handleHttp(request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse>;
 };
@@ -1705,7 +1706,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
     if (!controlSocket || (!remoteMcp && !force)) return;
     const enabled = remoteMcp?.isEnabled() === true;
-    const secret = enabled ? remoteMcp?.accountSecret?.() ?? null : null;
+    const secret = enabled ? remoteMcp?.accountSecret() ?? null : null;
     sendControlLifecycle(controlSocket, {
       t: "mcp_state",
       enabled,

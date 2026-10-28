@@ -140,6 +140,16 @@ export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
 }
 
+/**
+ * You pages that follow no machine at all: the account's own data, read
+ * through this desktop's brain. They show no "settings for <remote>" banner.
+ */
+export const ACCOUNT_ONLY_TAB_IDS: readonly SettingsTabId[] = ["ade-mcp"];
+
+export function isAccountOnlyTab(tab: SettingsTabId): boolean {
+  return ACCOUNT_ONLY_TAB_IDS.includes(tab);
+}
+
 /** A Computer page that follows the picked machine (every one but This computer's own). */
 export function isMachineSelectableSettingsTab(tab: SettingsTabId): boolean {
   return isMachineSettingsTab(tab) && !isThisComputerOnlyTab(tab);

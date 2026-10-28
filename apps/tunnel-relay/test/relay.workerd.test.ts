@@ -1,5 +1,11 @@
 import { env } from "cloudflare:workers";
-import { createExecutionContext, evictDurableObject, runInDurableObject, waitOnExecutionContext } from "cloudflare:test";
+import {
+  createExecutionContext,
+  evictDurableObject,
+  runDurableObjectAlarm,
+  runInDurableObject,
+  waitOnExecutionContext,
+} from "cloudflare:test";
 import { afterEach, describe, expect, it } from "vitest";
 import worker from "../src";
 import {
@@ -533,8 +539,9 @@ describe("TunnelDurableObject in workerd", () => {
   });
 
   it("serves an ADE MCP account from whichever of its computers is online, and lets a computer leave", async () => {
-    const secretOne = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8S9t0u_-";
-    const secretTwo = "Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp9Oo8Nn7Mm_-";
+    // Built at runtime: fake 43-character base64url account secrets.
+    const secretOne = `${"A1b2C3d4".repeat(5)}u_-`;
+    const secretTwo = `${"Zz9Yy8Xx".repeat(5)}m_-`;
     const accountOne = (await hmacSha256Hex(secretOne, "ade-mcp-account")).slice(0, 40);
     const accountTwo = (await hmacSha256Hex(secretTwo, "ade-mcp-account")).slice(0, 40);
     const [keyF, keyG] = [machineKey("7"), machineKey("8")];
@@ -638,6 +645,8 @@ describe("TunnelDurableObject in workerd", () => {
       const pong = nextMessage(controlF);
       controlF.send(JSON.stringify({ t: "ping" }));
       expect(await pong).toBe(JSON.stringify({ t: "pong" }));
+      // Being sent a request for an account it is not on, F leaves that account.
+      await accountReaches(accountOne, [keyG]);
 
       // Turning ADE MCP off leaves the account, even with the secret still sent;
       // nobody is left to answer.
@@ -648,6 +657,33 @@ describe("TunnelDurableObject in workerd", () => {
       await offCall.settled();
       expect(off.status).toBe(404);
       expect(await off.json()).toMatchObject({ error: "ade_mcp_off" });
+
+      // A join or leave the account object fails is retried while F's control
+      // socket stays open, without the brain sending mcp_state again.
+      const accountStorage = (accountKey: string, run: (storage: DurableObjectStorage) => Promise<void>) => (
+        runInDurableObject(stubFor(`mcp-account:${accountKey}`), (_instance, state) => run(state.storage))
+      );
+      const breakAccount = (accountKey: string) => accountStorage(accountKey, (storage) => storage.put("members", 1));
+      const retryPending = async (): Promise<void> => {
+        const alarmOfF = () => runInDurableObject(stubFor(keyF), (_instance, state) => state.storage.getAlarm());
+        for (let attempt = 0; attempt < 200; attempt += 1) if ((await alarmOfF()) !== null) return;
+        expect(await alarmOfF()).not.toBeNull();
+      };
+      await breakAccount(accountOne);
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretOne } });
+      await retryPending();
+      await accountStorage(accountOne, (storage) => storage.put("members", [keyG]));
+      expect(await runDurableObjectAlarm(stubFor(keyF))).toBe(true);
+      expect((await accountState(accountOne)).members).toEqual([keyG, keyF]);
+
+      await breakAccount(accountOne);
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretTwo } });
+      await accountReaches(accountTwo, [keyF]);
+      await retryPending();
+      await accountStorage(accountOne, (storage) => storage.put("members", [keyG, keyF]));
+      expect(await runDurableObjectAlarm(stubFor(keyF))).toBe(true);
+      expect((await accountState(accountOne)).members).toEqual([keyG]);
+      expect((await accountState(accountTwo)).members).toEqual([keyF]);
     } finally {
       // A control socket left idle at the end keeps workerd from shutting down.
       for (const key of [keyF, keyG]) {

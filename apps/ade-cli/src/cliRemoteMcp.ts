@@ -133,17 +133,14 @@ function scopeLabel(value: unknown): string {
   return value === "read" ? "read only" : "read & write";
 }
 
-function machineLine(machine: Record<string, unknown>, accountOn: boolean, thisServing: boolean): string {
+function machineLine(machine: Record<string, unknown>): string {
   const name = `${String(machine.name)}${machine.isThisMachine === true ? " (this computer)" : ""}`;
   const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
-  const serving = machine.isThisMachine === true
-    ? thisServing
-    : accountOn && machine.included !== false && machine.supported === true && machine.online !== false;
   const state = machine.supported !== true
     ? "not joined yet: open the latest ADE on it"
     : machine.included === false
       ? "left out"
-      : serving ? "serving" : "not serving";
+      : machine.serving === true ? "serving" : "not serving";
   return `  ${name}  ${online}  ${state}`;
 }
 
@@ -152,7 +149,8 @@ function connectionLine(connection: Record<string, unknown>): string {
   const host = typeof connection.redirectHost === "string" && connection.redirectHost ? ` (${connection.redirectHost})` : "";
   const used = typeof connection.lastUsedAt === "string" ? `last used ${connection.lastUsedAt}` : "never used";
   const hint = typeof connection.tokenHint === "string" && connection.tokenHint ? ` …${connection.tokenHint}` : "";
-  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}  ${used}`;
+  const only = isRecord(connection.onlyMachine) ? `  ${String(connection.onlyMachine.name)} only` : "";
+  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
 }
 
 /** `--text` output for every `ade mcp` result. */
@@ -199,7 +197,7 @@ export function formatRemoteMcpResult(value: unknown): string {
     const machines = Array.isArray(result.machines) ? result.machines.filter(isRecord) : [];
     if (machines.length) {
       lines.push(`Computers (${machines.length}):`);
-      for (const machine of machines) lines.push(machineLine(machine, accountOn, thisServing));
+      for (const machine of machines) lines.push(machineLine(machine));
     }
     const connections = result.connections.filter(isRecord);
     lines.push(connections.length ? `Connections (${connections.length}):` : "No connections yet. Add the server URL to an app, or run 'ade mcp token create'.");

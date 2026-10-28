@@ -15,7 +15,6 @@
 }
 
 .ade-mcp-title { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
-.ade-mcp-title > .kit-tag { text-transform: none; letter-spacing: 0; }
 
 /* Connect an app: the app picker, then one line and the thing to paste. */
 .ade-mcp-howto { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; margin-top: 10px; }

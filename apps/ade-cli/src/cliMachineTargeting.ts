@@ -516,8 +516,16 @@ async function executePlanOnAllMachines(
       })));
     return match?.name ?? null;
   };
-  const tag = (rows: JsonObject[], machineName: string, project: string | null): JsonObject[] =>
-    rows.map((row) => ({ [MACHINE_ROW_KEY]: machineName, [MACHINE_PROJECT_ROW_KEY]: project, ...row }));
+  const tag = (rows: JsonObject[], machineName: string, project: string | null, remote = false): JsonObject[] =>
+    rows.map((row) => ({
+      [MACHINE_ROW_KEY]: machineName,
+      [MACHINE_PROJECT_ROW_KEY]: project,
+      ...row,
+      // An inbox row's answer commands must reach the machine the chat is on.
+      ...(remote && kind === "inbox" && Array.isArray(row.respond)
+        ? { respond: row.respond.map((command) => `${String(command)} --machine ${JSON.stringify(machineName)}`) }
+        : {}),
+    }));
   // A usage report's provider-wide notes and the asking chat's account ride
   // beside its rows; keep them, naming the machine a note came from.
   const notes: string[] = [];
@@ -552,7 +560,7 @@ async function executePlanOnAllMachines(
         try {
           const value = await executePlan(plan, { ...single, machine: asString(machine.machineKey) ?? name });
           keepReportExtras(value, name, false);
-          return tag(rowsOfListValue(kind, value), name, projectNameOn(machine));
+          return tag(rowsOfListValue(kind, value), name, projectNameOn(machine), true);
         } catch (error) {
           return [{ [MACHINE_ROW_KEY]: name, unavailable: failureCause(error) }];
         }

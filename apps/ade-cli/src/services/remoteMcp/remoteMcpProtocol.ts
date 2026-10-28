@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
 import { samePathOnPlatform } from "../../../../desktop/src/shared/pathContainment";
 import type {
   RemoteMcpActivityEntry,
@@ -8,17 +9,29 @@ import type {
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
+import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
 import {
   DEFAULT_TIMEOUT_MS,
-  MAX_OUTPUT_BYTES,
   MAX_STDIN_BYTES,
   MAX_TIMEOUT_MS,
   runAdeForRemote,
   type RemoteRunResult,
 } from "./remoteMcpRunner";
-import { findTypedTool, TYPED_TOOLS, type TypedTool } from "./remoteMcpTools";
 import {
+  buildTypedToolResult,
+  findTypedTool,
+  MACHINES_TOOL_NAME,
+  nonEmptyString,
+  parseTypedRun,
+  shapedToolResult,
+  toolText,
+  TYPED_TOOLS,
+  type TypedTool,
+} from "./remoteMcpTools";
+import {
+  REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
+  toolError,
   withMachineLabel,
   type RemoteMcpCallContext,
   type RemoteMcpMachineRouter,
@@ -40,19 +53,19 @@ export type JsonRpcMessage = { jsonrpc?: unknown; id?: unknown; method?: unknown
 
 type ResolvedProject = { cwd: string; project: RemoteMcpProject | null };
 
-export const MAX_CONCURRENT_REMOTE_RUNS = 4;
+type ActivityBase = Pick<RemoteMcpActivityEntry, "connectionId" | "label" | "scope" | "tool">;
+
+const MAX_CONCURRENT_REMOTE_RUNS = 4;
 /** One connection's share, so a long `chat_wait` cannot shut every other app out. */
-export const MAX_CONCURRENT_RUNS_PER_CONNECTION = 3;
+const MAX_CONCURRENT_RUNS_PER_CONNECTION = 3;
 const MIN_TIMEOUT_SECONDS = 5;
-const MACHINES_TOOL = "machines_list";
 /** List-shaped tools that take `machine: "all"`. */
-const FAN_OUT_TOOLS = new Set(["projects_list", "chat_list", "inbox", "usage_limits", "lanes_list"]);
+const FAN_OUT_TOOL_NAMES = TYPED_TOOLS.filter((tool) => tool.fanOut).map((tool) => tool.name);
 const MAX_FAN_OUT = 6;
 const FAN_OUT_TIMEOUT_MS = 60_000;
 const FORWARD_EXTRA_MS = 30_000;
 const MAX_FORWARD_MS = 10 * 60_000;
 const SUPPORTED_PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
-const DEFAULT_PROTOCOL_VERSION = "2025-06-18";
 const TOOL_NAME = "ade";
 const COMMANDS_RESOURCE_URI = "ade://commands";
 const MAX_PROMPTS = 200;
@@ -63,9 +76,11 @@ const CATALOG_TTL_MS = 5 * 60_000;
 const EVERY_PROJECT_WINDOW_MS = 30 * 24 * 60 * 60_000;
 const EVERY_PROJECT_MAX = 6;
 const EVERY_PROJECT_PARALLEL = 2;
+/** A call the HTTP layer said nothing about: no bearer to forward, not forwarded, the per-machine address. */
+const NO_CALL_CONTEXT: RemoteMcpCallContext = { bearer: null, via: null, protocolVersion: null, accountMount: false };
 
-function nonEmptyString(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
 async function mapWithLimit<T, R>(items: readonly T[], limit: number, run: (item: T) => Promise<R>): Promise<R[]> {
@@ -82,13 +97,15 @@ async function mapWithLimit<T, R>(items: readonly T[], limit: number, run: (item
   return results;
 }
 
-declare const __ADE_VERSION__: string | undefined;
+/** A run that never started, as a failed result, so a sweep reports it beside the others. */
+function failedRun(message: string): RemoteRunResult {
+  return { exitCode: null, stdout: "", stderr: message, timedOut: false, truncated: false, durationMs: 0 };
+}
 
-/** ADE's version, so a client can tell which tools and fixes this server has. */
-function adeVersion(): string {
-  const bundled = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
-  if (bundled && bundled !== "0.0.0") return bundled;
-  return process.env.ADE_CLI_VERSION?.trim() || bundled || "0.0.0";
+/** Why a connection from before accounts can't reach this computer, or the one it named. */
+function onlyMachineRefusal(only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>): string {
+  return `This connection was made for ${only.name} before ADE MCP covered your account. `
+    + "Reconnect the app in ADE Settings → ADE MCP to reach every computer.";
 }
 
 export function createRemoteMcpProtocol(deps: {
@@ -98,11 +115,8 @@ export function createRemoteMcpProtocol(deps: {
   /** The provider and model this computer last launched a chat with, for chat_start. */
   launchDefaults?: () => { provider: string; model: string } | null;
   warn?: (event: string, data?: Record<string, unknown>) => void;
-  /**
-   * The account's other computers. With it, every tool takes `machine` and
-   * `machines_list` is listed; without it (a lone computer, tests) calls run here.
-   */
-  machines?: RemoteMcpMachineRouter;
+  /** The account's computers: every tool takes `machine`, and machines_list lists them. */
+  machines: RemoteMcpMachineRouter;
 }) {
   let activeRuns = 0;
   const runsByConnection = new Map<string, number>();
@@ -110,11 +124,6 @@ export function createRemoteMcpProtocol(deps: {
 
   // ── Projects ──────────────────────────────────────────────────────────────
 
-  /**
-   * The project a call runs in. Without `project`, the most recently opened
-   * one, which changes when the person opens another: every result names it,
-   * so a call never lands in a different repo unnoticed.
-   */
   /** The projects an every-project sweep reads: opened in the last 30 days, at most six. */
   const recentProjects = (): RemoteMcpProject[] => {
     const projects = [...deps.listProjects()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
@@ -123,6 +132,11 @@ export function createRemoteMcpProtocol(deps: {
     return (recent.length ? recent : projects.slice(0, 1)).slice(0, EVERY_PROJECT_MAX);
   };
 
+  /**
+   * The project a call runs in. Without `project`, the most recently opened
+   * one, which changes when the person opens another: every result names it,
+   * so a call never lands in a different repo unnoticed.
+   */
   const resolveProject = (requested: unknown): ResolvedProject | { error: string } => {
     const projects = deps.listProjects();
     const found = (project: RemoteMcpProject): ResolvedProject => ({ cwd: project.rootPath, project });
@@ -234,44 +248,30 @@ export function createRemoteMcpProtocol(deps: {
     return `[project: ${project.displayName} · ${project.projectId} · ${project.rootPath}]`;
   };
 
-  const toolText = (result: RemoteRunResult, outputLimitBytes = MAX_OUTPUT_BYTES): string => {
-    const parts: string[] = [];
-    const stdout = result.stdout.trimEnd();
-    const stderr = result.stderr.trimEnd();
-    if (stdout) parts.push(stdout);
-    if (stderr) parts.push(stdout ? `stderr:\n${stderr}` : stderr);
-    if (result.truncated) {
-      parts.push(`[Output was cut off at ${Math.round(outputLimitBytes / 1024)} KB. Narrow the command, e.g. with --text, filters or --limit.]`);
-    }
-    if (result.timedOut) parts.push(`[Stopped: the command ran past its time limit after ${Math.round(result.durationMs / 1000)}s.]`);
-    else if (result.exitCode !== 0) parts.push(`[exit code ${result.exitCode ?? "unknown"}]`);
-    return parts.join("\n\n") || "(no output)";
-  };
+  /** What every activity entry of one call shares. */
+  const logBaseFor = (connection: RemoteMcpConnectionSummary, name: string): ActivityBase => ({
+    connectionId: connection.id,
+    label: connection.label,
+    scope: connection.scope,
+    ...(name && name !== TOOL_NAME ? { tool: name } : {}),
+  });
 
-  const toolError = (text: string) => ({ content: [{ type: "text", text }], isError: true });
-
-  /** A typed tool's answer: the CLI's JSON, trimmed, as structured content. */
-  const typedResult = (tool: TypedTool, input: Record<string, unknown>, result: RemoteRunResult, resolved: ResolvedProject) => {
-    const ok = !result.timedOut && (tool.okExitCodes ?? [0]).includes(result.exitCode ?? -1);
-    const failed = () => ({
-      content: [{ type: "text", text: `${projectLine(resolved)}\n${toolText(result, tool.maxOutputBytes)}` }],
-      isError: true,
+  /** Logs a refusal and answers it; `headLine` (the project line) goes first when the call got that far. */
+  const refuse = (
+    logBase: ActivityBase,
+    reason: string,
+    extra: { command?: string; project?: string; headLine?: string } = {},
+  ): RemoteMcpToolResult => {
+    deps.record({
+      ...logBase,
+      ...(extra.project ? { project: extra.project } : {}),
+      command: extra.command ?? "",
+      outcome: "refused",
+      exitCode: null,
+      durationMs: 0,
+      detail: reason,
     });
-    if (!ok || result.truncated) return failed();
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.stdout);
-    } catch {
-      return failed();
-    }
-    const value = tool.shape ? tool.shape(parsed, input) : parsed;
-    // The next step rides in the result, where the model decides it.
-    const next = tool.next?.(value, input) ?? null;
-    return {
-      content: [{ type: "text", text: `${projectLine(resolved)}\n${JSON.stringify(value)}${next ? `\nNext: ${next}` : ""}` }],
-      structuredContent: { project: projectSummary(resolved), result: value, ...(next ? { next } : {}) },
-      isError: false,
-    };
+    return toolError(extra.headLine ? `${extra.headLine}\n${reason}` : reason);
   };
 
   const clampTimeoutSeconds = (value: unknown): number => {
@@ -279,59 +279,50 @@ export function createRemoteMcpProtocol(deps: {
     return Math.min(MAX_TIMEOUT_MS / 1000, Math.max(MIN_TIMEOUT_SECONDS, Math.round(value)));
   };
 
-  const callTool = async (connection: RemoteMcpConnectionSummary, params: Record<string, unknown>) => {
+  /** Runs one call on this computer. */
+  const callTool = async (connection: RemoteMcpConnectionSummary, params: Record<string, unknown>): Promise<RemoteMcpToolResult> => {
     const typed = params.name === TOOL_NAME ? null : findTypedTool(params.name);
     if (params.name !== TOOL_NAME && !typed) {
       const names = [TOOL_NAME, ...typedToolsFor(connection.scope).map((tool) => tool.name)].join(", ");
       return toolError(`Unknown tool "${String(params.name)}". The tools are: ${names}.`);
     }
-    const input = params.arguments && typeof params.arguments === "object" ? params.arguments as Record<string, unknown> : {};
-    const logBase = {
-      connectionId: connection.id,
-      label: connection.label,
-      scope: connection.scope,
-      ...(typed ? { tool: typed.name } : {}),
-    };
+    const input = asRecord(params.arguments);
+    const logBase = logBaseFor(connection, typed?.name ?? TOOL_NAME);
     const resolved = resolveProject(input.project);
-    if ("error" in resolved) {
-      deps.record({ ...logBase, command: "", outcome: "refused", exitCode: null, durationMs: 0, detail: resolved.error });
-      return toolError(resolved.error);
-    }
-    const inProject = resolved.project ? { project: resolved.project.displayName } : {};
-    /** A refusal still names the project, like every other result. */
-    const refuse = (command: string, reason: string) => {
-      deps.record({ ...logBase, ...inProject, command, outcome: "refused", exitCode: null, durationMs: 0, detail: reason });
-      return toolError(`${projectLine(resolved)}\n${reason}`);
-    };
+    if ("error" in resolved) return refuse(logBase, resolved.error);
+    const projectName = resolved.project?.displayName;
+    // A refusal still names the project, like every other result.
+    const refuseHere = (command: string, reason: string) =>
+      refuse(logBase, reason, { command, project: projectName, headLine: projectLine(resolved) });
     // Write tools are not listed for a read-only connection; one that calls
     // one anyway gets the reason, not a policy list.
     if (typed?.write && connection.scope !== "write") {
-      return refuse("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
+      return refuseHere("", `This connection is read-only, so it can't run ${typed.name}. The person can give this app full access in ADE Settings → ADE MCP.`);
     }
     let words: unknown;
     let stdin: string | null = null;
     if (typed) {
       const defaults = typed.launchDefaults ? deps.launchDefaults?.() ?? null : null;
       const built = typed.build(defaults && typed.launchDefaults ? typed.launchDefaults(input, defaults) : input);
-      if ("error" in built) return refuse("", built.error);
+      if ("error" in built) return refuseHere("", built.error);
       words = built.argv;
     } else {
       words = input.args;
       if (words === undefined && typeof input.command === "string") {
         words = splitCommandLine(input.command);
-        if (words === null) return refuse("", "The command has an unclosed quote.");
+        if (words === null) return refuseHere("", "The command has an unclosed quote.");
       }
       if (typeof input.stdin === "string") {
         if (Buffer.byteLength(input.stdin, "utf8") > MAX_STDIN_BYTES) {
-          return refuse("", `\`stdin\` is larger than ${MAX_STDIN_BYTES / 1024} KB.`);
+          return refuseHere("", `\`stdin\` is larger than ${MAX_STDIN_BYTES / 1024} KB.`);
         }
         stdin = input.stdin;
       }
     }
     const verdict = checkRemoteAdeCommand(words, connection.scope, { hasStdin: stdin !== null });
     const loggedCommand = Array.isArray(words) ? redactedCommandForLog(words.filter((w): w is string => typeof w === "string")) : "";
-    if (!verdict.ok) return refuse(loggedCommand, verdict.reason);
-    const logged = { ...logBase, ...inProject, command: loggedCommand };
+    if (!verdict.ok) return refuseHere(loggedCommand, verdict.reason);
+    const logged = { ...logBase, ...(projectName ? { project: projectName } : {}), command: loggedCommand };
     const connectionRuns = runsByConnection.get(connection.id) ?? 0;
     if (activeRuns >= MAX_CONCURRENT_REMOTE_RUNS) {
       deps.record({ ...logged, outcome: "busy", exitCode: null, durationMs: 0 });
@@ -357,41 +348,13 @@ export function createRemoteMcpProtocol(deps: {
     runsByConnection.set(connection.id, connectionRuns + 1);
     let result: RemoteRunResult;
     try {
-      if (everyProject && everyProject.length > 1 && typed?.everyProject) {
-        // One slot for the whole sweep, two projects at a time, so a sweep
-        // cannot take every run this computer has.
-        const parts = await mapWithLimit(everyProject, EVERY_PROJECT_PARALLEL, async (project) => {
-          const run = await runIn(project.rootPath);
-          const ok = !run.timedOut && !run.truncated && (typed.okExitCodes ?? [0]).includes(run.exitCode ?? -1);
-          let value: unknown = null;
-          if (ok) {
-            try { value = typed.shape ? typed.shape(JSON.parse(run.stdout), input) : JSON.parse(run.stdout); } catch { value = null; }
-          }
-          return { project, run, value };
-        });
-        const answered = parts.filter((part) => part.value !== null);
-        const durationMs = Math.max(0, ...parts.map((part) => part.run.durationMs));
-        const outcome: RemoteMcpActivityOutcome = answered.length ? "ok" : "failed";
-        deps.record({ ...logged, project: undefined, outcome, exitCode: answered.length ? 0 : null, durationMs, detail: `${answered.length} of ${parts.length} projects` });
-        if (!answered.length) {
-          return toolError(`Couldn't read any project on this computer:\n${parts.map((part) => `${part.project.displayName}: ${toolText(part.run, typed.maxOutputBytes)}`).join("\n")}`);
-        }
-        const value = typed.everyProject.merge(answered.map((part) => ({
-          project: { id: part.project.projectId, name: part.project.displayName },
-          result: part.value,
-        })));
-        const missed = parts.filter((part) => part.value === null).map((part) => part.project.displayName);
-        const next = typed.next?.(value, input) ?? null;
-        const scopeLine = `[projects: ${answered.map((part) => part.project.displayName).join(", ")}${missed.length ? `; couldn't read ${missed.join(", ")}` : ""}]`;
-        return {
-          content: [{ type: "text", text: `${scopeLine}\n${JSON.stringify(value)}${next ? `\nNext: ${next}` : ""}` }],
-          structuredContent: { project: null, result: value, ...(next ? { next } : {}) },
-          isError: false,
-        };
+      if (typed && everyProject && everyProject.length > 1) {
+        // One slot for the whole sweep, so a sweep cannot take every run this computer has.
+        return await sweepProjects(typed, input, everyProject, runIn, logBase, loggedCommand);
       }
       result = await runIn(resolved.cwd);
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = getErrorMessage(error);
       deps.record({ ...logged, outcome: "failed", exitCode: null, durationMs: 0, detail: message });
       return toolError(message);
     } finally {
@@ -403,11 +366,57 @@ export function createRemoteMcpProtocol(deps: {
     const answered = (typed?.okExitCodes ?? [0]).includes(result.exitCode ?? -1);
     const outcome: RemoteMcpActivityOutcome = result.timedOut ? "timeout" : answered ? "ok" : "failed";
     deps.record({ ...logged, outcome, exitCode: result.exitCode, durationMs: result.durationMs });
-    if (typed) return typedResult(typed, input, result, resolved);
+    const headLine = projectLine(resolved);
+    if (typed) return buildTypedToolResult(typed, input, result, { headLine, project: projectSummary(resolved) });
     return {
-      content: [{ type: "text", text: `${projectLine(resolved)}\n${toolText(result)}` }],
+      content: [{ type: "text", text: `${headLine}\n${toolText(result)}` }],
       isError: result.timedOut || result.exitCode !== 0,
     };
+  };
+
+  /**
+   * A typed tool with `everyProject`, run in each recent project two at a
+   * time and merged into one result. A project whose run fails (or throws) is
+   * named as missed; the sweep fails only when none answered.
+   */
+  const sweepProjects = async (
+    tool: TypedTool,
+    input: Record<string, unknown>,
+    projects: readonly RemoteMcpProject[],
+    runIn: (cwd: string) => Promise<RemoteRunResult>,
+    logBase: ActivityBase,
+    command: string,
+  ): Promise<RemoteMcpToolResult> => {
+    const parts = await mapWithLimit(projects, EVERY_PROJECT_PARALLEL, async (project) => {
+      let run: RemoteRunResult;
+      try {
+        run = await runIn(project.rootPath);
+      } catch (error) {
+        // Settle like a failed run, so the slot is held until every sibling is done.
+        run = failedRun(getErrorMessage(error));
+      }
+      return { project, run, parsed: parseTypedRun(tool, input, run) };
+    });
+    const answered = parts.flatMap((part) => (part.parsed ? [{ project: part.project, value: part.parsed.value }] : []));
+    const durationMs = Math.max(0, ...parts.map((part) => part.run.durationMs));
+    deps.record({
+      ...logBase,
+      command,
+      outcome: answered.length ? "ok" : "failed",
+      exitCode: answered.length ? 0 : null,
+      durationMs,
+      detail: `${answered.length} of ${parts.length} projects`,
+    });
+    if (!answered.length) {
+      return toolError(`Couldn't read any project on this computer:\n${parts.map((part) => `${part.project.displayName}: ${toolText(part.run, tool.maxOutputBytes)}`).join("\n")}`);
+    }
+    const value = tool.everyProject!.merge(answered.map((part) => ({
+      project: { id: part.project.projectId, name: part.project.displayName },
+      result: part.value,
+    })));
+    const missed = parts.filter((part) => !part.parsed).map((part) => part.project.displayName);
+    const headLine = `[projects: ${answered.map((part) => part.project.displayName).join(", ")}${missed.length ? `; couldn't read ${missed.join(", ")}` : ""}]`;
+    return shapedToolResult(tool, input, value, { headLine, project: null });
   };
 
   /**
@@ -441,10 +450,7 @@ export function createRemoteMcpProtocol(deps: {
   };
 
   const skillUnreadable = (filePath: string, error: unknown): void => {
-    deps.warn?.("remote_mcp.skill_unreadable", {
-      path: filePath,
-      error: error instanceof Error ? error.message : String(error),
-    });
+    deps.warn?.("remote_mcp.skill_unreadable", { path: filePath, error: getErrorMessage(error) });
   };
 
   // ── Other computers of the account ────────────────────────────────────────
@@ -453,57 +459,71 @@ export function createRemoteMcpProtocol(deps: {
    * Every call may name a computer (`machine`). This one runs it as before;
    * another one gets the same `tools/call` through the relay (remoteMcpForward.ts)
    * and its answer comes back marked `[machine: …]`. List tools take "all".
+   *
+   * A connection from before accounts (`onlyMachine`) reaches only the
+   * computer it was made on: on the account address its calls go there, and
+   * anywhere else they are refused, whatever they name.
    */
   const routeToolCall = async (
     connection: RemoteMcpConnectionSummary,
     params: Record<string, unknown>,
-    context: RemoteMcpCallContext | undefined,
-  ): Promise<unknown> => {
+    context: RemoteMcpCallContext,
+  ): Promise<RemoteMcpToolResult> => {
     const router = deps.machines;
-    if (!router) return await callTool(connection, params);
     const name = typeof params.name === "string" ? params.name : "";
-    const input = params.arguments && typeof params.arguments === "object" && !Array.isArray(params.arguments)
-      ? params.arguments as Record<string, unknown>
-      : {};
-    const logBase = {
-      connectionId: connection.id,
-      label: connection.label,
-      scope: connection.scope,
-      ...(name !== TOOL_NAME ? { tool: name } : {}),
-    };
-    const refuse = (reason: string) => {
-      deps.record({ ...logBase, command: "", outcome: "refused", exitCode: null, durationMs: 0, detail: reason });
-      return toolError(reason);
-    };
-    if (name === MACHINES_TOOL) return await machinesListResult(router, logBase);
-    if (input.machine === undefined || input.machine === null || input.machine === "") {
-      const result = await callTool(connection, params) as RemoteMcpToolResult;
-      // On the account address any computer may answer: say which one did.
-      return context?.accountMount ? withMachineLabel(result, router.thisMachine()) : result;
-    }
-    if (typeof input.machine !== "string") return refuse("`machine` must be a computer's name or key from machines_list.");
+    const input = asRecord(params.arguments);
+    const logBase = logBaseFor(connection, name);
+    const self = router.thisMachine();
+    const only = connection.onlyMachine ?? null;
+    const onlyElsewhere = only !== null && only.machineKey !== self.key;
+    if (onlyElsewhere && (!context.accountMount || context.via)) return refuse(logBase, onlyMachineRefusal(only));
+    if (name === MACHINES_TOOL_NAME) return await machinesListResult(logBase);
     const { machine: selector, ...rest } = input;
     const localParams = { ...params, arguments: rest };
-    if ((selector as string).trim().toLowerCase() === "all") {
-      if (!FAN_OUT_TOOLS.has(name)) {
-        return refuse(`machine "all" works with ${[...FAN_OUT_TOOLS].join(", ")}. Name one computer for ${name}.`);
+    if (selector === undefined || selector === null || selector === "") {
+      if (onlyElsewhere) return await forwardToOnlyMachine(connection, name, rest, only, context, logBase);
+      const result = await callTool(connection, params);
+      // On the account address any computer may answer: say which one did.
+      return context.accountMount ? withMachineLabel(result, self) : result;
+    }
+    if (typeof selector !== "string") return refuse(logBase, "`machine` must be a computer's name or key from machines_list.");
+    if (selector.trim().toLowerCase() === "all") {
+      if (!findTypedTool(name)?.fanOut) {
+        return refuse(logBase, `machine "all" works with ${FAN_OUT_TOOL_NAMES.join(", ")}. Name one computer for ${name}.`);
       }
-      if (context?.via) return refuse(`This call came through ${context.via}; ADE MCP sends a call on one hop only.`);
-      return await fanOut(connection, name, localParams, rest, context, router);
+      if (context.via) return refuse(logBase, `This call came through ${context.via}; ADE MCP sends a call on one hop only.`);
+      return await fanOut(connection, name, localParams, rest, context, only?.machineKey ?? null);
     }
-    const resolved = await router.resolve(selector as string);
-    if (resolved.kind === "error") return refuse(resolved.message);
-    if (resolved.kind === "here") {
-      return withMachineLabel(await callTool(connection, localParams) as RemoteMcpToolResult, resolved.machine);
-    }
-    if (context?.via) {
+    const resolved = await router.resolve(selector);
+    if (resolved.kind === "error") return refuse(logBase, resolved.message);
+    const targetKey = resolved.kind === "here" ? resolved.machine.key : resolved.machine.machineKey;
+    if (only && targetKey !== only.machineKey) return refuse(logBase, onlyMachineRefusal(only));
+    if (resolved.kind === "here") return withMachineLabel(await callTool(connection, localParams), resolved.machine);
+    if (context.via) {
       return refuse(
+        logBase,
         `This call came through ${context.via}; ADE MCP sends a call on one hop only, so it can't reach ${resolved.machine.name} from here.`,
       );
     }
     const reason = router.unavailableReason(resolved.machine);
-    if (reason) return refuse(reason);
-    return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest), router);
+    if (reason) return refuse(logBase, reason);
+    return await forwardTo(connection, name, rest, resolved.machine, context, forwardTimeoutMs(name, rest));
+  };
+
+  /** A connection from before accounts, on the account address of another computer: its call goes to its own. */
+  const forwardToOnlyMachine = async (
+    connection: RemoteMcpConnectionSummary,
+    name: string,
+    input: Record<string, unknown>,
+    only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>,
+    context: RemoteMcpCallContext,
+    logBase: ActivityBase,
+  ): Promise<RemoteMcpToolResult> => {
+    const resolved = await deps.machines.resolve(only.machineKey);
+    if (resolved.kind !== "remote") return refuse(logBase, onlyMachineRefusal(only));
+    const reason = deps.machines.unavailableReason(resolved.machine);
+    if (reason) return refuse(logBase, reason);
+    return await forwardTo(connection, name, input, resolved.machine, context, forwardTimeoutMs(name, input));
   };
 
   /** The forwarded call's budget: the tool's own timeout plus room for the trip, at most 10 minutes. */
@@ -530,22 +550,13 @@ export function createRemoteMcpProtocol(deps: {
     name: string,
     input: Record<string, unknown>,
     machine: RemoteMcpRosterMachine,
-    context: RemoteMcpCallContext | undefined,
+    context: RemoteMcpCallContext,
     timeoutMs: number,
-    router: RemoteMcpMachineRouter,
   ): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const result = await router.forward(
-      machine,
-      { name, arguments: input },
-      context ?? { bearer: null, via: null, protocolVersion: null, accountMount: false },
-      timeoutMs,
-    );
+    const result = await deps.machines.forward(machine, { name, arguments: input }, context, timeoutMs);
     deps.record({
-      connectionId: connection.id,
-      label: connection.label,
-      scope: connection.scope,
-      ...(name !== TOOL_NAME ? { tool: name } : {}),
+      ...logBaseFor(connection, name),
       command: commandForLog(name, input),
       outcome: result.isError ? "failed" : "ok",
       exitCode: null,
@@ -556,55 +567,51 @@ export function createRemoteMcpProtocol(deps: {
     return withMachineLabel(result, { key: machine.machineKey, name: machine.name });
   };
 
-  /** A list tool on every included computer at once, at most six in flight, one row per computer. */
+  /**
+   * A list tool on every included computer at once (or, for a connection
+   * from before accounts, on its one computer), at most six in flight, one
+   * row per computer.
+   */
   const fanOut = async (
     connection: RemoteMcpConnectionSummary,
     name: string,
     localParams: Record<string, unknown>,
     input: Record<string, unknown>,
-    context: RemoteMcpCallContext | undefined,
-    router: RemoteMcpMachineRouter,
-  ) => {
-    const targets = (await router.roster()).filter((machine) => machine.isThisMachine || machine.included);
+    context: RemoteMcpCallContext,
+    onlyMachineKey: string | null,
+  ): Promise<RemoteMcpToolResult> => {
+    const router = deps.machines;
+    const targets = (await router.roster()).filter((machine) =>
+      (machine.isThisMachine || machine.included) && (!onlyMachineKey || machine.machineKey === onlyMachineKey));
     const self = router.thisMachine();
     const timeoutMs = Math.min(forwardTimeoutMs(name, input), FAN_OUT_TIMEOUT_MS);
-    type Row = { machine: { key: string; name: string }; ok: boolean; result?: unknown; error?: string; text: string };
-    const rows: Row[] = new Array(targets.length);
-    const runOne = async (index: number) => {
-      const machine = targets[index]!;
+    const rows = await mapWithLimit(targets, MAX_FAN_OUT, async (machine) => {
       const ref = machine.isThisMachine ? self : { key: machine.machineKey, name: machine.name };
       const reason = machine.isThisMachine ? null : router.unavailableReason(machine);
-      let result: RemoteMcpToolResult;
-      if (reason) result = toolError(reason);
-      else if (machine.isThisMachine) result = await callTool(connection, localParams) as RemoteMcpToolResult;
-      else result = await forwardTo(connection, name, input, machine, context, timeoutMs, router);
+      const result = reason
+        ? toolError(reason)
+        : machine.isThisMachine
+          ? await callTool(connection, localParams)
+          : await forwardTo(connection, name, input, machine, context, timeoutMs);
       const text = firstText(result).replace(/^\[machine: [^\]\n]*\]\n?/, "");
-      rows[index] = result.isError
+      return result.isError
         ? { machine: ref, ok: false, error: text, text }
         : { machine: ref, ok: true, result: result.structuredContent ?? { text }, text };
-    };
-    let next = 0;
-    const worker = async () => {
-      while (next < targets.length) await runOne(next++);
-    };
-    await Promise.all(Array.from({ length: Math.min(MAX_FAN_OUT, targets.length) }, worker));
+    });
     return {
       content: [{
         type: "text",
         text: rows.map((row) => `[machine: ${row.machine.name}]${row.ok ? "" : " failed"}\n${row.text}`).join("\n\n")
           || "No computers to ask.",
       }],
-      structuredContent: { machines: rows.map(({ text: _text, ...row }) => row) },
+      structuredContent: { view: name, machines: rows.map(({ text: _text, ...row }) => row) },
       isError: rows.length > 0 && rows.every((row) => !row.ok),
     };
   };
 
-  const machinesListResult = async (
-    router: RemoteMcpMachineRouter,
-    logBase: { connectionId: string; label: string; scope: RemoteMcpScope },
-  ) => {
+  const machinesListResult = async (logBase: ActivityBase): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const machines = (await router.roster()).map((machine) => ({
+    const machines = (await deps.machines.roster()).map((machine) => ({
       name: machine.name,
       key: machine.machineKey,
       online: machine.online,
@@ -613,7 +620,7 @@ export function createRemoteMcpProtocol(deps: {
       supported: machine.supported,
       isThisMachine: machine.isThisMachine,
     }));
-    deps.record({ ...logBase, tool: MACHINES_TOOL, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
+    deps.record({ ...logBase, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
     const describe = (machine: (typeof machines)[number]) => [
       machine.isThisMachine ? `${machine.name} (answering)` : machine.name,
       machine.online === null ? "online unknown" : machine.online ? "online" : "offline",
@@ -621,46 +628,42 @@ export function createRemoteMcpProtocol(deps: {
     ].join(" · ");
     return {
       content: [{ type: "text", text: machines.map(describe).join("\n") || "No computers found." }],
-      structuredContent: { machines },
+      structuredContent: { view: MACHINES_TOOL_NAME, machines },
       isError: false,
     };
   };
 
   const machineInput = (toolName: string) => ({
     type: "string",
-    description: FAN_OUT_TOOLS.has(toolName)
+    description: findTypedTool(toolName)?.fanOut
       ? "Computer (machines_list) or \"all\". Default: this one."
       : "Computer (machines_list). Default: this one.",
   });
 
   const machinesToolDefinition = () => ({
-    name: MACHINES_TOOL,
+    name: MACHINES_TOOL_NAME,
     title: "List computers",
     description: "The computers on this ADE account: online, included, serving, and which one is answering.",
     inputSchema: { type: "object", properties: {} as Record<string, unknown> },
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
 
-  /** Adds `machine` to every tool and lists machines_list, when calls can reach other computers. */
+  /** Adds `machine` to every tool and lists machines_list. */
   const withMachineTools = <T extends { name: string; inputSchema: { properties?: Record<string, unknown> } }>(
     tools: T[],
-  ): Array<T | ReturnType<typeof machinesToolDefinition>> => {
-    if (!deps.machines) return tools;
-    return [
-      ...tools.map((tool) => ({
-        ...tool,
-        inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, machine: machineInput(tool.name) } },
-      })),
-      machinesToolDefinition(),
-    ];
-  };
-
+  ): Array<T | ReturnType<typeof machinesToolDefinition>> => [
+    ...tools.map((tool) => ({
+      ...tool,
+      inputSchema: { ...tool.inputSchema, properties: { ...tool.inputSchema.properties, machine: machineInput(tool.name) } },
+    })),
+    machinesToolDefinition(),
+  ];
 
   const handleRpc = async (
     connection: RemoteMcpConnectionSummary,
     message: JsonRpcMessage | null,
     /** What the HTTP layer knows: the bearer, a forwarding computer, the address used. */
-    context?: RemoteMcpCallContext,
+    context: RemoteMcpCallContext = NO_CALL_CONTEXT,
   ): Promise<Record<string, unknown> | null> => {
     if (!message || typeof message !== "object" || Array.isArray(message)) {
       return { jsonrpc: "2.0", id: null, error: { code: -32600, message: "Invalid request." } };
@@ -673,20 +676,27 @@ export function createRemoteMcpProtocol(deps: {
     const reply = (result: unknown) => ({ jsonrpc: "2.0", id, result });
     const fail = (code: number, text: string) => ({ jsonrpc: "2.0", id, error: { code, message: text } });
     if (message.jsonrpc !== "2.0" || !method) return fail(-32600, "Invalid JSON-RPC request.");
-    const params = message.params && typeof message.params === "object" && !Array.isArray(message.params)
-      ? message.params as Record<string, unknown>
-      : {};
+    const params = asRecord(message.params);
+    // A connection kept to another computer reads none of this one's
+    // projects: no skills and no command catalog (the tools refuse it too).
+    const only = connection.onlyMachine ?? null;
+    if (only && only.machineKey !== deps.machines.thisMachine().key) {
+      if (method === "prompts/list") return reply({ prompts: [] });
+      if (method === "prompts/get" || (method === "resources/read" && params.uri === COMMANDS_RESOURCE_URI)) {
+        return fail(-32602, onlyMachineRefusal(only));
+      }
+    }
     switch (method) {
       case "initialize": {
         const requested = typeof params.protocolVersion === "string" ? params.protocolVersion : "";
         return reply({
-          protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : DEFAULT_PROTOCOL_VERSION,
+          protocolVersion: SUPPORTED_PROTOCOL_VERSIONS.includes(requested) ? requested : REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
           capabilities: {
             tools: { listChanged: false },
             resources: { listChanged: false },
             prompts: { listChanged: false },
           },
-          serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: adeVersion() },
+          serverInfo: { name: "ade", title: `ADE on ${deps.machineName()}`, version: remoteMcpAdeVersion() },
           instructions: instructions(connection.scope),
         });
       }
@@ -717,7 +727,7 @@ export function createRemoteMcpProtocol(deps: {
           const text = await commandCatalog(connection.scope);
           return reply({ contents: [{ uri: COMMANDS_RESOURCE_URI, mimeType: "application/json", text }] });
         } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = getErrorMessage(error);
           deps.warn?.("remote_mcp.catalog_failed", { scope: connection.scope, error: message });
           return fail(-32603, message);
         }
@@ -739,9 +749,7 @@ export function createRemoteMcpProtocol(deps: {
       }
       case "prompts/get": {
         const name = typeof params.name === "string" ? params.name : "";
-        const promptArgs = params.arguments && typeof params.arguments === "object"
-          ? params.arguments as Record<string, unknown>
-          : {};
+        const promptArgs = asRecord(params.arguments);
         const resolved = resolveProject(promptArgs.project);
         if ("error" in resolved) return fail(-32602, resolved.error);
         if (!resolved.project) return fail(-32602, "No project is open on this computer, so it has no skills to show.");
