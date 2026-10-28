@@ -2576,8 +2576,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
                                                     Exit 0 running or waiting (turn ended, background
                                                     agents/shells still running), 1 idle, 2 blocked. Use --text.
-                                                    Adds a 'pending' line while an effort/fast-mode change
-                                                    waits for background work.
+                                                    Adds an 'effort' line while the running work keeps an
+                                                    older effort than the one picked, and a 'pending' line
+                                                    while a fast-mode change waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.

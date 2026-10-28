@@ -622,6 +622,29 @@ struct WorkComposerControlsRow: View {
   }
 }
 
+/// The composer's held-settings chip. Mirrors desktop
+/// (apps/desktop/src/shared/chatTurnStatus.ts): an effort the running work has
+/// not taken yet reads "High → Medium" (desktop's
+/// `reasoningEffortChangeShortLabel`); other held settings are named as in
+/// `pendingSettingsAfterBackgroundShortLabel`. Effort is left out of that list,
+/// which a host still fills for older apps. Nil when nothing waits.
+func workPendingSettingsLabel(
+  effortChange: AgentChatReasoningEffortChange?,
+  heldSettings: [String]?
+) -> String? {
+  let effort = effortChange.map {
+    "\(workEffortChangeName($0.current)) → \(workEffortChangeName($0.next))"
+  }
+  let held = workPendingSettingsAfterBackgroundShortLabel(heldSettings?.filter { $0 != "reasoningEffort" })
+  let parts = [effort, held].compactMap { $0 }
+  return parts.isEmpty ? nil : parts.joined(separator: " · ")
+}
+
+private func workEffortChangeName(_ effort: String?) -> String {
+  guard let effort, !effort.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return "Default" }
+  return workReasoningEffortDisplayName(effort)
+}
+
 /// Mirrors desktop `pendingSettingsAfterBackgroundShortLabel`
 /// (apps/desktop/src/shared/chatTurnStatus.ts): one held setting is named,
 /// several read "Settings pending". Nil when nothing waits.

@@ -675,6 +675,7 @@ import type {
   AgentChatSessionCapabilities,
   AgentChatSessionCapabilitiesArgs,
   AgentChatPendingSettingAfterBackground,
+  AgentChatReasoningEffortChange,
   AgentChatSessionSummary,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
@@ -3268,6 +3269,12 @@ type ClaudeRuntime = {
    * cleared by every query reset, which applies or supersedes them.
    */
   pendingResetSettings?: Set<AgentChatPendingSettingAfterBackground>;
+  /**
+   * The effort the live query still runs at while a deferred reset holds an
+   * effort change (`pendingResetSettings` has `reasoningEffort`). `undefined`
+   * when no effort change waits; `null` is the model's default.
+   */
+  pendingResetRunningEffort?: string | null;
   /** Clear Claude SDK continuity on the deferred reset; used after mode changes the old session cannot apply. */
   pendingSessionResetClearSdkSessionId?: boolean;
   /** Tool names the user has approved for the session via "Allow for Session". */
@@ -4573,6 +4580,41 @@ function claudePendingSettingsAfterBackground(
   return (["reasoningEffort", "fastMode"] as const).filter((setting) => settings.has(setting));
 }
 
+/** Hold an effort change for the deferred reset, remembering the effort the live query keeps. */
+function deferClaudeReasoningEffortReset(runtime: ClaudeRuntime, runningEffort: string | null): void {
+  if (runtime.pendingResetRunningEffort === undefined) runtime.pendingResetRunningEffort = runningEffort;
+  deferClaudeQueryResetForSetting(runtime, "reasoningEffort");
+}
+
+/**
+ * The picked effort a Claude chat's live query has not taken yet. Only a
+ * deferred reset leaves one: a live `applyFlagSettings` change lands on the
+ * next model request, even inside the running turn. Once the turn is over and
+ * no background work holds the reset, the next send applies it, so nothing
+ * is shown.
+ */
+function claudeReasoningEffortChange(
+  runtime: ChatRuntime | null,
+  selectedEffort: string | null,
+): AgentChatReasoningEffortChange | null {
+  if (runtime?.kind !== "claude" || !runtime.pendingSessionReset) return null;
+  const current = runtime.pendingResetRunningEffort;
+  if (current === undefined || !runtime.pendingResetSettings?.has("reasoningEffort")) return null;
+  if (current === selectedEffort) return null;
+  const backgroundHolds = claudeHasAwaitedBackgroundWorkload(runtime);
+  if (!runtime.busy && !backgroundHolds) return null;
+  return { current, next: selectedEffort, appliesAfter: backgroundHolds ? "background" : "turn" };
+}
+
+/** The picked effort a chat's running work has not taken yet, for any provider. */
+function managedReasoningEffortChange(managed: ManagedChatSession): AgentChatReasoningEffortChange | null {
+  const selected = managed.session.reasoningEffort ?? null;
+  if (managed.session.provider === "claude") return claudeReasoningEffortChange(managed.runtime, selected);
+  const current = managed.turnReasoningEffort;
+  if (current === undefined || managed.session.status !== "active" || current === selected) return null;
+  return { current, next: selected, appliesAfter: "turn" };
+}
+
 /**
  * Tracked tasks that still claim the runtime is doing work. Housekeeping tasks
  * and hook-only entries never do: neither is guaranteed a terminal edge.
@@ -5223,6 +5265,13 @@ type ManagedChatSession = {
    * the send; the list reports it as in flight meanwhile. In memory only.
    */
   turnAcceptedAt?: string | null;
+  /**
+   * The effort the running turn started with; `undefined` while no turn runs.
+   * Providers other than Claude take effort per turn, so a change mid-turn
+   * (a steer included) reaches only the next one. Claude tracks its live
+   * query instead (`claudeReasoningEffortChange`). In memory only.
+   */
+  turnReasoningEffort?: string | null;
   /**
    * The chat's personal profile changed while its provider process was
    * mid-turn (`adoptLegacyPersonalSessionAsAssistant`). That process was built
@@ -21712,6 +21761,7 @@ export function createAgentChatService(args: {
       // A new turn starts: the last turn's id no longer applies. Proof filed
       // before this turn's first event is placed by its time instead.
       lastTurnIdBySession.delete(managed.session.id);
+      managed.turnReasoningEffort = managed.session.reasoningEffort ?? null;
     }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
@@ -21725,6 +21775,7 @@ export function createAgentChatService(args: {
   ): void => {
     managed.session.status = "idle";
     managed.session.currentTurnStartedAt = null;
+    managed.turnReasoningEffort = undefined;
     clearTurnAccepted(managed);
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
@@ -46269,6 +46320,7 @@ export function createAgentChatService(args: {
     // The next query is built from the current settings, so every setting
     // that waited is applied (or superseded) by this reset.
     runtime.pendingResetSettings?.clear();
+    runtime.pendingResetRunningEffort = undefined;
     try { runtime.query?.close(); } catch { /* ignore */ }
     runtime.inputPump?.close();
     runtime.query = null;
@@ -60902,10 +60954,10 @@ export function createAgentChatService(args: {
       && managed.runtime?.kind === "claude"
       && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)
     ) {
-      if (claudeQueryResetMustWait(managed.runtime)) {
-        deferClaudeQueryResetForSetting(managed.runtime, "reasoningEffort");
-      } else {
+      if (!claudeQueryResetMustWait(managed.runtime)) {
         resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+      } else if (!await applyClaudeReasoningEffortLive(managed, managed.runtime, nextClaudeEffort)) {
+        deferClaudeReasoningEffortReset(managed.runtime, prevClaudeEffort);
       }
     } else if (managed.runtime?.kind === "claude" && managed.runtime.pendingSessionReset) {
       // A reset that waited (on background work, or a turn that has ended):
@@ -60933,6 +60985,42 @@ export function createAgentChatService(args: {
       onBackendDispatched,
     });
     markEpochDirectivesDelivered();
+  };
+
+  /**
+   * Change a busy Claude query's effort in place. The CLI takes it on its next
+   * model request, inside the running turn too, so a steer sent with a new
+   * effort is answered at that effort and nothing is restarted. Returns false
+   * when the query cannot take it, and the caller defers a reset instead.
+   */
+  const applyClaudeReasoningEffortLive = async (
+    managed: ManagedChatSession,
+    runtime: ClaudeRuntime,
+    effort: string | null,
+  ): Promise<boolean> => {
+    if (!runtime.query) return false;
+    const control = getClaudeQueryControl(runtime.query);
+    if (typeof control.applyFlagSettings !== "function") return false;
+    try {
+      // Both keys every time: an effort change sent without `ultracode`
+      // turns ultracode off, and `null` returns to the model's default.
+      await control.applyFlagSettings({
+        effortLevel: claudeRuntimeEffortForReasoningEffort(effort),
+        ultracode: isClaudeUltracodeEffort(effort),
+      } as Parameters<NonNullable<typeof control.applyFlagSettings>>[0]);
+    } catch (error) {
+      logger.warn("agent_chat.claude_set_effort_live_failed", {
+        sessionId: managed.session.id,
+        effort,
+        error: String(error),
+      });
+      return false;
+    }
+    // The live query runs at the picked effort now, so an effort change an
+    // earlier reset was holding no longer waits.
+    runtime.pendingResetSettings?.delete("reasoningEffort");
+    runtime.pendingResetRunningEffort = undefined;
+    return true;
   };
 
   const applyClaudeFastModeSettingToRuntime = async (
@@ -65875,6 +65963,7 @@ export function createAgentChatService(args: {
     const backgroundWork = runtimeBackgroundWork(liveManaged?.runtime ?? null);
     const activeBackgroundTaskCount = totalBackgroundWork(backgroundWork);
     const pendingSettingsAfterBackground = claudePendingSettingsAfterBackground(liveManaged?.runtime ?? null);
+    const reasoningEffortChange = liveManaged ? managedReasoningEffortChange(liveManaged) : null;
     const modelHandoffHistory = liveSession?.modelHandoffHistory ?? persisted?.modelHandoffHistory;
     const backgroundWorkSince = runtimeBackgroundWorkSince(liveManaged?.runtime ?? null);
     // Reported even when nothing is live in the runtime's own bookkeeping: a
@@ -66174,6 +66263,7 @@ export function createAgentChatService(args: {
       // summary read for every session.
       ...(activeBackgroundTaskCount > 0 ? { backgroundWork } : {}),
       ...(pendingSettingsAfterBackground.length ? { pendingSettingsAfterBackground } : {}),
+      ...(reasoningEffortChange ? { reasoningEffortChange } : {}),
       ...(activeBackgroundTaskCount > 0 && backgroundWorkSince ? { backgroundWorkSince } : {}),
       ...(runtimeProcesses.length ? { runtimeProcesses } : {}),
       // `true` is this brain's own runtime; `false` is only honest when no
@@ -66602,6 +66692,7 @@ export function createAgentChatService(args: {
       // Watch-only monitors never make a chat "waiting": nobody waits on them.
       backgroundWorkCount: backgroundWorkFromSummary(summary)?.workingCount ?? 0,
       pendingSettingsAfterBackground: summary.pendingSettingsAfterBackground ?? [],
+      reasoningEffortChange: summary.reasoningEffortChange ?? null,
       currentTool: runningWithTool?.lastToolName
         ? { name: runningWithTool.lastToolName }
         : null,
@@ -71364,13 +71455,13 @@ export function createAgentChatService(args: {
       // invalidate the query so it is recreated on the next turn
       // with the updated thinking configuration.
       if (prev !== next && managed.runtime?.kind === "claude" && (managed.runtime.query || managed.runtime.warmQuery || managed.runtime.warmupDone)) {
-        if (claudeQueryResetMustWait(managed.runtime)) {
+        if (!claudeQueryResetMustWait(managed.runtime)) {
+          resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+        } else if (!await applyClaudeReasoningEffortLive(managed, managed.runtime, next)) {
           // Defer session reset until the current turn completes — tearing down
           // a live session mid-turn would force the stream down the failure path
           // — and until background work ends, which would die with the process.
-          deferClaudeQueryResetForSetting(managed.runtime, "reasoningEffort");
-        } else {
-          resetClaudeQuerySession(managed, managed.runtime, "session_reset");
+          deferClaudeReasoningEffortReset(managed.runtime, prev);
         }
       }
       if (prev !== next && managed.runtime?.kind === "codex") {

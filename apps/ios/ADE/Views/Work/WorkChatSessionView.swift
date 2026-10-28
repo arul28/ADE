@@ -415,7 +415,10 @@ struct WorkChatSummaryRenderContext: Equatable {
     self.parentTitle = parentTitle
     self.pendingInputItemId = summary.pendingInputItemId
     self.activeBackgroundTaskCount = summary.activeBackgroundTaskCount
-    self.pendingSettingsLabel = workPendingSettingsAfterBackgroundShortLabel(summary.pendingSettingsAfterBackground)
+    self.pendingSettingsLabel = workPendingSettingsLabel(
+      effortChange: summary.reasoningEffortChange,
+      heldSettings: summary.pendingSettingsAfterBackground
+    )
     self.usageLimitResume = workUsageLimitResumeModel(for: summary)
     self.crossMachineHandoff = summary.crossMachineHandoff
     self.crossMachineBatchApproval = summary.crossMachineBatchApproval

@@ -269,7 +269,13 @@ import { ChatStatusGlyph } from "./chatStatusVisuals";
 import { chatToolTypeForProvider, isChatToolType } from "../../lib/sessions";
 import { ToolLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { pendingSettingsAfterBackgroundLabel, pendingSettingsAfterBackgroundShortLabel } from "../../../shared/chatTurnStatus";
+import {
+  pendingSettingsAfterBackgroundLabel,
+  pendingSettingsAfterBackgroundShortLabel,
+  reasoningEffortChangeLabel,
+  reasoningEffortChangeTooltip,
+  settingsHeldBesideEffortChange,
+} from "../../../shared/chatTurnStatus";
 import { Banner, NoticeChip, StatusChip, StatusStrip } from "../ui/notice";
 import { deriveConfiguredModelIds, isKnownSelectableChatModelId } from "../../lib/modelOptions";
 import {
@@ -17825,18 +17831,34 @@ export function AgentChatPane({
       runtimePin={renderedChatRuntimePin}
     />
   ) : null;
-  // An effort / fast-mode change the host holds until the chat's background
-  // work ends (applying it restarts the agent process, which would stop that
-  // work). Read off the session summary; it clears when the change applies.
-  const pendingSettingsAfterBackground = renderedSession?.pendingSettingsAfterBackground ?? [];
-  const pendingSettingsChip = composerSessionId && pendingSettingsAfterBackground.length ? (
-    <StatusChip
-      tone="neutral"
-      icon={<ClockCountdown size={10} weight="bold" />}
-      label={pendingSettingsAfterBackgroundShortLabel(pendingSettingsAfterBackground)}
-      tooltip={`The ${pendingSettingsAfterBackgroundLabel(pendingSettingsAfterBackground)} finishes. Applying it now would restart the agent and stop that work.`}
-      testId="chat-pending-settings-chip"
-    />
+  // A fast-mode change the host holds until the chat's background work ends
+  // (applying it restarts the agent process, which would stop that work), and
+  // an effort the running work has not taken yet ("High now · Medium next
+  // turn"). Both read off the session summary and clear when the change applies.
+  const pendingSettingsAfterBackground = settingsHeldBesideEffortChange(renderedSession?.pendingSettingsAfterBackground);
+  const reasoningEffortChange = renderedSession?.reasoningEffortChange ?? null;
+  const reasoningEffortChangeModelId = renderedSession?.modelId ?? renderedSession?.model ?? null;
+  const pendingSettingsChip = composerSessionId && (pendingSettingsAfterBackground.length || reasoningEffortChange) ? (
+    <>
+      {reasoningEffortChange ? (
+        <StatusChip
+          tone="neutral"
+          icon={<ClockCountdown size={10} weight="bold" />}
+          label={reasoningEffortChangeLabel(reasoningEffortChange, reasoningEffortChangeModelId)}
+          tooltip={reasoningEffortChangeTooltip(reasoningEffortChange, reasoningEffortChangeModelId)}
+          testId="chat-effort-change-chip"
+        />
+      ) : null}
+      {pendingSettingsAfterBackground.length ? (
+        <StatusChip
+          tone="neutral"
+          icon={<ClockCountdown size={10} weight="bold" />}
+          label={pendingSettingsAfterBackgroundShortLabel(pendingSettingsAfterBackground)}
+          tooltip={`The ${pendingSettingsAfterBackgroundLabel(pendingSettingsAfterBackground)} finishes. Applying it now would restart the agent and stop that work.`}
+          testId="chat-pending-settings-chip"
+        />
+      ) : null}
+    </>
   ) : null;
   const takeoverBanner = composerSessionId
     && selectedSession?.spawnKind === "subagent"

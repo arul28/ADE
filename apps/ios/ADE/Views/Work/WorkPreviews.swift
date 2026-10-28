@@ -518,6 +518,7 @@ func workPreviewChatSessionView(
   laneTools: WorkLaneToolsPreview? = nil,
   compactFirst: Bool = false,
   pendingSettingsAfterBackground: [String]? = nil,
+  reasoningEffortChange: AgentChatReasoningEffortChange? = nil,
   transcript: [WorkChatEnvelope] = WorkPreviewData.transcript,
   isSideChat: Bool = false,
   onOpenSideChat: (() -> Void)? = nil
@@ -529,6 +530,7 @@ func workPreviewChatSessionView(
     summary.sideChatParentSessionId = WorkPreviewData.chatSummary.sessionId
   }
   summary.pendingSettingsAfterBackground = pendingSettingsAfterBackground
+  summary.reasoningEffortChange = reasoningEffortChange
   if compactFirst {
     summary.compactionIdleMode = "ask"
     summary.compactFirstMinTokens = 1_000
@@ -1690,7 +1692,10 @@ struct ADEPreviewScreenHost: View {
       }
     case .pendingSettings:
       NavigationStack {
-        workPreviewChatSessionView(pendingSettingsAfterBackground: ["reasoningEffort"])
+        workPreviewChatSessionView(
+          pendingSettingsAfterBackground: ["reasoningEffort"],
+          reasoningEffortChange: AgentChatReasoningEffortChange(current: "high", next: "medium", appliesAfter: "turn")
+        )
       }
     case .toolChips:
       NavigationStack {

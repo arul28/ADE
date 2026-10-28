@@ -3499,6 +3499,14 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
    */
   pendingSettingsAfterBackground?: AgentChatPendingSettingAfterBackground[];
   /**
+   * The effort the user picked has not reached the running work yet: the live
+   * turn (or, for Claude, the live process kept for background work) still
+   * runs at `current`. Absent when the work already runs at the picked effort,
+   * which includes a change applied live and an idle chat whose next turn
+   * starts on it. Live only.
+   */
+  reasoningEffortChange?: AgentChatReasoningEffortChange;
+  /**
    * ISO instant this session's live background work began — the anchor for the
    * "Background work ×N 2h" elapsed. Omitted when the runtime cannot say
    * (nothing live, or a provider that does not track a background level), in
@@ -5703,6 +5711,16 @@ export type AgentChatSteerResult = {
 
 /** A chat setting whose change is held while background work runs. */
 export type AgentChatPendingSettingAfterBackground = "reasoningEffort" | "fastMode";
+
+/** An effort change the running work has not picked up yet (`reasoningEffortChange`). */
+export type AgentChatReasoningEffortChange = {
+  /** The effort the running work uses; null is the model's default. */
+  current: string | null;
+  /** The effort the user picked; null is the model's default. */
+  next: string | null;
+  /** When `next` starts: with the next turn, or once background work ends. */
+  appliesAfter: "turn" | "background";
+};
 
 export type AgentChatMessageSessionKind =
   | "auto"

@@ -8,7 +8,11 @@ import { resolveCurrentCliEntry } from "../lib/cliDelegation";
 import { Box, Text, useApp, useInput, type Key as InkKey } from "ink";
 import { isChatTaskListEvent } from "../../../desktop/src/shared/chatTaskList";
 import { isTurnInFlightError } from "../../../desktop/src/shared/codedError";
-import { pendingSettingsAfterBackgroundShortLabel } from "../../../desktop/src/shared/chatTurnStatus";
+import {
+  pendingSettingsAfterBackgroundShortLabel,
+  reasoningEffortChangeLabel,
+  settingsHeldBesideEffortChange,
+} from "../../../desktop/src/shared/chatTurnStatus";
 import { deriveCompactFirstState, type CompactFirstChoice } from "./compactFirstState";
 import type { AgentChatEvent } from "../../../desktop/src/shared/types/chat";
 import {
@@ -5899,13 +5903,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     contextTokens: compactFirstState.offer.contextTokens,
     estimatedPostTokens: compactFirstState.offer.estimatedPostTokens,
   } : null, [compactFirstState]);
-  // An effort / fast-mode change the host holds until the chat's background
-  // work ends (desktop shows the same "Effort pending" chip in the composer).
+  // An effort the running work has not taken yet ("High now · Medium next
+  // turn") and a fast-mode change held until background work ends — the same
+  // chips desktop shows over the composer.
   const activePendingSettings = activeSession?.pendingSettingsAfterBackground;
-  const footerPendingSettingsLabel = useMemo(
-    () => activePendingSettings?.length ? pendingSettingsAfterBackgroundShortLabel(activePendingSettings) : null,
-    [activePendingSettings],
-  );
+  const activeEffortChange = activeSession?.reasoningEffortChange;
+  const activeEffortModelId = activeSession?.modelId ?? activeSession?.model ?? null;
+  const footerPendingSettingsLabel = useMemo(() => {
+    const held = settingsHeldBesideEffortChange(activePendingSettings);
+    const parts = [
+      activeEffortChange ? reasoningEffortChangeLabel(activeEffortChange, activeEffortModelId) : null,
+      held.length ? pendingSettingsAfterBackgroundShortLabel(held) : null,
+    ].filter((part): part is string => part != null);
+    return parts.length ? parts.join(" · ") : null;
+  }, [activePendingSettings, activeEffortChange, activeEffortModelId]);
   const compactFirstSendRef = useRef<string | null>(null);
   compactFirstSendRef.current = compactFirstState?.offer && compactFirstState.enabled ? compactFirstState.sessionId : null;
   const activeFormField = rightPane.kind === "form"
