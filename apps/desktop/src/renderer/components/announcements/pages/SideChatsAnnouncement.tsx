@@ -1,7 +1,7 @@
 import { ChatsCircle, Eye, PaperPlaneTilt, TerminalWindow } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import gif from "./assets/side-chat.gif";
+import video from "./assets/side-chat.mp4";
 import still from "./assets/side-chat-still.webp";
 
 /** `/side`: a read-only side chat that knows the conversation. */
@@ -19,10 +19,10 @@ export default function SideChatsAnnouncement({ close }: AnnouncementPageProps) 
       ]}
       action={{ tipId: "side-chats", label: "Try /side" }}
       media={{
-        gif,
+        video,
         still,
-        width: 900,
-        height: 565,
+        width: 1600,
+        height: 1004,
         alt: "Typing /side in a chat opens a side chat that answers, then sends a note to the main chat",
       }}
     />

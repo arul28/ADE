@@ -22,7 +22,8 @@ import "./whatsNewFeature.css";
  * - up to three phone screenshots side by side.
  */
 
-type GifMedia = { kind?: "gif"; gif: string; still: string; width: number; height: number; alt: string };
+/** A looping screen recording; `still` is its poster and what reduce motion shows. */
+type RecordingMedia = { kind?: "recording"; video: string; still: string; width: number; height: number; alt: string };
 /** `src` is the picture; with `video`, it is the still shown under reduce motion. */
 type Shot = { src: string; alt: string; video?: string };
 /** `holdMs` sets how long each screenshot stays, for ones with more to read. */
@@ -37,7 +38,7 @@ export type WhatsNewFeatureProps = {
   sentence: string;
   /** Small chips under the sentence: what it works with, each with its own mark. */
   marks?: readonly { icon: ReactNode; label: string }[];
-  media: GifMedia | ImagesMedia | PhonesMedia;
+  media: RecordingMedia | ImagesMedia | PhonesMedia;
   /** An ADE Tips entry whose action the button runs, and the button's label. */
   action?: { tipId: string; label: string };
 };
@@ -91,7 +92,7 @@ export function WhatsNewFeature({ close, place, headline, sentence, marks, media
       </div>
       <figure
         className="ade-wnf-media"
-        data-kind={media.kind ?? "gif"}
+        data-kind={media.kind ?? "recording"}
         style={{ "--wnf-ratio": media.width / media.height } as CSSProperties}
       >
         {media.kind === "images" ? (
@@ -106,17 +107,34 @@ export function WhatsNewFeature({ close, place, headline, sentence, marks, media
   );
 }
 
-function Recording({ media }: { media: GifMedia }) {
+function Recording({ media }: { media: RecordingMedia }) {
   const reduceMotion = useReduceMotion();
+  if (reduceMotion) {
+    return (
+      <img
+        className="ade-wnf-plate"
+        src={media.still}
+        width={media.width}
+        height={media.height}
+        alt={media.alt}
+        decoding="async"
+        draggable={false}
+      />
+    );
+  }
   return (
-    <img
+    <video
       className="ade-wnf-plate"
-      src={reduceMotion ? media.still : media.gif}
+      src={media.video}
+      poster={media.still}
       width={media.width}
       height={media.height}
-      alt={media.alt}
-      decoding="async"
-      draggable={false}
+      aria-label={media.alt}
+      autoPlay
+      loop
+      muted
+      playsInline
+      preload="auto"
     />
   );
 }

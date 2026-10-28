@@ -1,7 +1,7 @@
 import { DeviceMobile, HandTap, Lightning } from "@phosphor-icons/react";
 import type { AnnouncementPageProps } from "../announcementPages";
 import { WhatsNewFeature } from "./WhatsNewFeature";
-import gif from "./assets/phone-stream.gif";
+import video from "./assets/phone-stream.mp4";
 import still from "./assets/phone-stream-still.webp";
 
 /** The simulator, streamed to the iPhone app and driven by touch. */
@@ -17,10 +17,10 @@ export default function PhoneSimulatorAnnouncement({ close }: AnnouncementPagePr
         { icon: <Lightning size={14} weight="fill" />, label: "Live updates" },
       ]}
       media={{
-        gif,
+        video,
         still,
-        width: 460,
-        height: 548,
+        width: 1920,
+        height: 1080,
         alt: "The simulator on a Mac beside a real iPhone showing the same screen, where a finger taps to open an app",
       }}
       action={{ tipId: "phone", label: "Pair your iPhone" }}
