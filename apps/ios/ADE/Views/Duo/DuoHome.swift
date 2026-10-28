@@ -369,7 +369,7 @@ struct DuoHomeWide<Title: View, Projects: View, Composer: View, ChatsDestination
     NavigationStack {
       VStack(spacing: 0) {
       headerRow
-      DuoLocalFoldReader { localFold, localSize in
+      DuoLocalFoldReader { localFold, localSize, _ in
         let top: CGFloat = {
           if case .stacked(let rect) = localFold { return max(0, min(rect.minY, localSize.height)) }
           return floor(localSize.height * 0.5)
@@ -731,7 +731,7 @@ private struct DuoHomeFixtureScreen: View {
 
   private var title: some View {
     HubConnectionMenu(
-      status: HubConnectionStatus(tone: .ok, label: "Arul’s Mac Studio", spokenState: "connected"),
+      status: HubConnectionStatus(tone: .ok, label: "2 machines", spokenState: "connected", machineCount: 2),
       machines: DuoHomeFixture.machines,
       onOpenSettings: {}
     )

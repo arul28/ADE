@@ -2090,7 +2090,7 @@ struct WorkActivityRailButton: View {
 /// (the Duo's closed outer display, held upright): a tall occlusion along the
 /// trailing edge. Every other iPhone has none, or a short one at the top.
 func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
-  guard proxy.size.height > proxy.size.width else { return false }
+  guard !proxy.isLandscapeIgnoringKeyboard else { return false }
   // Upright, only that display reserves a column on the trailing side.
   if proxy.safeAreaInsets.trailing > 40 { return true }
   #if compiler(>=6.4)
@@ -2112,7 +2112,7 @@ func workDisplayHasEdgeRail(_ proxy: GeometryProxy) -> Bool {
 /// sides alike.
 func workDisplayHasSideRail(_ proxy: GeometryProxy) -> Bool {
   if workDisplayHasEdgeRail(proxy) { return true }
-  guard proxy.size.width > proxy.size.height else { return false }
+  guard proxy.isLandscapeIgnoringKeyboard else { return false }
   return proxy.safeAreaInsets.trailing - proxy.safeAreaInsets.leading > 30
 }
 

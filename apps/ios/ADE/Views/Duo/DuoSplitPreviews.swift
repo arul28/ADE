@@ -633,7 +633,7 @@ private enum DuoSplitFixtureData {
     @ViewBuilder var detail: () -> DetailColumn
 
     var body: some View {
-      DuoLocalFoldReader { fold, size in
+      DuoLocalFoldReader { fold, size, _ in
         let metrics = DuoSplitMetrics(fold: fold, size: size)
         HStack(spacing: 0) {
           list(metrics.listWidth)

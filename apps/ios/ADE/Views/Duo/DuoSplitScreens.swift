@@ -95,14 +95,14 @@ struct DuoSplitScaffold<ListColumn: View, DetailColumn: View>: View {
   }
 
   var body: some View {
-    DuoLocalFoldReader { fold, size in
+    DuoLocalFoldReader { fold, size, landscape in
       let metrics = DuoSplitMetrics(
         fold: fold,
         size: size,
         preferredListWidth: preferredListWidth,
         minimumDetailWidth: minimumDetailWidth
       )
-      let family = adaptive ? duo.family(for: size) : .wide
+      let family = adaptive ? duo.family(landscape: landscape) : .wide
       let bookFolded: Bool = {
         if case .sideBySide = fold { return true }
         return false

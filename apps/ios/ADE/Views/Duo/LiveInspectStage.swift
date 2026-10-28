@@ -15,7 +15,7 @@ struct LiveInspectStage: View {
 
   var body: some View {
     NavigationStack {
-      DuoLocalFoldReader { fold, size in
+      DuoLocalFoldReader { fold, size, _ in
         if duo.isWide {
           wideLayout(fold: fold, size: size)
         } else {

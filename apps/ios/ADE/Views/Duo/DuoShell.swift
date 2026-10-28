@@ -154,14 +154,14 @@ extension View {
 
 private struct DuoAppNavigationRootModifier: ViewModifier {
   @Environment(\.duoLayout) private var duo
-  @State private var size: CGSize = .zero
+  @State private var landscape = false
 
   func body(content: Content) -> some View {
     content
-      .onGeometryChange(for: CGSize.self) { proxy in
-        proxy.size
-      } action: { newSize in
-        size = newSize
+      .onGeometryChange(for: Bool.self) { proxy in
+        proxy.isLandscapeIgnoringKeyboard
+      } action: { newValue in
+        landscape = newValue
         publish()
       }
       .onChange(of: duo.isWide, initial: true) { _, _ in
@@ -173,7 +173,7 @@ private struct DuoAppNavigationRootModifier: ViewModifier {
   }
 
   private func publish() {
-    let family = duo.family(for: size)
+    let family = duo.family(landscape: landscape)
     DuoAppNavigation.shared.setFamily(family, hasEdgeBar: duo.hasEdgeBar)
     CrashReporting.setDisplayLayout(family: "\(family)", edgeBar: duo.hasEdgeBar, fold: foldName)
   }

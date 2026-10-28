@@ -855,13 +855,14 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
   @ViewBuilder var filterBar: () -> FilterBar
   @ViewBuilder var roster: () -> Roster
   @ViewBuilder var composer: () -> Composer
+  /// Where the status bar leaves an empty band beside the clock
+  /// (`hubStatusBandLeadingWidth`): the band's width and height. The header
+  /// moves up into it and everything under it gains the row's height.
+  @State private var statusBand: CGSize?
 
   var body: some View {
     VStack(spacing: 0) {
-      HubHeaderRow(actions: actions, title: title)
-        .padding(.horizontal, 16)
-        .padding(.bottom, 10)
-        .hubHeaderClearsStatusBar()
+      header
       filterBar()
       roster()
         .frame(maxHeight: .infinity)
@@ -886,10 +887,36 @@ struct HubPhoneLayout<Title: View, FilterBar: View, Roster: View, Composer: View
       HubComposerClearsCorner(content: composer)
     }
     .hubComposerAtScreenBottom()
+    .onGeometryChange(for: CGSize?.self) { proxy in
+      hubStatusBandLeadingWidth(proxy).map { CGSize(width: $0, height: proxy.safeAreaInsets.top) }
+    } action: { band in
+      if band != statusBand { statusBand = band }
+    }
     .navigationBarTitleDisplayMode(.inline)
     // The header is a row of its own (under the status bar, the full width),
     // the same row every other form of the Hub shows.
     .toolbar(.hidden, for: .navigationBar)
+  }
+
+  @ViewBuilder
+  private var header: some View {
+    if let statusBand {
+      // In the band beside the clock, level with it, ending short of it.
+      HubHeaderRow(actions: actions, title: title)
+        .environment(\.hubHeaderInline, true)
+        .padding(.leading, 16)
+        .frame(width: max(0, statusBand.width - 8), alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: statusBand.height, alignment: .center)
+        .padding(.top, 6)
+        .padding(.top, -statusBand.height)
+        .padding(.bottom, 8)
+    } else {
+      HubHeaderRow(actions: actions, title: title)
+        .padding(.horizontal, 16)
+        .padding(.bottom, 10)
+        .hubHeaderClearsStatusBar()
+    }
   }
 
   private func collapse() {
