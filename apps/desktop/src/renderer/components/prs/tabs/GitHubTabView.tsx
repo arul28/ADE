@@ -319,7 +319,7 @@ function GitHubTabListColumn({
                   fontSize: 10,
                   fontWeight: 600,
                   color: active ? accent : COLORS.textDim,
-                  opacity: active ? 0.8 : 0.6,
+                  opacity: active ? 0.8 : "var(--ade-dim-row-opacity)",
                 }}>
                   {count}
                 </span>

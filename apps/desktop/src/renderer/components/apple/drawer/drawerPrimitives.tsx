@@ -220,7 +220,7 @@ export function DrawerSwitch({
     >
       <span
         className={cn(
-          "absolute top-[2px] h-[12px] w-[12px] rounded-full bg-white/90 transition-all",
+          "absolute top-[2px] h-[12px] w-[12px] rounded-full bg-white/90 shadow-[0_1px_2px_rgba(0,0,0,0.3)] transition-all",
           on ? "left-[14px]" : "left-[2px]",
         )}
       />

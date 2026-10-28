@@ -92,7 +92,7 @@ export const QwenLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
 );
 
 export const KimiLogo: React.FC<LogoProps> = ({ size = 16, className }) => (
-  <Kimi.Color size={size} className={lobeMarkClass(className)} />
+  <Kimi.Color size={size} className={lobeMarkClass(cn(className, "ade-mark-kimi"))} />
 );
 
 export const GrokLogo: React.FC<LogoProps> = ({ size = 16, className, appearance }) => (

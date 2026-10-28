@@ -897,7 +897,7 @@ export function WorkflowsTab({
             >
               <Icon size={12} weight={selected ? "fill" : "regular"} />
               {category.label}
-              <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, opacity: selected ? 0.8 : 0.6, color: selected ? catTheme.color : COLORS.textDim }}>
+              <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 600, opacity: selected ? 0.8 : "var(--ade-dim-row-opacity)", color: selected ? catTheme.color : COLORS.textDim }}>
                 {count}
               </span>
             </button>
