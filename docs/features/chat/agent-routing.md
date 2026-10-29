@@ -2124,9 +2124,12 @@ rename the chat or lane itself (`ade chat update --title`, `ade lanes
 rename`). `providerTaskRunner.ts` dispatches on
 `resolveCliProviderForModel`: OpenCode gets only models with no CLI
 provider, so a Droid, Devin, Pi or Antigravity model never reaches it,
-and an unknown provider throws. Every CLI one-shot runs in its own
-process group; a timeout sends SIGTERM to the group, then SIGKILL after
-1.5 s (Windows: `taskkill /T /F`).
+and an unknown provider throws. The pinned-CLI runners (Qwen, Kimi, Grok,
+Droid, Devin, Pi, Antigravity) live in `pinnedCliTaskRunners.ts`, and the
+spawn they share in `providerTaskCommon.ts`. Every CLI one-shot runs in its
+own process group; a timeout sends SIGTERM to the group, then SIGKILL after
+1.5 s (Windows: `taskkill /T /F`). None of them starts the user's MCP
+servers: see [MCP servers › Background jobs start no MCP servers](../onboarding-and-settings/mcp-servers.md#background-jobs-start-no-mcp-servers).
 
 These helper calls go through `summarizeTerminal`, which always runs as a
 background utility task (`ProviderTaskRunnerArgs.backgroundUtility`): every
