@@ -561,7 +561,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     "none", "invalid_event", "invalid_surface", "duplicate", "rate_limited", "daily_budget", "transport_error",
   ]),
   source: new Set([
-    "mutation", "runtime", "renderer_route", "renderer_project", "renderer_startup", "ipc", "ade_code",
+    "mutation", "runtime", "renderer_route", "renderer_project", "renderer_startup", "ipc",
   ]),
   mode: new Set(["direct", "relay", "local", "remote", "manual", "automatic", "attached", "embedded"]),
   entry_point: new Set([

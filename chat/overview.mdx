@@ -62,7 +62,7 @@ Approval gates depend on the session's permission mode: a read-only **plan** mod
 
 ## The same chat, every surface
 
-Chat sessions are owned by the machine's runtime, not by any one client. A chat you start on the desktop is the same conversation in the terminal and on your phone — the renderer, `ade code`, and the iOS app are all clients of the same session.
+Chat sessions are owned by the machine's runtime, not by any one client. A chat you start on the desktop is the same conversation on the web client and on your phone — the renderer, the web client, and the iOS app are all clients of the same session.
 
 Provider-native sessions can also be recovered into ADE when possible. Claude and Codex history imports seed a normal ADE chat, preserving provenance while keeping future turns lane-scoped and visible in the same transcript UI.
 
@@ -70,11 +70,6 @@ Provider-native sessions can also be recovered into ADE when possible. Claude an
   <Tab title="Desktop">
     <Frame caption="Agent chat in the macOS app.">
       <img src="/media/current/work-chat.jpg" alt="Agent chat on the ADE desktop" />
-    </Frame>
-  </Tab>
-  <Tab title="Terminal">
-    <Frame caption="The same chat in ade code.">
-      <img src="/assets/readme/terminal.webp" alt="Agent chat in ade code" />
     </Frame>
   </Tab>
   <Tab title="iOS">

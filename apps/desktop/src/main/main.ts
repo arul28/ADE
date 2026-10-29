@@ -2456,11 +2456,11 @@ app.whenReady().then(async () => {
         const notification = mode === "isolated"
           ? new Notification({
               title: "ADE is running in fallback mode",
-              body: "The ADE background service did not restart cleanly. Phone sync and ADE Code connections are unavailable while ADE keeps retrying in the background.",
+              body: "The ADE background service did not restart cleanly. Phone sync and connections from other machines are unavailable while ADE keeps retrying in the background.",
             })
           : new Notification({
               title: "ADE service restored",
-              body: "Phone sync and ADE Code connections are available again.",
+              body: "Phone sync and connections from other machines are available again.",
             });
         notification.show();
       } catch (error) {
@@ -2925,7 +2925,7 @@ app.whenReady().then(async () => {
       }
       if (!shouldUseInProcessProjectRuntime()) {
         // Desktop foregrounding is independent from phone sync project selection:
-        // registering the project lets desktop/TUI route RPC by projectId without
+        // registering the project lets desktop clients route RPC by projectId without
         // stealing the singleton mobile sync host from a connected phone.
         const projectRegistration = localRuntimePool.ensureProject(normalizedRoot);
         void projectRegistration.catch((error) => {

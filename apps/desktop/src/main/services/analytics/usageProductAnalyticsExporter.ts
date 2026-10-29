@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import type { AdeUsageClientSurface } from "../../../shared/types";
+import { normalizeAdeUsageClientSurface } from "../../../shared/types";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 const DEFAULT_INITIAL_DELAY_MS = 45_000;
@@ -28,10 +28,6 @@ type UsageProductAnalyticsExporterArgs = {
   batchSize?: number;
   now?: () => number;
 };
-
-function isUsageSurface(value: string): value is AdeUsageClientSurface {
-  return ["desktop", "mobile", "tui", "web", "api"].includes(value);
-}
 
 function derivedEventId(baseId: string, suffix: string): string {
   const chars = createHash("sha256").update(`${baseId}:${suffix}`).digest("hex").slice(0, 32).split("");
@@ -132,13 +128,14 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
     const accepted: string[] = [];
     const suppressed: Array<{ id: string; reason: string }> = [];
     for (const row of rows) {
-      if (!isUsageSurface(row.client_surface)) {
+      const surface = normalizeAdeUsageClientSurface(row.client_surface);
+      if (!surface) {
         suppressed.push({ id: row.id, reason: "invalid_surface" });
         continue;
       }
       const results = [args.analytics.capture({
         event: "ade_feature_used",
-        surface: row.client_surface,
+        surface,
         projectId: row.project_id,
         sessionId: row.session_id,
         clientEventId: row.id,
@@ -154,7 +151,7 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
       if (started) {
         results.push(args.analytics.captureInternal({
           event: started.event,
-          surface: row.client_surface,
+          surface,
           projectId: row.project_id,
           sessionId: row.session_id,
           clientEventId: derivedEventId(row.id, started.event),

@@ -89,7 +89,7 @@ describe("buildAnswers", () => {
     expect(buildAnswers(questions, { one: ["alpha"] }, { two: "   " })).toEqual({ one: "alpha" });
   });
 
-  // The bug this contract exists to kill: on the TUI a typed note used to
+  // The bug this contract exists to kill: on the old terminal client a typed note used to
   // REPLACE the selection. Both must travel, on every surface.
   it("a note never replaces the selection", () => {
     const built = buildAnswers(questions, { one: ["alpha"] }, { one: "actually beta-ish" });

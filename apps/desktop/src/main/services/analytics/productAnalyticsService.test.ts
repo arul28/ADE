@@ -112,6 +112,11 @@ describe("productAnalyticsService", () => {
       ok: false,
       reason: "invalid_surface",
     });
+    // Older clients still name the command line `tui`.
+    expect(parseProductAnalyticsCapture({ event: "ade_app_opened", surface: "tui" })).toMatchObject({
+      ok: true,
+      value: { surface: "cli" },
+    });
     const harness = makeHarness();
     const result = harness.service.capture({
       event: "ade_feature_used",
@@ -1134,8 +1139,8 @@ describe("productAnalyticsService", () => {
     const harness = makeHarness({ dailyBudget: 25, now: () => nowMs });
     const input = {
       event: "ade_screen_viewed" as const,
-      surface: "tui" as const,
-      dedupeKey: "tui:details_help",
+      surface: "cli" as const,
+      dedupeKey: "cli:details_help",
       minimumIntervalMs: 60_000,
       properties: { screen: "details_help" },
     };
@@ -2436,7 +2441,7 @@ describe("usage product analytics exporter", () => {
       });
       recordUsageInteraction(db, {
         projectId: "project-private",
-        client: "tui",
+        client: "cli",
         action: "work.startCliSession",
         sessionId: "session-cli",
         occurredAt: "2026-07-13T12:01:00.000Z",
@@ -2473,7 +2478,7 @@ describe("usage product analytics exporter", () => {
       });
       expect(captures[2]).toMatchObject({
         event: "ade_work_session_started",
-        surface: "tui",
+        surface: "cli",
         properties: { feature: "cli", outcome: "started" },
       });
       expect(analytics.flush).toHaveBeenCalledTimes(1);
@@ -2487,7 +2492,7 @@ describe("usage product analytics exporter", () => {
     await withUsageDb("ade-analytics-retry-", async (db) => {
       recordUsageInteraction(db, {
         projectId: "project",
-        client: "tui",
+        client: "cli",
         action: "git.commit",
         occurredAt: "2026-07-13T12:00:00.000Z",
       });

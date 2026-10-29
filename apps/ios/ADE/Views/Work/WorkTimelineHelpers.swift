@@ -4980,7 +4980,7 @@ func eventCard(
       else { return nil }
       // Automatic provider retries/reconnects are live working state. Older
       // hosts persisted one notice per attempt; keep replay from rebuilding
-      // the same wall of cards that desktop and TUI intentionally suppress.
+      // the same wall of cards that desktop intentionally suppresses.
       guard !isLegacyProviderRetryNotice(kind: kind, message: message, detail: detail) else { return nil }
       // ── Provider handoff ──
       // Its own card kind so the timeline can draw the desktop divider

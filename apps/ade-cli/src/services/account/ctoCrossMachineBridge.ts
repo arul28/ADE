@@ -5,10 +5,10 @@
  * another machine on the same ADE account, in that machine's checkout of the
  * same repository.
  *
- * Transport: the paired runtime channel the TUI's `ade code` hop already uses
- * (`openPairedCandidate` -> `RuntimeRpcClient`), over LAN, Tailscale or ADE
- * Relay. Authentication is the account's: the pairing is created by the same
- * account-authenticated hello the desktop and TUI use (`pairListedMachine`),
+ * Transport: the paired runtime channel (`openPairedCandidate` ->
+ * `RuntimeRpcClient`), over LAN, Tailscale or ADE Relay. Authentication is the
+ * account's: the pairing is created by the same account-authenticated hello
+ * the desktop and `ade machines connect` use (`pairListedMachine`),
  * and a Relay leg carries the account token. Nothing here connects while the
  * brain is signed out.
  *
@@ -53,7 +53,7 @@ import {
 } from "../../../../desktop/src/main/services/ai/tools/ctoCrossMachine";
 import { isSecretBearingAdeAction } from "../../../../desktop/src/main/services/adeActions/actionPolicy";
 import type { CtoActionCaller } from "../../adeRpcServer";
-import { withTimeout } from "../../tuiClient/remoteLaunchBudget";
+import { withTimeout } from "../../lib/remoteLaunchBudget";
 import {
   MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,
   MachineAccountSignedOutError,

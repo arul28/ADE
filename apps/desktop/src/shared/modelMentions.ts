@@ -15,7 +15,6 @@
 
 import { compareChatMentionRanks, scoreChatMentionCandidate } from "./chatMentions";
 import {
-  defaultModelPermission,
   modelPermissionLabel,
   nativePermissionToCliMode,
   resolveModelPermissionValue,
@@ -24,9 +23,6 @@ import {
 /** Permission modes a model chip can carry. Mirrors `--permissions` on `ade chat create`. */
 export const MODEL_MENTION_PERMISSION_MODES = ["default", "auto", "plan", "edit", "full-auto"] as const;
 export type ModelMentionPermissionMode = (typeof MODEL_MENTION_PERMISSION_MODES)[number];
-
-/** The mode a new chip starts on. */
-export const MODEL_MENTION_DEFAULT_PERMISSION: ModelMentionPermissionMode = "default";
 
 /**
  * Label for a stored permission value. `provider` selects the per-provider
@@ -151,11 +147,6 @@ export function parseModelMentionToken(token: string): ModelMention | null {
     : null;
 }
 
-/** True when a bare `@`-token body (the text after `@`) is a model token. */
-export function isModelMentionTokenBody(body: string): boolean {
-  return parseModelMentionToken(`@${body}`) !== null;
-}
-
 /** What the expansion needs to know about the model, from the caller's catalog. */
 export type ModelMentionModelInfo = {
   displayName: string;
@@ -244,7 +235,7 @@ export function buildModelMentionDetail(
 }
 
 /**
- * A model row in an `@` menu. Every surface (desktop, TUI, iOS) lists models
+ * A model row in an `@` menu. Every surface (desktop, iOS) lists models
  * with the same shape and the same match rule.
  */
 export type ComposerModelSuggestion = {

@@ -580,8 +580,8 @@ with the watcher:
 - `fileService.quickOpen({ workspaceId, query, limit, includeIgnored })`
   runs a scoring pass over the matching index. An empty query is a valid
   browse: it returns shallowest-paths-first (`scoreBrowseDepth`) instead of
-  an empty list, which is what the composer `@` menu, TUI palette, iOS, and
-  web clients rely on for the pre-typing state — all four funnel into this
+  an empty list, which is what the composer `@` menu, iOS, and
+  web clients rely on for the pre-typing state — all three funnel into this
   one service, so no caller-side empty-query guards should be reintroduced
 
 **Folders are indexed, and opt-in.** Directories live in their own
@@ -597,8 +597,8 @@ composer `@` menu until the next rebuild.
 and `FilesQuickOpenItem.isDirectory` marks them. Off by default because **most
 callers open what they receive**: the Files panel renders every hit under a
 Files header and hands it to the editor, and ⌘K mints a file deeplink for it.
-Only the composer `@` menu and the `ade code` TUI palette opt in, and both
-insert a pointer chip rather than opening or attaching anything — a folder has
+Only the composer `@` menu opts in, and it
+inserts a pointer chip rather than opening or attaching anything — a folder has
 no bytes to upload, and attaching one reaches the model as
 `Attachment unavailable: <dir>`. The flag is part of the quick-open cache key,
 or a generic caller could be served the composer's cached rows, folders and all.

@@ -780,7 +780,7 @@ function SessionContextMenuPanel({
           // opens, NOT from the static vocabulary. The static list would offer
           // "This evening" at 11pm, which silently resolves to TOMORROW evening
           // — a menu that quietly does something other than what it says. The
-          // hover popover and the `ade code` TUI resolve the same way.
+          // hover popover resolve the same way.
           onOpen={() => setSnoozePresets(resolveSnoozePresets())}
         >
           {statusMenuContent}

@@ -46,7 +46,7 @@ ADE version, is only a differential cache copy. ADE therefore:
   `downloadUpdate()` resolving with a present ZIP is the source of truth.
 
 The same `quitAndInstall()` path serves the desktop pill, the orange Restart
-banner, Settings, `ade update install`, the TUI action, and idle auto-apply.
+banner, Settings, `ade update install`, and idle auto-apply.
 There is no per-surface installer.
 
 The practical volume checks are therefore:

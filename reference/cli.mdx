@@ -9,7 +9,6 @@ icon: "terminal"
 ```bash
 ade lanes create "fix-checkout-flow"   # spin up a worktree for a task
 ade brain status --text                # check the machine runtime
-ade code                               # open the terminal UI
 ```
 
 <Tip>
@@ -49,7 +48,6 @@ ade lanes list --json   # stable JSON for scripts and agents
     ade chat create --lane <lane-id> --model gpt-5.5
     ade shell start-cli codex --lane <lane-id> --permission-mode edit --message "fix failing tests"
     ade shell start --lane <lane-id> -- npm test
-    ade code                                # open the terminal UI
     ```
   </Accordion>
 
@@ -169,9 +167,6 @@ For every command, subcommand, flag, and the runtime modes behind them, see the 
 </Card>
 
 <CardGroup cols={2}>
-  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
-    The interactive terminal UI built on the same runtime.
-  </Card>
   <Card title="Architecture" icon="sitemap" href="/architecture">
     How the control plane, runtime, and clients fit together.
   </Card>

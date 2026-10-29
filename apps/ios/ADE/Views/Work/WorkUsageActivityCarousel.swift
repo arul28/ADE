@@ -66,7 +66,7 @@ private enum WorkUsageColors {
   static let client: [String: Color] = [
     "desktop": ADEColor.purpleAccent,
     "mobile": Color.pink,
-    "tui": ADEColor.success,
+    "cli": ADEColor.success,
     "web": Color.teal,
     "api": ADEColor.warning,
   ]
@@ -763,14 +763,36 @@ private struct WorkUsageClientMix: View {
     switch client {
     case "desktop": return "Desktop"
     case "mobile": return "Mobile"
-    case "tui": return "ADE Code"
+    case "cli": return "CLI"
     case "web": return "Web"
     default: return "API"
     }
   }
 
+  /// An older brain still names the command line `tui`; fold it into `cli`.
+  private var merged: [MobileAdeUsageClientSummary] {
+    var byClient: [String: MobileAdeUsageClientSummary] = [:]
+    var order: [String] = []
+    for row in clients {
+      let client = row.client == "tui" ? "cli" : row.client
+      if var prior = byClient[client] {
+        prior.interactions += row.interactions
+        prior.activeDays = max(prior.activeDays, row.activeDays)
+        prior.sessions += row.sessions
+        prior.lastActiveAt = [prior.lastActiveAt, row.lastActiveAt].compactMap { $0 }.max()
+        byClient[client] = prior
+      } else {
+        var copy = row
+        copy.client = client
+        byClient[client] = copy
+        order.append(client)
+      }
+    }
+    return order.compactMap { byClient[$0] }
+  }
+
   var body: some View {
-    let visible = clients.filter { $0.interactions > 0 }.sorted { $0.interactions > $1.interactions }
+    let visible = merged.filter { $0.interactions > 0 }.sorted { $0.interactions > $1.interactions }
     let total = max(1, visible.reduce(0) { $0 + $1.interactions })
     if visible.isEmpty {
       WorkUsageTabEmptyHint(message: "No client activity in this range.")

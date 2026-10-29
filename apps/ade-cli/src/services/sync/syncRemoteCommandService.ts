@@ -687,7 +687,7 @@ type SyncRemoteCommandServiceArgs = {
   /**
    * Lazy accessor for the model picker store (favorites + recents, backed by
    * the per-project cr-sqlite DB). iOS hits these via the `modelPicker.*` sync
-   * commands so favorites/recents stay in sync with desktop + TUI. Optional —
+   * commands so favorites/recents stay in sync with desktop. Optional —
    * when unset, handlers fall back to the per-db shared store built from
    * `args.db`, so the sync host always reads/writes the real DB rather than an
    * empty stub.
@@ -5392,7 +5392,7 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     });
   };
   // Byte-offset transcript pagination for chat event envelopes (scroll-back
-  // beyond the hydrated tail). The canonical action mirrors the desktop/TUI
+  // beyond the hydrated tail). The canonical action mirrors the desktop
   // ADE action surface; the legacy agentChat.* name remains for older mobile
   // clients that learned the first sync-only spelling.
   register("chat.getChatEventHistoryPage", { viewerAllowed: true, observesAbort: true }, getChatEventHistoryPage);
@@ -5918,7 +5918,7 @@ function requireMacDesktopConnectionId(
  * The lease's holder id, from the socket and the caller's token — never the
  * wire's own `controllerId`.
  *
- * `web:` names the family so a later surface (the TUI, say) can mint its own
+ * `web:` names the family so a later surface can mint its own
  * prefix and no two families can collide. The token is the client's per-tab
  * value; the connection id is the host's, so a token stolen from one tab is
  * inert on another socket.

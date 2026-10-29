@@ -2362,7 +2362,7 @@ enum WorkNewChatPreviewFixtures {
       "clients": [
         ["client": "desktop", "interactions": 1_240, "activeDays": 55, "sessions": 180],
         ["client": "mobile", "interactions": 410, "activeDays": 31, "sessions": 52],
-        ["client": "tui", "interactions": 280, "activeDays": 18, "sessions": 21],
+        ["client": "cli", "interactions": 280, "activeDays": 18, "sessions": 21],
       ],
       "daily": daily,
     ]

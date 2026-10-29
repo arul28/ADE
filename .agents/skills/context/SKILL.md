@@ -16,7 +16,7 @@ lane. Feature-aware — load only the docs relevant to the work, never a broad
 dump.
 
 **Invocation:** `/context` or `/context <keywords>`
-**Arguments:** optional feature/domain keywords (e.g., `prs`, `lanes rebase`, `tui`).
+**Arguments:** optional feature/domain keywords (e.g., `prs`, `lanes rebase`).
 
 ---
 
@@ -147,7 +147,7 @@ and a **gotchas / fragile areas** section — read those first; a flagged
 invariant usually deserves care (and a test later in `/test`).
 
 If the area maps to a performance skill (`ade-perf-boot`, `ade-perf-lanes`,
-`ade-perf-prs`, `ade-perf-work`, or `ade-tui-web-preview`), open that skill too
+`ade-perf-prs`, or `ade-perf-work`), open that skill too
 **before editing** — it records measured patterns you must preserve. When the
 work can move performance, also read `docs/perf/macos-baseline.md`: the
 measured numbers and ceilings the **Performance budget** in `AGENTS.md` holds
@@ -216,7 +216,7 @@ Emit this and nothing more (keep it scannable):
 **Project:** ADE — local-first desktop env for orchestrating coding agents,
 lanes, PRs, and proof/artifacts (Electron + React + TS; CLI in `apps/ade-cli`).
 **Branch:** [name] · [N changed files | fresh lane]
-**Area:** [feature] — [desktop / cli / tui / ios / cross-cutting]
+**Area:** [feature] — [desktop / cli / ios / cross-cutting]
 **Docs:** [loaded list]   **Perf skill:** [ade-perf-* loaded | none for this area]
 **Windows:** [Windows docs loaded — parity required for all new code | not a
 Windows-sensitive surface, parity still required]

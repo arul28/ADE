@@ -1241,7 +1241,7 @@ export function createAiIntegrationService(args: {
     const discoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
     // "cached-or-fallback" serves last-known-good rows and warms the cache in
     // the background when cold, so a verified key surfaces models on passive
-    // status reads (availableModelIds, mobile, TUI) without an active probe.
+    // status reads (availableModelIds, mobile) without an active probe.
     const cursorDiscoveryMode = options?.discoverCliModels === true ? "probe" : "cached-or-fallback";
 
     const cursorApiKey = getCursorApiKeyFromAuth(auth);

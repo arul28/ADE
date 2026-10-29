@@ -36,7 +36,7 @@ No move binds acceptance to a route kind. The brain uses the account's paired
 agent connection for every step; the modal only states which kind of route
 that is (see [Transport and security](#transport-and-security)).
 
-The TUI (`ade code`) and the plain CLI have no move banner and no send
+The plain CLI has no move banner and no send
 routing: they start, cancel, retry and inspect single-chat moves (`ade chat
 handoff …`) and batches (`ade chat move …`).
 

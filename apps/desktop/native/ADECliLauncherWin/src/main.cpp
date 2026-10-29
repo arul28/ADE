@@ -27,11 +27,9 @@
 //   ifnone A,B NAME=VALUE        set only when none of A, B is set (the
 //                                Node compile cache, as `ade.cmd` sets it)
 //   unset NAME                   removed
-//   ttynode 1                    run real Node instead of `exe` when
-//                                ADE_CLI_NODE names one, or for `ade code`
-//                                (Electron run as Node has no TTY on Windows,
-//                                so the TUI cannot start under it); the same
-//                                rule as ade-cli-windows-wrapper.cmd
+//   ttynode 1                    run the Node that ADE_CLI_NODE names instead
+//                                of `exe`; the same rule as
+//                                ade-cli-windows-wrapper.cmd
 //
 // No job object: the CLI may start a detached brain that must outlive this
 // process. Ctrl+C reaches the child, which shares this console; the launcher
@@ -172,60 +170,12 @@ BOOL WINAPI ignoreInterrupt(DWORD event) {
   return event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT ? TRUE : FALSE;
 }
 
-// The first argument after the program name, unquoted, for the `code` check.
-std::wstring firstArgument(const wchar_t* rest) {
-  const wchar_t* p = rest;
-  std::wstring out;
-  if (*p == L'"') {
-    ++p;
-    while (*p && *p != L'"') out.push_back(*p++);
-  } else {
-    while (*p && *p != L' ' && *p != L'\t') out.push_back(*p++);
-  }
-  return out;
-}
-
 std::wstring envValue(const wchar_t* name) {
   DWORD size = GetEnvironmentVariableW(name, NULL, 0);
   if (size == 0) return std::wstring();
   std::vector<wchar_t> buffer(size);
   DWORD got = GetEnvironmentVariableW(name, buffer.data(), size);
   return std::wstring(buffer.data(), got);
-}
-
-// Runs `exe <args>` with no window and returns its exit code, or -1.
-long runQuietly(const std::wstring& exe, const std::wstring& args) {
-  std::wstring line = quoteArg(exe) + L" " + args;
-  std::vector<wchar_t> mutableLine(line.begin(), line.end());
-  mutableLine.push_back(L'\0');
-  STARTUPINFOW startup;
-  ZeroMemory(&startup, sizeof(startup));
-  startup.cb = sizeof(startup);
-  PROCESS_INFORMATION process;
-  ZeroMemory(&process, sizeof(process));
-  if (!CreateProcessW(exe.c_str(), mutableLine.data(), NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &startup, &process)) {
-    return -1;
-  }
-  CloseHandle(process.hThread);
-  DWORD code = 1;
-  if (WaitForSingleObject(process.hProcess, 10000) != WAIT_OBJECT_0) {
-    // A probe that hangs is a failed probe; it must not outlive the launcher.
-    TerminateProcess(process.hProcess, 1);
-  } else if (!GetExitCodeProcess(process.hProcess, &code)) {
-    code = 1;
-  }
-  CloseHandle(process.hProcess);
-  return static_cast<long>(code);
-}
-
-// A `node.exe` on PATH that is Node 22 or newer, or empty.
-std::wstring findNode22() {
-  std::vector<wchar_t> buffer(32768);
-  DWORD length = SearchPathW(NULL, L"node.exe", NULL, static_cast<DWORD>(buffer.size()), buffer.data(), NULL);
-  if (length == 0 || length >= buffer.size()) return std::wstring();
-  std::wstring node(buffer.data(), length);
-  long code = runQuietly(node, L"-e \"process.exit(Number(process.versions.node.split('.')[0]) >= 22 ? 0 : 1)\"");
-  return code == 0 ? node : std::wstring();
 }
 
 }  // namespace
@@ -332,14 +282,6 @@ int wmain() {
     const std::wstring cliNode = envValue(L"ADE_CLI_NODE");
     if (!cliNode.empty()) {
       exe = cliNode;
-    } else if (firstArgument(rest) == L"code") {
-      const std::wstring node = findNode22();
-      if (node.empty()) {
-        writeError(L"'code' needs an interactive terminal, which the bundled ADE runtime cannot provide on Windows. "
-                   L"Install Node.js 22 or newer and run this command again, or set ADE_CLI_NODE to a Node 22+ executable.");
-        return 127;
-      }
-      exe = node;
     }
     commandLine = quoteArg(exe);
     for (const std::wstring& arg : fixedArgs) {

@@ -467,7 +467,7 @@ The `screenshot_environment`, `record_environment`, `ingest_computer_use_artifac
 
 Explicit owners are added in addition to the session identity inferred from `ADE_*` env vars, so an agent can attach the same artifact to its current chat plus a specific PR in one call.
 
-A client whose environment names no chat and no attempt makes a caller id from its name and pid, such as `ade-cli:5504` or `ade-code:912` (`apps/desktop/src/shared/syntheticCallerId.ts`). That id identifies a process. It never becomes a `chat_session` owner. The RPC server also does not fill it in with the brain's own env identity.
+A client whose environment names no chat and no attempt makes a caller id from its name and pid, such as `ade-cli:5504` (`apps/desktop/src/shared/syntheticCallerId.ts`). That id identifies a process. It never becomes a `chat_session` owner. The RPC server also does not fill it in with the brain's own env identity.
 
 ---
 

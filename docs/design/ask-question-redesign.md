@@ -1,6 +1,6 @@
 # Ask-question surface — implementation spec
 
-**Status:** PR 1 implements contract + desktop + web + TUI. PR 2 (iOS) remains outstanding.
+**Status:** PR 1 implements contract + desktop + web. PR 2 (iOS) remains outstanding.
 **Visual reference:** `docs/design/ask-question-redesign.html` — open it in a browser.
 It is live React and the option rows, previews, minimize, and Send labels all work.
 Rendered stills are in `docs/design/renders/`.
@@ -19,7 +19,6 @@ four independent renderers that disagree about what an answer *is*:
 |---|---|---|
 | Desktop | `AgentChatMessageList.tsx:2632` `InlineQuestionRequestCard` | **both sent**, as an array |
 | Web client | *same React component* | same |
-| TUI | `tuiClient/pendingInput.ts` `buildPendingInputAnswers` | **either/or** — text *replaces* the selection |
 | iOS | `WorkChatComposerAndInputViews.swift:969` `WorkStructuredQuestionCard` | 1 question: both · N questions: **note silently dropped** |
 
 No provider forces any of this. Verified end to end:
@@ -55,9 +54,7 @@ Secondary defects fixed here:
 
 ## 2 · Answer semantics (the shared contract)
 
-Lives in `apps/desktop/src/shared/pendingInputAnswers.ts`. The TUI imports it directly
-(it already imports `pendingInputLabels` and `types/attention` from
-`apps/desktop/src/shared/`). **iOS mirrors it in Swift** — it cannot import TypeScript;
+Lives in `apps/desktop/src/shared/pendingInputAnswers.ts`. **iOS mirrors it in Swift** — it cannot import TypeScript;
 `workChatPendingInputHeaderVerb` in `WorkModels.swift` is the existing precedent.
 
 ### Four states, per question
@@ -121,7 +118,6 @@ No disabled state, no mode switch.
 
 ### Sites to fix
 
-- `tuiClient/pendingInput.ts` `buildPendingInputAnswers` — currently text-replaces-selection.
   Must accumulate.
 - `WorkStructuredQuestionCard.submitAll` — the `continue` after a non-empty selection
   drops the per-question freeform. Must append it.
@@ -153,7 +149,7 @@ No disabled state, no mode switch.
   to its cap; only long content scrolls inside it.
 - **Compare** stays: a fixed-height 2-up split when ≥2 options carry previews.
 - **Keyboard:** `1-9` pick, `↵` next/send, `←→` page, `esc` decline. Already mostly
-  present on desktop and in the TUI; keep and make consistent.
+  present on desktop; keep and make consistent.
 
 ### Height budget — the card never outgrows the chat
 
@@ -164,7 +160,7 @@ iOS already proves this shape (`topChrome` / `ScrollView` / `bottomChrome` in
 `WorkStructuredQuestionCard`). **Budget from the chat surface, never from the transcript
 viewport** — the existing comment on `workPendingInputMaxHeight` explains why: the
 transcript shrinks as the card grows, so feeding its height back in creates a runaway
-loop that eats the screen. Desktop and the TUI adopt the same rule.
+loop that eats the screen. Desktop adopts the same rule.
 
 When rows fall fully below the fold, a `⌄ N more options` row renders on its own line
 between the list and the note row. It scrolls the list on click. **On its own line
@@ -234,10 +230,10 @@ regression tests.
 
 ## 5 · Scope split
 
-Two PRs, **not stacked**. Desktop/TUI and iOS are siblings, not a chain — stacking would
+Two PRs, **not stacked**. Desktop and iOS are siblings, not a chain — stacking would
 impose a false dependency and force rebases over changes neither reads.
 
-**PR 1 — contract + desktop + web + TUI.** One language, one CI, one release train. The
+**PR 1 — contract + desktop + web.** One language, one CI, one release train. The
 shared module ships with two real consumers, so its API is reviewable. Web client is free
 (same React component).
 

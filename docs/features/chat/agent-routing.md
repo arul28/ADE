@@ -147,7 +147,7 @@ Merging a manifest edit to `main` reaches running installs within minutes.
 - **Propagation**: an applied manifest marks the chat model catalog stale
   (served once more while a background rebuild runs). Every catalog response
   carries `modelManifest`, and renderer pickers adopt it when it is newer than
-  their own copy (`adoptHostModelManifest`), so desktop, web, and the TUI
+  their own copy (`adoptHostModelManifest`), so desktop and web
   agree with the host. iOS reads the host catalog.
 - **Defaults**: `getAppDefaultModelDescriptor()` is what ADE uses when nothing
   names a provider (new automations, batch launch, a chat whose model
@@ -178,7 +178,7 @@ Droid and Copilot keep the Haiku rows their own catalogs serve.
 The Claude registry is ordered as Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 5.5,
 then the retained Sonnet 5 and Opus 5. Claude and Codex are the two providers
 whose default is not hoisted to the front of `listModelDescriptorsForProvider`,
-so the desktop picker catalog, Settings, ADE Code, and the CTO picker all show
+so the desktop picker catalog, Settings, and the CTO picker all show
 this same registry order.
 Opus 5.5 selects provider model `claude-opus-5-5`, defaults to `medium`
 effort, and exposes `low|medium|high|xhigh|max` plus Fast Mode. It is the
@@ -215,7 +215,7 @@ The OpenAI section follows the Codex catalog's own order on every ADE model surf
 8. `openai/gpt-5.5` (`gpt-5.5`) — legacy; still runs on a ChatGPT sign-in.
 
 Both Lunas expose `low | medium | high | xhigh | max`; Astra, the Sols and
-Terra expose `low | medium | high | xhigh | max | ultra`. Desktop, ADE Code,
+Terra expose `low | medium | high | xhigh | max | ultra`. Desktop
 and iOS label those values Light, Medium, High, Extra High, Max, and Ultra.
 Runtime app-server ladders retain their advertised order.
 `ultra` is the multi-agent tier and carries a usage warning.
@@ -257,7 +257,7 @@ row.
 `selectSupportedReasoningEffort()` centralizes fallback order: keep a valid
 explicit selection, then use the model's advertised default, then a valid
 surface fallback, then Medium/first tier. All desktop launch surfaces and
-handoffs use that helper; ADE Code and iOS mirror the same rule and prefer
+handoffs use that helper; iOS mirrors the same rule and prefer
 host-advertised model metadata over their static compatibility catalogs.
 
 ## Auth and credentials
@@ -310,7 +310,7 @@ Results feed into the UI's `AiProviderConnectionStatus` /
 `AiRuntimeConnectionStatus` (see `providerConnectionStatus.ts`).
 
 ADE's account vault is not a provider SDK config home. The brain owns the
-account refresh boundary and desktop, CLI, and ADE Code request access tokens
+account refresh boundary and desktop and CLI request access tokens
 through its refresh broker. The local encrypted key store remains the runtime
 adapter's fast path, while account migration and hydration fill it without
 overwriting a device-origin key. Ambient environment variables, provider-owned
@@ -988,8 +988,7 @@ round-trip sits on the hot path.
 This is a permission, not a default. With it on, every new chat still starts
 **Standard** and Fast is a per-chat choice. Nothing remembers Fast from one chat
 to the next: the machine launch defaults write `fastMode: false`, the renderer's
-last-launch snapshot and draft hydration force it off, the TUI's project memory
-and iOS's `WorkComposerPreferences` drop it, and a handoff no longer inherits it
+last-launch snapshot and draft hydration force it off, and iOS's `WorkComposerPreferences` drops it, and a handoff no longer inherits it
 from the source chat. A restored draft or a failed launch keeps the choice made
 for that same attempt.
 
@@ -1003,8 +1002,7 @@ where the "show me" spotlight rings the row. The phone draws a muted bolt,
 disables the picker's Fast switch, and offers the switch in Settings › Chat;
 the hosted web client reaches the same row over the sync host
 (`chat.getFastModeEnabled` / `chat.setFastModeEnabled`), because its
-account-settings adapter has no brain to write. `ade code` answers `/fast`
-with the same sentence. Only the Settings row explains the cost; there is no
+account-settings adapter has no brain to write. Only the Settings row explains the cost; there is no
 banner and no toast.
 
 An explicit request while it is off is refused, not silently downgraded:
@@ -1077,7 +1075,7 @@ At send time Codex asks for `serviceTier: "ultrafast"` when the stored tier is
 Ultrafast and the cache does not say the model lacks it; an unknown model keeps
 the stored choice, because the user could only have picked the tier from a
 catalog that offered it. `updateSession` changes the tier only when the update
-names `fastTier` — Fast-only clients (the TUI, the phone, older desktops)
+names `fastTier` — Fast-only clients (the phone, older desktops)
 resend `fastMode: true` with every model or effort change, and reading that as
 plain Fast would drop a choice made elsewhere. Fast off clears the tier; a
 model switch keeps it only when the update names it or the new model is known
@@ -1494,7 +1492,7 @@ session-shaped rule cannot live in a provider-keyed record — so the carve-out 
 the exported helper `cursorSessionRunsInCloud(session)` beside it, and every
 surface that knows the session reads that one derivation: `agentChatService`,
 the desktop `AgentChatPane`, the hosted web client (same pane, same helper),
-the `ade code` TUI's `/steer` advert, and iOS
+and iOS
 `workChatCursorSessionRunsInCloud`. It checks
 `cursorRuntime` **and** `cursorCloudAgentId` because a session promoted before
 `cursorRuntime` existed carries only the agent id. When the host pins
@@ -1716,8 +1714,7 @@ take the main process's per-project fallback (`resolveChatConfig`), which is
 also full access when the project configures nothing (the shared `cli` and
 `inProcess` modes default to `full-auto`; Copilot and Muse fall back to
 `full-auto` and `allowAll`). Droid keeps no fallback on purpose, so its own
-`settings.json` decides. The `ade` CLI's terminal launches, the `ade code`
-composer and the phone's new-chat composer (`workDefaultRuntimeMode`) start on
+`settings.json` decides. The `ade` CLI's terminal launches and the phone's new-chat composer (`workDefaultRuntimeMode`) start on
 full access too; a spawned subagent with no mode still inherits its parent.
 
 Reading a level back out of a family (`permissionLevelFor*`) is the same rule in
@@ -1803,7 +1800,7 @@ permission ceiling (`clampGenericPermissionMode`), which reads `edit` as
 `providerOptions.ts` exposes `mapPermissionModeToNativeFields()`, which
 translates the abstract value into the correct provider-native fields:
 
-- `claude`: `claudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions"`. The `auto` mode hands permission decisions to the SDK's automatic gate and surfaces in the desktop and `ade code` permission pickers alongside the existing modes.
+- `claude`: `claudePermissionMode = "default" | "auto" | "plan" | "acceptEdits" | "bypassPermissions"`. The `auto` mode hands permission decisions to the SDK's automatic gate and surfaces in the desktop permission picker alongside the existing modes.
 - `codex`: `codexApprovalPolicy` + `codexSandbox` pair.
 - `opencode`: `opencodePermissionMode = "plan" | "edit" | "full-auto"`.
 - `cursor`: `opencodePermissionMode` carries the collapsed level, and
@@ -2007,8 +2004,7 @@ runs never move it. Every client reads `chat.getLaunchDefaults` to seed a new ch
 ahead of its own local memory: the desktop draft composer (refetched when the
 target machine changes, a chat is created, or the window regains focus), the
 iOS new-chat screen (while the user has not picked anything there, chat mode,
-focused machine), and the TUI on connect (while its model is the one it opened
-on). An older brain answers nothing and each client keeps its own last choice.
+focused machine). An older brain answers nothing and each client keeps its own last choice.
 The service only writes the file when built with `machineAdeHome`; tests and
 embedders keep the record in memory.
 
@@ -2305,8 +2301,8 @@ removed.
   (`"sdk" | "cli" | "all"`, default `"all"`) and probe only the requested
   source synchronously — the other source serves last-known-good rows and
   revalidates in the background, so a chat picker refresh never waits on a
-  CLI spawn. The TUI (`adeApi.ts`), mobile (`SyncService.swift`), and the
-  desktop ModelPicker all pass `cursorSource: "sdk"`. Catalog staleness is
+  CLI spawn. Mobile (`SyncService.swift`) and the
+  desktop ModelPicker both pass `cursorSource: "sdk"`. Catalog staleness is
   flavor-aware: an SDK-only refresh does **not** satisfy a CLI-surface
   staleness check (it gates on `cursorAvailability[source]`, not just
   `modelCount > 0`), mirrored on the renderer in `runtimeCatalogCache.ts`.

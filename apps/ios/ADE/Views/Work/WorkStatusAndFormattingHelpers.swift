@@ -1295,7 +1295,7 @@ func workRuntimeModeTint(_ mode: String) -> Color {
 }
 
 /// Default runtime mode for a fresh chat given the provider. Mirrors the
-/// desktop/TUI defaults: Default for Claude/Codex, Edit for OpenCode, Agent
+/// desktop defaults: Default for Claude/Codex, Edit for OpenCode, Agent
 /// for Cursor, and Auto low for Droid.
 /// What a new chat starts on: each provider's most permissive mode, the same
 /// default the desktop composer uses (`defaultNativeControls`). The picker

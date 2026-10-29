@@ -2268,7 +2268,7 @@ export function createPrService({
 
   /**
    * The next step and the agent reviewers for a lane's PR, from the cached
-   * snapshot only — `listPrsByLane` is a 30s TUI poll and must stay local.
+   * snapshot only — `listPrsByLane` is a 30s poll and must stay local.
    * Review threads are not in the snapshot, so thread counts do not appear.
    */
   const lanePrInsights = (
@@ -7877,7 +7877,7 @@ export function createPrService({
         });
       }
       // A PR with no local row has no lane to archive, but the head branch is
-      // still deletable — and the CLI, TUI and mobile all offer it. Reporting
+      // still deletable — and the CLI and mobile both offer it. Reporting
       // `branchDeleted: false` unconditionally made that opt-in a silent no-op
       // for exactly the PRs this branch exists to support.
       const branchDeleted = args.deleteRemoteBranch

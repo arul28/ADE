@@ -3,7 +3,7 @@ import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
   type PairedRuntimeRouteDiagnostic,
-} from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
+} from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
@@ -14,36 +14,36 @@ import {
   pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
-} from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
-import { DesktopPairedMachineStore } from "../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
+} from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
+import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
 import {
   openSyncRuntimeTransport,
   type SyncRuntimeTransport,
-} from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
+} from "../../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
 import type {
   RemoteRuntimeConnectionAttempt,
   RemoteRuntimeTarget,
-} from "../../../desktop/src/shared/types/remoteRuntime";
-import type { DesktopPairedMachineCredentials } from "../../../desktop/src/shared/types/pairedRuntime";
+} from "../../../../desktop/src/shared/types/remoteRuntime";
+import type { DesktopPairedMachineCredentials } from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   withBoundedAttempt,
   type RemoteLaunchBudget,
-} from "./remoteLaunchBudget";
+} from "../../lib/remoteLaunchBudget";
 
-export type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
+type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
 
 export type AccountRelayProof = {
   userId: string;
   token: string;
 };
 
-export type AccountRelayProofResolver = () => Promise<AccountRelayProof | null>;
+type AccountRelayProofResolver = () => Promise<AccountRelayProof | null>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function pairedRouteAccountProof(args: {
+async function pairedRouteAccountProof(args: {
   kind: "lan" | "tailnet" | "relay";
   credentials: Pick<DesktopPairedMachineCredentials, "accountOwnerUserId">;
   getAccountRelayProof: AccountRelayProofResolver;
@@ -72,7 +72,7 @@ export async function pairedRouteAccountProof(args: {
   return { userId: proof.userId.trim(), token: proof.token.trim() };
 }
 
-export async function assertRelayAccountUnchanged(
+async function assertRelayAccountUnchanged(
   initialProof: AccountRelayProof | null,
   getAccountRelayProof: AccountRelayProofResolver,
 ): Promise<void> {
@@ -84,7 +84,7 @@ export async function assertRelayAccountUnchanged(
   );
 }
 
-export function pairedEndpointCandidatesForPreference(
+function pairedEndpointCandidatesForPreference(
   candidates: PairedRuntimeEndpointCandidate[],
   preference: RemoteRoutePreference,
 ): PairedRuntimeEndpointCandidate[] {
@@ -92,7 +92,7 @@ export function pairedEndpointCandidatesForPreference(
   return candidates.filter((candidate) => candidate.kind === preference);
 }
 
-export function pairedConnectionLabel(
+function pairedConnectionLabel(
   candidate: Pick<PairedRuntimeEndpointCandidate, "endpoint" | "kind">,
 ): string {
   const url = new URL(candidate.endpoint);
@@ -128,7 +128,7 @@ export class PairedRemoteConnectionUnavailableError extends Error {
   }
 }
 
-export function relayAuthErrorWithDiagnostic(
+function relayAuthErrorWithDiagnostic(
   error: PairedRuntimeRelayAuthRequiredError,
   diagnostic: PairedRuntimeRouteDiagnostic,
 ): PairedRuntimeRelayAuthRequiredError {
@@ -139,7 +139,7 @@ export function relayAuthErrorWithDiagnostic(
   );
 }
 
-export type OpenedPairedCandidate<T> = {
+type OpenedPairedCandidate<T> = {
   value: T;
   candidate: PairedRuntimeEndpointCandidate;
   connectedAt: number;

@@ -5,8 +5,8 @@
 // PR identity is `(repo, number)`, not the lane's head branch, so one lane
 // legitimately owns SEVERAL rows: a follow-up PR cut from the same chat, or a
 // colleague's PR referenced from this lane. Every surface with room for exactly
-// one PR has to CHOOSE — the lane badge, the chat header, the chat PR pane, the
-// TUI lane-details and `/pr` panes, and the deeplink envelope the CLI stamps
+// one PR has to CHOOSE — the lane badge, the chat header, the chat PR pane,
+// and the deeplink envelope the CLI stamps
 // onto `ade://` links.
 //
 // They must all choose the SAME row. A CLI-minted link that points at a

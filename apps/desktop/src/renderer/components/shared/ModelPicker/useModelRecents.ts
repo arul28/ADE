@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 // Authoritative storage lives in the ade-cli main process so recents sync
-// across desktop, TUI, and iOS surfaces. localStorage is a hot cache that
+// across desktop and iOS surfaces. localStorage is a hot cache that
 // keeps the picker responsive while the RPC roundtrip completes.
 const STORAGE_KEY = "ade.modelPicker.recents.v1";
 const MAX_RECENTS = 10;

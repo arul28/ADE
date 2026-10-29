@@ -612,7 +612,7 @@ export function createSessionService({
     // Without this, the renderer never learns the session went from
     // stopped/ended back to running, so the Work tab keeps showing the frozen
     // ClosedCliSessionSurface even though the PTY is live and streaming output
-    // that the TUI receives.
+    // that remote clients receive.
     if (changed > 0) emitChanged({ sessionId: trimmed, reason: "meta-updated" });
     return changed > 0;
   };

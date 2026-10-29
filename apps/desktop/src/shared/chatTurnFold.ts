@@ -5,7 +5,7 @@
  *
  * Pure and UI-free on purpose. Desktop feeds it grouped transcript rows (see
  * `deriveChatTranscriptTurnFolds` in the renderer's `chatTranscriptRows.ts`);
- * the TUI and iOS can describe their own rows with the same roles and get the
+ * iOS can describe its own rows with the same roles and get the
  * same folds. Presentation only: nothing here touches events, storage, sync, or
  * canonical text.
  *

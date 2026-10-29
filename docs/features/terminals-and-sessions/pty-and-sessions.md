@@ -166,7 +166,7 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
   `cliUserTitleCommitted`
 - buffer snapshot mirror: `terminalSnapshot` — for tracked PTYs only;
   an `@xterm/headless` Terminal + `SerializeAddon` that mirrors PTY
-  output so the renderer-less surfaces (TUI `TerminalPane`, mobile
+  output so the renderer-less surfaces (mobile
   Work tab, `ade terminal preview`) can render a real xterm buffer
   snapshot without subscribing to the live data stream. Writes are
   debounced (`TERMINAL_SNAPSHOT_DEBOUNCE_MS = 5_000`, because each write
@@ -701,7 +701,7 @@ overrides, launches a new PTY in the existing row, and returns
 performed.
 
 The renderer's Work continuation composer, the iOS Work tab's
-"continue" path (`work.sendToSession` remote command), and the TUI's
+"continue" path (`work.sendToSession` remote command), and the
 `send_to_session` JSON-RPC tool all go through `sendToSession`.
 
 Durable scheduled work uses this same delivery boundary for tracked provider

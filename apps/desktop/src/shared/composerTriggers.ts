@@ -1,5 +1,5 @@
 // Cursor-relative trigger detection for the prompt composers (desktop chat
-// composer, ade-code TUI prompt, mirrored on iOS). A trigger is an in-progress
+// composer, mirrored on iOS). A trigger is an in-progress
 // `/command` or `@` query that ends exactly at the cursor, so suggestion menus
 // can open anywhere in the draft — not just at position 0.
 
@@ -229,7 +229,7 @@ function confirmedFileTokenEnd(
  * Find the confirmed chip tokens in a draft: word-boundary `@body` / `/body`
  * runs whose body the caller vouches for (attached file, known command).
  * Offsets are code units into `text`, sorted ascending. Used by the desktop
- * textarea overlay and the TUI prompt renderer to style chips.
+ * textarea overlay to style chips.
  */
 export function findConfirmedComposerTokens(
   text: string,

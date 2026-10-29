@@ -174,7 +174,7 @@ function terminalTitle(terminal: ChatTerminalSession): string {
  *
  * A symbol, not a field: symbols do not survive structured clone, so nothing
  * arriving over IPC or the sync wire can set it, and it adds nothing to the
- * chat wire contract the TUI and iOS marshal. Sniffing the block header
+ * chat wire contract iOS marshals. Sniffing the block header
  * instead would let a user who merely pastes that sentence silently lose their
  * own mention expansion.
  */

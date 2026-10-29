@@ -63,7 +63,21 @@ export function isAdeUsageRangePreset(value: unknown): value is AdeUsageRangePre
     && (ADE_USAGE_RANGE_PRESETS as readonly string[]).includes(value);
 }
 
-export type AdeUsageClientSurface = "desktop" | "mobile" | "tui" | "web" | "api";
+export const ADE_USAGE_CLIENT_SURFACES = ["desktop", "mobile", "cli", "web", "api"] as const;
+
+export type AdeUsageClientSurface = (typeof ADE_USAGE_CLIENT_SURFACES)[number];
+
+/**
+ * Reads a client surface from the wire or a stored row. Older clients and
+ * brains send `tui` for the `ade` command line (the name dates from the
+ * removed ADE Code terminal client); it is the same surface as `cli`.
+ */
+export function normalizeAdeUsageClientSurface(value: unknown): AdeUsageClientSurface | null {
+  if (value === "tui") return "cli";
+  return (ADE_USAGE_CLIENT_SURFACES as readonly unknown[]).includes(value)
+    ? value as AdeUsageClientSurface
+    : null;
+}
 
 /**
  * Scope of provider-ledger metrics.

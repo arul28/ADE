@@ -17,7 +17,6 @@ flowchart LR
     BrainB[brain] --> StoreB[(".ade project state")]
   end
   Desktop[desktop app] --> BrainA
-  TUI[ade code] --> BrainA
   Phone[iOS app] --> BrainA
   Web[web client] --> BrainA
   Desktop -. remote .-> BrainB
@@ -28,7 +27,7 @@ flowchart LR
 | Client | Runs on | What it is |
 |---|---|---|
 | Desktop app | macOS, Windows | The full control plane: Work, Lanes, Files, PRs, CTO, Settings. |
-| `ade code` | macOS, Linux, Windows | Terminal UI over the same lanes and chats. |
+| `ade` CLI | macOS, Linux, Windows | Typed commands for agents and scripts over the same lanes and chats. |
 | Web client | Any browser | Owner-only hosted view over the sync connection. |
 | iOS app | iPhone | Follow chats, review, and answer questions from anywhere. |
 | SSH-attached desktop | Any host | A desktop window attached to a brain on another machine. |

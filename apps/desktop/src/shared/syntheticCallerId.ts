@@ -1,5 +1,5 @@
 /**
- * `ade-cli:5504`, `ade-code:912`: a caller id a client makes from its name and
+ * `ade-cli:5504`, `ade-sdk:912`: a caller id a client makes from its name and
  * its own pid when its environment names no chat session and no attempt.
  *
  * It identifies a PROCESS. It is a usable caller id, but it must never become

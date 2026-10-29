@@ -411,5 +411,5 @@ export function firstMeaningfulSummary(...candidates: Array<string | null | unde
   return null;
 }
 
-// Lives in shared so the TUI and other surfaces derive the same agent names.
+// Lives in shared so other surfaces derive the same agent names.
 export { humanizeAgentIdentity, type AgentIdentityLabel } from "../../../shared/agentIdentity";

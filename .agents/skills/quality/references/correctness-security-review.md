@@ -32,7 +32,7 @@ git diff "$QUALITY_REVIEW_BASE" --name-only
 ADE is a multi-surface system with tight coupling across process and app
 boundaries: `apps/desktop` main process ↔ `src/preload` ↔ `src/renderer` ↔
 `src/shared` (IPC + types), and `apps/desktop` ↔ `apps/ade-cli` (shared core
-services, the `ade actions` registry, the TUI) ↔ `apps/ios` (sync payloads).
+services, the `ade actions` registry) ↔ `apps/ios` (sync payloads).
 A simple change in one place has subtle interactions that break functionality
 elsewhere. Trace side effects end-to-end:
 

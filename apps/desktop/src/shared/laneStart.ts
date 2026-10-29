@@ -4,7 +4,7 @@ import { branchNameFromLaneRef } from "./laneBaseResolution";
  * Where a new lane's branch starts: which branch, and on which copy of it.
  *
  * One shape for every surface that makes a lane: the New lane dialog (desktop,
- * phone, `ade code`), Auto-create lane, `ade lanes create`, agent tools and the
+ * phone), Auto-create lane, `ade lanes create`, agent tools and the
  * sync commands. The brain resolves it into a commit (`laneService.create`), so
  * every caller gets the same answer for the same choice.
  *

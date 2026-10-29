@@ -3141,7 +3141,7 @@ function AgentChatComposerImpl({
   // DOM callbacks (chip hydration) read the latest lookup without re-binding.
   const describeChipModelRef = useRef(describeChipModel);
   describeChipModelRef.current = describeChipModel;
-  // The model picker's synced recents (desktop, TUI, iOS); the `@` menu leads with them.
+  // The model picker's synced recents (desktop, iOS); the `@` menu leads with them.
   const { recents: modelRecents, recordUsage: recordModelRecent } = useModelRecents();
   const modelMentionOptions = useMemo(() => {
     ensureRuntimeCatalogDescriptors(modelCatalogScopeKey, true);

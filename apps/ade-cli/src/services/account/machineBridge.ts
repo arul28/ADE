@@ -7,10 +7,10 @@
  * the identity a connection initializes with is the identity every call on it
  * carries. A CTO connection lent to an agent would hand the agent the CTO role.
  *
- * Transport: the paired runtime channel the TUI's `ade code` hop already uses
- * (`openPairedCandidate` -> `RuntimeRpcClient`), over LAN, Tailscale or ADE
- * Relay. Authentication is the account's: the pairing is created by the same
- * account-authenticated hello the desktop and TUI use (`pairListedMachine`),
+ * Transport: the paired runtime channel (`openPairedCandidate` ->
+ * `RuntimeRpcClient`), over LAN, Tailscale or ADE Relay. Authentication is the
+ * account's: the pairing is created by the same account-authenticated hello
+ * the desktop and `ade machines connect` use (`pairListedMachine`),
  * and a Relay leg carries the account token. Nothing here connects while the
  * brain is signed out.
  *
@@ -35,8 +35,8 @@ import type { RemoteRuntimeTarget } from "../../../../desktop/src/shared/types/r
 import {
   openPairedCandidate,
   type AccountRelayProof,
-} from "../../tuiClient/pairedRemoteConnector";
-import { createRemoteLaunchBudget } from "../../tuiClient/remoteLaunchBudget";
+} from "./pairedRemoteConnector";
+import { createRemoteLaunchBudget } from "../../lib/remoteLaunchBudget";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import { SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES } from "../sync/syncProtocol";
 import { codedError } from "../../../../desktop/src/shared/codedError";

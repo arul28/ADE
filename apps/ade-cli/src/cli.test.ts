@@ -13,7 +13,6 @@ import {
   accountReconnectNeedsFreshSignIn,
   applySyncWebPairingFlags,
   automaticProjectRegistrationParams,
-  buildAdeCodeArgs,
   buildCliPlan,
   checkLinearReadiness,
   detectAccountLoginMode,
@@ -45,7 +44,6 @@ import {
   readRuntimeIdleExitMs,
   resolveSnoozeUntilIso,
   renderLaneGraph,
-  resolveAdeCodeModulePath,
   resolveWindowsDesktopExecutable,
   resolveRoots,
   runCli,
@@ -73,7 +71,7 @@ import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRu
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { parseChatLaunchArgs } from "../../desktop/src/main/services/chat/chatLaunchArgs";
 import { generateRpcAuthToken } from "./rpcAuth";
-import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
+import { JsonRpcClient } from "./lib/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { readBrainHeartbeat } from "./services/runtime/brainHeartbeat";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
@@ -547,24 +545,18 @@ describe("ADE CLI", () => {
       "machines",
       "connect",
       "mk_studio",
-      "--project",
-      "ADE",
     ])).toEqual({
       kind: "account-machine-connect",
       machine: "mk_studio",
-      remoteArgs: ["--project", "ADE"],
     });
     expect(buildCliPlan([
       "machine",
-      "hop",
+      "connect",
       "--machine",
       "device_studio",
-      "--session",
-      "Fix auth",
     ])).toEqual({
       kind: "account-machine-connect",
       machine: "device_studio",
-      remoteArgs: ["--session", "Fix auth"],
     });
     expect(() => buildCliPlan(["machines", "connect", "--project", "ADE"]))
       .toThrow(/requires a stable machine key/i);
@@ -969,42 +961,6 @@ describe("ADE CLI", () => {
     expect(windowsPath.options.requireSocket).toBe(true);
     expect(windowsPath.options.socketPath).toBe("C:\\Users\\me\\.ade\\runtime");
     expect(windowsPath.command).toEqual(["lanes", "list"]);
-  });
-
-  it("maps ade code to the terminal Work chat launcher", () => {
-    const parsed = parseCliArgs([
-      "--project-root",
-      "/tmp/project",
-      "code",
-      "--print-state",
-    ]);
-    expect(parsed.options.projectRoot).toBe(path.resolve("/tmp/project"));
-    expect(parsed.command).toEqual(["code", "--print-state"]);
-
-    const plan = buildCliPlan(parsed.command);
-    expect(plan).toEqual({ kind: "ade-code", rest: ["--print-state"] });
-  });
-
-  it("keeps general ADE Code help local and delegates remote help to its command", () => {
-    const general = buildCliPlan(["code", "--help"]);
-    expect(general.kind).toBe("help");
-    if (general.kind !== "help") return;
-    expect(general.text).toContain("ade code --socket /tmp/ade.sock");
-    expect(general.text).toContain("ade code --require-socket");
-    expect(general.text).toContain("ade code --lane <id|name|branch>");
-    expect(general.text).toContain(
-      "ade code remote --target <machine> --route <auto|lan|tailscale|relay>",
-    );
-    expect(general.text).toContain("Command palette");
-
-    expect(buildCliPlan(["code", "remote", "--help"])).toEqual({
-      kind: "ade-code",
-      rest: ["remote", "--help"],
-    });
-    expect(buildCliPlan(["code", "remote", "--target", "studio"])).toEqual({
-      kind: "ade-code",
-      rest: ["remote", "--target", "studio"],
-    });
   });
 
   it("shows help for bare ade invocations", () => {
@@ -1581,7 +1537,7 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn("\\\\.\\pipe\\ade-runtime-stable-test", {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(true);
-    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
+    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-stdio-rpc-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
   });
@@ -2892,69 +2848,6 @@ describe("ADE CLI", () => {
     expect(() =>
       buildCliPlan(["sync", "security", "require-dpop", "maybe"]),
     ).toThrow(/on or off/);
-  });
-
-  it("forwards resolved roots and socket intent to ade code", () => {
-    const previousRuntimeSocket = process.env.ADE_RUNTIME_SOCKET_PATH;
-    const previousRpcSocket = process.env.ADE_RPC_SOCKET_PATH;
-    const previousRpcUrl = process.env.ADE_RPC_URL;
-    const previousWorkspace = process.env.ADE_WORKSPACE_ROOT;
-    delete process.env.ADE_RPC_SOCKET_PATH;
-    delete process.env.ADE_RPC_URL;
-    delete process.env.ADE_WORKSPACE_ROOT;
-    process.env.ADE_RUNTIME_SOCKET_PATH = "/tmp/ade-runtime.sock";
-    try {
-      const args = buildAdeCodeArgs(["--print-state"], {
-        ...baseResolveOpts(),
-        projectRoot: "/tmp/project",
-        workspaceRoot: null,
-        headless: false,
-        requireSocket: true,
-      });
-
-      expect(args).toEqual([
-        "--project-root",
-        "/tmp/project",
-        "--workspace-root",
-        "/tmp/project",
-        "--socket",
-        "/tmp/ade-runtime.sock",
-        "--require-socket",
-        "--print-state",
-      ]);
-    } finally {
-      if (previousRuntimeSocket === undefined)
-        delete process.env.ADE_RUNTIME_SOCKET_PATH;
-      else process.env.ADE_RUNTIME_SOCKET_PATH = previousRuntimeSocket;
-      if (previousRpcSocket === undefined)
-        delete process.env.ADE_RPC_SOCKET_PATH;
-      else process.env.ADE_RPC_SOCKET_PATH = previousRpcSocket;
-      if (previousRpcUrl === undefined) delete process.env.ADE_RPC_URL;
-      else process.env.ADE_RPC_URL = previousRpcUrl;
-      if (previousWorkspace === undefined)
-        delete process.env.ADE_WORKSPACE_ROOT;
-      else process.env.ADE_WORKSPACE_ROOT = previousWorkspace;
-    }
-  });
-
-  it("resolves ade code from packaged runtime resources", () => {
-    const runtimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-runtime-"));
-    const modulePath = path.join(runtimeRoot, "tuiClient", "cli.mjs");
-    fs.mkdirSync(path.dirname(modulePath), { recursive: true });
-    fs.writeFileSync(modulePath, "export async function runAdeCodeCli() { return 0; }\n");
-    try {
-      withEnv(
-        {
-          ADE_RUNTIME_ROOT: runtimeRoot,
-          ADE_RESOLVED_RUNTIME_ROOT: undefined,
-        },
-        () => {
-          expect(resolveAdeCodeModulePath()).toBe(modulePath);
-        },
-      );
-    } finally {
-      fs.rmSync(runtimeRoot, { recursive: true, force: true });
-    }
   });
 
   it("preserves command-local value flags that overlap global flags", () => {

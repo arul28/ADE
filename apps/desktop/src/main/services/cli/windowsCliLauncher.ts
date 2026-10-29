@@ -52,9 +52,8 @@ export type WindowsCliLaunchSpec = {
   /** Set only when none of `guards` is set (the Node compile cache, as `ade.cmd` sets it). */
   ifNone?: ReadonlyArray<{ guards: readonly string[]; name: string; value: string }>;
   /**
-   * Run real Node when ADE_CLI_NODE names one, or a Node 22+ from PATH for
-   * `ade code`: Electron run as Node has no TTY on Windows, so the TUI cannot
-   * start under it. The same rule as ade-cli-windows-wrapper.cmd.
+   * Run the Node that ADE_CLI_NODE names instead of the bundled runtime.
+   * The same rule as ade-cli-windows-wrapper.cmd.
    */
   ttyNode?: boolean;
 };
@@ -63,8 +62,7 @@ export type WindowsCliLaunchSpec = {
  * The launch spec for a CLI the Electron app runs as Node: `ADE.exe <cli.cjs>`
  * with ELECTRON_RUN_AS_NODE, the app's module dirs on NODE_PATH, and the
  * brain defaults, as `ade.cmd` runs it. Also what `ade.cmd` did besides: a
- * warm compile cache for every call, and real Node for `ade code` (Electron
- * run as Node has no TTY on Windows).
+ * warm compile cache for every call, and the Node ADE_CLI_NODE names when set.
  */
 export function electronCliLaunchSpec(input: {
   /** The app's `ADE.exe`. */

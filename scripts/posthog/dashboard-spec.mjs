@@ -262,7 +262,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "active-installations-by-surface",
           "Feature-active installations by surface",
-          "Unique installations with successful feature activity on desktop, mobile, TUI, web, or API surfaces.",
+          "Unique installations with successful feature activity on desktop, mobile, CLI, web, or API surfaces. Before the CLI surface was renamed it was reported as `tui`.",
           trends({
             series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau" })],
             breakdown: PROPERTIES.SURFACE,

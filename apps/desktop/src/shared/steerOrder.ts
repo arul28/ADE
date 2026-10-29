@@ -1,6 +1,6 @@
 /**
  * Staged-queue ordering, shared by the chat service, the desktop pane and
- * composer, and the TUI. iOS mirrors `applySteerOrder` by hand in
+ * composer. iOS mirrors `applySteerOrder` by hand in
  * `derivePendingWorkSteers`.
  */
 

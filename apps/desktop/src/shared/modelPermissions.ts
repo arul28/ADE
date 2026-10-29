@@ -7,8 +7,8 @@
 // `AgentChatPermissionMode`. That is what lets the chip show "Bypass" for Claude
 // and "Full auto" for OpenCode, matching the composer footer exactly.
 //
-// Pure: values + labels only, no rendering. The desktop footer, the chip, the
-// TUI, and iOS all read one list, so a provider that adds a mode cannot drift.
+// Pure: values + labels only, no rendering. The desktop footer, the chip
+// and iOS all read one list, so a provider that adds a mode cannot drift.
 //
 // The send-time token may carry either a native value or one of the legacy
 // generic values (`@model:…?perm=full-auto`) written before this module existed;

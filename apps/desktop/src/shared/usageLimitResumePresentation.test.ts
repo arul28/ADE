@@ -7,7 +7,6 @@ import {
   isUsageLimitFailureText,
   isUsageLimitTurn,
   parseUsageLimitResume,
-  usageLimitResumePill,
   usageLimitResumeProviderLabel,
   usageLimitResumeRowStatus,
   usageLimitChip,
@@ -49,53 +48,6 @@ describe("formatUsageLimitCountdown", () => {
   });
 });
 
-describe("usageLimitResumePill", () => {
-  it("counts down to the fire time and ticks once a minute while far out", () => {
-    const pill = usageLimitResumePill(
-      resume({ fireAt: new Date(NOW + 12 * 60_000).toISOString() }),
-      NOW,
-    );
-    expect(pill.label).toBe("Resumes in 12 min · usage limit");
-    expect(pill.refreshMs).toBe(60_000);
-  });
-
-  it("ticks once a second inside the last five minutes", () => {
-    const pill = usageLimitResumePill(resume(), NOW);
-    expect(pill.label).toBe("Resumes in 3 min · usage limit");
-    expect(pill.refreshMs).toBe(1_000);
-  });
-
-  it("reads Resuming… once the fire time has passed, and arms no timer", () => {
-    const pill = usageLimitResumePill(resume(), NOW + 5 * 60_000);
-    expect(pill.label).toBe("Resuming…");
-    expect(pill.refreshMs).toBeNull();
-  });
-
-  it("names the retry time on a paused streak", () => {
-    const pill = usageLimitResumePill(
-      resume({ state: "paused", attempts: 2, fireAt: null, resetAt: null }),
-      NOW,
-    );
-    expect(pill.segments[0]).toBe("Paused after 2 tries");
-    expect(pill.actionHint).toBe("Try again");
-    expect(pill.refreshMs).toBeNull();
-  });
-
-  it("offers Turn on when the user opted out, and Retry when there is no reset", () => {
-    expect(usageLimitResumePill(resume({ state: "opted_out" }), NOW).label)
-      .toBe("Won't auto-resume · Turn on");
-    expect(usageLimitResumePill(resume({ state: "no_reset", fireAt: null, resetAt: null }), NOW).label)
-      .toBe("Usage limit · no reset time · Retry");
-  });
-
-  it("falls back to the reset instant when the host published no fire time", () => {
-    const pill = usageLimitResumePill(
-      resume({ fireAt: null, resetAt: new Date(NOW + 20 * 60_000).toISOString() }),
-      NOW,
-    );
-    expect(pill.label).toBe("Resumes in 20 min · usage limit");
-  });
-});
 
 describe("usageLimitResumeProviderLabel", () => {
   it("uses the known display names and title-cases anything else", () => {

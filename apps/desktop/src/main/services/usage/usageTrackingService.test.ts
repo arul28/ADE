@@ -6304,7 +6304,7 @@ describe("ADE database usage aggregation", () => {
   it("normalizes client actions while excluding reads and terminal keystrokes", async () => {
     const db = await createStatsDb();
     expect(usageClientSurfaceFromRpcName("ade-desktop")).toBe("desktop");
-    expect(usageClientSurfaceFromRpcName("ade-code")).toBe("tui");
+    expect(usageClientSurfaceFromRpcName("ade-cli")).toBe("cli");
     expect(usageClientSurfaceFromRpcName("ade-web-client")).toBe("web");
     expect(usageClientSurfaceFromPeer("phone", "ios")).toBe("mobile");
     expect(usageActionFromIpcChannel("ade.agentChat.send")).toBe("chat.send");

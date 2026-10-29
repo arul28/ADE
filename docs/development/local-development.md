@@ -12,7 +12,7 @@ keeps the short version; this is the full reference.
 | Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/alpha brain service. |
 | Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
 | Channel | A build lane such as stable, alpha, or dev. Each channel has its own ADE home. Beta is an update track of stable, not a channel. |
-| Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
+| Client | A surface that attaches to the brain: desktop, ADE Mobile, or an SSH-bound desktop window. |
 | Project | A registered repo with one ADE database at `<project>/.ade/ade.db`. |
 | Lane | A task worktree under `.ade/worktrees/` that shares the project database. |
 | Catalog | The machine-level project list served by the brain to clients and ADE Mobile. |
@@ -30,8 +30,8 @@ This table describes the current code behavior.
 | Phone pairing / PIN | Yes. | No. |
 | Mobile/machine catalog authority | Yes. | No; it may expose registry data to explicitly attached clients, but ADE Mobile ignores manual runtimes. |
 | Runs agents, PTYs, git, lanes, PR work | Yes. | Yes. |
-| Clients | Desktop, `ade code`, and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
-| Survives client close | Yes, when service-owned. Desktop/TUI fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
+| Clients | Desktop and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
+| Survives client close | Yes, when service-owned. Desktop fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
 
 ## What to rebuild after a change
 
@@ -41,8 +41,6 @@ This table describes the current code behavior.
 | iOS sync protocol, project catalog, pairing, or remote-command change | Rebuild/restart the target brain from the lane, then build the iOS app from the same lane. | The phone and brain both need the new contract. |
 | Desktop renderer UI change | Run/build Desktop from the lane and let it attach to the channel brain. | Renderer code is client-side unless it depends on new brain APIs. |
 | Desktop main/preload/runtime-bridge change | Run/build Desktop from the lane; rebuild/restart the brain only if the runtime RPC contract or brain behavior changed. | Electron main is a client/bridge, but some handlers route through the brain. |
-| `ade code` / TUI UI change | Build/run `ade code` from the lane and attach to the existing brain. | The TUI is a client of the brain. |
-| TUI command that depends on new RPC or shared types | Rebuild/restart the brain from the lane, then run the lane's `ade code`. | Both sides of the RPC contract must match. |
 | Brain, sync, project catalog, pairing, agents, PTYs, lanes, PR workflows, or CLI runtime service change | Rebuild the ADE CLI/brain from the lane and restart the target brain before testing clients. | These live in the always-on process; existing installed brains keep running old code. |
 | Manual runtime behavior | Start `ade runtime run --socket <path>` from the lane and point a client at that endpoint. | Manual runtimes are standalone and sync is always off. |
 | Remote runtime / SSH transport change | Test with a remote target using the lane-built desktop/runtime artifacts. | SSH-bound windows talk to the remote ADE transport, not the local mobile brain. |
@@ -147,7 +145,7 @@ When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
 project data by default. For example, running from
 `/path/to/ADE/.ade/worktrees/my-lane` opens `/path/to/ADE` as the ADE project
-and uses the lane path as the workspace root for `dev:code`.
+and uses the lane path as the workspace root.
 
 Dev command matrix:
 
@@ -156,10 +154,8 @@ npm run dev:desktop          # refresh shared dev runtime, then launch desktop
 npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
 npm run dev:desktop -- --first-run  # walk setup as a brand-new user, isolated from your ADE (below)
-npm run dev:code:web          # `ade code` in the browser (PTY + inspector WebSocket)
-npm run dev:code:attach      # terminal TUI only; fail if dev runtime is not already running
 npm run dev:runtime          # runtime only in the foreground
-npm run dev:all              # start shared dev runtime, then run desktop/code attach commands in separate terminals
+npm run dev:all              # start shared dev runtime, then run `npm run dev:desktop:attach`
 npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
@@ -256,7 +252,6 @@ Override it when needed:
 
 ```bash
 npm run dev:desktop -- --socket /tmp/my-ade-dev.sock
-npm run dev:code -- --socket /tmp/my-ade-dev.sock
 ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
 ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
@@ -540,8 +535,6 @@ To test auto-runtime creation, use the default dev commands after stopping the d
 ```bash
 npm run dev:stop
 npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
-npm run dev:stop
-npm run dev:code             # tests TUI wrapper creating the dev runtime
 ```
 
 ## Rebuild ADE Alpha locally
@@ -604,7 +597,7 @@ updated.
 
 Replacing the app bundle does not replace a brain process that is already
 running for that channel. Before restarting the channel brain, close or finish
-any active ADE Desktop, ADE Code, agent, or mobile sessions that depend on it.
+any active ADE Desktop, agent, or mobile sessions that depend on it.
 Then restart and verify the channel brain through the CLI:
 
 ```bash

@@ -63,7 +63,6 @@ test("reports every missing runtime-critical ADE CLI payload", () => {
       "copilotSdkWorker.cjs",
       "piSdkWorker.cjs",
       "adeRpcServer.cjs",
-      "tuiClient/cli.mjs",
       "bin/ade",
       "bin/ade.cmd",
       "install-path.sh",

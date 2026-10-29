@@ -3,7 +3,6 @@ import {
   buildGitHubPrReference,
   ensureGitHubPrIssueLinkSection,
   ensureGitHubPrReference,
-  parseGitHubIssueRef,
 } from "./githubMagicWords";
 import type { LaneGitHubIssue } from "./types";
 
@@ -44,9 +43,4 @@ describe("githubMagicWords", () => {
     expect(body).toContain("closes on merge");
   });
 
-  it("parses TUI issue refs", () => {
-    expect(parseGitHubIssueRef("ade/app#42")).toEqual({ owner: "ade", repo: "app", number: 42 });
-    expect(parseGitHubIssueRef("#42")).toEqual({ number: 42 });
-    expect(parseGitHubIssueRef("ADE-123")).toBeNull();
-  });
 });

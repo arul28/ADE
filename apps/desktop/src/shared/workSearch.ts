@@ -1,6 +1,6 @@
 /**
  * Search vocabulary shared by Work's cached session list, the desktop command
- * palette, and the ADE TUI. Keep the parser deliberately small: users get
+ * palette. Keep the parser deliberately small: users get
  * quoted phrases, whitespace-separated any-order terms, and the facets Work
  * can actually explain in a result row.
  */
@@ -182,42 +182,6 @@ export function matchesWorkSearchTerms(
     .join(" ")
     .toLowerCase();
   return terms.every((term) => haystack.includes(term));
-}
-
-/**
- * Score TUI-style labels while retaining its established subsequence fallback.
- * Desktop Work rows use the stricter matcher above; the TUI command palette has
- * historically let short queries such as "nch" find "/new chat".
- */
-export function scoreWorkSearchTerms(
-  terms: readonly string[],
-  fields: readonly (string | null | undefined)[],
-): number | null {
-  if (terms.length === 0) return 0;
-  const haystack = fields
-    .filter(
-      (field): field is string => typeof field === "string" && field.length > 0,
-    )
-    .join(" ")
-    .toLowerCase();
-  let total = 0;
-  for (const term of terms) {
-    const exactIndex = haystack.indexOf(term);
-    if (exactIndex >= 0) {
-      total += exactIndex;
-      continue;
-    }
-    let cursor = 0;
-    let fuzzyScore = 0;
-    for (const char of term) {
-      const found = haystack.indexOf(char, cursor);
-      if (found < 0) return null;
-      fuzzyScore += found - cursor;
-      cursor = found + 1;
-    }
-    total += fuzzyScore + haystack.length;
-  }
-  return total;
 }
 
 function valueMatchesFacet(value: string, wanted: string): boolean {

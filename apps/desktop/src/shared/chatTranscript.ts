@@ -171,7 +171,7 @@ function steerStayedInLiveTurn(
  * Otherwise a plain message starts a turn, and a steer does only when it ran
  * as its own turn. A steer the live turn took in (or one that went nowhere)
  * lands mid-turn, and cutting the activity there hid every tool the turn ran
- * before it. Desktop's transcript and the `ade code` TUI both group by this.
+ * before it. Desktop's transcript groups by this.
  *
  * @param openTurnId the turn id of the newest work since the last boundary.
  */

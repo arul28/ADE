@@ -2,14 +2,14 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
+The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, sync, proof, and the machine project catalog. The desktop app, hosted web, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
 
 ## Reading order
 
 1. [**PRD.md**](./PRD.md) — product scope, brain role, runtime machinery, clients model, concepts, feature index.
 2. [**ARCHITECTURE.md**](./ARCHITECTURE.md) — apps, brain/client topology, data plane, IPC, services catalog, security, build/test/deploy.
 3. [**logging.md**](./logging.md) — ground truth for local logging, PostHog product analytics, privacy, consent, event budgets, dashboards, and instrumentation rules.
-4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
+4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/` and `sync-and-multi-device/` for the brain+clients picture.
 5. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
 Running ADE from a checkout starts with
@@ -46,7 +46,6 @@ docs/
 │   └── windows-support.md                  # installed Windows support guide
 └── features/
     ├── agents/                            # agent identity, tools, personas
-    ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient
     ├── automations/                       # rule triggers + actions + guardrails
     ├── capture-gesture/                    # global screenshot chord (both ⌘ / both Ctrl) → CTO
     ├── chat/                              # multi-provider agent chat
@@ -67,7 +66,7 @@ docs/
     ├── pull-requests/                     # stacking, queue, conflict simulation
     ├── ade-mcp/                           # ADE MCP: AI apps run `ade` on a computer through ADE Relay
     ├── remote-runtime/                    # local runtime + SSH remote machines
-    ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
+    ├── search/                            # universal FTS5 index + ⌘K/CLI search
     ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair
     ├── sync-and-multi-device/             # CRDT sync, account Activity, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces

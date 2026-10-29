@@ -137,7 +137,7 @@ Muse's short window has no confirmed start, so none of them is offered.
 | Cache | Last snapshot plus provider/GitHub scan caches | Separate usage, cookie, and cost caches | Separate in-flight quota and history work. Each provider retains its last-good windows and last-success timestamp. |
 | Stale behavior | A failed refresh could leave source/freshness ambiguous | Stale/error state remains visible | Provider status carries `updatedAt`, `lastAttemptAt`, error kind, optional next retry, and the source when one is known. Unexpired last-good windows remain visible with their source and an explicit stale/re-auth state. |
 | Latency | User refresh could wait on every provider ledger and GitHub scan | Expensive storage scans do not block normal usage refresh | Quota refresh performs only provider credential/quota work. Large history scans can remain pending while a quota refresh completes. |
-| Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms, per account: a throttled account waits on its own clock while its siblings keep polling, and an account with nothing to show carries a per-account "Rate-limited — retrying" notice on the desktop rows instead of an empty "No usage yet". The TUI, the `ade usage snapshot` text output, and iOS keep their existing empty state and adopt the field when they next touch their usage rows. |
+| Errors | Mostly provider-prefixed strings | Provider-specific surfaced errors and bounded timeouts | Structured classification for auth, forbidden, conflict, rate limit, timeout, network, invalid response, and unavailable. `Retry-After` and exponential backoff prevent refresh storms, per account: a throttled account waits on its own clock while its siblings keep polling, and an account with nothing to show carries a per-account "Rate-limited — retrying" notice on the desktop rows instead of an empty "No usage yet". The `ade usage snapshot` text output and iOS keep their existing empty state and adopt the field when they next touch their usage rows. |
 
 Codex quota payloads are normalized in `providerQuotaParsers.ts`. Current HTTP
 responses can report only one weekly bucket in `primary_window`, while older
@@ -642,8 +642,8 @@ yellow from 25% to under 50%, red under 25% (`USAGE_HEADROOM_THRESHOLDS` and
 than the headroom colour. The ring is the week when the
 provider reports one, otherwise the month. The control's accessible name still says `wk`
 or `mo`, the percent left, and a five-hour window when that provider reports
-one. The popover rows keep their text meters. iOS and the TUI have no top-bar
-ring; they keep the text meters. Quota window bars in the popover use the
+one. The popover rows keep their text meters. iOS has no top-bar
+ring; it keeps the text meters. Quota window bars in the popover use the
 same headroom colours; charts and the extra-usage spend bar keep the provider
 colour from `providerColors.ts` (Cursor slate, Copilot green, Grok gray,
 OpenCode purple).
@@ -1100,13 +1100,12 @@ for each provider, mainly Claude and Codex. The wire contract is in
   switch the Cost/Tokens metric, and ⌘⇧E (Ctrl+Shift+E) exports the visible
   Breakdown view as CSV. The bars use the data-viz categorical order validated
   for the light and dark surfaces, with grey for the remainder and every
-  segment named with its dollars. `ade code` `/usage` reads the runtime snapshot for
-  every tracked quota provider and displays source metadata.
+  segment named with its dollars.
 - Remote desktop/runtime calls use the same runtime actions as a local project.
 - Paired iOS devices request `usage.getQuotaSnapshot` for the host-cached
   snapshot. Pull-to-refresh and Settings refresh use `usage.refreshQuota` and
   therefore run a bounded provider flow on the paired host without interactive
-  Keychain or bare-TUI prompts. The phone stores the last snapshot in a
+  Keychain prompts. The phone stores the last snapshot in a
   host-scoped local cache, clears it when the active host changes to an
   unsupported or unidentified machine, shows source/staleness, and never
   receives provider credentials. Older hosts that do not advertise the two
@@ -1165,8 +1164,8 @@ for each provider, mainly Claude and Codex. The wire contract is in
   The arithmetic is `usageLimitModel.ts` on desktop (`buildAccountRows`
   transposes `buildLimitCards`, so one set of numbers feeds both shapes) and the
   `adeUsageLimitCards` family in `ADEUsageDesign.swift` on iOS; both are pure
-  and clock-injected, and both are asserted against the same numbers. iOS, the
-  TUI `/usage` pane, and `ade usage snapshot` name an account that has no
+  and clock-injected, and both are asserted against the same numbers. iOS
+  and `ade usage snapshot` name an account that has no
   window yet as `No usage yet` (the snapshot text says `no windows yet`). The row
   itself is `UsageAccountRow.tsx`, rendered by `UsageLimitsBand` in the header
   popup. It replaced a per-window card stack that cost roughly 360px per
@@ -1203,8 +1202,7 @@ for each provider, mainly Claude and Codex. The wire contract is in
   account-wide fan-out in `accountUsageLiveRefresh.ts` carries history rollups
   (`usage.getUsageRollup`), not live quota. The pooled shape is the contract so
   a quota fan-out can fill it without moving any client. **Every row names its
-  account, always** — on desktop, iOS, and the `ade code` usage pane
-  (`usageWindowAccountLabel` in `tuiClient/components/UsagePane.tsx`). The
+  account, always** — on desktop and iOS. The
   earlier rule suppressed the email whenever a provider had one account, which
   is precisely the case where the row IS that account and a machine shared
   between two logins gives no other clue. A host with no account directory

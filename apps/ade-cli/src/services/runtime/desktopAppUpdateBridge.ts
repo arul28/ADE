@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
+import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 
 /**
  * "Update & restart" for a machine whose ADE desktop app is open.

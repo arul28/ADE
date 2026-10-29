@@ -54,9 +54,6 @@ async function validateNativeArchive(filePath, target) {
   if (!entries.some((entry) => entry.startsWith("./node_modules/"))) {
     fail(`Remote runtime native archive for ${target} does not contain ./node_modules/: ${filePath}`);
   }
-  if (!entries.includes("./tuiClient/cli.mjs")) {
-    fail(`Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${filePath}`);
-  }
 }
 
 async function main() {

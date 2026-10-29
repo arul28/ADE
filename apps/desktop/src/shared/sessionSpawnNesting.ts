@@ -19,7 +19,7 @@ import { pluralCount } from "./formatting";
  * list: they leave the top-level rows, the parent row carries one mark for
  * them (`nestedSubagentMark`), and the parent's actions pane lists them
  * (`filedSubagentsOf`). Peers stay top-level. This module is the one filing
- * rule desktop, ADE Code, and the iOS mirror consult so a demote, a
+ * rule desktop and the iOS mirror consult so a demote, a
  * quiet-parent pull-up, or a grandchild flatten cannot disagree across
  * surfaces.
  *

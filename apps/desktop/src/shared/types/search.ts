@@ -1,7 +1,7 @@
 /**
  * Universal search types shared between the main-process search service, the
- * ADE action bridge (`search.*` domain), the desktop command palette, the
- * `ade search` CLI, and the TUI search palette.
+ * ADE action bridge (`search.*` domain), the desktop command palette,
+ * and the `ade search` CLI.
  */
 
 export const SEARCH_DOC_KINDS = [

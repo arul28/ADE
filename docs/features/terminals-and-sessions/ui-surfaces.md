@@ -285,7 +285,7 @@ board (reason chips "Wake scheduled" and "Subagent working"), the host's
 `deriveWorkBoardColumn` (which reads the chat's wake and applies the same
 nesting rule to the lane's chats and tracked CLI rows, so a drag starts from the
 column the board shows), the Lanes
-overview, the command palette, `ade code`'s work list and iOS. The card, the
+overview, the command palette, and iOS. The card, the
 sidebar and the board each re-evaluate at the instant a wake turns overdue
 (`nextScheduledWakeDeadlineMs`) rather than polling; the card owns that clock
 because it computes the label.
@@ -350,9 +350,7 @@ child whose parent is hidden (by search, or deleted) stays top-level. Status,
 time, and Kanban stay flat. Foreign by-lane rows file the same way.
 Demote-to-peer un-nests; promote files again. Cross-lane children stay
 top-level in their own lane with the existing lineage chip. The old drawer
-keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. ADE Code
-does the same: no child rows, a `⊚2 ●` mark on the parent card, and the
-children in the chat info pane. `ade chat list` stays a flat table.
+keys (`chat-subagents:<parentId>`, `drawer-open:`) do nothing now. `ade chat list` stays a flat table.
 
 Filing comes from `effectiveSessionFilingBuckets` (wrapping the base
 `sessionFilingBucket` rule), which combines canonical lifecycle
@@ -549,7 +547,7 @@ slot before activity details. An active ADE chat in its authoritative
 plan interaction mode reads **Planning** in violet; Codex uses the collaboration
 mode accepted by the active `turn/start`. An eligible, current activity report
 replaces the generic **Working** label for a live turn with one fixed short
-label and its matching activity glyph on desktop, ADE Code, and iOS; without
+label and its matching activity glyph on desktop and iOS; without
 one, the card shows **Planning** or **Working** from the provider mode. Once the
 foreground turn is idle, provider-reported background
 tasks read blue **Background work** (**Background work ×N** when several are
@@ -574,7 +572,7 @@ duration. It is still a session-level anchor rather than any single job's
 runtime — a second job joining a live set counts from the first one's start —
 and providers with no background-task level (Codex, Cursor) keep the last-activity
 fallback. All three anchors come from one shared helper, `sessionElapsedAnchor`,
-so the Work rows, `ade code`, and `ade session show` cannot report different
+so the Work rows and `ade session show` cannot report different
 durations for the same session. The desktop slot feeds the raw anchor to a
 ticking component; the two text surfaces take the already-formatted string from
 `sessionElapsedLabel`, which wraps the same anchor. Waiting refreshes on a quiet
@@ -2243,7 +2241,7 @@ nothing when no delta is available.
   `useWorkSessions` ripple. Keep lane-scoped persistence keyed by
   `projectRoot::laneId` or the Lanes tab state leaks across projects.
 - **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
-  filing lives in `sessionSpawnNesting.ts`. Desktop, ADE Code, and iOS consult
+  filing lives in `sessionSpawnNesting.ts`. Desktop and iOS consult
   that index (`WorkSpawnNesting.swift` on the phone). Do not re-derive nest /
   quiet-parent pull-up / grandchild flatten in a list renderer. Status, time,
   and Kanban stay flat; `ade chat list` stays a flat table.

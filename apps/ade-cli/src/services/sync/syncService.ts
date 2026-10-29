@@ -241,7 +241,7 @@ type SyncServiceArgs = {
   projectScopes?: { getIfBooted(projectId: string): Promise<unknown> | null };
   /**
    * Lazy accessor for the model picker store. iOS uses the `modelPicker.*`
-   * sync commands to share favorites + recents with desktop and the TUI; the
+   * sync commands to share favorites + recents with desktop; the
    * store is backed by the per-project cr-sqlite DB (`db`) so all surfaces
    * converge for a project via CRR replication. Optional — the remote command
    * service falls back to the per-db shared store built from `db` when unset.

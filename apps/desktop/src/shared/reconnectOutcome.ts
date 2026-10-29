@@ -3,8 +3,8 @@ import { ADE_ACCOUNT_PAIRING_AUTHENTICATION_REQUIRED_CODE } from "./types/accoun
 
 /**
  * What "Reconnect this computer" did, in one sentence. The desktop's reconnect
- * surfaces, `ade machines reconnect --text` and the `ade code` `/reconnect`
- * notice all read it from here, so the three cannot disagree. Pure: no
+ * surfaces and `ade machines reconnect --text` both read it from here, so
+ * the two cannot disagree. Pure: no
  * renderer or Node globals.
  */
 
@@ -113,8 +113,8 @@ export function reconnectNeedsFreshSignIn(
 }
 
 /**
- * A repair result read off the wire, or null when it is not one. The CLI and
- * the TUI get it as untyped JSON; every field an older brain may omit reads as
+ * A repair result read off the wire, or null when it is not one. The CLI
+ * gets it as untyped JSON; every field an older brain may omit reads as
  * its "nothing happened" value.
  */
 export function readReconnectResult(value: unknown): AdeAccountMachinePairingRepairResult | null {

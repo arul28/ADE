@@ -377,8 +377,8 @@ export function sessionStatusPresentation(
 }
 
 /**
- * The ONE elapsed anchor, shared by the desktop status slot and `ade code`'s
- * work list so the two cannot report different durations for the same row.
+ * The ONE elapsed anchor, shared by the desktop status slot and
+ * `ade session show` so the two cannot report different durations for the same row.
  *
  * Four anchors, one per kind of "how long":
  *   • a live turn showing an activity ("Testing") counts from when the session
@@ -423,7 +423,7 @@ export function sessionElapsedAnchor(
  * The already-formatted elapsed a text surface shows beside a status word —
  * "2h" in "Background work ×2 2h".
  *
- * `ade code` and `ade session show` both need a finished string, and each would
+ * `ade session show` needs a finished string, and each would
  * otherwise re-derive the same three steps (does this presentation want an
  * elapsed, is the anchor parseable, format it). One helper so the two cannot
  * report different durations for the same session. The desktop deliberately

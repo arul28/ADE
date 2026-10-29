@@ -18,7 +18,7 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 
 - **/context** — session primer: detects the lane's area and loads only the matching docs + perf skill (never a broad dump).
 - **/quality** — opens the PR first so CI and the review bots run during the review; then a dual-track review (correctness/security + maintainability/code-judo) that fixes every verified finding at every severity; then harvests the PR's CI failures and bot comments and fixes those too. It gates only a product decision the agent cannot make or a behavior change the branch was not authorized to make.
-- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
+- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI parity + CI-mirrored shards. Adds a test for a fixed bug only when no existing test would catch it, and never a tautological or change-detector test. Harvests the PR again before it finishes.
 - **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). It adopts the early PR with one round already fixed, so it mostly closes the PR out. After any ship-loop mutation it reruns commit-bound `/quality` revalidation on the delta only. Wraps `docs/playbooks/ship-lane.md`.
 
 Anything new must survive a project switch: declare each new runtime action `read` or `write` in `apps/desktop/src/shared/adeActionAccess.ts`, and make a surface that loads data say "couldn't load" with a retry, never a false empty state (`/quality` checks this: ADE review rule 4.5).
@@ -144,8 +144,8 @@ session, a lane, a terminal, a sign-in) has to be sent to **that** machine:
 
 The most common defect class in this repo is a change that works on the path you tested and is missing everywhere else. Before you call a change done (and again in `/quality`), walk this list and state which entries applied:
 
-- **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, the `ade code` TUI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
-- **Clients.** Desktop (Electron), hosted web, iOS, and the TUI attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
+- **Entry points.** A behavior reachable from the desktop UI is usually also reachable from the `ade` CLI, deeplinks, the command palette, and keybindings. Fixing one entry point is not fixing the feature.
+- **Clients.** Desktop (Electron), hosted web, and iOS attach to the same brain. Shared logic belongs in shared services and types, not re-implemented per client.
 - **Providers.** Claude, Codex, Cursor, OpenCode, and Droid each have an adapter with different capabilities. A provider-shaped feature needs a decision per adapter, even when the decision is "not supported here" — record it in the capability gate, not by silence.
 - **Contracts.** Anything crossing a boundary is typed once: main-process handler, `src/shared` types, preload exposure, renderer caller, daemon action domain, tests/mocks. Change the contract and all of them move together.
 - **Reverse states.** If you add a way in, add the way out and the way to see it. Snooze needs unsnooze; settle needs unsettle; a link needs unlink. A one-way door is a bug.
@@ -419,9 +419,9 @@ If your environment is not Cursor Cloud, use the general **Validation** section 
 
 ### Running the Electron desktop app on Linux
 
-Cursor’s own desktop IDE does not ship for Linux; Cloud Agents run on Linux VMs, so agents exercise ADE through the **headless `ade` CLI/TUI** or the **Electron dev app** built from this repo (there is still no published Linux `.deb`/AppImage — `electron-builder` only packages macOS and, when enabled, Windows).
+Cursor’s own desktop IDE does not ship for Linux; Cloud Agents run on Linux VMs, so agents exercise ADE through the **headless `ade` CLI** or the **Electron dev app** built from this repo (there is still no published Linux `.deb`/AppImage — `electron-builder` only packages macOS and, when enabled, Windows).
 
-- **Canonical Cloud Agent / Linux VM flow:** after `npm run setup`, run `ADE_PROJECT_ROOT=<project> npm run dev:desktop -- --skip-runtime-build`. That rebuilds the lane CLI when needed, points desktop at `/tmp/ade-runtime-dev.sock`, and launches Electron against Vite. Do not start Electron with bare `npx electron .` — without `ADE_RUNTIME_SOCKET_PATH` the app tries `~/.ade/sock/ade.sock`, refuses to spawn a brain there, and project open fails. Renderer-only work can use `cd apps/desktop && npm run dev:vite` (mock `window.ade`) or `npm run dev:code -- --skip-runtime-build --attach` for the TUI.
+- **Canonical Cloud Agent / Linux VM flow:** after `npm run setup`, run `ADE_PROJECT_ROOT=<project> npm run dev:desktop -- --skip-runtime-build`. That rebuilds the lane CLI when needed, points desktop at `/tmp/ade-runtime-dev.sock`, and launches Electron against Vite. Do not start Electron with bare `npx electron .` — without `ADE_RUNTIME_SOCKET_PATH` the app tries `~/.ade/sock/ade.sock`, refuses to spawn a brain there, and project open fails. Renderer-only work can use `cd apps/desktop && npm run dev:vite` (mock `window.ade`).
 - **Repository-managed Cloud Agent bootstrap:** `.cursor/environment.json` runs `.cursor/scripts/cloud-agent-install.sh` (deps + CLI build + native rebuild + desktop prebuild) and starts the `ade-dev-desktop` terminal with the command above.
 - Set `ADE_DISABLE_HARDWARE_ACCEL=1` — the VM has no real GPU, and without this the app crashes on `WebGL1 blocklisted`.
 - `node-pty` ships only macOS/Windows prebuilds. After `npm install`, run `npm --prefix apps/desktop run rebuild:native` to compile `pty.node` for Electron on Linux. Then manually compile the spawn-helper: `cd apps/desktop/node_modules/node-pty && g++ -o build/Release/spawn-helper src/unix/spawn-helper.cc`.
@@ -434,4 +434,3 @@ Cursor’s own desktop IDE does not ship for Linux; Cloud Agents run on Linux VM
 - The pinned Vitest 0.34.6 does not support `--project`. Use `npx vitest run <specific-test-file>` in `apps/desktop` for targeted tests, `npx vitest run --shard=<n>/8` for a CI-style shard, or `npm run test:desktop:sharded` from the repo root for the full desktop unit workspace.
 - In the Cursor Cloud VM the active X display is `:1`, not `:99`. When launching Electron set `DISPLAY=:1`.
 - To launch the desktop dev app quickly when the CLI is already built: `npm run dev:desktop -- --skip-runtime-build`.
-- To launch the TUI against an already-running dev runtime: `npm run dev:code -- --skip-runtime-build --attach --project-root <path> --workspace-root <path>`.

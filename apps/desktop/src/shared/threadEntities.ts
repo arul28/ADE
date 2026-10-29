@@ -12,7 +12,7 @@
 //   - **Only real things.** A span becomes a lane or chat chip only when it
 //     matches a lane or chat in the index the surface passes in. Unknown ids
 //     stay code. A guessed link is worse than no link.
-//   - **Pure and synchronous.** No I/O; every surface (desktop, TUI, iOS port)
+//   - **Pure and synchronous.** No I/O; every surface (desktop, iOS port)
 //     runs the same rules inline, at render time, over agent text.
 //   - **Inline code is the strong signal.** Agents put identifiers in
 //     backticks. Prose matching is limited to shapes that cannot be ordinary

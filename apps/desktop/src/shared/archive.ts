@@ -3,7 +3,7 @@ import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind, type ArchiveSummary } from ".
 
 /**
  * Archive rules and words shared by every surface — the archive service, the
- * Settings page, the weekly reminder, ADE Code and `ade archive` — so "stale"
+ * Settings page, the weekly reminder and `ade archive` — so "stale"
  * and "3 lanes" mean the same thing everywhere.
  */
 

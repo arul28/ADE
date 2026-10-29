@@ -12,7 +12,6 @@ const REQUIRED_PACKAGED_ADE_CLI_PAYLOAD_PATHS = Object.freeze([
   "piSdkWorker.cjs",
   "usageLedgerWorker.cjs",
   "adeRpcServer.cjs",
-  "tuiClient/cli.mjs",
   "bin/ade",
   "bin/ade.cmd",
   "install-path.sh",

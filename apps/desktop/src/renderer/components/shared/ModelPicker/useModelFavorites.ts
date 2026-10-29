@@ -3,7 +3,7 @@ import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
 
 // Authoritative storage lives in the ade-cli main process so favorites sync
-// across desktop, TUI, and iOS surfaces. We keep a localStorage cache so the
+// across desktop and iOS surfaces. We keep a localStorage cache so the
 // initial render is instant while the RPC roundtrip completes in the
 // background, and so the picker still works when the runtime isn't bound.
 const STORAGE_KEY = "ade.modelPicker.favorites.v1";

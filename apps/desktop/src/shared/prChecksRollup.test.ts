@@ -372,7 +372,7 @@ describe("rollupPrChecks — row-level rollup shared by CLI/TUI/toolbars", () =>
 
   it("treats a slug-less legacy row as CI rather than reporting not-run", () => {
     // `appSlug` only started being populated in this change. Persisted rows,
-    // older hosts and the TUI's action payloads all carry checks with no slug;
+    // older hosts' action payloads all carry checks with no slug;
     // failing those closed would report "CI has not run" for every legacy
     // payload whose CI genuinely passed.
     const result = rollupPrChecks([{ status: "completed", conclusion: "success", appSlug: null }]);

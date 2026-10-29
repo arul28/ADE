@@ -191,8 +191,8 @@ export interface CtoOperatorToolDeps {
   // Domain coverage. Every entry below is OPTIONAL: a runtime that does
   // not wire the backing service leaves the method undefined and the tool
   // answers a clean "not available on this runtime" instead of throwing. That
-  // is the runtime-backed-null-services rule — `ade code`, the headless brain
-  // and the desktop all build this map and they do not wire the same graph.
+  // is the runtime-backed-null-services rule — the headless brain
+  // and the desktop both build this map and they do not wire the same graph.
   // ───────────────────────────────────────────────────────────────────────────
 
   /**

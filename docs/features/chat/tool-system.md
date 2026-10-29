@@ -151,7 +151,7 @@ this is the canonical prose copy.
 | `createPrFromLane({ laneId, title?, body? })` | Creates a pull request from the lane's changes. |
 | `captureScreenshot()` | **Not callable.** The name was listed by the deleted `workflowToolNames()` but no tool registry ever received an implementation, so an agent that called it got "tool not found". Use `ade proof capture --caption "…"` to file reviewer-facing proof, or `screenshot_environment` for a bare look at the screen. |
 | `reportCompletion(...)` | **Not callable.** A name with no implementation in any registry. Its system-prompt bullet has been removed, so nothing advertises it either. |
-| `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | **Live**, but not from this module. They are registered, allow-listed and dispatched in `apps/ade-cli/src/adeRpcServer.ts` (registration `:1109+`, allowlist `:1399+`, dispatch `:5415+`) under **snake_case** names, and are called by agents and by the TUI (`tuiClient/app.tsx:11383`). `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
+| `pr_get_checks`, `pr_get_review_comments`, `pr_rerun_failed_checks`, `pr_reply_to_review_thread`, `pr_resolve_review_thread` | **Live**, but not from this module. They are registered, allow-listed and dispatched in `apps/ade-cli/src/adeRpcServer.ts` (registration `:1109+`, allowlist `:1399+`, dispatch `:5415+`) under **snake_case** names, and are called by agents. `pr_get_checks` returns the persisted checks verdict in preference to a row-level rollup, because a row tally cannot see required contexts that never reported. |
 | `pr_get_check_log`, `pr_refresh_issue_inventory`, `pr_reply_to_comment` | **Not callable** under either spelling — no dispatch handler exists. The first two are still in `systemPrompt.ts`'s `PR_ISSUE_TOOL_NAMES` set, which is harmless: that set only filters names a caller already passed, so it can never make the prompt claim a tool that does not exist. |
 | The camelCase `pr*` names (`prGetChecks`, `prGetReviewComments`, …) | **Not callable.** They appeared only in the deleted `workflowToolNames()` and in the `PR_ISSUE_TOOL_NAMES` set, which survives. The working spellings are the snake_case ones above. |
 
@@ -163,7 +163,7 @@ fail in opposite directions.
 An agent working a PR can already re-pull checks and review threads, re-trigger
 failed GitHub Actions runs, reply on review threads, and resolve them. Those are
 the five live `pr_*` RPC tools in the table above, dispatched from
-`apps/ade-cli/src/adeRpcServer.ts` and exercised by the TUI. Nothing about that
+`apps/ade-cli/src/adeRpcServer.ts`. Nothing about that
 path is speculative.
 
 What does not exist is the surface that was supposed to *launch* such a chat for

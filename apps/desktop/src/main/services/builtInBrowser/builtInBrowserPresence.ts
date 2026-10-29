@@ -10,7 +10,7 @@ import type { BuiltInBrowserAgentPresence } from "../../../shared/types/builtInB
  * "An agent is using the browser right now", derived rather than declared.
  *
  * Every surface that shows a chat — the session card, the chat header, the
- * Tools pane, the phone, the TUI — needs the same one-bit answer, and the agent
+ * Tools pane, the phone — needs the same one-bit answer, and the agent
  * must never be the one to supply it. An instruction to "announce when you open
  * the browser" is a fact the model can forget, embellish, or leave set after it
  * has moved on; the only trustworthy evidence that an agent is driving the

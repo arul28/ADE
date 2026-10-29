@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
+import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 
 /**
  * One lazily opened connection from the runtime daemon to the desktop bridge

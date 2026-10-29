@@ -89,8 +89,7 @@
             "pages": [
               "tools/remote-machines",
               "tools/ios-companion",
-              "tools/ios-simulator",
-              "tools/ade-code"
+              "tools/ios-simulator"
             ]
           },
           {

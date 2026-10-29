@@ -232,13 +232,13 @@ describe("buildAttentionItems", () => {
       loadRoster: async () => [rosterProject({
         status: "failed",
         lastTurnFailedAt: "2026-08-01T11:00:00.000Z",
-        title: "Align ADE Code With Work Tab",
+        title: "Align Mobile With Work Tab",
       })],
     }));
 
     expect(items).toHaveLength(1);
     expect(items[0]?.phase).toBe("failed");
-    expect(items[0]?.title).toBe("Align ADE Code With Work Tab");
+    expect(items[0]?.title).toBe("Align Mobile With Work Tab");
   });
 
   it("publishes a snoozed running chat as idle, even if a live run is still open", async () => {

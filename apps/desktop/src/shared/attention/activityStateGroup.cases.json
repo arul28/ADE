@@ -3,7 +3,7 @@
     "Conformance fixture for the OLD six-group Activity table (needs-you,",
     "failed, planning, working, idle, done).",
     "",
-    "Desktop, the web client and ADE Code no longer group by it: every Activity",
+    "Desktop and the web client no longer group by it: every Activity",
     "surface now counts by the Work board's four columns, pinned by",
     "activityBoardColumn.cases.json beside this file. The table survives only",
     "because the push relay still fills the Live Activity's `groups` field from",

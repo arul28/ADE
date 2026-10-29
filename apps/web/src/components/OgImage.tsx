@@ -3,8 +3,8 @@ import type { CSSProperties } from "react";
 /**
  * Social link-preview card, rendered at exactly 1200×630 and screenshotted to
  * /og-image.png. Mirrors the site hero — the competitor equation, the headline,
- * and the desktop + TUI + iPhone trio, hand-labelled by the machine each one
- * runs on, minus the install CTAs. /og-video.mp4 animates this same card.
+ * and the desktop + iPhone pair, hand-labelled by the machine each one runs
+ * on, minus the install CTAs. /og-video.mp4 animates this same card.
  */
 const rainbow: CSSProperties = {
   background:
@@ -139,7 +139,7 @@ export function OgImage() {
         app that runs <span style={rainbow}>everywhere</span>.
       </h1>
 
-      {/* device trio — larger */}
+      {/* device pair — larger */}
       <div className="absolute left-1/2 -translate-x-1/2" style={{ top: 246, width: 800 }}>
         <div className="relative">
           {/* glow */}
@@ -160,26 +160,6 @@ export function OgImage() {
           >
             <img
               src="/images/hero-v2/desktop.webp"
-              alt=""
-              style={{ display: "block", width: "100%", height: "auto" }}
-            />
-          </div>
-
-          {/* TUI — bottom-left, larger */}
-          <div
-            className={`absolute ${frame}`}
-            style={{
-              bottom: "17%",
-              left: "-15%",
-              width: "55%",
-              borderRadius: 9,
-              transform: "rotate(-2deg)",
-              transformOrigin: "bottom left",
-              filter: "drop-shadow(0 22px 40px rgba(0,0,0,0.66))",
-            }}
-          >
-            <img
-              src="/images/hero-v2/terminal.webp"
               alt=""
               style={{ display: "block", width: "100%", height: "auto" }}
             />
@@ -241,14 +221,6 @@ export function OgImage() {
           strokeLinecap="round"
           markerEnd="url(#ah)"
         />
-        {/* TUI — label curves down to the TUI's top-left corner */}
-        <path
-          d="M78 320 C 90 336, 94 346, 100 356"
-          stroke="#efe6d0"
-          strokeWidth="2.2"
-          strokeLinecap="round"
-          markerEnd="url(#ah)"
-        />
         {/* Mobile — top-right label curves down to the top of the phone */}
         <path
           d="M1066 232 C 1036 256, 1014 276, 996 300"
@@ -262,9 +234,6 @@ export function OgImage() {
       {/* hand-written labels */}
       <span className="absolute" style={{ ...hand, left: 52, top: 196, fontSize: 33, transform: "rotate(-7deg)" }}>
         on your Mac
-      </span>
-      <span className="absolute" style={{ ...hand, left: 22, top: 284, fontSize: 33, transform: "rotate(-5deg)" }}>
-        on your server
       </span>
       <span className="absolute" style={{ ...hand, right: 44, top: 192, fontSize: 33, transform: "rotate(6deg)" }}>
         on your phone

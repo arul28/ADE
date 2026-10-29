@@ -6,7 +6,7 @@ import { resolveMachineAdeLayout } from "../projects/machineLayout";
 /**
  * Cross-process mutual exclusion for "spawn a brain for this socket".
  *
- * Every failing `ade` command and every `ade code` launch can spawn a detached
+ * Every failing `ade` command can spawn a detached
  * brain, so without a lock a burst of commands races: each one checks, each one
  * finds nothing, and each one spawns. That is how a machine ends up with a pile
  * of immortal brains fighting over the same relay slot. An advisory record

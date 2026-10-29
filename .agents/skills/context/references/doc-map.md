@@ -57,12 +57,11 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 | `apps/desktop/src/shared/**` | `docs/ARCHITECTURE.md` + the touching feature's doc | — |
 | Any renderer UI (`apps/desktop/src/renderer/**/*.tsx`), esp. `components/ui/notice/**`, `components/ui/dialog/**`, `components/app/toast/**`, `HeaderSheet.tsx`, `zLayers.ts`, `eslint-rules/**` | `docs/design/notices.md` and `docs/design/visual-language.md` (in addition to the area's docs) | — |
 
-## ADE CLI & TUI
+## ADE CLI
 
 | Path pattern | Feature docs | Perf skill |
 |---|---|---|
-| `apps/ade-cli/src/tuiClient/**` | `docs/features/ade-code/README.md` + `ARCHITECTURE.md` (ADE CLI) | `ade-tui-web-preview` |
-| `apps/ade-cli/**` (non-TUI) | `docs/ARCHITECTURE.md` (ADE CLI / Build/Test/Deploy) + `features/agents/` | — |
+| `apps/ade-cli/**` | `docs/ARCHITECTURE.md` (ADE CLI / Build/Test/Deploy) + `features/agents/` | — |
 
 ## iOS, web, CI
 

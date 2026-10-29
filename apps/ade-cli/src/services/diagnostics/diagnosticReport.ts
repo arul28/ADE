@@ -822,7 +822,7 @@ export function diagnosticReportFilePath(dir: string, surface: string, at: Date)
  * read-only or full disk must not turn "report a bug" into a second bug, and
  * the issue URL is still usable on its own.
  *
- * Shared by every surface (desktop button, `ade report-issue`, the TUI) so the
+ * Shared by every surface (desktop button, `ade report-issue`) so the
  * 0o700/0o600 modes are stated in exactly one place.
  */
 export function writeDiagnosticReportFile(filePath: string, report: string): boolean {

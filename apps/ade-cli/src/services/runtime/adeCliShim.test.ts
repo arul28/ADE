@@ -173,7 +173,7 @@ describe("installAdeCliShim on Windows", () => {
     expect(launch).toContain(`arg ${entryPath}`);
     expect(launch).toContain("env ELECTRON_RUN_AS_NODE=1");
     expect(launch).toContain(`default ADE_HOME=${brain.adeHome}`);
-    // What ade.cmd also did: a warm compile cache, and real Node for `ade code`.
+    // What ade.cmd also did: a warm compile cache, and ADE_CLI_NODE when set.
     expect(launch).toContain(`ifnone NODE_COMPILE_CACHE,NODE_DISABLE_COMPILE_CACHE NODE_COMPILE_CACHE=${brain.adeHome}\\cache\\node-compile`);
     expect(launch).toContain("ttynode 1");
   });

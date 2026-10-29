@@ -57,7 +57,7 @@ export {
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
-// so local TUI/desktop clients (and the unix RPC socket, which is separate)
+// so local desktop clients (and the unix RPC socket, which is separate)
 // keep working unchanged. Operators who want the old loopback-only posture can
 // set ADE_SYNC_BIND_HOST=127.0.0.1; that mode also relaxes the PIN requirement
 // for new bootstrap-token devices (see the hello handler in syncHostService)

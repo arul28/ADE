@@ -72,7 +72,7 @@ export function Hero() {
           style={{ animationDelay: "120ms" }}
         >
           One agentic development environment, synced across every machine you own. Desktop, web,
-          terminal, and iPhone. Bring your own models.
+          and iPhone. Bring your own models.
         </p>
 
         <InstallBlock position={MARKETING_CTA_POSITIONS.HERO} animated />
@@ -176,11 +176,11 @@ export function InstallBlock({ position, animated }: { position: string; animate
 }
 
 /**
- * One chat, three screens: the Mac app, `ade code` in a terminal, and the
- * iPhone app, all captured at the same moment. The group starts tilted back
- * and settles flat as it scrolls into view; the terminal and phone drift in
- * from the sides, end straight, and then float. Every size is a percentage of one container,
- * so the overlap holds at every width.
+ * One chat, two screens: the Mac app and the iPhone app, captured at the
+ * same moment. The group starts tilted back and settles flat as it scrolls
+ * into view; the phone drifts in from the side, ends straight, and then
+ * floats. Every size is a percentage of one container, so the overlap holds
+ * at every width.
  */
 function HeroDevices() {
   const reduceMotion = useReducedMotion() ?? false;
@@ -188,10 +188,8 @@ function HeroDevices() {
   const { scrollYProgress } = useScroll({ target: ref, offset: ["start end", "start 25%"] });
   const rotateX = useTransform(scrollYProgress, [0, 1], [reduceMotion ? 0 : 22, 0]);
   const scale = useTransform(scrollYProgress, [0, 1], [reduceMotion ? 1 : 0.9, 1]);
-  const termX = useTransform(scrollYProgress, [0, 1], [reduceMotion ? "0%" : "-10%", "0%"]);
   const phoneX = useTransform(scrollYProgress, [0, 1], [reduceMotion ? "0%" : "14%", "0%"]);
-  // The side devices start tilted and end exactly straight once the group is in view.
-  const termRotate = useTransform(scrollYProgress, [0, 1], [reduceMotion ? 0 : -6, 0]);
+  // The phone starts tilted and ends exactly straight once the group is in view.
   const phoneRotate = useTransform(scrollYProgress, [0, 1], [reduceMotion ? 0 : 7, 0]);
 
   return (
@@ -205,20 +203,6 @@ function HeroDevices() {
         <div className="relative mx-auto w-[86%]">
           <LiveDemo poster="/images/home/demo-poster.jpg" className="shadow-[0_40px_90px_rgba(124,58,237,0.35)]" />
         </div>
-
-        {/* Terminal: `ade code`, the same chat. */}
-        <motion.div className="pointer-events-none absolute bottom-0 left-0 z-20 w-[42%] origin-bottom-left" style={{ x: termX, rotate: termRotate }}>
-          <div className="ade-float" style={{ animationDelay: "-2s" }}>
-            <img
-              src="/images/hero-v2/terminal.webp"
-              alt="The same chat in ADE Code, the terminal app"
-              width={2228}
-              height={1166}
-              loading="eager"
-              className="block h-auto w-full rounded-[clamp(6px,0.8vw,12px)] shadow-[0_30px_80px_rgba(0,0,0,0.8)]"
-            />
-          </div>
-        </motion.div>
 
         {/* iPhone: the same chat. */}
         <motion.div className="pointer-events-none absolute bottom-0 right-[0%] z-30 w-[16.5%] origin-bottom-right" style={{ x: phoneX, rotate: phoneRotate }}>

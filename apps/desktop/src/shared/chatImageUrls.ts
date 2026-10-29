@@ -2,7 +2,7 @@ import { basenameCrossPlatform } from "./pathDisplay";
 
 /**
  * URL predicates for the image events every client renders, owned once so the
- * main process, the desktop renderer, and the `ade code` TUI cannot drift on
+ * main process and the desktop renderer cannot drift on
  * what "this is a data URI" means.
  *
  * A data URI is renderable inline everywhere (the desktop CSP allows `data:`

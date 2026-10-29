@@ -377,7 +377,7 @@ describe("createAgentChatService", () => {
       const created = await service.createScheduledWork({
         sessionId: "cli-state",
         cron: "1 * * * *",
-        prompt: "Inspect this from ADE Code.",
+        prompt: "Inspect this from the CLI.",
         recurring: false,
       });
 

@@ -47,7 +47,6 @@ export class JsonRpcClient {
   private readonly buffer = new RpcByteQueue();
   private pendingContentLength: number | null = null;
   private pending = new Map<string, PendingRequest>();
-  private notificationHandlers = new Map<string, Set<(params: unknown) => void>>();
   private closeHandlers = new Set<() => void>();
   private closed = false;
 
@@ -209,16 +208,6 @@ export class JsonRpcClient {
     }
   }
 
-  onNotification(method: string, handler: (params: unknown) => void): () => void {
-    const handlers = this.notificationHandlers.get(method) ?? new Set<(params: unknown) => void>();
-    handlers.add(handler);
-    this.notificationHandlers.set(method, handlers);
-    return () => {
-      handlers.delete(handler);
-      if (handlers.size === 0) this.notificationHandlers.delete(method);
-    };
-  }
-
   private handleData(chunk: Buffer | string): void {
     if (this.closed) return;
     this.lastInboundAt = Date.now();
@@ -309,14 +298,8 @@ export class JsonRpcClient {
   }
 
   private handleResponse(response: JsonRpcResponse): void {
-    if (response.id == null) {
-      if (typeof response.method === "string") {
-        for (const handler of this.notificationHandlers.get(response.method) ?? []) {
-          handler(response.params);
-        }
-      }
-      return;
-    }
+    // A notification (no id) has no waiter; nothing here subscribes to them.
+    if (response.id == null) return;
     const pendingKey = String(response.id);
     const pending = this.pending.get(pendingKey);
     if (!pending) return;

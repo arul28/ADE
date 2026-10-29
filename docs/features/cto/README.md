@@ -490,7 +490,7 @@ delivered into the running turn, or starts one.
 
 Session lifecycle is not desktop-only and settle is not the only quiet tier. A
 session carries a canonical phase plus two independent controls, and both are
-reachable from every surface — desktop, iOS, `ade code`, hosted web, the `ade`
+reachable from every surface — desktop, iOS, hosted web, the `ade`
 CLI, and the CTO's own tools:
 
 - **Settle override** — the tri-state `null | "settled" | "active"` pin. It is

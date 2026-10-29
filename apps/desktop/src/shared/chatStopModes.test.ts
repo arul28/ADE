@@ -8,7 +8,6 @@ import {
   formatBackgroundJobCount,
   isAgentChatStopMode,
   parseAgentChatStopMode,
-  resolveAgentChatStopModeAlias,
   shouldDeclarePerTaskStopAffordance,
   providerStopModeSupport,
   stopModeAvailable,
@@ -96,12 +95,4 @@ describe("chat stop matrix", () => {
     expect(CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE).toBe(true);
   });
 
-  it("resolves hyphen, underscore, and flag aliases to the four-mode matrix", () => {
-    expect(resolveAgentChatStopModeAlias("keep-queue")).toBe("stop_only");
-    expect(resolveAgentChatStopModeAlias("clear-queue")).toBe("stop_and_clear");
-    expect(resolveAgentChatStopModeAlias("background")).toBe("stop_and_background");
-    expect(resolveAgentChatStopModeAlias("clear-and-background")).toBe("stop_and_clear_and_background");
-    expect(resolveAgentChatStopModeAlias("stop_and_clear")).toBe("stop_and_clear");
-    expect(resolveAgentChatStopModeAlias("nope")).toBeNull();
-  });
 });

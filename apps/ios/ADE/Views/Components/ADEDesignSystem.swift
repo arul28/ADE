@@ -374,7 +374,7 @@ enum ADEColor {
   /// id ("anthropic/claude-sonnet-5") and shortId ("sonnet") so lookups work
   /// against either form of `chatSummary.modelId`. Keep this aligned with
   /// `apps/desktop/src/shared/modelRegistry.ts` so the mobile composer exposes
-  /// the same effort actions as desktop and the ADE TUI.
+  /// the same effort actions as desktop.
   private static let modelReasoningTiers: [String: [String]] = [
     // Claude
     "anthropic/claude-opus-5-5": ["low", "medium", "high", "xhigh", "max"],

@@ -8,11 +8,13 @@ import {
   TerminalWindow,
   Trophy,
 } from "@phosphor-icons/react";
-import type {
-  AdeUsageClientSurface,
-  AdeUsageDailyPoint,
-  AdeUsageRangePreset,
-  AdeUsageStats,
+import {
+  normalizeAdeUsageClientSurface,
+  type AdeUsageClientSummary,
+  type AdeUsageClientSurface,
+  type AdeUsageDailyPoint,
+  type AdeUsageRangePreset,
+  type AdeUsageStats,
 } from "../../../shared/types";
 import { formatCompact, formatDayShort, formatTokens } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
@@ -182,7 +184,7 @@ const SERIES_PALETTE: Record<SeriesKey, string> = {
 /** One hue in steps: the busiest client gets the full accent. */
 const CLIENT_COLORS: Record<AdeUsageClientSurface, string> = {
   desktop: "var(--color-accent)",
-  tui: "color-mix(in srgb, var(--color-accent) 66%, transparent)",
+  cli: "color-mix(in srgb, var(--color-accent) 66%, transparent)",
   mobile: "color-mix(in srgb, var(--color-accent) 46%, transparent)",
   web: "color-mix(in srgb, var(--color-accent) 32%, transparent)",
   api: "color-mix(in srgb, var(--color-fg) 35%, transparent)",
@@ -195,7 +197,7 @@ function clientColor(client: AdeUsageClientSurface): string {
 const CLIENT_LABELS: Record<AdeUsageClientSurface, string> = {
   desktop: "Desktop",
   mobile: "Mobile",
-  tui: "ADE Code",
+  cli: "CLI",
   web: "Web",
   api: "API",
 };
@@ -497,9 +499,32 @@ function CodeBars({
 
 function ClientIcon({ client }: { client: AdeUsageClientSurface }) {
   if (client === "mobile") return <DeviceMobile size={13} />;
-  if (client === "tui") return <TerminalWindow size={13} />;
+  if (client === "cli") return <TerminalWindow size={13} />;
   if (client === "web") return <Globe size={13} />;
   return <Monitor size={13} />;
+}
+
+/**
+ * An older brain still reports the command line as `tui`; fold it into `cli`
+ * so the legend never shows a client it has no label for.
+ */
+function mergeClientSurfaces(clients: AdeUsageClientSummary[]): AdeUsageClientSummary[] {
+  const merged = new Map<AdeUsageClientSurface, AdeUsageClientSummary>();
+  for (const row of clients) {
+    const client = normalizeAdeUsageClientSurface(row.client);
+    if (!client) continue;
+    const prior = merged.get(client);
+    merged.set(client, prior
+      ? {
+          ...prior,
+          interactions: prior.interactions + row.interactions,
+          activeDays: Math.max(prior.activeDays, row.activeDays),
+          sessions: prior.sessions + row.sessions,
+          lastActiveAt: [prior.lastActiveAt, row.lastActiveAt].filter(Boolean).sort().at(-1) ?? null,
+        }
+      : { ...row, client });
+  }
+  return [...merged.values()];
 }
 
 /**
@@ -508,7 +533,7 @@ function ClientIcon({ client }: { client: AdeUsageClientSurface }) {
  * the card to match a label to its number.
  */
 function ClientMix({ stats }: { stats: AdeUsageStats }) {
-  const clients = (stats.clients ?? [])
+  const clients = mergeClientSurfaces(stats.clients ?? [])
     .filter((client) => client.interactions > 0)
     .sort((a, b) => b.interactions - a.interactions);
   const total = clients.reduce((sum, client) => sum + client.interactions, 0);

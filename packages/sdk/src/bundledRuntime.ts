@@ -25,7 +25,6 @@ import { isDirectory, isFile } from "./fsProbe.js";
  *     native/               the extracted contents of <binary>.native.tar.gz
  *       node_modules/       the modules the binary dlopens
  *       vendor/crsqlite/... the cr-sqlite extension
- *       tuiClient/
  *     LICENSE
  *     README.md
  *

@@ -198,11 +198,10 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   port and its base-port holders, and says explicitly that a root-owned holder
   such as `tailscaled` is invisible to this probe rather than reporting the
   ports as free.
-- `apps/ade-cli/src/tuiClient/remoteLauncher.ts`,
-  `pairedRemoteConnector.ts`, `remoteLaunchBudget.ts`, and `remoteBridge.ts` —
-  `ade code remote` target resolution, legacy account-target migration,
-  paired/SSH launch ordering, bounded cancellation, project/session selection,
-  and the one-connection local socket handed to the normal ADE Code client.
+- `apps/ade-cli/src/services/account/pairedRemoteConnector.ts` and
+  `apps/ade-cli/src/lib/remoteLaunchBudget.ts` — paired route/auth/health policy,
+  legacy account-target migration, and bounded cancellation for
+  `ade machines connect`.
 - `apps/desktop/src/main/services/localRuntime/localRuntimeConnectionPool.ts` —
   the local runtime connection used by desktop IPC, event streaming, sync
   Settings, and local-work checks. Runtime initialization advertises an integer
@@ -1199,7 +1198,7 @@ page, and Run all follow it. Two things are deliberately wider than that:
 
 Hosted web still cannot drive Simulator (no capture stream) and shows App
 Control read-only. iOS switches host rather than pinning a foreign runtime. The
-TUI hops machines separately. Windows uses the same session-owned routing;
+CLI addresses machines separately. Windows uses the same session-owned routing;
 Simulator stays macOS-only.
 
 Machine selection also appears at lane creation: the create-lane dialog picks
@@ -1322,22 +1321,16 @@ run a local repair against data owned by the remote machine. See
    If the same window starts multiple remote opens concurrently, both preload
    and the main IPC bridge keep only the latest open as the durable binding.
 
-`ade code remote` consumes that same saved target registry and paired credential
+`ade machines connect` consumes that same saved target registry and paired credential
 store. Before opening a credentialless routed SSH record, it compares the saved
 name and all saved hosts with the signed-in account directory. An exact, unique
 legacy account-machine match is adopted into the paired store and the obsolete
 SSH-shaped record is removed. If the directory cannot be verified, the machine
 is offline, or adoption fails, that account-created target fails closed; ADE
 does not silently retry it as SSH. Targets with an explicit SSH user or private
-key remain true SSH targets and bypass this migration. Interactive launches
-always show the machine chooser, including when only one target is saved.
-Paired launches dial LAN → tailnet → relay by default; `--route
-lan|tailscale|relay` restricts the attempt to one path class and never falls
-back to SSH. ADE verifies the long-lived paired connection before it launches
-the TUI, reuses that connection for the first local bridge socket, and leaves
-the bridge available for an explicit retry if the remote path later closes.
-The CLI prints the selected path and reports subsequent path changes without
-showing temporary socket locations or pairing identifiers.
+key remain true SSH targets and bypass this migration. Paired connections dial LAN → tailnet → relay by default and
+never fall back to SSH. The CLI prints the selected path without showing temporary socket
+locations or pairing identifiers.
 
 For a true SSH target, each alternate route is passed as
 `-o HostName=<concrete-route>` while the saved hostname stays in the destination
@@ -1574,7 +1567,7 @@ Environment overrides:
 - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
 - `ADE_HOME=/path/to/.ade` — alternate per-machine state root.
 
-After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; `ade code` works on the headless machine itself.
+After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; the `ade` CLI works on the headless machine itself.
 
 There are two ways to make that machine reachable, and they are independent:
 
@@ -2055,6 +2048,5 @@ tailnet routes to a paired device never consulted account state at all.
 
 - [Internal architecture](./internal-architecture.md) — protocol shape, bootstrap sequence, sync command scoping.
 - [ADE CLI](../../../apps/ade-cli/README.md) — runtime modes, service manager, machine layout, and legacy compatibility command names.
-- [ADE Code](../ade-code/README.md) — terminal client that uses the same runtime.
 - [Sync and Multi-Device](../sync-and-multi-device/README.md) — phone pairing and multi-device sync (hosted by the same runtime).
 - [Cross-machine session handoff](../sync-and-multi-device/cross-machine-session-handoff.md) — route, repository, Git, capsule, and retry contract for continuing a Work chat on another connected machine.

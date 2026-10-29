@@ -5,16 +5,16 @@ import { isUserOnlyConsentCard } from "./types/macDesktop";
  * The answer semantics for a pending-input question, shared by every surface
  * that renders one.
  *
- * One data model (`PendingInputRequest`) used to have four renderers that
- * disagreed about what an answer *is*: desktop sent the selection and the typed
- * text as an array, the TUI let the typed text *replace* the selection, and iOS
- * dropped the typed text entirely once more than one question was in play. No
+ * One data model (`PendingInputRequest`) used to have renderers that disagreed
+ * about what an answer *is*: desktop sent the selection and the typed text as
+ * an array, and iOS dropped the typed text entirely once more than one
+ * question was in play. No
  * provider forces any of that — Claude's `question.reply` takes
  * `answers: string[][]`, ADE's own `askUser` tool returns free-form JSON, and
  * Droid takes a single string ADE joins itself. The divergence was ours.
  *
  * This module is the contract. The desktop renderer (and therefore the web
- * client, which shares the component) and the `ade code` TUI import it
+ * client, which shares the component) imports it
  * directly; iOS mirrors it in Swift the way `workChatPendingInputHeaderVerb`
  * already mirrors `pendingInputLabels`.
  *
@@ -55,7 +55,7 @@ export function isQuestionKind(kind: string | null | undefined): boolean {
  *
  * Looser than `isAskQuestionRequest`, which needs a full `PendingInputRequest`:
  * this reads whatever the envelope carries and lets `isQuestionKind` decide.
- * Canonical because two surfaces (the TUI transcript and push) must agree about
+ * Canonical because two surfaces (the transcript and push) must agree about
  * the same event.
  */
 export function approvalRequestKind(
@@ -563,21 +563,12 @@ export function foldedSummary(
 }
 
 /**
- * Does this question carry an answer? Canonical so desktop and the TUI cannot
+ * Does this question carry an answer? Canonical so desktop and iOS cannot
  * disagree about "2 of 3 answered" — they previously used two structurally
  * different predicates for the same sentence.
  */
 export function isQuestionAnswered(picks: readonly string[], note: string): boolean {
   return answerState(picks, note) !== "EMPTY";
-}
-
-/** Does a stored wire answer carry a pick or note? */
-export function isStoredQuestionAnswered(
-  question: { options?: readonly PendingInputOption[] | null },
-  value: string | readonly string[] | undefined,
-): boolean {
-  const { picks, note } = splitAnswer(question, value);
-  return isQuestionAnswered(picks, note);
 }
 
 /** How many of a request's questions carry a pick or a note. */

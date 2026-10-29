@@ -1,4 +1,4 @@
-import type { AdeUsageClientSurface } from "./usage";
+import { normalizeAdeUsageClientSurface, type AdeUsageClientSurface } from "./usage";
 
 export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_app_installed",
@@ -70,8 +70,6 @@ export type ProductAnalyticsCaptureParseResult =
   | { ok: true; value: ProductAnalyticsCapture }
   | { ok: false; reason: "invalid_event" | "invalid_surface" };
 
-const PRODUCT_ANALYTICS_SURFACES = ["desktop", "mobile", "tui", "web", "api"] as const;
-
 /** Normalize untrusted IPC/sync input before it reaches the typed service. */
 export function parseProductAnalyticsCapture(
   input: unknown,
@@ -84,8 +82,8 @@ export function parseProductAnalyticsCapture(
   if (!(PRODUCT_ANALYTICS_EVENTS as readonly unknown[]).includes(value.event)) {
     return { ok: false, reason: "invalid_event" };
   }
-  const surface = forcedSurface ?? value.surface;
-  if (!(PRODUCT_ANALYTICS_SURFACES as readonly unknown[]).includes(surface)) {
+  const surface = normalizeAdeUsageClientSurface(forcedSurface ?? value.surface);
+  if (!surface) {
     return { ok: false, reason: "invalid_surface" };
   }
   if (
@@ -109,7 +107,7 @@ export function parseProductAnalyticsCapture(
     ok: true,
     value: {
       event: value.event as ProductAnalyticsEventName,
-      surface: surface as ProductAnalyticsSurface,
+      surface,
       ...(value.properties === undefined
         ? {}
         : { properties: value.properties as Record<string, ProductAnalyticsPropertyValue> }),

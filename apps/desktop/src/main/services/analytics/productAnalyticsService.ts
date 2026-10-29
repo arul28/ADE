@@ -5,6 +5,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import { safeJsonParse, writeTextAtomic } from "../shared/utils";
 import { doNotTrackRequested } from "../../../shared/doNotTrack";
+import { normalizeAdeUsageClientSurface } from "../../../shared/types/usage";
 import {
   PRODUCT_ANALYTICS_EVENTS,
   type ProductAnalyticsCapture,
@@ -887,9 +888,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         return drop("invalid_event");
       }
       if (!allowInternal && INTERNAL_ONLY_EVENTS.has(input.event)) return drop("invalid_event");
-      if (!["desktop", "mobile", "tui", "web", "api"].includes(input.surface)) {
-        return drop("invalid_surface");
-      }
+      const surface = normalizeAdeUsageClientSurface(input.surface);
+      if (!surface) return drop("invalid_surface");
       if (input.event === "ade_app_installed" && state.installCapturedAtMs != null) {
         return { accepted: false, reason: "duplicate" };
       }
@@ -937,7 +937,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
 
       const properties: Record<string, unknown> = {
         ...sanitizeProductAnalyticsProperties(input.event, input.properties),
-        surface: input.surface,
+        surface,
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",
         platform: process.platform,

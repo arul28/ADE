@@ -6055,7 +6055,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   /**
    * Whether this peer asked for the slim mobile chat wire. Desktop, hosted web
-   * and the TUI never announce it, so their bytes are untouched.
+   * never announce it, so their bytes are untouched.
    */
   function peerWantsSlimChat(peer: PeerState): boolean {
     return peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;

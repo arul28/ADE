@@ -1,6 +1,6 @@
 /**
  * Who wrote a PR comment, review, or thread: a person, an agent reviewer, or
- * another bot. One rule for desktop, the TUI, and (ported) iOS.
+ * another bot. One rule for desktop and (ported) iOS.
  *
  * GitHub says an account is a bot two ways: REST `user.type === "Bot"` (login
  * ends in `[bot]`) and GraphQL `__typename === "Bot"` (login has NO suffix —

@@ -352,7 +352,7 @@ export function captureNewLaneLaunchAnalytics(args: {
 }
 
 /**
- * One external-session import (Import dialog, TUI, or phone) finished: which
+ * One external-session import (Import dialog or phone) finished: which
  * way it ran, whether it worked, and the coarse provider family. Captured by the
  * external sessions service's outcome hook, never per list or preview.
  */
