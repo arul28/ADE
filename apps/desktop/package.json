@@ -92,7 +92,7 @@
     "@anthropic-ai/claude-agent-sdk": "0.3.310",
     "@cursor/sdk": "1.0.40",
     "@factory/droid-sdk": "0.9.1",
-    "@github/copilot-sdk": "1.0.22",
+    "@github/copilot-sdk": "1.0.28",
     "@linear/sdk": "^84.0.0",
     "@lobehub/emojilib": "^1.0.0",
     "@modelcontextprotocol/sdk": "^1.29.0",
