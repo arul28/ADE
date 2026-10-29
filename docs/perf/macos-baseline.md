@@ -958,6 +958,8 @@ CPU is % of one core.
 | "Thinking" shimmer text: style recalcs / renderer | `loop-cost.mjs shimmer` | 240-250/s; 14.6-16.6% | 61/s; 7.0% | 100/s; 10% |
 | Agent working (dots, pulse dot, Working label, top-bar pulse): compositor ticks / renderer / GPU | `loop-cost.mjs working-set` | 240/s; 7.2-8.5%; 6.4-7.4% | 41-47/s; 6.2% (one run 12.4%, machine noise); 6.6% | 60/s; 10%; 9% |
 | Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
+| Chat working indicator (sparkle glyph, twinkle, label sheen; 30 steps/s), one running chat: frames / GPU / renderer. Replaces the thinking dots in the chat; measured 2026-10-28 on `bf09cd4b0` + this branch, 120 Hz, load ~3 | `loop-cost.mjs thinking` | 120/s; 22-24%; 15% | 31/s; 17-18%; 14% | 31/s; 23%; 18% |
+| Same, three running chats on screen (split view): the clock shares one frame for all three | `loop-cost.mjs thinking3` | 120/s; 36-40%; 13-17% | 31/s; 21%; 14-15% | 31/s; 26%; 19% |
 
 Any running infinite CSS animation makes Chromium service every display
 frame, whatever its `steps()` say: a compositor loop ticks the compositor and
@@ -2268,3 +2270,26 @@ lazy-loads the Jira pane's issue viewer (as the GitHub pane does): 876 → 797 s
 
 Left: the Work list's section headers still redraw (new inline handlers and children) when a session's
 data changes right after launch, ~200 renders in the first run on a fresh home.
+
+## Mac Studio (M4 Max): boot splash and the after-update "What's new" (2026-10-28)
+
+Dev build, 240 Hz display, the owner's ADE project, warm reloads of the dev
+renderer. The boot splash plays the liquid glass logo reveal; after an update
+the logo flies from the splash into the "What's new" header
+(`announcements/WhatsNewArrival.tsx`). Frame times are `requestAnimationFrame`
+deltas read in the page; the switch frame is the one in which the splash
+unmounts and the app (and the window) mount. Three to five runs each.
+
+| Metric | Before | Baseline | Ceiling |
+|---|---:|---:|---:|
+| Switch frame, normal boot (no update) | — | 8-9 ms | not set (new row; ceilings are the owner's call) |
+| Switch frame, after an update | 50-62 ms | 8 ms (one run of five: 25 ms) | not set (new row; ceilings are the owner's call) |
+| Window mount frame, after an update (one frame later, while the logo holds) | — | 20-29 ms | not set (new row; ceilings are the owner's call) |
+| Flight frames, splash to header (p50 / p95 / slowest) | — | 4.2 / 4.7-5.1 / 25-30 ms, none over 34 ms | not set (new row; ceilings are the owner's call) |
+
+Before is the first version of the arrival, which mounted the window in the
+switch frame. The window now mounts one frame after the logo and veil, while
+the logo still holds still. The Work page's own first frames after the boot
+(one 25-29 ms frame) are there with or without the window. One run of
+five had a single 217 ms frame within 1.5 s of the switch; the other four,
+and the three flight runs, had none over 34 ms.

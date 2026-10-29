@@ -10,7 +10,9 @@ import { deriveConfiguredModelIds } from "../../../lib/modelOptions";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
 import { cn } from "../../ui/cn";
-import { getPermissionOptions, safetyColors } from "../../shared/permissionOptions";
+import { getPermissionOptions } from "../../shared/permissionOptions";
+import { PermissionModePicker } from "../../shared/PermissionModePicker";
+import { toPermissionPickerOption } from "../../shared/permissionModePickerOptions";
 
 type PrResolverLaunchControlsBaseProps = {
   modelId: string;
@@ -177,28 +179,17 @@ export function PrResolverLaunchControls({
         onChange={(next) => onReasoningEffortChange(next ?? "")}
         disabled={disabled}
       />
-      <div className="flex items-center gap-px border border-border/10 bg-surface-recessed/40">
-        {permissionOptions.map((option) => {
-          const colors = safetyColors(option.safety);
-          const active = activePermissionMode === option.value;
-          return (
-            <button
-              key={option.value}
-              type="button"
-              className={cn(
-                "px-2 py-1 font-mono text-[9px] font-bold uppercase tracking-wider transition-colors",
-                active ? `${colors.activeBg} text-fg/80` : "text-muted-fg/35 hover:text-muted-fg/60",
-                permissionLocked || disabled ? "cursor-not-allowed opacity-50" : "",
-              )}
-              disabled={disabled || permissionLocked}
-              onClick={() => emitPermissionMode(option.value)}
-              title={permissionLocked ? "Permission is fixed for the current resolver session." : option.shortDesc}
-            >
-              {labelForPermissionOption(option.value, option.label, providerGroup)}
-            </button>
-          );
-        })}
-      </div>
+      <PermissionModePicker
+        ariaLabel="Resolver permission mode"
+        selectedValue={activePermissionMode}
+        options={permissionOptions.map((option) => ({
+          ...toPermissionPickerOption(option),
+          label: labelForPermissionOption(option.value, option.label, providerGroup),
+        }))}
+        disabled={disabled || permissionLocked}
+        onSelect={emitPermissionMode}
+        title={permissionLocked ? "Permission is fixed for the current resolver session." : undefined}
+      />
       {permissionLocked ? (
         <span className="font-mono text-[10px] text-fg/45">
           Launch-time permission locked for this resolver session.

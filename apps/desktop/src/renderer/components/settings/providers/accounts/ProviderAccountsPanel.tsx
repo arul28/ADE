@@ -26,6 +26,7 @@ import { ProviderPanel } from "../../providerSectionPrimitives";
 import { SettingsToggle } from "../../primitives/SettingsControls";
 import { confirmDialog } from "../../../ui/dialog";
 import { Banner } from "../../../ui/notice/Banner";
+import { AnchoredTooltip } from "../../../ui/AnchoredTooltip";
 import { useUsageSnapshot } from "../../../usage/useUsageSnapshot";
 import { usePrefersReducedMotion } from "../../../../hooks/usePrefersReducedMotion";
 import {
@@ -51,20 +52,13 @@ const HINT_TOOLTIP_WIDTH = 280;
 /** A (?) that explains a switch without spending a line of the panel on it. */
 function HintDot({ label, text }: { label: string; text: string }) {
   const [open, setOpen] = useState(false);
-  const [alignRight, setAlignRight] = useState(false);
   const anchorRef = useRef<HTMLSpanElement | null>(null);
-
-  // A tooltip hung from the dot's left edge can run past the window and cut
-  // off the sentence it exists to show. Measure at open time and hang it from
-  // whichever edge keeps it on screen.
-  const show = useCallback(() => {
-    const rect = anchorRef.current?.getBoundingClientRect();
-    setAlignRight(rect ? rect.left + HINT_TOOLTIP_WIDTH > window.innerWidth - 8 : false);
-    setOpen(true);
-  }, []);
+  // Portalled and placed against the window, so neither the panel's overflow nor
+  // the window edge can cut off the sentence it exists to show.
+  const show = useCallback(() => setOpen(true), []);
 
   return (
-    <span ref={anchorRef} style={{ position: "relative", display: "inline-flex" }}>
+    <span ref={anchorRef} style={{ display: "inline-flex" }}>
       <button
         type="button"
         aria-label={`About ${label}`}
@@ -90,13 +84,14 @@ function HintDot({ label, text }: { label: string; text: string }) {
         <Question size={12} />
       </button>
       {open ? (
-        <span
-          role="tooltip"
+        <AnchoredTooltip
+          open
+          triggerRef={anchorRef}
+          side="bottom"
+          remeasureKey={text}
+          onDismiss={() => setOpen(false)}
           style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            ...(alignRight ? { right: 0 } : { left: 0 }),
-            zIndex: 20,
+            pointerEvents: "none",
             width: HINT_TOOLTIP_WIDTH,
             padding: "9px 11px",
             fontSize: 11,
@@ -110,7 +105,7 @@ function HintDot({ label, text }: { label: string; text: string }) {
           }}
         >
           {text}
-        </span>
+        </AnchoredTooltip>
       ) : null}
     </span>
   );

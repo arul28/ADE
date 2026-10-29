@@ -3,6 +3,7 @@ import { AppearanceRoot } from "../app/AppearanceRoot";
 import { GlassSignInCard } from "./GlassSignInCard";
 import { GateBackdrop } from "./GateBackdrop";
 import "./launchGateGlass.css";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /** The hosted client's sign-in card over the mesh backdrop. `LaunchGate` renders it inside the app shell. */
 export function WebSignInGate() {
@@ -15,7 +16,7 @@ export function WebSignInGate() {
         {loading ? (
           <div role="status" className="ade-gate-loading">
             <span className="ade-glass-mark">
-              <img src="./logo.png" alt="ADE" draggable={false} />
+              <AdeWordmark draggable={false} />
             </span>
             Checking your ADE account…
           </div>

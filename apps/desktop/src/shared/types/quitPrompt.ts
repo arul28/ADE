@@ -20,6 +20,12 @@ export type QuitPromptRequest = {
   /** Chats with a live turn right now; null when ADE could not check in time. */
   runningAgents: number | null;
   appOwnedService: QuitPromptAppOwnedService | null;
+  /**
+   * A downloaded update with automatic install on. `installs`: this quit
+   * installs it; false: it waits so running work is not stopped. Absent when
+   * no update is waiting, or for a restart.
+   */
+  updateOnQuit?: { version: string; installs: boolean } | null;
 };
 
 /**

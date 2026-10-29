@@ -227,11 +227,11 @@ export function probeMachineBrainSocket(args: {
 export async function resolveMachineBrainSocketPath(
   override?: string | null,
 ): Promise<string> {
-  const { resolveMachineAdeLayout } = await import("../projects/machineLayout");
+  const { resolveReachableMachineRuntimeSocketPath } = await import("../projects/machineLayout");
   const raw =
     override?.trim() ||
     process.env.ADE_RUNTIME_SOCKET_PATH?.trim() ||
-    resolveMachineAdeLayout().socketPath;
+    resolveReachableMachineRuntimeSocketPath();
   return raw.startsWith("tcp://") || raw.startsWith("\\\\")
     ? raw
     : path.resolve(raw);

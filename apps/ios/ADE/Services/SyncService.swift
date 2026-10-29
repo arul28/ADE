@@ -2907,6 +2907,7 @@ func syncDiscoveredHostsEqualForPresentation(
     && left.tailscaleAddress == right.tailscaleAddress
     && left.runtimeKind == right.runtimeKind
     && left.runtimeVersion == right.runtimeVersion
+    && left.appVersion == right.appVersion
     && left.projectIds == right.projectIds
     && left.projectNames == right.projectNames
     && left.projectCount == right.projectCount
@@ -20112,6 +20113,8 @@ final class SyncService: ObservableObject {
           runtimeName: syncNonEmpty(preferred.runtimeName) ?? syncNonEmpty(fallback.runtimeName),
           runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
           runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
+          // From the same host as the runtime version, so the pair agrees.
+          appVersion: preferred.runtimeVersion != nil ? preferred.appVersion : fallback.appVersion,
           projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
           projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
           projectCount: preferred.projectCount ?? fallback.projectCount,
@@ -20222,6 +20225,7 @@ final class SyncService: ObservableObject {
       runtimeName: syncNonEmpty(preferred.runtimeName) ?? syncNonEmpty(fallback.runtimeName),
       runtimeKind: preferred.runtimeKind ?? fallback.runtimeKind,
       runtimeVersion: preferred.runtimeVersion ?? fallback.runtimeVersion,
+      appVersion: preferred.runtimeVersion != nil ? preferred.appVersion : fallback.appVersion,
       projectIds: deduplicatedStrings(preferred.projectIds + fallback.projectIds),
       projectNames: deduplicatedStrings(preferred.projectNames + fallback.projectNames),
       projectCount: preferred.projectCount ?? fallback.projectCount,
@@ -25350,6 +25354,7 @@ func syncDiscoveredHostFromBonjour(
   let runtimeName = txtRecord["runtimeName"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let runtimeKind = txtRecord["runtimeKind"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let runtimeVersion = txtRecord["runtimeVersion"]?.trimmingCharacters(in: .whitespacesAndNewlines)
+  let appVersion = txtRecord["appVersion"]?.trimmingCharacters(in: .whitespacesAndNewlines)
   let projectIds = txtRecord["projects"]?
     .split(separator: ",")
     .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -25404,6 +25409,7 @@ func syncDiscoveredHostFromBonjour(
     runtimeName: runtimeName?.isEmpty == false ? runtimeName : nil,
     runtimeKind: runtimeKind?.isEmpty == false ? runtimeKind : nil,
     runtimeVersion: runtimeVersion?.isEmpty == false ? runtimeVersion : nil,
+    appVersion: appVersion?.isEmpty == false ? appVersion : nil,
     projectIds: projectIds,
     projectNames: projectNames,
     projectCount: projectCount,

@@ -279,7 +279,7 @@ struct WorkComputerUseActionGlyph: View {
     if action.prNumber != nil || action.verb.hasPrefix("proof") { return "checkmark.seal" }
     switch action.verb {
     case "click", "double-click", "right-click", "hover": return "cursorarrow.click"
-    case "tap": return "hand.tap"
+    case "tap", "long-press": return "hand.tap"
     case "type", "fill", "clear": return "textformat"
     case "press", "key": return "keyboard"
     case "scroll", "swipe": return "arrow.up.and.down"

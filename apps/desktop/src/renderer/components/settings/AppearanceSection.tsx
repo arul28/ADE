@@ -52,6 +52,7 @@ import {
 import { addUserScene, removeUserScene, userSceneUrl } from "../../scene/userScenes";
 import { backdropThemeFromScene } from "../../scene/scenePalette";
 import "./AppearanceSection.css";
+import { AdeWordmark } from "../ui/AdeWordmark";
 
 /**
  * Appearance settings.
@@ -838,7 +839,7 @@ function AppearancePreview() {
           <span className="ade-ap-preview-tab" data-dim="true">New tab</span>
         </div>
         <div className="ade-ap-preview-hero">
-          {scene.kind === "image" && scene.showImage ? null : <img src="./logo.png" alt="" className="ade-ap-preview-logo" draggable={false} />}
+          {scene.kind === "image" && scene.showImage ? null : <AdeWordmark alt="" className="ade-ap-preview-logo" draggable={false} />}
           <div className="ade-ap-preview-composer">
             <span className="ade-ap-preview-placeholder">Describe a task…</span>
             <div className="ade-ap-preview-composer-row">

@@ -11,6 +11,7 @@ import {
 } from "@phosphor-icons/react";
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { MachineAvatar, VersionChip, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
+import { formatMachineVersions } from "../../../shared/machineVersions";
 import { relativeLastSeenPhrase } from "../remoteTargets/remoteMachineModel";
 import { Dialog } from "../ui/dialog";
 import { checkboxConfirmDialog } from "../ui/dialog/confirm";
@@ -236,9 +237,10 @@ export function ThisMacCard({
   const { status, projectStatus, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
   // The version the brain runs (what actually answers other machines), else
-  // the app package's. The chip shows the number alone; a prerelease already
-  // names its channel ("1.2.28-beta.1").
-  const runningVersion = appInfo?.brainVersion?.trim() || appInfo?.packageVersion?.trim() || null;
+  // the app package's; both when they differ ("1.2.123 · brain 1.2.125").
+  // The chip shows the numbers alone; a prerelease already names its channel
+  // ("1.2.28-beta.1").
+  const runningVersion = formatMachineVersions({ brainVersion: appInfo?.brainVersion, appVersion: appInfo?.packageVersion });
   // Restarting the brain is the fix when it cannot read the stored account
   // session; re-read the snapshot once it settles so the banner clears.
   // Forced: a repair is a user action, so it must not wait out the degraded

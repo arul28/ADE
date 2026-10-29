@@ -22,6 +22,11 @@ import {
 import { releaseNotesDigest, type ReleaseNotesDigest } from "./releaseNotesDigest";
 import { ReleaseNotesPage } from "./ReleaseNotesPage";
 import "./announcements.css";
+import { AdeWordmark, useAdeWordmarkSrc } from "../ui/AdeWordmark";
+import type { ScreenBox } from "../ui/LiquidGlassLogoReveal";
+import { afterBootSplash, bootSplashLogoBox } from "../app/BootSplashReveal";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import { useArrivalDialogReady, WhatsNewLogoFlight } from "./WhatsNewArrival";
 
 /**
  * The "What's new" modal. It opens three ways:
@@ -30,7 +35,10 @@ import "./announcements.css";
  *   another machine): on the first launch of the new version, on whatever
  *   screen ADE opens to. Up to three unseen catalogue pages, then "And more",
  *   the release notes since the version it came from. AutoUpdateControl asks
- *   for it (`openWhatsNewAfterUpdate`) in place of its old notice.
+ *   for it (`openWhatsNewAfterUpdate`) in place of its old notice. It waits
+ *   for the boot splash to go, then arrives: the logo flies from the splash
+ *   into the header while the window opens around it (`WhatsNewArrival`).
+ *   The other two ways open with the plain dialog fade.
  * - **Inside a project**, by itself: up to three unseen catalogue pages, at
  *   most once a day (an after-update showing counts), and only when nothing
  *   else wants the user's attention — onboarding finished or was skipped
@@ -70,7 +78,16 @@ type NotesPage = {
   githubReleaseUrl: string | null;
 };
 
-type Showing = { pages: readonly AnnouncementPageDef[]; notes: NotesPage | null; onClose?: () => void };
+/** After an update: the version it brought, and the splash's last logo box to fly from. */
+type Arrival = { version: string; from: ScreenBox | null };
+
+type Showing = {
+  pages: readonly AnnouncementPageDef[];
+  notes: NotesPage | null;
+  onClose?: () => void;
+  /** After an update: the logo flies in, from the splash's last logo box when there is one. */
+  arrival?: Arrival;
+};
 
 /** Opens every "What's new" page (Help menu, command palette). */
 export function openWhatsNew(): void {
@@ -99,12 +116,14 @@ export function AnnouncementsHost() {
         notes: digest ? { digest, resumedChats: [], changelogUrl: null, githubReleaseUrl: null } : null,
       });
     };
+    let cancelArrival = () => {};
     const openAfterUpdate = (event: Event) => {
       const detail = (event as CustomEvent<AfterUpdateDetail>).detail;
       if (!detail) return;
       markShowing();
       setShownThisLaunch(true);
-      setShowing({
+      cancelArrival();
+      cancelArrival = afterBootSplash(() => setShowing({
         pages: dueAnnouncements(),
         notes: {
           digest: releaseNotesDigest(detail.version, detail.fromVersion),
@@ -113,13 +132,15 @@ export function AnnouncementsHost() {
           githubReleaseUrl: detail.githubReleaseUrl,
         },
         onClose: detail.onClose,
-      });
+        arrival: { version: detail.version, from: bootSplashLogoBox() },
+      }));
     };
     window.addEventListener(OPEN_EVENT, openAll);
     window.addEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
     return () => {
       window.removeEventListener(OPEN_EVENT, openAll);
       window.removeEventListener(AFTER_UPDATE_EVENT, openAfterUpdate);
+      cancelArrival();
     };
   }, []);
 
@@ -149,7 +170,7 @@ export function AnnouncementsHost() {
     setShowing(null);
   }, []);
   if (!showing || (showing.pages.length === 0 && !showing.notes)) return null;
-  return <AnnouncementsModal pages={showing.pages} notes={showing.notes} onClose={close} />;
+  return <AnnouncementsModal pages={showing.pages} notes={showing.notes} arrival={showing.arrival ?? null} onClose={close} />;
 }
 
 /**
@@ -182,17 +203,33 @@ type ModalItem = { key: string; title: string; page: AnnouncementPageDef | null 
 function AnnouncementsModal({
   pages,
   notes,
+  arrival,
   onClose,
 }: {
   pages: readonly AnnouncementPageDef[];
   notes: NotesPage | null;
+  arrival: Arrival | null;
   onClose: () => void;
 }) {
+  const appReduceMotion = useAppearanceStore((state) => state.interfacePreferences.reduceMotion);
+  const systemReduceMotion = usePrefersReducedMotion();
+  // Decided once: turning reduce motion on mid-flight does not bring a flight back.
+  const [arrives] = useState(() => arrival != null && !appReduceMotion && !systemReduceMotion);
+  const [flying, setFlying] = useState(arrives);
+  const dialogReady = useArrivalDialogReady(arrives);
+  const brandMarkRef = useRef<HTMLSpanElement>(null);
+  const version = arrival?.version ?? null;
+  const wordmarkSrc = useAdeWordmarkSrc();
   const items = useMemo<ModalItem[]>(() => [
     ...pages.map((page) => ({ key: page.id, title: page.title, page })),
     ...(notes ? [{ key: "and-more", title: pages.length > 0 ? "And more" : "What changed", page: null }] : []),
   ], [notes, pages]);
   const [index, setIndex] = useState(0);
+  // The arrival's staggered entrance is for the first page only; a page turned to enters at once.
+  const [turned, setTurned] = useState(false);
+  useEffect(() => {
+    if (index > 0) setTurned(true);
+  }, [index]);
   const item = items[Math.min(index, items.length - 1)]!;
   const last = index >= items.length - 1;
 
@@ -203,85 +240,107 @@ function AnnouncementsModal({
 
   const glowColors = useGlowColors();
   const Page = item.page?.Page ?? null;
+  const flight = flying ? (
+    <WhatsNewLogoFlight
+      from={arrival?.from ?? null}
+      target={brandMarkRef}
+      targetReady={dialogReady}
+      onLanded={() => setFlying(false)}
+    />
+  ) : null;
+  if (!dialogReady) return flight;
   return (
-    <Dialog
-      open
-      onOpenChange={(open) => {
-        if (!open) onClose();
-      }}
-      title={`What's new: ${item.title}`}
-      hideHeader
-      hideClose
-      width={1080}
-      maxHeight="min(92vh, 900px)"
-      bodyPadding={false}
-      panelClassName="ade-whats-new"
-      panelStyle={glowColors}
-      testId="whats-new"
-      footer={(
-        <div className="ade-whats-new-foot">
-          {items.length > 1 ? (
-            <div className="ade-whats-new-dots" aria-label={`Page ${index + 1} of ${items.length}`}>
-              {items.map((entry, entryIndex) => (
-                <button
-                  key={entry.key}
-                  type="button"
-                  className="ade-whats-new-dot"
-                  data-active={entryIndex === index ? "true" : undefined}
-                  aria-label={entry.title}
-                  aria-current={entryIndex === index ? "step" : undefined}
-                  onClick={() => setIndex(entryIndex)}
-                />
-              ))}
-            </div>
-          ) : (
-            <span />
-          )}
-          <div className="ade-whats-new-buttons">
-            {index > 0 ? (
-              <button type="button" className="kit-btn kit-btn-ghost" onClick={() => setIndex(index - 1)}>
-                <ArrowLeft size={12} weight="bold" aria-hidden />
-                Back
+    <>
+      {flight}
+      <Dialog
+        open
+        onOpenChange={(open) => {
+          if (!open) onClose();
+        }}
+        title={`What's new: ${item.title}`}
+        hideHeader
+        hideClose
+        width={1080}
+        maxHeight="min(92vh, 900px)"
+        bodyPadding={false}
+        panelClassName={arrives ? `ade-whats-new ade-whats-new--arrive${turned ? "" : " ade-whats-new--intro"}` : "ade-whats-new"}
+        panelStyle={glowColors}
+        testId="whats-new"
+        footer={(
+          <div className="ade-whats-new-foot">
+            {items.length > 1 ? (
+              <div className="ade-whats-new-dots" aria-label={`Page ${index + 1} of ${items.length}`}>
+                {items.map((entry, entryIndex) => (
+                  <button
+                    key={entry.key}
+                    type="button"
+                    className="ade-whats-new-dot"
+                    data-active={entryIndex === index ? "true" : undefined}
+                    aria-label={entry.title}
+                    aria-current={entryIndex === index ? "step" : undefined}
+                    onClick={() => setIndex(entryIndex)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <span />
+            )}
+            <div className="ade-whats-new-buttons">
+              {index > 0 ? (
+                <button type="button" className="kit-btn kit-btn-ghost" onClick={() => setIndex(index - 1)}>
+                  <ArrowLeft size={12} weight="bold" aria-hidden />
+                  Back
+                </button>
+              ) : null}
+              <button
+                type="button"
+                className="kit-btn kit-btn-primary"
+                autoFocus
+                onClick={() => (last ? onClose() : setIndex(index + 1))}
+              >
+                {last ? "Done" : "Next"}
+                {last ? null : <ArrowRight size={12} weight="bold" aria-hidden />}
               </button>
-            ) : null}
-            <button
-              type="button"
-              className="kit-btn kit-btn-primary"
-              autoFocus
-              onClick={() => (last ? onClose() : setIndex(index + 1))}
-            >
-              {last ? "Done" : "Next"}
-              {last ? null : <ArrowRight size={12} weight="bold" aria-hidden />}
-            </button>
+            </div>
           </div>
+        )}
+      >
+        {/* Colour from the window's background, drifting; each page moves it somewhere new. */}
+        <div className="ade-whats-new-glow" data-page={index % 3} aria-hidden>
+          <span />
+          <span />
+          <span />
         </div>
-      )}
-    >
-      {/* Colour from the window's background, drifting; each page moves it somewhere new. */}
-      <div className="ade-whats-new-glow" data-page={index % 3} aria-hidden>
-        <span />
-        <span />
-        <span />
-      </div>
-      <p className="ade-whats-new-brand">
-        <img src="./logo.png" alt="" draggable={false} />
-        What's new in ADE
-      </p>
-      <button type="button" className="kit-icon-btn ade-whats-new-close" aria-label="Close" onClick={onClose}>
-        <X size={13} weight="bold" />
-      </button>
-      {Page ? (
-        <Suspense fallback={<div className="ade-whats-new-loading" />}>
-          <Page key={item.key} close={onClose} />
-        </Suspense>
-      ) : notes ? (
-        <ReleaseNotesPage
-          notes={notes.digest}
-          resumedChats={notes.resumedChats}
-          changelogUrl={notes.changelogUrl}
-          githubReleaseUrl={notes.githubReleaseUrl}
-        />
-      ) : null}
-    </Dialog>
+        <p className="ade-whats-new-brand">
+          <span
+            ref={brandMarkRef}
+            className="ade-whats-new-mark"
+            data-arrival={arrives ? (flying ? "waiting" : "landed") : undefined}
+            style={{ "--wn-mark-mask": `url("${wordmarkSrc}")` } as CSSProperties}
+          >
+            <AdeWordmark alt="" draggable={false} />
+          </span>
+          <span className="ade-whats-new-title">
+            What's new in ADE
+            {version ? <span className="ade-whats-new-version">{version}</span> : null}
+          </span>
+        </p>
+        <button type="button" className="kit-icon-btn ade-whats-new-close" aria-label="Close" onClick={onClose}>
+          <X size={13} weight="bold" />
+        </button>
+        {Page ? (
+          <Suspense fallback={<div className="ade-whats-new-loading" />}>
+            <Page key={item.key} close={onClose} />
+          </Suspense>
+        ) : notes ? (
+          <ReleaseNotesPage
+            notes={notes.digest}
+            resumedChats={notes.resumedChats}
+            changelogUrl={notes.changelogUrl}
+            githubReleaseUrl={notes.githubReleaseUrl}
+          />
+        ) : null}
+      </Dialog>
+    </>
   );
 }

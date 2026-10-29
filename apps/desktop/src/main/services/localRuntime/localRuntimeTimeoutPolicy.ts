@@ -345,6 +345,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // service timed out" while the daemon kept building, so the session surfaced
   // minutes later with no error to explain it.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
+  // Builds into the lane's DerivedData like a launch, then installs.
+  ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_TIMEOUT_MS],
   // See IOS_SIMULATOR_PREVIEW_TIMEOUT_MS.
   ["ios_simulator.renderPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
   ["ios_simulator.renderCurrentPreview", IOS_SIMULATOR_PREVIEW_TIMEOUT_MS],
@@ -361,6 +363,8 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   ["ios_simulator.runtimeDelete", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],
   ["ios_simulator.duoAppStoreScreenshots", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.addDuoSkill", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
+  // A window layout is several gestures, each read back (a size takes up to four drags).
+  ["ios_simulator.windowLayout", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   ["ios_simulator.attachRenderProof", IOS_SIMULATOR_DEVICE_LIFECYCLE_TIMEOUT_MS],
   // A render folds the Duo per pose and records a turntable.
   ["ios_simulator.requestRender", IOS_SIMULATOR_DEVICE_CLEANUP_TIMEOUT_MS],

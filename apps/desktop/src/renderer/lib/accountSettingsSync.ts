@@ -193,6 +193,15 @@ export const ACCOUNT_SYNCED_SETTINGS: readonly AccountSyncedSetting[] = [
     { perDevice: true },
   ),
   pref(
+    "apple.autoRecordAgentInput",
+    (state) => state.appleDevice.autoRecordAgentInput,
+    (state, value) => {
+      if (typeof value === "boolean") state.setAppleDevicePreferences({ autoRecordAgentInput: value });
+    },
+    "account",
+    { perDevice: true },
+  ),
+  pref(
     "apple.remoteBitrateKbpsCap",
     (state) => state.appleDevice.remoteBitrateKbpsCap,
     (state, value) => {

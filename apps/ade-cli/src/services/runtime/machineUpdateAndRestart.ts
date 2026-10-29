@@ -118,6 +118,14 @@ export type MachineUpdateControlsArgs = {
   requestRestart: () => Promise<{ status: number | null; stdout: string; stderr: string }>;
   /** See `MachineUpdateAndRestartDeps.requestDesktopAppUpdate`. */
   requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
+  /**
+   * The installed ADE app on this machine, as the brain reports it
+   * (`readInstalledDesktopApp`), or null. The brain update moves the app too,
+   * so the machine is behind when either one is: a brain that already runs the
+   * target beside an older, closed app would otherwise answer "already on the
+   * newest version" and leave the app behind for good.
+   */
+  installedApp?: () => Promise<{ name: string; version: string | null; updatable: boolean } | null>;
 };
 
 // One comparator for the whole app. Slightly wider than the old local
@@ -143,16 +151,31 @@ export function createMachineUpdateControls(
     currentVersion: args.version,
     checkForUpdate: async (targetVersion) => {
       const normalizedTarget = targetVersion?.trim() || null;
+      const app = await args.installedApp?.().catch(() => null) ?? null;
+      // An app whose version cannot be read does not hold the machine back.
+      const appBehind = (target: string) => Boolean(app?.version && !machineVersionCovers(app.version, target));
+      // The brain runs `target` and only the app is behind. A Beta or Alpha app
+      // has no update feed, so the update would change nothing and the button
+      // would come back forever: say so instead.
+      const current = (target: string): MachineUpdateCheck | null => {
+        if (!machineVersionCovers(args.version, target)) return null;
+        if (!appBehind(target)) {
+          return { available: false, currentVersion: args.version, targetVersion: target, detail: "Already on the newest version." };
+        }
+        if (app && !app.updatable) {
+          return {
+            available: false,
+            currentVersion: args.version,
+            targetVersion: target,
+            detail: `The brain is on ${args.version}. ${app.name} ${app.version} has no update feed, so updating can't move it; rebuild it to match.`,
+          };
+        }
+        return null;
+      };
       // The one thing the host can decide on its own: it will not "update" to
       // the version it is already running, nor back to an older one.
-      if (normalizedTarget && machineVersionCovers(args.version, normalizedTarget)) {
-        return {
-          available: false,
-          currentVersion: args.version,
-          targetVersion: normalizedTarget,
-          detail: "Already on the newest version.",
-        };
-      }
+      const alreadyCurrent = normalizedTarget ? current(normalizedTarget) : null;
+      if (alreadyCurrent) return alreadyCurrent;
       const { runBrainUpdateCommand } = await import("../../commands/brainUpdate");
       // `check` is the dry run: it resolves the release assets without touching
       // the installation, so a target that does not exist fails here rather
@@ -180,14 +203,8 @@ export function createMachineUpdateControls(
         : "";
       const resolved = resolvedRaw && resolvedRaw.toLowerCase() !== "latest" ? resolvedRaw : null;
       const effectiveTarget = normalizedTarget ?? resolved;
-      if (effectiveTarget && sameVersion(effectiveTarget, args.version)) {
-        return {
-          available: false,
-          currentVersion: args.version,
-          targetVersion: effectiveTarget,
-          detail: "Already on the newest version.",
-        };
-      }
+      const resolvedCurrent = effectiveTarget && sameVersion(effectiveTarget, args.version) ? current(effectiveTarget) : null;
+      if (resolvedCurrent) return resolvedCurrent;
       return {
         available: true,
         currentVersion: args.version,
@@ -303,7 +320,7 @@ async function runStandaloneUpdateAndRestart(
   if (!check.available) {
     // Still worth doing. A machine that is merely stuck -- reachable but not
     // answering properly -- is the other reason this button exists.
-    steps.push(step("apply", "skipped", "Already on the newest version."));
+    steps.push(step("apply", "skipped", check.detail));
   } else {
     let applied: MachineUpdateOutcome;
     try {

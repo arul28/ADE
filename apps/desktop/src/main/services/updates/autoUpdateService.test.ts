@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { CancellationToken } from "builder-util-runtime";
 import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
-import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport } from "./windowsInstallProgress";
+import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport, takeWindowsLaunchRequest } from "./windowsInstallProgress";
 import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
   buildGithubReleaseUrl,
@@ -327,6 +327,72 @@ describe("createAutoUpdateService", () => {
     expect(service.getSnapshot().autoApplyPending).toBeNull();
     expect(updater.quitAndInstall).not.toHaveBeenCalled();
     service.dispose();
+  });
+
+  // A quit never installs (autoInstallOnAppQuit is off), so the shutdown is the
+  // only place that can say a downloaded update was left behind. Without the
+  // record, "downloaded, then nothing" reads the same as a crash. Shutdown
+  // disposes twice; the install's own quit is not a left-behind update.
+  it.each([
+    { name: "a plain quit with the update downloaded", installFirst: false, expected: 1 },
+    { name: "the install's own quit", installFirst: true, expected: 0 },
+  ])("records an uninstalled downloaded update on $name", async ({ installFirst, expected }) => {
+    const { service, logger } = stageReadyUpdate();
+    if (installFirst) {
+      await expect(service.quitAndInstall()).resolves.toBe(true);
+      expect(service.getSnapshot().status).toBe("installing");
+    }
+
+    service.dispose();
+    service.dispose();
+
+    const records = (logger.warn as Mock).mock.calls.filter(
+      ([event]) => event === "autoUpdate.quit_with_update_ready",
+    );
+    expect(records).toHaveLength(expected);
+    if (expected > 0) {
+      expect(records[0][1]).toMatchObject({ version: "1.2.61", currentVersion: "1.2.60", automaticInstall: false });
+      expect(logger.flushSync).toHaveBeenCalled();
+    }
+  });
+
+  // The quit-install contract across the relaunch: the quit records it, and
+  // only the launch that lands that install runs hidden and closes again. A
+  // launch the install never reached, a later launch of the same version, and
+  // an ordinary Restart and install all open normally.
+  it.each([
+    { label: "the launch that lands it", relaunchVersion: "1.2.61", closeAfterInstall: true, landed: true },
+    { label: "not a launch the install never reached", relaunchVersion: "1.2.60", closeAfterInstall: true, landed: false },
+    { label: "not after a Restart and install", relaunchVersion: "1.2.61", closeAfterInstall: false, landed: false },
+  ])("a quit-install closes after $label", async ({ relaunchVersion, closeAfterInstall, landed }) => {
+    const globalStatePath = makeStatePath();
+    const onInstallHandoff = vi.fn(() => null);
+    const { service, updater } = stageReadyUpdate({ globalStatePath, autoApplyEnabled: true, onInstallHandoff });
+    // Automatic install is off by default, and then a quit never installs.
+    expect(service.installOnQuitVersion()).toBeNull();
+    service.setPreferences({ automaticInstall: true, onlyWhenIdle: true });
+    expect(service.installOnQuitVersion()).toBe("1.2.61");
+
+    await expect(service.quitAndInstall(false, { closeAfterInstall })).resolves.toBe(true);
+    expect(updater.quitAndInstall).toHaveBeenCalledWith(true, true);
+    // The install surface runs for both: on Windows it is the guard against a
+    // copy of ADE opened by hand mid-install.
+    expect(onInstallHandoff).toHaveBeenCalledWith(expect.objectContaining({ closeAfterInstall }));
+    service.dispose();
+
+    const relaunch = () => createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: relaunchVersion,
+      globalStatePath,
+      updater: new FakeAutoUpdater(),
+      autoCheckEnabled: false,
+    });
+    const landing = relaunch();
+    expect(landing.landedQuitInstall() != null).toBe(landed);
+    landing.dispose();
+    const later = relaunch();
+    expect(later.landedQuitInstall()).toBeNull();
+    later.dispose();
   });
 
   it("uses electron-builder app-update.yml as the packaged feed authority", () => {
@@ -3530,8 +3596,12 @@ describe("Windows update window files", () => {
     const heartbeat = writeHeartbeat(null, { ...beat, updatedAt: ago(ageMs) });
 
     expect(deferToRunningWindowsInstall({ channel: null, appVersion: "1.2.94" })).toBe(defers);
-    // Deferring is only half of it: the window has to be asked to come forward.
+    // Deferring is only half of it: the window has to be asked to come forward,
+    // and the launch the installer makes has to open a window for the person,
+    // once.
     expect(fs.existsSync(`${heartbeat}.focus`)).toBe(defers);
+    expect(takeWindowsLaunchRequest({ channel: null, appVersion: "1.2.95" })).toBe(defers);
+    expect(takeWindowsLaunchRequest({ channel: null, appVersion: "1.2.95" })).toBe(false);
   });
 
   it("hand-launch guard starts normally with no update window, or another channel's", () => {

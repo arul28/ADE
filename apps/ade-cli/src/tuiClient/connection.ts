@@ -5,7 +5,7 @@ import net from "node:net";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { resolveAdeLayout } from "../../../desktop/src/shared/adeLayout";
-import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { resolveReachableMachineRuntimeSocketPath } from "../services/projects/machineLayout";
 import {
   clearRuntimeSpawnRecord,
   hasRecentRuntimeSpawn,
@@ -873,7 +873,8 @@ export async function connectToAde(args: {
   const layout = resolveAdeLayout(args.project.projectRoot);
   const explicitSocketPath =
     args.socketPath?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null;
-  const machineSocketPath = resolveMachineAdeLayout().socketPath;
+  // On Windows: an older name when only an older brain listens on one.
+  const machineSocketPath = resolveReachableMachineRuntimeSocketPath();
   const socketPath = explicitSocketPath ?? machineSocketPath;
   const preferServiceRepair =
     args.preferServiceRepair === true

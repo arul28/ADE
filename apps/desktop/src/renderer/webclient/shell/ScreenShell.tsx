@@ -1,5 +1,6 @@
 import React from "react";
 import { COLORS, SANS_FONT, cardStyle } from "./shellTokens";
+import { AdeWordmark } from "../../components/ui/AdeWordmark";
 
 /**
  * Full-viewport surface for the pre-app screens (sign-in, machine +
@@ -32,8 +33,7 @@ export function ScreenShell({
       }}
     >
       {/* Page logo, pinned top-left. */}
-      <img
-        src="/logo.png"
+      <AdeWordmark
         alt="ADE"
         draggable={false}
         style={{ position: "fixed", top: 24, left: 28, height: 38, width: "auto", objectFit: "contain", pointerEvents: "none" }}

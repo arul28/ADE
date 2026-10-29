@@ -230,6 +230,8 @@ export function parseAdeCmdShim(text: string): AdeCmdShimLaunch | null {
       nodePath = unbatch(set[2]!.slice(0, -SHIM_NODE_PATH_SUFFIX.length));
     } else if (line === "set ELECTRON_RUN_AS_NODE=1") {
       runtimeFlag = true;
+    } else if (set && set[1] === "ADE_CLI_VIA_CMD") {
+      // The cmd.exe marker; delegation starts the entry directly, so it is not carried.
     } else if (
       line !== ":ade_run"
       && line !== "if defined ADE_HOME goto ade_run"

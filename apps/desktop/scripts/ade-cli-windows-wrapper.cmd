@@ -1,5 +1,8 @@
 @echo off
 setlocal
+rem cmd.exe ends a command at its first line feed, so a multi-line --prompt
+rem or --text is cut here. The CLI reads this marker to warn about it.
+set "ADE_CLI_VIA_CMD=1"
 
 set "SCRIPT_DIR=%~dp0"
 set "CLI_JS=%ADE_CLI_JS%"

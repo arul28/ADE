@@ -378,34 +378,6 @@ export function applyCodexPresetToControls(
   return { ...current, ...policies[preset] };
 }
 
-export type ClaudePermissionOption = {
-  value: AgentChatClaudePermissionMode;
-  label: string;
-  detail: string;
-};
-
-export const CLAUDE_PERMISSION_OPTIONS: ClaudePermissionOption[] = [
-  { value: "default", label: "Manual", detail: "Claude asks before edits, Bash, and other sensitive tools." },
-  { value: "auto", label: "Auto", detail: "Claude judges each tool call." },
-  { value: "acceptEdits", label: "Accept edits", detail: "File edits are auto-approved; higher-risk actions still prompt." },
-  { value: "plan", label: "Plan mode", detail: "Read-only Claude turns for analysis and implementation planning." },
-  { value: "bypassPermissions", label: "Bypass", detail: "Skip every Claude permission prompt for this chat." },
-];
-
-export const CODEX_PERMISSION_PRESETS = [
-  { value: "default" as const, label: "Default", detail: "Ask on request with workspace write sandbox." },
-  { value: "edit" as const, label: "Edit", detail: "Untrusted approval with workspace write sandbox." },
-  { value: "plan" as const, label: "Plan", detail: "Read-only sandbox for planning." },
-  { value: "full-auto" as const, label: "Full auto", detail: "No approval prompts with full sandbox access." },
-];
-
-export const OPENCODE_PERMISSION_OPTIONS: Array<{ value: AgentChatOpenCodePermissionMode; label: string }> = [
-  { value: "plan", label: "Plan" },
-  { value: "edit", label: "Edit" },
-  { value: "full-auto", label: "Full auto" },
-  { value: "config-toml", label: "Config" },
-];
-
 export const DROID_PERMISSION_OPTIONS = AGENT_CHAT_DROID_PERMISSION_MODE_OPTIONS;
 
 export const MUSE_PERMISSION_OPTIONS: Array<{ value: AgentChatMusePermissionMode; label: string; detail: string }> =

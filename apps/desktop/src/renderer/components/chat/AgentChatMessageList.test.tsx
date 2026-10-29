@@ -1153,7 +1153,7 @@ describe("AgentChatMessageList transcript rendering", () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("Second block."));
   });
 
-  it("puts the text row's hover footer on its own line under the prose, live or folded", () => {
+  it("offers message copy and whole-turn copy in their respective rows", () => {
     const footerOf = (text: string) => {
       const prose = screen.getByText(text).closest("[data-assistant-output]") as HTMLElement;
       const footer = prose.nextElementSibling as HTMLElement;
@@ -1174,15 +1174,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     const view = renderMessageList(events, { showStreamingIndicator: true });
     for (const text of ["I'll pull the description.", "ADE is a workspace."]) {
       const footer = footerOf(text);
-      // Under the prose, never pinned over the end of the text.
-      expect(footer.parentElement!.className).not.toContain("pr-7");
       expect(within(footer).getByRole("button", { name: "Copy message" })).toBeTruthy();
     }
-    // The turn's latest reply keeps its strip in flow; an earlier narration
-    // line floats its strip so short progress lines are not spread apart.
-    expect(footerOf("ADE is a workspace.").className).not.toMatch(/(^|\s)absolute(\s|$)/);
-    expect(footerOf("I'll pull the description.").className).toMatch(/(^|\s)absolute(\s|$)/);
-
     // Copy turn belongs on the turn-end row, not beside the answer block.
     view.rerender(
       <MemoryRouter>
@@ -1192,7 +1185,7 @@ describe("AgentChatMessageList transcript rendering", () => {
       </MemoryRouter>,
     );
     const answerFooter = footerOf("ADE is a workspace.");
-    expect(answerFooter.className).not.toMatch(/(^|\s)absolute(\s|$)/);
+    expect(within(answerFooter).getByRole("button", { name: "Copy message" })).toBeTruthy();
     expect(within(answerFooter).queryByRole("button", { name: "Copy whole turn" })).toBeNull();
     expect(screen.getByRole("button", { name: "Copy whole turn" })).toBeTruthy();
   });

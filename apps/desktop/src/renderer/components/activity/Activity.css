@@ -278,11 +278,17 @@ button.activity-pane-freshness {
   color: var(--color-accent);
 }
 
+/* The portalled menus render outside `.activity-pane` / `.activity-panel`, so
+   they carry the type and hairline tokens their rows read. */
+.activity-filter-menu,
+.activity-settings-popover {
+  --activity-fs-xs: 11px;
+  --activity-fs-sm: 12px;
+  --activity-hairline: color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .activity-filter-menu {
-  position: absolute;
-  z-index: 5;
-  top: calc(100% + 5px);
-  left: 0;
   display: flex;
   min-width: 190px;
   max-height: 280px;
@@ -1179,11 +1185,8 @@ button.activity-pane-freshness {
   transform: scale(0.94);
 }
 
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .activity-settings-popover {
-  position: absolute;
-  top: calc(100% + 9px);
-  right: 0;
-  z-index: 80;
   width: min(400px, calc(100vw - 32px));
   max-height: min(560px, calc(100vh - 120px));
   overflow-y: auto;

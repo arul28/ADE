@@ -48,6 +48,9 @@ export function GitHubTriggerFilters({
   const isPr = trigger.type.startsWith("github.pr_") || trigger.type.startsWith("git.pr_");
   const isIssue = trigger.type.startsWith("github.issue_");
   const isPush = trigger.type === "git.push" || trigger.type === "git.commit";
+  // ADE's PR poller sends this one, not a webhook: it carries no author,
+  // labels, body or changed fields, so filters on them could never match.
+  const fromPoller = trigger.type === "github.pr_checks_failed";
 
   const [labels, setLabels] = useState<string[]>([]);
   const [collaborators, setCollaborators] = useState<string[]>([]);
@@ -98,7 +101,7 @@ export function GitHubTriggerFilters({
     (trigger.keywords ?? []).length ? "set" : "",
     (trigger.changedFields ?? []).length ? "set" : "",
     isPr && trigger.draftState && trigger.draftState !== "any" ? trigger.draftState : "",
-    isPr && (trigger.labels ?? []).length ? "set" : "",
+    isPr && !fromPoller && (trigger.labels ?? []).length ? "set" : "",
   ].filter((value) => (value ?? "").toString().trim()).length;
   const [moreOpen, setMoreOpen] = useState(moreFilterCount > 0);
 
@@ -106,13 +109,15 @@ export function GitHubTriggerFilters({
     <div className="space-y-3">
       {isPr ? (
         <div className="space-y-3">
-          <AuthorPicker
-            value={authors}
-            collaborators={collaborators}
-            loading={loadingPickers}
-            onChange={setAuthors}
-            showBots
-          />
+          {fromPoller ? null : (
+            <AuthorPicker
+              value={authors}
+              collaborators={collaborators}
+              loading={loadingPickers}
+              onChange={setAuthors}
+              showBots
+            />
+          )}
           <LabeledInput
             label={isMerged ? "Target branch" : "Branch"}
             value={isMerged ? trigger.targetBranch ?? "" : trigger.branch ?? ""}
@@ -178,7 +183,7 @@ export function GitHubTriggerFilters({
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-1 text-[10.5px] text-muted-fg/60">
-              {moreOpen ? "Done" : isPr ? "Repository, labels, title, draft…" : "Repository, title, body…"}
+              {moreOpen ? "Done" : fromPoller ? "Repository, title, draft…" : isPr ? "Repository, labels, title, draft…" : "Repository, title, body…"}
               <CaretDown size={9} weight="bold" className={cn("transition-transform", moreOpen && "rotate-180")} />
             </span>
           </button>
@@ -190,7 +195,7 @@ export function GitHubTriggerFilters({
                 placeholder={repoInfo ? `${repoInfo.owner}/${repoInfo.name}` : "owner/repo"}
                 onChange={(value) => onPatch({ repo: value.trim() || undefined })}
               />
-              {isPr ? (
+              {isPr && !fromPoller ? (
                 <LabelPicker
                   label="Labels"
                   value={trigger.labels ?? []}
@@ -205,24 +210,28 @@ export function GitHubTriggerFilters({
                 placeholder="^\[release\]"
                 onChange={(value) => onPatch({ titleRegex: value })}
               />
-              <LabeledInput
-                label="Body regex"
-                value={trigger.bodyRegex ?? ""}
-                placeholder="needs reproduction|security"
-                onChange={(value) => onPatch({ bodyRegex: value })}
-              />
+              {fromPoller ? null : (
+                <LabeledInput
+                  label="Body regex"
+                  value={trigger.bodyRegex ?? ""}
+                  placeholder="needs reproduction|security"
+                  onChange={(value) => onPatch({ bodyRegex: value })}
+                />
+              )}
               <LabeledInput
                 label="Keywords"
                 value={(trigger.keywords ?? []).join(", ")}
                 placeholder="security, regression"
                 onChange={(value) => onPatch({ keywords: parseList(value) })}
               />
-              <LabeledInput
-                label="Changed fields"
-                value={(trigger.changedFields ?? []).join(", ")}
-                placeholder="title, body, labels"
-                onChange={(value) => onPatch({ changedFields: parseList(value) })}
-              />
+              {fromPoller ? null : (
+                <LabeledInput
+                  label="Changed fields"
+                  value={(trigger.changedFields ?? []).join(", ")}
+                  placeholder="title, body, labels"
+                  onChange={(value) => onPatch({ changedFields: parseList(value) })}
+                />
+              )}
               {isPr ? (
                 <label className="block space-y-1.5">
                   <span className={labelCls}>Draft state</span>

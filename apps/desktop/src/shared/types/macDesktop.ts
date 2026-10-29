@@ -309,6 +309,12 @@ export type MacDesktopWindow = {
    */
   layer?: number;
   /**
+   * Mac only: the window this sheet is attached to ("Replace?" on a Save
+   * panel). Its buttons are in observe; a claim of it claims that window.
+   * Absent on every other row.
+   */
+  sheetOf?: number | null;
+  /**
    * The owning app's icon, base64 PNG (32x32), for lists that name apps.
    *
    * Sent on the FIRST window of each bundle id in a reply and null on the
@@ -325,6 +331,12 @@ export type MacDesktopOpenArgs = MacDesktopTrustedHolderArgs & {
   target: string;
   /** Extra arguments passed to the launched app. */
   args?: string[] | null;
+  /**
+   * Mac: a document open goes to a separate new copy of its app even when
+   * this lane already runs one. Without it, a document opens in the lane's
+   * own running copy. A blank app launch is always a new copy.
+   */
+  newInstance?: boolean | null;
   chatSessionId?: string | null;
 };
 
@@ -444,7 +456,20 @@ export type MacDesktopObservation = {
   screenshotPath: string;
   /** Host-absolute path to the numbered element map, when `--map` was asked. */
   mapPath: string | null;
-  display: { width: number; height: number; scale: number };
+  /**
+   * `width`/`height` are the screenshot's pixels. Points an agent sends are
+   * GLOBAL screen points: the screenshot's top-left pixel is `origin`, and a
+   * pixel (px, py) is the point (origin.x + px / scale, origin.y + py / scale).
+   * `bounds` is the display's rectangle on the global plane, in points.
+   * Both absent from an observation built before they existed.
+   */
+  display: {
+    width: number;
+    height: number;
+    scale: number;
+    origin?: { x: number; y: number };
+    bounds?: { x: number; y: number; width: number; height: number };
+  };
   windows: MacDesktopWindow[];
   elements: MacDesktopElement[];
   /** Total elements found before the observation cap trimmed the list. */
@@ -521,6 +546,11 @@ export type MacDesktopTarget = {
   /** Global screen point. Delivered as `background` input on a Mac, `real` elsewhere. */
   x?: number | null;
   y?: number | null;
+  /**
+   * `x`/`y` are display-local points instead: (0,0) is the lane display's
+   * top-left corner, and ADE adds the display's global origin.
+   */
+  local?: boolean | null;
   windowId?: number | null;
 };
 
@@ -801,8 +831,20 @@ export type MacDesktopLeaseRequestArgs = {
   reason?: string | null;
 };
 
+/**
+ * Why a lease request did not grant: the user said no, nobody answered the
+ * card before it was withdrawn, the card could not be shown, there was no
+ * chat to ask in, or someone else holds the screen's input right now.
+ */
+export type MacDesktopLeaseRefusalOutcome = "declined" | "unanswered" | "unasked" | "no_chat" | "held";
+
 export type MacDesktopLeaseRequestResult = {
   granted: boolean;
+  /**
+   * What happened, in one word. Absent from an older brain, where only
+   * `granted` and `code` tell it.
+   */
+  outcome?: "granted" | "not_required" | MacDesktopLeaseRefusalOutcome;
   /** Set when the grant was refused, using one of the codes above. */
   code: MacDesktopErrorCode | null;
   lease: MacDesktopLeaseState | null;
@@ -1081,7 +1123,33 @@ export type MacDesktopStatus = {
    * whose readers call that function themselves.
    */
   seat?: DesktopSeatSummary | null;
+  /**
+   * Argument features this brain understands, so a newer CLI never sends one
+   * an older brain would silently ignore. Absent from a brain older than the
+   * list itself, which supports none of them. See
+   * {@link MAC_DESKTOP_BRAIN_CAPABILITIES}.
+   */
+  capabilities?: string[];
 };
+
+/**
+ * What this brain's `mac_desktop` actions and proof tools accept beyond the
+ * original contract. A CLI checks for one before it sends a flag whose absence
+ * would change what happens without an error:
+ *
+ * - `open.newInstance`: `open --new-instance` (an older brain drops it, and a
+ *   document goes to the lane's running copy instead of a separate one).
+ *   Advertised only by a brain whose seat is the Mac driver: the Windows and
+ *   Linux seats have no separate-instance launch.
+ * - `proof.plain`: `ade proof record --plain` (an older brain cuts still
+ *   stretches anyway). Every seat.
+ * - `target.local`: display-local `x/y` (`local: true`), converted to global
+ *   points by the brain from the lane display's origin. Every seat. The CLI
+ *   sends `local: true` when the brain says this, and converts `--local`
+ *   itself only for a brain that does not.
+ */
+export const MAC_DESKTOP_BRAIN_CAPABILITIES = ["open.newInstance", "proof.plain", "target.local"] as const;
+export type MacDesktopBrainCapability = (typeof MAC_DESKTOP_BRAIN_CAPABILITIES)[number];
 
 /** The host-aware summary at the top of `ade screen status`. */
 export type DesktopSeatSummary = {
@@ -1721,7 +1789,7 @@ export type DesktopSeatProvider = {
    * holds.
    */
   unpark(args: { windowId: number; laneId?: string }): Promise<{ releasedWindowIds: number[]; handedOverPid: number | null; handedOverPids?: number[] }>;
-  launch(args: { laneId: string; target: string; args: string[] }): Promise<DesktopSeatReply>;
+  launch(args: { laneId: string; target: string; args: string[]; newInstance?: boolean }): Promise<DesktopSeatReply>;
   /** `app.quit`: apps the lane opened, released ones included. */
   quitApp(args: { laneId: string; app?: string | null }): Promise<DesktopSeatReply>;
   /**

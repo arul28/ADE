@@ -2,7 +2,7 @@
 // What a looping CSS animation costs while nothing else moves, with the
 // renderer's step clock (lib/steppedLoopClock.ts) and as plain CSS.
 // usage: node scripts/perf/ui/loop-cost.mjs <case>[,<case>...] [seconds] [runtime-socket]
-// cases: header-pulse working-set dots duty-pulse breathe svg-spinner shimmer lane-spin
+// cases: header-pulse working-set dots duty-pulse breathe svg-spinner shimmer lane-spin thinking thinking3
 //
 // Each case puts the app's own loop markup on the page (its real classes and
 // keyframes), lets it start, and traces the whole browser for <seconds>:
@@ -30,6 +30,9 @@ const dots = `<span class="inline-flex items-center gap-1.5">${dot(0)}${dot(0.18
 const dutyPulse = '<span class="inline-flex motion-safe:animate-pulse"><span class="h-2 w-2 rounded-full bg-violet-400"></span></span>';
 const breathe = '<span class="motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]">Working</span>';
 const svgSpinner = '<svg class="animate-spin" width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="20 20"/></svg>';
+// The chat's working indicator (components/ui/ThinkingIndicator.tsx): glyph
+// spin and morph, twinkle and label sheen, all stepped at 30/s.
+const thinking = (id) => `<span class="ade-thinking-indicator inline-flex items-center gap-[0.5em] text-violet-300/80"><span class="relative inline-block h-[1.3em] w-[1.3em]"><span class="ade-thinking-glyph absolute inset-0"><svg viewBox="0 0 24 24" class="h-full w-full" fill="none"><defs><linearGradient id="lc-thinking-${id}" gradientUnits="userSpaceOnUse" x1="5" x2="20" y1="4" y2="20"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0.4"/></linearGradient></defs><path class="ade-thinking-glyph-shape" d="M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" fill="url(#lc-thinking-${id})"/></svg></span><span class="ade-thinking-twinkle absolute inset-0"><svg viewBox="0 0 24 24" class="h-full w-full" fill="none"><path d="M 19 2.5 C 19.18 4.32 19.68 4.82 21.5 5 C 19.68 5.18 19.18 5.68 19 7.5 C 18.82 5.68 18.32 5.18 16.5 5 C 18.32 4.82 18.82 4.32 19 2.5 Z" fill="currentColor"/></svg></span></span><span class="ade-thinking-label font-medium">Working</span></span>`;
 const CASES = {
   "header-pulse": '<span style="display:inline-block;width:6px;height:6px;border-radius:3px;background:#3c3;animation:activity-hdr-pulse 3s step-end infinite"></span>',
   // What a chat shows while its agent works: the thinking dots, a pulsing dot,
@@ -40,6 +43,9 @@ const CASES = {
   breathe: `${breathe}${breathe}${breathe}`,
   "svg-spinner": svgSpinner,
   shimmer: '<span class="ade-thinking-shimmer font-medium">Claude is thinking</span>',
+  // One running chat, and three side by side (split view).
+  thinking: thinking(0),
+  thinking3: `${thinking(1)}${thinking(2)}${thinking(3)}`,
   "lane-spin": `<span class="inline-flex motion-safe:animate-[spin_3s_steps(180)_infinite]">${svgSpinner.replace(' class="animate-spin"', "")}</span>`,
 };
 const AS_CSS = "<style>#ade-loop-cost *, #ade-loop-cost *::before, #ade-loop-cost *::after { animation-iteration-count: 10000000 !important; }</style>";

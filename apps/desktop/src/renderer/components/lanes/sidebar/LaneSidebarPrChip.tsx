@@ -2,7 +2,7 @@ import React from "react";
 import { CaretDown, GitMerge, GitPullRequest } from "@phosphor-icons/react";
 import { COLORS, SANS_FONT, floatingPane } from "../laneDesignTokens";
 import type { LaneTabPrTag } from "../lanePageModel";
-import { LanePrHoverCard } from "../LanePrHoverCard";
+import { HoverCard } from "../../ui/HoverCard";
 import { getPrCiDotColor, getPrReviewDotColor } from "../../prs/shared/prVisuals";
 import {
   lanePrAttention,
@@ -60,7 +60,7 @@ export const LaneSidebarPrChip = React.memo(function LaneSidebarPrChip({
   const ChipIcon = primary.state === "merged" ? GitMerge : GitPullRequest;
 
   return (
-    <LanePrHoverCard
+    <HoverCard
       className="inline-flex min-w-0 shrink-0 items-center"
       label={prs.length > 1 ? `Pull requests (${prs.length})` : `Pull request #${primary.githubPrNumber}`}
       width={300}
@@ -120,6 +120,6 @@ export const LaneSidebarPrChip = React.memo(function LaneSidebarPrChip({
         <span>#{primary.githubPrNumber}</span>
         {extra > 0 ? <CaretDown size={8} weight="bold" className="shrink-0 opacity-60" aria-hidden /> : null}
       </button>
-    </LanePrHoverCard>
+    </HoverCard>
   );
 });

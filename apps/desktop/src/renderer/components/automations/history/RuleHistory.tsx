@@ -147,6 +147,7 @@ export function RuleHistory({
         <RunDetail
           detail={detail}
           loading={detailLoading}
+          ruleName={ruleName}
           pin={pin}
           onChanged={() => {
             void load();

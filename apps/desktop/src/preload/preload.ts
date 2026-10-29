@@ -997,6 +997,7 @@ import type {
   ComputerUseOwnerSnapshotArgs,
   IosSimulatorDevice,
   IosSimulatorDragArgs,
+  IosSimulatorLongPressArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
   IosSimulatorEnsurePreviewWorkspaceArgs,
@@ -4864,6 +4865,15 @@ const adeBridge = {
       const listener = (_event: Electron.IpcRendererEvent, elevated: boolean) => cb(elevated === true);
       ipcRenderer.on(IPC.appElevatedDesktopChanged, listener);
       return () => ipcRenderer.removeListener(IPC.appElevatedDesktopChanged, listener);
+    },
+    /**
+     * The OS window's focus. Unlike `window` focus in the page, clicking into
+     * a pane that is its own web view (the built-in browser) keeps it true.
+     */
+    onWindowFocusChanged: (cb: (focused: boolean) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, focused: boolean) => cb(focused === true);
+      ipcRenderer.on(IPC.appWindowFocusChanged, listener);
+      return () => ipcRenderer.removeListener(IPC.appWindowFocusChanged, listener);
     },
     hasClipboardImage: async (): Promise<boolean> =>
       ipcRenderer.invoke(IPC.appHasClipboardImage),
@@ -9756,6 +9766,16 @@ const adeBridge = {
       const stamped = asUserInput(args);
       return callIosSimulatorActionOr(pin, "tap", { args: stamped }, () =>
         ipcRenderer.invoke(IPC.iosSimulatorTap, stamped),
+      );
+    },
+    /** A press held at one point (a context menu), sent once the pointer lifts. */
+    longPress: async (
+      args: IosSimulatorLongPressArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<{ ok: true; action: "long-press"; durationMs: number }> => {
+      const stamped = asUserInput(args);
+      return callIosSimulatorActionOr(pin, "longPress", { args: stamped }, () =>
+        ipcRenderer.invoke(IPC.iosSimulatorLongPress, stamped),
       );
     },
     pressButton: (

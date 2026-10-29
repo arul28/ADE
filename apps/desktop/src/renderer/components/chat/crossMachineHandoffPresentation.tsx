@@ -1,22 +1,13 @@
 import { CheckCircle, CircleNotch, Warning } from "@phosphor-icons/react";
 import type { ReactNode } from "react";
-import type {
-  AgentChatPermissionMode,
-  AgentChatProvider,
-} from "../../../shared/types";
+import type { AgentChatProvider } from "../../../shared/types";
 import { providerDisplayLabel as providerDisplayLabelShared } from "../../../shared/pendingInputLabels";
-import type { PermissionOption, SafetyLevel } from "../shared/permissionOptions";
-import type {
-  PermissionModeIconKind,
-  PermissionModeTone,
-} from "../shared/PermissionModePicker";
 import { cn } from "../ui/cn";
 
 /**
- * Pure presentation for the cross-machine handoff modal — types, copy, the
- * safety/icon lookups, and the small row component. With no state and no
- * hooks they can be asserted directly (the tone map once silently rendered
- * every permission pill grey).
+ * Pure presentation for the cross-machine handoff modal — types, copy and the
+ * small row component. With no state and no hooks they can be asserted
+ * directly.
  */
 
 export type ModalStage = "choose" | "clone" | "review";
@@ -46,31 +37,6 @@ export function forkFallbackReasonForPrepareError(message: string): string | nul
 }
 
 /**
- * `permissionOptions.ts` describes an option by safety level, while the picker
- * pill styles by tone. Both maps are keyed on the real unions rather than
- * `Record<string, …>`: the first draft invented its own key names, every lookup
- * silently fell through to the default tone, and the whole row rendered grey
- * while the composer's rendered green/amber/red. An exhaustive Record makes the
- * compiler name any key a union gains.
- */
-export const PERMISSION_SAFETY_TONES: Record<SafetyLevel, PermissionModeTone> = {
-  safe: "green",
-  "semi-auto": "amber",
-  "full-auto": "red",
-  danger: "red",
-  custom: "slate",
-};
-
-export const PERMISSION_MODE_ICONS: Record<AgentChatPermissionMode, PermissionModeIconKind> = {
-  default: "manual",
-  auto: "auto",
-  plan: "plan",
-  edit: "edit",
-  "full-auto": "full",
-  "config-toml": "config",
-};
-
-/**
  * Copy for the per-machine repository hint. "unknown" and "checking" render
  * nothing rather than a hedge — an unanswered question isn't worth a row.
  */
@@ -82,23 +48,6 @@ export function repoReadinessLabel(state: "checking" | "present" | "absent" | "u
 
 export function repoReadinessClass(state: "checking" | "present" | "absent" | "unknown" | undefined): string {
   return state === "present" ? "text-emerald-300/60" : "text-amber-200/60";
-}
-
-/** Maps a shared PermissionOption onto the picker's display shape. */
-export function toPermissionPickerOption(option: PermissionOption): {
-  value: string;
-  label: string;
-  detail: string;
-  tone: PermissionModeTone;
-  icon: PermissionModeIconKind;
-} {
-  return {
-    value: option.value,
-    label: option.label,
-    detail: option.shortDesc,
-    tone: PERMISSION_SAFETY_TONES[option.safety],
-    icon: PERMISSION_MODE_ICONS[option.value],
-  };
 }
 
 export function CheckRow({

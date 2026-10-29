@@ -610,6 +610,12 @@ describe("explicit proof capture", () => {
     }));
     expect(service.stopRecording).toHaveBeenCalledWith({ laneId: "lane-1", chatSessionId: "chat-1" });
     expect(result.structuredContent.artifacts.map((artifact: any) => artifact.id)).toEqual(["artifact-clip"]);
+    // A default recording cuts still stretches; `--plain` asks for real time.
+    expect((service.startRecording.mock.calls as unknown as Array<[Record<string, unknown>]>)[0]![0]).not.toHaveProperty("plain");
+
+    const plain = await callTool(handler, "record_environment", { proof: true, durationSec: 1, name: "flow", plain: true });
+    expect(plain.isError).toBeFalsy();
+    expect(service.startRecording).toHaveBeenLastCalledWith(expect.objectContaining({ laneId: "lane-1", plain: true }));
   });
 
   it("refuses a proof capture or recording when the lane has no display, and captures nothing", async () => {

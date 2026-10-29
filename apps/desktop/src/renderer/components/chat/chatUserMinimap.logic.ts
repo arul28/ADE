@@ -237,7 +237,8 @@ export function collectUserMessageMinimapSourceEntries(
  * draws. A turn fold must not make the rail lose an item (or its reply
  * preview), so an entry whose row is hidden in a closed fold sits on that
  * fold's row and remembers the fold (`foldId`) for the jump to open it.
- * Entries are never dropped: ticks are 1:1 with entries.
+ * Entries are never dropped: ticks are 1:1 with entries. A queued follow-up
+ * draws no row (it lives in the composer), so its tick sits on the last row.
  */
 export function placeMinimapEntriesOnVisibleRows(
   entries: readonly ChatUserMinimapSourceEntry[],
@@ -245,6 +246,8 @@ export function placeMinimapEntriesOnVisibleRows(
   foldIdByHiddenRowKey: ReadonlyMap<string, string>,
 ): ChatUserMinimapSourceEntry[] {
   let previousIndex = 0;
+  let lastIndex = 0;
+  for (const index of visibleIndexByKey.values()) lastIndex = Math.max(lastIndex, index);
   return entries.map((entry) => {
     const place = (rowIndex: number, foldId: string | undefined): ChatUserMinimapSourceEntry => {
       previousIndex = rowIndex;
@@ -258,7 +261,8 @@ export function placeMinimapEntriesOnVisibleRows(
     if (visibleIndex !== undefined) return place(visibleIndex, undefined);
     const foldId = foldIdByHiddenRowKey.get(entry.rowKey);
     const foldIndex = foldId ? visibleIndexByKey.get(foldId) : undefined;
-    return foldIndex !== undefined ? place(foldIndex, foldId) : place(previousIndex, undefined);
+    if (foldIndex !== undefined) return place(foldIndex, foldId);
+    return place(entry.kind === "queued" ? lastIndex : previousIndex, undefined);
   });
 }
 

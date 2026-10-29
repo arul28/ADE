@@ -144,7 +144,7 @@ func syncDiscoveredHostDetailText(host: DiscoveredSyncHost, detailPrefix statusL
   // pairing target is the computer, not a single project socket.
   if let name = syncTrimmedNonEmpty(host.runtimeName) {
     parts.append(name)
-  } else if let runtimeText = syncRuntimeText(kind: host.runtimeKind, version: host.runtimeVersion) {
+  } else if let runtimeText = syncRuntimeText(kind: host.runtimeKind, version: host.runtimeVersion, appVersion: host.appVersion) {
     parts.append(runtimeText)
   }
   if let status = syncTrimmedNonEmpty(statusLabel) {
@@ -257,6 +257,10 @@ private func syncMergeLiveDiscoveredHost(
     runtimeName: syncTrimmedNonEmpty(preferred.runtimeName) ?? syncTrimmedNonEmpty(fallback.runtimeName),
     runtimeKind: syncTrimmedNonEmpty(preferred.runtimeKind) ?? syncTrimmedNonEmpty(fallback.runtimeKind),
     runtimeVersion: syncTrimmedNonEmpty(preferred.runtimeVersion) ?? syncTrimmedNonEmpty(fallback.runtimeVersion),
+    // From the same host as the runtime version, so the pair agrees.
+    appVersion: syncTrimmedNonEmpty(preferred.runtimeVersion) != nil
+      ? syncTrimmedNonEmpty(preferred.appVersion)
+      : syncTrimmedNonEmpty(fallback.appVersion),
     projectIds: syncUniqueNonEmptyStrings(preferred.projectIds + fallback.projectIds),
     projectNames: syncUniqueNonEmptyStrings(preferred.projectNames + fallback.projectNames),
     projectCount: max(preferred.projectCount ?? 0, fallback.projectCount ?? 0) > 0
@@ -297,6 +301,9 @@ private func syncMergeSavedDiscoveredHost(
     runtimeName: syncTrimmedNonEmpty(savedHost.runtimeName) ?? syncTrimmedNonEmpty(liveHost.runtimeName),
     runtimeKind: syncTrimmedNonEmpty(savedHost.runtimeKind) ?? syncTrimmedNonEmpty(liveHost.runtimeKind),
     runtimeVersion: syncTrimmedNonEmpty(savedHost.runtimeVersion) ?? syncTrimmedNonEmpty(liveHost.runtimeVersion),
+    appVersion: syncTrimmedNonEmpty(savedHost.runtimeVersion) != nil
+      ? syncTrimmedNonEmpty(savedHost.appVersion)
+      : syncTrimmedNonEmpty(liveHost.appVersion),
     projectIds: syncUniqueNonEmptyStrings(savedHost.projectIds + liveHost.projectIds),
     projectNames: syncUniqueNonEmptyStrings(savedHost.projectNames + liveHost.projectNames),
     projectCount: savedHost.projectCount ?? liveHost.projectCount,
@@ -305,8 +312,15 @@ private func syncMergeSavedDiscoveredHost(
   )
 }
 
-private func syncRuntimeText(kind: String?, version: String?) -> String? {
+/// "ADE brain 1.2.125", or both versions when the machine's desktop app and
+/// brain differ: "ADE 1.2.123 · brain 1.2.125" (the same text the desktop shows).
+private func syncRuntimeText(kind: String?, version: String?, appVersion: String? = nil) -> String? {
   guard let kind = syncTrimmedNonEmpty(kind) else { return nil }
+  if let brain = syncTrimmedNonEmpty(version),
+     let app = syncTrimmedNonEmpty(appVersion),
+     syncStripVersionPrefix(brain) != syncStripVersionPrefix(app) {
+    return "ADE \(app) · brain \(brain)"
+  }
   let label: String
   switch kind.lowercased() {
   case "daemon", "headless":
@@ -318,6 +332,10 @@ private func syncRuntimeText(kind: String?, version: String?) -> String? {
   }
   guard let version = syncTrimmedNonEmpty(version) else { return label }
   return "\(label) \(version)"
+}
+
+private func syncStripVersionPrefix(_ version: String) -> String {
+  version.hasPrefix("v") || version.hasPrefix("V") ? String(version.dropFirst()) : version
 }
 
 private func syncTrimmedNonEmpty(_ value: String?) -> String? {

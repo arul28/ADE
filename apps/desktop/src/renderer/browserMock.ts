@@ -121,6 +121,12 @@ import {
 } from "../shared/types";
 import type { ChatLaunchEvent, ChatLaunchSnapshot } from "../shared/types/chatLaunch";
 import type { AccountSettingRow } from "../shared/types/accountSettings";
+import type {
+  RemoteMcpAction,
+  RemoteMcpActivityEntry,
+  RemoteMcpConnectionSummary,
+  RemoteMcpStatus,
+} from "../shared/types/remoteMcp";
 import type { ProviderCompactionSettings } from "../shared/compactionSettings";
 import type { ProviderInstanceSettingsPatch } from "../shared/types/providerInstances";
 import type {
@@ -302,6 +308,25 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+/** A failed built-in run: the "Clean up merged lanes" template run by hand. */
+const BROWSER_MOCK_FAILED_RUN = {
+  id: "run-2",
+  automationId: "auto-clean-up-merged-lanes",
+  chatSessionId: null,
+  triggerType: "manual",
+  startedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  endedAt: new Date(Date.now() - 2 * 60_000 + 4).toISOString(),
+  status: "failed",
+  executionKind: "built-in",
+  actionsCompleted: 0,
+  actionsTotal: 1,
+  errorMessage: "No lane to delete. This step deletes the lane its trigger names; pick a lane when you run it by hand, or set a target lane on the step.",
+  spendUsd: 0,
+  confidence: null,
+  triggerMetadata: { reason: "clean-up-merged-lanes", scheduledAt: new Date(Date.now() - 2 * 60_000).toISOString() },
+  summary: null,
+  billingCode: "auto:clean-up-merged-lanes",
+};
 /** Mirrors `createLoginImportUnavailableStub` in the hosted web adapter. */
 const LOGIN_IMPORT_UNAVAILABLE = {
   ok: false as const,
@@ -1387,6 +1412,109 @@ function browserMockFlag(name: string): boolean {
     return false;
   }
 }
+
+/**
+ * ADE MCP (Settings → You → ADE MCP). `?mockAdeMcp=off|signedout|error`
+ * stages the other states; with no value the account has it on, three
+ * computers (one offline, one on an older ADE) and a few connections. Writes
+ * change this in-memory copy, so the page's toggles and token flow work.
+ */
+const browserMockRemoteMcp = (() => {
+  const mode = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get("mockAdeMcp") ?? "on";
+    } catch {
+      return "on";
+    }
+  })();
+  const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+  const serverUrl = "https://relay.ade.dev/a/3f9c2a71d04e8b6655c1e0a9f7d2b3c4a5e6f708/mcp";
+  const connections: RemoteMcpConnectionSummary[] = [
+    { id: "c1", kind: "app", label: "Claude", scope: "write", tokenHint: "q8Zt", createdAt: minutesAgo(9_000), lastUsedAt: minutesAgo(4), redirectHost: "claude.ai", onlyMachine: null },
+    { id: "c2", kind: "app", label: "ChatGPT", scope: "read", tokenHint: "M2kd", createdAt: minutesAgo(6_000), lastUsedAt: minutesAgo(190), redirectHost: "chatgpt.com", onlyMachine: null },
+    { id: "c3", kind: "app", label: "Cursor", scope: "write", tokenHint: "7yPw", createdAt: minutesAgo(3_000), lastUsedAt: null, redirectHost: "cursor.com", onlyMachine: null },
+    { id: "c4", kind: "token", label: "Nightly script", scope: "read", tokenHint: "aT3f", createdAt: minutesAgo(20_000), lastUsedAt: minutesAgo(5_000), redirectHost: null, onlyMachine: { machineKey: "m-mini", name: "Mac mini" } },
+  ];
+  const status: RemoteMcpStatus = {
+    enabled: mode === "on",
+    signedIn: mode !== "signedout",
+    serverUrl: mode === "on" ? serverUrl : null,
+    relayConnected: true,
+    machineName: "Arul's MacBook Pro",
+    thisMachineServing: mode === "on",
+    machines: mode === "signedout" ? [] : [
+      { machineKey: "m-this", name: "Arul's MacBook Pro", included: true, supported: true, online: true, serving: mode === "on", isThisMachine: true },
+      { machineKey: "m-mini", name: "Mac mini", included: true, supported: true, online: false, serving: false, isThisMachine: false },
+      { machineKey: "m-pc", name: "Studio PC", included: true, supported: false, online: true, serving: false, isThisMachine: false },
+    ],
+    connections: mode === "on" ? connections : [],
+  };
+  const activity: RemoteMcpActivityEntry[] = mode === "signedout" ? [] : [
+    { at: minutesAgo(4), connectionId: "c1", label: "Claude", scope: "write", command: "chat inbox --json", outcome: "ok", exitCode: 0, durationMs: 412, tool: "inbox" },
+    { at: minutesAgo(6), connectionId: "c1", label: "Claude", scope: "write", command: "chat list --json", outcome: "ok", exitCode: 0, durationMs: 380, forwardedTo: "Mac mini" },
+    { at: minutesAgo(11), connectionId: "c1", label: "Claude", scope: "write", command: "chat respond 8f2c --approve", outcome: "ok", exitCode: 0, durationMs: 690, project: "ADE", tool: "chat_respond" },
+    { at: minutesAgo(25), connectionId: "c2", label: "ChatGPT", scope: "read", command: "pr checks 1934", outcome: "ok", exitCode: 0, durationMs: 1_220, project: "ADE", via: "Mac mini" },
+    { at: minutesAgo(31), connectionId: "c2", label: "ChatGPT", scope: "read", command: "lanes create fix-login", outcome: "refused", exitCode: null, durationMs: 3, detail: "Read-only connection." },
+    { at: minutesAgo(48), connectionId: "c4", label: "Nightly script", scope: "read", command: "usage limits --json", outcome: "timeout", exitCode: null, durationMs: 60_000 },
+  ];
+  const servingOf = (machine: RemoteMcpStatus["machines"][number]): boolean =>
+    status.enabled && machine.included && machine.supported && machine.online !== false;
+  const snapshot = (): RemoteMcpStatus => ({
+    ...status,
+    machines: status.machines.map((machine) => ({ ...machine })),
+    connections: status.connections.map((connection) => ({ ...connection })),
+  });
+  return async (action: RemoteMcpAction, args: Record<string, unknown> = {}): Promise<unknown> => {
+    if (mode === "error") throw new Error("ADE couldn't reach its background service.");
+    switch (action) {
+      case "getStatus":
+        return snapshot();
+      case "listActivity":
+        return activity.slice(0, typeof args.limit === "number" ? args.limit : 50);
+      case "setEnabled":
+        if (!status.signedIn) throw new Error("Sign in to your ADE account first.");
+        status.enabled = args.enabled === true;
+        status.serverUrl = status.enabled ? serverUrl : status.serverUrl;
+        status.thisMachineServing = status.enabled && (status.machines.find((m) => m.isThisMachine)?.included ?? true);
+        for (const machine of status.machines) {
+          machine.serving = servingOf(machine);
+        }
+        return snapshot();
+      case "setMachineIncluded": {
+        const machine = status.machines.find((m) => m.machineKey === args.machineKey);
+        if (!machine) throw new Error("That computer isn't on your account.");
+        machine.included = args.included === true;
+        machine.serving = servingOf(machine);
+        if (machine.isThisMachine) status.thisMachineServing = status.enabled && machine.included;
+        return snapshot();
+      }
+      case "createToken": {
+        const token = `ade_mcp_${Math.random().toString(36).slice(2)}${Math.random().toString(36).slice(2)}`;
+        const connection: RemoteMcpConnectionSummary = {
+          id: `c${Date.now()}`,
+          kind: "token",
+          label: typeof args.label === "string" ? args.label : "Token",
+          scope: args.scope === "read" ? "read" : "write",
+          tokenHint: token.slice(-4),
+          createdAt: new Date().toISOString(),
+          lastUsedAt: null,
+          redirectHost: null,
+          onlyMachine: null,
+        };
+        status.connections.push(connection);
+        return { token, connection, serverUrl: status.serverUrl };
+      }
+      case "updateConnection": {
+        const connection = status.connections.find((c) => c.id === args.id);
+        if (connection && (args.scope === "read" || args.scope === "write")) connection.scope = args.scope;
+        return connection ?? null;
+      }
+      case "removeConnection":
+        status.connections = status.connections.filter((c) => c.id !== args.id);
+        return { removed: true };
+    }
+  };
+})();
 
 /** Setup finished or skipped in this page load; `?mockFirstRun` stops forcing it after that. */
 let browserMockFirstRunEnded = false;
@@ -6201,6 +6329,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           state: "connected",
           arch: "darwin-arm64",
           version: "0.0.0-browser",
+          // `?mockMachineDrift`: the Studio's brain was updated alone, its app was not.
+          ...(browserMockFlag("mockMachineDrift") ? { appVersion: "0.0.0-app" } : {}),
           route: { kind: "tailnet", endpoint: "100.64.0.2" },
           capabilities: {
             projects: true,
@@ -6718,6 +6848,33 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                     "Recent runs consistently produced concise PR follow-up notes.",
                 },
               },
+              {
+                id: "auto-clean-up-merged-lanes",
+                name: "Clean up merged lanes",
+                description: "When a lane is merged, delete it and its local branch so the workspace stays tidy.",
+                enabled: true,
+                mode: "monitor",
+                triggers: [{ type: "lane.merged" }],
+                trigger: { type: "lane.merged" },
+                execution: {
+                  kind: "built-in",
+                  builtIn: { actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }] },
+                },
+                executor: { mode: "automation-bot" },
+                prompt: "",
+                reviewProfile: "quick",
+                toolPalette: ["git"],
+                contextSources: [],
+                guardrails: {},
+                outputs: { disposition: "comment-only", createArtifact: true },
+                verification: { verifyBeforePublish: false, mode: "intervention" },
+                billingCode: "auto:clean-up-merged-lanes",
+                actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }],
+                running: false,
+                lastRunAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+                lastRunStatus: "failed",
+                confidence: null,
+              },
             ],
       ),
       toggle: resolvedArg([]),
@@ -6806,7 +6963,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               },
             ],
       ),
-      getRunDetail: resolvedArg({
+      getRunDetail: async (runId: unknown) => (runId === BROWSER_MOCK_FAILED_RUN.id ? {
+        run: BROWSER_MOCK_FAILED_RUN,
+        rule: null,
+        chatSession: null,
+        actions: [{
+          id: "run-2-step-1",
+          runId: BROWSER_MOCK_FAILED_RUN.id,
+          actionIndex: 0,
+          actionType: "delete-lane",
+          startedAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+          endedAt: BROWSER_MOCK_FAILED_RUN.endedAt,
+          status: "failed",
+          errorMessage: BROWSER_MOCK_FAILED_RUN.errorMessage,
+          output: BROWSER_MOCK_FAILED_RUN.errorMessage,
+        }],
+        ingressEvent: null,
+      } : {
         run: {
           id: "run-1",
           automationId: "auto-session-review",
@@ -6868,10 +7041,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           receivedAt: now,
         },
       }),
-      listRuns: resolvedArg(
+      // Each rule's history shows only its own runs.
+      listRuns: async (args: { automationId?: string } = {}) => (
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
           ? ADE_DB_AUTOMATIONS.runs
           : [
+              BROWSER_MOCK_FAILED_RUN,
               {
                 id: "run-1",
                 automationId: "auto-session-review",
@@ -6895,8 +7070,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                   "Summarized the latest PR update and suggested next review points.",
                 billingCode: "auto:session-review",
               },
-            ],
-      ),
+            ]
+      ).filter((run: { automationId?: string }) => !args?.automationId || run.automationId === args.automationId),
       getIngressStatus: resolved({
         webhookGateway: {
           enabled: true,
@@ -8399,6 +8574,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       stopStream: resolvedArg({ streaming: false, streamUrl: null } as any),
       getStreamStatus: resolvedArg({ streaming: false, streamUrl: null } as any),
       tap: resolved({ ok: true as const }),
+      longPress: resolved({ ok: true as const, action: "long-press" as const, durationMs: 1000 }),
       typeText: resolved({ ok: true as const }),
       drag: resolved({ ok: true as const }),
       swipe: resolved({ ok: true as const }),
@@ -10145,9 +10321,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       autoApplyPending: null,
       autoApplySuppressedUntil: null,
     }),
-    remoteMcpCall: async () => {
-      throw new Error("Not available in the browser preview.");
-    },
+    remoteMcpCall: async <T,>(action: RemoteMcpAction, args?: Record<string, unknown>): Promise<T> =>
+      (await browserMockRemoteMcp(action, args)) as T,
     keepAwakeGet: resolved(MOCK_KEEP_AWAKE_SNAPSHOT),
     keepAwakeSetLevel: async (): Promise<KeepAwakeSnapshot> => MOCK_KEEP_AWAKE_SNAPSHOT,
     keepAwakeFixSystemSleep: resolved({

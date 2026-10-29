@@ -271,6 +271,7 @@ import {
   USER_SCROLL_UP_REPIN_HOLD_MS,
 } from "./chatListScrollAnchoring";
 import { BackgroundJobRunRow } from "./BackgroundJobRunRow";
+import { ThinkingIndicator } from "../ui/ThinkingIndicator";
 import { ScheduledWorkChips, ScheduledWorkLine, WakeChainChip, WakeChainRow } from "./ScheduledWorkLine";
 import { applyWakeChains, foldIdsByHiddenRowKey, foldScheduledWorkRows, insertNewSinceDivider, moveScheduledWorkToTurnEnds } from "./chatScheduledWorkRows";
 import { useWakeLoopFolds } from "./useWakeLoopFolds";
@@ -2026,20 +2027,6 @@ function runningToolLabel(entries: readonly ChatWorkLogEntry[]): string | null {
   return null;
 }
 
-function ThinkingDots({ toneClass = "bg-emerald-300/70" }: { toneClass?: string }) {
-  return (
-    <span className="inline-flex items-center gap-1.5" aria-hidden="true">
-      {[0, 1, 2].map((index) => (
-        <span
-          key={index}
-          className={cn("ade-thinking-pulse inline-block h-[5px] w-[5px] rounded-full", toneClass)}
-          style={{ animationDelay: `${index * 0.18}s` }}
-        />
-      ))}
-    </span>
-  );
-}
-
 /**
  * Formats the elapsed turn time as a compact "working for" duration. Stays as
  * bare seconds under a minute ("42s") and rolls into minutes past it
@@ -2121,8 +2108,7 @@ function WorkingIndicator({
   }, [toolEntries, replyWritesScene]);
   const status = (
     <span className="inline-flex min-w-0 items-center gap-2 font-sans text-[length:calc(var(--chat-font-size)*12/14)]">
-      <ThinkingDots toneClass="bg-violet-400/70" />
-      <span className="min-w-0 truncate font-medium text-fg/55">{activity ?? "Working"}</span>
+      <ThinkingIndicator label={activity ?? "Working"} className="text-violet-300/80" />
       <span className="shrink-0 text-fg/28" aria-hidden>·</span>
       <span className="shrink-0 text-fg/38">
         working for <span ref={attachTimer} className="tabular-nums">0s</span>
@@ -2853,6 +2839,11 @@ function renderEvent(
      * lines reads as one passage rather than three lines apart.
      */
     interimText?: boolean;
+    /**
+     * The last reply of a turn whose turn-end line is drawn. Its hover time and
+     * Copy float into the gap above that line instead of reserving a strip.
+     */
+    turnEndText?: boolean;
     /** Interrupt-receipt identities whose queued messages already ran → collapse. */
     staleInterruptReceipts?: Set<string>;
     /** True when a host is listening for `ade:chat:open-info` (see the registry). */
@@ -2990,13 +2981,10 @@ function renderEvent(
      that they never wrote. */
   // One decision for what a user-message row shows (`userMessageBody.ts`);
   // find (⌘F) searches the same text.
-  // A subagent's report: the spawn_wake_divider row above it already says who
-  // came back and what it said. The agent still reads this message; the user
-  // does not need it twice.
-  const spawnCompletion = event.type === "user_message" ? event.metadata?.spawnCompletion : undefined;
-  if (spawnCompletion?.childSessionId?.trim() && (spawnCompletion.spawnKind === "subagent" || spawnCompletion.spawnKind === "peer")) {
-    return null;
-  }
+  // A subagent's report draws nothing here (`transcriptEventDrawsNothing`, at
+  // the top): the spawn_wake_divider row above it already says who came back
+  // and what it said. The agent still reads the message; the user does not
+  // need it twice.
   const userBody = event.type === "user_message" ? resolveUserMessageBody(event) : null;
   if (userBody?.kind === "board-move") {
     const boardMove = userBody.move;
@@ -3305,12 +3293,15 @@ function renderEvent(
           />
           {/* Hover actions sit in their own line under the prose, never on it:
               pinned over the text's top-right corner they covered the end of a
-              short line (interim narration) and the first line of a long one. */}
+              short line (interim narration) and the first line of a long one.
+              Interim narration and a finished turn's last reply float that line
+              into the gap below instead of reserving it: there it was an empty
+              strip above the next row or the turn-end line. */}
           <div
             data-testid="assistant-text-hover-footer"
             className={cn(
               "flex h-5 items-center gap-1 opacity-0 transition-opacity duration-200 group-hover:opacity-100 focus-within:opacity-100",
-              options?.interimText
+              options?.interimText || options?.turnEndText
                 ? "pointer-events-none absolute left-0 top-full z-10 group-hover:pointer-events-auto focus-within:pointer-events-auto"
                 : "mt-0.5",
             )}
@@ -4944,7 +4935,7 @@ function DoneTurnDivider({
   ) : null;
 
   return (
-    <div className="group/turnend my-4 min-w-0">
+    <div className="group/turnend my-2 min-w-0">
       <ChatTurnWorkSummary
         toolEntries={workSummaryInFold ? EMPTY_WORK_LOG_ENTRIES : toolEntries}
         fileEntries={hasCheckpointDiffSummary || workSummaryInFold
@@ -5215,6 +5206,7 @@ type EventRowProps = SpawnedChatProviderProps & {
   onScrollToRowKey?: (rowKey: string) => void;
   assistantTurnCopyText?: string | null;
   interimText?: boolean;
+  turnEndText?: boolean;
   staleInterruptReceipts?: Set<string>;
   onCancelQueuedMessage?: (uuid: string) => void;
   onRestoreCancelledQueue?: (recoveryId: string) => Promise<boolean>;
@@ -5299,6 +5291,7 @@ const EventRow = React.memo(function EventRow({
   onScrollToRowKey,
   assistantTurnCopyText,
   interimText,
+  turnEndText,
   staleInterruptReceipts,
   onCancelQueuedMessage,
   onRestoreCancelledQueue,
@@ -5331,7 +5324,7 @@ const EventRow = React.memo(function EventRow({
         "min-w-0 max-w-full space-y-3 transition-colors duration-700",
         // Interim assistant hover actions extend below their text row; keep
         // horizontal overflow contained without clipping that vertical footer.
-        interimText ? "overflow-x-clip" : "overflow-hidden",
+        interimText || turnEndText ? "overflow-x-clip" : "overflow-hidden",
         anchored && "rounded-lg bg-amber-300/[0.08] ring-1 ring-amber-300/15",
       )}
     >
@@ -5421,6 +5414,7 @@ const EventRow = React.memo(function EventRow({
             turnDiffSummaries,
             onScrollToRowKey,
             interimText,
+            turnEndText,
             staleInterruptReceipts,
             onCancelQueuedMessage,
             onRestoreCancelledQueue,
@@ -5498,7 +5492,10 @@ const MeasuredEventRow = React.memo(function MeasuredEventRow({
       // The rect is screen pixels under hosted-web body zoom; the heights the
       // scroll math stores are layout pixels.
       const height = Math.max(el.offsetHeight, toLayoutPx(el.getBoundingClientRect().height), fallbackHeight);
-      if (height > 0) onMeasure(rowKey, height);
+      // A row that draws nothing measures 0 and must say so, or it keeps its
+      // estimate as blank space. A 0 from a hidden pane (no layout box) is not
+      // a measurement.
+      if (height > 0 || el.getClientRects().length > 0) onMeasure(rowKey, height);
     };
 
     measureNow();
@@ -6716,7 +6713,7 @@ function AgentChatMessageListMain({
   // turn fold is omitted. Per-message copy remains available on any text row
   // that the reader reveals by opening the fold.
   const previousAssistantTurnCopyRef = useRef<Map<string, AssistantTurnCopyInfo>>(new Map());
-  const { assistantTurnCopyByTurnId, interimTextRowKeys } = useMemo(() => {
+  const { assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys } = useMemo(() => {
     const previous = previousAssistantTurnCopyRef.current;
     const hiddenTextRowKeys = new Set<string>();
     for (const fold of turnFolds) {
@@ -6733,15 +6730,25 @@ function AgentChatMessageListMain({
     }
     previousAssistantTurnCopyRef.current = byTurnId;
     // Every text row of a turn except its last visible one is interim narration.
+    // The last one of a turn that drew its turn-end line floats its hover strip
+    // into the gap above that line rather than reserving the space.
+    const endedTurnIds = new Set<string>();
+    for (const row of rows) {
+      if (row.event.type !== "done") continue;
+      const turnId = getEventTurnId(row.event);
+      if (turnId && !(compactOnlyTurnIds.has(turnId) && row.event.status === "completed")) endedTurnIds.add(turnId);
+    }
     const interim = new Set<string>();
+    const turnEnd = new Set<string>();
     for (const row of rows) {
       if (row.event.type !== "text") continue;
       const turnId = getEventTurnId(row.event);
       const last = turnId ? allText.get(turnId)?.lastTextEventKey : null;
       if (last && last !== row.key) interim.add(row.key);
+      else if (last && turnId && endedTurnIds.has(turnId)) turnEnd.add(row.key);
     }
-    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim };
-  }, [rows, turnFolds]);
+    return { assistantTurnCopyByTurnId: byTurnId, interimTextRowKeys: interim, turnEndTextRowKeys: turnEnd };
+  }, [compactOnlyTurnIds, rows, turnFolds]);
   // Unfolded row keys: the logical order jumps, the fork divider, the "N new"
   // count, and the measured-height cache work in. Stable across pure content
   // deltas, like `groupedRowKeys` below.
@@ -6901,7 +6908,11 @@ function AgentChatMessageListMain({
     // Only a turn's newest computer-use action is drawn in full.
     const arranged = arrangeComputerUseRuns(merged, previousComputerUseRunRowsRef.current);
     previousComputerUseRunRowsRef.current = arranged.built;
-    return arranged.rows;
+    // A row that draws nothing (a queued steer, a stale interrupt receipt, …)
+    // is not a row: kept, it measures 0, which never replaces its estimate,
+    // and a run of them at the tail strands the thread above a blank band.
+    const drawn = arranged.rows.filter((row) => !transcriptEventDrawsNothing(row.event, rowDrawContext));
+    return drawn.length === arranged.rows.length ? arranged.rows : drawn;
   }, [openTurnFolds, presentedRows, rowDrawContext, turnFolds, unreadSince, wakeChains, wakeTurnIds]);
   // A Thought row merged into the row before it answers to that row: jumps,
   // highlights, event anchors, inline proof, and scroll-memory anchors that
@@ -8665,6 +8676,7 @@ function AgentChatMessageListMain({
       ? assistantTurnCopyByTurnId.get(envelope.event.turnId)?.text ?? null
       : null;
     const interimText = interimTextRowKeys.has(envelope.key);
+    const turnEndText = turnEndTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
 
     if (virtualized) {
@@ -8731,6 +8743,7 @@ function AgentChatMessageListMain({
           onScrollToRowKey={rowScrollToRowKey}
           assistantTurnCopyText={assistantTurnCopyText}
           interimText={interimText}
+          turnEndText={turnEndText}
           staleInterruptReceipts={staleInterruptReceipts}
           onCancelQueuedMessage={onCancelQueuedMessage}
           onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -8807,6 +8820,7 @@ function AgentChatMessageListMain({
         onScrollToRowKey={rowScrollToRowKey}
         assistantTurnCopyText={assistantTurnCopyText}
         interimText={interimText}
+        turnEndText={turnEndText}
         staleInterruptReceipts={staleInterruptReceipts}
         onCancelQueuedMessage={onCancelQueuedMessage}
         onRestoreCancelledQueue={onRestoreCancelledQueue}
@@ -8820,7 +8834,7 @@ function AgentChatMessageListMain({
         turnWorkInFold={turnWorkInFold}
       />
     );
-  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
+  }, [activeTurnId, foldedTurnEndKeys, openTurnFolds, toggleTurnFold, anchoredRowKey, assistantLabel, assistantTurnCopyByTurnId, interimTextRowKeys, turnEndTextRowKeys, checkpointDiffTurnIds, surfaceMode, surfaceProfile, turnModelState, handleApproval, rowMeasure, openWorkspacePath, handleNavigateSuggestion, handleReviewChanges, onCodexRecovery, onRecoverContinuity, onRetryProviderFailure, onChooseProviderFailureModel, onRunUnprocessedMessage, onEditUnprocessedMessage, onDismissUnprocessedMessage, onInsertDraft, onRevealChatTerminal, onRewindFiles, turnDiffSummaries, respondingApprovalIds, pendingApprovalIds, resolvedInputStates, resolvedInputAnswers, laneId, sessionId, sessionProvider, resolveSpawnedChatProvider, sessionTurnActive, sessionEnded, usageLimitResumeActive, usageLimitResumeTurnId, runtimeName, runtimePin, jiraIssueSnapshotsById, rowScrollToRowKey, forkHistoryDividerRowKey, staleInterruptReceipts, settledQueueRecoveryIds, onCancelQueuedMessage, onRestoreCancelledQueue, onStopSubagent, transcriptToolActivity, turnEndDurationByRowKey, turnProofByRowKey, scheduledWorkByTurnEndKey, wakeTurnFoldIdByTurnEndKey, wakeChainByAnchorKey, inlineProofByRowKey, onOpenProofDrawer, turnSourcesByTurnId, onOpenTurnSources, onForkFromTurn, pacedTextRowKey, liveThinkingDrawnKey, compactOnlyTurnIds]);
 
   // Compute the bottom spacer height for virtualized mode.
   const bottomSpacerHeight = useMemo(() => {

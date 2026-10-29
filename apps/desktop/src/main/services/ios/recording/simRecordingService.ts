@@ -12,6 +12,7 @@ import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../..
 import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
 import type { Logger } from "../../logging/logger";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
+import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../../shared/appleDeviceSettings";
 import type { ComputerUseProofProvenanceInput } from "../../../../shared/types/computerUseArtifacts";
 import { APPLE_DEVICE_ALREADY_RECORDING_CODE, type AppleInputSource, type AppleRecordingPhase } from "../../../../shared/types/iosSimulator";
 import type { SimHelperTransport } from "../simHelperClient";
@@ -34,7 +35,9 @@ import {
  * device rather than something it has to remember to ask for:
  *
  * 1. The first AGENT input on a device with no running recording starts one,
- *    tagged `auto`, owned by the calling chat. A person driving the pane never
+ *    tagged `auto`, owned by the calling chat, unless the caller opted out
+ *    (`--no-record` on the call, `auto-record off` on the lane, or the
+ *    machine's "Record agent input" setting off). A person driving the pane never
  *    starts one (round 3, A2) — see `noteInput`'s `source`.
  * 2. It stops at the end of that chat's turn, or after five minutes, whichever
  *    comes first.
@@ -134,6 +137,11 @@ export interface SimRecordingService {
     text?: string;
     /** The device's size in points, the unit of `x`/`y`, when a stream knows it. */
     pointSize?: { width: number; height: number } | null;
+    /**
+     * False: this input may not START an automatic recording (the caller
+     * opted out). A recording already running still overlays it.
+     */
+    autoStart?: boolean;
     /**
      * Who drove the device. Only `agent` may START a recording.
      *
@@ -410,7 +418,7 @@ export type SimRecordingServiceDeps = {
    * the failure mode of the other default is an agent silently producing
    * undecorated proof.
    */
-  readOverlaySetting?: (key: "apple.recordingOverlays.tapRings" | "apple.recordingOverlays.keyBadges") => boolean | undefined;
+  readOverlaySetting?: (key: "apple.recordingOverlays.tapRings" | "apple.recordingOverlays.keyBadges" | typeof APPLE_AUTO_RECORD_SETTING_KEY) => boolean | undefined;
   /** Theme primary, for the tap ring. */
   accentColor?: () => string | null | undefined;
   /** The proof drawer. Absent means a stopped recording is still kept locally. */
@@ -571,6 +579,14 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
       // Either decoration switched on is a reason to composite; the helper is
       // told which by the per-event calls below, not by this flag.
       return rings !== false || badges !== false;
+    } catch {
+      return true;
+    }
+  };
+
+  const autoRecordAgentInputEnabled = (): boolean => {
+    try {
+      return deps.readOverlaySetting?.(APPLE_AUTO_RECORD_SETTING_KEY) !== false;
     } catch {
       return true;
     }
@@ -1118,6 +1134,11 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           // A person tapping the pane never starts a recording. See the
           // `source` field on this method for why.
           if (input.source === "user") return;
+          // Opted out: for this call (`--no-record`), for the lane
+          // (`auto-record off`), or on this machine (Settings ▸ Apple
+          // Development ▸ Record agent input). Default on.
+          if (input.autoStart === false) return;
+          if (autoRecordAgentInputEnabled() === false) return;
           if (!deps.transport || !deps.projectRoot) return;
           await beginRecording({
             laneId: input.laneId,

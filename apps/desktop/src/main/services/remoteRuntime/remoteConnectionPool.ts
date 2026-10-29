@@ -211,6 +211,7 @@ const LONG_RUNNING_REMOTE_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> =
   // so it failed with "Remote ADE service timed out" while the remote build
   // was still running.
   ["ios_simulator.launch", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
+  ["ios_simulator.installApp", IOS_SIMULATOR_LAUNCH_REMOTE_TRANSPORT_TIMEOUT_MS],
   // A lane template's installs on the other machine; see LANE_ENV_SETUP_TIMEOUT_MS.
   ["lane.initEnv", LANE_ENV_SETUP_REMOTE_TRANSPORT_TIMEOUT_MS],
   // Checkout, `worktree add` and `worktree remove` on the other machine; see

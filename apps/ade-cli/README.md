@@ -167,7 +167,7 @@ Manage the service from the CLI:
 ade brain start                   # enable/load the login service
 ade brain stop                    # disable/unload the login service
 ade brain status --text           # endpoint state, service state, sync state, project-host readiness
-ade brain update --text           # stage/apply the latest standalone brain release and restart the service
+ade brain update --text           # stage/apply the latest standalone brain release and restart the service (on macOS the installed ADE app moves to the same version)
 ade brain update status --text    # last headless update state
 ade brain restart                 # re-exec after an app update
 
@@ -568,6 +568,17 @@ ade lanes defaults --text
 ade lanes defaults set --from primary --bring local
 ade lanes create --linear-issue-json '{"id":"...","identifier":"ENG-431"}' --start-chat --provider codex --model <model> --no-parent
 ade lanes create --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
+ade lane drift --lane lane-id --text              # did someone `git checkout` inside the worktree? compares live HEAD to the lane's recorded branch
+ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
+ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
+ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
+ade lanes rename lane-id --name "OAuth refactor"            # rename the lane; its branch keeps its name
+ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
+ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
+ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files
+ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
+ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
+ade lanes delete lane-id --force --delete-branch
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent

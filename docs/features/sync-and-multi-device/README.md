@@ -3954,6 +3954,12 @@ The Worker and brain bind control, pipe, ready, and reject messages to a random
 connection epoch. A replacement control supersedes the old epoch, so a stale
 pipe cannot attach to a new controller. Legacy Workers retain only a bounded
 pre-ready buffer; ready-v2 paths buffer no ADE data before the bridge exists.
+In the other direction the Worker holds host bytes that reach a pipe before
+its pair is ready (in memory: 64 frames / 4 MiB per pipe, 16 MiB per machine,
+sized for a stream's config + keyframe) and flushes them to the client after
+its `ready`. The brain's pre-open buffer (`MAX_PENDING_TUNNEL_BYTES`) is the
+same 4 MiB. Only the Apple device stream needs it: its loopback
+socket speaks first. A lost or overflowing buffer closes the pair.
 
 iOS races authenticated candidates rather than declaring victory at TCP or
 WebSocket open: attempts are staggered by 250 ms, limited to three concurrent

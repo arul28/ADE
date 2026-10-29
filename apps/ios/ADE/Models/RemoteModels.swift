@@ -420,6 +420,9 @@ struct DiscoveredSyncHost: Codable, Equatable, Identifiable {
   var runtimeName: String? = nil
   var runtimeKind: String? = nil
   var runtimeVersion: String? = nil
+  /// The machine's installed desktop app version (Bonjour TXT `appVersion`),
+  /// beside the brain's `runtimeVersion`. Nil with no app or an older host.
+  var appVersion: String? = nil
   var projectIds: [String] = []
   var projectNames: [String] = []
   var projectCount: Int? = nil

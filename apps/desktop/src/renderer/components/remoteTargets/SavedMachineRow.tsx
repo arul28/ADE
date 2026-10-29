@@ -284,7 +284,7 @@ export function SavedMachineRow({
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
               <VersionChip
-                version={row.version}
+                version={row.versionLabel ?? row.version}
                 target={behind || updatePhase ? updateTargetVersion : null}
                 tone={showFinalUpdateStatus && updateStatus?.ok && !behind ? "success" : "muted"}
               />

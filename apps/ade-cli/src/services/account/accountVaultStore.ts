@@ -8,10 +8,12 @@ import {
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
-import type {
-  AccountVaultItem,
-  AccountVaultItemKind,
-  AccountVaultWrite,
+import {
+  NEWER_VAULT_KINDS,
+  isAccountVaultItemKind,
+  type AccountVaultItem,
+  type AccountVaultItemKind,
+  type AccountVaultWrite,
 } from "../push/accountRelayRows";
 import type { AccountVaultWriteOptions } from "../../../../desktop/src/shared/types/accountVault";
 
@@ -78,14 +80,6 @@ function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function isAccountVaultItemKind(value: unknown): value is AccountVaultItemKind {
-  return value === "secret"
-    || value === "provider_key"
-    || value === "integration"
-    || value === "provider_api_key"
-    || value === "linear_refresh_token"
-    || value === "project_secret";
-}
 
 function readNullableString(value: unknown): string | null | undefined {
   if (value === null) return null;
@@ -270,30 +264,61 @@ export function createAccountVaultStore(args: {
     decodePending: decodePendingWrite,
     async upload(pending) {
       const relay = args.relay!;
-      const writes = pending.filter((entry) => !entry.deleted && entry.value != null);
+      const allWrites = pending.filter((entry) => !entry.deleted && entry.value != null);
       const completedSeqs: number[] = [];
       let uploadedAt: string | null = null;
+      const put = (batch: typeof allWrites) => relay.putAccountVault(
+        batch.map((entry) => ({
+          scope: entry.scope,
+          kind: entry.kind,
+          key: entry.key,
+          value: entry.value!,
+          refreshOwner: entry.refreshOwner,
+        })),
+        args.getDeviceId?.() ?? null,
+      );
+      // The Worker refuses a whole batch for one kind it does not know. Kinds
+      // newer than some deployed Workers go in their own batch, so an older
+      // Worker holds back only those rows, never every other credential.
+      const writes = allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind));
+      const newerWrites = allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind));
       if (writes.length) {
-        const result = await relay.putAccountVault(
-          writes.map((entry) => ({
-            scope: entry.scope,
-            kind: entry.kind,
-            key: entry.key,
-            value: entry.value!,
-            refreshOwner: entry.refreshOwner,
-          })),
-          args.getDeviceId?.() ?? null,
-        );
+        const result = await put(writes);
         // `null` means there was no token to ask with. The queue stays.
         if (result === null) return null;
         uploadedAt = result.updatedAt;
         completedSeqs.push(...writes.map((entry) => entry.seq));
       }
+      if (newerWrites.length) {
+        try {
+          const result = await put(newerWrites);
+          if (result === null) return { updatedAt: uploadedAt, completedSeqs };
+          // Keep the first batch's stamp: a later one would make this machine
+          // win over a remote edit that landed between the two PUTs.
+          uploadedAt ??= result.updatedAt;
+          completedSeqs.push(...newerWrites.map((entry) => entry.seq));
+        } catch (error) {
+          // They stay queued and go up once the Worker knows the kind.
+          logger.warn("account.vault_newer_kind_upload_failed", {
+            kinds: [...new Set(newerWrites.map((entry) => entry.kind))],
+            error: error instanceof Error ? error.message : String(error ?? ""),
+          });
+        }
+      }
       for (const entry of pending.filter((item) => item.deleted)) {
         let deleted: boolean | null;
         try {
           deleted = await relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key);
-        } catch {
+        } catch (error) {
+          // An older Worker refuses a kind it does not know; that delete waits
+          // without holding back the deletes queued behind it.
+          if (NEWER_VAULT_KINDS.has(entry.kind)) {
+            logger.warn("account.vault_newer_kind_delete_failed", {
+              kind: entry.kind,
+              error: error instanceof Error ? error.message : String(error ?? ""),
+            });
+            continue;
+          }
           return { updatedAt: uploadedAt, completedSeqs };
         }
         if (deleted === null) return { updatedAt: uploadedAt, completedSeqs };

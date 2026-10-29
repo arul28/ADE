@@ -420,6 +420,7 @@ export async function bootstrapPairedRuntime(args: {
           target: updated,
           arch: updated.lastSeenArch ?? "unknown",
           version: initializeInfo.version,
+          appVersion: initializeInfo.desktopAppVersion,
           route: {
             kind: candidate.kind,
             endpoint: candidate.endpoint,

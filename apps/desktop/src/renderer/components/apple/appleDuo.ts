@@ -16,6 +16,7 @@
  * - `vFromBottom` is the continuous-canvas v in [0, 1], 0 at the bottom.
  */
 
+import { appleDeviceTypeSupportsDuo } from "../../../shared/appleOrientation";
 import { APPLE_DEVICE_POSE_TARGETS } from "../../../shared/types/iosSimulator";
 
 export type AppleDuoStanceId = "open" | "laptop" | "book" | "tent" | "closed";
@@ -161,11 +162,9 @@ export function appleDeviceSupportsDuo(input: {
   deviceTypeIdentifier?: string | null;
   deviceTypeName?: string | null;
 }): boolean {
-  const identifier = (input.deviceTypeIdentifier ?? "").trim();
   const name = (input.deviceTypeName ?? "").trim();
-  return /(^|[^a-z])duo([^a-z]|$)/i.test(identifier)
-    || /(^|[^a-z])duo([^a-z]|$)/i.test(name)
-    || /fold/i.test(identifier);
+  return appleDeviceTypeSupportsDuo(input.deviceTypeIdentifier)
+    || /(^|[^a-z])duo([^a-z]|$)/i.test(name);
 }
 
 /* ── The control state machine ──────────────────────────────────────────── */

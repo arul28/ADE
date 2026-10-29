@@ -22,8 +22,8 @@ import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remote
  */
 
 
-export const MAX_REMOTE_ARGS = 64;
-export const MAX_REMOTE_ARG_CHARS = 8_000;
+const MAX_REMOTE_ARGS = 64;
+const MAX_REMOTE_ARG_CHARS = 8_000;
 
 /** Never runnable remotely, at any scope. */
 const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
@@ -85,7 +85,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs", new Set(["list", "list-open", "show", "checks", "comments", "watch-status", "github-snapshot"])],
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
-    "list", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
+    "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
     "linear-issues", "actions", "wait", "watch",
   ])],
   ["terminal", new Set(["list", "read", "active"])],
@@ -128,7 +128,7 @@ const NESTED_GROUPS: ReadonlySet<string> = new Set([
   "prs stacks", "github issue", "github app-auth", "automations webhook", "usage budget", "providers accounts",
 ]);
 
-export type RemoteCommandVerdict =
+type RemoteCommandVerdict =
   | { ok: true; args: string[] }
   | { ok: false; reason: string };
 
@@ -189,6 +189,11 @@ export function checkRemoteAdeCommand(
     };
   }
   const words = positionalWords(args);
+  // It asks every computer of the account; ADE MCP's chat tools run it for a
+  // connection and apply its own computer rules (remoteMcpProtocol.ts).
+  if ((command === "chat" || command === "chats") && words[0] === "locate") {
+    return { ok: false, reason: "ADE MCP reaches only this computer. The chat tools find a chat's computer by themselves." };
+  }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };
   }
@@ -246,6 +251,12 @@ const SERVICE_SIGN_IN_ACTIONS: ReadonlyMap<string, ReadonlySet<string> | true> =
   ])],
 ]);
 
+/**
+ * The whole `account_vault` domain, at every scope: it holds the account's
+ * credentials, ADE MCP's own token hashes and its account secret.
+ */
+const ACCOUNT_VAULT_REASON = "The account vault holds your ADE account's credentials, so it is used on the computer itself.";
+
 /** Spellings of `ade providers opencode accounts remove`, which signs OpenCode out. */
 const OPENCODE_ACCOUNT_REMOVALS: ReadonlySet<string> = new Set(["remove", "rm", "delete"]);
 
@@ -296,6 +307,9 @@ function checkActionsCommand(words: readonly string[], scope: RemoteMcpScope): R
   }
   if (target.domain === "account" && target.action !== "status") {
     return { ok: false, reason: `\`${name}\` is not available remotely. ${BLOCKED_COMMANDS.get("account")}` };
+  }
+  if (target.domain === "account_vault") {
+    return { ok: false, reason: `\`${name}\` is not available remotely. ${ACCOUNT_VAULT_REASON}` };
   }
   const signIn = SERVICE_SIGN_IN_ACTIONS.get(target.domain);
   if (signIn === true || signIn?.has(target.action)) {
@@ -379,7 +393,7 @@ const SEARCH_WRITE_FLAGS: ReadonlySet<string> = new Set(["--rebuild", "--rebuild
 let readOnlyDescription: string | null = null;
 
 /** One line listing what a read-only connection can run, for errors and tool text. */
-export function describeReadOnlyCommands(): string {
+function describeReadOnlyCommands(): string {
   if (readOnlyDescription) return readOnlyDescription;
   const parts: string[] = [];
   for (const [command, allowed] of READ_ONLY_COMMANDS) {

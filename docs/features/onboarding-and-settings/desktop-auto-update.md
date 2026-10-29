@@ -187,6 +187,52 @@ app. The app CLI gets the module paths its installer's setup step uses. With no 
 `ADE_CLI_PATH`; from an ADE terminal it used to hand the install back to the
 old app's CLI.
 
+### The app and the brain move together (macOS)
+
+On macOS `brain update --apply-staged` used to swap only the standalone
+`~/.ade/bin/ade` and point the service at it. The app stayed behind (a 1.2.123
+app beside a 1.2.125 brain, 2026-10-27) until someone pressed Restart and
+install. `applyMacDesktopUpdate` (`ade-cli/src/commands/macDesktopUpdate.ts`)
+now runs first when the stable `ADE.app` is in `/Applications` or
+`~/Applications`:
+
+1. App on the target or newer: the service is registered on the app's own
+   runtime with its `cli.cjs brain start`.
+2. App open: the brain asks it over the desktop bridge to install its own
+   update, the same request "Update & restart" sends. The app's install and
+   its post-update transaction move the service. An app that is open but does
+   not answer refuses the update.
+3. App closed: download `latest-mac.yml` and the app zip, check the zip's
+   SHA-512 against the feed, expand it beside the app, and check it with
+   `codesign --verify --deep --strict`, the installed app's TeamIdentifier, its
+   bundle id and its version. Then check again that the app is still closed,
+   stop the service through the staged binary, swap the bundle, and register
+   the service on the new app's runtime. A failed swap or service start puts
+   the old app and its service back.
+
+The service ends on the app's runtime, not the standalone one, because the app
+owns the brain: it keeps the app's privacy permissions, and an app that sees a
+brain of its own version built differently takes the service back anyway. When
+the app part succeeds, the standalone `ade` is still promoted to the same
+version, as a command only. Anything that cannot be done safely changes
+nothing and says why: an unwritable bundle (with the `chown` to run), a failed
+check, `--no-restart`, or a feed with no such version. ADE Beta and Alpha have
+no feed; their app is left alone and the status says it is behind. With no app
+installed (servers, Linux) only the brain is updated, as before.
+
+`brain update --dry-run` names the app it would update (`desktopApp`).
+"Update & restart" counts the app's version too (`installedApp`), on every
+platform, so a brain already on the target beside an older closed app is still
+updated. It reads the app through the same `readInstalledDesktopApp`
+(`nativeHelperPaths.ts`) the brain reports, `ade doctor` shows and the macOS
+app update swaps, so a machine is judged on the version it reports. A Beta or
+Alpha app behind its brain is reported as such ("has no update feed … rebuild
+it"), not offered an update that would change nothing. The macOS swap restores
+the old app only when it moved it, and checks again that ADE is still closed
+after the service stops.
+`ade setup` never swaps an app that is open, and an older app it does not
+replace is reported as kept, not as "not installed".
+
 `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
 fresh on the release tag and adds the installer, blockmap, and `latest.yml` to
 the draft release. The build is fail-closed on Authenticode: the installer and
@@ -657,6 +703,45 @@ update-service boundary. Only the coarse automatic/manual and
 idle-only/immediate choices are included, with a 24-hour deduplication window
 per combination; no paths, versions, session details, or activity counts leave
 the machine.
+
+### Installing on quit
+
+With automatic install on, quitting ADE installs a downloaded update. It is
+the same install as Restart and install (`quitAndInstall` with
+`closeAfterInstall`), so the background service moves with the app. A plain
+quit leaves the brain running its agents, and an install restarts it, so
+`decideInstallOnQuit` (`services/updates/installOnQuit.ts`) allows it only
+when that stops nothing:
+
+- the service brain answers and runs no chat turn, CLI session or terminal;
+- or ADE runs the brain itself (`app_fallback`), which the quit stops anyway.
+
+Busy, an isolated brain, or a probe that timed out defers: the quit is a plain
+quit and the update waits for the automatic install of a later launch. The quit
+prompt says which ("installs as ADE quits" or "installs later, when no agent is
+running"), and the log has `autoUpdate.quit_install_start` or
+`autoUpdate.quit_install_deferred`. The work is read before the prompt, again
+after it, and once more right before the background service stops (after the
+feed re-check), since an agent can start meanwhile. That last look turns the
+install back into a plain quit (`InstallOnQuitDeferredError`); the update stays
+downloaded.
+
+The install relaunches ADE, as every install does. Only the updater's own
+relaunch (`isQuitInstallRelaunch`) starts with a hidden window and no Dock
+icon: on Windows it carries the installer's `--updated`, on Linux the AppImage
+updater's `APPIMAGE_SILENT_INSTALL`, and it must come within 10 minutes of the
+quit. Squirrel.Mac relaunches with no marker, so macOS has only a 3-minute
+window. Any other launch that lands the install (the installer's relaunch lost
+the single-instance lock and the person opened ADE) runs the transaction in
+the open. The hidden launch runs the post-update transaction and closes once it
+passes, leaving the brain on the new build. It opens no projects and keeps the
+saved workspace for the next launch. It shows its window when the transaction
+fails, or when the person opens ADE meanwhile (Dock, second launch, a deep link
+or a file). On Windows the "Updating ADE" window shows for a quit-install too:
+its heartbeat is what makes a copy opened by hand mid-install step aside. In
+that mode it closes once the new ADE.exe starts after the installer. The
+controller is `createInstallOnQuitController`; `main.ts` only wires it. With
+automatic install off, a quit never installs.
 
 `installing` remains a sticky status throughout: the service ignores
 `update-not-available` / `checking-for-update` / `error` while a

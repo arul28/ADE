@@ -58,7 +58,10 @@ const USER_SETTING_WRITES = {
   pty: { actions: ["setDefaultShell"], entryId: "behaviour.terminal-shell" },
   budget: { actions: ["updateConfig"], entryId: "agents.budget" },
   analytics: { actions: ["setEnabled"], entryId: null },
-  remote_mcp: { actions: ["setEnabled", "createToken", "updateConnection", "removeConnection"], entryId: "ade-mcp.server" },
+  remote_mcp: {
+    actions: ["setEnabled", "setMachineIncluded", "createToken", "updateConnection", "removeConnection"],
+    entryId: "ade-mcp.server",
+  },
 } as const satisfies Partial<Record<AdeActionDomain, { actions: readonly string[]; entryId: string | null }>>;
 
 /**
@@ -354,7 +357,15 @@ export const ADE_ACTION_USER_ONLY: Partial<Record<AdeActionDomain, readonly stri
   ],
   // Granting an outside AI app this computer is the person's call. `ade mcp`
   // in their own terminal reaches the same service through `remoteMcp.call`.
-  remote_mcp: ["getStatus", "listActivity", "setEnabled", "createToken", "updateConnection", "removeConnection"],
+  remote_mcp: [
+    "getStatus",
+    "listActivity",
+    "setEnabled",
+    "setMachineIncluded",
+    "createToken",
+    "updateConnection",
+    "removeConnection",
+  ],
 };
 
 export function isUserOnlyAdeAction(domain: AdeActionDomain, action: string): boolean {
@@ -441,6 +452,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getStatus",
     "listActivity",
     "setEnabled",
+    "setMachineIncluded",
     "createToken",
     "updateConnection",
     "removeConnection",

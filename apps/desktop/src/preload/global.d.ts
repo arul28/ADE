@@ -926,6 +926,7 @@ import type {
   ComputerUseOwnerSnapshotArgs,
   IosSimulatorDevice,
   IosSimulatorDragArgs,
+  IosSimulatorLongPressArgs,
   IosSimulatorEventPayload,
   IosSimulatorListPreviewsArgs,
   IosSimulatorEnsurePreviewWorkspaceArgs,
@@ -1349,6 +1350,7 @@ declare global {
         readClipboardText: () => Promise<string>;
         getElevatedDesktop: () => Promise<boolean>;
         onElevatedDesktopChanged: (cb: (elevated: boolean) => void) => () => void;
+        onWindowFocusChanged?: (cb: (focused: boolean) => void) => () => void;
         hasClipboardImage: () => Promise<boolean>;
         readClipboardImage: () => Promise<{
           data: string;
@@ -3242,6 +3244,11 @@ declare global {
           args: { deviceUdid?: string | null; x: number; y: number },
           pin?: OpenProjectBinding | null,
         ) => Promise<{ ok: true }>;
+        /** A press held at one point (a context menu). */
+        longPress: (
+          args: IosSimulatorLongPressArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<{ ok: true; action: "long-press"; durationMs: number }>;
         pressButton: (
           args: ApplePressButtonArgs,
           pin?: OpenProjectBinding | null,

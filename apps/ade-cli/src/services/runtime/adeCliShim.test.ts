@@ -1,6 +1,10 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   adeCliShimDirName,
+  installAdeCliShim,
   publishServedRuntimeSocket,
   renderAdeCliGitBashShim,
   renderAdeCliShim,
@@ -76,6 +80,8 @@ describe("renderAdeCliShim", () => {
     expect(body).toBe([
       "@echo off",
       "setlocal",
+      // The cmd.exe marker: the CLI warns that an inline multi-line flag was cut.
+      'set "ADE_CLI_VIA_CMD=1"',
       "if defined ADE_HOME goto ade_run",
       "if defined ADE_RUNTIME_SOCKET_PATH goto ade_run",
       'set "ADE_HOME=C:\\Users\\a\\%%TEMP%%\\.ade-alpha"',
@@ -91,7 +97,7 @@ describe("renderAdeCliShim", () => {
       execPath: "C:\\ade\\ade.exe",
       brain: { socketPath: "C:\\bad\"path", adeHome: null },
       platform: "win32",
-    })).toBe("@echo off\r\nsetlocal\r\n\"C:\\ade\\ade.exe\" %*\r\n");
+    })).toBe("@echo off\r\nsetlocal\r\nset \"ADE_CLI_VIA_CMD=1\"\r\n\"C:\\ade\\ade.exe\" %*\r\n");
   });
 
   it("writes the Git Bash shim a Windows brain needs, keeping the arguments whole", () => {
@@ -130,5 +136,45 @@ describe("renderAdeCliShim", () => {
       adeCliShimDirName(entry, "/node", { ...alpha, adeHome: null }),
     );
     expect(adeCliShimDirName(entry, "/node", alpha)).toBe(adeCliShimDirName(entry, "/node", { ...alpha }));
+  });
+});
+
+// ADE_CLI_PATH on Windows must not be a batch file: cmd.exe ends a command at
+// its first line feed, so `ade.cmd` cut every multi-line --prompt (#46, W2).
+describe("installAdeCliShim on Windows", () => {
+  const brain = { socketPath: "\\\\.\\pipe\\ade-runtime-1", adeHome: "C:\\Users\\a\\.ade" };
+  const shimsRoot = () => fs.mkdtempSync(path.join(os.tmpdir(), "ade-shims-"));
+
+  it.each([
+    ["the standalone ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", "C:\\Users\\a\\.ade\\bin\\ade.exe", /ade\.exe$/],
+    ["the app's cli.cjs without the launcher", "C:\\ADE\\resources\\ade-cli\\cli.cjs", "C:\\ADE\\ADE.exe", /ade\.cmd$/],
+  ] as const)("names a runnable command for %s", (_label, entryPath, execPath, commandPattern) => {
+    const shim = installAdeCliShim({ entryPath, execPath, brain, shimsRoot: shimsRoot(), platform: "win32" });
+    expect(shim).not.toBeNull();
+    expect(shim!.commandPath).toMatch(commandPattern);
+    // Git Bash's extensionless `ade` is always there.
+    expect(fs.existsSync(path.join(shim!.dir, "ade"))).toBe(true);
+  });
+
+  // The launcher is found through the resources directory with Windows paths,
+  // so only a Windows host can stand one up.
+  it.skipIf(process.platform !== "win32")("names the shipped launcher for the app's cli.cjs", () => {
+    const root = shimsRoot();
+    const resourcesPath = path.join(root, "resources");
+    fs.mkdirSync(path.join(resourcesPath, "native"), { recursive: true });
+    fs.writeFileSync(path.join(resourcesPath, "native", "ade-cli-launcher.exe"), "MZ launcher");
+    const entryPath = "C:\\ADE\\resources\\ade-cli\\cli.cjs";
+    const execPath = "C:\\ADE\\ADE.exe";
+    const shim = installAdeCliShim({ entryPath, execPath, brain, shimsRoot: root, platform: "win32", resourcesPath });
+    expect(shim!.commandPath).toMatch(/launcher[\\/]ade\.exe$/);
+    const launch = fs.readFileSync(path.join(shim!.dir, "launcher", "ade.launch"), "utf8").split("\r\n");
+    expect(launch[0]).toBe("ade-launch 1");
+    expect(launch).toContain(`exe ${execPath}`);
+    expect(launch).toContain(`arg ${entryPath}`);
+    expect(launch).toContain("env ELECTRON_RUN_AS_NODE=1");
+    expect(launch).toContain(`default ADE_HOME=${brain.adeHome}`);
+    // What ade.cmd also did: a warm compile cache, and real Node for `ade code`.
+    expect(launch).toContain(`ifnone NODE_COMPILE_CACHE,NODE_DISABLE_COMPILE_CACHE NODE_COMPILE_CACHE=${brain.adeHome}\\cache\\node-compile`);
+    expect(launch).toContain("ttynode 1");
   });
 });

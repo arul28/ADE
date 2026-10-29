@@ -239,7 +239,7 @@ export function FilesWorkbench({
   // The web client has no Finder/Explorer of its own to reveal a path in.
   const canRevealInFinder = !isWebClientMode() && workspace != null && (workspace.kind === "external" || !isRemoteProject);
   const branch = workspace?.branchRef?.replace("refs/heads/", "") ?? null;
-  const theme: EditorThemeMode = "dark";
+  const theme: EditorThemeMode = useAppStore((s) => s.theme);
   const sessionKey = filesProjectSessionKey(projectRootPath);
   const recentSessionKey = filesSessionKey(
     projectRootPath,

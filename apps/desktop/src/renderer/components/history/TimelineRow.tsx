@@ -4,6 +4,7 @@ import type { TimelineEvent } from "./timelineTypes";
 import { getStatusClasses } from "./eventTaxonomy";
 import { EventMachineChip, isEventMachineOffline } from "./EventMachineChip";
 import { relativeWhen, formatDurationMs } from "../../lib/format";
+import { toneText } from "../lanes/laneDesignTokens";
 
 type TimelineRowProps = {
   event: TimelineEvent;
@@ -72,7 +73,7 @@ export function TimelineRow({
       {event.laneName && (
         <span
           className="font-mono text-[9px] truncate max-w-[80px] shrink-0 font-bold"
-          style={{ color: `${laneColor}CC` }}
+          style={{ color: `color-mix(in srgb, ${toneText(laneColor)} 80%, transparent)` }}
         >
           {event.laneName}
         </span>

@@ -13,6 +13,7 @@ import type {
 } from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
+import { formatMachineVersions, machineComparableVersion } from "../../../shared/machineVersions";
 import {
   accountMachineConnectionState,
   accountMachineEndpointHost,
@@ -398,9 +399,30 @@ export function formatThisComputerVersion(args: {
   const brain = args.brainVersion?.trim();
   const packageVersion = args.packageVersion?.trim();
   const product = channelProductName(args.channel);
-  if (brain) return { text: `${product} ${brain}`, source: "brain" };
+  // When the brain and this app differ, both: "ADE 1.2.123 · brain 1.2.125".
+  if (brain) return { text: `${product} ${formatMachineVersions({ brainVersion: brain, appVersion: packageVersion })}`, source: "brain" };
   if (packageVersion) return { text: `${product} ${packageVersion}`, source: "package" };
   return null;
+}
+
+/**
+ * A machine's versions as a connection reports them. `version` decides
+ * whether it is behind: the older of its brain and its desktop app, so a
+ * machine whose app is behind never reads as up to date. `versionLabel` is
+ * what to show: one version, or both when they drift
+ * ("1.2.123 · brain 1.2.125"). The app version is only trusted beside the
+ * live version it was read with.
+ */
+export function machineVersionFacts(
+  status: Pick<RemoteRuntimeConnectionStatus, "version" | "appVersion"> | null | undefined,
+  target: Pick<RemoteRuntimeTarget, "runtimeBinaryVersion"> | null | undefined,
+): { version: string | null; versionLabel: string | null } {
+  const live = status?.version?.trim() || null;
+  const versions = {
+    brainVersion: live ?? target?.runtimeBinaryVersion ?? null,
+    appVersion: live ? status?.appVersion ?? null : null,
+  };
+  return { version: machineComparableVersion(versions), versionLabel: formatMachineVersions(versions) };
 }
 
 // ---------------------------------------------------------------------------
@@ -617,8 +639,13 @@ export type SavedMachineRow = {
   target: RemoteRuntimeTarget;
   status: RemoteRuntimeConnectionStatus | null;
   connected: boolean;
-  /** ADE version running on that machine, live when connected. */
+  /**
+   * ADE version on that machine, live when connected: the older of its brain
+   * and its desktop app (`machineVersionFacts`). Decides "behind".
+   */
   version: string | null;
+  /** What to show: one version, or both when the brain and app drift. */
+  versionLabel: string | null;
   /** Set only for the unavailable section (offline / unsupported). */
   unavailableReason: string | null;
 };
@@ -790,7 +817,10 @@ export function machineUpdatePhase(args: {
 export type ConnectedMachine = {
   id: string;
   name: string;
+  /** The older of its brain and desktop app (`machineVersionFacts`). */
   version: string | null;
+  /** One version, or both when they drift. */
+  versionLabel?: string | null;
 };
 
 /** The machines a connection snapshot says are connected right now. */
@@ -802,7 +832,7 @@ export function connectedMachinesFromSnapshot(
     .map((connection) => ({
       id: connection.target.id,
       name: connection.target.name,
-      version: connection.version ?? connection.target.runtimeBinaryVersion ?? null,
+      ...machineVersionFacts(connection, connection.target),
     }));
 }
 
@@ -966,7 +996,7 @@ export function assignMachineSections(args: {
         target,
         status,
         connected: true,
-        version: status?.version ?? target.runtimeBinaryVersion ?? null,
+        ...machineVersionFacts(status, target),
         unavailableReason: null,
       });
       continue;
@@ -979,7 +1009,7 @@ export function assignMachineSections(args: {
         target,
         status,
         connected: false,
-        version: status?.version ?? target.runtimeBinaryVersion ?? null,
+        ...machineVersionFacts(status, target),
         unavailableReason: match.unsupportedReason ?? "Offline",
       });
       continue;
@@ -991,7 +1021,7 @@ export function assignMachineSections(args: {
       target,
       status,
       connected: false,
-      version: status?.version ?? target.runtimeBinaryVersion ?? null,
+      ...machineVersionFacts(status, target),
       unavailableReason: null,
     });
   }

@@ -114,6 +114,8 @@ public actor SimHelperRuntime {
         // services) belong to one boot too; the next session must look them up
         // again rather than reuse a dead boot's.
         await CoreDeviceBridge.shared.resetForNewCapture(udid: udid)
+        // A new boot numbers its windows anew.
+        WindowPlacement.forget(udid: udid)
         // Removed before the teardown awaits, so anything that reaches the
         // actor in between gets a new session rather than the dying one.
         guard let session = sessions.removeValue(forKey: udid) else { return false }
@@ -259,15 +261,68 @@ public actor SimHelperRuntime {
 
             case let .axDescribe(_, udid):
                 let display = await DevicePosture.accessibilityDisplay(udid: udid)
-                let json = try await offMainThread {
+                let displaySize = await displayPointSize(udid)
+                let screenTurn = await rigidScreenTurn(udid, displaySize: displaySize)
+                let description = try await offMainThread {
                     SimFrameworks.load()
                     return try AccessibilityBridge.shared.describeUI(
                         udid: udid,
                         displayId: display.id,
-                        displayOrientation: display.orientation
+                        displayOrientation: display.orientation,
+                        displaySize: displaySize,
+                        screenTurn: screenTurn
                     )
                 }
-                emit(.ok(id: id, payload: ["tree": String(decoding: json, as: UTF8.self)]))
+                // `truncated` says the walk stopped at a cap, so a reader
+                // knows elements may be missing rather than absent.
+                emit(.ok(id: id, payload: [
+                    "tree": String(decoding: description.json, as: UTF8.self),
+                    "truncated": !description.truncatedBy.isEmpty,
+                    "truncatedBy": description.truncatedBy,
+                    "limits": AccessibilityBridge.limits,
+                    "unplaced": description.unplaced,
+                ]))
+
+            case let .axHit(_, udid, x, y):
+                let display = await DevicePosture.accessibilityDisplay(udid: udid)
+                let displaySize = await displayPointSize(udid)
+                let screenTurn = await rigidScreenTurn(udid, displaySize: displaySize)
+                let json = try await offMainThread {
+                    SimFrameworks.load()
+                    return try AccessibilityBridge.shared.describeElement(
+                        udid: udid,
+                        x: x,
+                        y: y,
+                        displayId: display.id,
+                        displayOrientation: display.orientation,
+                        displaySize: displaySize,
+                        screenTurn: screenTurn
+                    )
+                }
+                // `hit` is what tells this answer from an older helper's full
+                // tree (which ignores the command and is never asked it).
+                emit(.ok(id: id, payload: [
+                    "hit": true,
+                    "tree": json.map { String(decoding: $0, as: UTF8.self) } ?? NSNull(),
+                ]))
+
+            case let .axFocused(_, udid):
+                let display = await DevicePosture.accessibilityDisplay(udid: udid)
+                let displaySize = await displayPointSize(udid)
+                let screenTurn = await rigidScreenTurn(udid, displaySize: displaySize)
+                let focus = try await offMainThread {
+                    SimFrameworks.load()
+                    return try AccessibilityBridge.shared.focusedElement(
+                        udid: udid,
+                        displayId: display.id,
+                        displaySize: displaySize,
+                        screenTurn: screenTurn
+                    )
+                }
+                emit(.ok(id: id, payload: [
+                    "supported": focus.supported,
+                    "element": focus.element ?? NSNull(),
+                ]))
 
             case let .axFrontmost(_, udid):
                 let info = try await offMainThread {
@@ -341,6 +396,42 @@ public actor SimHelperRuntime {
     /// `AccessibilityBridge` talks to the device synchronously and can block for
     /// hundreds of milliseconds. On the cooperative pool that starves every
     /// other device's capture; Swift concurrency has no thread to spare.
+    /// How a rigid device's picture sits on its framebuffer (an iPad or iPhone
+    /// held landscape): the turn the touch path reads (CoreDevice's display
+    /// list), for the accessibility reads, which hit-test in the framebuffer's
+    /// points and get SpringBoard's frames in them. Nil for a foldable (its
+    /// panels keep their own path) or when the size is unknown.
+    private func rigidScreenTurn(_ udid: String, displaySize: CGSize?) async -> ScreenTurn? {
+        guard let size = displaySize, size.width > 1, size.height > 1 else { return nil }
+        if await CoreDeviceBridge.shared.supportsHingeAngle(udid: udid) { return nil }
+        // A frame that already arrives wide has been turned for us.
+        if size.width > size.height { return ScreenTurn(turns: 0, frame: size) }
+        let displays = await DevicePosture.displays(udid: udid)
+        let live = displays.first(where: \.active) ?? displays.first(where: { $0.screenID == 1 }) ?? displays.first
+        return ScreenTurn(orientation: live?.orientation, frame: size)
+    }
+
+    /// Each device's screen in points, from its device type (which never
+    /// changes), read once per device.
+    private var displaySizes: [String: CGSize] = [:]
+
+    /// The device's screen in points: how the accessibility reads tell a
+    /// window from a full-screen app. A running session's metrics follow a
+    /// foldable's live panel; with none, the device type's, without making a
+    /// session just to ask. Nil when neither is known, and then no window
+    /// placement runs.
+    private func displayPointSize(_ udid: String) async -> CGSize? {
+        if let session = sessions[udid] {
+            let metrics = await session.metrics
+            return CGSize(width: metrics.pointWidth, height: metrics.pointHeight)
+        }
+        if let known = displaySizes[udid] { return known }
+        guard let metrics = metricsLookup(udid) else { return nil }
+        let size = CGSize(width: metrics.pointWidth, height: metrics.pointHeight)
+        displaySizes[udid] = size
+        return size
+    }
+
     private func offMainThread<T: Sendable>(_ body: @escaping @Sendable () throws -> T) async throws -> T {
         try await withCheckedThrowingContinuation { continuation in
             DispatchQueue.global(qos: .userInitiated).async {

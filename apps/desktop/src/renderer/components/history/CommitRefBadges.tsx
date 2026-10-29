@@ -86,7 +86,8 @@ function RefBadge({
             badge.isCurrent && !tinted ? "shadow-[inset_0_0_0_1px_rgba(255,255,255,0.18)]" : null,
           )}
           style={tinted ? {
-            color: `color-mix(in srgb, ${laneColor} 82%, var(--color-fg))`,
+            // 82% of the lane colour on dark pages, less on light ones (`--ade-tone-text-strength`).
+            color: `color-mix(in srgb, ${laneColor} calc(var(--ade-tone-text-strength) * 0.82), var(--color-fg))`,
             background: `color-mix(in srgb, ${laneColor} ${badge.isCurrent ? 22 : 13}%, transparent)`,
             boxShadow: badge.isCurrent ? `inset 0 0 0 1px color-mix(in srgb, ${laneColor} 45%, transparent)` : undefined,
           } : undefined}

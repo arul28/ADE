@@ -14,6 +14,7 @@ import {
   AUTOMATION_CHAT_SESSION_PREFIX,
   MAC_DESKTOP_INPUT_LEASE_METADATA_KEY,
   MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
+  MAC_DESKTOP_USER_HAS_CONTROL_CODE,
   WINDOWS_DESKTOP_CONSENT_REQUIRED_CODE,
   WINDOWS_DESKTOP_SHARED_CONSENT_MESSAGE,
   WINDOWS_DESKTOP_SHARED_CONSENT_METADATA_KEY,
@@ -22,6 +23,7 @@ import {
 import type {
   DesktopSeatProvider,
   MacDesktopEventPayload,
+  MacDesktopLeaseRefusalOutcome,
   MacDesktopLeaseRequestArgs,
   MacDesktopLeaseRequestResult,
   MacDesktopLeaseState,
@@ -205,12 +207,23 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       const laneId = args.laneId.trim();
       const chatSessionId = args.chatSessionId.trim();
       deps.requireDisplay(laneId);
-      const refuse = (): MacDesktopLeaseRequestResult => ({
+      // Every refusal says which one it was: a caller that reads only
+      // `granted: false` cannot tell "the user said no" from "nobody answered".
+      const refuse = (
+        outcome: MacDesktopLeaseRefusalOutcome,
+        message: string,
+      ): MacDesktopLeaseRequestResult => ({
         granted: false,
         code: MAC_DESKTOP_INPUT_LEASE_REQUIRED_CODE,
         lease: null,
+        outcome,
+        message,
       });
-      if (!chatSessionId) return refuse();
+      const noChat = () => refuse(
+        "no_chat",
+        "There is no chat to show the real-input card in, so nobody was asked. Run this from the agent's chat.",
+      );
+      if (!chatSessionId) return noChat();
       const windowsHost = deps.platform === "win32";
       const seatMode = windowsHost ? deps.seatModeOf?.(laneId) ?? null : null;
       // A Windows private seat is its own session with its own pointer and
@@ -221,6 +234,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
           code: null,
           lease: deps.leases.get(laneId),
           notRequired: true,
+          outcome: "not_required",
           message: "This lane's private Windows screen has its own pointer and keyboard; real input needs no lease here.",
         };
       }
@@ -231,10 +245,20 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
           holderId: chatSessionId,
           holderLabel: null,
         });
-        if (!decision.ok) return { granted: false, code: decision.code, lease: decision.lease };
+        if (!decision.ok) {
+          return {
+            granted: false,
+            code: decision.code,
+            lease: decision.lease,
+            outcome: "held",
+            message: decision.code === MAC_DESKTOP_USER_HAS_CONTROL_CODE
+              ? "The user has control of this screen right now. Wait until they give it back, then ask again."
+              : "Another holder has real input on this screen right now. Ask again when it is released.",
+          };
+        }
         void pushLease(laneId, decision.lease);
         deps.emit({ type: "lease-changed", laneId, lease: decision.lease });
-        return { granted: true, code: null, lease: decision.lease };
+        return { granted: true, code: null, lease: decision.lease, outcome: "granted" };
       };
 
       // Asked once per chat, for the chat's whole life. A second request is a
@@ -244,7 +268,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       // and that consent is the permission this card would ask for again. It
       // covers the chats of that lane, never a caller with no chat.
       if (seatMode === "shared") {
-        if (chatSessionId === MAC_DESKTOP_ANONYMOUS_HOLDER_ID) return refuse();
+        if (chatSessionId === MAC_DESKTOP_ANONYMOUS_HOLDER_ID) return noChat();
         deps.leases.approveChat(laneId, chatSessionId);
         return grantNow();
       }
@@ -255,7 +279,7 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       // was coming. A host with no `requestChatInput` wired has no card either,
       // so it refuses here too rather than after the event.
       if (chatSessionId.startsWith(AUTOMATION_CHAT_SESSION_PREFIX) || !deps.requestChatInput) {
-        return refuse();
+        return noChat();
       }
       const reason = args.reason?.trim() || "drive this display with real pointer and keyboard input";
       const product = desktopProductName(deps.platform);
@@ -287,16 +311,21 @@ export function createMacDesktopLeaseFlow(deps: MacDesktopLeaseFlowDeps) {
       }
       if (controller.signal.aborted && answer.outcome !== "allow") {
         deps.logger.info("mac_desktop.lease_prompt_withdrawn", { laneId, chatSessionId });
-        return { ...refuse(), message: MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE };
+        return refuse("unanswered", MAC_DESKTOP_INPUT_LEASE_UNANSWERED_MESSAGE);
       }
       if (answer.outcome === "unasked") {
         // The chat could be gone by the time the lease is asked for. A missing
         // chat is not an approval, and it is not a crash either: it is the same
         // "nobody said yes" the decline path returns.
         deps.logger.warn("mac_desktop.lease_prompt_failed", { laneId, error: answer.error });
-        return refuse();
+        return refuse("unasked", `ADE could not show the real-input card in this chat (${answer.error}), so nobody was asked.`);
       }
-      if (answer.outcome !== "allow") return refuse();
+      if (answer.outcome !== "allow") {
+        return refuse(
+          "declined",
+          "The user declined real input. Carry on with accessibility and background actions; do not ask again for the same step.",
+        );
+      }
       deps.leases.approveChat(laneId, chatSessionId);
       return grantNow();
     },

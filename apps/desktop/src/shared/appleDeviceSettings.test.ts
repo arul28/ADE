@@ -11,13 +11,14 @@ import {
 } from "./appleDeviceSettings";
 
 describe("appleDeviceSettings", () => {
-  it("defaults the five contract keys", () => {
+  it("defaults the six contract keys", () => {
     expect(DEFAULT_APPLE_DEVICE_PREFERENCES).toEqual({
       realisticBody: true,
       recordingTapRings: true,
       recordingKeyBadges: true,
       remoteBitrateKbpsCap: DEFAULT_APPLE_REMOTE_BITRATE_KBPS,
       recordingsWarnBytes: DEFAULT_APPLE_RECORDINGS_WARN_BYTES,
+      autoRecordAgentInput: true,
     });
     expect(DEFAULT_APPLE_REMOTE_BITRATE_KBPS).toBe(2500);
     expect(DEFAULT_APPLE_RECORDINGS_WARN_BYTES).toBe(5 * GIB);
@@ -30,12 +31,14 @@ describe("appleDeviceSettings", () => {
       recordingKeyBadges: true,
       remoteBitrateKbpsCap: 1000,
       recordingsWarnBytes: 2 * GIB,
+      autoRecordAgentInput: false,
     });
     expect(serialized).toEqual({
       realisticBody: false,
       recordingOverlays: { tapRings: false, keyBadges: true },
       remoteBitrateKbpsCap: 1000,
       recordingsWarnBytes: 2 * GIB,
+      autoRecordAgentInput: false,
     });
     expect(normalizeAppleDevicePreferences(serialized)).toEqual({
       realisticBody: false,
@@ -43,6 +46,7 @@ describe("appleDeviceSettings", () => {
       recordingKeyBadges: true,
       remoteBitrateKbpsCap: 1000,
       recordingsWarnBytes: 2 * GIB,
+      autoRecordAgentInput: false,
     });
   });
 

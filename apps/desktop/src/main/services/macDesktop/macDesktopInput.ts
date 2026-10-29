@@ -14,7 +14,12 @@
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
-import { macDesktopNextStep, macDesktopRefusedNextStep } from "./macDesktopNextStep";
+import {
+  macDesktopNextStep,
+  macDesktopOffDisplayRefusalMessage,
+  macDesktopRefusedNextStep,
+  macDesktopWindowDragNextStep,
+} from "./macDesktopNextStep";
 import { macDesktopDemoKey } from "./macDesktopRecording";
 import { MAC_DESKTOP_ANONYMOUS_HOLDER_ID } from "./macDesktopLeaseFlow";
 import {
@@ -197,6 +202,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       ...(args.caption ? { caption: args.caption } : {}),
     });
     const elements = Array.isArray(reply.elements) ? reply.elements as MacDesktopElement[] : [];
+    // An older driver sends no origin; the display record has it, and moves
+    // with every `display-moved`.
+    const replyDisplay = asRecord(reply.display);
+    const replyOrigin = asRecord(replyDisplay.origin);
+    const replyBounds = asRecord(replyDisplay.bounds);
+    const origin = {
+      x: asNumber(replyOrigin.x, display.origin?.x ?? 0),
+      y: asNumber(replyOrigin.y, display.origin?.y ?? 0),
+    };
     const observation: MacDesktopObservation = {
       id: asNullableString(reply.id) ?? `obs-${Math.random().toString(36).slice(2, 10)}`,
       laneId,
@@ -204,9 +218,16 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       screenshotPath: asNullableString(reply.screenshotPath) ?? screenshotPath,
       mapPath: asNullableString(reply.mapPath),
       display: {
-        width: asNumber(asRecord(reply.display).width, display.width),
-        height: asNumber(asRecord(reply.display).height, display.height),
-        scale: asNumber(asRecord(reply.display).scale, display.scale),
+        width: asNumber(replyDisplay.width, display.width),
+        height: asNumber(replyDisplay.height, display.height),
+        scale: asNumber(replyDisplay.scale, display.scale),
+        origin,
+        bounds: {
+          x: asNumber(replyBounds.x, origin.x),
+          y: asNumber(replyBounds.y, origin.y),
+          width: asNumber(replyBounds.width, display.width),
+          height: asNumber(replyBounds.height, display.height),
+        },
       },
       windows: asWindows(reply.windows),
       elements,
@@ -274,8 +295,15 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       };
     }
     if (typeof target.x === "number" && typeof target.y === "number") {
+      // The driver takes global points. A display-local point (`--local`, read
+      // off the screenshot) is moved by the display's origin here.
+      const origin = target.local === true ? deps.requireDisplay(laneId).origin ?? { x: 0, y: 0 } : { x: 0, y: 0 };
       return {
-        payload: { x: target.x, y: target.y, ...(target.windowId != null ? { windowId: target.windowId } : {}) },
+        payload: {
+          x: target.x + origin.x,
+          y: target.y + origin.y,
+          ...(target.windowId != null ? { windowId: target.windowId } : {}),
+        },
         element: null,
         // A bare point has no element to act on, so it is delivered as a
         // pointer event: background on a Mac, real on a Windows seat.
@@ -545,6 +573,18 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     deps.noteStreamActivity(laneId);
     ownership.touchDisplay(laneId);
     if (failure) {
+      // A point off the lane's display: say where the display is, in the
+      // global points the call takes, even before the driver says so itself.
+      const offDisplay = macDesktopOffDisplayRefusalMessage(failure.message.replace(/^[A-Za-z_]+: /, ""), {
+        x: display.origin?.x ?? 0,
+        y: display.origin?.y ?? 0,
+        width: display.width,
+        height: display.height,
+      });
+      if (offDisplay) {
+        const code = (failure as { code?: unknown }).code;
+        throw typeof code === "string" ? deps.serviceError(code, offDisplay) : new Error(offDisplay);
+      }
       const refused = macDesktopRefusedNextStep({
         action: args.action,
         mode: args.mode,
@@ -603,7 +643,14 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       lease: leases.checkRealInput({ laneId, holderId }),
       realInputNeedsNoCard: !onMacSeat,
       backgroundAvailable: onMacSeat,
-    });
+    }) ?? (args.action === "drag"
+      ? macDesktopWindowDragNextStep({
+        mode: deliveredMode,
+        from: pointOf(args.payload) ?? args.resolved?.center ?? null,
+        before: resolvedAgainst,
+        after: observation,
+      })
+      : null);
     return {
       ok: true,
       action: args.action,

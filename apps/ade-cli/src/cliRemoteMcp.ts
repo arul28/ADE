@@ -1,9 +1,11 @@
 /**
- * `ade mcp` — this computer's ADE MCP, from the person's own terminal.
+ * `ade mcp` — the ADE account's ADE MCP server, from the person's own terminal.
  *
- * Every subcommand is one `remoteMcp.call` on the machine brain (machine-wide,
- * so it works from any folder and never registers the current one). The brain
- * refuses it to agents; Settings → ADE MCP is the same service.
+ * Every subcommand is one `remoteMcp.call` on this computer's brain
+ * (machine-wide, so it works from any folder and never registers the current
+ * one). On/off, the computers and the connections are account-wide; the
+ * activity is this computer's. The brain refuses it to agents; Settings →
+ * ADE MCP is the same service.
  */
 
 import type { RemoteMcpAction, RemoteMcpScope } from "../../desktop/src/shared/types/remoteMcp";
@@ -13,12 +15,16 @@ export const REMOTE_MCP_HELP = `
   ADE MCP
 
   Lets AI apps you choose (claude.ai, ChatGPT, Cursor, Claude Code, VS Code,
-  Grok, or anything that speaks remote MCP) run ade on this computer through
-  ADE Relay. Off until you turn it on. Each app or token is read only or
-  read & write (full access), and you can change or remove it any time.
+  Grok, or anything that speaks remote MCP) run ade on the computers of your
+  ADE account through ADE Relay: one server URL for the account, and an app
+  can name the computer each call runs on. Off until you turn it on. Each app
+  or token is read only or read & write (full access), and you can change or
+  remove it any time.
 
-    $ ade mcp status --text                  On or off, the server URL, and every connection
-    $ ade mcp on | off                       Turn ADE MCP on or off for this computer
+    $ ade mcp status --text                  On or off, the server URL, the computers and every connection
+    $ ade mcp on | off                       Turn ADE MCP on or off for your ADE account
+    $ ade mcp machine exclude "Mac mini"     Leave a computer out (include brings it back)
+    $ ade mcp machine include "Mac mini"
     $ ade mcp token create --label "Grok" --read-only --text
     $ ade mcp token create --label "Grok" --full-access --text
     $ ade mcp token create --label "Grok" --scope read|write --text
@@ -26,7 +32,7 @@ export const REMOTE_MCP_HELP = `
     $ ade mcp scope <connection-id> read|write
                                              Change what a connection may do
     $ ade mcp remove <connection-id>         Disconnect an app or revoke a token
-    $ ade mcp activity [--limit 50] --text   What connected apps ran here, newest first
+    $ ade mcp activity [--limit 50] --text   What connected apps ran on this computer, newest first
 
   Two ways to connect an app:
     Sign in   Add the server URL from 'ade mcp status' as a custom connector.
@@ -77,6 +83,17 @@ export function buildRemoteMcpPlan(input: readonly string[]): CliPlan {
       return call("mcp on", "setEnabled", { enabled: true });
     case "off":
       return call("mcp off", "setEnabled", { enabled: false });
+    case "machine":
+    case "machines":
+    case "computer": {
+      const verb = words[1];
+      // Names may have spaces: the words after the verb are the name.
+      const name = words.slice(2).join(" ").trim();
+      if ((verb !== "include" && verb !== "exclude") || !name) {
+        throw new CliUsageError("Usage: ade mcp machine include|exclude <name or machine key>");
+      }
+      return call(`mcp machine ${verb}`, "setMachineIncluded", { machine: name, included: verb === "include" });
+    }
     case "token": {
       if ((words[1] ?? "create") !== "create") {
         throw new CliUsageError(
@@ -116,12 +133,24 @@ function scopeLabel(value: unknown): string {
   return value === "read" ? "read only" : "read & write";
 }
 
+function machineLine(machine: Record<string, unknown>): string {
+  const name = `${String(machine.name)}${machine.isThisMachine === true ? " (this computer)" : ""}`;
+  const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
+  const state = machine.supported !== true
+    ? "not joined yet: open the latest ADE on it"
+    : machine.included === false
+      ? "left out"
+      : machine.serving === true ? "serving" : "not serving";
+  return `  ${name}  ${online}  ${state}`;
+}
+
 function connectionLine(connection: Record<string, unknown>): string {
   const kind = connection.kind === "token" ? "token" : "app";
   const host = typeof connection.redirectHost === "string" && connection.redirectHost ? ` (${connection.redirectHost})` : "";
   const used = typeof connection.lastUsedAt === "string" ? `last used ${connection.lastUsedAt}` : "never used";
   const hint = typeof connection.tokenHint === "string" && connection.tokenHint ? ` …${connection.tokenHint}` : "";
-  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}  ${used}`;
+  const only = isRecord(connection.onlyMachine) ? `  ${String(connection.onlyMachine.name)} only` : "";
+  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
 }
 
 /** `--text` output for every `ade mcp` result. */
@@ -132,7 +161,11 @@ export function formatRemoteMcpResult(value: unknown): string {
     return result.filter(isRecord).map((entry) => {
       const exit = entry.exitCode === null || entry.exitCode === undefined ? "" : ` exit ${String(entry.exitCode)}`;
       const detail = typeof entry.detail === "string" ? ` — ${entry.detail}` : "";
-      return `${String(entry.at)}  ${String(entry.label)}  ${String(entry.outcome)}${exit}  ade ${String(entry.command)}${detail}`;
+      const route = typeof entry.forwardedTo === "string"
+        ? `  → ${entry.forwardedTo}`
+        : typeof entry.via === "string" ? `  via ${entry.via}` : "";
+      const what = typeof entry.tool === "string" && !entry.command ? entry.tool : `ade ${String(entry.command)}`;
+      return `${String(entry.at)}  ${String(entry.label)}  ${String(entry.outcome)}${exit}  ${what}${route}${detail}`;
     }).join("\n");
   }
   if (!isRecord(result)) return String(result ?? "");
@@ -151,11 +184,21 @@ export function formatRemoteMcpResult(value: unknown): string {
     return result.removed ? "Disconnected. Its token stops working now." : "No connection with that id.";
   }
   if (Array.isArray(result.connections)) {
+    if (result.signedIn === false) {
+      return "ADE MCP needs an ADE account. Sign in on this computer (ade login), then run 'ade mcp on'.";
+    }
+    const accountOn = result.enabled === true;
+    const thisServing = result.thisMachineServing === true;
     const lines = [
-      `ADE MCP on ${String(result.machineName)}: ${result.enabled === true ? "ON" : "off"}`,
-      `Server URL: ${result.serverUrl ? String(result.serverUrl) : "not available yet (this computer has no relay address)"}`,
-      `Relay: ${result.relayConnected === true ? "connected" : "not connected"}`,
+      `ADE MCP for your ADE account: ${accountOn ? "ON" : "off"}`,
+      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not available yet (this computer has no relay address)" : "made when you turn it on"}`,
+      `This computer (${String(result.machineName)}): ${thisServing ? "serving" : "not serving"}, relay ${result.relayConnected === true ? "connected" : "not connected"}`,
     ];
+    const machines = Array.isArray(result.machines) ? result.machines.filter(isRecord) : [];
+    if (machines.length) {
+      lines.push(`Computers (${machines.length}):`);
+      for (const machine of machines) lines.push(machineLine(machine));
+    }
     const connections = result.connections.filter(isRecord);
     lines.push(connections.length ? `Connections (${connections.length}):` : "No connections yet. Add the server URL to an app, or run 'ade mcp token create'.");
     for (const connection of connections) lines.push(connectionLine(connection));

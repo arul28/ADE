@@ -7,11 +7,13 @@
 import type { AiPermissionSettings, AutomationRuleDraft, ModelConfig } from "../../../../shared/types";
 import { defaultKickoffPrompt } from "../../../lib/linearBatchLaunch";
 
+const GROUP_ORDER = ["Agent workflows", "Pull requests", "Chats", "Issue intake", "Hygiene"] as const;
+
 export type AutomationTemplate = {
   id: string;
   name: string;
   description: string;
-  group: string;
+  group: (typeof GROUP_ORDER)[number];
   triggerType: string;
   whatYouConfigure: string[];
   isFlagship?: boolean;
@@ -33,10 +35,8 @@ const BASE: Pick<
 };
 
 const SONNET = { modelId: "anthropic/claude-sonnet-5", thinkingLevel: "medium" as const };
-const SONNET_HIGH = { modelId: "anthropic/claude-sonnet-5", thinkingLevel: "high" as const };
 
 export const TEMPLATES: AutomationTemplate[] = [
-  // ---- Flagship 1 ----
   {
     id: "daily-agent-task",
     name: "Daily agent task",
@@ -65,7 +65,6 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
-  // ---- Flagship 2 ----
   {
     id: "linear-issue-lane-agent",
     name: "Linear issue → lane + agent",
@@ -98,7 +97,6 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
-  // ---- Flagship 3 ----
   {
     id: "github-issue-lane-agent",
     name: "GitHub issue → lane + agent",
@@ -148,14 +146,71 @@ export const TEMPLATES: AutomationTemplate[] = [
       },
       modelConfig: SONNET,
       prompt:
-        "Dependabot opened PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Finish the update: run any generate steps the bump needs, run the checks for what changed, fix what breaks, then commit and push to this branch. A provider SDK bump needs `npm run tools:manifest` in apps/ade-cli. When the bumped package is @muse-code/sdk, run `npm run tools:muse-pin` in apps/ade-cli instead: it pins the Muse binary that pairs with the new SDK version and regenerates the manifest, and it refuses a version with no paired build — report that refusal rather than working around it. End with what you checked and anything a human must decide.",
+        "Dependabot opened PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Finish the update: read what the bump changes (its changelog or release notes for breaking changes), run any install, lockfile or code-generation steps the project uses for that package, run the build and the checks for the code that uses it, and fix what breaks. Commit and push to this branch. If the new version needs a decision a human should make (a breaking API, a dropped platform, a licence change), do not work around it; stop and say what is needed. End with what you checked.",
       toolPalette: ["repo", "git", "github"],
       guardrails: {},
       billingCode: "auto:dependabot-pr-agent",
       actions: [],
     },
   },
-  // ---- Flagship 4 ----
+  {
+    id: "fix-failing-ci",
+    name: "Fix failing CI on a PR",
+    description: "When a PR's checks fail, an agent opens the PR's branch, reads the failing checks, fixes them and pushes.",
+    group: "Pull requests",
+    triggerType: "github.pr_checks_failed",
+    whatYouConfigure: ["Branches to watch", "Model"],
+    isFlagship: true,
+    draft: {
+      ...BASE,
+      name: "Fix failing CI on a PR",
+      mode: "fix",
+      triggers: [{ type: "github.pr_checks_failed" }],
+      trigger: { type: "github.pr_checks_failed" },
+      execution: {
+        kind: "agent-session",
+        laneMode: "pr-branch",
+        laneNamePreset: "pr-title-author",
+        session: { title: "Fix CI" },
+      },
+      modelConfig: SONNET,
+      prompt:
+        "The checks on PR #{{trigger.pr.number}} ({{trigger.pr.title}}) failed. You are on its branch. Read the failing checks (`ade prs checks {{trigger.pr.number}} --text`) and the failed jobs' logs from your CI (for GitHub Actions, `gh run view <run> --log-failed`), find the cause, and fix it with the smallest change. Run the failing checks locally where you can, then commit and push to this branch. Do not skip, disable or weaken a test to make it pass. Do not push when the failure is flaky or outside this PR, or when the last commit on this branch is already a CI fix from this automation and the same check failed again; say so and stop, so a human takes over.",
+      toolPalette: ["repo", "git", "github"],
+      guardrails: {},
+      billingCode: "auto:fix-failing-ci",
+      actions: [],
+    },
+  },
+  {
+    id: "fix-review-comments",
+    name: "Fix review comments",
+    description: "When a review asks for changes on a PR, an agent opens the PR's branch, makes the changes and replies to each comment.",
+    group: "Pull requests",
+    triggerType: "github.pr_review_submitted",
+    whatYouConfigure: ["Whose PRs (PR authors)", "Model"],
+    isFlagship: true,
+    draft: {
+      ...BASE,
+      name: "Fix review comments",
+      mode: "fix",
+      triggers: [{ type: "github.pr_review_submitted" }],
+      trigger: { type: "github.pr_review_submitted" },
+      execution: {
+        kind: "agent-session",
+        laneMode: "pr-branch",
+        laneNamePreset: "pr-title-author",
+        session: { title: "Review fixes" },
+      },
+      modelConfig: SONNET,
+      prompt:
+        "A review was submitted on PR #{{trigger.pr.number}} ({{trigger.pr.title}}). You are on its branch. Read the open review work (`ade prs comments {{trigger.pr.number}}` lists each open thread with its id). If nothing in it asks for a change, or every request in every open thread (including any the reviewer added after your last reply) already has your answer, stop without pushing. Otherwise make each requested change, run the checks for what you touched, then commit and push to this branch. Reply on each thread you acted on with what you changed, or why you did not when a request is unclear or wrong (`ade prs reply {{trigger.pr.number}} --thread <id> --body \"...\"`). Do not resolve threads; the reviewer does.",
+      toolPalette: ["repo", "git", "github"],
+      guardrails: {},
+      billingCode: "auto:fix-review-comments",
+      actions: [],
+    },
+  },
   {
     id: "clean-up-merged-lanes",
     name: "Clean up merged lanes",
@@ -185,32 +240,63 @@ export const TEMPLATES: AutomationTemplate[] = [
     },
   },
 
-  // ---- Agent workflows ----
+  // ---- Chats ----
   {
-    id: "pr-review-session",
-    name: "PR review session",
-    description: "Open an agent review thread whenever a PR opens against main. Focuses on risk and missing tests.",
-    group: "Agent workflows",
-    triggerType: "github.pr_opened",
-    whatYouConfigure: ["Base branch", "Review prompt", "Model"],
+    id: "handoff-on-usage-limit",
+    name: "Keep going when a model runs out",
+    description: "When a chat hits its usage limit, hand it to another model so the work carries on.",
+    group: "Chats",
+    triggerType: "session.limit_reached",
+    whatYouConfigure: ["Model to switch to", "Fork or brief"],
     draft: {
       ...BASE,
-      name: "PR review session",
-      // `branch` matches the PR head branch; the base-branch filter is
-      // `targetBranch`, left unset so the template fires on every PR until
-      // the user narrows it.
-      triggers: [{ type: "github.pr_opened" }],
-      trigger: { type: "github.pr_opened" },
-      execution: { kind: "agent-session", session: { title: "PR review" } },
-      modelConfig: SONNET_HIGH,
-      prompt:
-        "Review this pull request. Cite concrete risks and missing tests; skip filler. Reference file paths and checks that support each finding.",
-      toolPalette: ["repo", "git", "github"],
+      name: "Keep going when a model runs out",
+      mode: "monitor",
+      triggers: [{ type: "session.limit_reached" }],
+      trigger: { type: "session.limit_reached" },
+      execution: {
+        kind: "built-in",
+        builtIn: {
+          actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5", targetLaneMode: "same" }],
+        },
+      },
+      prompt: "",
+      toolPalette: ["repo"],
       guardrails: {},
-      billingCode: "auto:pr-review-session",
+      billingCode: "auto:handoff-on-usage-limit",
+      actions: [{ type: "handoff", handoffMode: "brief", targetModelId: "openai/gpt-5.5", targetLaneMode: "same" }],
+    },
+  },
+  {
+    id: "finished-chat-draft-pr",
+    name: "Finished chat → draft PR",
+    description: "When a chat ends with changes but no PR, an agent writes the title and description and opens a draft PR from its lane.",
+    group: "Chats",
+    triggerType: "session.ended_without_pr",
+    whatYouConfigure: ["Base branch", "Model"],
+    draft: {
+      ...BASE,
+      name: "Finished chat → draft PR",
+      mode: "fix",
+      triggers: [{ type: "session.ended_without_pr" }],
+      trigger: { type: "session.ended_without_pr" },
+      execution: {
+        kind: "agent-session",
+        laneMode: "require-on-trigger",
+        session: { title: "Draft PR" },
+      },
+      modelConfig: SONNET,
+      prompt:
+        "A chat in this lane ended with work and no pull request. Look at what the lane changed against its base branch. If there is nothing worth a PR (no meaningful commits and no meaningful uncommitted changes, only scratch files), stop and say so. Otherwise commit anything left uncommitted that belongs with the work, push the branch, write the description to a temporary file outside the lane (a file inside it leaves the worktree dirty, and `ade prs create` refuses a dirty worktree), open the PR (`ade prs create --lane <this lane> --title \"...\" --body-file <that file>`) and mark it a draft (`ade prs draft <pr>`). Write a plain title and a short description: what changed, why, and how it was checked. Do not change the code itself.",
+      toolPalette: ["repo", "git", "github"],
+      outputs: { disposition: "open-pr-draft", createArtifact: true },
+      guardrails: {},
+      billingCode: "auto:finished-chat-draft-pr",
       actions: [],
     },
   },
+
+  // ---- Agent workflows ----
   {
     id: "pr-comment-responder",
     name: "PR comment responder",
@@ -259,51 +345,8 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [],
     },
   },
-  {
-    id: "daily-agent-brief",
-    name: "Daily agent brief",
-    description: "Every weekday morning, summarize repo activity and likely follow-ups into a thread.",
-    group: "Agent workflows",
-    triggerType: "schedule",
-    whatYouConfigure: ["Schedule", "Brief prompt"],
-    draft: {
-      ...BASE,
-      name: "Daily agent brief",
-      triggers: [{ type: "schedule", cron: "0 9 * * 1-5" }],
-      trigger: { type: "schedule", cron: "0 9 * * 1-5" },
-      execution: { kind: "agent-session", session: { title: "Daily brief" } },
-      modelConfig: SONNET,
-      prompt:
-        "Summarize the most important repo activity since yesterday's brief. Keep it concise, concrete, and oriented around what the team should know next.",
-      guardrails: {},
-      billingCode: "auto:daily-agent-brief",
-      actions: [],
-    },
-  },
 
   // ---- Issue intake ----
-  {
-    id: "issue-triage",
-    name: "Issue triage agent",
-    description: "When a new issue opens, draft a triage comment: likely owner, severity, and a reproduction question.",
-    group: "Issue intake",
-    triggerType: "github.issue_opened",
-    whatYouConfigure: ["Repository / labels", "Triage prompt"],
-    draft: {
-      ...BASE,
-      name: "Issue triage agent",
-      triggers: [{ type: "github.issue_opened" }],
-      trigger: { type: "github.issue_opened" },
-      execution: { kind: "agent-session", session: { title: "Issue triage" } },
-      modelConfig: SONNET,
-      prompt:
-        "Triage this new issue. Identify the likely owner/area, suggest a severity, and ask one sharp reproduction question if anything is missing.",
-      toolPalette: ["repo", "git", "github"],
-      guardrails: {},
-      billingCode: "auto:issue-triage",
-      actions: [],
-    },
-  },
   {
     id: "auto-label-issue",
     name: "Auto-label new issues",
@@ -350,54 +393,8 @@ export const TEMPLATES: AutomationTemplate[] = [
       ],
     },
   },
-  {
-    id: "linear-label-triage",
-    name: "Linear label triage",
-    description: "When an 'agent' label is added to a Linear issue, post a triage comment recommending next steps.",
-    group: "Issue intake",
-    triggerType: "linear.issue_labeled",
-    whatYouConfigure: ["Label to watch", "Comment prompt"],
-    draft: {
-      ...BASE,
-      name: "Linear label triage",
-      mode: "monitor",
-      triggers: [{ type: "linear.issue_labeled", labels: ["agent"] }],
-      trigger: { type: "linear.issue_labeled", labels: ["agent"] },
-      execution: { kind: "agent-session", session: { title: "Linear triage" } },
-      modelConfig: SONNET,
-      prompt:
-        "This Linear issue was just labeled for agent attention. Post a short triage comment: likely owner, a severity guess, and the next concrete step.",
-      toolPalette: ["linear"],
-      guardrails: {},
-      billingCode: "auto:linear-label-triage",
-      actions: [],
-    },
-  },
 
   // ---- Hygiene ----
-  {
-    id: "stale-issue-closer",
-    name: "Stale issue closer",
-    description: "Nightly pass that closes issues idle 60+ days with an explanatory comment.",
-    group: "Hygiene",
-    triggerType: "schedule",
-    whatYouConfigure: ["Schedule", "Idle threshold prompt"],
-    draft: {
-      ...BASE,
-      name: "Stale issue closer",
-      mode: "monitor",
-      triggers: [{ type: "schedule", cron: "0 3 * * *" }],
-      trigger: { type: "schedule", cron: "0 3 * * *" },
-      execution: { kind: "agent-session", session: { title: "Stale issue sweep" } },
-      modelConfig: SONNET,
-      prompt:
-        "Scan open issues. For each idle for 60+ days with no owner signal, post a short explanatory comment and close it. Keep comments courteous.",
-      toolPalette: ["github"],
-      guardrails: {},
-      billingCode: "auto:stale-issue-closer",
-      actions: [],
-    },
-  },
   {
     id: "push-conflict-scan",
     name: "Push conflict scan",
@@ -419,55 +416,8 @@ export const TEMPLATES: AutomationTemplate[] = [
       actions: [{ type: "predict-conflicts" }],
     },
   },
-  {
-    id: "label-welcome",
-    name: "Label welcome comment",
-    description: "When an issue receives a label, post a short automated welcome with repro steps and doc links.",
-    group: "Hygiene",
-    triggerType: "github.issue_labeled",
-    whatYouConfigure: ["Label", "Welcome prompt"],
-    draft: {
-      ...BASE,
-      name: "Label welcome comment",
-      mode: "monitor",
-      triggers: [{ type: "github.issue_labeled" }],
-      trigger: { type: "github.issue_labeled" },
-      execution: { kind: "agent-session", session: { title: "Label welcome" } },
-      modelConfig: SONNET,
-      prompt:
-        "A label was just added to this issue. Post a short, friendly comment linking repro steps and the most relevant doc section. Keep it under 5 sentences.",
-      toolPalette: ["github"],
-      guardrails: {},
-      billingCode: "auto:label-welcome",
-      actions: [],
-    },
-  },
-
-  // ---- CI & tests ----
-  {
-    id: "nightly-test-sweep",
-    name: "Nightly test sweep",
-    description: "Run the built-in test suite on a cron. No chat thread, just deterministic checks.",
-    group: "CI & tests",
-    triggerType: "schedule",
-    whatYouConfigure: ["Schedule", "Test suite"],
-    draft: {
-      ...BASE,
-      name: "Nightly test sweep",
-      mode: "monitor",
-      triggers: [{ type: "schedule", cron: "0 2 * * 1-5" }],
-      trigger: { type: "schedule", cron: "0 2 * * 1-5" },
-      execution: { kind: "built-in", builtIn: { actions: [{ type: "run-tests", suiteId: "" }] } },
-      prompt: "",
-      toolPalette: ["tests"],
-      guardrails: {},
-      billingCode: "auto:nightly-test-sweep",
-      actions: [{ type: "run-tests", suite: "" }],
-    },
-  },
 ];
 
-export const GROUP_ORDER = ["Agent workflows", "Issue intake", "Pull requests", "Hygiene", "CI & tests"];
 
 export const TEMPLATE_GROUPS: Array<{ title: string; templates: AutomationTemplate[] }> = GROUP_ORDER.map(
   (title) => ({ title, templates: TEMPLATES.filter((t) => t.group === title) }),

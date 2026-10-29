@@ -36,7 +36,7 @@ import {
 } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { ModelRowLogo } from "../shared/ProviderLogos";
 import { PermissionModeGlyph } from "../shared/PermissionModePicker";
-import { modelPermissionChipOptions, permissionToneTextClass } from "../../lib/modelPermissionOptions";
+import { modelPermissionChipOptions, permissionToneTextClass } from "../shared/permissionModePickerOptions";
 import { cn } from "../ui/cn";
 
 export type { ComposerModelSuggestion };

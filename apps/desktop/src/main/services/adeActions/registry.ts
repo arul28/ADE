@@ -93,6 +93,8 @@ import {
 import { normalizeCustomNotificationLink } from "../../../shared/customNotificationLink";
 import { deriveProjectId } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { remoteMcpActionHandlers } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpService";
+import { REMOTE_MCP_SETTINGS_PREFIX } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpAccount";
+import { REMOTE_MCP_VAULT_KIND } from "../../../../../ade-cli/src/services/remoteMcp/remoteMcpStore";
 import {
   PushRelayNotifyRateLimitedError,
   PushRelayRequestError,
@@ -579,6 +581,77 @@ type OpaqueService = Record<string, unknown>;
 
 function toService(value: unknown): OpaqueService | null {
   return (value ?? null) as OpaqueService | null;
+}
+
+const ADE_MCP_ACCOUNT_ROWS_REFUSED =
+  "ADE MCP's own account data (its connections, account secret and computers) is managed in Settings → ADE MCP, not through actions.";
+
+/**
+ * The account vault without ADE MCP's rows. They hold the connections' token
+ * hashes and the account secret: a caller that could write one could mint
+ * itself a permanent token, and one that could read the secret could answer
+ * for the account. Refused for every caller, Settings included; the remote
+ * MCP service reads and writes them in-process (remoteMcpShared.ts), never
+ * through this domain.
+ */
+function buildAccountVaultDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const store = runtime.accountVaultStore;
+  if (!store) return null;
+  const guard = (kind: unknown): void => {
+    if (kind === REMOTE_MCP_VAULT_KIND) throw new AdeExpectedError(ADE_MCP_ACCOUNT_ROWS_REFUSED, "user");
+  };
+  type Store = typeof store;
+  return {
+    list: (scope?: string) => store.list(scope).filter((row) => row.kind !== REMOTE_MCP_VAULT_KIND),
+    get: (...args: Parameters<Store["get"]>) => {
+      guard(args[1]);
+      return store.get(...args);
+    },
+    set: (...args: Parameters<Store["set"]>) => {
+      guard(args[1]);
+      return store.set(...args);
+    },
+    remove: (...args: Parameters<Store["remove"]>) => {
+      guard(args[1]);
+      return store.remove(...args);
+    },
+    sync: (...args: Parameters<Store["sync"]>) => store.sync(...args),
+    pendingKeys: (...args: Parameters<Store["pendingKeys"]>) => {
+      guard(args[1]);
+      return store.pendingKeys(...args);
+    },
+  };
+}
+
+/**
+ * The account settings without writes to ADE MCP's keys (`ade_mcp.*`): its
+ * on/off switch and each computer's entry, whose endpoint key says where the
+ * account's calls go. Reads stay. The remote MCP service writes them
+ * in-process, never through this domain.
+ */
+function buildAccountSettingsDomainService(runtime: AdeRuntime): OpaqueService | null {
+  const store = runtime.accountSettingsStore;
+  if (!store) return null;
+  const guard = (key: unknown): void => {
+    if (typeof key === "string" && key.startsWith(REMOTE_MCP_SETTINGS_PREFIX)) {
+      throw new AdeExpectedError(ADE_MCP_ACCOUNT_ROWS_REFUSED, "user");
+    }
+  };
+  type Store = typeof store;
+  return {
+    list: (...args: Parameters<Store["list"]>) => store.list(...args),
+    deletedKeys: (...args: Parameters<Store["deletedKeys"]>) => store.deletedKeys(...args),
+    get: (...args: Parameters<Store["get"]>) => store.get(...args),
+    set: (...args: Parameters<Store["set"]>) => {
+      guard(args[1]);
+      return store.set(...args);
+    },
+    remove: (...args: Parameters<Store["remove"]>) => {
+      guard(args[1]);
+      return store.remove(...args);
+    },
+    sync: () => store.sync(),
+  };
 }
 
 function buildProxyDomainService(runtime: AdeRuntime): OpaqueService | null {
@@ -4302,8 +4375,8 @@ export function getAdeActionDomainServices(
     ade_project: toService(runtime.adeProjectService),
     project_config: toService(runtime.projectConfigService),
     project_secret: toService(buildProjectSecretDomainService(runtime)),
-    account_settings: toService(runtime.accountSettingsStore),
-    account_vault: toService(runtime.accountVaultStore),
+    account_settings: buildAccountSettingsDomainService(runtime),
+    account_vault: buildAccountVaultDomainService(runtime),
     linear_credentials: toService(runtime.linearCredentialService),
     linear_oauth: buildLinearOAuthDomainService(runtime),
     linear_agent: buildLinearAgentDomainService(runtime),

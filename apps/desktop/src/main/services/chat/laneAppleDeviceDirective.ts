@@ -52,7 +52,7 @@ export function buildLaneAppleDeviceDirective(device: LaneAppleDeviceRef): strin
     "Tests: `\"$ADE_CLI_PATH\" apple test --scheme <scheme> --text` runs xcodebuild test on this device. Never make a simulator with `simctl create`/`clone`; this lane has one. If you run `xcodebuild` yourself, pass `-derivedDataPath .ade/cache/ios-simulator/DerivedData` so the build stays in this lane.",
     "If recording fails, say so. Never attach an older recording or a file you did not just record.",
     "Check each step before you report it: an ok result only means the input was sent. Confirm with `\"$ADE_CLI_PATH\" apple foreground`, `snapshot` or `assert-visible`, and report only what you saw. If a step did not work, say which one.",
-    "Sharing this device with other agents (a coordinator and its subagents)? Take turns: `\"$ADE_CLI_PATH\" apple lease --wait 300 --holder <your name> --text` before a run of builds, folds and shots, then `\"$ADE_CLI_PATH\" apple lease release --token <t> --text`.",
+    "Sharing this device with other agents (a coordinator and its subagents)? Take turns: `\"$ADE_CLI_PATH\" apple lease --wait 300 --holder <your name> --text` before a run of builds, folds and shots, then `\"$ADE_CLI_PATH\" apple lease release --token <t> --text`. The token is your turn: only it renews (`lease --token <t>`) or releases it.",
     "To show the device to the user, run `\"$ADE_CLI_PATH\" apple show`.",
     "</ade-lane-tools>",
   ].join("\n");

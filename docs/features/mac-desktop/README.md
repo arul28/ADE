@@ -347,6 +347,33 @@ Single-instance apps are one lane at a time. A second lane asking for the same
 bundle id is refused with `MAC_DESKTOP_APP_OWNED_BY_OTHER_LANE`, and the message
 names the holding lane.
 
+**Opening a document.** A blank `open <app>` always starts a new copy of the app
+for the lane; that is how two lanes stay out of each other's process. A document
+open (`open <file>`, or `open <app> -- <file>`) works differently
+(`documentInstance` in `AppLauncher.swift`):
+
+- The lane already runs the app, and no other copy runs: the file goes to the
+  lane's copy (a non-new-instance open). A second Ableton Live for one `.als`
+  fought the first over its Remote Script port.
+- The lane runs it and so does the user or another lane: refused. macOS picks
+  which running copy gets a document and may pick the user's. The message says
+  to use the lane copy's File menu, or `--new-instance`.
+- Only someone else runs it: a new copy for the lane, and the reply's `message`
+  says a second copy is running and that port- or lock-holding apps may
+  misbehave.
+- `--new-instance` (`newInstance` on the action): always a new copy.
+
+**Quitting by name.** `quit <name>` resolves against what `windows` shows as
+the lane's own (`ade_launched`): the launched-app registry, its released apps,
+and any instance a lane window still carries that origin for (a window id dies
+with its process, so that is never a reused pid). Every name an app goes by
+counts: the launch's, the running app's localized name, the bundle's name and
+file name, and the window owner name, case and a trailing `.app` ignored. A
+prefix is enough when it names one app (`quit "FL Studio"` for "FL Studio
+2025"); one that fits two apps is refused with both named. A refusal lists what
+the lane opened and which user apps it holds windows of
+(`LaneAppMatch` in `LaneApps.swift`).
+
 ## Lifecycle
 
 1. **Auto-start.** The first time a chat opens the Mac Desktop tab, or the first
@@ -479,6 +506,14 @@ Accessibility actions need no lease. Real pointer and keyboard events do.
   session record is gone is refused every acting command rather than passed
   through naming someone else's lane. `getStatus` and `listWindows` still
   answer, because `getStatus` is the domain's capability probe.
+- **The caller waits longer than the card.** The card is withdrawn after
+  `MAC_DESKTOP_INPUT_LEASE_WAIT_MS` (170 s) and the brain's budget for
+  `requestInputLease` is 180 s, so `ade mac-desktop lease` sets a client floor of
+  195 s (`macDesktopInteractiveClientFloorMs`). `screen start --shared` does the
+  same. The result carries `outcome`: `granted`, `not_required`, `declined`,
+  `unanswered` (withdrawn), `unasked` (the card could not be shown), `no_chat`,
+  or `held`. The CLI prints it and exits 1 for anything but a grant, in `--json`
+  too.
 - **An `ade` process with no chat identity speaks for nobody.** It connects
   as `ade-cli:<pid>`: a person's terminal, or an agent whose shell has no chat
   environment (every OpenCode agent). `scopeUnboundMacDesktopAdeActionArgs`
@@ -537,9 +572,38 @@ nothing here falls back to the HID tap.
 The target is the frontmost window under the point that belongs to an app with
 a window on the lane, at any window level (a context menu is its own window
 above the one that opened it), and only on the lane's display
-(`WindowHitTest.backgroundCandidates`). A point off the display is refused. A
-drag goes wholly to the window it starts in; one that ends on a different
-window is refused, because the drop would reach nobody. Its steps pump the run
+(`WindowHitTest.backgroundCandidates`). So a point that another lane window
+covers goes to that window, the one on top, as a real click would.
+
+Points are global screen points. The lane's display sits somewhere on that
+plane (here at -2560,1440), and every observation's `display` carries its
+`origin` and `bounds` in points next to the image size in pixels; the CLI prints
+them as the `points` line. `--local` on `click`, `scroll` and `drag` takes a
+display-local point. The CLI reads the display origin with `getStatus` first and
+sends global points, so it works against an older brain too (one that does not
+know `local` would read the point as global, and with `--real` click the user's
+screen). It refuses when the lane has no display. Other callers may send `local:
+true` on the target to a brain that lists `target.local`.
+
+**Mixed versions.** `getStatus` lists `capabilities`
+(`MAC_DESKTOP_BRAIN_CAPABILITIES`). A flag an older brain would drop without an
+error is checked first: `open --new-instance` needs `open.newInstance` and
+`proof record --plain` (lane display) needs `proof.plain`, or the CLI refuses
+and says to update. `record start --plain` sends `keepIdle` as well, which every
+brain forwards. An older driver ignores `newInstance`, which is safe: it always
+opens a new copy.
+A point off the display is refused with the display's global range and, when it
+fits the display as a local point, the global point it meant
+(`Geometry.offDisplayRefusal`). The brain adds the same to an older driver's
+shorter refusal (`macDesktopOffDisplayRefusalMessage`).
+
+A drag goes wholly to the window it starts in; one that ends on a different
+window is refused, because the drop would reach nobody. A background drag
+cannot move a window: only the window server moves windows, so a title bar or a
+frameless Electron drag region stays put. After a drag that started in a
+window's top 60 points and left it in place, the result's `effect.next` says so
+and points at `claim` (`macDesktopWindowDragNextStep`); a claim of a layer-3
+palette parks it by Accessibility like any window, and `present` moves it too. Its steps pump the run
 loop under the gesture gate; a click's and a scroll's short pauses do not pump.
 
 A user takeover refuses background input from an agent exactly as it refuses
@@ -826,6 +890,13 @@ the capture so the returned state is the state that was filed. `record start`
 files the finished movie only when it was given `--caption`. Agents keep writing
 their own captions; the CLI never invents one.
 
+A recording cuts still stretches unless it is plain. `record start --plain`
+sends `plain`, which the action domain and the sync command forward (they used
+to forward only the old `keepIdle`, so `--plain` was dropped).
+`ade proof record --plain` sends `plain` to `record_environment`, so a filed
+proof recording can keep real time too. A `--real-screen` recording is always
+real time.
+
 The pane is the one caller that supplies a default. A person pressing Record or
 Save screenshot has already said they want the capture kept, so the pane sends
 `macDesktopPaneCaption` — "Mac Desktop recording · <lane>" or "Mac Desktop
@@ -1110,6 +1181,17 @@ So a lane app's panel is a lane window like any other: listed, observed and
 watched. A window the service itself owns is never taken, because taking that
 process would give one lane every app's next panel: `claim`/`park` refuse it,
 and a lane listing shows it only while it sits on the lane's display.
+
+A sheet attached to a window or panel ("Replace?" on a Save panel) is its own
+window-server entry but no Accessibility window: it is an `AXSheet` child of its
+parent. A panel-layer entry that is not one of the app's windows is checked
+against its windows' sheets (`WindowLayerPolicy.panelAdmission`), and a sheet is
+listed with `sheetOf` (`[sheet of #<id>]`). `observe` walks it first and its
+parent's walk skips it; `press` with no target reaches it; a background click
+lands on it (it is a lane app's window on the lane's display); a claim of it
+claims its parent; the watcher never parks it alone. A lane app's modal panel
+whose app cannot be read at all is still listed, so the lane can see it is
+blocked.
 
 The 1 s watcher sweep moves a new panel of a lane app onto the lane display the
 same way it moves a window. When it cannot — the window never answers

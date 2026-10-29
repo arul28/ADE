@@ -31,7 +31,6 @@ enum WorkSettingsCatalog {
     "general.diagnostics-sharing": Setting(path: "Computer › ADE service › Send a report to ADE", locked: true),
     "general.reset": Setting(path: "Computer › ADE service › Reset ADE", locked: true),
     "general.keep-awake": Setting(path: "Computer › Behaviour › Keep this computer awake", locked: true),
-    "ade-mcp.server": Setting(path: "Computer › ADE MCP › ADE MCP: let AI apps use this computer", locked: true),
     "behaviour.terminal-shell": Setting(path: "Computer › Behaviour › Default terminal shell", locked: false),
     "general.capture-gesture": Setting(path: "Computer › Behaviour › Capture with a key gesture", locked: true),
     "general.link-open-mode": Setting(path: "Computer › Behaviour › Open links", locked: false),
@@ -70,6 +69,7 @@ enum WorkSettingsCatalog {
     "appearance.apple-realistic-body": Setting(path: "Computer › Apple devices › Realistic body", locked: false),
     "appearance.apple-tap-rings": Setting(path: "Computer › Apple devices › Tap rings in recordings", locked: false),
     "appearance.apple-typed-badges": Setting(path: "Computer › Apple devices › Typed text in recordings", locked: false),
+    "apple.auto-record": Setting(path: "Computer › Apple devices › Record agent input", locked: false),
     "appearance.apple-remote-bitrate": Setting(path: "Computer › Apple devices › Remote viewer bitrate cap", locked: false),
     "appearance.apple-recordings-warn": Setting(path: "Computer › Apple devices › Recordings storage warning", locked: false),
     "agents.providers": Setting(path: "Computer › Providers › AI connections", locked: true),
@@ -125,6 +125,9 @@ enum WorkSettingsCatalog {
     "activity.machines": Setting(path: "You › Notifications › Machines", locked: false),
     "secrets.secrets": Setting(path: "Project › Secrets", locked: false),
     "stats.usage": Setting(path: "You › Usage › Usage & spend", locked: true),
+    "ade-mcp.server": Setting(path: "You › ADE MCP › ADE MCP: let AI apps use ADE", locked: true),
+    "ade-mcp.computers": Setting(path: "You › ADE MCP › Computers AI apps can reach", locked: true),
+    "ade-mcp.connections": Setting(path: "You › ADE MCP › Connected AI apps and tokens", locked: true),
   ]
 
   static let places: [String: String] = [

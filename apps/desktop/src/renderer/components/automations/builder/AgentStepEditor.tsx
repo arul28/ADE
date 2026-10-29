@@ -4,8 +4,9 @@ import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../.
 import type { ModelConfig, ThinkingLevel } from "../../../../shared/types";
 import { ModelPicker } from "../../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../../shared/ModelPicker/ReasoningEffortPicker";
-import { labelCls, selectCls } from "../designTokens";
-import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../permissionControls";
+import { labelCls } from "../designTokens";
+import { permissionControlsForModel } from "../permissionControls";
+import { RulePermissionPicker } from "../RulePermissionPicker";
 import { cn } from "../../ui/cn";
 import { AUTOMATION_AGENT_LIMIT_MAX_MIN } from "../../../../shared/automationLimits";
 import type { WorkflowStep } from "./draftBridge";
@@ -26,30 +27,16 @@ function PermissionPicker({
   onChange: (next: WorkflowStep) => void;
 }) {
   const modelId = step.modelConfig?.modelId ?? defaultModelId();
-  const meta = permissionControlsForModel(modelId);
-  if (!meta) return null;
-  const current = selectedPermissionMode(step.permissionConfig, modelId);
+  if (!permissionControlsForModel(modelId)) return null;
   return (
-    <label className="block space-y-1">
+    <div className="block space-y-1">
       <span className={labelCls}>Permissions</span>
-      <select
-        className={selectCls}
-        value={current}
-        onChange={(e) =>
-          onChange({
-            ...step,
-            permissionConfig: patchPermissionConfig(step.permissionConfig, modelId, e.target.value),
-          })
-        }
-      >
-        <option value="">Rule default</option>
-        {meta.options.map((option) => (
-          <option key={option.value} value={option.value}>
-            {option.label}
-          </option>
-        ))}
-      </select>
-    </label>
+      <RulePermissionPicker
+        modelId={modelId}
+        permissionConfig={step.permissionConfig}
+        onChange={(permissionConfig) => onChange({ ...step, permissionConfig })}
+      />
+    </div>
   );
 }
 

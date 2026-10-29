@@ -100,7 +100,7 @@ socket, no session object.
   writer wins, reached only through the Worker's internal
   `/__mcp-endpoint` path), and the Worker caches that mapping. So the URL an
   AI app holds cannot dial `/connect` or `/prewarm` for the machine.
-- The brain sends `{t:"mcp_state", enabled, endpointKey}` on every control open and toggle;
+- The brain sends `{t:"mcp_state", enabled, endpointKey, account?}` on every control open and toggle;
   the DO keeps it in the control socket's attachment. Off (or a brain that
   never says) → `404 ade_mcp_off` without waking the machine.
 - No control socket → `503 offline`. Over 16 in flight or 300 a minute →
@@ -108,8 +108,9 @@ socket, no session object.
   minutes → `504`; a control socket that closes or is replaced fails its
   pending requests with `503` at once.
 - Only `authorization`, `content-type`, `accept`, `mcp-protocol-version`,
-  `mcp-session-id` and `user-agent` go to the brain; only a fixed list of
-  response headers comes back. Every answer carries permissive CORS, and
+  `mcp-session-id`, `user-agent` and `x-ade-mcp-via` (set by a brain that
+  forwards a call to another computer; the target refuses a second hop) go to
+  the brain; only a fixed list of response headers comes back. Every answer carries permissive CORS, and
   `OPTIONS` is answered by the Worker.
 - `GET /oauth/callback` is ADE sign-in's one registered return address. The
   `state` names the machine before the dot; the request goes to that brain as
@@ -118,6 +119,73 @@ socket, no session object.
   that proves a person approved all live on the brain, which redeems ADE's
   sign-in code with a verifier only it holds. The relay can read the traffic
   (TLS ends at Cloudflare) but cannot mint access.
+
+### The account address
+
+One address serves every computer on an ADE account that has ADE MCP on:
+`/a/<accountKey>/<rest>` (brain path `/<rest>`, encoded as for `/m/`), plus
+`/.well-known/{oauth-protected-resource,oauth-authorization-server,openid-configuration}/a/<accountKey>[/<suffix>]`
+(brain path `/.well-known/<kind>[/<suffix>]`). `OPTIONS` is answered by the
+Worker with the same CORS. The ADE sign-in callback stays per-machine
+(`/oauth/callback`, state `<endpointKey>.<nonce>`), so it returns to the
+computer holding the pending sign-in.
+
+- **Joining.** The brain adds `account: {secret}` to `mcp_state`. The secret is
+  the account's ADE MCP secret (32 random bytes, base64url, from the account
+  vault). The machine object checks its shape (base64url, 32–128 chars), derives
+  `accountKey = hex(HMAC-SHA256(utf8(secret), "ade-mcp-account")).slice(0, 40)`
+  itself (a key the brain names is never trusted), and adds its machine to the
+  object `mcp-account:<accountKey>`. It remembers the key on the control
+  socket's attachment and in its own storage, so a restarted brain can still
+  leave the account it joined. The secret is never stored or logged.
+- **Leaving.** `enabled: false`, no `account`, a malformed secret, or a secret
+  for another account removes the machine from the account it joined before. A
+  control socket that closes does not leave: an offline computer is skipped.
+  Membership messages are applied one at a time, in the order sent.
+- **Retries.** A join or leave the account object fails is not lost: an
+  account still to leave stays in the machine object's storage
+  (`mcpAccountLeaving`), and while the control socket stays open the machine
+  object's alarm retries both every 60s until they take (the brain sends
+  `mcp_state` only on control open and change). The next `mcp_state` retries
+  them too. A machine object sent an account request for an account it is not
+  on leaves that account (or, when it is the one its brain asked for, retries
+  the join).
+- **The account object** stores `members` (machine relay keys, at most 32, most
+  recent registration last; the oldest drops out past 32) and `front` (the
+  machine that last answered). Internal paths, never routed publicly:
+  `GET /__mcp-account` → `{members, front}`;
+  `PUT /__mcp-account` `{machineKey, op: "add"|"remove"}`;
+  `POST /__mcp-account/front` `{machineKey}` (members only).
+- **Failover.** The Worker reads the account object and tries the front first,
+  then the others newest-first. Each try goes to that machine's object with the
+  internal header `x-ade-mcp-mount: a/<accountKey>`; any client copy of that
+  header is dropped first, on every MCP route, so a client cannot fake a mount.
+  The machine object passes it to the brain as
+  `mount: {kind: "account", key}` on the `http` message, never as a header, and
+  answers only when this machine is on that account (`mcpAccountKey` on its
+  control socket); a machine still listed on an account it has left refuses.
+  When the machine object refuses **before** the brain could see the request
+  (`503 offline`: no control socket or the send failed; `404 ade_mcp_off`: off
+  there, or not on this account), it marks the answer with the internal
+  `x-ade-mcp-undelivered` header and the Worker tries the next machine. The
+  body is buffered (1 MiB cap, `413` above it) so it can be sent again. Any
+  other answer is final and returned as is, including a `503` for a request
+  whose brain went away mid-call and a `429`: a request a brain may have
+  received is never sent to a second one, and a Durable Object failure on that
+  hop is not retried either (`fetchDurableObject`, `retry: "never"`). If the
+  machine that answered is not the front, it becomes the front (`waitUntil`).
+  No members, or every machine off → `404 ade_mcp_off` ("ADE MCP is off for
+  this account…"); at least one offline and none answering → `503 offline`
+  ("None of your computers with ADE MCP on are online…", `Retry-After: 30`).
+  Rate limits and the other limits above stay per machine object.
+- **Trust.** The account address adds no authority to the relay. Account
+  tokens, OAuth and the sign-in check still live on the brains, which check the
+  `mount` key against the account key they derive themselves. The account key
+  in the URL is public and grants nothing; the secret behind it reaches the
+  relay only over a brain's signed control socket. A compromised relay could
+  add a rogue member to an account only by using a secret it already relays,
+  and a rogue member would still have to answer requests whose tokens it cannot
+  verify: it gains the traffic it could already read, not access to any brain.
 
 ## Trust model — read this
 
@@ -149,6 +217,16 @@ What the relay's position does **not** grant:
   instead of silently losing a protocol frame. Ready-v2 phones do not send ADE
   frames until the relay confirms the pipe and local bridge are ready, so their
   first frame never depends on volatile DO memory.
+- Host frames that reach a pipe before its pair is ready are held in DO memory
+  (in order; 64 frames / 4 MiB per pipe, 16 MiB across every pipe of one
+  machine) and sent to the phone right after its `{t:"ready"}`. 4 MiB fits the
+  stream's first config + keyframe with margin: real screens measured 30-190
+  KB, full-screen noise (the worst case) 1.1-1.9 MB on an iPhone 17 Pro and up
+  to 1.3 MB on the iPhone Duo's inner panel. The brain's own pre-open buffer
+  matches it (`MAX_PENDING_TUNNEL_BYTES`). This is the Apple device stream: its loopback socket
+  speaks first, so its config and keyframe can reach the pipe before the
+  brain's `ready` reaches the control socket. A lost buffer (hibernation) or an
+  overflow closes the pair instead of forwarding a stream with a gap in it.
 
 Treat the relay like any other network hop you don't fully control: fine for
 transport, not a place to rely on for confidentiality until E2E payload
@@ -173,9 +251,9 @@ protocol control frames handled at the Cloudflare edge: they do not become JSON
 | `4501` | phone `/connect` | Host unavailable: no usable control socket or local sync listener |
 | `4502` | pipe/phone | Idle > 10 min, closed by the alarm sweep |
 | `4503` | phone `/connect` | Machine already at 16 concurrent tunnels |
-| `4504` | pipe | Pipe arrived but its phone had already disconnected |
+| `4504` | pipe | Pipe arrived, or sent pre-ready data, after its phone had disconnected |
 | `4505` | host control | Replaced by a newer host control socket |
-| `4506` | phone `/connect` | Pre-pipe frame buffer exceeded 64 frames or 256 KiB |
+| `4506` | phone/pipe | Pre-ready buffer exceeded its cap: phone side 64 frames / 256 KiB; pipe side 64 frames / 4 MiB per pipe or 16 MiB per machine |
 | `4507` | phone/pipe | Brain rejected the open because bridge validation/setup failed |
 | `4508` | pipe | Pipe epoch or id did not match a pending client |
 | `4509` | phone/pipe | One side could not receive a forwarded frame |
@@ -208,7 +286,11 @@ in the dashboard (Workers → **ade-tunnel-relay** → Logs) and stream live via
 `npx wrangler tail ade-tunnel-relay`. Only lifecycle/rejection events are
 logged — never per-frame, so a busy tunnel stays cheap: `host_registered`,
 `connect_rejected` (`reason: host_offline | too_many | bridge_rejected`), `auth_failed`
-(`role: host | pipe`), `cloudflare_transient` (a Durable Object restarting under
+(`role: host | pipe`), `mcp_account_joined` / `mcp_account_left` (machine and
+account key prefixes only), `mcp_account_add_failed` / `mcp_account_remove_failed`
+(prefixes and the status or error name), `mcp_account_front_failed` (recording
+the account's front), `mcp_account_rejected` (`reason: bad_secret`, never
+the secret), `mcp_account_sync_failed`, `cloudflare_transient` (a Durable Object restarting under
 Cloudflare: "storage is no longer accessible", "instance is no longer active",
 "internal error; reference = …"). The Worker retries such a failure once on a
 fresh stub when the request can be sent twice (a `GET`, a prewarm, a claim),

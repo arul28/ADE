@@ -208,7 +208,60 @@ function normalizeVersion(value: unknown): string | null {
   throw new Error("version must look like 27.1.");
 }
 
+/**
+ * Which runtime a model that no installed runtime runs needs, as far as the
+ * Mac can tell. There is no local list of downloadable runtimes, so:
+ *
+ * - A model new in this SDK (its first runtime is the SDK version, the Duo on
+ *   Xcode 27.1) needs the SDK's runtime.
+ * - A model that an installed runtime it is old enough for does NOT run sits
+ *   behind a narrow point release (iOS 27.1 runs only the Duo). It needs the
+ *   major's base release, iOS 27.0; that version is pinned for the install.
+ * - Otherwise the SDK's version, unpinned: Xcode fetches every runtime its
+ *   SDK needs, and the list names the gap again once one is installed.
+ */
+function runtimeNeededBy(
+  type: DeviceTypeRecord,
+  installedIos: AppleInstalledRuntime[],
+  sdkVersion: string,
+): { version: string; installVersion: string | null } {
+  const sdkScore = appleRuntimeScore(sdkVersion);
+  const minScore = type.minRuntimeVersion ? appleRuntimeScore(type.minRuntimeVersion) : 0;
+  if (minScore >= sdkScore) return { version: sdkVersion, installVersion: null };
+  const sdkMajor = Math.floor(sdkScore / 1_000_000);
+  // Only a point release of the SDK's own major counts: an old iOS 18.6
+  // that does not run an iPhone 17 says nothing about iOS 27.
+  const narrow = installedIos
+    .filter((runtime) => {
+      const score = appleRuntimeScore(runtime.version);
+      return Math.floor(score / 1_000_000) === sdkMajor && score <= sdkScore && score >= minScore;
+    })
+    .sort((a, b) => appleRuntimeScore(a.version) - appleRuntimeScore(b.version))[0];
+  if (narrow) {
+    const major = Math.floor(appleRuntimeScore(narrow.version) / 1_000_000);
+    const base = `${major}.0`;
+    const baseScore = appleRuntimeScore(base);
+    if (baseScore < appleRuntimeScore(narrow.version) && baseScore >= minScore) {
+      return { version: base, installVersion: base };
+    }
+  }
+  return { version: sdkVersion, installVersion: null };
+}
+
 /* ───────────────────────── the manager ───────────────────────── */
+
+export const APPLE_RUNTIME_ALREADY_INSTALLED_CODE = "APPLE_RUNTIME_ALREADY_INSTALLED";
+
+/** A pinned `runtimes install --version` for a runtime the Mac already has. */
+export class AppleRuntimeAlreadyInstalledError extends Error {
+  readonly code = APPLE_RUNTIME_ALREADY_INSTALLED_CODE;
+  readonly adeExpected = "user" as const;
+
+  constructor(detail: string) {
+    super(`${APPLE_RUNTIME_ALREADY_INSTALLED_CODE}: ${detail}`);
+    this.name = "AppleRuntimeAlreadyInstalledError";
+  }
+}
 
 /** Apple's developer releases feed, for the "newer Xcode" note. */
 export const APPLE_RELEASES_FEED_URL = "https://developer.apple.com/news/releases/rss/releases.rss";
@@ -422,23 +475,42 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
    * What this Xcode can simulate but the Mac cannot yet: the current iPhone and
    * iPad models (they run on this Xcode's SDK version) that no installed
    * runtime runs. Counted per model, not per runtime: with only iOS 27.1
-   * installed every iPhone but the Duo is missing, because they need iOS 27.0.
+   * installed every iPhone but the Duo is missing, because they need iOS 27.0,
+   * so the gap is named "iOS 27.0", not the SDK's 27.1. Models that need
+   * different runtimes are grouped per version.
    */
   const missingFrom = (input: { installed: AppleInstalledRuntime[]; types: DeviceTypeRecord[]; sdkVersion: string | null }): AppleMissingRuntime | null => {
     if (!input.sdkVersion) return null;
-    const sdkScore = appleRuntimeScore(input.sdkVersion);
-    const supported = new Set(input.installed
-      .filter((runtime) => runtime.platform === "iOS")
-      .flatMap((runtime) => runtime.deviceTypes.map((type) => type.identifier)));
-    const deviceTypes = input.types
+    const sdkVersion = input.sdkVersion;
+    const sdkScore = appleRuntimeScore(sdkVersion);
+    const installedIos = input.installed.filter((runtime) => runtime.platform === "iOS");
+    const supported = new Set(installedIos.flatMap((runtime) => runtime.deviceTypes.map((type) => type.identifier)));
+    const missingTypes = input.types
       .filter((type) => type.productFamily === "iPhone" || type.productFamily === "iPad")
       .filter((type) => !supported.has(type.identifier))
       .filter((type) => !type.minRuntimeVersion || appleRuntimeScore(type.minRuntimeVersion) <= sdkScore)
       .filter((type) => isCurrentModel(type, sdkScore))
-      .map(({ identifier, name, family }) => ({ identifier, name, family }))
       .reverse();
-    if (!deviceTypes.length) return null;
-    return { platform: "iOS", version: input.sdkVersion, name: `iOS ${input.sdkVersion}`, deviceTypes };
+    if (!missingTypes.length) return null;
+    const groups = new Map<string, { version: string; installVersion: string | null; deviceTypes: AppleMissingRuntime["deviceTypes"] }>();
+    for (const type of missingTypes) {
+      const need = runtimeNeededBy(type, installedIos, sdkVersion);
+      const group = groups.get(need.version) ?? { version: need.version, installVersion: need.installVersion, deviceTypes: [] };
+      group.deviceTypes.push({ identifier: type.identifier, name: type.name, family: type.family });
+      groups.set(need.version, group);
+    }
+    const runtimes = [...groups.values()]
+      .sort((a, b) => appleRuntimeScore(a.version) - appleRuntimeScore(b.version))
+      .map((group) => ({ ...group, name: `iOS ${group.version}` }));
+    return {
+      platform: "iOS",
+      // The first group's version: what an older renderer pins nothing with
+      // and shows; `name` lists every one.
+      version: runtimes[0]!.version,
+      name: runtimes.map((group) => group.name).join(" and "),
+      deviceTypes: runtimes.flatMap((group) => group.deviceTypes),
+      runtimes,
+    };
   };
 
   const runtimeList = async (): Promise<AppleRuntimeInventory> => {
@@ -452,6 +524,32 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
 
   const installActive = () => appleRuntimeInstallActive(installer.install);
 
+  /** Throws when iOS `version` is already installed, with the install that would help instead. */
+  const refuseInstalledPin = async (version: string): Promise<void> => {
+    const read = await readRuntimes();
+    const score = appleRuntimeScore(version);
+    const same = read.installed.find((runtime) => runtime.platform === "iOS" && appleRuntimeScore(runtime.version) === score);
+    if (!same) return;
+    const runs = same.deviceTypes.map((type) => type.name);
+    const runsText = runs.length === 0
+      ? "it runs no device model"
+      : runs.length <= 3 ? `it runs only ${runs.join(", ")}` : `it runs ${runs.length} models`;
+    const missing = missingFrom(read);
+    const groups = missing?.runtimes ?? [];
+    if (!groups.length) {
+      throw new AppleRuntimeAlreadyInstalledError(`iOS ${same.version} is already installed (${runsText}), and every current iPhone and iPad already has a runtime. Nothing to install.`);
+    }
+    const steps = groups.map((group) => {
+      const names = group.deviceTypes.slice(0, 3).map((type) => type.name).join(", ")
+        + (group.deviceTypes.length > 3 ? ` and ${group.deviceTypes.length - 3} more` : "");
+      const command = group.installVersion && appleRuntimeScore(group.installVersion) !== score
+        ? `ade apple runtimes install --version ${group.installVersion}`
+        : "ade apple runtimes install (no --version: Xcode fetches what its SDK needs)";
+      return `${names} need ${group.name}: run \`${command}\``;
+    });
+    throw new AppleRuntimeAlreadyInstalledError(`iOS ${same.version} is already installed, and ${runsText}. ${steps.join(". ")}.`);
+  };
+
   const runtimeInstall = async (args: AppleRuntimeInstallArgs = {}): Promise<AppleRuntimeInstallState> => {
     // Guarded on the phase, not on the child: the child only exists after the
     // SDK lookup and the free-space check, and a second call in that window
@@ -462,6 +560,15 @@ export function createAppleRuntimeManager(deps: AppleRuntimeManagerDeps) {
     // runtime it needs: Xcode 27.1 needs iOS 27.0 (every iPhone) AND iOS 27.1
     // (only the Duo), and pinning 27.1 alone would leave the other iPhones out.
     const pinnedVersion = normalizeVersion(args.version);
+    if (pinnedVersion && platform === "iOS") {
+      // xcodebuild answers a pinned version that is already installed with
+      // "already downloaded" and nothing else, even when that runtime does
+      // not run the models the list calls missing. Refuse up front and name
+      // the version they need.
+      await refuseInstalledPin(pinnedVersion);
+      // The read above awaited: another call may have started the download.
+      if (installer.install && installActive()) return { ...installer.install };
+    }
     installer.install = {
       platform,
       version: pinnedVersion ?? "",

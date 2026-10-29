@@ -241,6 +241,7 @@ export function createSeatProvider(
       laneId: args.laneId,
       target: args.target,
       args: args.args,
+      ...(args.newInstance ? { newInstance: true } : {}),
     }, { timeoutMs: LAUNCH_TIMEOUT_MS }),
 
     quitApp: (args) => request(MAC_DESKTOP_DRIVER_OPS.quitApp, {

@@ -52,6 +52,27 @@ to the same report.
 aliases). Any other command refuses them rather than quietly answering for this
 machine; `drafts` and `machines` keep their own `--machine` flag.
 
+### A chat id without `--machine`
+
+A chat id is unique across the account, so a chat command does not need
+`--machine` to find it. Before `chat read|show|status|wait|send|message|steer|
+interrupt|stop|respond|pending|resume|subagents` runs here, the CLI
+(`cliChatLocate.ts`) asks this machine's brain `chats.locate`: booted scopes,
+then each project's transcripts on disk, never a boot. If the chat is not here,
+every online machine is asked the same at once (five seconds each; offline
+machines are not asked). Exactly one match: the command runs there with the
+chat's project (or `--personal`), and the CLI prints `· on <machine>` to
+stderr. No match: the command runs here and fails as before, naming the
+machines that were offline or did not answer. Two matches fail and list both.
+
+The match is kept in `<ADE_HOME>/cache/chat-machines.json` (24 hours, 200
+entries), so the next command asks only that machine. `ade chat locate <id>`
+prints the answer. `chats.locate` is read-only and reachable by other
+machines' agents; it names only the project, which `projects.list` already
+shows them. A machine older than it answers "isn't available", reported as
+"no answer". Through ADE MCP the CLI does not look anywhere else; ADE MCP
+finds the computer and forwards the call itself (docs/features/ade-mcp).
+
 ## Moving a chat to another machine
 
 `ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO

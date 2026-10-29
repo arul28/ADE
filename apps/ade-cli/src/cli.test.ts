@@ -68,6 +68,7 @@ import {
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../desktop/src/shared/accountDirectory";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { RUNTIME_COMPAT_LEVEL } from "../../desktop/src/shared/adeRuntimeProtocol";
 import { PI_LOGIN_IPC_TIMEOUT_MS } from "../../desktop/src/main/services/localRuntime/localRuntimeTimeoutPolicy";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { parseChatLaunchArgs } from "../../desktop/src/main/services/chat/chatLaunchArgs";
@@ -7600,14 +7601,14 @@ describe("ADE CLI", () => {
         requests.push(request.method);
         if (request.method === "ade/initialize") return { runtimeInfo: {
           version: "0.0.0", defaultRole: "agent", pid: process.pid,
+          minCompatibleProtocol: RUNTIME_COMPAT_LEVEL, protocolVersion: RUNTIME_COMPAT_LEVEL,
         } };
         throw new Error(`Unexpected method: ${request.method}`);
       }) as any,
     });
     try {
-      await expect(runCli(["--project-root", root, "--role", "cto", "chat", "list"])).rejects.toMatchObject({
-        details: { cause: expect.stringMatching(/Refusing to repair\/restart ADE runtime/) },
-      });
+      await expect(runCli(["--project-root", root, "--role", "cto", "chat", "list"]))
+        .rejects.toThrow(/default role agent cannot serve CLI role cto/);
       expect(requests).toContain("ade/initialize");
       expect(requests).not.toContain("shutdown");
     } finally {

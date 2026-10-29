@@ -86,6 +86,28 @@ export function AppleDevicesSection() {
       </ModernSection>
 
       <ModernSection
+        group="Automatic recording"
+        anchor="apple-auto-record"
+        title="Record agent input"
+        hint="An agent's taps and typing start a recording that is filed as proof when it stops."
+      >
+        <div className="ade-as-feature" data-on={appleDevice.autoRecordAgentInput}>
+          <div className="ade-as-feature-text">
+            <div className="ade-ap-rowtitle">Record agent input</div>
+            <div className="ade-ap-rowhint">
+              Off: agents record only when they ask (record-start). One lane can turn it off with ade apple auto-record off,
+              one command with --no-record. Your own input never starts a recording.
+            </div>
+          </div>
+          <SettingsToggle
+            label="Record agent input"
+            checked={appleDevice.autoRecordAgentInput}
+            onChange={(autoRecordAgentInput) => setAppleDevicePreferences({ autoRecordAgentInput })}
+          />
+        </div>
+      </ModernSection>
+
+      <ModernSection
         group="Remote streaming"
         anchor="apple-remote-bitrate"
         title="Remote viewer bitrate cap"

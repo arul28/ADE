@@ -8,14 +8,26 @@ import {
   generateConnectionId,
   jsonResponse,
   MACHINE_KEY_PATTERN,
-  MCP_CORS_HEADERS,
+  logTunnel,
+  MCP_ACCOUNT_FRONT_PATH,
+  MCP_ACCOUNT_PATH,
   MCP_ENDPOINT_PATH,
+  MCP_MOUNT_HEADER,
   mcpEndpointObjectName,
   routeMcpPath,
   routeTunnelPath,
   verifySignedQuery,
   type TunnelRelayEnv,
-} from "./relay";
+} from "./relayShared";
+import { desiredMcpAccount, handleMcpAccount, reconcileMcpAccount } from "./mcpAccountObject";
+import {
+  answerMcp,
+  createMcpForwarding,
+  failMcpForControl,
+  forwardMcp,
+  handleMcpEndpoint,
+  type McpMount,
+} from "./mcpMachineForwarding";
 
 // Application close codes must live in 4000-4999. Documented in the README.
 export const CLOSE_PARTNER_CLOSED = 4000; // the other end closed without an application code
@@ -42,85 +54,36 @@ const ACTIVITY_WRITE_THROTTLE_MS = 60 * 1000;
 // cannot lose their first protocol frame and no per-frame DO storage is needed.
 const MAX_BUFFERED_CLIENT_FRAMES = 64;
 const MAX_BUFFERED_CLIENT_BYTES = 256 * 1024;
+// The other direction. The host's local socket can speak first (the Apple
+// device stream sends its config and keyframe the moment it opens), and its
+// bytes reach this object on the pipe socket while the epoch-matched
+// {t:"ready"} is still in flight on the control socket: two sockets, no
+// ordering between them. Those bytes are held, in order, until the pair is
+// ready, then flushed after the client's ready. Like the legacy buffer it is
+// instance memory only: a reconstructed instance that lost it fails the pair
+// loudly instead of forwarding a gap.
+//
+// Sized for the stream's first burst, config + one H.264 keyframe in one
+// message. Measured on the sim helper (2026-10-27): real screens 30-190 KB
+// (a full-screen photo is 59 KB at the 2.5 Mb/s remote cap, 188 KB at the
+// 20 Mb/s maximum); full-screen noise, the worst case, 1.1 MB at 2.5 Mb/s and
+// 1.9 MB at 20 Mb/s on an iPhone 17 Pro (1206x2622), 0.9-1.3 MB on the iPhone
+// Duo's inner panel (2007x2853). 4 MiB fits that with 2x margin. The object
+// total bounds memory however many streams open at once (16 tunnels x 4 MiB
+// would be half of a Durable Object's 128 MB); past either cap the pair
+// closes with 4506 and the viewer redials.
+const MAX_BUFFERED_PIPE_FRAMES = 64;
+const MAX_BUFFERED_PIPE_BYTES = 4 * 1024 * 1024;
+const MAX_BUFFERED_PIPE_BYTES_PER_OBJECT = 16 * 1024 * 1024;
 export const RELAY_READY_VERSION = 2;
 export const LEGACY_CONTROL_EPOCH = "legacy-v1";
 const MAX_CLOSE_REASON_BYTES = 123;
 const WS_OPEN = 1;
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
-// ADE MCP. Requests ride the host control socket; the brain answers
-// each one by rid. Limits are per machine and live in instance memory: a
-// hibernated object has no requests in flight, so nothing is lost by a reset.
-const MCP_MAX_IN_FLIGHT = 16;
-const MCP_MAX_PER_MINUTE = 300;
-// The brain stops a command after 10 minutes; give its answer time to arrive.
-const MCP_RESPONSE_TIMEOUT_MS = 11 * 60 * 1000;
-const MCP_MAX_REQUEST_BYTES = 1024 * 1024;
-// The brain refuses a longer path; refusing it here answers at once instead of
-// leaving the request to wait out MCP_RESPONSE_TIMEOUT_MS.
-const MCP_MAX_PATH_CHARS = 8_192;
-const MCP_FORWARDED_REQUEST_HEADERS = [
-  "authorization",
-  "content-type",
-  "accept",
-  "mcp-protocol-version",
-  "mcp-session-id",
-  "user-agent",
-];
-const MCP_RETURNED_RESPONSE_HEADERS = new Set([
-  "content-type",
-  "cache-control",
-  "www-authenticate",
-  "location",
-  "allow",
-  "x-frame-options",
-  "content-security-policy",
-  "referrer-policy",
-  "x-content-type-options",
-]);
-const MCP_METHODS = new Set(["GET", "POST", "DELETE", "HEAD"]);
-
-type PendingMcpRequest = {
-  control: WebSocket;
-  resolve: (response: Response) => void;
-  timer: ReturnType<typeof setTimeout>;
-};
-
-/**
- * The request body as text, or null once it passes `maxBytes`. Read as a
- * stream, so a body with no content-length (chunked) can never be buffered
- * whole: this object also carries the machine's phone connections.
- */
-async function readBodyCapped(request: Request, maxBytes: number): Promise<string | null> {
-  if (!request.body) return "";
-  const reader = request.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return null;
-    }
-    chunks.push(value);
-  }
-  const joined = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    joined.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  return textDecoder.decode(joined);
-}
-
-function mcpJson(status: number, error: string, description: string, extra: Record<string, string> = {}): Response {
-  return new Response(JSON.stringify({ error, error_description: description }), {
-    status,
-    headers: { "content-type": "application/json", "cache-control": "no-store", ...MCP_CORS_HEADERS, ...extra },
-  });
-}
+// A join or leave the account object refused is retried this often while the
+// control socket stays open: the brain sends mcp_state only on open and change.
+const MCP_ACCOUNT_RETRY_MS = 60 * 1000;
 
 const CORRELATION_ID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -150,20 +113,6 @@ function bufferedFrameBytes(message: string | ArrayBuffer): number {
   return typeof message === "string" ? textEncoder.encode(message).byteLength : message.byteLength;
 }
 
-/**
- * Structured single-line log. View live with `wrangler tail ade-tunnel-relay`,
- * or in the dashboard (observability enabled in wrangler.jsonc). Only lifecycle
- * and rejection events are logged — never per-frame — so a busy tunnel stays
- * cheap and the stream stays diagnosable.
- */
-function logTunnel(kind: string, fields: Record<string, unknown> = {}): void {
-  try {
-    console.log(JSON.stringify({ ts: new Date().toISOString(), svc: "ade-tunnel-relay", kind, ...fields }));
-  } catch {
-    console.log(`ade-tunnel-relay ${kind}`);
-  }
-}
-
 type SocketRole = "control" | "client" | "pipe";
 
 /**
@@ -181,6 +130,8 @@ type SocketAttachment = {
   established?: boolean;
   /** Legacy pre-ready bytes exist only in this instance's bounded memory. */
   legacyBuffered?: true;
+  /** Pipe sockets only: pre-ready host bytes exist only in this instance's memory. */
+  pipeBuffered?: true;
   /** Pre-deploy data socket whose volatile pre-ready state cannot be proven. */
   legacyStateUnknown?: true;
   /** Safe client-generated operation id; never contains endpoint/auth data. */
@@ -191,6 +142,12 @@ type SocketAttachment = {
   machineKey?: string;
   /** Control sockets only: the MCP endpoint key already registered. */
   mcpEndpointKey?: string;
+  /** Control sockets only: the ADE MCP account this machine was added to. */
+  mcpAccountKey?: string;
+  /** Control sockets only: the account the last `mcp_state` asked for (null: none). */
+  mcpAccountWant?: string | null;
+  /** Control sockets only: a join or leave failed and is retried by the alarm. */
+  mcpAccountRetry?: true;
   ts: number;
 };
 
@@ -208,15 +165,23 @@ export class TunnelDurableObject implements DurableObject {
     string,
     { frames: (string | ArrayBuffer)[]; bytes: number }
   >();
+  // Host bytes that reached a pipe before its pair was ready, by connection id.
+  private readonly pendingPipeFrames = new Map<
+    string,
+    { frames: (string | ArrayBuffer)[]; bytes: number }
+  >();
+  /** Sum of every `pendingPipeFrames` entry's bytes. */
+  private pendingPipeBytes = 0;
   private readonly terminalSocketLogs = new WeakSet<WebSocket>();
   // Pure overhead removal for the hot path; the socket's own attachment stays
   // authoritative. Hibernation drops instance memory, so every read falls back
   // to the durable copy (or a tag scan) and repopulates itself after a wake.
   private readonly cachedAttachments = new WeakMap<WebSocket, SocketAttachment>();
   private readonly cachedPartners = new WeakMap<WebSocket, WebSocket>();
-  private readonly pendingMcp = new Map<string, PendingMcpRequest>();
-  private mcpWindowStart = 0;
-  private mcpWindowCount = 0;
+  private readonly mcp = createMcpForwarding();
+  // Account membership changes run one at a time, in the order the brain sent
+  // them: each awaits another object, which lets the next message in.
+  private mcpAccountSync: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly state: DurableObjectState,
@@ -268,11 +233,22 @@ export class TunnelDurableObject implements DurableObject {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     // Reached only from inside this Worker: the public router never routes it.
-    if (url.pathname === MCP_ENDPOINT_PATH) return this.handleMcpEndpoint(request);
+    if (url.pathname === MCP_ENDPOINT_PATH) return handleMcpEndpoint(this.state.storage, request);
+    if (url.pathname === MCP_ACCOUNT_PATH || url.pathname === MCP_ACCOUNT_FRONT_PATH) {
+      return handleMcpAccount(this.state.storage, request, url.pathname);
+    }
     const route = routeTunnelPath(url.pathname) ?? routeMcpPath(url);
     if (!route) return new Response("not found", { status: 404 });
 
-    if (route.kind === "mcp") return this.handleMcp(request, route.path);
+    if (route.kind === "mcp") return this.forwardMcp(request, route.path);
+    if (route.kind === "mcp-account") {
+      // Only the Worker's account route sets this header (after dropping any
+      // client copy), and only for the account named in the address.
+      if (request.headers.get(MCP_MOUNT_HEADER) !== `a/${route.accountKey}`) {
+        return new Response("not found", { status: 404 });
+      }
+      return this.forwardMcp(request, route.path, { kind: "account", key: route.accountKey });
+    }
     if (route.kind === "claim") return this.handleClaim(request);
     if (route.kind === "host") return this.handleHost(request, url, route.machineKey);
     if (route.kind === "pipe") return this.handlePipe(request, url, route.machineKey, route.id);
@@ -281,78 +257,84 @@ export class TunnelDurableObject implements DurableObject {
     return new Response("not found", { status: 404 });
   }
 
-  /**
-   * ADE MCP: forward one HTTP request to the brain over its control
-   * socket and wait for its answer. The relay understands none of it (MCP,
-   * OAuth, tokens all live on the machine); it only refuses early when the
-   * machine is offline or has the feature off, and bounds the traffic.
-   */
-  private async handleMcp(request: Request, path: string): Promise<Response> {
-    if (!MCP_METHODS.has(request.method)) return mcpJson(405, "method_not_allowed", "Method not allowed.");
-    if (path.length > MCP_MAX_PATH_CHARS) return mcpJson(414, "uri_too_long", "Request address too long.");
-    const control = this.currentControl();
-    if (!control) {
-      return mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it.", { "retry-after": "30" });
-    }
-    const controlAttachment = this.normalizedAttachment(control);
-    if (controlAttachment?.mcp !== true) {
-      return mcpJson(404, "ade_mcp_off", "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.");
-    }
-    const now = Date.now();
-    if (now - this.mcpWindowStart >= 60_000) {
-      this.mcpWindowStart = now;
-      this.mcpWindowCount = 0;
-    }
-    if (this.pendingMcp.size >= MCP_MAX_IN_FLIGHT || this.mcpWindowCount >= MCP_MAX_PER_MINUTE) {
-      logTunnel("mcp_rejected", { reason: "rate_limited", inFlight: this.pendingMcp.size });
-      return mcpJson(429, "rate_limited", "Too many requests to that computer. Retry shortly.", { "retry-after": "5" });
-    }
-    this.mcpWindowCount += 1;
-    const declaredLength = Number(request.headers.get("content-length") ?? "0");
-    if (Number.isFinite(declaredLength) && declaredLength > MCP_MAX_REQUEST_BYTES) {
-      return mcpJson(413, "too_large", "Request too large.");
-    }
-    let body: string | null = null;
-    if (request.method === "POST") {
-      body = await readBodyCapped(request, MCP_MAX_REQUEST_BYTES);
-      if (body === null) return mcpJson(413, "too_large", "Request too large.");
-    }
-    const headers: Record<string, string> = {};
-    for (const name of MCP_FORWARDED_REQUEST_HEADERS) {
-      const value = request.headers.get(name);
-      if (value !== null && value.length <= 8_192) headers[name] = value;
-    }
-    const rid = generateConnectionId();
-    const response = new Promise<Response>((resolve) => {
-      const timer = setTimeout(() => {
-        this.pendingMcp.delete(rid);
-        resolve(mcpJson(504, "timeout", "That computer took too long to answer."));
-      }, MCP_RESPONSE_TIMEOUT_MS);
-      this.pendingMcp.set(rid, { control, resolve, timer });
+  /** ADE MCP on this machine's control socket (see forwardMcp). */
+  private forwardMcp(request: Request, path: string, mount?: McpMount): Promise<Response> {
+    const socket = this.currentControl();
+    const att = socket ? this.normalizedAttachment(socket) : null;
+    const control = socket ? { socket, enabled: att?.mcp === true, accountKey: att?.mcpAccountKey } : null;
+    return forwardMcp(this.mcp, request, path, control, mount, (accountKey) => {
+      // Still listed there: leave it (or, if it is the one asked for, retry the join).
+      if (socket) void this.queueMcpAccount(() => this.syncMcpAccountNow(socket, accountKey));
     });
-    try {
-      control.send(JSON.stringify({ t: "http", rid, method: request.method, path, headers, body }));
-    } catch {
-      this.settleMcp(rid, mcpJson(503, "offline", "That computer is offline, or ADE isn't running on it."));
-    }
-    return response;
   }
 
-  /** The `mcp-endpoint:<key>` object: which machine an MCP endpoint key belongs to. */
-  private async handleMcpEndpoint(request: Request): Promise<Response> {
-    const stored = await this.state.storage.get<string>("mcpEndpointMachineKey");
-    if (request.method === "GET") {
-      return stored ? jsonResponse({ machineKey: stored }) : jsonResponse({ error: "unknown" }, { status: 404 });
+  /** Runs one account membership step after the ones before it, in order. */
+  private queueMcpAccount(step: () => Promise<void>): Promise<void> {
+    const next = this.mcpAccountSync.then(step).catch((error: unknown) => {
+      logTunnel("mcp_account_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+    });
+    this.mcpAccountSync = next;
+    return next;
+  }
+
+  /**
+   * Brings this machine's account membership in line with `desired` (see
+   * reconcileMcpAccount) and records the outcome on the control socket. A
+   * join or leave that failed is retried by the alarm while the socket stays
+   * open, and by the next `mcp_state` on any socket.
+   */
+  private async syncMcpAccount(ws: WebSocket, desired: string | null, stale?: string): Promise<void> {
+    const att = this.normalizedAttachment(ws);
+    if (!att?.machineKey || !this.isOpen(ws)) return;
+    let result: Awaited<ReturnType<typeof reconcileMcpAccount>>;
+    try {
+      result = await reconcileMcpAccount(this.state.storage, this.env, {
+        machineKey: att.machineKey.toLowerCase(),
+        desired,
+        joined: att.mcpAccountKey ?? null,
+        stale,
+      });
+    } catch (error) {
+      // A storage step threw: keep what the brain wants and let the alarm try
+      // again, so a wake never falls back to the account it was leaving.
+      logTunnel("mcp_account_sync_failed", { error: error instanceof Error ? error.name : "unknown" });
+      const current = this.normalizedAttachment(ws) ?? att;
+      this.writeAttachment(ws, { ...current, mcpAccountWant: desired, mcpAccountRetry: true });
+      if (this.isOpen(ws)) await this.scheduleAlarmBy(Date.now() + MCP_ACCOUNT_RETRY_MS);
+      return;
     }
-    if (request.method !== "PUT") return new Response("method not allowed", { status: 405 });
-    const machineKey = (await request.text()).trim();
-    if (!MACHINE_KEY_PATTERN.test(machineKey)) return new Response("bad machine key", { status: 400 });
-    if (stored && stored !== machineKey) {
-      logTunnel("mcp_endpoint_conflict", {});
-      return new Response("endpoint key already registered", { status: 409 });
-    }
-    if (!stored) await this.state.storage.put("mcpEndpointMachineKey", machineKey);
-    return new Response(null, { status: 204 });
+    const { mcpAccountKey: _joined, mcpAccountRetry: _retry, ...rest } = this.normalizedAttachment(ws) ?? att;
+    this.writeAttachment(ws, {
+      ...rest,
+      mcpAccountWant: desired,
+      ...(result.joined ? { mcpAccountKey: result.joined } : {}),
+      ...(result.settled ? {} : { mcpAccountRetry: true as const }),
+    });
+    if (!result.settled && this.isOpen(ws)) await this.scheduleAlarmBy(Date.now() + MCP_ACCOUNT_RETRY_MS);
+  }
+
+  /** The alarm's half of account membership: retry what failed on the live control socket. */
+  private async retryMcpAccount(): Promise<void> {
+    const control = this.currentControl();
+    if (!control || !this.normalizedAttachment(control)?.mcpAccountRetry) return;
+    await this.queueMcpAccount(() => this.syncMcpAccountNow(control));
+  }
+
+  /**
+   * A queued step reads what the brain wants when it runs, not when it was
+   * queued: an `mcp_state` ahead of it in the queue may have changed it, and
+   * acting on the older want would re-join an account the brain just left.
+   */
+  private syncMcpAccountNow(socket: WebSocket, staleAccountKey?: string): Promise<void> {
+    const att = this.normalizedAttachment(socket);
+    if (!att) return Promise.resolve();
+    return this.syncMcpAccount(socket, wantedMcpAccount(att), staleAccountKey);
+  }
+
+  /** Moves the alarm earlier when needed; never later (the sweep shares it). */
+  private async scheduleAlarmBy(time: number): Promise<void> {
+    const current = await this.state.storage.getAlarm();
+    if (current === null || current > time) await this.state.storage.setAlarm(time);
   }
 
   /** Registers the brain's MCP endpoint key once per control socket. */
@@ -362,42 +344,6 @@ export class TunnelDurableObject implements DurableObject {
     const stub = this.env.TUNNEL.get(this.env.TUNNEL.idFromName(mcpEndpointObjectName(endpointKey)));
     const response = await stub.fetch(`https://relay.internal${MCP_ENDPOINT_PATH}`, { method: "PUT", body: att.machineKey });
     if (response.ok) this.writeAttachment(ws, { ...(this.normalizedAttachment(ws) ?? att), mcpEndpointKey: endpointKey });
-  }
-
-  private settleMcp(rid: string, response: Response): void {
-    const pending = this.pendingMcp.get(rid);
-    if (!pending) return;
-    this.pendingMcp.delete(rid);
-    clearTimeout(pending.timer);
-    pending.resolve(response);
-  }
-
-  /** Builds the client's response from the brain's answer, keeping only known headers. */
-  private mcpResponseFromBrain(parsed: Record<string, unknown>): Response {
-    const status = typeof parsed.status === "number" && Number.isInteger(parsed.status)
-      && parsed.status >= 200 && parsed.status <= 599
-      ? parsed.status
-      : 502;
-    const headers = new Headers(MCP_CORS_HEADERS);
-    if (parsed.headers && typeof parsed.headers === "object" && !Array.isArray(parsed.headers)) {
-      for (const [key, value] of Object.entries(parsed.headers as Record<string, unknown>)) {
-        const name = key.toLowerCase();
-        if (MCP_RETURNED_RESPONSE_HEADERS.has(name) && typeof value === "string" && !/[\r\n]/.test(value)) {
-          headers.set(name, value);
-        }
-      }
-    }
-    const body = typeof parsed.body === "string" ? parsed.body : "";
-    const empty = status === 204 || status === 304 || (status === 202 && body === "");
-    return new Response(empty ? null : body, { status, headers });
-  }
-
-  /** A control socket went away: nothing it was asked can be answered now. */
-  private failMcpForControl(control: WebSocket): void {
-    for (const [rid, pending] of this.pendingMcp) {
-      if (pending.control !== control) continue;
-      this.settleMcp(rid, mcpJson(503, "offline", "That computer went offline before it answered."));
-    }
   }
 
   /**
@@ -491,7 +437,7 @@ export class TunnelDurableObject implements DurableObject {
           "control replaced",
         );
       }
-      this.failMcpForControl(existing);
+      failMcpForControl(this.mcp, existing);
       try {
         existing.close(CLOSE_CONTROL_REPLACED, "replaced by newer host");
       } catch {
@@ -850,20 +796,21 @@ export class TunnelDurableObject implements DurableObject {
           if (parsed?.t === "ping") {
             ws.send(JSON.stringify({ t: "pong" }));
           } else if (parsed?.t === "http_res") {
-            const rid = (parsed as { rid?: unknown }).rid;
-            const pending = typeof rid === "string" ? this.pendingMcp.get(rid) : undefined;
-            // Only the socket the request went out on may answer it.
-            if (typeof rid === "string" && pending?.control === ws) {
-              this.settleMcp(rid, this.mcpResponseFromBrain(parsed as Record<string, unknown>));
-            }
+            answerMcp(this.mcp, ws, parsed as Record<string, unknown>);
           } else if (parsed?.t === "mcp_state") {
             const enabled = (parsed as { enabled?: unknown }).enabled === true;
             if (att.mcp !== enabled) {
               att = { ...att, mcp: enabled };
               this.writeAttachment(ws, att);
             }
+            const account = (parsed as { account?: unknown }).account;
+            const machineKey = att.machineKey?.toLowerCase() ?? "";
+            const accountSync = this.queueMcpAccount(async () => (
+              this.syncMcpAccount(ws, await desiredMcpAccount(machineKey, enabled, account))
+            ));
             const endpointKey = (parsed as { endpointKey?: unknown }).endpointKey;
             if (typeof endpointKey === "string") await this.registerMcpEndpoint(ws, att, endpointKey);
+            await accountSync;
           } else if (
             parsed?.t === "reject"
             && typeof parsed.id === "string"
@@ -877,7 +824,7 @@ export class TunnelDurableObject implements DurableObject {
             if (clientAttachment?.established) return;
             const code = applicationCloseCode(parsed.code, CLOSE_BRIDGE_REJECTED);
             const reason = sanitizedCloseReason(parsed.reason, "bridge rejected");
-            this.pendingClientFrames.delete(parsed.id);
+            this.forgetPending(parsed.id);
             logTunnel("connect_rejected", {
               reason: "bridge_rejected",
               code,
@@ -962,11 +909,74 @@ export class TunnelDurableObject implements DurableObject {
         att = { ...att, legacyBuffered: true, ts: Date.now() };
         this.writeAttachment(ws, att satisfies SocketAttachment);
       }
+    } else if (att.role === "pipe" && att.id) {
+      const buffered = this.bufferPipeFrame(ws, att, att.id, partner, message);
+      if (!buffered) return;
+      att = buffered;
     } else if (att.role === "pipe") {
       this.closePair(ws, att, CLOSE_NOT_READY, "relay bridge not ready");
       return;
     }
     this.touch(ws, att);
+  }
+
+  /**
+   * Holds one host frame that arrived before its pair was ready. Returns the
+   * pipe's attachment to keep using, or null once the pair has been closed.
+   */
+  private bufferPipeFrame(
+    ws: WebSocket,
+    att: SocketAttachment,
+    id: string,
+    partner: WebSocket | null,
+    message: string | ArrayBuffer,
+  ): SocketAttachment | null {
+    if (!this.isOpen(ws)) return null;
+    const epoch = this.epochOf(att) ?? LEGACY_CONTROL_EPOCH;
+    // Only the one pipe this object paired may hold bytes for the id. A
+    // duplicate or stale pipe was closed at accept and must not add to them.
+    if (this.pipeForId(id, epoch) !== ws) {
+      this.closePair(ws, null, CLOSE_STALE_PIPE, "stale pipe");
+      return null;
+    }
+    if (!partner) {
+      this.closePair(ws, att, CLOSE_CLIENT_GONE, "relay client gone");
+      return null;
+    }
+    const buffered = this.pendingPipeFrames.get(id);
+    if (att.pipeBuffered && !buffered) {
+      // A reconstructed instance lost the earlier bytes; forwarding this frame
+      // would hand the client a stream with a hole in it.
+      this.closePair(ws, att, CLOSE_FORWARD_FAILED, "pre-ready pipe buffer unavailable");
+      return null;
+    }
+    const pending = buffered ?? { frames: [], bytes: 0 };
+    const frameBytes = bufferedFrameBytes(message);
+    const nextBytes = pending.bytes + frameBytes;
+    if (
+      pending.frames.length >= MAX_BUFFERED_PIPE_FRAMES
+      || nextBytes > MAX_BUFFERED_PIPE_BYTES
+      || this.pendingPipeBytes + frameBytes > MAX_BUFFERED_PIPE_BYTES_PER_OBJECT
+    ) {
+      logTunnel("pipe_buffer_overflow", {
+        connectionId: id,
+        frames: pending.frames.length + 1,
+        bytes: nextBytes,
+        objectBytes: this.pendingPipeBytes + frameBytes,
+        correlationId: att.correlationId ?? null,
+      });
+      this.closePair(ws, att, CLOSE_PRE_PIPE_BUFFER_OVERFLOW, "pre-ready pipe buffer overflow");
+      return null;
+    }
+    pending.frames.push(message);
+    pending.bytes = nextBytes;
+    this.pendingPipeBytes += frameBytes;
+    this.pendingPipeFrames.set(id, pending);
+    if (att.pipeBuffered) return att;
+    // One attachment write per pipe, recording only that volatile bytes exist.
+    const marked = { ...att, pipeBuffered: true as const, ts: Date.now() } satisfies SocketAttachment;
+    this.writeAttachment(ws, marked);
+    return marked;
   }
 
   private touch(ws: WebSocket, att: SocketAttachment): void {
@@ -1005,7 +1015,7 @@ export class TunnelDurableObject implements DurableObject {
     const att = this.normalizedAttachment(ws);
     if (!att) return;
     if (att.role === "control") {
-      this.failMcpForControl(ws);
+      failMcpForControl(this.mcp, ws);
       this.closePendingForControlEpoch(
         this.epochOf(att) ?? LEGACY_CONTROL_EPOCH,
         sourceCode === CLOSE_CONTROL_REPLACED ? CLOSE_CONTROL_REPLACED : CLOSE_HOST_OFFLINE,
@@ -1016,7 +1026,7 @@ export class TunnelDurableObject implements DurableObject {
       );
       return;
     }
-    if (att.id) this.pendingClientFrames.delete(att.id);
+    if (att.id) this.forgetPending(att.id);
     const partner = this.partnerOf(ws, att);
     if (partner) {
       const code = applicationCloseCode(sourceCode, CLOSE_PARTNER_CLOSED);
@@ -1054,17 +1064,24 @@ export class TunnelDurableObject implements DurableObject {
       this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "legacy pre-ready buffer unavailable");
       return;
     }
+    const bufferedPipe = this.pendingPipeFrames.get(id);
+    if (pipeAttachment.pipeBuffered && !bufferedPipe) {
+      this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "pre-ready pipe buffer unavailable");
+      return;
+    }
     try {
       if (clientAttachment.readyVersion === RELAY_READY_VERSION) {
         client.send(JSON.stringify({ t: "ready", v: RELAY_READY_VERSION }));
       } else {
         for (const frame of buffered?.frames ?? []) pipe.send(frame);
       }
+      // After the client's ready, so a ready-v2 client still reads ready first.
+      for (const frame of bufferedPipe?.frames ?? []) client.send(frame);
     } catch {
       this.closePair(client, clientAttachment, CLOSE_FORWARD_FAILED, "relay readiness forwarding failed");
       return;
     }
-    this.pendingClientFrames.delete(id);
+    this.forgetPending(id);
     const now = Date.now();
     const {
       legacyBuffered: _legacyBuffered,
@@ -1072,7 +1089,16 @@ export class TunnelDurableObject implements DurableObject {
       ...cleanClientAttachment
     } = clientAttachment;
     this.writeAttachment(client, { ...cleanClientAttachment, established: true, ts: now } satisfies SocketAttachment);
-    this.writeAttachment(pipe, { ...pipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+    const { pipeBuffered: _pipeBuffered, ...cleanPipeAttachment } = pipeAttachment;
+    this.writeAttachment(pipe, { ...cleanPipeAttachment, established: true, ts: now } satisfies SocketAttachment);
+  }
+
+  private forgetPending(id: string): void {
+    this.pendingClientFrames.delete(id);
+    const pipe = this.pendingPipeFrames.get(id);
+    if (!pipe) return;
+    this.pendingPipeBytes = Math.max(0, this.pendingPipeBytes - pipe.bytes);
+    this.pendingPipeFrames.delete(id);
   }
 
   private closePair(
@@ -1091,7 +1117,7 @@ export class TunnelDurableObject implements DurableObject {
         correlationId: attachment?.correlationId ?? null,
       });
     }
-    if (attachment?.id) this.pendingClientFrames.delete(attachment.id);
+    if (attachment?.id) this.forgetPending(attachment.id);
     const partner = attachment ? this.partnerOf(socket, attachment) : null;
     for (const candidate of [socket, partner]) {
       if (!candidate) continue;
@@ -1160,5 +1186,11 @@ export class TunnelDurableObject implements DurableObject {
     if (remainingNonControl > 0) {
       await this.state.storage.setAlarm(now + SWEEP_INTERVAL_MS);
     }
+    await this.retryMcpAccount();
   }
+}
+
+/** The account a control socket's brain last asked for; a socket hibernated before that was recorded keeps the one it joined. */
+function wantedMcpAccount(att: SocketAttachment): string | null {
+  return att.mcpAccountWant !== undefined ? att.mcpAccountWant : att.mcpAccountKey ?? null;
 }
