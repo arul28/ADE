@@ -27,6 +27,8 @@ import {
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
   ThisMacCard: () => <div data-testid="this-mac-card">This computer</div>,
+  ThisComputerPairingCode: () => null,
+  canShowPairingCode: () => false,
   PhoneConnectionsTab: () => (
     <section data-testid="sync-devices-section" data-variant="phone">
       Phone connections
@@ -1080,9 +1082,9 @@ describe("TopBar", () => {
 
     renderTopBarWithRouter();
     act(() => openConnectionsPanel("machines"));
-    fireEvent.click(
-      await screen.findByRole("button", { name: "Disconnect" }),
-    );
+    // Disconnect lives in the connected machine's ⋯ menu.
+    fireEvent.click(await screen.findByRole("button", { name: /^Actions for / }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Disconnect" }));
 
     await waitFor(() => {
       expect(switchProjectToPath).toHaveBeenCalledWith("/Users/arul/ADE");
