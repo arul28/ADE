@@ -46,17 +46,16 @@ on:
 # Every job states its own permissions.
 permissions: {}
 
-# One publisher at a time for the feed, queued rather than cancelled: a run
-# that is replaced mid-publish could leave a half-published beta, and a forced
-# dispatch must not be dropped for a schedule tick. Its own group, so a beta
-# never waits on or cancels a stable release. Previews never touch the feed,
-# so each gets a group of its own and never holds up the schedule.
-# (`queue: max` is GitHub's 2026 queued-concurrency option; actionlint 1.7.12
-# does not know the key yet.)
+# One publisher at a time for the feed, never cancelled: a run replaced
+# mid-publish could leave a half-published beta. GitHub keeps one pending run
+# per group; a newer pending run replaces an older one, which is harmless here
+# because every run resolves the newest green main commit itself. (`queue:
+# max` would keep them all, but a key GitHub rejects would stop every beta, so
+# it is left out.) Its own group, so a beta never waits on or cancels a stable
+# release. Previews never touch the feed, so each gets a group of its own.
 concurrency:
   group: ${{ inputs.preview_ref && format('beta-preview-{0}', github.run_id) || 'beta' }}
   cancel-in-progress: false
-  queue: max
 
 jobs:
   resolve:
