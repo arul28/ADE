@@ -27,6 +27,14 @@
   letter-spacing: -0.01em;
   color: var(--color-fg);
 }
+.ade-ap-head p code {
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: var(--kit-hover);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  letter-spacing: 0;
+}
 .ade-ap-head p {
   margin: 4px 0 0;
   font-size: 12.5px;

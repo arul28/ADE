@@ -22,6 +22,7 @@ import type {
 import {
   LANE_START_BRING_LABEL,
   LANE_START_BRING_VALUES,
+  sameLaneStart,
   type LaneStart,
   type LaneStartBring,
 } from "../../../shared/laneStart";
@@ -122,6 +123,7 @@ export function CreateLaneDialog({
   createStart,
   setCreateStart,
   newLaneDefaults,
+  onMakeStartDefault,
   createImportBranch,
   setCreateImportBranch,
   projectRoot,
@@ -170,6 +172,8 @@ export function CreateLaneDialog({
   setCreateStart: (start: LaneStart) => void;
   /** The project's saved new-lane defaults on the lane's machine; null while loading. */
   newLaneDefaults: NewLaneDefaultsSnapshot | null;
+  /** Save the current start as the project's default (every new lane, auto-create included). */
+  onMakeStartDefault?: () => void;
   createImportBranch: string;
   setCreateImportBranch: (v: string) => void;
   /** Project scope for shared Linear issue browser cache/filter persistence. */
@@ -305,6 +309,7 @@ export function CreateLaneDialog({
   const startHolder = laneHoldingBranch(startSource, lanes);
   const startMissing = createStart.from === "primary" && newLaneDefaults !== null && !newLaneDefaults.primaryBranch;
   const uncommittedBlocked = !startHolder;
+  const startIsDefault = newLaneDefaults ? sameLaneStart(createStart, newLaneDefaults.defaults.start) : false;
   let startTitle: string;
   if (createStart.from === "default") startTitle = "Default branch";
   else if (createStart.from === "primary") startTitle = "Primary lane's branch";
@@ -605,11 +610,28 @@ export function CreateLaneDialog({
                     );
                   })}
                 </div>
-                <span className="cl-hint" data-tone={createStart.bring === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
-                  {createStart.bring === "uncommitted" && uncommittedBlocked
-                    ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
-                    : bringHint(createStart.bring, startRef, startHolder)}
-                </span>
+                <div className="cl-hint-row">
+                  <span className="cl-hint" data-tone={createStart.bring === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
+                    {createStart.bring === "uncommitted" && uncommittedBlocked
+                      ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
+                      : bringHint(createStart.bring, startRef, startHolder)}
+                  </span>
+                  {newLaneDefaults && startIsDefault ? (
+                    <span className="cl-default" title="Auto-create lane and ade lanes create start this way too. Change it in Settings › Lanes › New lanes.">
+                      Project default
+                    </span>
+                  ) : newLaneDefaults && onMakeStartDefault && startSource && !locked ? (
+                    <button
+                      type="button"
+                      className="cl-default"
+                      data-action="true"
+                      title="Start every new lane this way, including Auto-create lane. Saved to your account for this repository."
+                      onClick={onMakeStartDefault}
+                    >
+                      Make default
+                    </button>
+                  ) : null}
+                </div>
               </div>
             </>
           ) : null}

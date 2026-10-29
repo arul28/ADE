@@ -228,10 +228,26 @@
 .cl-bring > button { justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cl-bring > button:disabled { opacity: 0.4; cursor: default; }
 
+/* A hint with the "Project default" mark (or the button that makes it so) on its right. */
+.cl-hint-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.cl-default {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
+.cl-default[data-action="true"] { color: var(--kit-text-2); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--kit-rule); }
+.cl-default[data-action="true"]:hover { color: var(--color-fg); text-decoration-color: currentColor; }
+.cl-default[data-action="true"]:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 2px; border-radius: 3px; }
+
 .cl-hint { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); padding-left: 2px; }
 .cl-hint b { font-weight: 500; color: var(--kit-text-2); }
 .cl-hint code { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-2); word-break: break-all; }
-.cl-hint[data-tone="warn"], .cl-hint[data-tone="warn"] code { color: var(--kit-warn); }
+.cl-hint[data-tone="warn"], .cl-hint[data-tone="warn"] code, .cl-hint[data-tone="warn"] b { color: var(--kit-warn); }
 
 /* ── Extras: Attach Linear issue · Use a template ─────────────────────────── */
 .cl-extras { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }

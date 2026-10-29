@@ -9,7 +9,12 @@ import type { NewLaneDefaultsSnapshot, OpenProjectBinding } from "../../shared/t
  * updates every reader at once; nothing polls.
  */
 
-type Entry = { value?: NewLaneDefaultsSnapshot | null; promise?: Promise<NewLaneDefaultsSnapshot | null> };
+type Entry = {
+  value?: NewLaneDefaultsSnapshot | null;
+  promise?: Promise<NewLaneDefaultsSnapshot | null>;
+  /** The last read failed (an older brain, a machine that went away). */
+  failed?: boolean;
+};
 
 const cache = new Map<string, Entry>();
 const listeners = new Set<() => void>();
@@ -35,7 +40,11 @@ export function getNewLaneDefaultsCached(args: {
     if (existing?.promise) return existing.promise;
   }
   const read = window.ade?.lanes?.getNewLaneDefaults;
-  if (typeof read !== "function") return Promise.resolve(null);
+  if (typeof read !== "function") {
+    cache.set(key, { failed: true });
+    notify();
+    return Promise.resolve(null);
+  }
   const promise = (args.pin ? read(args.pin) : read())
     .then((value) => {
       cache.set(key, { value });
@@ -43,7 +52,8 @@ export function getNewLaneDefaultsCached(args: {
       return value;
     })
     .catch(() => {
-      if (cache.get(key)?.promise === promise) cache.delete(key);
+      if (cache.get(key)?.promise === promise) cache.set(key, { failed: true });
+      notify();
       return null;
     });
   cache.set(key, { ...existing, promise });
@@ -77,12 +87,25 @@ export function useNewLaneDefaults(args: {
   pin?: OpenProjectBinding | null;
   enabled?: boolean;
 }): NewLaneDefaultsSnapshot | null {
+  return useNewLaneDefaultsState(args).snapshot;
+}
+
+/** {@link useNewLaneDefaults} plus whether the read failed, and a retry. */
+export function useNewLaneDefaultsState(args: {
+  projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
+  enabled?: boolean;
+}): { snapshot: NewLaneDefaultsSnapshot | null; failed: boolean; retry: () => void } {
   const enabled = args.enabled !== false;
   const key = cacheKey(args.projectRoot, args.pin);
-  const [value, setValue] = useState<NewLaneDefaultsSnapshot | null>(() => peekNewLaneDefaultsCached(args));
+  const read = () => {
+    const entry = cache.get(key);
+    return { snapshot: entry?.value ?? null, failed: entry?.failed === true };
+  };
+  const [state, setState] = useState(read);
   useEffect(() => {
     if (!enabled) return;
-    const sync = () => setValue(peekNewLaneDefaultsCached(args));
+    const sync = () => setState(read());
     listeners.add(sync);
     sync();
     void getNewLaneDefaultsCached(args);
@@ -92,5 +115,10 @@ export function useNewLaneDefaults(args: {
     // Keyed on the cache key (project root + `pin?.key`), not the pin object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, key]);
-  return value;
+  return {
+    ...state,
+    retry: () => {
+      void getNewLaneDefaultsCached({ ...args, force: true });
+    },
+  };
 }

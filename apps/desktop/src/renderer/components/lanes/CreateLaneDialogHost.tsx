@@ -5,6 +5,7 @@ import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLane
 import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
 import { DEFAULT_LANE_START, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
+import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -373,7 +374,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     const loadSeq = ++createBaseBranchesLoadSeqRef.current;
     const current = () => createBaseBranchesLoadSeqRef.current === loadSeq;
 
-    const defaultsRead = window.ade.lanes.getNewLaneDefaults(...pinArg(pin)).catch(() => null);
+    // Fresh on every open: another computer may have changed them. An older
+    // brain without new-lane defaults answers null, and the form keeps the
+    // built-in default (pushed work from the default branch).
+    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
       window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin))
@@ -419,6 +423,21 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     createStartUserPickedRef.current = true;
     setCreateStartState(start);
   }, []);
+
+  // "Make default": the dialog's start becomes the project's, on the machine
+  // the lane is being created on (the account setting is shared, but the
+  // machine answers with its own branch names).
+  const handleMakeStartDefault = useCallback(() => {
+    if (!newLaneDefaults) return;
+    const pin = targetPinRef.current;
+    void saveNewLaneDefaults({
+      projectRoot: getActiveProjectRoot(),
+      pin,
+      defaults: { ...newLaneDefaults.defaults, start: createStart },
+    })
+      .then(setNewLaneDefaults)
+      .catch((error: unknown) => setCreateError(error instanceof Error ? error.message : String(error)));
+  }, [createStart, newLaneDefaults, targetPinRef]);
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
@@ -810,6 +829,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       createStart={createStart}
       setCreateStart={handleSetCreateStart}
       newLaneDefaults={newLaneDefaults}
+      onMakeStartDefault={handleMakeStartDefault}
       createImportBranch={createImportBranch}
       setCreateImportBranch={setCreateImportBranch}
       projectRoot={activeProjectRoot}

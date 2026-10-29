@@ -14,18 +14,18 @@ import {
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { saveNewLaneDefaults, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
+import { saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
+import { Banner } from "../ui/notice";
 import {
   LANE_START_BRING_HINT,
   LANE_START_BRING_LABEL,
   LANE_START_BRING_VALUES,
-  describeLaneStart,
   plainLaneStartBranch,
   type LaneStart,
   type LaneStartBring,
   type LaneStartFrom,
 } from "../../../shared/laneStart";
-import type { LaneSummary, NewLaneSettingsScope } from "../../../shared/types";
+import type { LaneSummary, NewLaneDefaultsSnapshot, NewLaneSettingsScope } from "../../../shared/types";
 import type { LaneBranchOption } from "../lanes/laneUtils";
 import { ComposerPopover } from "../lanes/createLaneComposerChips";
 import { LaneBranchList } from "../lanes/LaneBranchList";
@@ -57,7 +57,7 @@ const BRING_ICON: Record<LaneStartBring, Icon> = {
 export function NewLaneSettingsSection() {
   const { pin } = useSettingsMachineScope();
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const snapshot = useNewLaneDefaults({ projectRoot, pin });
+  const { snapshot, failed, retry } = useNewLaneDefaultsState({ projectRoot, pin });
   const { state: saveState, flash, fail } = useSavedFlash();
   const [pending, setPending] = useState<LaneStart | null>(null);
   const start = pending ?? snapshot?.defaults.start ?? null;
@@ -100,7 +100,7 @@ export function NewLaneSettingsSection() {
       group="New lanes"
       anchor="new-lane-start"
       title="Where new lanes start"
-      hint="Auto-create lane and ade lanes create start here. The New lane dialog starts here too, and you can change it there for one lane."
+      hint={<>Auto-create lane and <code>ade lanes create</code> use this. The New lane dialog starts here too.</>}
       actions={(
         <>
           <SavedFlash state={saveState} />
@@ -108,7 +108,18 @@ export function NewLaneSettingsSection() {
         </>
       )}
     >
-      {!snapshot || !start ? (
+      {failed && !snapshot ? (
+        <Banner
+          layout="inline"
+          model={{
+            id: "new-lane-defaults-error",
+            tone: "error",
+            title: "ADE couldn't read this project's new-lane settings",
+            detail: "The machine that owns this project may need a newer ADE.",
+            actions: [{ label: "Try again", onClick: retry }],
+          }}
+        />
+      ) : !snapshot || !start ? (
         <div className="ade-nl-loading" aria-busy="true">
           <span className="ade-st-shimmer" />
           <span className="ade-st-shimmer" />
@@ -122,7 +133,7 @@ export function NewLaneSettingsSection() {
               let hint: string;
               if (option.value === "default") hint = snapshot.defaultBranch || "The repository's main branch";
               else if (option.value === "primary") hint = snapshot.primaryBranch ? `${snapshot.primaryBranch} right now` : "No branch checked out";
-              else hint = start.from === "branch" && start.branch ? plainLaneStartBranch(start.branch) : "Always the same one";
+              else hint = start.from === "branch" && start.branch ? plainLaneStartBranch(start.branch) : "Pick one, like develop";
               return (
                 <button
                   key={option.value}
@@ -232,15 +243,19 @@ function StartSummary({ start, sourceBranch, holder }: { start: LaneStart; sourc
     );
   }
   const nothingToCopy = start.bring === "uncommitted" && !holder;
+  const ref = start.bring === "pushed" ? `origin/${sourceBranch}` : sourceBranch;
+  const holderName = holder ? (holder.laneType === "primary" ? "Primary" : holder.name) : "";
+  let tail: string;
+  if (start.bring === "pushed") tail = ", after fetching the latest from the remote.";
+  else if (start.bring === "local") tail = ", your local copy, including commits you haven't pushed.";
+  else if (holder) tail = `, plus a copy of the uncommitted changes in ${holderName}. ${holderName} keeps its own.`;
+  else tail = `. It isn't open in any lane right now, so there's nothing uncommitted to copy.`;
   return (
     <div className="ade-nl-summary" data-tone={nothingToCopy ? "warn" : undefined}>
       {nothingToCopy ? <WarningCircle size={14} /> : <GitBranch size={14} />}
       <span>
-        New lanes branch from <b>{describeLaneStart(start, sourceBranch)}</b>.
-        {nothingToCopy && sourceBranch ? ` ${sourceBranch} isn't open in any lane right now, so there's nothing uncommitted to copy.` : null}
-        {start.bring === "uncommitted" && holder
-          ? ` Changes are copied from ${holder.laneType === "primary" ? "Primary" : holder.name}; it keeps its own copy.`
-          : null}
+        New lanes branch from <b>{ref}</b>{tail}
+        {start.from === "primary" ? " It follows whatever Primary has checked out when the lane is made." : null}
       </span>
     </div>
   );
@@ -256,7 +271,7 @@ function BranchPickerRow({
 }: {
   pin: ReturnType<typeof useSettingsMachineScope>["pin"];
   lanes: LaneSummary[];
-  snapshot: NonNullable<ReturnType<typeof useNewLaneDefaults>>;
+  snapshot: NewLaneDefaultsSnapshot;
   value: string;
   onPick: (branch: string) => void;
 }) {
@@ -315,28 +330,29 @@ function BranchPickerRow({
  * the default branch on top, the primary lane's checkout, or another branch.
  */
 function StartArt({ from }: { from: LaneStartFrom }) {
-  const rows: Record<LaneStartFrom, number> = { default: 9, primary: 22, branch: 35 };
-  const lit = rows[from];
+  const rows: ReadonlyArray<{ from: LaneStartFrom; y: number; end: number; label: string }> = [
+    { from: "default", y: 10, end: 122, label: "main" },
+    { from: "primary", y: 24, end: 100, label: "primary" },
+    { from: "branch", y: 38, end: 80, label: "other" },
+  ];
+  const lit = rows.find((row) => row.from === from)!;
   return (
-    <svg width="148" height="46" viewBox="0 0 148 46" fill="none">
-      {([9, 22, 35] as const).map((y) => (
-        <g key={y} opacity={y === lit ? 0.95 : 0.22}>
-          <path d={`M10 ${y} H${y === 9 ? 118 : y === 22 ? 96 : 74}`} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-          <circle cx={y === 9 ? 118 : y === 22 ? 96 : 74} cy={y} r="3" fill="currentColor" />
+    <svg width="168" height="48" viewBox="0 0 168 48" fill="none">
+      {rows.map((row) => (
+        <g key={row.from} opacity={row.from === from ? 0.95 : 0.22}>
+          <text x="0" y={row.y + 3} fontSize="8" fontFamily="var(--font-mono)" fill="currentColor">{row.label}</text>
+          <path d={`M40 ${row.y} H${row.end}`} stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+          <circle cx={row.end} cy={row.y} r="3" fill="currentColor" />
         </g>
       ))}
-      {(() => {
-        const x = lit === 9 ? 118 : lit === 22 ? 96 : 74;
-        return (
-          <path
-            d={`M${x} ${lit} C${x + 10} ${lit} ${x + 12} ${lit + 8} ${x + 26} ${lit + 8}`}
-            stroke="var(--color-accent)"
-            strokeWidth="1.5"
-            strokeDasharray="3 3"
-            strokeLinecap="round"
-          />
-        );
-      })()}
+      <path
+        d={`M${lit.end} ${lit.y} C${lit.end + 10} ${lit.y} ${lit.end + 12} ${lit.y + 7} ${lit.end + 30} ${lit.y + 7}`}
+        stroke="var(--color-accent)"
+        strokeWidth="1.5"
+        strokeDasharray="3 3"
+        strokeLinecap="round"
+      />
+      <circle cx={lit.end + 32} cy={lit.y + 7} r="2.5" fill="var(--color-accent)" />
     </svg>
   );
 }
