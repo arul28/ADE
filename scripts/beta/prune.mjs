@@ -16,7 +16,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isBetaTag, isPreviewTag, prunePlan } from "./beta-lib.mjs";
+import { isBetaTag, isPreviewTag, prunePlan, readReleases, readTagCommits } from "./beta-lib.mjs";
 
 function run(args) {
   return execFileSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 }).trim();
@@ -35,19 +35,8 @@ function parseArgs(argv) {
 }
 
 function liveInputs(repo) {
-  const tags = {};
-  const lsRemote = execFileSync("git", ["ls-remote", "--tags", "origin"], { encoding: "utf8" });
-  for (const line of lsRemote.split("\n").filter(Boolean)) {
-    const [sha, ref] = line.split(/\s+/);
-    const peeled = ref.endsWith("^{}");
-    const name = ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, "");
-    if (peeled || !tags[name]) tags[name] = sha;
-  }
-  const releases = run([
-    "api", `repos/${repo}/releases?per_page=100`, "--paginate",
-    "--jq", ".[] | {tag: .tag_name, draft, prerelease, publishedAt: .published_at, createdAt: .created_at}",
-  ]).split("\n").filter(Boolean).map((line) => JSON.parse(line));
-  return { tags, releases, now: Date.now() };
+  const git = (args) => execFileSync("git", args, { encoding: "utf8" });
+  return { tags: readTagCommits(git), releases: readReleases(run, repo), now: Date.now() };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

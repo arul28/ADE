@@ -1,17 +1,86 @@
 import { useCallback, useState } from "react";
-import type { AutoUpdateSnapshot } from "../../../shared/types";
+import type { AutoUpdateSnapshot, AutoUpdateTrackState } from "../../../shared/types";
 import { updateTrackLabel, type UpdateTrack } from "../../../shared/updateTrack";
-import { requestDownloadedUpdateInstall } from "../app/autoUpdateInstallAction";
+import { captureError } from "../../../shared/sentry/capture";
 import { confirmDialog } from "../ui/dialog";
-import { Banner } from "../ui/notice";
+import { Banner, type BannerModel } from "../ui/notice";
 import { ModernRow, ModernRows, SettingsSegmented } from "./primitives";
 
 const TRACK_OPTIONS = [
   { value: "stable", label: "Stable", hint: "Tested releases" },
-  { value: "beta", label: "Beta", hint: "New every few hours" },
+  { value: "beta", label: "Beta", hint: "New builds every few hours" },
 ] as const;
 
-type Busy = { target: UpdateTrack } | null;
+type Blocked = { target: UpdateTrack; reason: string };
+
+/**
+ * The one line under the control: what is happening with this computer's
+ * track right now, or null when nothing is.
+ */
+function trackStatusModel(args: {
+  track: AutoUpdateTrackState;
+  snapshot: AutoUpdateSnapshot;
+  checking: UpdateTrack | null;
+  blocked: Blocked | null;
+  clearBlocked: () => void;
+  finishSwitch: (target: UpdateTrack) => void;
+}): BannerModel | null {
+  const { track, snapshot, checking, blocked } = args;
+  if (checking) {
+    return {
+      id: "update-track-checking",
+      tone: "info",
+      busy: true,
+      title: `Checking that ${updateTrackLabel(checking)} can open your projects…`,
+    };
+  }
+  if (blocked) {
+    return {
+      id: "update-track-blocked",
+      tone: "warning",
+      title: `This computer stays on ${updateTrackLabel(track.running)}`,
+      detail: blocked.reason,
+      report: false,
+      dismiss: { onDismiss: args.clearBlocked },
+    };
+  }
+  if (track.switching) {
+    const label = updateTrackLabel(track.switching);
+    // A downloaded switch is an app-wide state: the app banner owns its
+    // "Restart and switch" (AutoUpdateBanner), so it is not repeated here.
+    if (snapshot.status === "ready") return null;
+    if (snapshot.status === "checking" || snapshot.status === "downloading") {
+      return {
+        id: "update-track-downloading",
+        tone: "info",
+        busy: true,
+        title: snapshot.status === "downloading" && snapshot.version
+          ? `Downloading ${label} ${snapshot.version}…`
+          : `Looking for the newest ${label} build…`,
+      };
+    }
+    if (snapshot.status === "idle" && snapshot.lastCheckedAt != null) {
+      return {
+        id: "update-track-none",
+        tone: "info",
+        title: `There is no ${label} build to switch to right now`,
+        detail: `Try again later, or choose ${updateTrackLabel(track.running)} to stay.`,
+        actions: [{ label: "Try again", onClick: () => { void window.ade.updateCheckForUpdates(); } }],
+      };
+    }
+    return null;
+  }
+  if (track.selected !== track.running) {
+    return {
+      id: "update-track-unfinished",
+      tone: "warning",
+      title: `The switch to ${updateTrackLabel(track.selected)} didn't finish`,
+      detail: `This computer still runs ${updateTrackLabel(track.running)}.`,
+      actions: [{ label: "Finish switching", onClick: () => args.finishSwitch(track.selected) }],
+    };
+  }
+  return null;
+}
 
 /**
  * Stable or Beta for this computer (docs/plans/beta-track.md).
@@ -19,15 +88,16 @@ type Busy = { target: UpdateTrack } | null;
  * The words stay plain on purpose, because two tracks are easy to confuse:
  * the control shows what this computer follows, and one line under it says
  * what is happening. Both tracks are the same app with the same projects and
- * chats; only which builds arrive changes.
+ * chats; only which builds arrive changes. Renders nothing for a build with
+ * no track (dev, Alpha).
  */
 export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot }) {
-  const [busy, setBusy] = useState<Busy>(null);
-  const [blocked, setBlocked] = useState<{ target: UpdateTrack; reason: string } | null>(null);
+  const [checking, setChecking] = useState<UpdateTrack | null>(null);
+  const [blocked, setBlocked] = useState<Blocked | null>(null);
   const track = snapshot.track;
 
   const switchTo = useCallback(async (target: UpdateTrack) => {
-    if (busy || !track) return;
+    if (checking || !track) return;
     setBlocked(null);
     // Back to the track this build is on: nothing installs, so no question.
     if (target === track.running) {
@@ -35,7 +105,7 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
       if (!result.ok) setBlocked({ target, reason: result.reason });
       return;
     }
-    setBusy({ target });
+    setChecking(target);
     try {
       const check = await window.ade.updateCheckTrackSwitch(target);
       if (!check.allowed) {
@@ -47,120 +117,50 @@ export function UpdateTrackControls({ snapshot }: { snapshot: AutoUpdateSnapshot
       const confirmed = await confirmDialog({
         title: `Switch this computer to ${label}?`,
         message: target === "beta"
-          ? `ADE downloads Beta${versionText} and then asks you to restart. Your projects, chats and settings stay. Beta gets new builds from main every few hours, so it can have bugs Stable doesn't. You can switch back to Stable later.`
-          : `ADE downloads Stable${versionText} and then asks you to restart. Your projects, chats and settings stay.`,
+          ? `ADE downloads Beta${versionText}, then asks you to restart. Your projects and chats stay, and Beta can have bugs Stable doesn't.`
+          : `ADE downloads Stable${versionText}, then asks you to restart. Your projects and chats stay.`,
         confirmLabel: `Switch to ${label}`,
         tone: target === "beta" ? "warning" : "accent",
       });
       if (!confirmed) return;
       const result = await window.ade.updateSwitchTrack(target);
       if (!result.ok) setBlocked({ target, reason: result.reason });
-    } catch {
+    } catch (error) {
+      captureError(error, { tags: { area: "update_track", step: "switch" }, fingerprint: ["update_track", "switch"] });
       setBlocked({ target, reason: "ADE couldn't start the switch. Try again." });
     } finally {
-      setBusy(null);
+      setChecking(null);
     }
-  }, [busy, track]);
+  }, [checking, track]);
 
   if (!track) return null;
 
-  const selectedLabel = updateTrackLabel(track.selected);
-  const unfinished = track.selected !== track.running && !track.switching;
-  const switching = track.switching;
-  const switchingLabel = switching ? updateTrackLabel(switching) : null;
-  const readyForSwitch = Boolean(
-    switching && snapshot.status === "ready" && snapshot.version,
-  );
-
-  let status: React.ReactNode = null;
-  if (busy) {
-    status = (
-      <Banner
-        layout="inline"
-        model={{
-          id: "update-track-checking",
-          tone: "info",
-          busy: true,
-          title: `Checking that ${updateTrackLabel(busy.target)} can open your projects…`,
-        }}
-      />
-    );
-  } else if (blocked) {
-    status = (
-      <Banner
-        layout="inline"
-        model={{
-          id: "update-track-blocked",
-          tone: "warning",
-          title: `This computer stays on ${updateTrackLabel(track.running)}`,
-          detail: blocked.reason,
-          report: false,
-          dismiss: { onDismiss: () => setBlocked(null) },
-        }}
-      />
-    );
-  } else if (readyForSwitch && switchingLabel) {
-    status = (
-      <Banner
-        layout="inline"
-        model={{
-          id: "update-track-ready",
-          tone: "accent",
-          title: `${switchingLabel} ${snapshot.version} is ready`,
-          detail: `Restart ADE to finish switching to ${switchingLabel}.`,
-          actions: [{
-            label: "Restart and switch",
-            onClick: () => { void requestDownloadedUpdateInstall(snapshot); },
-          }],
-        }}
-      />
-    );
-  } else if (switching && switchingLabel && (snapshot.status === "checking" || snapshot.status === "downloading")) {
-    status = (
-      <Banner
-        layout="inline"
-        model={{
-          id: "update-track-downloading",
-          tone: "info",
-          busy: true,
-          title: snapshot.status === "downloading" && snapshot.version
-            ? `Downloading ${switchingLabel} ${snapshot.version}…`
-            : `Looking for the newest ${switchingLabel} build…`,
-        }}
-      />
-    );
-  } else if (unfinished) {
-    status = (
-      <Banner
-        layout="inline"
-        model={{
-          id: "update-track-unfinished",
-          tone: "warning",
-          title: `The switch to ${selectedLabel} didn't finish`,
-          detail: `This computer still runs ${updateTrackLabel(track.running)}.`,
-          actions: [{ label: "Finish switching", onClick: () => { void switchTo(track.selected); } }],
-        }}
-      />
-    );
-  }
+  const status = trackStatusModel({
+    track,
+    snapshot,
+    checking,
+    blocked,
+    clearBlocked: () => setBlocked(null),
+    finishSwitch: (target) => { void switchTo(target); },
+  });
 
   return (
     <ModernRows>
       <ModernRow
         anchor="update-track"
         title="Update track"
-        hint="Stable gets releases after they ran on Beta. Beta gets new builds from main every few hours. Both use the same projects and chats."
+        hint="Both use the same projects, chats and settings."
         control={
           <SettingsSegmented<UpdateTrack>
             ariaLabel="Update track"
             value={track.selected}
             options={TRACK_OPTIONS}
-            disabled={busy != null || snapshot.status === "installing"}
+            disabled={checking != null || snapshot.status === "installing"}
             onChange={(next) => { void switchTo(next); }}
           />
         }
       >
-        {status}
+        {status ? <Banner layout="inline" model={status} /> : null}
       </ModernRow>
     </ModernRows>
   );

@@ -1,7 +1,11 @@
 import path from "node:path";
 
-import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import {
+  resolveMachineAdeLayout,
+  resolvePersonalChatsStateRoot,
+} from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
+import { fetchReleaseManifestJson } from "../../../../../ade-cli/src/lib/releaseAssets";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   BETA_FEED_MANIFEST_URL,
@@ -13,7 +17,35 @@ import {
   type UpdateTrack,
 } from "../../../shared/updateTrack";
 import type { TrackSwitchCheckResult } from "../../../shared/types";
+import { DB_COMPAT_LEVEL, LEGACY_DB_COMPAT_LEVEL } from "../../../shared/releaseCompat";
+import type { Logger } from "../logging/logger";
 import { dbCompatLevelOf } from "../state/dbCompatRecord";
+
+export type TrackSwitchGuardDeps = {
+  /** Resolves the parsed JSON, `null` for a 404, and throws on other failures. */
+  fetchJson?: (url: string) => Promise<unknown | null>;
+  /** Every database file on this machine. Injected in tests. */
+  listDatabasePaths?: () => Array<{ label: string; dbPath: string }>;
+};
+
+function defaultListDatabasePaths(): Array<{ label: string; dbPath: string }> {
+  const layout = resolveMachineAdeLayout();
+  const databases = [
+    { label: "this computer's ADE data", dbPath: path.join(layout.adeDir, "ade.db") },
+    // Personal chats run a runtime of their own on this state root.
+    {
+      label: "your personal chats",
+      dbPath: resolveAdeLayout(resolvePersonalChatsStateRoot(layout)).dbPath,
+    },
+  ];
+  for (const project of new ProjectRegistry(layout).list()) {
+    databases.push({
+      label: project.displayName || path.basename(project.rootPath),
+      dbPath: resolveAdeLayout(project.rootPath).dbPath,
+    });
+  }
+  return databases;
+}
 
 /**
  * Before a machine moves to the other update track: can the build it would
@@ -25,55 +57,14 @@ import { dbCompatLevelOf } from "../state/dbCompatRecord";
  * the highest level any local database was migrated to. Anything this check
  * cannot read blocks the switch instead of guessing.
  */
-export type TrackSwitchCheck = TrackSwitchCheckResult;
-
-export type TrackSwitchGuardDeps = {
-  /** Resolves the parsed JSON, `null` for a 404, and throws on other failures. */
-  fetchJson?: (url: string) => Promise<unknown | null>;
-  /** Every database file on this machine. Injected in tests. */
-  listDatabasePaths?: () => Array<{ label: string; dbPath: string }>;
-};
-
-const MANIFEST_FETCH_TIMEOUT_MS = 15_000;
-
-async function defaultFetchJson(url: string): Promise<unknown | null> {
-  const response = await fetch(url, {
-    redirect: "follow",
-    signal: AbortSignal.timeout(MANIFEST_FETCH_TIMEOUT_MS),
-    headers: { accept: "application/json" },
-  });
-  if (response.status === 404) return null;
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return await response.json();
-}
-
-function defaultListDatabasePaths(): Array<{ label: string; dbPath: string }> {
-  const layout = resolveMachineAdeLayout();
-  const databases = [{ label: "this computer's ADE data", dbPath: path.join(layout.adeDir, "ade.db") }];
-  for (const project of new ProjectRegistry(layout).list()) {
-    databases.push({
-      label: project.displayName || path.basename(project.rootPath),
-      dbPath: resolveAdeLayout(project.rootPath).dbPath,
-    });
-  }
-  return databases;
-}
-
-/**
- * Stable releases from before release manifests existed have no
- * `release-manifest.json`. Their schema is the one `DB_COMPAT_LEVEL` 1 was
- * defined as, so such a release reads level 1. Every release since publishes
- * its manifest, or its build fails.
- */
-const LEGACY_RELEASE_DB_COMPAT = 1;
-
 export async function checkTrackSwitch(args: {
   target: UpdateTrack;
   runningVersion: string;
   deps?: TrackSwitchGuardDeps;
-}): Promise<TrackSwitchCheck> {
+  logger?: Pick<Logger, "warn">;
+}): Promise<TrackSwitchCheckResult> {
   const { target, runningVersion } = args;
-  const fetchJson = args.deps?.fetchJson ?? defaultFetchJson;
+  const fetchJson = args.deps?.fetchJson ?? fetchReleaseManifestJson;
   const listDatabasePaths = args.deps?.listDatabasePaths ?? defaultListDatabasePaths;
   const runningTrack = updateTrackOfVersion(runningVersion);
   const targetLabel = updateTrackLabel(target);
@@ -84,7 +75,8 @@ export async function checkTrackSwitch(args: {
   let raw: unknown | null;
   try {
     raw = await fetchJson(target === "beta" ? BETA_FEED_MANIFEST_URL : LATEST_STABLE_MANIFEST_URL);
-  } catch {
+  } catch (error) {
+    args.logger?.warn("autoUpdate.track_switch_manifest_failed", { target, error: String(error) });
     return {
       allowed: false,
       target,
@@ -108,7 +100,7 @@ export async function checkTrackSwitch(args: {
     }
   }
 
-  const targetDbCompat = manifest ? manifest.dbCompat : LEGACY_RELEASE_DB_COMPAT;
+  const targetDbCompat = manifest ? manifest.dbCompat : LEGACY_DB_COMPAT_LEVEL;
   if (targetDbCompat == null) {
     return {
       allowed: false,
@@ -117,10 +109,24 @@ export async function checkTrackSwitch(args: {
     };
   }
 
+  const targetName = manifest ? `${targetLabel} ${manifest.version}` : `the newest ${targetLabel} build`;
+  const tooNew = (subject: string): TrackSwitchCheckResult => ({
+    allowed: false,
+    target,
+    reason: `${subject} in a way ${targetName} can't read yet. Stay on ${updateTrackLabel(runningTrack)} for now, and switch again after the next ${targetLabel} release.`,
+  });
+
+  // This build may still open a project before the switch installs, and that
+  // open migrates the file to this build's level. So a target below this
+  // build's own level is refused even when no database is there yet; the
+  // per-file check below then covers files a newer build already migrated.
+  if (targetDbCompat < DB_COMPAT_LEVEL) return tooNew("This build updates projects");
+
   let databases: Array<{ label: string; dbPath: string }>;
   try {
     databases = listDatabasePaths();
-  } catch {
+  } catch (error) {
+    args.logger?.warn("autoUpdate.track_switch_projects_failed", { target, error: String(error) });
     return {
       allowed: false,
       target,
@@ -133,17 +139,10 @@ export async function checkTrackSwitch(args: {
       return {
         allowed: false,
         target,
-        reason: `ADE couldn't read the data version of ${database.label}, so it won't switch. Open the project once on this build, then try again.`,
+        reason: `ADE couldn't read the data version of ${database.label}, so it won't switch. Open it once on this build, then try again.`,
       };
     }
-    if (level > targetDbCompat) {
-      const version = manifest?.version ?? "the newest Stable build";
-      return {
-        allowed: false,
-        target,
-        reason: `This Beta already updated ${database.label} in a way ${targetLabel} ${version} can't read yet. Stay on Beta for now, and switch again after the next ${targetLabel} release.`,
-      };
-    }
+    if (level > targetDbCompat) return tooNew(`A newer build already updated ${database.label}`);
   }
   return { allowed: true, target, targetVersion: manifest?.version ?? null };
 }

@@ -347,7 +347,12 @@ import {
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
-import { UPDATE_TRACK_ARGV_PREFIX, updateTrackOfVersion, type UpdateTrack } from "../shared/updateTrack";
+import {
+  shippedVersionOrNull,
+  UPDATE_TRACK_ARGV_PREFIX,
+  updateTrackOfVersion,
+  type UpdateTrack,
+} from "../shared/updateTrack";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
@@ -1073,7 +1078,7 @@ async function createWindow(args: {
       additionalArguments: [
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
         // Same reason: the "Beta" label next to the logo is drawn at first paint.
-        `${UPDATE_TRACK_ARGV_PREFIX}${app.isPackaged ? updateTrackOfVersion(app.getVersion()) : "stable"}`,
+        `${UPDATE_TRACK_ARGV_PREFIX}${updateTrackOfVersion(app.getVersion())}`,
         ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },
@@ -3390,24 +3395,22 @@ app.whenReady().then(async () => {
     autoUpdateInstallRollbackReason = reason;
     await reinstallRuntimeServiceAfterUpdateAbort(reason);
   };
+  // Channel builds do not check for updates. There is no per-channel publish
+  // feed: an Alpha would poll Stable's feed and offer to "update" itself into
+  // a Stable installer with a different appId and ADE home.
+  const hasUpdateFeed = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     installTargetPath: process.execPath,
-    // Channel builds do not check for updates. There is no per-channel publish
-    // feed yet, so a Beta would poll Stable's `latest.yml` and offer to
-    // "update" itself into a Stable installer — a different appId, a different
-    // ADE home, and an install that would land beside itself rather than over
-    // itself. Rebuild a channel to move it forward until a real per-channel
-    // feed exists.
-    autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    autoCheckEnabled: hasUpdateFeed,
     // Stable and Beta are tracks of this same install, not channels: the
     // machine's choice lives in ~/.ade/update-track.json so the brain and the
     // CLI read the same one (docs/plans/beta-track.md). A channel build (Alpha)
     // has no feed and no track.
-    ...(app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL)
+    ...(hasUpdateFeed
       ? {
           readSelectedTrack: () => readSavedUpdateTrack()?.track ?? null,
           writeSelectedTrack: (track: UpdateTrack) => {
@@ -3477,7 +3480,7 @@ app.whenReady().then(async () => {
     getService: () => autoUpdateService,
     // The same gate as the update checks themselves: a development or channel
     // build has no feed of its own, so the brain updates its standalone runtime.
-    supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    supported: hasUpdateFeed,
     // Only a service-managed app uninstalls its service before installing.
     preflightInstall: shouldRepairRuntimeServiceOnFallback ? checkRuntimeServiceRemovable : undefined,
     logger: updateLogger,
@@ -3930,7 +3933,7 @@ app.whenReady().then(async () => {
     const db = await measureProjectInitStep("db_open", () =>
       openKvDb(adePaths.dbPath, logger, {
         hasSyncPeers,
-        appVersion: app.isPackaged ? app.getVersion() : null,
+        appVersion: shippedVersionOrNull(app.getVersion()),
       }),
     );
     recordLocalProjectDatabaseIdentity(projectRoot, logger);

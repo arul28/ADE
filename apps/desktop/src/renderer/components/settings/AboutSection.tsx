@@ -306,7 +306,7 @@ export function AboutSection() {
             <span className="kit-eyebrow">ADE</span>
             <span className="ade-modern-stat-value">
               <span className="kit-stat kit-num">{runningVersion}</span>
-              {updateSnapshot.track?.running === "beta" ? <span className="kit-tag" data-tone="warn">Beta</span> : null}
+              {updateSnapshot.track?.running === "beta" ? <span className="kit-tag">Beta</span> : null}
               {pill}
             </span>
             <span className="ade-modern-stat-sub">
@@ -413,8 +413,8 @@ export function AboutSection() {
       </ModernSection>
 
       <ModernSection group="Updates" title="Updates" hint="Choose which builds this computer gets, and whether ADE installs them automatically.">
-        {/* Alpha and dev builds have no feed, so they have no track. */}
-        {!isDev && info.packageChannel !== "alpha" ? <UpdateTrackControls snapshot={updateSnapshot} /> : null}
+        {/* Renders nothing for a build with no track (dev, Alpha). */}
+        <UpdateTrackControls snapshot={updateSnapshot} />
         <AutoUpdatesControls />
       </ModernSection>
 

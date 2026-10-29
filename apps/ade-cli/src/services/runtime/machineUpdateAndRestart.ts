@@ -505,10 +505,9 @@ export async function runMachineUpdateAndRestart(
   // made on the machine itself, which checks its databases first. Such a
   // request updates this machine on its own track instead (T3 does the same).
   const selectedTrack = deps.selectedTrack?.() ?? updateTrackOfVersion(ownVersion);
-  const targetVersion = requestedTargetVersion
-    && updateTrackOfVersion(requestedTargetVersion) !== selectedTrack
-    ? null
-    : requestedTargetVersion;
+  const crossesTrack = requestedTargetVersion != null
+    && updateTrackOfVersion(requestedTargetVersion) !== selectedTrack;
+  const targetVersion = crossesTrack ? null : requestedTargetVersion;
   if (deps.requestDesktopAppUpdate) {
     let routing: DesktopAppUpdateRouting;
     try {

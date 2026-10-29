@@ -115,7 +115,10 @@ beta's), so **push the notes before step 3** or they miss this build. So:
   `apps/desktop/src/renderer/components/announcements/announcementPages.ts`
   (its `added` date is the day it ships) plus a short file in `pages/`. Use
   real captures from the dev app, cropped to the feature, GIF or WebP in
-  `pages/assets/`. Pages show by themselves for 45 days.
+  `pages/assets/`. Pages show by themselves for 45 days. Pages are app
+  code, not notes: a stable build has only the pages in the beta's commit.
+  A new page merges to `main` in its own PR, and ships in the first stable
+  release that promotes a beta built after that merge.
 
 List the PRs from `git log v<previous-release>..$BETA_SHA`, not from `main`'s
 head: the release ships the beta's commit, and anything merged after it waits
@@ -140,8 +143,9 @@ background. It does not need the desktop draft. TestFlight builds will move
 to CI with the Beta track; until then this script is still the path:
 
 ```bash
-git checkout $BETA_SHA   # main's head on an iOS-only release
-bash scripts/release-tools/ios-testflight.sh <mv> <build> $BETA_SHA   # run_in_background, timeout ≥ 90 min
+IOS_SHA=${BETA_SHA:-$(git rev-parse origin/main)}   # iOS-only release: main's head
+git checkout $IOS_SHA
+bash scripts/release-tools/ios-testflight.sh <mv> <build> $IOS_SHA   # run_in_background, timeout ≥ 90 min
 ```
 
 ### 4. Desktop workflow (~30 min)
@@ -206,6 +210,7 @@ One short block:
 |---|---|
 | `main`'s `ci-pass` red before notes | Read the failed job. Flaky → rerun it. Secret-scan false positive → allowlist it in `.gitleaks.toml` in a PR. Real → stop. |
 | Release `verify` job fails | Get `ci-pass` green on the same SHA, then `gh run rerun <id> --failed`. |
+| A failed release left its tag behind | `release-publish.yml` creates the tag before the draft. To build again at a different commit, delete the tag first: `git push origin :refs/tags/v<V>` (only when no release is public). |
 | No beta to promote | `beta.yml` failing: read the **Beta build failed** issue. Beta too new: wait, or `gh workflow run beta.yml -f force=true` only if the owner asks. |
 | Mac job: Apple network error | `gh run rerun <id> --failed`, once. |
 | Notarization stuck > 15 min | `gh run cancel <id>`, then `gh run rerun <id> --failed`. |

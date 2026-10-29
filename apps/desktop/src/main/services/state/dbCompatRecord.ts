@@ -3,7 +3,7 @@ import { promises as fsp } from "node:fs";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 
-import { DB_COMPAT_LEVEL } from "../../../shared/releaseCompat";
+import { DB_COMPAT_LEVEL, LEGACY_DB_COMPAT_LEVEL } from "../../../shared/releaseCompat";
 import { compareUpdateVersions } from "../../../shared/updateVersions";
 import type { Logger } from "../logging/logger";
 import { readVolumeSpace } from "../storage/volume";
@@ -65,7 +65,7 @@ export function dbCompatLevelOf(dbPath: string): number | "unreadable" {
   if (!fs.existsSync(dbPath)) return 0;
   const record = readDbCompatRecord(dbPath);
   if (record === "unreadable") return "unreadable";
-  return record?.level ?? 1;
+  return record?.level ?? LEGACY_DB_COMPAT_LEVEL;
 }
 
 /**
@@ -81,14 +81,15 @@ export function writeDbCompatRecord(dbPath: string, appVersion: string, logger: 
     lastOpenedVersion: appVersion,
     updatedAt: now.toISOString(),
   };
+  // Written with a plain rename that replaces the old file, never delete-then-
+  // rename (writeJsonAtomic's Windows path): between those two steps the
+  // switch guard would read "no record" and take the level for 1. On Windows
+  // a rename onto a file another process has open fails briefly; it retries.
   const target = dbCompatRecordPath(dbPath);
   const temporary = `${target}.${process.pid}.tmp`;
   try {
     fs.writeFileSync(temporary, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
-    if (process.platform === "win32") {
-      try { fs.unlinkSync(target); } catch { /* first write */ }
-    }
-    fs.renameSync(temporary, target);
+    renameReplacing(temporary, target);
   } catch (error) {
     try { fs.unlinkSync(temporary); } catch { /* best effort */ }
     logger.warn("db.compat_record_write_failed", {
@@ -98,8 +99,23 @@ export function writeDbCompatRecord(dbPath: string, appVersion: string, logger: 
   }
 }
 
+const RENAME_ATTEMPTS = 5;
+
+function renameReplacing(from: string, to: string): void {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      fs.renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (attempt >= RENAME_ATTEMPTS || (code !== "EPERM" && code !== "EACCES" && code !== "EBUSY")) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20 * attempt);
+    }
+  }
+}
+
 const SNAPSHOT_SUFFIX = ".bak";
-const SNAPSHOTS_KEPT = 2;
+const SNAPSHOTS_KEPT = 3;
 const SNAPSHOT_HEADROOM_BYTES = 256 * 1024 * 1024;
 /** Pages copied per step; small steps keep the event loop free on big files. */
 const SNAPSHOT_PAGES_PER_STEP = 256;
@@ -167,10 +183,17 @@ export async function snapshotDatabaseBeforeVersionChange(args: {
     return null;
   }
 
+  // Named by both versions (`ade.db.pre-1.2.127-from-1.2.128-beta.3.bak`):
+  // a file that goes back and forth between versions gets a copy for each
+  // move, so a return to an older build never reuses, or overwrites, the copy
+  // taken before an earlier upgrade.
   const destination = path.join(
     path.dirname(dbPath),
-    `${snapshotPrefix(dbPath)}${safeVersionLabel(appVersion)}${SNAPSHOT_SUFFIX}`,
+    `${snapshotPrefix(dbPath)}${safeVersionLabel(appVersion)}-from-${safeVersionLabel(lastOpenedVersion ?? "unknown")}${SNAPSHOT_SUFFIX}`,
   );
+  // The same move again (the file went back and forth twice): the first copy
+  // of this move is already there; keep it.
+  if (fs.existsSync(destination)) return null;
   const temporary = `${destination}.${process.pid}.tmp`;
   const startedAt = Date.now();
   try {
@@ -198,7 +221,7 @@ export async function snapshotDatabaseBeforeVersionChange(args: {
 }
 
 /** Newest first, by modification time. */
-export function listDatabaseSnapshots(dbPath: string): Array<{ path: string; modifiedAt: number; sizeBytes: number }> {
+function listDatabaseSnapshots(dbPath: string): Array<{ path: string; modifiedAt: number; sizeBytes: number }> {
   const directory = path.dirname(dbPath);
   const prefix = snapshotPrefix(dbPath);
   let names: string[];
@@ -210,6 +233,9 @@ export function listDatabaseSnapshots(dbPath: string): Array<{ path: string; mod
   const snapshots: Array<{ path: string; modifiedAt: number; sizeBytes: number }> = [];
   for (const name of names) {
     if (!name.startsWith(prefix) || !name.endsWith(SNAPSHOT_SUFFIX)) continue;
+    // Only version copies (`.pre-1.2.128-beta.3.bak`). kvDb's one-time
+    // `.pre-crsqlite-w1.bak` shares the prefix and is never pruned.
+    if (!/^\d/.test(name.slice(prefix.length))) continue;
     const fullPath = path.join(directory, name);
     try {
       const stat = fs.statSync(fullPath);

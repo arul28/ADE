@@ -2,7 +2,8 @@ import React from "react";
 
 import type { AppPackageChannel } from "../../../shared/packageChannel";
 import type { UpdateTrack } from "../../../shared/updateTrack";
-import { packageChannelLabel, rendererPackageChannel, rendererUpdateTrack } from "../../lib/packageChannel";
+import { packageChannelLabel, rendererPackageChannel } from "../../lib/packageChannel";
+import { rendererUpdateTrack } from "../../lib/updateTrack";
 
 export type ChannelBadgeProps = {
   /** Defaults to the synchronous preload channel. Injected in tests. */
@@ -46,24 +47,12 @@ export function ChannelBadge({
     };
   }, [isPrerelease, version]);
 
-  // Beta is a track of the normal install, not dev chrome: a tiny "BETA" next
-  // to the logo, no version (Settings › About has it), no IPC.
-  if (!isPrerelease && track === "beta") {
-    return (
-      <span
-        className="ade-shell-channel-badge ade-shell-track-badge shrink-0"
-        data-static="true"
-        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
-        title="ADE Beta. Settings › About shows the version and the update track."
-        aria-label="ADE Beta"
-      >
-        BETA
-      </span>
-    );
-  }
-  if (!isPrerelease) return null;
-  const shownVersion = version !== undefined ? version : fetchedVersion;
-  const label = packageChannelLabel(channel);
+  // Beta is a track of the normal install, not dev chrome: the same chip with
+  // only the word. Settings › About has the version.
+  const betaTrack = !isPrerelease && track === "beta";
+  if (!isPrerelease && !betaTrack) return null;
+  const shownVersion = betaTrack ? null : version !== undefined ? version : fetchedVersion;
+  const label = betaTrack ? "BETA" : packageChannelLabel(channel);
   const body = (
     <>
       <span>{label}</span>
@@ -78,8 +67,8 @@ export function ChannelBadge({
       className="ade-shell-channel-badge shrink-0"
       data-static="true"
       style={dragOptOut}
-      title={`${label} build`}
-      aria-label={`${label} build${shownVersion ? ` ${shownVersion}` : ""}`}
+      title={betaTrack ? "ADE Beta. Settings › About shows the version and the update track." : `${label} build`}
+      aria-label={betaTrack ? "ADE Beta" : `${label} build${shownVersion ? ` ${shownVersion}` : ""}`}
     >
       {body}
     </span>

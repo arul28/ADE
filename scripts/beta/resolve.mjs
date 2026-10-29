@@ -20,10 +20,13 @@
 //     "commits": [{ "sha", "subject", "ciPass", "product": true }],   // newest first
 //     "refs": { "my-branch": "<sha>" } }
 import { execFileSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import { pathToFileURL } from "node:url";
 import {
   PRODUCT_PATHS,
+  readReleases,
+  readTagCommits,
   decide,
   isBetaTag,
   lastPublishedBeta,
@@ -59,24 +62,8 @@ function liveSource() {
   return {
     repo,
     now: Date.now(),
-    tagCommits() {
-      // Annotated tags (the stable ones) list their commit on the ^{} line.
-      const tags = {};
-      for (const line of run("git", ["ls-remote", "--tags", "origin"]).split("\n").filter(Boolean)) {
-        const [sha, ref] = line.split(/\s+/);
-        const peeled = ref.endsWith("^{}");
-        const name = ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, "");
-        if (peeled || !tags[name]) tags[name] = sha;
-      }
-      return tags;
-    },
-    releases() {
-      const out = run("gh", [
-        "api", `repos/${repo}/releases?per_page=100`, "--paginate",
-        "--jq", ".[] | {tag: .tag_name, draft, prerelease, publishedAt: .published_at, createdAt: .created_at}",
-      ]);
-      return out.split("\n").filter(Boolean).map((line) => JSON.parse(line));
-    },
+    tagCommits: () => readTagCommits((args) => run("git", args)),
+    releases: () => readReleases((args) => run("gh", args), repo),
     mainCommits() {
       return run("git", ["log", "--first-parent", "--format=%H", "-n", "100", "origin/main"])
         .split("\n").filter(Boolean).map((sha) => ({ sha }));
@@ -100,15 +87,27 @@ function liveSource() {
       return run("git", ["log", "--first-parent", "--format=%s", "-n", "500", range]).split("\n").filter(Boolean);
     },
     resolveRef(ref) {
-      // The checkout has every branch; a sha that is on none is asked of the API.
-      for (const candidate of [`origin/${ref}^{commit}`, `${ref}^{commit}`]) {
+      // Only code that is on a branch of this repository: a preview skips the
+      // main and ci-pass gates and builds with the signing secrets, so a
+      // commit from a fork (which GitHub's API also resolves) is refused.
+      if (!/^[0-9A-Za-z._/-]+$/.test(ref) || ref.includes("..")) {
+        throw new Error(`${ref} is not a branch name or a commit sha.`);
+      }
+      let sha = "";
+      for (const candidate of [`refs/remotes/origin/${ref}^{commit}`, `${ref}^{commit}`]) {
         try {
-          return run("git", ["rev-parse", "--verify", "--quiet", candidate]);
+          sha = run("git", ["rev-parse", "--verify", "--quiet", candidate]);
+          break;
         } catch {
           // try the next spelling
         }
       }
-      return run("gh", ["api", `repos/${repo}/commits/${ref}`, "--jq", ".sha"]);
+      if (!sha) throw new Error(`${ref} is not a branch or commit of ${repo}.`);
+      const branches = run("git", ["branch", "--remotes", "--contains", sha]);
+      if (!branches.split("\n").some((line) => line.trim().startsWith("origin/"))) {
+        throw new Error(`${ref} (${sha}) is on no branch of ${repo}; previews build only this repository's code.`);
+      }
+      return sha;
     },
   };
 }
@@ -183,7 +182,7 @@ export async function resolveBeta(source, { force, previewRef, runNumber }) {
 function writeOutputs(result) {
   const outputFile = process.env.GITHUB_OUTPUT;
   if (outputFile) {
-    const delimiter = `BETA_NOTES_${Date.now()}`;
+    const delimiter = `BETA_NOTES_${randomUUID()}`;
     fs.appendFileSync(outputFile, [
       `skip=${result.skip}`,
       `reason=${result.reason.replace(/\n/g, " ")}`,

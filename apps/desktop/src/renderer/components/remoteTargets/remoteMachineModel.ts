@@ -34,7 +34,7 @@ import {
   thisComputerAction,
   type ThisComputerAction,
 } from "../../../shared/types/sync";
-import { normalizeAppPackageChannel, type AppPackageChannel } from "../../../shared/packageChannel";
+import { appPackageChannelDisplayName, normalizeAppPackageChannel, type AppPackageChannel } from "../../../shared/packageChannel";
 import {
   readAccountRefusalCode,
   type AccountMachineRefusalCode,
@@ -387,7 +387,7 @@ export function channelProductName(
   version?: string | null,
 ): string {
   const normalized = normalizeAppPackageChannel(channel);
-  if (normalized === "alpha") return "ADE Alpha";
+  if (normalized !== "stable") return appPackageChannelDisplayName(normalized);
   return updateTrackOfVersion(version) === "beta" ? "ADE Beta" : "ADE";
 }
 

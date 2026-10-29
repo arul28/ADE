@@ -274,8 +274,8 @@ service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
   `apps/desktop/src/main/services/state/dbCompatRecord.ts`.
   `DB_COMPAT_LEVEL` is in `apps/desktop/src/shared/releaseCompat.ts`.
 - **Database copy.** Before the first open by a new app version, ADE copies each
-  database to `<db>.pre-<version>.bak`. The copy uses the SQLite online backup
-  in small steps. ADE keeps the last 2 copies. `dbCompatRecord.ts` makes them.
+  database to `<db>.pre-<version>-from-<previous>.bak`. The copy uses the SQLite
+  online backup in small steps. ADE keeps the last 3 copies. `dbCompatRecord.ts` makes them.
 - **Remote "Update & restart".** It never moves a machine across tracks. A
   request that names a build of the other track updates the machine on its own
   track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.

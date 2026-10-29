@@ -18,7 +18,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
-import { DEV_PLACEHOLDER_VERSION } from "../../desktop/src/shared/updateTrack";
+import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
 import {
   detectCloudPlaceholderFile,
   detectCloudStorageProvider,
@@ -357,16 +357,6 @@ declare const __ADE_VERSION__: string | undefined;
 
 const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
 
-/**
- * A released version, or null for a dev or test runtime (the package.json
- * placeholder, `0.0.0`, or nothing). Database copies before a version change
- * and compatibility records are only kept for released builds.
- */
-function shippedVersionOrNull(version: string | null | undefined): string | null {
-  const trimmed = version?.trim() || "";
-  if (!trimmed || trimmed === "0.0.0" || trimmed === DEV_PLACEHOLDER_VERSION) return null;
-  return trimmed;
-}
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 

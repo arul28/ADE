@@ -169,13 +169,6 @@ h6 {
   outline-offset: 1px;
 }
 
-/* Beta track: the same chip, smaller, with only the word. */
-.ade-shell-track-badge {
-  height: 15px;
-  padding-inline: 5px;
-  font-size: 8px;
-}
-
 .ade-shell-channel-badge-version {
   font-weight: 500;
   letter-spacing: 0.02em;

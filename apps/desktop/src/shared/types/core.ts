@@ -469,7 +469,7 @@ export type TrackSwitchCheckResult =
   | { allowed: true; target: UpdateTrack; targetVersion: string | null }
   | { allowed: false; target: UpdateTrack; reason: string };
 
-/** What a track switch request answered. `blocked` carries the reason to show. */
+/** What a track switch request answered; a refusal carries the reason to show. */
 export type UpdateTrackSwitchResult =
   | { ok: true; target: UpdateTrack }
   | { ok: false; target: UpdateTrack; reason: string };

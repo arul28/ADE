@@ -28,12 +28,15 @@ win_count="$(echo "$assets" | awk '{print $1}' | grep -cE 'win-x64|win32-x64|^la
 # Updater ZIPs over ~900 MB have crashed Squirrel.Mac.
 echo "$assets" | awk '$1 ~ /\.zip$/ && $2 > 900*1024*1024 {print $1}' | while read -r z; do echo "FAIL: $z is over 900 MB"; done | grep . && fail=1
 
-gh release download "v$V" --repo "$REPO" --pattern 'latest*.yml' --pattern release-manifest.json --dir "$DIR" --clobber
+gh release download "v$V" --repo "$REPO" --pattern 'latest*.yml' --pattern release-manifest.json --dir "$DIR" --clobber \
+  || bad "could not download the draft's updater manifests and release-manifest.json"
 # Machines read this before installing (docs/plans/beta-track.md); it must
 # describe this exact stable release.
 if [ -f "$DIR/release-manifest.json" ]; then
-  manifest="$(jq -r '"\(.tag) \(.track) \(.dbCompat|type) \(.syncProtocol.version|type)"' "$DIR/release-manifest.json" 2>/dev/null)"
-  [ "$manifest" = "v$V stable number number" ] || bad "release-manifest.json does not describe stable v$V (got: ${manifest:-unreadable})"
+  manifest="$(jq -r '"\(.version) \(.tag) \(.track) \(.dbCompat|type) \(.syncProtocol.version|type)"' "$DIR/release-manifest.json" 2>/dev/null)"
+  [ "$manifest" = "$V v$V stable number number" ] || bad "release-manifest.json does not describe stable v$V (got: ${manifest:-unreadable})"
+else
+  bad "release-manifest.json was not downloaded"
 fi
 mac_refs="$(grep -E '^\s*(- )?(url|path):' "$DIR/latest-mac.yml" | awk '{print $NF}' | sort -u)"
 echo "$mac_refs" | grep -q universal && bad "latest-mac.yml references a universal ZIP"

@@ -10,6 +10,7 @@ import {
   RELEASE_DOWNLOAD_TIMEOUT_MS,
   detectRuntimeTargetResult,
   downloadReleaseAsset,
+  fetchReleaseManifestJson,
   readSha256SumsFile,
   releaseAssetUrl,
   runtimeBinaryAssetName,
@@ -20,6 +21,8 @@ import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import {
   BETA_FEED_MANIFEST_URL,
   parseReleaseManifest,
+  updateTrackLabel,
+  updateTrackOfVersion,
   type UpdateTrack,
 } from "../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "../services/runtime/updateTrackStore";
@@ -102,20 +105,9 @@ export type BrainUpdateDeps = {
   runCommand?: typeof runCommand;
   /** Where macOS looks for the installed ADE app. */
   applicationsDirs?: readonly string[];
-  /** Reads the Beta feed's `beta.json`. Injected in tests. */
-  fetchBetaManifest?: () => Promise<unknown>;
+  /** Reads the Beta feed's `beta.json` (null for a 404). Injected in tests. */
+  fetchBetaManifest?: () => Promise<unknown | null>;
 };
-
-const BETA_FEED_FETCH_TIMEOUT_MS = 15_000;
-
-async function defaultFetchBetaManifest(): Promise<unknown> {
-  const response = await fetch(BETA_FEED_MANIFEST_URL, {
-    redirect: "follow",
-    signal: AbortSignal.timeout(BETA_FEED_FETCH_TIMEOUT_MS),
-  });
-  if (!response.ok) throw new Error(`HTTP ${response.status}`);
-  return await response.json();
-}
 
 /**
  * "latest" on the Beta track is the build the Beta feed names. It never falls
@@ -129,17 +121,31 @@ async function resolveRequestedBrainVersion(
   env: NodeJS.ProcessEnv,
 ): Promise<{ version: string; track: UpdateTrack }> {
   const track = resolveSelectedUpdateTrack(deps.currentVersion ?? null, env);
-  if (options.version !== "latest" || track !== "beta" || options.repo !== DEFAULT_RELEASE_REPO) {
+  if (options.version !== "latest" || options.repo !== DEFAULT_RELEASE_REPO) {
     return { version: options.version, track };
   }
-  let manifest: ReturnType<typeof parseReleaseManifest> = null;
+  // A switch whose install did not land leaves the choice on one track and
+  // the running build on the other. "latest" there would cross tracks without
+  // the database check the desktop runs, so it is refused.
+  const runningTrack = deps.currentVersion ? updateTrackOfVersion(deps.currentVersion) : track;
+  if (runningTrack !== track) {
+    throw new Error(
+      `This machine's switch to ${updateTrackLabel(track)} didn't finish. Finish it in ADE › Settings › About, or pass --version.`,
+    );
+  }
+  if (track !== "beta") return { version: options.version, track };
+  let raw: unknown | null;
   try {
-    manifest = parseReleaseManifest(await (deps.fetchBetaManifest ?? defaultFetchBetaManifest)());
+    raw = await (deps.fetchBetaManifest ?? (() => fetchReleaseManifestJson(BETA_FEED_MANIFEST_URL)))();
   } catch (error) {
     throw new Error(
       `Could not read the Beta feed (${error instanceof Error ? error.message : String(error)}). This machine follows Beta, so nothing was changed. Try again later.`,
     );
   }
+  if (raw === null) {
+    throw new Error("There is no Beta build right now. This machine follows Beta, so nothing was changed.");
+  }
+  const manifest = parseReleaseManifest(raw);
   if (!manifest || manifest.track !== "beta") {
     throw new Error("The Beta feed has no usable build right now. This machine follows Beta, so nothing was changed.");
   }

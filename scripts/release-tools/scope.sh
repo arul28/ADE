@@ -30,17 +30,15 @@ echo "ios:     changed_files=$ios_changes since=$IOS_LAST_TAG"
 
 # Cloudflare: each surface's baseline is the newest deploy-web.yml run on main
 # whose job for that surface succeeded. A surface with no successful job in
-# the scanned runs was simply not deployed by any of them; when its paths have
-# not changed since the oldest scanned run, it is unchanged, not unknown.
-# Only a surface that changed and was never deployed in the window is UNKNOWN.
+# the scanned runs has not changed in that window (its job is path-filtered),
+# so its baseline is the run of the last commit that changed it: deployed
+# there means unchanged since. A failed or missing job there stays UNKNOWN.
 surfaces="webclient account-directory webhook-relay tunnel-relay push-relay"
 found=""   # "name=sha" pairs; bash 3.2 (macOS) has no associative arrays
-oldest=""  # headSha of the oldest run scanned
 base_of() { for p in $found; do [ "${p%%=*}" = "$1" ] && { echo "${p#*=}"; return; }; done; }
 for run in $(gh run list --repo "$REPO" --workflow deploy-web.yml --branch main \
   --json databaseId,headSha --limit 60 --jq '.[] | "\(.databaseId)=\(.headSha)"'); do
   id="${run%%=*}"
-  oldest="${run#*=}"
   ok="$(gh run view "$id" --repo "$REPO" --json headSha,jobs \
     --jq '.headSha as $s | [.jobs[] | select(.conclusion=="success") | .name + "=" + $s] | join(" ")')"
   for pair in $ok; do
@@ -58,10 +56,20 @@ for s in $surfaces; do
     paths="apps/$s"
   fi
   b="$(base_of "$s")"
-  if [ -z "$b" ] && [ -n "$oldest" ] && git cat-file -e "$oldest^{commit}" 2>/dev/null \
-    && [ -z "$(git log --oneline -n 1 "$oldest..origin/main" -- $paths)" ]; then
-    echo "cloudflare $s: baseline=${oldest:0:9} undeployed_commits=0 (unchanged since)"
-  elif [ -z "$b" ]; then
+  if [ -z "$b" ]; then
+    last="$(git log -n 1 --format=%H origin/main -- $paths)"
+    if [ -n "$last" ]; then
+      for id in $(gh run list --repo "$REPO" --workflow deploy-web.yml --commit "$last" \
+        --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+        if [ "$(gh run view "$id" --repo "$REPO" --json jobs \
+          --jq "[.jobs[] | select(.name==\"$s\" and .conclusion==\"success\")] | length")" != 0 ]; then
+          b="$last"
+          break
+        fi
+      done
+    fi
+  fi
+  if [ -z "$b" ]; then
     echo "cloudflare $s: baseline=UNKNOWN -> reconcile (gh workflow run deploy-web.yml)"
   else
     n="$(git log --oneline "$b..origin/main" -- $paths | wc -l | tr -d ' ')"

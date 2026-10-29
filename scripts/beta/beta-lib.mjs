@@ -23,7 +23,8 @@ export const PREVIEW_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 /**
  * What a desktop build is made of. A main commit that touches none of these
  * (docs, changelog, the SDK, the website) cannot change a beta, so it does not
- * earn one. Kept in step with the desktop list in scripts/release-tools/scope.sh.
+ * earn one. It covers the desktop app and the brain, and the workflows that
+ * build them.
  */
 export const PRODUCT_PATHS = [
   "apps/desktop",
@@ -267,4 +268,26 @@ export function absolutizeUpdateInfo(doc, { repo, tag }) {
   });
   if (doc.path !== undefined) out.path = absolute(doc.path, "path");
   return { doc: out, referenced: [...referenced] };
+}
+
+/**
+ * The live repository reads that resolve.mjs and prune.mjs share: every tag's
+ * commit (peeled for annotated tags) and every release.
+ */
+export function readTagCommits(runGit) {
+  const tags = {};
+  for (const line of runGit(["ls-remote", "--tags", "origin"]).split("\n").filter(Boolean)) {
+    const [sha, ref] = line.split(/\s+/);
+    const peeled = ref.endsWith("^{}");
+    const name = ref.replace(/^refs\/tags\//, "").replace(/\^\{\}$/, "");
+    if (peeled || !tags[name]) tags[name] = sha;
+  }
+  return tags;
+}
+
+export function readReleases(runGh, repo) {
+  return runGh([
+    "api", `repos/${repo}/releases?per_page=100`, "--paginate",
+    "--jq", ".[] | {tag: .tag_name, draft, prerelease, publishedAt: .published_at, createdAt: .created_at}",
+  ]).split("\n").filter(Boolean).map((line) => JSON.parse(line));
 }

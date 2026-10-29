@@ -93,7 +93,7 @@ Asset `release-manifest.json`:
   database's recorded level is blocked, and so is a switch whose levels cannot
   be read (T3 #26288).
 - Before the first open by a new app version, ADE copies each database with
-  `VACUUM INTO` (`<db>.pre-<version>.bak`, last 2 kept, disk checked first).
+  SQLite's online backup (`<db>.pre-<version>-from-<previous>.bak`, last 3 kept, disk checked first).
 
 ## Work list
 

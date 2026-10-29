@@ -11,8 +11,6 @@ import { compareUpdateVersions } from "./updateVersions";
 
 export type UpdateTrack = "stable" | "beta";
 
-export const UPDATE_TRACKS: readonly UpdateTrack[] = ["stable", "beta"];
-
 /**
  * The fixed Beta feed: a GitHub prerelease whose `latest-mac.yml`,
  * `latest.yml` and `beta.json` always describe the current beta, with file
@@ -62,6 +60,17 @@ export function resolveUpdateTrackFromArgv(argv: readonly string[] | undefined):
     }
   }
   return "stable";
+}
+
+/**
+ * A released version, or null for a dev or test build (the package.json
+ * placeholder, `0.0.0`, or nothing). Only released builds keep database
+ * copies and compatibility records.
+ */
+export function shippedVersionOrNull(version: string | null | undefined): string | null {
+  const trimmed = version?.trim() || "";
+  if (!trimmed || trimmed === "0.0.0" || trimmed === DEV_PLACEHOLDER_VERSION) return null;
+  return trimmed;
 }
 
 export function normalizeUpdateTrack(value: unknown): UpdateTrack | null {
@@ -134,11 +143,6 @@ export function parseReleaseManifest(value: unknown): ReleaseManifest | null {
     dbCompat: finiteInteger(record.dbCompat),
     syncProtocol: syncVersion != null && syncMin != null ? { version: syncVersion, minSupported: syncMin } : null,
   };
-}
-
-/** Where a stable release's manifest lives. */
-export function stableReleaseManifestUrl(tag: string): string {
-  return `https://github.com/arul28/ADE/releases/download/${tag}/${RELEASE_MANIFEST_ASSET}`;
 }
 
 export const LATEST_STABLE_MANIFEST_URL =

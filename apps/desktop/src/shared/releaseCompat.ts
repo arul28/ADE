@@ -12,3 +12,9 @@
  * Never lower it.
  */
 export const DB_COMPAT_LEVEL = 1;
+
+/**
+ * The level of a database no build has recorded yet, and of a stable release
+ * from before release manifests existed: the schema level 1 was defined as.
+ */
+export const LEGACY_DB_COMPAT_LEVEL = 1;

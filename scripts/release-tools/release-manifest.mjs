@@ -17,6 +17,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { trackOfTag } from "../beta/beta-lib.mjs";
 
 const RELEASE_TAG = /^v(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)$/;
 
@@ -42,12 +43,6 @@ export function readIntegerConstant(source, name, file) {
   return value;
 }
 
-/** Same rule as updateTrackOfVersion() in apps/desktop/src/shared/updateTrack.ts. */
-function trackOf(version) {
-  const dash = version.indexOf("-");
-  return dash >= 0 && version.slice(dash + 1).split(".")[0].toLowerCase() === "beta" ? "beta" : "stable";
-}
-
 export function buildReleaseManifest({ root, tag, commit, publishedAt = new Date().toISOString() }) {
   const tagMatch = RELEASE_TAG.exec(tag ?? "");
   if (!tagMatch) throw new Error(`Release tag must look like v1.2.3 or v1.2.3-beta.4, got ${tag}.`);
@@ -69,7 +64,7 @@ export function buildReleaseManifest({ root, tag, commit, publishedAt = new Date
     schema: 1,
     version,
     tag,
-    track: trackOf(version),
+    track: trackOfTag(version),
     commit,
     publishedAt,
     dbCompat: readIntegerConstant(compatSource, "DB_COMPAT_LEVEL", compatFile),

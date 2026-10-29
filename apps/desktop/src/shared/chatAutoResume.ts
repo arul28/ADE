@@ -331,6 +331,49 @@ export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
 
 /**
+ * Why a chat a restart cut short does not continue by itself, or null when it
+ * does. One owner for the rule, so the notice and the resume always agree.
+ */
+export type RestartResumeHold = "disabled" | "stale" | "awaiting_user" | "capped" | "settled";
+
+export function restartResumeHold(args: {
+  continueEnabled: boolean;
+  recent: boolean;
+  awaitingUser: boolean;
+  capped: boolean;
+  settledOrArchived: boolean;
+}): RestartResumeHold | null {
+  if (!args.continueEnabled) return "disabled";
+  if (args.settledOrArchived) return "settled";
+  if (!args.recent) return "stale";
+  if (args.awaitingUser) return "awaiting_user";
+  if (args.capped) return "capped";
+  return null;
+}
+
+/** The notice for a turn a restart cut short, by what happens next. */
+export function restartInterruptedNotice(args: {
+  announceThisTurn: boolean;
+  hold: RestartResumeHold | null;
+  cancelledLine: string;
+}): string {
+  const { hold, cancelledLine } = args;
+  if (args.announceThisTurn) {
+    return `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`;
+  }
+  if (hold === null) {
+    return `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`;
+  }
+  if (hold === "awaiting_user") {
+    return `ADE restarted while this chat was waiting for your answer, so it doesn't continue on its own. Send your answer as a message to continue.${cancelledLine}`;
+  }
+  if (hold === "capped") {
+    return `ADE restarted while this response was running, again. It already continued this chat ${MAX_CONSECUTIVE_RESTART_RESUMES} times in a row, so it waits for you now. Send a message to continue.${cancelledLine}`;
+  }
+  return `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`;
+}
+
+/**
  * The streak the next restart-resume of a chat would have, from its previous
  * resume row (same deterministic id) and when the chat last finished a turn.
  * The streak starts again when the user stepped in (the row was cancelled), a

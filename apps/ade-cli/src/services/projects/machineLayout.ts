@@ -25,6 +25,22 @@ export type MachineAdeLayout = {
   personalChatsWorkspaceRoot?: string;
 };
 
+/**
+ * `ADE_PACKAGE_CHANNEL`, lower-cased, with the removed "beta" package channel
+ * read as Stable (null): Beta is now a track of the normal install, so a
+ * leftover value must give Stable's names, or clients without it could not
+ * reach the brain. Other values stay as they are (custom channels included).
+ */
+export function liveChannelFromEnv(value: string | null | undefined): string | null {
+  const normalized = value?.trim().toLowerCase() || null;
+  return normalized === "beta" ? null : normalized;
+}
+
+/** Where personal chats keep their runtime state (their own `.ade/ade.db`). */
+export function resolvePersonalChatsStateRoot(layout: Pick<MachineAdeLayout, "adeDir" | "personalChatsStateRoot">): string {
+  return layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+}
+
 export function resolveMachineAdeDir(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ADE_HOME?.trim();
   if (explicit) return path.resolve(explicit);
@@ -167,7 +183,7 @@ function windowsChannelIdentity(adeDir: string, env: NodeJS.ProcessEnv): {
   label: string;
 } {
   const serviceName = env.ADE_RUNTIME_SERVICE_NAME?.trim().toLowerCase();
-  const explicitChannel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  const explicitChannel = liveChannelFromEnv(env.ADE_PACKAGE_CHANNEL) ?? undefined;
   const homeName = path.win32.basename(adeDir).toLowerCase();
   const inferred = homeName === ".ade-alpha"
     ? "alpha"
