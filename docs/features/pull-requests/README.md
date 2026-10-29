@@ -211,7 +211,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. Snapshot hydration writes `viewerLogin` and `writeViewerLogin` into `PrsContext` so timeline comment mutations use the write-capable GitHub account rather than the read-only App login. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. It owns no link/unlink controls: the lane picker, the **Map** button and the **Unmap** button are gone, and the only lane affordance left is the quiet **Open as lane** offer it hands to `PrDetailHeader` (preflight + create dialog over `pr.preflightCreateLaneFromPrBranch` / `pr.createLaneFromPrBranch`) for an open PR that has no local lane. The create dialog seeds an editable lane name from the preflight (defaulting to the PR title) and, on success, navigates to the Lanes tab with the new lane selected, so the PR→lane→chat flow ends where the lane lives. Snapshot rows are mapped through `reconcileLinkedPrState` (using `isTerminalPrState` from `renderer/lib/prState.ts`) into `reconciledItems`; `computeTerminalOverlayItems` then appends last-seen rows for linked ADE PRs that went terminal but dropped from an open-only snapshot, producing `displayedItems`, so a terminal ADE PR state (merged/closed) overrides a stale non-terminal GitHub row and a just-merged row is not erased before a full-history fetch (see [Terminal-state precedence](#terminal-state-precedence)). The selection effect follows a PR into its new bucket on merge/close and the detail pane pins the selected PR through the transition behind a `PrBucketTransitionBanner` rather than blanking (see [Selection follow and detail-pane pinning](#selection-follow-and-detail-pane-pinning)). The Merged/Closed buckets are rendered through `shared/prListGrouping.ts` with sticky period headers; terminal rows collapse to two lines and swap queue signals for merge facts (see [Terminal bucket rendering](#terminal-bucket-rendering)). It also folds `PrsContext.optimisticTerminalStates` over the reconciled rows through `applyOptimisticTerminalState`, so a PR the user just merged or closed moves bucket immediately instead of sitting in Open until the next snapshot. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
-| `tabs/RebaseTab.tsx` | Lane rebase needs (base + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
+| `tabs/RebaseTab.tsx` | Lane rebase needs against the compare base. |
 | `tabs/WorkflowsTab.tsx` | Container for integration and rebase workflows. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `tabs/githubTabModel.ts` | Pure list model for the GitHub tab: `githubCoordKey`, `matchesFilter`, `countGitHubItemsByState`, `reconcileLinkedPrState`, `computeTerminalOverlayItems`, and `applyOptimisticTerminalState` — which folds a locally-confirmed merge/close over a snapshot row. That overlay only ever moves a row **into** a terminal bucket, never back out, and expires after `OPTIMISTIC_TERMINAL_TTL_MS` (5 min) so a reopened PR cannot stay pinned to Closed for the session. |
@@ -259,7 +259,6 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/IntegrationPrContextPanel.tsx` | Integration PR context panel |
 | `shared/prVisuals.tsx` | CI running indicator, check/review badges, dot colors, activity derivation |
 | `shared/rebaseNeedUtils.ts` | Rebase need dedup, route selection, upstream rebase chain |
-| `shared/rebaseAttentionUtils.ts` | Auto-rebase attention items for the Rebase tab |
 | `shared/lanePrWarnings.ts` | Pre-submit lane-health warnings |
 | `shared/prFormatters.ts` | Formatting helpers shared across PR surfaces. `formatPrBadgeLabel(pr)` returns a state-aware compact badge (`PR #123`, `DRAFT #123`, `MERGED #123`, `CLOSED #123`) used by the chat git toolbar and the lane list PR tag so closed/merged PRs aren't visually identical to open ones. |
 | `shared/laneBranchTargets.ts` | Target branch resolution for PR creation |
@@ -733,7 +732,7 @@ What the link actually decides is narrow:
   hot refresh window; a PR without one drops its activity memos and invalidates
   the GitHub snapshot cache instead (`refreshAfterMutation`).
 - **Lane-scoped side effects of a merge.** Archiving the lane, group-membership
-  removal, child-lane rebase, and the rebase-needs scan only exist when there is
+  removal and the rebase-needs scan only exist when there is
   a lane. A PR without one still merges, and still deletes its head branch if
   asked.
 - **Provenance.** Chats, proof artifacts, and the frozen `was: <lane>` counts on
@@ -1038,7 +1037,7 @@ is mirrored in the iOS bootstrap/migration schema and PR projection cleanup.
 Do not add a unique secondary index; CRR conversion rejects it. The dismissal
 table uses the same PK-only contract.
 
-Creating a new GitHub stack layer from a child lane also attaches that PR to
+Creating a new GitHub stack layer from a lane also attaches that PR to
 parent chats that already linked an earlier layer of the same stack. Child
 chats do not receive the parent's base PR through that attach; a chat spawned
 while the parent holds open or draft PRs inherits them at spawn time (above).
@@ -1205,7 +1204,7 @@ existing detached row instead of inserting a duplicate primary key. `upsertRow`
 resolves by id first for the same reason.
 
 Beyond `prService`, `LIVE_PR_ROWS` semantics are applied by `conflictService`
-(rebase-need scanning), `autoRebaseService`, `rebaseSuggestionService`,
+(rebase-need scanning),
 `laneService` (branch-rename and base-ref repair,
 plus the "lane has a PR" delete guard), and the integration-proposal prune.
 
@@ -2081,7 +2080,6 @@ try-catch so a cleanup failure does not mask the successful merge:
 - base branch fetch
 - cache invalidation
 - rebase-needs scan
-- rebase-suggestion refresh
 - an immediate default-branch auto-pull request when the live PR base is the project's default branch (including unmapped and GitHub-stack merges)
 
 Individual failures log as warnings; the operation is marked
@@ -2296,7 +2294,7 @@ are how a chat asks to be woken when its PR changes. Source:
 ## Integration merge target adoption
 
 An integration proposal can target an existing lane instead of always
-creating a fresh `integration-*` child lane:
+creating a fresh `integration-*` lane:
 
 1. The user selects a merge target lane in `IntegrationTab` or
    `CreatePrModal`. The selected lane cannot be one of the proposal's

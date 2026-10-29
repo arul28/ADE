@@ -266,7 +266,7 @@ Conflict intelligence lives where it's useful:
 - **Graph**: `RiskMatrix` with animated transitions, cell tooltips
   with overlap file lists, merge simulation from edge clicks.
 - **PRs > Rebase**: rebase continue/abort, manual attention surface
-  for failed auto-rebases, upstream rebase chain view.
+  for rebase operations.
 - **PRs > Integration**: pairwise matrix for merge-plan proposals.
 
 All surfaces consume the same service. Keeping prediction,

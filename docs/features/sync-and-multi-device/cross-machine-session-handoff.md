@@ -148,7 +148,7 @@ relation and identity stamp (`requestedFor`, `requestedBySessionId`,
 move asks the person and its batch, which has no requesting chat for a card, is
 refused. A start persists only the public target fields of
 `AgentChatStartCrossMachineHandoffArgs`; batch context (source lane, parent
-link, destination parent lane, approval) comes only from the batch runner, and
+link, destination lane, approval) comes only from the batch runner, and
 `adeRpcServer` drops those fields from every caller.
 
 - **Agent scope follows persisted lineage.** A chat-bound agent may move its own
@@ -349,10 +349,7 @@ Otherwise lane changes are carried once with the lane import and the chat
 capsule reuses that imported lane. Active turns wait by default; `--interrupt`
 stops them first. `--note` is included in every chat's first continuation.
 
-The destination preserves parent lane links for new lanes and parent chat links
-when both chats travel. Reused destination lanes keep their current parent and
-report a warning. A chat whose parent stays at the source arrives without a
-local parent link and says so.
+The destination preserves parent chat links when both chats travel. A chat whose parent stays at the source arrives without a local parent link and says so.
 
 The destination imports the lane and starts its environment setup itself (the
 default lane template, else the project's lane env config), whichever

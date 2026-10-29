@@ -58,7 +58,6 @@
             "pages": [
               "lanes/overview",
               "lanes/creating",
-              "lanes/stacks",
               "lanes/environment",
               "guides/multi-agent-setup"
             ]
@@ -329,7 +328,7 @@
     },
     {
       "source": "/guides/stacked-prs",
-      "destination": "/lanes/stacks"
+      "destination": "/tools/pull-requests"
     },
     {
       "source": "/chat/grid",

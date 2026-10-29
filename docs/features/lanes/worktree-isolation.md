@@ -47,9 +47,7 @@ Primary lanes reuse the repo root itself (no worktree creation); their
 
 `laneService.create()` sequence for `lane_type = 'worktree'`:
 
-1. Resolve `baseRef`. If `parentLaneId` is provided, default to the
-   parent's `branch_ref`; otherwise caller-supplied or the project's
-   default branch.
+1. Resolve the selected start choice and commit, using saved defaults when omitted.
 2. `normalizeBranchName(baseRef)` — strips `refs/heads/`, `refs/remotes/`,
    `origin/` prefixes (shared helper in `shared/laneBaseResolution.ts`).
 3. Build the target worktree path under `.ade/worktrees/<slug>` with
@@ -126,7 +124,7 @@ the directory first:
    Without force the delete stops with the reason and "Enable force delete
    after confirming warnings.". Archive-and-reclaim runs the same check and
    asks for `forceDirty` instead.
-3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
+3. Stop lane runtime work.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.
 5. Enter the shared worktree-mutation guard and run

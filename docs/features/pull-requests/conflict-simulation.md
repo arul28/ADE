@@ -115,7 +115,7 @@ integration lane or adopts an existing lane as the merge target.
 2. If `preferred_integration_lane_id` is set, validate that lane still
    exists, is not a source lane, is not primary, and passes the dirty
    worktree preflight unless `allowDirtyWorktree` was explicitly set.
-3. Otherwise create a child lane under the base branch, name
+3. Otherwise create a lane from the base branch, named
    `integration-<short-id>`.
 4. Persist `integration_lane_id` on the proposal row. The display
    origin is inferred as `adopted` when the preferred lane became the
@@ -149,8 +149,7 @@ lane, `scanRebaseNeeds` computes:
 
 The comparison ref is resolved via `resolveLaneRebaseTarget`:
 
-- Parent lane branch (if non-primary parent and `shouldLaneTrackParent`)
-- `origin/<baseRef>` with fallback to local `<baseRef>`
+- The open PR base branch, or the project default branch when no PR is open.
 
 This keeps the PR Rebase tab's prediction consistent with the lane
 service's actual rebase target (they use the same resolver).

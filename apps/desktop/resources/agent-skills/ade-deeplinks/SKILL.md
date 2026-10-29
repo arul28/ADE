@@ -204,9 +204,9 @@ Linear card/comment matrix:
 
 | Linear-related action | Who adds the ADE link |
 | --- | --- |
-| `ade lanes create --linear-issue-json` / `ade lanes create-from-linear` | ADE posts the lane attachment/comment |
+| `ade lanes create --linear-issue-json` | ADE posts the lane attachment/comment |
 | `ade lanes link-linear-issue` / `ade chat attach-linear-issue` / `ade linear attach --this-session` | ADE posts lane/chat attachments when a lane/session is known |
-| `ade chat create --from-linear-issue` or `ade lanes create-from-linear --start-chat` | ADE posts the chat attachment after the issue is attached |
+| `ade chat create --from-linear-issue` or `ade lanes create --start-chat` | ADE posts the chat attachment after the issue is attached |
 | `ade prs create` on a linked lane | ADE posts the PR attachment/footer |
 | `ade linear comment`, `set-state`, `assign`, `label`, or `graphql` | The agent should include the relevant ADE link in any Linear comment it writes |
 

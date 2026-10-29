@@ -122,17 +122,16 @@ or Git operations until the visible surface needs them.
 ### Keep workflow lane reads status-light
 
 - **Why it helped**: Workflow reloads still paid full lane Git status and
-  auto-rebase status cleanup even though the visible workflow cards only needed
+  workflow status cleanup even though the visible workflow cards only needed
   lane identity, branch, color, rebase needs, and merge context.
-- **Apply when**: Editing `PrsContext`, workflow tabs, or auto-rebase status
+- **Apply when**: Editing `PrsContext`, workflow tabs, or workflow status
   hydration for PRs.
 - **Avoid**: `window.ade.lanes.list({ includeStatus: true })` on PR workflow
   startup or background PR refreshes that do not display lane dirty/ahead/behind
   state.
 - **Verification**: In
   `prs-ui-rebase-fetch-ttl-20260512-062130`, queue reload lane reads dropped
-  from `1393ms` to `47-80ms`, and `listAutoRebaseStatuses` dropped from
-  `1404-1407ms` to `40-70ms`.
+  from `1393ms` to `47-80ms`.
 
 ### Share reads, cap concurrency, and keep what cannot change (2026-10-26)
 

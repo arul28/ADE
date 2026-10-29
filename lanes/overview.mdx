@@ -12,7 +12,7 @@ A **lane** is ADE's name for a git worktree: an isolated branch and working copy
 
 ## The primary lane vs. your lanes
 
-When you open a repository, your existing checkout — the repo root — becomes the **primary lane**. It always exists and can't be deleted or restacked. Agents *can* work in it, but it's your real working tree, so the safer habit is to leave the primary lane alone and do agent work in fresh lanes.
+When you open a repository, your existing checkout — the repo root — becomes the **primary lane**. It always exists and can't be deleted. Agents *can* work in it, but it's your real working tree, so the safer habit is to leave the primary lane alone and do agent work in fresh lanes.
 
 Everything else is a lane you create. Each new lane is its own git worktree under `.ade/worktrees/`, completely isolated from the primary checkout and from other lanes.
 
@@ -25,9 +25,6 @@ You don't pick a "lane type" — the primary lane is just your repo root, and ev
 <CardGroup cols={2}>
   <Card title="New worktree off a branch" icon="code-branch">
     Branch a fresh worktree from your default branch — or any other branch. This is the default, and the safest place for agent work.
-  </Card>
-  <Card title="Child lane (stacked)" icon="layer-group" href="/lanes/stacks">
-    Branch a lane off another lane instead of `main` to build dependent work as a stack. ADE calls these **child lanes**.
   </Card>
   <Card title="Import an existing branch" icon="download">
     Pull a branch you already have — local or remote — into a managed worktree, PR pills and all.
@@ -82,7 +79,7 @@ A lane is more than a branch — it's a full parallel workspace.
 
 <Steps>
   <Step title="Create">
-    Branch a worktree from your default branch, stack a child lane, import a branch, or attach an external worktree.
+    Create a branch or work directly on an existing branch in a separate worktree.
   </Step>
   <Step title="Work">
     Open chat, terminals, Files, or Run — all scoped to the lane.
@@ -101,7 +98,7 @@ A lane is more than a branch — it's a full parallel workspace.
 
     ```bash
     ade lanes list --text                 # list lanes in the active project
-    ade lanes create "fix-checkout-flow"  # branch a new worktree lane
+    ade lanes create --name fix-checkout-flow  # branch a new worktree lane
     ade lanes delete <lane-id> --force    # tear down a merged or abandoned lane
     ```
 
@@ -145,7 +142,7 @@ Some workflows keep a bare clone plus a set of worktrees, with no main checkout 
   <Card title="Create lanes" icon="plus" href="/lanes/creating">
     Every way to start a lane, in detail.
   </Card>
-  <Card title="Stack lanes" icon="layer-group" href="/lanes/stacks">
-    Build child-lane chains and reviewable stacks.
+  <Card title="Stacked pull requests" icon="layer-group" href="/tools/pull-requests">
+    Review dependent branches with GitHub pull requests.
   </Card>
 </CardGroup>

@@ -23,17 +23,13 @@ Everything in ADE is scoped to a lane, which is what makes "what is running, whe
 
 ## One task, one lane
 
-Create a lane from your default branch when you start something new. If the work grows, split it into a second lane, or stack one on top of the other.
+Create a lane from the project default, the primary branch, or another branch. Bring pushed commits, local commits, or a copy of uncommitted changes. You can also work directly on an existing branch.
 
-A lane starts from a branch and inherits the repository. ADE records its base so it can rebase, restack, and show divergence later.
+A lane compares against its open PR's base, or the project default branch when no PR is open. For dependent work, create a branch from another branch and target it with a GitHub PR.
 
-## Stacking
+## Stacked pull requests
 
-Stacking puts a lane on top of another lane instead of on `main`. Use it when a piece of work depends on unmerged work: the child branch contains the parent's commits, and the graph shows the order.
-
-<Card title="Stacks" icon="layer-group" href="/lanes/stacks" horizontal>
-  Create, rebase, and ship a stack of dependent lanes.
-</Card>
+For dependent work, create a lane from another branch and open a PR targeting that branch. [Pull requests](/tools/pull-requests) covers GitHub stacks.
 
 ## Environment
 
@@ -45,7 +41,7 @@ A lane can carry setup steps that run when it is created or resumed — install 
 
 ## Finishing a lane
 
-When the work is merged, archive the lane: ADE removes the worktree, and you choose whether to delete the branch. Archive rather than delete when you want the history and sessions to remain searchable.
+When work is merged, archive the lane to keep its worktree and history available, or delete it when you no longer need the worktree.
 
 <CardGroup cols={2}>
   <Card title="Create a lane" icon="plus" href="/lanes/creating">

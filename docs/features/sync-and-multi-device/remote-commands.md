@@ -281,7 +281,7 @@ the hosted web client both consume them; see `ios-companion.md` and
 
 **Lanes** (`lanes.*`)
 - `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`
-- `create`, `createChild`, `createFromUnstaged`, `importBranch`
+- `create`, `importBranch`, `getNewLaneDefaults`, `setNewLaneDefaults`
 - `listUnregisteredWorktrees`, `attach`, `adoptAttached` —
   **compatibility stubs.** Every git worktree is now a lane the moment it
   exists, so there is nothing to select or attach. They stay registered
@@ -292,13 +292,9 @@ the hosted web client both consume them; see `ios-companion.md` and
   empty array (an older phone's attach sheet renders its own empty state);
   `attach` and `adoptAttached` fail with a "no longer supported" message
   the phone surfaces verbatim.
-- `rename`, `reparent`, `updateAppearance`
+- `rename`, `updateAppearance`
 - `archive`, `unarchive`, `delete`
-- `getStackChain`, `getChildren`
 - `rebaseStart`, `rebasePush`, `rebaseRollback`, `rebaseAbort`
-- `listRebaseSuggestions`, `dismissRebaseSuggestion`,
-  `deferRebaseSuggestion`
-- `listAutoRebaseStatuses`
 - `listTemplates`, `getDefaultTemplate`
 - `initEnv`, `getEnvStatus`, `applyTemplate`
 - `getBranchDrift`, `resolveBranchDrift` — detection and resolution for a
@@ -309,21 +305,7 @@ the hosted web client both consume them; see `ios-companion.md` and
   `LaneSummary.devicesOpen` with a 60 s TTL and fans out updates via
   the brain-status broadcast (`brain_status`).
 
-`lanes.reparent` accepts `{ laneId, newParentLaneId,
-stackBaseBranchRef? }`. The optional base ref is trimmed before
-dispatch; when present, the brain resolves it in the project repo
-preferring `origin/<branch>`, persists it as the lane's `base_ref`,
-and rebases the lane onto that resolved branch. When omitted, the brain
-uses the selected parent lane's current branch.
-
-`lanes.refreshSnapshots` accepts lightweight-decoration flags:
-`includeConflictStatus`, `includeRebaseSuggestions`, and
-`includeAutoRebaseStatus`. Mobile list refreshes set these to `false`
-when they only need runtime/session bucket updates, avoiding extra git
-and rebase-status work on routine refreshes. `lanes.getDetail` reads the
-requested lane through the scoped lane-summary path and then fetches the
-detail overlays for that lane, instead of forcing a full lane list as a
-side effect of opening a detail screen.
+`lanes.refreshSnapshots` supports lightweight lane refreshes; `lanes.getDetail` reads the scoped lane summary.
 
 `lanes.getDetail` and `lanes.refreshSnapshots` are **conditional
 responses**. Both compute their full payload, then hash it
@@ -837,23 +819,7 @@ register("lanes.archive",
 
 A handful have more logic:
 
-- **`lanes.create`** — when the caller omits `baseBranch`, `startPoint`,
-  **and** `parentLaneId` (the mobile hub composer's auto-create and the
-  iOS create sheet's default), the handler resolves a **remote-first
-  default base** before delegating to `laneService.create`. It calls
-  `resolveLaneCreateRemoteBase`
-  (`apps/ade-cli/src/services/laneCreateRemoteBase.ts`), which reads the
-  project's `git.newLaneBaseSource` config (effective default
-  `"remote"`; `"local"` short-circuits), runs a bounded remote fetch on
-  the primary lane (so a slow remote never stalls creation), maps the
-  primary lane's base branch to its remote-tracking ref with
-  `selectRemoteLaneBaseRef` (the local base branch's configured upstream
-  as-is, else `origin/<base>` when listed), and verifies the ref resolves
-  to a commit (`git rev-parse --verify`). A missing remote ref, an
-  upstream that is gone from the remote, or any failure resolves to null
-  and creation proceeds with the legacy local default. This matches the desktop create-lane dialog, which resolves
-  the same remote-first default renderer-side, so a lane created from a
-  phone no longer silently branches from a stale local primary tip.
+- **`lanes.create`** — uses saved account and repository defaults when start choices are omitted. `lanes.getNewLaneDefaults` and `lanes.setNewLaneDefaults` read and write those defaults.
 
 - **`work.runQuickCommand`** — constructs a `PtyCreateArgs`, calls
   `ptyService.create`, and returns the PTY handle for the controller
@@ -981,8 +947,7 @@ A handful have more logic:
   action domain, IPC, and the chat-launch service use the same helper.
 - **`lanes.list`** — delegates to `laneService.list` then runs
   `buildLaneListSnapshots` to produce the richer payload the iOS
-  Lanes tab consumes (runtime bucket summaries, rebase suggestions,
-  auto-rebase statuses, batch assessment).
+  Lanes tab consumes (runtime bucket summaries and conflict status).
 - **`prs.refresh`** — delegates to `prService.refresh`, then
   re-lists PRs and returns the PR list plus a **bounded** set of snapshots:
   `{ refreshedCount, prs, snapshots, snapshotScope, omittedSnapshotPrIds }`.
@@ -1001,20 +966,12 @@ A handful have more logic:
   whose queue is already full, or backpressured past the timeout, is closed
   with 4001.
 - **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
-  which builds stack chains from `laneService.list`, classifies each
+  which builds GitHub PR stacks, classifies each
   PR's action capabilities, resolves per-lane create-PR eligibility
-  (using `resolveStableLaneBaseBranch`), and collects queue /
+  against the compare base, and collects queue /
   integration / rebase workflow cards from the DB and
   `conflictService.scanRebaseNeeds()` (the same source the desktop
   Rebase tab consumes).
-- **`lanes.dismissRebaseSuggestion` / `lanes.deferRebaseSuggestion`** —
-  dual-write the lane state. The handler calls
-  `conflictService.dismissRebase(laneId)` /
-  `conflictService.deferRebase(laneId, until)` first so the next
-  `prs.getMobileSnapshot` rebuild reflects the action immediately,
-  then forwards to `rebaseSuggestionService.dismiss/defer` for the
-  legacy desktop banner. `defer` clamps the requested minutes to
-  `[5, 7 days]` before computing the absolute `until` ISO string.
 - **`lanes.presence.announce` / `lanes.presence.release`** — handled
   in `syncHostService` directly (not in the remote command registry);
   the brain upserts a per-lane `DeviceMarker` map and
@@ -1022,10 +979,7 @@ A handful have more logic:
 
 ### Lane response decoration
 
-`syncHostService` wraps command results for `lanes.list`,
-`lanes.getDetail`, `lanes.refreshSnapshots`, `lanes.getChildren`,
-`lanes.create`, `lanes.createChild`, `lanes.createFromUnstaged`,
-and `lanes.importBranch` to
+`syncHostService` wraps lane list, detail, snapshot, create, and import results to
 inject `LaneSummary.devicesOpen` from the presence map. Controllers
 therefore see up-to-date presence without a separate query.
 
@@ -1050,8 +1004,6 @@ services:
   portAllocationService?,
   laneEnvironmentService?,
   laneTemplateService?,
-  rebaseSuggestionService?,
-  autoRebaseService?,
   usageTrackingService?,
   logger,
 }
@@ -1194,7 +1146,7 @@ runtime-side `agentChatService` consumes the same shape end-to-end.
 
 ## Lane and PR Linear-issue payload shape
 
-`parseCreateLaneArgs` / `parseCreateChildLaneArgs` accept an optional
+`parseCreateLaneArgs` accepts an optional
 `linearIssue: LaneLinearIssue | null` so a controller can create a
 lane already attached to a Linear ticket; `laneService.create`
 derives the branch name (`linearIssueBranchName`) and persists the

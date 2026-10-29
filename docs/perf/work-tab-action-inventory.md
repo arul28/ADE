@@ -257,7 +257,6 @@ Coverage states:
 | work.git.rebase-details | View rebase details | external-skip | `LaneGitActionsPane.tsx` |
 | work.git.revert.prompt | Revert commit SHA prompt | prompt-only | `LaneGitActionsPane.tsx` |
 | work.git.cherry-pick.prompt | Cherry-pick SHA prompt | prompt-only | `LaneGitActionsPane.tsx` |
-| work.git.settings | Open Settings from auto-rebase notice | external-skip | `LaneGitActionsPane.tsx` |
 | work.git.conflict.abort-rebase | Abort rebase conflict flow | prompt-only | `LaneGitActionsPane.tsx` |
 | work.git.conflict.continue-rebase | Continue rebase conflict flow | prompt-only | `LaneGitActionsPane.tsx` |
 | work.git.conflict.abort-merge | Abort merge conflict flow | prompt-only | `LaneGitActionsPane.tsx` |

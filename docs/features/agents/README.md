@@ -289,8 +289,7 @@ idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
 surfacing — live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
 When the spawned work must carry the current lane's unmerged commits, spawn
-into a child lane instead of a fresh one — see
-[Lanes › Child-lane guidance for spawned work](../lanes/stacking.md#child-lane-guidance-for-spawned-work).
+from that branch with `ade lanes create --name <n> --from <branch> --bring local`. Use `--bring uncommitted` to copy uncommitted changes too.
 
 ## Agent download / auth from chat
 

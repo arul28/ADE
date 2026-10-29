@@ -188,7 +188,7 @@ Mechanics specific to ADE stacks:
 
 1. Order the layers bottom to top and keep foundations below their consumers.
 2. Create one deliberate branch and PR per layer. Each layer can own a child
-   ADE lane (`ade lanes child`) and its own agent, so every layer gets an
+   ADE lane and its own agent, so every layer gets an
    isolated worktree and ship loop; alternatively one lead keeps the whole
    branch chain and delegates only non-overlapping work.
 3. `ade prs stacks create` expects every PR base to already match the previous
@@ -244,3 +244,5 @@ ade actions run <domain.action> --input-json '{"key":"value"}'
 
 For review-thread or CI work, fetch current checks/comments with
 `ade prs checks` / `ade prs comments` first; the PR tab snapshot can be stale.
+
+Stack layers are lanes whose PRs target each other’s branches on GitHub.

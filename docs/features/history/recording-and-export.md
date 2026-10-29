@@ -155,8 +155,6 @@ action. Lane-scoped git ops inherit `laneId`.
 ### Conflicts (`conflictService.ts`)
 
 - `git.rebase` -- entering and completing a rebase.
-- Dismissed/deferred rebase suggestions do not record operations (they
-  are UI state only).
 
 ### Pack refreshes
 

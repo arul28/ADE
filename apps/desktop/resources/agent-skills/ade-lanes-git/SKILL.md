@@ -9,22 +9,20 @@ description: Use this skill when creating, inspecting, syncing, committing, push
 
 Lanes are ADE-managed git worktrees and branches.
 
-New lanes default to remote main (`git.newLaneBaseSource: "remote"`). Pass
-`--base` or set local mode to override that default. A child lane is based on
-the parent lane's HEAD, so it carries the parent's commits that have not landed
-on main yet.
-
-| situation | do |
+| Situation | Command |
 |---|---|
-| continue MY unmerged work in a new lane | `ade lanes child --lane <current> --name <n>` (carries your commits) |
-| fresh, unrelated feature | `ade lanes create --name <n>` (off remote main by default) |
-| build on ANOTHER lane's unlanded work | `ade lanes child --lane <that-lane> --name <n>` |
+| New work off the project default (usually what you want) | `ade lanes create --name <n>` |
+| Continue work that is in another lane / branch | `ade lanes create --name <n> --from <branch> --bring local` |
+| ...and bring its uncommitted changes too (copied) | `ade lanes create --name <n> --from <branch> --bring uncommitted` |
+| Work directly on an existing branch | `ade lanes create --name <n> --existing-branch <branch>` |
+| See what a bare create would do | `ade lanes defaults --text` |
+
+`ade new chat --auto-create-lane` uses the same defaults and accepts `--from` and `--bring`. Defaults and templates are saved per account and repository; repositories without a remote use this computer. Stacked PRs are GitHub's (`ade prs stacks`): each PR targets the branch below it.
 
 ```bash
 ade lanes list --text
 ade lanes show <lane> --text
-ade lanes create --name <name> --description "..." --text
-ade lanes child --lane <parent> --name <name> --text
+ade lanes create --name <name> --text
 ade lanes archive <lane> --text
 ```
 
@@ -42,8 +40,7 @@ by itself. A project's default lane template runs for each new lane. A template
 can copy env files and paths, install dependencies, and run a setup script. If
 `injectPrimaryPath` is true, the script receives `$PRIMARY_WORKTREE_PATH`.
 
-Templates live in that machine's `.ade/local.yaml`. They do not sync. Use
-`--machine <name>` to read or write templates on another machine.
+Templates are saved per account and repository. Repositories without a remote use this computer.
 
 ```bash
 ade lanes templates list --text

@@ -58,18 +58,15 @@ When checks pass and reviews are in, merge from the readiness panel. Pick the me
 
 ## Stacked PRs
 
-A PR opened from a child lane targets its **parent lane's branch**, not `main` — so a chain of dependent PRs each gets reviewed on its own but merges in dependency order. When a parent PR merges, ADE retargets and rebases the child onto the new base automatically.
+For a GitHub stack, each lane has its own PR targeting the branch below it. Use `ade prs stacks` to inspect the stack; rebase a lane when its compare base advances.
 
 <CardGroup cols={2}>
   <Card title="Dependency-ordered landing" icon="layer-group">
     Land a whole stack in one action: ADE merges the root, then each downstream PR in order, auto-rebasing any descendant that drifted and stopping on the first failure.
   </Card>
-  <Card title="Upstream rebase chain" icon="arrow-up-from-bracket">
-    When a child is behind its parent — which may itself be behind *its* parent — the Rebase view shows the full chain so you can fix several descendants by rebasing one ancestor.
-  </Card>
 </CardGroup>
 
-See [Stack lanes](/lanes/stacks) for the lane side of stacking.
+Each lane in the stack works on its own branch.
 
 ## Merge queue
 

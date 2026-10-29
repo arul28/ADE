@@ -998,7 +998,7 @@ For deeper detail on the watcher + trust boundary, see
   primary repo root and lanes whose `is_edit_protected = 1` — opens Monaco in
   read/write mode with create / rename / delete controls enabled on desktop and
   mobile. The `is_edit_protected` flag still exists but only governs lane
-  lifecycle (delete / reparent / auto-rebase exclusion), not file editing;
+  lifecycle (lane deletion exclusion), not file editing;
   `FilesWorkspace.isReadOnlyByDefault` is now derived as constant `false`.
 - Workspace switching is navigation, not a discard action. Dirty tabs remain
   open and published to the dirty-buffer map under their own workspace root

@@ -48,7 +48,7 @@ This is the same primitive that backs the PR merge-readiness check and integrati
 
 ## Rebase when a lane drifts
 
-When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — a queue's tracking branch if the lane is in a merge queue, the parent branch for a stacked lane, or `origin/<base>` otherwise.
+When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — the open PR's base branch, or the project default branch when there is no open PR.
 
 ## AI-assisted resolution
 

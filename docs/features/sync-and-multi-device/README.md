@@ -58,6 +58,9 @@ or select the correct destination. Without an account, a client may show only a
 truthfully labeled local or explicitly connected-machine snapshot; it must
 never present that subset as the account view.
 
+
+The brain rejects iOS builds older than `MIN_SUPPORTED_MOBILE_APP_BUILD` with `protocol_version_mismatch` and `updateTarget: client`, then closes the connection. The phone asks the user to update ADE.
+
 ## Where the sync authority runs
 
 The sync authority is the machine-owned `ade serve` runtime in
@@ -2511,18 +2514,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   while `usage.refreshQuota` runs the bounded quota-only provider path with
   interactive auth disabled. Neither remote quota action starts local provider
   history scans or sends provider credentials to the controller.
-  Lane snapshot commands accept decoration flags so mobile can refresh
-  runtime/session buckets without recomputing conflict status, rebase
-  suggestions, or auto-rebase status on every light refresh; lane detail
-  uses the scoped lane-summary path instead of forcing a full lane list.
+  Lane snapshots support lightweight refreshes; lane detail uses the scoped lane-summary path.
   Model-picker commands read/write the same per-project CRR-backed
   favorites/recents store as desktop and the TUI; the sync service falls
   back to the DB-wired shared store when no explicit accessor is
   injected, so iOS never reads an empty process stub in production.
-  Lane reparent commands parse the optional `stackBaseBranchRef`
-  override and forward it to the runtime lane service so controllers can
-  pick a specific branch to stack onto instead of always using the
-  selected parent lane's branch.
   The `personalChats.*` family is registered from the shared
   `PERSONAL_CHAT_ACTIONS` allowlist with `scope: "runtime"`; the executor calls
   `PersonalChatScope` directly instead of looking up the current project.
@@ -2533,17 +2529,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   second is not merely cancelling something: it spends a provider turn against
   the owner's quota, so it stays owner-only just like the sync remote command
   of the same name.
-  `lanes.create` calls that omit `baseBranch` / `startPoint` /
-  `parentLaneId` (hub-composer auto-create, the mobile create sheet's
-  default) resolve a **remote-first default base** on the host before
-  creation: the project's `git.newLaneBaseSource` config (effective
-  default `"remote"`) selects between a bounded remote fetch +
-  remote-tracking mapping (the local base branch's configured upstream,
-  else `origin/<primary base>`, verified to resolve to a commit) and the
-  legacy local primary tip; the resolution helper is
-  `apps/ade-cli/src/services/laneCreateRemoteBase.ts`, built on
-  `apps/desktop/src/shared/defaultRemoteLaneBase.ts` (shared with the
-  desktop create-lane dialog's renderer-side default).
+  `lanes.create` uses account and repository defaults when start choices are omitted. `lanes.getNewLaneDefaults` and `lanes.setNewLaneDefaults` read and write them.
   New-lane chat launches (`chat.startLaunch` … `chat.completeLaunchClient`)
   are brain-owned end to end; their progress is pushed to every peer of the
   project as `chat_launch_event`. See
@@ -3168,7 +3154,7 @@ iOS service files (`apps/ios/ADE/Services/`):
   live chat-event push listener, subscription-scoped
   `chat_history` request/response tracking with an 8-second non-disconnecting
   timeout and legacy command fallback, lane
-  reparent payload building with the optional stack base-branch
+  lane creation defaults and
   override, project hub/catalog state, active-project scoping,
   and local project-list hiding for
   "Remove from list" so cached DB rows and runtime catalog rows for

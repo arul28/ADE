@@ -24,9 +24,9 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 
 ## Refresh rules
 
-- Use full decorated snapshots only when runtime decorations, conflict status, rebase suggestions, or auto-rebase state are truly needed.
+- Use full decorated snapshots only when runtime decorations or conflict status are truly needed.
 - For Git Actions local operations such as stage, commit, fetch, push, pull, and history refresh, prefer `refreshLanes({ includeStatus: true, includeSnapshots: false })`. This updates lane Git status without rebuilding runtime/rebase/conflict snapshot decorations.
-- For runtime-only updates from Work pane sessions, use `refreshLanes({ includeStatus: false, includeSnapshots: true, includeConflictStatus: false, includeRebaseSuggestions: false, includeAutoRebaseStatus: false })`. Preserve prior lane Git status while refreshing runtime buckets.
+- For runtime-only updates from Work pane sessions, use `refreshLanes({ includeStatus: false, includeSnapshots: true, includeConflictStatus: false })`. Preserve prior lane Git status while refreshing runtime buckets.
 - For metadata-only updates such as lane color/appearance, use `refreshLanes({ includeStatus: false })` and preserve prior `status` / `parentStatus` in the store. A color change must not recompute Git status.
 - Avoid calling bare `refreshLanes()` from new Lanes UI handlers. Treat it as the expensive path and document why a full refresh is required.
 
@@ -49,7 +49,7 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 
 - Keep local change operations scoped. Stage, unstage, commit, stash, and discard should refresh the active lane's change model and lane Git status, not all snapshot decorations.
 - History and diff controls should fetch only the selected commit/file data. Split/unified, wrap, line-number, and copy-path controls should be renderer-local after the file/patch is loaded.
-- Network actions are allowed to cost real time. `fetch`, `push`, and child-lane creation can dominate a trace; do not optimize them by hiding progress or skipping correctness checks.
+- Network actions are allowed to cost real time. `fetch`, `push`, and lane creation can dominate a trace; do not optimize them by hiding progress or skipping correctness checks.
 - Save Changes currently stashes tracked changes and can leave untracked files visible. If changing that behavior, treat it as functionality work and add tests before using it as a perf cleanup.
 
 ## Proven patterns
@@ -109,7 +109,7 @@ Use this as engineering guidance for keeping the Lanes tab fast while adding fea
 - **Verification**: `perf(lanes): refresh visible PR status opportunistically` refreshes at most 4 stale visible linked PRs after a 260 ms debounce with a 15 s stale/request gate, merges returned summaries into Lanes tags, and covers selection/dedupe/cap behavior in `LanesPage.test.ts`.
 
 ### Pause minimized and delayed Git Actions effects
-- **Why it helped**: Minimized pane bodies were CSS-hidden but still mounted, so Git Actions kept diff/stash/sync/conflict loads, auto-rebase status, sync-status polling, event subscriptions, and commit-history requests alive in the background. Multiple visible lanes could also mount Git Actions panes at once.
+- **Why it helped**: Minimized pane bodies were CSS-hidden but still mounted, so Git Actions kept diff/stash/sync/conflict loads, sync-status polling, event subscriptions, and commit-history requests alive in the background. Multiple visible lanes could also mount Git Actions panes at once.
 - **Apply when**: A pane body owns timers, subscriptions, local Git reads, PR/AI/runtime status, or history loads. Pass pane minimized state into the render path, make child effects explicitly inactive while minimized, and stagger non-primary visible pane mounts so only the immediate lane warms eagerly.
 - **Avoid**: Treating visual collapse as inactive, or adding a single page-level throttle while hidden pane components keep their own timers running.
 - **Verification**: `perf(lanes): pause minimized git actions panes` adds `PaneConfig.renderChildren`, passes `active={!minimized}` to `LaneGitActionsPane` and `CommitTimeline`, staggers inline Git Actions bodies by visible-lane order, and covers inactive/active transitions in component tests. A real Electron `/lanes` segment, `lanes-minimized-git-idle` in `lanes-20260531-1421-throttles-after3`, kept the Git Actions pane minimized for 33.4 s with no slow Git Actions status/history IPC; main/browser p95 CPU was 0.15% and renderer tab p95 was 0.05%.
