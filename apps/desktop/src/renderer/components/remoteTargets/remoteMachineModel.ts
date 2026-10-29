@@ -1,4 +1,5 @@
 import { extractError } from "../../lib/format";
+import { updateTrackOfVersion } from "../../../shared/updateTrack";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
@@ -377,12 +378,17 @@ export function describeThisComputerCard(
   };
 }
 
-/** Channel word in front of a build: "ADE" or "ADE Alpha". */
-export function channelProductName(channel: AppPackageChannel | string | null | undefined): string {
+/**
+ * The product word in front of a build: "ADE", "ADE Alpha", or "ADE Beta"
+ * for a stable-channel build on the Beta track (read from its version).
+ */
+export function channelProductName(
+  channel: AppPackageChannel | string | null | undefined,
+  version?: string | null,
+): string {
   const normalized = normalizeAppPackageChannel(channel);
-  return normalized === "stable"
-    ? "ADE"
-    : `ADE ${normalized.charAt(0).toUpperCase()}${normalized.slice(1)}`;
+  if (normalized === "alpha") return "ADE Alpha";
+  return updateTrackOfVersion(version) === "beta" ? "ADE Beta" : "ADE";
 }
 
 /**
@@ -398,7 +404,7 @@ export function formatThisComputerVersion(args: {
 }): { text: string; source: "brain" | "package" } | null {
   const brain = args.brainVersion?.trim();
   const packageVersion = args.packageVersion?.trim();
-  const product = channelProductName(args.channel);
+  const product = channelProductName(args.channel, args.brainVersion ?? args.packageVersion);
   // When the brain and this app differ, both: "ADE 1.2.123 · brain 1.2.125".
   if (brain) return { text: `${product} ${formatMachineVersions({ brainVersion: brain, appVersion: packageVersion })}`, source: "brain" };
   if (packageVersion) return { text: `${product} ${packageVersion}`, source: "package" };
