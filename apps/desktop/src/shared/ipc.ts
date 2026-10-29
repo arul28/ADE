@@ -1088,6 +1088,7 @@ export const IPC = {
   accountListMachines: "ade.account.listMachines",
   accountGetMachineInventory: "ade.account.getMachineInventory",
   accountGetConnectionRoutes: "ade.account.getConnectionRoutes",
+  accountGetAvatarDataUrl: "ade.account.getAvatarDataUrl",
   accountSetRelayEnabled: "ade.account.setRelayEnabled",
   accountRenameMachine: "ade.account.renameMachine",
   accountPairMachine: "ade.account.pairMachine",

@@ -73,17 +73,17 @@ const KIT_TONE: Record<MachineRouteItem["tone"], "ok" | "warn" | undefined> = {
  */
 export function RoutePills({ items, dimmed }: { items: MachineRouteItem[]; dimmed?: boolean }) {
   return (
-    <div className="ade-route-pills" data-dimmed={dimmed ? "true" : undefined} aria-label="Connection routes">
+    <div className="ade-route-pills" data-dimmed={dimmed ? "true" : undefined} aria-label="How it connects">
       {items.map((item) => (
         <span
           key={item.kind}
-          className="kit-tag ade-route-pill"
-          data-tone={KIT_TONE[item.tone]}
-          data-route-off={item.tone === "off" ? "true" : undefined}
+          className="ade-route-badge"
+          data-tone={KIT_TONE[item.tone] ?? "off"}
+          role="img"
+          aria-label={`${item.label}: ${item.word}`}
           title={`${item.label}: ${item.word}${item.detail ? ` · ${item.detail}` : ""}`}
         >
-          <RouteIcon kind={item.kind} size={10} />
-          {item.short}
+          <RouteIcon kind={item.kind} size={12} />
         </span>
       ))}
     </div>

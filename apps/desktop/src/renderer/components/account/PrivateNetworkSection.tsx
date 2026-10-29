@@ -28,7 +28,7 @@ const KEY_EXPIRY_WARN_DAYS = 14;
 
 type StepState = "done" | "todo" | "blocked" | "working";
 
-type SetupStep = {
+export type SetupStep = {
   id: string;
   title: string;
   hint: ReactNode;
@@ -55,7 +55,7 @@ const ROUTE_STEP: Record<MachineTailnetHttpsState, { state: StepState; hint: str
   unavailable: { state: "blocked", hint: WAITING_ON_STEPS },
 };
 
-function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
+export function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
   const ts = routes.tailscale;
   const running = ts.state === "running";
   const installed = ts.state !== "not_installed";
@@ -105,14 +105,14 @@ function setupSteps(routes: MachineConnectionRoutes): SetupStep[] {
 /** The order clients try routes in, as three steps. */
 function RouteLadder({ onTailnet, total }: { onTailnet: number; total: number }) {
   const steps = [
-    { key: "lan", icon: <WifiHigh size={15} weight="bold" />, name: "Local network", note: "Same network, direct" },
+    { key: "lan", icon: <WifiHigh size={15} weight="bold" />, name: "Local network", note: "On the same Wi-Fi, direct" },
     {
       key: "tailscale",
       icon: <TailscaleMark size={15} />,
       name: "Tailscale",
-      note: total > 0 ? `${onTailnet} of ${total} computers` : "Anywhere, direct",
+      note: total > 0 ? `Anywhere, private · ${onTailnet} of ${total} on it` : "Anywhere, private and direct",
     },
-    { key: "relay", icon: <CloudArrowUp size={15} weight="bold" />, name: "ADE Relay", note: "When nothing else answers" },
+    { key: "relay", icon: <CloudArrowUp size={15} weight="bold" />, name: "ADE Relay", note: "Through ADE's servers, as a fallback" },
   ];
   return (
     <ol className="ade-net-ladder" aria-label="Route order">
@@ -181,8 +181,10 @@ export function PrivateNetworkSection({
     <ModernSection
       group="Account"
       anchor={PRIVATE_NETWORK_SETTINGS_ANCHOR}
-      title="Private network"
-      hint="Your computers reach each other directly over Tailscale. ADE Relay only steps in when nothing else answers."
+      title="Connections"
+      icon={<TailscaleMark size={15} />}
+      tone="teal"
+      hint="How your phone, the web app and your other computers reach these computers. ADE tries each way in order and uses the first that answers."
       actions={(
         <button type="button" className="ade-acct-btn" disabled={checking} onClick={onRecheck}>
           {checking

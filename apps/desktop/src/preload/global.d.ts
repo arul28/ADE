@@ -4638,6 +4638,8 @@ declare global {
           machineKey?: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<MachineInventoryDetail>;
+        /** The signed-in account's own profile picture, as a data URL (for reading its colours). */
+        getAvatarDataUrl?: () => Promise<string | null>;
         getConnectionRoutes?: (args?: {
           machineKey?: string | null;
           refresh?: boolean;

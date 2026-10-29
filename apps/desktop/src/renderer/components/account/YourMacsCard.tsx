@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
   CaretRight,
   DeviceMobile,
+  Desktop,
   DotsThreeVertical,
 } from "@phosphor-icons/react";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
@@ -64,6 +65,7 @@ import { Banner } from "../ui/notice/Banner";
 import { ModernRows, ModernSection } from "../settings/primitives";
 import { RoutePills } from "./MachineRoutes";
 import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
+import type { AccountNetworkSummary } from "./AccountHero";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -364,7 +366,15 @@ function SignInLinkFallback({ url }: { url: string }) {
   );
 }
 
-export function YourMacsCard() {
+export function YourMacsCard({
+  onSummary,
+  between,
+}: {
+  /** The banner's counts: computers, online, relay, and this computer's routes. */
+  onSummary?: (summary: AccountNetworkSummary | null) => void;
+  /** Placed between Your computers and Connections (the update section). */
+  between?: ReactNode;
+} = {}) {
   const webMode = isWebClientMode();
   const workspace = useOptionalWebWorkspace();
   const webMachines = useWebMachines();
@@ -832,20 +842,41 @@ export function YourMacsCard() {
     }
   }, [pendingForget, workspace]);
 
+  /** "Reachable over your local network and Tailscale", for this computer's row. */
+  const reachLine = (row: ComputerDisplayRow): string | null => {
+    if (!row.thisMac || !row.accountMachine) return null;
+    const names = routes.routeItemsFor(row)
+      .filter((item) => item.tone === "on")
+      .map((item) => (item.kind === "lan" ? "your local network" : item.label));
+    if (names.length === 0) return null;
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return `Reachable over ${list}`;
+  };
+
+  const summaryReady = !usingWorkspaceRoster && result?.state === "ok";
+  const { localRoutes, relayOnCount } = routes;
+  useEffect(() => {
+    if (!onSummary) return;
+    onSummary(summaryReady
+      ? { total: rows.length, online: onlineCount, relayOn: relayOnCount, localRoutes }
+      : null);
+  }, [localRoutes, onSummary, onlineCount, relayOnCount, rows.length, summaryReady]);
+
   const directoryOffline =
     (!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
     || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured"));
 
   return (
     <>
-    {routes.privateNetwork}
     <ModernSection
       group="Computers"
       anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
       title="Your computers"
+      icon={<Desktop size={15} weight="bold" />}
+      tone="blue"
       hint={(
         <>
-          {summary}
+          Every computer signed in to this account. Open one to see how it connects. {summary}
           {thisComputerVersion ? (
             <span className="ade-acct-version">This machine: {thisComputerVersion.text}</span>
           ) : null}
@@ -1063,9 +1094,9 @@ export function YourMacsCard() {
                           {row.rememberedOnly ? <span className="kit-tag">This browser</span> : null}
                           {row.connected ? <span className="kit-tag" data-tone="ok">Connected</span> : null}
                         </div>
-                        {row.statusLine ? (
+                        {row.statusLine ?? reachLine(row) ? (
                           <div className="ade-acct-machine-status" data-awake={row.awake ? "true" : undefined}>
-                            {row.statusLine}
+                            {row.statusLine ?? reachLine(row)}
                           </div>
                         ) : null}
                         {/* No inventory chips here. A collapsed machine row is
@@ -1372,6 +1403,8 @@ export function YourMacsCard() {
         />
       ) : null}
     </ModernSection>
+    {between}
+    {routes.privateNetwork}
     </>
   );
 }

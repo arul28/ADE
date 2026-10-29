@@ -13000,6 +13000,8 @@ const adeBridge = {
      * this computer's key) asks the local brain; any other key goes over the
      * live paired connection to that computer, resolved in main.
      */
+    getAvatarDataUrl: (): Promise<string | null> =>
+      ipcRenderer.invoke(IPC.accountGetAvatarDataUrl),
     getConnectionRoutes: (args?: {
       machineKey?: string | null;
       refresh?: boolean;

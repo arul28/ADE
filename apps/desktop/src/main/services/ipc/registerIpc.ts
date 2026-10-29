@@ -12713,6 +12713,25 @@ export function registerIpc({
   // the same best-effort path immediately after the account/settings services.
   accountMigrationStartRetry.tryStart();
 
+  // The signed-in account's own profile picture as a data URL, so the Account
+  // banner can read its colours: the image hosts don't send CORS headers.
+  // Only that one URL, https only, an image, at most 2 MB.
+  ipcMain.handle(IPC.accountGetAvatarDataUrl, async (): Promise<string | null> => {
+    const imageUrl = accountBridge.status().imageUrl?.trim();
+    if (!imageUrl || !/^https:\/\//i.test(imageUrl)) return null;
+    try {
+      const response = await fetch(imageUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
+      if (!response.ok || !/^image\/(png|jpe?g|webp|gif)$/i.test(contentType)) return null;
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > 2 * 1024 * 1024) return null;
+      return `data:${contentType};base64,${bytes.toString("base64")}`;
+    } catch (error) {
+      getCtx().logger.debug("account.avatar_fetch_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  });
+
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
