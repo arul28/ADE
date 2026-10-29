@@ -17,7 +17,10 @@ const scanInFlight = new Map<string, Promise<RebaseNeed[]>>();
 /** The last needs each project reported (scan or pushed event), so a revisit paints at once. */
 const lastNeedsByProject = new Map<string, { needs: ReadonlyMap<string, RebaseNeed>; atMs: number }>();
 
-/** One scan per project at a time; the Lanes and PRs tabs share it. */
+/**
+ * One scan per project at a time: a Lanes page that remounts while a scan is
+ * in flight joins it. The PRs tab's rebase views run their own scans.
+ */
 function scanRebaseNeedsCoalesced(projectKey: string): Promise<RebaseNeed[]> {
   const existing = scanInFlight.get(projectKey);
   if (existing) return existing;
@@ -123,14 +126,13 @@ function hiddenByUser(need: RebaseNeed | null | undefined, nowMs: number): boole
 }
 
 /**
- * The lane's compare base: its open PR's base branch when it has one, else the
- * lane's base (the project's default branch).
+ * The branch a lane is compared to and rebases onto. The brain decides it (its
+ * open PR's base, else the default branch) and reports it on the lane's
+ * status; the lane's own base stands in only when the status lacks it (an
+ * older brain, a list read without status).
  */
-export function laneCompareBaseBranch(
-  lane: Pick<LaneSummary, "baseRef">,
-  openPrBaseBranch?: string | null,
-): string {
-  return branchNameFromLaneRef(openPrBaseBranch) || branchNameFromLaneRef(lane.baseRef) || "main";
+export function laneCompareBase(lane: Pick<LaneSummary, "baseRef" | "status">): string {
+  return branchNameFromLaneRef(lane.status?.compareBase) || branchNameFromLaneRef(lane.baseRef);
 }
 
 /**
@@ -145,7 +147,6 @@ export function laneCompareBaseBranch(
 export function laneRebaseLine(args: {
   lane: Pick<LaneSummary, "laneType" | "baseRef" | "status">;
   need: RebaseNeed | null | undefined;
-  openPrBaseBranch?: string | null;
   merged?: boolean;
   nowMs?: number;
 }): LaneRebaseLine | null {
@@ -153,7 +154,7 @@ export function laneRebaseLine(args: {
   if (lane.laneType === "primary" || args.merged) return null;
   if (lane.status?.rebaseInProgress) return null;
   if (hiddenByUser(need, args.nowMs ?? Date.now())) return null;
-  const baseBranch = branchNameFromLaneRef(need?.baseBranch) || laneCompareBaseBranch(lane, args.openPrBaseBranch);
+  const baseBranch = branchNameFromLaneRef(need?.baseBranch) || laneCompareBase(lane);
   const statusBehind = lane.status?.behind ?? 0;
   if (need?.kind === "built_on_merged") {
     const prNumber = need.mergedPr?.number;

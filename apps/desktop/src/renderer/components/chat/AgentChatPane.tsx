@@ -556,6 +556,19 @@ import {
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
 /** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
+/**
+ * The pin a draft's new-lane defaults are read with: the machine the draft
+ * launches on, or null for the tab's own machine (the unpinned route, and the
+ * cache entry Settings and the New lane dialog share).
+ */
+function newLaneDefaultsPin(
+  launchBinding: OpenProjectBinding | null,
+  projectBinding: OpenProjectBinding | null,
+): OpenProjectBinding | null {
+  if (!launchBinding || launchBinding.key === projectBinding?.key) return null;
+  return launchBinding;
+}
+
 function devinCloudErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
@@ -12999,7 +13012,10 @@ export function AgentChatPane({
     // the first frame. Only `fetch` depends on the start: a lane that brings
     // pushed work fetches first. Unread defaults assume the built-in default
     // (pushed work).
-    const knownDefaults = peekNewLaneDefaultsCached({ projectRoot, pin: launchBinding });
+    const knownDefaults = peekNewLaneDefaultsCached({
+      projectRoot,
+      pin: newLaneDefaultsPin(launchBinding, useAppStore.getState().projectBinding),
+    });
     const launchStart = chatLaunchLaneStart(
       configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
       knownDefaults?.defaults.start ?? DEFAULT_LANE_START,
@@ -14610,11 +14626,6 @@ export function AgentChatPane({
             issueCount ? `${issueCount} issue${issueCount === 1 ? "" : "s"}` : null,
           ].filter(Boolean).join(" · ");
         }
-        const projectConfigSnapshot = await getProjectConfigCached({
-          projectRoot: launchProjectRoot,
-          pin: launchBinding,
-          force: false,
-        }).catch(() => null);
         const namingModelId = parallelModelSlots[0]!.modelId;
         const genericSuffix = autoLaneGenericSuffix();
         // Instant: name the new lanes deterministically now. If AI titles are
@@ -16086,15 +16097,9 @@ export function AgentChatPane({
     && !lockSessionId
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
-  // The auto-create row says where a new lane would start ("from origin/main"),
-  // read from the project's saved new-lane defaults.
-  const newLaneDefaultsSnapshot = useNewLaneDefaults({ projectRoot, enabled: showDraftLaunchControls });
-  const autoCreateStartDetail = newLaneDefaultsSnapshot
-    ? describeAutoCreateStart(newLaneDefaultsSnapshot)
-    : null;
   const {
     machineOptions: laneMachineOptions,
-    selectorLanes: draftLaneSelectorLanes,
+    selectorLanes: draftRoutedSelectorLanes,
     boundMachineId: boundLaneMachineId,
     selectedMachineId: selectedDraftMachineId,
     selectionReconciled: draftMachineSelectionReconciled,
@@ -16107,7 +16112,6 @@ export function AgentChatPane({
     handleMachineChange: handleDraftMachineChange,
     handleLaneSelectionChange: handleDraftLaneSelectionChange,
   } = useDraftMachineRouting({
-    autoCreateDetail: autoCreateStartDetail,
     enabled: showDraftLaunchControls,
     projectBinding,
     openProjectTabRoots,
@@ -16123,6 +16127,25 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  // The auto-create row says where a new lane would start ("from origin/main"),
+  // read from the saved new-lane defaults of the machine the draft launches on.
+  // The launch's predicted stages peek the same cache entry.
+  const newLaneDefaultsSnapshot = useNewLaneDefaults({
+    projectRoot,
+    pin: newLaneDefaultsPin(draftExecutionBinding, projectBinding),
+    enabled: showDraftLaunchControls,
+  });
+  const autoCreateStartDetail = newLaneDefaultsSnapshot
+    ? describeAutoCreateStart(newLaneDefaultsSnapshot)
+    : null;
+  const draftLaneSelectorLanes = useMemo(
+    () => (autoCreateStartDetail
+      ? draftRoutedSelectorLanes.map((lane) => (
+        isAutoCreateLaneOptionId(lane.id) ? { ...lane, detail: autoCreateStartDetail } : lane
+      ))
+      : draftRoutedSelectorLanes),
+    [autoCreateStartDetail, draftRoutedSelectorLanes],
+  );
   /**
    * The lane whose branch drift the composer speaks for. A draft can be aimed at
    * "Auto-create lane" (there is no worktree yet) or at another machine (whose

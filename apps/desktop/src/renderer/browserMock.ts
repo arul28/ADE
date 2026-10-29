@@ -7392,7 +7392,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listTemplates: resolved([]),
       getTemplate: resolvedArg(null),
       getNewLaneDefaults: resolvedArg(MOCK_NEW_LANE_DEFAULTS),
-      setNewLaneDefaults: async (args: { defaults: any }) => ({ ...MOCK_NEW_LANE_DEFAULTS, defaults: args.defaults }),
+      setNewLaneDefaults: async (args: { defaults: any }) => ({
+        ...MOCK_NEW_LANE_DEFAULTS,
+        defaults: { ...MOCK_NEW_LANE_DEFAULTS.defaults, ...args.defaults },
+      }),
       getDefaultTemplate: resolvedArg(null),
       setDefaultTemplate: resolvedArg(undefined),
       applyTemplate: resolvedArg({

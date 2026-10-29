@@ -170,9 +170,11 @@ function RebaseLineHint({
     >
       <span aria-hidden className="kit-dot" data-state="warn" />
       <span className="min-w-0 truncate tabular-nums">{line.text}</span>
+      {/* The same quiet kit action as the lane's overview (LaneIdentity). */}
       <button
         type="button"
-        className="shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+        className="kit-btn kit-btn-ghost shrink-0"
+        data-size="sm"
         data-testid="lane-sidebar-rebase"
         onClick={(event) => {
           event.stopPropagation();

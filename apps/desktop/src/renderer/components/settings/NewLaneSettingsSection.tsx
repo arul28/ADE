@@ -8,7 +8,6 @@ import {
   GitBranch,
   GitCommit,
   UserCircle,
-  WarningCircle,
   type Icon,
 } from "@phosphor-icons/react";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
@@ -20,6 +19,8 @@ import {
   LANE_START_BRING_HINT,
   LANE_START_BRING_LABEL,
   LANE_START_BRING_VALUES,
+  LANE_START_FROM_LABEL,
+  LANE_START_FROM_VALUES,
   plainLaneStartBranch,
   type LaneStart,
   type LaneStartBring,
@@ -33,11 +34,10 @@ import { laneHoldingBranch, startBranchItems, startSourceBranch } from "../lanes
 import "../lanes/createLaneComposer.css";
 import "./machineSettings.css";
 
-const FROM_OPTIONS: ReadonlyArray<{ value: LaneStartFrom; label: string }> = [
-  { value: "default", label: "Default branch" },
-  { value: "primary", label: "Primary lane's branch" },
-  { value: "branch", label: "A specific branch" },
-];
+const FROM_OPTIONS: ReadonlyArray<{ value: LaneStartFrom; label: string }> = LANE_START_FROM_VALUES.map((value) => ({
+  value,
+  label: LANE_START_FROM_LABEL[value],
+}));
 
 const BRING_ICON: Record<LaneStartBring, Icon> = {
   pushed: CloudArrowDown,
@@ -71,7 +71,9 @@ export function NewLaneSettingsSection() {
       .then((next) => {
         if (!cancelled) setLanes(Array.isArray(next) ? next : []);
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.warn("new_lane_settings.lanes_load_failed", error);
+      });
     return () => {
       cancelled = true;
     };
@@ -83,7 +85,9 @@ export function NewLaneSettingsSection() {
     if (!snapshot) return;
     setPending(next);
     try {
-      await saveNewLaneDefaults({ projectRoot, pin, defaults: { ...snapshot.defaults, start: next } });
+      // Only the start: the brain merges, so a template picked elsewhere since
+      // this snapshot was read is kept.
+      await saveNewLaneDefaults({ projectRoot, pin, defaults: { start: next } });
       flash();
     } catch (error) {
       fail(error instanceof Error ? error.message : String(error));
@@ -220,7 +224,8 @@ function ScopeChip({ scope }: { scope: NewLaneSettingsScope }) {
   const account = scope.kind === "account-repo";
   return (
     <span
-      className="ade-nl-scope"
+      className="kit-tag"
+      style={{ gap: 5 }}
       title={account
         ? `Saved to your ADE account for ${scope.repo}. Every computer and phone that opens this repository uses it.`
         : "This project has no remote, so these settings are saved on this computer only."}
@@ -236,23 +241,35 @@ function ScopeChip({ scope }: { scope: NewLaneSettingsScope }) {
 function StartSummary({ start, sourceBranch, holder }: { start: LaneStart; sourceBranch: string; holder: LaneSummary | null }) {
   if (start.from === "branch" && !sourceBranch) {
     return (
-      <div className="ade-nl-summary" data-tone="warn">
-        <WarningCircle size={14} />
-        <span>Pick the branch new lanes should start from.</span>
-      </div>
+      <Banner
+        layout="inline"
+        model={{ id: "new-lane-start-branch", tone: "warning", title: "Pick the branch new lanes should start from." }}
+      />
     );
   }
-  const nothingToCopy = start.bring === "uncommitted" && !holder;
   const ref = start.bring === "pushed" ? `origin/${sourceBranch}` : sourceBranch;
+  if (start.bring === "uncommitted" && !holder) {
+    return (
+      <Banner
+        layout="inline"
+        model={{
+          id: "new-lane-start-nothing-to-copy",
+          tone: "warning",
+          title: <>New lanes branch from <b>{ref}</b>, but nothing uncommitted will be copied.</>,
+          ariaLabel: `New lanes branch from ${ref}, but nothing uncommitted will be copied.`,
+          detail: `${sourceBranch} isn't open in any lane right now, so there's nothing uncommitted to copy.`,
+        }}
+      />
+    );
+  }
   const holderName = holder ? (holder.laneType === "primary" ? "Primary" : holder.name) : "";
   let tail: string;
   if (start.bring === "pushed") tail = ", after fetching the latest from the remote.";
   else if (start.bring === "local") tail = ", your local copy, including commits you haven't pushed.";
-  else if (holder) tail = `, plus a copy of the uncommitted changes in ${holderName}. ${holderName} keeps its own.`;
-  else tail = `. It isn't open in any lane right now, so there's nothing uncommitted to copy.`;
+  else tail = `, plus a copy of the uncommitted changes in ${holderName}. ${holderName} keeps its own.`;
   return (
-    <div className="ade-nl-summary" data-tone={nothingToCopy ? "warn" : undefined}>
-      {nothingToCopy ? <WarningCircle size={14} /> : <GitBranch size={14} />}
+    <div className="ade-nl-summary">
+      <GitBranch size={14} />
       <span>
         New lanes branch from <b>{ref}</b>{tail}
         {start.from === "primary" ? " It follows whatever Primary has checked out when the lane is made." : null}

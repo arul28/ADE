@@ -6,18 +6,24 @@ import type { NewLaneDefaultsSnapshot, OpenProjectBinding } from "../../shared/t
  * The project's new-lane defaults, per machine, read once and shared by every
  * surface that shows them: the auto-create row in the lane picker, the chat
  * launch's predicted stages, Settings. Saving through {@link saveNewLaneDefaults}
- * updates every reader at once; nothing polls.
+ * updates every reader at once, and a change to the account's settings (another
+ * computer or the phone saved them) re-reads what is cached; nothing polls.
  */
+
+type ReadArgs = { projectRoot?: string | null; pin?: OpenProjectBinding | null };
 
 type Entry = {
   value?: NewLaneDefaultsSnapshot | null;
   promise?: Promise<NewLaneDefaultsSnapshot | null>;
   /** The last read failed (an older brain, a machine that went away). */
   failed?: boolean;
+  /** What the entry was read with, so an account change can re-read it. */
+  args?: ReadArgs;
 };
 
 const cache = new Map<string, Entry>();
 const listeners = new Set<() => void>();
+let stopAccountSettingsWatch: (() => void) | null = null;
 
 function cacheKey(projectRoot: string | null | undefined, pin: OpenProjectBinding | null | undefined): string {
   const root = projectRoot?.trim() || pin?.rootPath?.trim() || "__no_project__";
@@ -26,6 +32,28 @@ function cacheKey(projectRoot: string | null | undefined, pin: OpenProjectBindin
 
 function notify(): void {
   for (const listener of listeners) listener();
+}
+
+/** Re-read every cached machine when the account's settings change. */
+function refreshAllCached(): void {
+  for (const entry of cache.values()) {
+    if (entry.args) void getNewLaneDefaultsCached({ ...entry.args, force: true });
+  }
+}
+
+function addListener(listener: () => void): () => void {
+  listeners.add(listener);
+  if (!stopAccountSettingsWatch) {
+    const onChanged = window.ade?.accountSettings?.onChanged;
+    if (typeof onChanged === "function") stopAccountSettingsWatch = onChanged(refreshAllCached);
+  }
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && stopAccountSettingsWatch) {
+      stopAccountSettingsWatch();
+      stopAccountSettingsWatch = null;
+    }
+  };
 }
 
 export function getNewLaneDefaultsCached(args: {
@@ -39,24 +67,29 @@ export function getNewLaneDefaultsCached(args: {
     if (existing?.value !== undefined) return Promise.resolve(existing.value);
     if (existing?.promise) return existing.promise;
   }
+  const readArgs: ReadArgs = { projectRoot: args.projectRoot, pin: args.pin };
   const read = window.ade?.lanes?.getNewLaneDefaults;
   if (typeof read !== "function") {
-    cache.set(key, { failed: true });
+    cache.set(key, { failed: true, args: readArgs });
     notify();
     return Promise.resolve(null);
   }
-  const promise = (args.pin ? read(args.pin) : read())
+  const promise: Promise<NewLaneDefaultsSnapshot | null> = (args.pin ? read(args.pin) : read())
     .then((value) => {
-      cache.set(key, { value });
+      // A save or a newer read landed while this one was in flight; it wins.
+      if (cache.get(key)?.promise !== promise) return cache.get(key)?.value ?? value;
+      cache.set(key, { value, args: readArgs });
       notify();
       return value;
     })
-    .catch(() => {
-      if (cache.get(key)?.promise === promise) cache.set(key, { failed: true });
+    .catch((error) => {
+      console.warn("new_lane_defaults.read_failed", { pinned: Boolean(args.pin), error });
+      const current = cache.get(key);
+      if (current?.promise === promise) cache.set(key, { value: current.value, failed: current.value === undefined, args: readArgs });
       notify();
-      return null;
+      return current?.value ?? null;
     });
-  cache.set(key, { ...existing, promise });
+  cache.set(key, { ...existing, promise, args: readArgs });
   return promise;
 }
 
@@ -71,12 +104,13 @@ export function peekNewLaneDefaultsCached(args: {
 export async function saveNewLaneDefaults(args: {
   projectRoot?: string | null;
   pin?: OpenProjectBinding | null;
-  defaults: NewLaneDefaults;
+  /** Only the fields that change; the brain keeps the rest. */
+  defaults: Partial<NewLaneDefaults>;
 }): Promise<NewLaneDefaultsSnapshot> {
   const value = args.pin
     ? await window.ade.lanes.setNewLaneDefaults({ defaults: args.defaults }, args.pin)
     : await window.ade.lanes.setNewLaneDefaults({ defaults: args.defaults });
-  cache.set(cacheKey(args.projectRoot, args.pin), { value });
+  cache.set(cacheKey(args.projectRoot, args.pin), { value, args: { projectRoot: args.projectRoot, pin: args.pin } });
   notify();
   return value;
 }
@@ -106,12 +140,10 @@ export function useNewLaneDefaultsState(args: {
   useEffect(() => {
     if (!enabled) return;
     const sync = () => setState(read());
-    listeners.add(sync);
+    const stop = addListener(sync);
     sync();
     void getNewLaneDefaultsCached(args);
-    return () => {
-      listeners.delete(sync);
-    };
+    return stop;
     // Keyed on the cache key (project root + `pin?.key`), not the pin object.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, key]);

@@ -22,6 +22,8 @@ import type {
 import {
   LANE_START_BRING_LABEL,
   LANE_START_BRING_VALUES,
+  LANE_START_FROM_LABEL,
+  plainLaneStartBranch,
   sameLaneStart,
   type LaneStart,
   type LaneStartBring,
@@ -308,16 +310,18 @@ export function CreateLaneDialog({
   // The folder whose uncommitted changes "Local + uncommitted" copies.
   const startHolder = laneHoldingBranch(startSource, lanes);
   const startMissing = createStart.from === "primary" && newLaneDefaults !== null && !newLaneDefaults.primaryBranch;
+  // A named branch must be picked. Default and Primary are the brain's to
+  // resolve, so an unread (or failed) defaults read does not block them.
+  const startBranchMissing = createStart.from === "branch" ? !startSource : newLaneDefaults !== null && !startSource;
   const uncommittedBlocked = !startHolder;
   const startIsDefault = newLaneDefaults ? sameLaneStart(createStart, newLaneDefaults.defaults.start) : false;
   let startTitle: string;
-  if (createStart.from === "default") startTitle = "Default branch";
-  else if (createStart.from === "primary") startTitle = "Primary lane's branch";
-  else startTitle = startSource || "Pick a branch…";
+  if (createStart.from === "branch") startTitle = startSource || "Pick a branch…";
+  else startTitle = LANE_START_FROM_LABEL[createStart.from];
 
   // Existing branch: a branch already open in a lane is that lane.
   const importHolder = createMode === "existing" && createImportBranch
-    ? laneHoldingBranch(createImportBranch.replace(/^origin\//, ""), lanes)
+    ? laneHoldingBranch(plainLaneStartBranch(createImportBranch), lanes)
     : null;
 
   let branchPickerPlaceholder: string;
@@ -344,7 +348,7 @@ export function CreateLaneDialog({
     : (busy
       || machineMissing
       || !createLaneName.trim()
-      || (createMode === "new" && (!startSource || startMissing || (createStart.bring === "uncommitted" && uncommittedBlocked)))
+      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.bring === "uncommitted" && uncommittedBlocked)))
       || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
       || selectedLinearBranchConflict);
 
@@ -688,7 +692,7 @@ export function CreateLaneDialog({
                   </span>
                 ) : createImportBranch ? (
                   <span className="cl-hint">
-                    No new branch is made. The lane's commits go onto <b>{createImportBranch.replace(/^origin\//, "")}</b>.
+                    No new branch is made. The lane's commits go onto <b>{plainLaneStartBranch(createImportBranch)}</b>.
                   </span>
                 ) : (
                   <span className="cl-hint">The lane works directly on the branch you pick.</span>

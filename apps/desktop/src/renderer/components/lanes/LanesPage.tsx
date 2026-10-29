@@ -83,7 +83,7 @@ import {
   type MachineLane,
 } from "../../state/laneMachineRouting";
 import { useLanesPageMachines } from "./useLanesPageMachines";
-import { laneCompareBaseBranch, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
+import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
@@ -517,11 +517,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     const lines = new Map<string, LaneRebaseLine>();
     for (const lane of allViewLanes) {
       const prs = (lanePrTagsByLaneId.get(lane.id) ?? []).filter((pr) => pr.laneRole !== "previous");
-      const openPr = prs.find((pr) => pr.state === "open" || pr.state === "draft") ?? null;
       const line = laneRebaseLine({
         lane,
         need: foreignRowByKey.has(lane.id) ? null : rebaseNeeds.get(lane.id),
-        openPrBaseBranch: openPr?.baseBranch ?? null,
         merged: pickPrimaryPr(prs)?.state === "merged",
         nowMs,
       });
@@ -2141,18 +2139,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     />
   ) : null;
 
-  // The foreign detail lane's PR tags, keyed by that machine's real lane ids,
-  // which is how the dashboard names its lane.
-  const foreignDetailMaps = useMemo(() => {
-    if (!detailForeignRow) return null;
-    const prTagsByRealId = new Map<string, LaneTabPrTag[]>();
-    for (const lane of foreignLanes.realLanesByMachineId.get(detailForeignRow.machineId) ?? EMPTY_LANES) {
-      const tags = lanePrTagsByLaneId.get(foreignLaneKey(detailForeignRow.machineId, lane.id));
-      if (tags) prTagsByRealId.set(lane.id, tags);
-    }
-    return { prTagsByRealId };
-  }, [detailForeignRow, foreignLanes.realLanesByMachineId, lanePrTagsByLaneId]);
-
   /* ---- Render ---- */
 
   const laneList = (
@@ -2198,13 +2184,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   );
 
   const laneDetail = detailLaneId && detailLane ? lanePaneDetails[detailLaneId] ?? EMPTY_LANE_PANE_DETAIL : EMPTY_LANE_PANE_DETAIL;
-  // What the Git pane's rebase targets: the open PR's base, else the lane's base.
-  const detailCompareBase = useMemo(() => {
-    if (!detailLane || !detailLaneId) return null;
-    const openPr = (lanePrTagsByLaneId.get(detailLaneId) ?? [])
-      .find((pr) => pr.laneRole !== "previous" && (pr.state === "open" || pr.state === "draft"));
-    return laneCompareBaseBranch(detailLane, openPr?.baseBranch ?? null);
-  }, [detailLane, detailLaneId, lanePrTagsByLaneId]);
+  // What the Git pane's rebase targets: the compare base the brain reports.
+  const detailCompareBase = detailLane ? laneCompareBase(detailLane) : null;
 
   return (
     <div data-route="lanes" className="flex h-full min-w-0" style={{ background: COLORS.pageBg }}>
@@ -2258,7 +2239,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       laneId={detailForeignRow.lane.id}
                       colorIndex={detailColorIndex}
                       active={active}
-                      prTagsByLaneId={foreignDetailMaps?.prTagsByRealId ?? lanePrTagsByLaneId}
                       onOpenLaneMenu={(_realLaneId, anchor) => openLaneMenuAt(detailLaneId, anchor)}
                       // A rebase runs on the lane's own machine (see `runRebaseFlow`).
                       rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
@@ -2308,7 +2288,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   colorIndex={detailColorIndex}
                   active={active}
                   agents={agentsByLaneId.get(detailLaneId)}
-                  prTagsByLaneId={lanePrTagsByLaneId}
                   onOpenLaneMenu={openLaneMenuAt}
                   rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
                   onRebase={() => { void runRebaseFlow(detailLaneId, "local_only"); }}

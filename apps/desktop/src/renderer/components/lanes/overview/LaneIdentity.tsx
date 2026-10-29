@@ -11,6 +11,7 @@ import {
   NotePencil,
 } from "@phosphor-icons/react";
 import type { GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
+import { plainLaneStartBranch } from "../../../../shared/laneStart";
 import { relativeWhen } from "../../../lib/format";
 import { revealLabel } from "../../../lib/platform";
 import { ProviderLogo } from "../../shared/ProviderLogos";
@@ -145,7 +146,7 @@ export function LaneIdentity({
   statusStale?: boolean;
 }) {
   const isPrimary = lane.laneType === "primary";
-  const fromLabel = (lane.baseRef ?? "").replace(/^refs\/heads\//, "") || "base";
+  const fromLabel = plainLaneStartBranch(lane.baseRef) || "base";
   // "Up to date" would contradict a lane that still needs a rebase.
   const status = laneStatusItems({ lane, baseLabel: compareBase, upstream })
     .filter((item) => !(rebaseLine && item.glyph === "check"));

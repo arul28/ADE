@@ -143,7 +143,6 @@ function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboar
               <LaneDashboard
                 laneId="lane-1"
                 colorIndex={0}
-                prTagsByLaneId={new Map()}
                 rebaseLine={null}
                 rebaseError={null}
                 {...handlers}

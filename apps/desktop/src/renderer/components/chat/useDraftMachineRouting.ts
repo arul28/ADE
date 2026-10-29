@@ -28,7 +28,6 @@ export const AUTO_CREATE_DRAFT_LANE_OPTION = {
   name: "Auto-create lane",
   color: null,
   branchRef: null,
-  detail: null as string | null,
 };
 
 const NO_LANES: readonly RoutedDraftLane[] = [];
@@ -113,8 +112,6 @@ type UseDraftMachineRoutingInput = {
   onLaneChange?: (laneId: string) => void;
   setDraftLaunchTargetId: (targetId: string | null) => void;
   setError: (message: string | null) => void;
-  /** Shown on the auto-create row: where a new lane would start, e.g. "from origin/main". */
-  autoCreateDetail?: string | null;
 };
 
 /**
@@ -139,7 +136,6 @@ export function useDraftMachineRouting({
   onLaneChange,
   setDraftLaunchTargetId,
   setError,
-  autoCreateDetail = null,
 }: UseDraftMachineRoutingInput) {
   const [connectionSnapshot, setConnectionSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
@@ -466,8 +462,8 @@ export function useDraftMachineRouting({
     // Strictly the picked machine's lanes. A lane id from another machine is
     // not a row here — each machine has exactly one Primary, so preserving a
     // foreign one duplicated it in the list.
-    return [{ ...AUTO_CREATE_DRAFT_LANE_OPTION, detail: autoCreateDetail }, ...executionLanes];
-  }, [autoCreateDetail, availableLanes, enabled, executionLanes, lanes]);
+    return [AUTO_CREATE_DRAFT_LANE_OPTION, ...executionLanes];
+  }, [availableLanes, enabled, executionLanes, lanes]);
 
   /**
    * The lane catalog of a machine the union has not read yet is fetched on its

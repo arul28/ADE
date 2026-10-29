@@ -102,21 +102,8 @@
 .ade-nl-loading { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
 .ade-nl-loading > span { height: 128px; border-radius: var(--radius-lg); }
 
-/* Who the settings follow: one quiet pill in the section header. */
-.ade-nl-scope {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  height: 22px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid var(--kit-rule);
-  font-size: 11px;
-  color: var(--kit-text-2);
-  white-space: nowrap;
-  cursor: default;
-}
-.ade-nl-scope-repo { font-family: var(--font-mono); font-size: 10.5px; color: var(--kit-text-3); }
+/* Who the settings follow: the repo inside the header's `.kit-tag`. */
+.ade-nl-scope-repo { color: var(--kit-text-3); }
 
 /* "A specific branch": the branch field, aligned under the cards. */
 .ade-nl-branch {
@@ -144,7 +131,6 @@
 }
 .ade-nl-summary > svg { flex: none; margin-top: 2px; color: var(--kit-text-3); }
 .ade-nl-summary b { font-weight: 500; color: var(--color-fg); font-family: var(--font-mono); font-size: 12px; }
-.ade-nl-summary[data-tone="warn"] > svg { color: var(--kit-warn); }
 
 /* ── Lane templates ─────────────────────────────────────────────────── */
 

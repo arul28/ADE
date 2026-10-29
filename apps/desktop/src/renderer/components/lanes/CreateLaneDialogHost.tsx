@@ -3,7 +3,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
-import { DEFAULT_LANE_START, type LaneStart } from "../../../shared/laneStart";
+import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
 import { startSourceBranch } from "./laneStartOptions";
 import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
@@ -428,16 +428,16 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   // the lane is being created on (the account setting is shared, but the
   // machine answers with its own branch names).
   const handleMakeStartDefault = useCallback(() => {
-    if (!newLaneDefaults) return;
     const pin = targetPinRef.current;
+    // Only the start: the brain keeps the rest (the default template).
     void saveNewLaneDefaults({
       projectRoot: getActiveProjectRoot(),
       pin,
-      defaults: { ...newLaneDefaults.defaults, start: createStart },
+      defaults: { start: createStart },
     })
       .then(setNewLaneDefaults)
       .catch((error: unknown) => setCreateError(error instanceof Error ? error.message : String(error)));
-  }, [createStart, newLaneDefaults, targetPinRef]);
+  }, [createStart, targetPinRef]);
 
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
@@ -643,7 +643,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return;
     }
     const pin = machineTargets.get(machineId)?.pin ?? null;
-    if (createMode === "new" && !startSourceBranch(createStart, newLaneDefaults)) {
+    // A named branch must be picked. Default and Primary are the brain's to
+    // resolve, so a failed defaults read does not block them.
+    const startBranchMissing = createStart.from === "branch"
+      ? !plainLaneStartBranch(createStart.branch)
+      : newLaneDefaults !== null && !startSourceBranch(createStart, newLaneDefaults);
+    if (createMode === "new" && startBranchMissing) {
       setCreateError("Choose the branch this lane starts from.");
       return;
     }

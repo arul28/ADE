@@ -7,6 +7,7 @@ import {
   type ResolveLaneBranchDriftResult,
   type RestoreLaneResult,
 } from "../../../shared/types";
+import type { NewLaneDefaults } from "../../../shared/laneStart";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { assertWebRuntimePinRoutable, type RuntimePinArg } from "./runtimePinGuard";
 
@@ -240,7 +241,8 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
       });
     },
-    setNewLaneDefaults: async (args: unknown, pin?: RuntimePinArg) => {
+    // Only the fields that change; the brain merges them into the saved defaults.
+    setNewLaneDefaults: async (args: { defaults: Partial<NewLaneDefaults> }, pin?: RuntimePinArg) => {
       guardPin("setNewLaneDefaults", pin);
       return await commands.call<NewLaneDefaultsSnapshot>("lanes.setNewLaneDefaults", asRecord(args), mutation);
     },

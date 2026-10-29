@@ -36,11 +36,7 @@ import type {
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LinearMark } from "./linearBrand";
 import { showToast } from "../app/toast/toastStore";
-import {
-  LABEL_CLASS_NAME,
-  INPUT_CLASS_NAME,
-  SELECT_CLASS_NAME
-} from "./laneDialogTokens";
+import { INPUT_CLASS_NAME } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";

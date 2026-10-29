@@ -28,6 +28,8 @@ import type {
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
+import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -232,6 +234,12 @@ export function LaneTemplatesSection() {
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<LaneTemplate | null>(null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The default template is part of the new-lane defaults every surface
+  // shares; re-read them after a change here so none keeps a stale copy.
+  const refreshNewLaneDefaults = useCallback(() => {
+    void getNewLaneDefaultsCached({ projectRoot, pin, force: true });
+  }, [pin, projectRoot]);
 
   const refresh = useCallback(async () => {
     try {
@@ -259,26 +267,29 @@ export function LaneTemplatesSection() {
     } catch {
       await refresh();
     }
-  }, [pin, refresh]);
+    refreshNewLaneDefaults();
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const handleSave = useCallback(async (template: LaneTemplate) => {
     try {
       await window.ade.lanes.saveTemplate({ template }, pin);
       setEditing(null);
       await refresh();
+      refreshNewLaneDefaults();
     } catch (err: unknown) {
       showToast({ title: "Failed to save template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [pin, refresh]);
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const handleDelete = useCallback(async (templateId: string) => {
     try {
       await window.ade.lanes.deleteTemplate({ templateId }, pin);
       await refresh();
+      refreshNewLaneDefaults();
     } catch (err: unknown) {
       showToast({ title: "Failed to delete template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [pin, refresh]);
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const newTemplateButton = (
     <button type="button" className="ade-modern-btn" onClick={() => setEditing(emptyTemplate())}>

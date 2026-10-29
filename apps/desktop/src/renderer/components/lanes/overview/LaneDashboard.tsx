@@ -6,8 +6,8 @@ import { revealLaneWorktree } from "../../../lib/revealLaneWorktree";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { getLaneAccent } from "../laneColorPalette";
 import type { LaneAgent } from "../laneAgents";
-import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanePageModel";
-import { laneCompareBaseBranch, type LaneRebaseLine } from "../laneRebaseNeeds";
+import { lanePrTagRoutePath } from "../lanePageModel";
+import { laneCompareBase, type LaneRebaseLine } from "../laneRebaseNeeds";
 import { LaneBuildOutputNotice } from "./LaneBuildOutputNotice";
 import { LaneChangesSection } from "./LaneChangesSection";
 import { LaneChatsSection } from "./LaneChatsSection";
@@ -107,7 +107,6 @@ export function LaneDashboard({
   colorIndex,
   active = true,
   agents = EMPTY_AGENTS,
-  prTagsByLaneId,
   rebaseLine,
   onRebase,
   rebaseError,
@@ -121,7 +120,6 @@ export function LaneDashboard({
   active?: boolean;
   /** The lane's live roster from the page; a change in it re-reads the chat rows. */
   agents?: LaneAgent[];
-  prTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
   /** The quiet "3 behind main" line, when the lane needs a rebase. */
   rebaseLine: LaneRebaseLine | null;
   /** Runs the rebase the line offers. */
@@ -144,12 +142,6 @@ export function LaneDashboard({
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lane = useMemo(() => lanes.find((row) => row.id === laneId) ?? null, [laneId, lanes]);
   const primaryLane = useMemo(() => lanes.find((row) => row.laneType === "primary") ?? null, [lanes]);
-  // What the lane is compared to: its open PR's base, else its own base.
-  const openPrBaseBranch = useMemo(
-    () => (prTagsByLaneId.get(laneId) ?? [])
-      .find((pr) => pr.laneRole !== "previous" && (pr.state === "open" || pr.state === "draft"))?.baseBranch ?? null,
-    [laneId, prTagsByLaneId],
-  );
 
   // Folded sections, saved per project like the sidebar's folded groups, so
   // a section stays folded as you move between lanes.
@@ -291,7 +283,7 @@ export function LaneDashboard({
     return <div className="h-full" data-testid="lane-dashboard" />;
   }
 
-  const baseLabel = rebaseLine?.baseBranch ?? laneCompareBaseBranch(lane, openPrBaseBranch);
+  const baseLabel = rebaseLine?.baseBranch ?? laneCompareBase(lane);
   const sections = laneOverviewSections({
     prs: prs.all,
     chatCount: chatRows.length,

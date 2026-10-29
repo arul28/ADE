@@ -11,6 +11,7 @@ import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { plainLaneStartBranch } from "../../../shared/laneStart";
+import { laneCompareBase } from "./laneRebaseNeeds";
 import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
@@ -617,8 +618,8 @@ export function LaneGitActionsPane({
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
   onViewRebaseDetails?: (laneId?: string | null) => void;
   /**
-   * The branch this lane rebases onto: its open PR's base, else the project's
-   * default branch. Unset falls back to the lane's own base.
+   * The branch this lane rebases onto (`laneCompareBase`: the brain's compare
+   * base). Unset reads it from the lane.
    */
   compareBase?: string | null;
   onSelectFile: (path: string, mode: LaneDiffMode) => void;
@@ -1395,9 +1396,17 @@ export function LaneGitActionsPane({
     if (!branch) {
       // A lane on another machine may not be in this window's lists yet; ask
       // its own machine.
-      const machineLanes = await Promise.resolve()
-        .then(() => window.ade.lanes.list({ includeStatus: false }, pin))
-        .catch(() => [] as LaneSummary[]);
+      let machineLanes: LaneSummary[];
+      try {
+        machineLanes = await window.ade.lanes.list({ includeStatus: false }, pin);
+      } catch (err) {
+        console.warn("lane_git_actions.branch_lookup_failed", { laneId, pinned: Boolean(pin), error: err });
+        patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
+          notice: null,
+          error: `ADE couldn't read which branch this lane is on: ${formatLaneGitError(err, pin)}`,
+        });
+        return;
+      }
       branch = plainLaneStartBranch(machineLanes.find((entry) => entry.id === laneId)?.branchRef);
     }
     if (!branch) {
@@ -1430,12 +1439,24 @@ export function LaneGitActionsPane({
         { name: name.trim(), start: { from: "branch", branch, bring: "uncommitted" } },
         pin,
       );
+      // The lane is made even when the copy did not apply (or a fallback was
+      // taken); say so instead of claiming the changes came along.
+      const notes = created.createdFrom?.notes ?? [];
+      const copiedNothing = created.createdFrom?.copiedFiles === 0;
+      const warned = copiedNothing || notes.length > 0;
+      if (warned) {
+        showToast({
+          title: `${created.name} was created`,
+          message: notes.length > 0 ? notes.join(" ") : "No uncommitted changes were copied into it.",
+          tone: "warning",
+        });
+      }
       if (pin) {
         // The new lane lives on the lane's machine, not in this tab's lane
         // list or Lanes page, so stay here; it appears in that machine's list.
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
-          notice: `Created ${created.name} with a copy of these changes.`,
+          notice: warned ? null : `Created ${created.name} with a copy of these changes.`,
           error: null,
         });
         return;
@@ -1740,7 +1761,7 @@ export function LaneGitActionsPane({
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
   // The primary lane is the base; it never rebases onto it.
   const canRebaseOntoBase = lane != null && lane.laneType !== "primary";
-  const rebaseBase = compareBase?.trim() || plainLaneStartBranch(lane?.baseRef) || "main";
+  const rebaseBase = compareBase?.trim() || (lane ? laneCompareBase(lane) : "");
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
 
   const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
