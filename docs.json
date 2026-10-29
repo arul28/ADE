@@ -323,6 +323,10 @@
   },
   "redirects": [
     {
+      "source": "/lanes/stacks",
+      "destination": "/tools/pull-requests"
+    },
+    {
       "source": "/lanes/repos-and-worktrees",
       "destination": "/lanes/overview"
     },

@@ -208,7 +208,7 @@ node -e 'let i=0; const t=setInterval(()=>{process.stdout.write("ade-stress "+(+
 
 2. Lanes tab stress:
    - Navigate to Lanes while a session is running or immediately after heavy terminal output.
-   - Observe whether Lanes does full status snapshots, rebase suggestions, git/diff reads, or presence updates repeatedly.
+   - Observe whether Lanes does full status snapshots, rebase-need scans, git/diff reads, or presence updates repeatedly.
    - Confirm idle logs calm down.
 
 3. Chat stress:
