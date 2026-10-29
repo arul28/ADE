@@ -54,7 +54,7 @@ These are the foundations that should stay merged from this lane (see also `docs
 
 Recent `main` work that is **not** inherently macOS-only but can surface path/shell/IPC issues on Windows. After pulling `main`, run through these in a **Windows** dev or packaged build:
 
-1. **Lanes + git** — worktrees, rebase/merge conflict flows, `LaneGitActionsPane` actions (Rebase tab rename + routing landed in #180: confirm deep links and navigation from lane views).
+1. **Lanes + git** — worktrees, rebase/merge conflict flows, `LaneGitActionsPane` actions.
 2. **Terminals** — new tab/session flows, WebGL → DOM fallback, session resume, resize/fit, parked runtimes (covered by `TerminalView` but behavior differs on ConPTY).
 3. **Work grid + chat** — #181 layout changes; check keyboard shortcuts and split panes.
 4. **Multi-model + identity** — multi-model prompt lanes (#184), single desktop device id / identity policy; confirm settings and session startup do not assume Unix paths.

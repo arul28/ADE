@@ -42,7 +42,6 @@ vi.mock("../settings/AppearanceSection", () => ({ AppearanceSection: stubSection
 vi.mock("../settings/ProvidersSection", () => ({ ProvidersSection: stubSection(["ai-providers"]) }));
 vi.mock("../settings/AiFeaturesSection", () => ({ AiFeaturesSection: stubSection(["background-jobs"]) }));
 vi.mock("../settings/DictationSection", () => ({ DictationSection: stubSection(["voice-input"]) }));
-vi.mock("../settings/LaneBehaviorSection", () => ({ LaneBehaviorSection: stubSection(["auto-rebase", "rebase-suggestions"]) }));
 vi.mock("../settings/LaneTemplatesSection", () => ({ LaneTemplatesSection: stubSection(["lane-templates"]) }));
 vi.mock("../settings/PrChatTranscriptsSection", () => ({ PrChatTranscriptsSection: stubSection(["pr-chat-transcripts"]) }));
 vi.mock("../settings/KeepAwakeSection", () => ({ KeepAwakeSection: stubSection(["keep-awake"]) }));
@@ -55,7 +54,7 @@ vi.mock("../settings/AdeCliSection", () => ({ AdeCliSection: stubSection([]) }))
 vi.mock("../settings/NotificationsSection", () => ({ NotificationsSection: stubSection(["notification-events"]) }));
 vi.mock("../settings/SecretsSection", () => ({ SecretsSection: stubSection(["secrets"]) }));
 vi.mock("../settings/lanes/LanesSettingsPage", () => ({
-  LanesSettingsPage: stubSection(["lane-list", "auto-rebase", "rebase-suggestions", "lane-templates"]),
+  LanesSettingsPage: stubSection(["lane-list", "new-lane-start", "lane-templates"]),
   StorageSettingsPage: stubSection(["storage", "archive"]),
 }));
 vi.mock("../settings/location/LocationPage", () => ({ LocationPage: stubSection(["project-location", "project-health"]) }));
@@ -151,9 +150,9 @@ describe("SettingsPage", () => {
 
     expect(visibleAnchors(container)).toContain("lane-templates");
 
-    fireEvent.change(searchBox(), { target: { value: "rebase" } });
+    fireEvent.change(searchBox(), { target: { value: "fetch" } });
     await waitFor(() => {
-      expect(visibleAnchors(container)).toContain("auto-rebase");
+      expect(visibleAnchors(container)).toContain("new-lane-start");
     });
     expect(visibleAnchors(container)).not.toContain("lane-templates");
 

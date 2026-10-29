@@ -408,7 +408,6 @@ export function prMergeFact(args: {
 export type LaneOverviewSections = {
   pr: boolean;
   chats: boolean;
-  stack: boolean;
   changes: "pr-files" | "commits" | null;
 };
 
@@ -416,8 +415,6 @@ export type LaneOverviewSections = {
 export function laneOverviewSections(args: {
   prs: LaneHistoryPr[];
   chatCount: number;
-  hasParent: boolean;
-  childCount: number;
   livePrFileCount: number;
   laneCommitCount: number;
 }): LaneOverviewSections {
@@ -426,7 +423,6 @@ export function laneOverviewSections(args: {
   return {
     pr: args.prs.length > 0,
     chats: args.chatCount > 0,
-    stack: args.hasParent || args.childCount > 0,
     changes: showFiles ? "pr-files" : args.laneCommitCount > 0 ? "commits" : null,
   };
 }

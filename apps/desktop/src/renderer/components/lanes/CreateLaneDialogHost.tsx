@@ -3,14 +3,9 @@ import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useLaneMachineChoice } from "./useLaneMachineChoice";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { CreateLaneDialog, type CreateLaneMode, type CreateLaneSetupStep } from "./CreateLaneDialog";
-import {
-  DEFAULT_NEW_LANE_BASE_SOURCE,
-  effectiveNewLaneBaseSource,
-  fetchNewLaneBaseBranches,
-  listNewLaneBaseOptions,
-  selectDefaultNewLaneBaseRef,
-} from "./newLaneBaseSource";
-import { resolveCreateLaneRequest } from "./lanePageModel";
+import { DEFAULT_LANE_START, plainLaneStartBranch, type LaneStart } from "../../../shared/laneStart";
+import { startSourceBranch } from "./laneStartOptions";
+import { getNewLaneDefaultsCached, saveNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import { dismissToast, showToast } from "../app/toast/toastStore";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
@@ -27,11 +22,10 @@ import type {
   LaneLinearIssue,
   LaneSummary,
   LaneTemplate,
-  NewLaneBaseSource,
+  NewLaneDefaultsSnapshot,
   OpenProjectBinding,
 } from "../../../shared/types";
 import { useLaneEmojiSuggestion } from "./useLaneEmojiSuggestion";
-import { saveProjectLocalConfig } from "../../lib/projectLocalConfig";
 
 type CreateSetupPhase =
   | "creating"
@@ -43,15 +37,13 @@ export type CreateLaneBehavior = "stay-open-setup" | "close-on-create" | "config
 
 /**
  * The lane recipe a "configure-for-chat" dialog hands back. It is the launch's
- * own `ChatLaunchLaneConfig` plus the two fields that travel separately on a
- * launch (name and base), so a new recipe field cannot be forgotten on one side.
- * Nothing is created here: the composer holds this and the new-lane launch
- * applies it when the chat is sent.
+ * own `ChatLaunchLaneConfig` plus the name, which travels separately on a
+ * launch, so a new recipe field cannot be forgotten on one side. Nothing is
+ * created here: the composer holds this and the new-lane launch applies it
+ * when the chat is sent.
  */
 export type NewLaneDraftConfig = ChatLaunchLaneConfig & {
   name: string;
-  /** root/child base override ("" for none). */
-  baseBranch: string;
 };
 
 export type CreateLanePrefill = {
@@ -198,17 +190,13 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const activeProjectRoot = useAppStore(selectActiveProjectRoot);
 
   const [createLaneName, setCreateLaneName] = useState("");
-  const [createParentLaneId, setCreateParentLaneId] = useState<string>("");
-  const [createMode, setCreateMode] = useState<CreateLaneMode>("primary");
-  const [createBaseSource, setCreateBaseSource] = useState<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
-  const createBaseSourceRef = useRef<NewLaneBaseSource>(DEFAULT_NEW_LANE_BASE_SOURCE);
-  const createBaseSourceUserPickedRef = useRef(false);
+  const [createMode, setCreateMode] = useState<CreateLaneMode>("new");
+  // Starts as the project's saved default; a pick here is for this lane only.
+  const [createStart, setCreateStartState] = useState<LaneStart>(DEFAULT_LANE_START);
+  const createStartUserPickedRef = useRef(false);
+  const [newLaneDefaults, setNewLaneDefaults] = useState<NewLaneDefaultsSnapshot | null>(null);
   const createBaseBranchesLoadSeqRef = useRef(0);
-  const createBaseSourceSaveInFlightRef = useRef(false);
-  const createBaseSourceSavePendingRef = useRef<NewLaneBaseSource | null>(null);
-  const [createBaseBranch, setCreateBaseBranch] = useState("");
   const [createImportBranch, setCreateImportBranch] = useState("");
-  const [createChildBaseBranch, setCreateChildBaseBranch] = useState("");
   const [createBranches, setCreateBranches] = useState<LaneBranchOption[]>([]);
   const [createBranchesLoading, setCreateBranchesLoading] = useState(false);
   const [createBranchPullRequests, setCreateBranchPullRequests] = useState<BranchPullRequest[]>([]);
@@ -224,7 +212,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   /** The create in flight, so Cancel can stop its git checkout on the lane's machine. */
   const createOperationRef = useRef<{ operationId: string; pin: OpenProjectBinding | null } | null>(null);
   const [createCancelRequested, setCreateCancelRequested] = useState(false);
-  const createBaseBranchUserPickedRef = useRef(false);
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [selectedTemplateId, setSelectedTemplateId] = useState("");
   const [createSelectedColor, setCreateSelectedColor] = useState<string | null>(null);
@@ -322,15 +309,14 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
   const resetCreateDialogState = useCallback(() => {
     createEnvInitLaneIdRef.current = null;
     createdLaneMachineRef.current = null;
-    createBaseBranchUserPickedRef.current = false;
+    createStartUserPickedRef.current = false;
     createBaseBranchesLoadSeqRef.current += 1;
     setLaneCreated(false);
     setCreateLaneName("");
-    setCreateParentLaneId("");
-    setCreateMode("primary");
-    setCreateBaseBranch("");
+    setCreateMode("new");
+    setCreateStartState(DEFAULT_LANE_START);
+    setNewLaneDefaults(null);
     setCreateImportBranch("");
-    setCreateChildBaseBranch("");
     setCreateBusy(false);
     setCreateError(null);
     setCreateEnvInitProgress(null);
@@ -366,72 +352,47 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return current;
     });
     setCreateImportBranch("");
-    setCreateMode((mode) => mode === "existing" ? "primary" : mode);
+    setCreateMode("new");
   }, [laneNameChangedEmoji]);
 
   /**
-   * Load what the form reads from the chosen machine: its base branches (via
-   * its Primary lane), git identity, and lane templates. Re-run whenever the
-   * target machine changes; the name, color and Linear issue are kept.
+   * Load what the form reads from the chosen machine: the project's new-lane
+   * defaults there, its branches (via its Primary lane), git identity, and lane
+   * templates. Re-run whenever the target machine changes; the name, color and
+   * Linear issue are kept. No fetch: a lane that starts on the remote
+   * fetches when it is created.
    */
   const machineDataKeyRef = useRef<string | null>(null);
   const loadMachineData = useCallback((pin: OpenProjectBinding | null, primary: LaneSummary | null) => {
     machineDataKeyRef.current = `${pin?.key ?? "bound"}::${primary?.id ?? ""}`;
-    setCreateBaseSource(DEFAULT_NEW_LANE_BASE_SOURCE);
-    createBaseSourceRef.current = DEFAULT_NEW_LANE_BASE_SOURCE;
-    createBaseSourceUserPickedRef.current = false;
-    createBaseBranchUserPickedRef.current = false;
-    setCreateParentLaneId("");
-    setCreateBaseBranch("");
+    createStartUserPickedRef.current = false;
     setCreateImportBranch("");
-    setCreateChildBaseBranch("");
     setCreateBranches([]);
     setCreateBranchPullRequests([]);
     setCreateGitUserName("");
+    setNewLaneDefaults(null);
     const loadSeq = ++createBaseBranchesLoadSeqRef.current;
-    setCreateBranchesLoading(false);
+    const current = () => createBaseBranchesLoadSeqRef.current === loadSeq;
+
+    // Fresh on every open: another computer may have changed them. An older
+    // brain without new-lane defaults answers null, and the form keeps the
+    // built-in default (the default branch on the remote).
+    const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
+    setCreateBranchesLoading(Boolean(primary));
     if (primary) {
-      setCreateBranchesLoading(true);
-      // The default base source is a per-checkout setting, so read it from
-      // the machine the lane is being created on.
-      window.ade.projectConfig.get(pin)
-        .catch(() => null)
-        .then(async (snapshot) => {
-          const baseSource = effectiveNewLaneBaseSource(snapshot);
-          const selectedBaseSource = createBaseSourceUserPickedRef.current
-            ? createBaseSourceRef.current
-            : baseSource;
-          if (!createBaseSourceUserPickedRef.current) {
-            createBaseSourceRef.current = baseSource;
-            setCreateBaseSource(baseSource);
-          }
-          const branches = await fetchNewLaneBaseBranches({
-            source: selectedBaseSource,
-            fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }, ...pinArg(pin)),
-            listBranches: () => window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin)),
-          });
-          if (createBaseBranchesLoadSeqRef.current !== loadSeq) return;
-          setCreateBranches(branches);
-          if (!createBaseBranchUserPickedRef.current) {
-            const defaultBaseRef = selectDefaultNewLaneBaseRef({
-              branches,
-              source: createBaseSourceUserPickedRef.current
-                ? createBaseSourceRef.current
-                : selectedBaseSource,
-              primaryBaseRef: primary.baseRef,
-            });
-            if (defaultBaseRef) setCreateBaseBranch(defaultBaseRef);
-          }
+      window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin))
+        .then((branches) => {
+          if (current()) setCreateBranches(branches);
         })
         .catch(() => {})
         .finally(() => {
-          if (createBaseBranchesLoadSeqRef.current === loadSeq) setCreateBranchesLoading(false);
+          if (current()) setCreateBranchesLoading(false);
         });
 
       // Capture git user.name so the picker can resolve `mine` / `author:me`.
       window.ade.git.getUserIdentity({ laneId: primary.id }, ...pinArg(pin))
         .then((identity) => {
-          if (createBaseBranchesLoadSeqRef.current === loadSeq) setCreateGitUserName(identity?.name ?? "");
+          if (current()) setCreateGitUserName(identity?.name ?? "");
         })
         .catch(() => setCreateGitUserName(""));
 
@@ -442,11 +403,14 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         .catch(() => setCreateBranchPullRequests([]));
     }
     Promise.all([
+      defaultsRead,
       window.ade.lanes.listTemplates(...pinArg(pin)).catch(() => [] as LaneTemplate[]),
-      window.ade.lanes.getDefaultTemplate(...pinArg(pin)).catch(() => null),
-    ]).then(([nextTemplates, defaultTemplateId]) => {
-      if (createBaseBranchesLoadSeqRef.current !== loadSeq) return;
+    ]).then(([snapshot, nextTemplates]) => {
+      if (!current()) return;
+      setNewLaneDefaults(snapshot);
+      if (snapshot && !createStartUserPickedRef.current) setCreateStartState(snapshot.defaults.start);
       setTemplates(nextTemplates);
+      const defaultTemplateId = snapshot?.defaults.templateId ?? null;
       setSelectedTemplateId(
         defaultTemplateId && nextTemplates.some((template) => template.id === defaultTemplateId)
           ? defaultTemplateId
@@ -455,9 +419,29 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     });
   }, []);
 
+  const handleSetCreateStart = useCallback((start: LaneStart) => {
+    createStartUserPickedRef.current = true;
+    setCreateStartState(start);
+  }, []);
+
+  // "Make default": the dialog's start becomes the project's, on the machine
+  // the lane is being created on (the account setting is shared, but the
+  // machine answers with its own branch names).
+  const handleMakeStartDefault = useCallback(() => {
+    const pin = targetPinRef.current;
+    // Only the start: the brain keeps the rest (the default template).
+    void saveNewLaneDefaults({
+      projectRoot: getActiveProjectRoot(),
+      pin,
+      defaults: { start: createStart },
+    })
+      .then(setNewLaneDefaults)
+      .catch((error: unknown) => setCreateError(error instanceof Error ? error.message : String(error)));
+  }, [createStart, targetPinRef]);
+
   const prepareCreateDialog = useCallback((prefillInput?: CreateLanePrefill | null) => {
     setCreateLaneName("");
-    setCreateMode("primary");
+    setCreateMode("new");
     // The colour is not cleared here: closing already cleared it, and the
     // dialog's own effect picks a free one on open. Clearing it again here, in
     // the same commit as that pick, left every new lane with no colour.
@@ -533,8 +517,10 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     switch (createSetupPhase) {
       case "creating":
         return createMode === "existing"
-          ? "Importing branch and creating the lane worktree..."
-          : "Creating the lane branch and worktree...";
+          ? "Opening the branch in a new lane..."
+          : createStart.on === "remote"
+            ? "Fetching, then creating the lane's branch..."
+            : "Creating the lane's branch...";
       case "appearance":
         return "Saving lane appearance...";
       case "refreshing":
@@ -544,21 +530,20 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       default:
         return laneCreated ? "Lane exists. Finish setup or retry the failed step." : null;
     }
-  }, [createMode, createSetupPhase, laneCreated, selectedTemplateId]);
+  }, [createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
 
   const createSetupSteps = useMemo<CreateLaneSetupStep[]>(() => {
     if (!createBusy && !laneCreated) return [];
-    let laneLabel: string;
-    if (createMode === "child") laneLabel = "Create child lane";
-    else if (createMode === "existing") laneLabel = "Import branch";
-    else laneLabel = "Create lane";
+    const laneLabel = createMode === "existing" ? "Open the branch in a new lane" : "Create the lane's branch";
     let laneState: CreateLaneSetupStep["state"];
     if (createSetupPhase === "creating") laneState = "active";
     else if (laneCreated) laneState = "done";
     else laneState = "pending";
     const steps: CreateLaneSetupStep[] = [{
       label: laneLabel,
-      detail: "Create the branch metadata and worktree on disk.",
+      detail: createMode === "new" && createStart.on === "remote"
+        ? "Fetch, then check out the branch in its own folder."
+        : "Check out the branch in its own folder.",
       state: laneState,
     }];
     steps.push({
@@ -569,90 +554,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       state: createSetupPhase === "environment" ? "active" : "pending",
     });
     return steps;
-  }, [createBusy, createMode, createSetupPhase, laneCreated, selectedTemplateId]);
-
-  /** Wraps setCreateBaseBranch so we can track user-driven selections and avoid
-   *  the async branch-list fetch from overwriting a value the user already picked. */
-  const handleSetCreateBaseBranch = useCallback((v: string) => {
-    createBaseBranchUserPickedRef.current = true;
-    setCreateBaseBranch(v);
-  }, []);
-
-  const persistCreateBaseSourceConfig = useCallback(() => {
-    if (createBaseSourceSaveInFlightRef.current) return;
-    if (!createBaseSourceSavePendingRef.current) return;
-    createBaseSourceSaveInFlightRef.current = true;
-    let failed = false;
-
-    void (async () => {
-      try {
-        // Saved to the machine the lane is being created on, same as the read.
-        const pin = targetPinRef.current;
-        while (createBaseSourceSavePendingRef.current) {
-          const source: NewLaneBaseSource = createBaseSourceSavePendingRef.current;
-          await saveProjectLocalConfig((snapshot) => ({
-            ...snapshot.local,
-            git: {
-              ...(snapshot.local.git ?? {}),
-              newLaneBaseSource: source,
-            },
-          }), pin);
-          if (createBaseSourceSavePendingRef.current === source) {
-            createBaseSourceSavePendingRef.current = null;
-          }
-        }
-      } catch (saveError) {
-        failed = true;
-        setCreateError(saveError instanceof Error ? saveError.message : String(saveError));
-      } finally {
-        createBaseSourceSaveInFlightRef.current = false;
-        if (!failed && createBaseSourceSavePendingRef.current) {
-          persistCreateBaseSourceConfig();
-        }
-      }
-    })();
-  }, [targetPinRef]);
-
-  const handleSetCreateBaseSource = useCallback((source: NewLaneBaseSource) => {
-    createBaseSourceRef.current = source;
-    createBaseSourceUserPickedRef.current = true;
-    createBaseBranchUserPickedRef.current = false;
-    const loadSeq = ++createBaseBranchesLoadSeqRef.current;
-    setCreateBaseSource(source);
-    setCreateBaseBranch("");
-    setCreateBranches([]);
-    const primary = lanes.find((l) => l.laneType === "primary");
-    const pin = targetPinRef.current;
-    if (primary) {
-      setCreateBranchesLoading(true);
-      fetchNewLaneBaseBranches({
-        source,
-        fetchRemoteBranches: () => window.ade.git.fetch({ laneId: primary.id }, ...pinArg(pin)),
-        listBranches: () => window.ade.git.listBranches({ laneId: primary.id }, ...pinArg(pin)),
-        })
-        .then((branches) => {
-          if (createBaseSourceRef.current !== source || createBaseBranchesLoadSeqRef.current !== loadSeq) return;
-          setCreateBranches(branches);
-          if (!createBaseBranchUserPickedRef.current) {
-            setCreateBaseBranch(selectDefaultNewLaneBaseRef({
-              branches,
-              source,
-              primaryBaseRef: primary.baseRef,
-            }));
-          }
-        })
-        .catch(() => {})
-        .finally(() => {
-          if (createBaseSourceRef.current === source && createBaseBranchesLoadSeqRef.current === loadSeq) {
-            setCreateBranchesLoading(false);
-          }
-        });
-    } else {
-      setCreateBranchesLoading(false);
-    }
-    createBaseSourceSavePendingRef.current = source;
-    persistCreateBaseSourceConfig();
-  }, [lanes, persistCreateBaseSourceConfig, targetPinRef]);
+  }, [createBusy, createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
 
   /** Run post-create setup for a lane that already exists. Used as the retry path
    *  when environment setup fails (stay-open mode). */
@@ -693,7 +595,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
    */
   const validateLaneFormExtras = useCallback((): string | null => {
     if (createSelectedLinearIssue && createMode === "existing") {
-      return "Detach the Linear issue before importing an existing branch.";
+      return "Detach the Linear issue before using an existing branch.";
     }
     if (selectedTemplateId && !templates.some((template) => template.id === selectedTemplateId)) {
       return "The selected lane template no longer exists. Refresh templates or choose a different option.";
@@ -712,12 +614,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       }
       setCreateError(null);
       onConfigured?.({
-        mode: createMode === "child" ? "child" : createMode === "existing" ? "import" : "root",
+        mode: createMode,
         name: createLaneName.trim(),
-        baseBranch: createMode === "child"
-          ? createChildBaseBranch.trim()
-          : createMode === "primary" ? createBaseBranch : "",
-        parentLaneId: createMode === "child" ? createParentLaneId : "",
+        start: createMode === "new" ? createStart : null,
         branchRef: createMode === "existing" ? createImportBranch : "",
         templateId: selectedTemplateId || null,
         color: createSelectedColor,
@@ -744,16 +643,14 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       return;
     }
     const pin = machineTargets.get(machineId)?.pin ?? null;
-    if (createMode === "child" && !createParentLaneId) return;
-    if (createMode === "primary") {
-      const validBaseBranch = listNewLaneBaseOptions(createBranches, createBaseSource)
-        .some((option) => option.ref === createBaseBranch);
-      if (createBranchesLoading || !validBaseBranch) {
-        setCreateError(createBranchesLoading
-          ? "Still loading base branches. Try again in a moment."
-          : "Choose a valid base branch for the selected source.");
-        return;
-      }
+    // A named branch must be picked. Default and Primary are the brain's to
+    // resolve, so a failed defaults read does not block them.
+    const startBranchMissing = createStart.from === "branch"
+      ? !plainLaneStartBranch(createStart.branch)
+      : newLaneDefaults !== null && !startSourceBranch(createStart, newLaneDefaults);
+    if (createMode === "new" && startBranchMissing) {
+      setCreateError("Choose the branch this lane starts from.");
+      return;
     }
     if (createMode === "existing" && !createImportBranch) return;
     const extrasError = validateLaneFormExtras();
@@ -771,13 +668,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     setCreateCancelRequested(false);
 
     try {
-      const request = resolveCreateLaneRequest({
-        name,
-        createMode,
-        createParentLaneId,
-        createBaseBranch,
-        createImportBranch,
-      });
       const linearIssueArgs = createSelectedLinearIssue
         ? {
           linearIssue: {
@@ -788,25 +678,18 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
         }
         : {};
       let lane: LaneSummary;
-      if (request.kind === "import") {
-        lane = await window.ade.lanes.importBranch({ ...request.args, operationId }, ...pinArg(pin));
-      } else if (request.kind === "child") {
-        const trimmedBase = createChildBaseBranch.trim();
-        const parentLane = lanes.find((l) => l.id === request.args.parentLaneId);
-        if (!parentLane) {
-          setCreateError("Parent lane no longer exists. Please close and reopen the dialog.");
-          setCreateBusy(false);
-          setCreateSetupPhase(null);
-          return;
-        }
-        const childArgs = trimmedBase && trimmedBase !== parentLane.branchRef
-          ? { ...request.args, baseBranchRef: trimmedBase, ...linearIssueArgs, operationId }
-          : { ...request.args, ...linearIssueArgs, operationId };
-        lane = await window.ade.lanes.createChild(childArgs, ...pinArg(pin));
+      if (createMode === "existing") {
+        lane = await window.ade.lanes.importBranch({ branchRef: createImportBranch, name, operationId }, ...pinArg(pin));
       } else {
-        lane = await window.ade.lanes.create({ ...request.args, ...linearIssueArgs, operationId }, ...pinArg(pin));
+        lane = await window.ade.lanes.create({ name, start: createStart, ...linearIssueArgs, operationId }, ...pinArg(pin));
       }
       createOperationRef.current = null;
+      // A fallback the brain had to take (a failed fetch, a copy that did not
+      // apply) is worth a word; the lane itself is fine.
+      const notes = lane.createdFrom?.notes ?? [];
+      if (notes.length > 0) {
+        showToast({ title: `${lane.name} was created`, message: notes.join(" "), tone: "warning" });
+      }
 
       // Lane created successfully: record its id (and machine) so retries skip
       // creation and run setup on the same machine.
@@ -867,14 +750,9 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     behavior,
     createLaneName,
     createMode,
-    createParentLaneId,
-    createBaseSource,
-    createBaseBranch,
-    createBranches,
-    createBranchesLoading,
+    createStart,
+    newLaneDefaults,
     createImportBranch,
-    createChildBaseBranch,
-    lanes,
     createBusy,
     refreshLanes,
     onCreated,
@@ -910,11 +788,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     if (!next && busyRef.current) return;
     onOpenChange(next);
   }, [onOpenChange]);
-
-  const importBranchWarning = createMode === "existing" && createImportBranch && primaryLane?.status.dirty
-    && createBranches.find((b) => b.name === createImportBranch && !b.isRemote)?.isCurrent
-    ? "This branch is currently checked out and has uncommitted changes. The new lane will only include committed changes - uncommitted work will not carry over."
-    : null;
 
   // Configuring a draft creates nothing and owns no machine; the two behaviors
   // differ in one bundle of props, kept here instead of nine ternaries inline.
@@ -958,16 +831,12 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       setCreateLaneName={handleSetCreateLaneName}
       createMode={createMode}
       setCreateMode={setCreateMode}
-      createParentLaneId={createParentLaneId}
-      setCreateParentLaneId={setCreateParentLaneId}
-      createBaseSource={createBaseSource}
-      setCreateBaseSource={handleSetCreateBaseSource}
-      createBaseBranch={createBaseBranch}
-      setCreateBaseBranch={handleSetCreateBaseBranch}
+      createStart={createStart}
+      setCreateStart={handleSetCreateStart}
+      newLaneDefaults={newLaneDefaults}
+      onMakeStartDefault={handleMakeStartDefault}
       createImportBranch={createImportBranch}
       setCreateImportBranch={setCreateImportBranch}
-      createChildBaseBranch={createChildBaseBranch}
-      setCreateChildBaseBranch={setCreateChildBaseBranch}
       projectRoot={activeProjectRoot}
       createBranches={createBranches}
       lanes={lanes}
@@ -994,7 +863,6 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       loadingBranches={createBranchesLoading}
       onOpenLinearSettings={onOpenLinearSettings}
       onNavigateToTemplates={onNavigateToTemplates}
-      importBranchWarning={importBranchWarning}
       selectedMachineId={selectedMachineId}
     />
   );

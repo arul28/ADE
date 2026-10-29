@@ -1,14 +1,12 @@
 import { PROVIDER_DISPLAY_NAME } from "../../../../shared/providers";
 
 import type {
-  AutoRebaseLaneStatus,
   GitCommitSummary,
   LaneSummary,
   OperationRecord,
   PrChecksStatus,
   PrReviewStatus,
   PrState,
-  RebaseSuggestion,
 } from "../../../../shared/types";
 
 /**
@@ -375,6 +373,7 @@ const OPERATION_TEXT: Record<string, { ok: string; failed: string }> = {
   lane_rebase: { ok: "Rebased onto base", failed: "Rebase failed" },
   git_rebase_abort: { ok: "Rebase aborted", failed: "Rebase abort failed" },
   git_merge_abort: { ok: "Merge aborted", failed: "Merge abort failed" },
+  git_merge_base_in: { ok: "Merged base in", failed: "Merge of base failed" },
   git_checkout_branch: { ok: "Switched branch", failed: "Branch switch failed" },
   git_revert: { ok: "Reverted a commit", failed: "Revert failed" },
   git_reset_hard: { ok: "Reset the branch", failed: "Reset failed" },
@@ -543,41 +542,4 @@ export function groupLaneHistoryByDay(entries: LaneHistoryEntry[], nowTs: number
 
 export function formatEntryTime(ts: number): string {
   return new Date(ts).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
-}
-
-/* ───────────────────────── Rebase ───────────────────────── */
-
-export type LaneNoticeTone = "danger" | "warning" | "muted";
-
-/** Where a rebase line came from, so the notice knows what Dismiss clears. */
-export type LaneRebaseSource = "in-progress" | "auto-rebase" | "suggestion" | "behind";
-
-/** The one line about rebasing, or null when the lane is up to date. */
-export function laneRebaseNeed(args: {
-  lane: Pick<LaneSummary, "laneType" | "baseRef" | "branchRef" | "status">;
-  rebaseSuggestion: RebaseSuggestion | null | undefined;
-  autoRebaseStatus: AutoRebaseLaneStatus | null | undefined;
-  parentName?: string | null;
-}): { label: string; tone: LaneNoticeTone; source: LaneRebaseSource } | null {
-  const { lane } = args;
-  if (lane.status?.rebaseInProgress) return { label: "Rebase in progress", tone: "danger", source: "in-progress" };
-  const auto = args.autoRebaseStatus;
-  if (auto?.state === "rebaseConflict") {
-    return { label: "Auto-rebase stopped on conflicts", tone: "danger", source: "auto-rebase" };
-  }
-  if (auto?.state === "rebaseFailed") return { label: "Auto-rebase failed", tone: "danger", source: "auto-rebase" };
-  if (auto?.state === "rebasePending") {
-    return { label: auto.message?.trim() || "Auto-rebase is waiting on a manual rebase", tone: "warning", source: "auto-rebase" };
-  }
-  const base = args.rebaseSuggestion?.baseLabel?.trim() || args.parentName?.trim() || shortBranch(lane.baseRef) || "base";
-  const suggestion = args.rebaseSuggestion;
-  if (suggestion && !suggestion.dismissedAt && suggestion.behindCount > 0) {
-    const n = suggestion.behindCount;
-    return { label: `${n} commit${n === 1 ? "" : "s"} behind ${base} · rebase needed`, tone: "warning", source: "suggestion" };
-  }
-  // The primary lane has no base of its own to fall behind.
-  if (lane.laneType === "primary") return null;
-  const behind = lane.status?.behind ?? 0;
-  if (behind > 0) return { label: `${behind} commit${behind === 1 ? "" : "s"} behind ${base}`, tone: "muted", source: "behind" };
-  return null;
 }

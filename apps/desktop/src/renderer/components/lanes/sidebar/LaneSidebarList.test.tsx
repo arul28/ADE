@@ -16,10 +16,6 @@ function makeLane(id: string, overrides: Partial<LaneSummary> = {}): LaneSummary
     branchRef: `refs/heads/${id}`,
     worktreePath: `/tmp/${id}`,
     attachedRootPath: null,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
     color: null,
@@ -50,7 +46,6 @@ function renderList(overrides: Partial<LaneSidebarListProps> = {}) {
     lanes,
     groupBy: "state",
     stateByLaneId: states,
-    lanesById: new Map(lanes.map((lane) => [lane.id, lane] as const)),
   });
   const props: LaneSidebarListProps = {
     layout,
@@ -69,7 +64,8 @@ function renderList(overrides: Partial<LaneSidebarListProps> = {}) {
     loading: false,
     totalLaneCount: lanes.length,
     laneRuntimeById: new Map(),
-    laneSnapshotByLaneId: new Map(),
+    rebaseLineByLaneId: new Map(),
+    resolveCatchUpTarget: (laneKey: string) => ({ ok: true as const, laneId: laneKey, pin: null, machineId: null }),
     agentsByLaneId: new Map(),
     lanePrTagsByLaneId: new Map(),
     deleteProgressByLaneId: {},
@@ -122,7 +118,7 @@ describe("LaneSidebarList by State", () => {
 
   it("switches the grouping", () => {
     const props = renderList();
-    fireEvent.click(screen.getByTestId("lane-sidebar-group-by-stack"));
-    expect(props.onGroupByChange).toHaveBeenCalledWith("stack");
+    fireEvent.click(screen.getByTestId("lane-sidebar-group-by-list"));
+    expect(props.onGroupByChange).toHaveBeenCalledWith("list");
   });
 });

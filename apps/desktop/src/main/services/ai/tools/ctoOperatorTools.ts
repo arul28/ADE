@@ -56,6 +56,7 @@ import type { createCtoStateService } from "../../cto/ctoStateService";
 import { CTO_MEMORY_FACT_KINDS, type CtoMemoryService } from "../../cto/ctoMemoryService";
 import { getErrorMessage, nowIso, parseIsoToEpoch } from "../../shared/utils";
 import { buildAdePrUrl } from "../../../../shared/deeplinks";
+import { normalizeLaneStart } from "../../../../shared/laneStart";
 import { settleAbortMessage } from "../../sessions/settleTerminalSession";
 import {
   AGENT_CHAT_DROID_PERMISSION_MODE_VALUES,
@@ -795,12 +796,22 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     inputSchema: z.object({
       name: z.string(),
       description: z.string().optional(),
-      parentLaneId: z.string().optional().describe("A lane on the same machine the new lane is created on."),
+      start: z.object({
+        from: z.enum(["default", "primary", "branch"]),
+        branch: z.string().optional().describe("Required when from is \"branch\": a plain branch name such as develop."),
+        on: z.enum(["remote", "local", "uncommitted"]),
+      }).optional().describe(
+        "Where the new branch starts. from: default (the project's default branch), primary (the primary lane's branch) or branch. "
+        + "on: remote (fetch, then start from origin), local (the local tip, unpushed commits included) or uncommitted (the local tip plus a copy of its uncommitted changes). "
+        + "Omit to use the project's new-lane defaults.",
+      ),
       machine: machineArgSchema,
     }),
     budgetMs: ({ machine }) => (machine ? CREATE_REMOTE_LANE_BUDGET_MS : DEFAULT_ADE_TOOL_BUDGET_MS),
-    execute: async ({ name, description, parentLaneId, machine }) => {
+    execute: async ({ name, description, start: rawStart, machine }) => {
       try {
+        const start = rawStart ? normalizeLaneStart(rawStart) : null;
+        if (rawStart && !start) throw new Error("start.from \"branch\" needs start.branch.");
         const target = await remoteMachine(machine);
         if (target) {
           const lane = await runRemote(target, {
@@ -809,13 +820,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
             args: {
               name,
               ...(description !== undefined ? { description } : {}),
-              ...(parentLaneId !== undefined ? { parentLaneId } : {}),
+              ...(start ? { start } : {}),
             },
             timeoutMs: REMOTE_LANE_CREATE_TIMEOUT_MS,
           });
           return { success: true, ...onMachine(target), lane };
         }
-        const lane = await deps.laneService.create({ name, description, parentLaneId });
+        const lane = await deps.laneService.create({ name, description, ...(start ? { start } : {}) });
         return {
           success: true,
           lane,

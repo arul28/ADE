@@ -132,7 +132,6 @@ export function lanePrDeepLinkPath(pr: PrSummary): string {
     selectedPrNumber: pr.githubPrNumber,
     repoOwner: pr.repoOwner,
     repoName: pr.repoName,
-    selectedRebaseItemId: null,
   })}`;
 }
 

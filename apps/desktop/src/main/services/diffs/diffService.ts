@@ -1,9 +1,7 @@
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
-import os from "node:os";
 import path from "node:path";
 import type { createLaneService } from "../lanes/laneService";
-import { gitCommandError, parseNameStatusRecords, resolveWorktreeIndexPath, runGit } from "../git/git";
+import { parseNameStatusRecords, runGit } from "../git/git";
 import { parseNumstatRecordsZ, PATH_ESCAPES_ROOT_MESSAGE, resolvePathWithinRoot } from "../shared/utils";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import type { BranchDiffChanges, DiffChanges, DiffLineStats, DiffMode, FileDiff, FileChange, FilePatch } from "../../../shared/types";
@@ -319,61 +317,6 @@ async function resolveBranchCompareBase(
   return { label: compare, mergeBase: sha };
 }
 
-/** Where the worktree's own index lives; empty when git cannot say. */
-function readRealIndexPath(worktreePath: string): Promise<string> {
-  return resolveWorktreeIndexPath(worktreePath).catch(() => "");
-}
-
-/**
- * Runs `fn` against a throwaway index holding the working tree: HEAD's tree
- * plus every tracked edit and every untracked file .gitignore keeps. Diffing
- * that index with `--cached` is what lets one diff carry commits, uncommitted
- * edits and new files together, without touching the user's real index.
- *
- * The throwaway starts as a copy of the real index, so `git add` re-hashes
- * only files whose stat changed (not every file through its clean filters, as
- * a fresh `read-tree` would) and a sparse checkout's skip-worktree entries
- * stay present rather than reading as deleted. A repository with no index yet
- * starts from HEAD. The file lives in the OS temp directory and is removed
- * whatever happens.
- *
- * `realIndexPathRead` is `readRealIndexPath`, started early by a caller that has
- * other git work to do first, so the lookup does not wait its turn.
- */
-async function withWorkingTreeIndex<T>(
-  worktreePath: string,
-  fn: (env: NodeJS.ProcessEnv) => Promise<T>,
-  realIndexPathRead: Promise<string>,
-): Promise<T> {
-  const indexPath = path.join(os.tmpdir(), `ade-branch-diff-${randomUUID()}.index`);
-  const env = { GIT_INDEX_FILE: indexPath };
-  try {
-    const realIndexPath = await realIndexPathRead;
-    let copied = false;
-    if (realIndexPath) {
-      try {
-        fs.copyFileSync(realIndexPath, indexPath);
-        copied = true;
-      } catch {
-        // No index yet (a fresh clone mid-checkout, an empty repo): start from HEAD.
-      }
-    }
-    if (!copied) {
-      const read = await runGit(["read-tree", "HEAD"], { cwd: worktreePath, env, timeoutMs: 20_000 });
-      if (read.exitCode !== 0) throw new Error(read.stderr.trim() || "git read-tree failed");
-    }
-    const add = await runGit(["add", "-A", "--", "."], { cwd: worktreePath, env, timeoutMs: 60_000 });
-    if (add.exitCode !== 0) throw gitCommandError(add.stderr.trim() || "git add failed");
-    return await fn(env);
-  } finally {
-    try {
-      fs.rmSync(indexPath, { force: true });
-    } catch {
-      // The OS cleans its temp directory; a leftover index holds no secrets.
-    }
-  }
-}
-
 function nameStatusFileChanges(stdout: string): FileChange[] {
   return parseNameStatusRecords(stdout).map(({ letter, path: filePath, oldPath }): FileChange => {
     if (letter === "R" || letter === "C") return { path: filePath, oldPath: oldPath ?? "", kind: letter === "R" ? "renamed" : "added" };
@@ -382,8 +325,8 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 }
 
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
-  /** The newest read per lane, and whether it has started reading the working tree. */
-  type BranchRead = { readingWorkingTree: boolean; read: Promise<BranchDiffChanges> };
+  /** The newest read per lane, and whether it has started reading git. */
+  type BranchRead = { readingGit: boolean; read: Promise<BranchDiffChanges> };
   const readChanges = async (worktreePath: string): Promise<DiffChanges> => {
     // The line counts do not depend on the status, so all three run at once:
     // one process start of wall time instead of two (25-45 ms each on Windows).
@@ -425,30 +368,29 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
 
   const readBranchChanges = async (laneId: string, entry: BranchRead): Promise<BranchDiffChanges> => {
     const { baseRef, branchRef, worktreePath } = laneService.getLaneBaseAndBranch(laneId);
-    const realIndexPath = readRealIndexPath(worktreePath);
     const { label, mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
-    entry.readingWorkingTree = true;
-    return await withWorkingTreeIndex(worktreePath, async (env) => {
-      const [names, numstat] = await Promise.all([
-        runGit(["diff", "--cached", "--name-status", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-        runGit(["diff", "--cached", "--numstat", "--find-renames", "-z", mergeBase], { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
-      ]);
-      if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
-      const files = nameStatusFileChanges(names.stdout);
-      if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
-      return {
-        baseRef: label,
-        mergeBase,
-        files,
-        additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
-        deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
-      };
-    }, realIndexPath);
+    // Committed work only: the lane's starting point against HEAD. Uncommitted
+    // edits are `getChanges`' to list, so the two never overlap.
+    entry.readingGit = true;
+    const [names, numstat] = await Promise.all([
+      runGit(["diff", "--name-status", "--find-renames", "-z", mergeBase, "HEAD"], { cwd: worktreePath, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+      runGit(["diff", "--numstat", "--find-renames", "-z", mergeBase, "HEAD"], { cwd: worktreePath, timeoutMs: 20_000, maxOutputBytes: 2 * 1024 * 1024 }),
+    ]);
+    if (names.exitCode !== 0) throw new Error(names.stderr.trim() || "git diff failed");
+    const files = nameStatusFileChanges(names.stdout);
+    if (numstat.exitCode === 0) applyNumstat(files, numstat.stdout);
+    return {
+      baseRef: label,
+      mergeBase,
+      files,
+      additions: files.reduce((sum, file) => sum + (file.additions ?? 0), 0),
+      deletions: files.reduce((sum, file) => sum + (file.deletions ?? 0), 0),
+    };
   };
 
   const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
-    // `read` is assigned at once; the read itself flags the entry when it starts on the tree.
-    const entry = { readingWorkingTree: false } as BranchRead;
+    // `read` is assigned at once; the read itself flags the entry once it starts the git diff of its commits.
+    const entry = { readingGit: false } as BranchRead;
     entry.read = readBranchChanges(laneId, entry);
     branchReads.set(laneId, entry);
     void entry.read.catch(() => undefined).then(() => {
@@ -492,14 +434,13 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
     },
 
     getBranchChanges(laneId: string): Promise<BranchDiffChanges> {
-      // Opening a lane asks twice at once (the Branch support probe and the
-      // pane's own read), and on a lane far from its base each read is a full
-      // temp-index diff of seconds. An ask shares a read that has not started
-      // reading the working tree yet: that read still sees every edit made
-      // before the ask. Once it has, an edit may have landed after its
-      // snapshot, so the ask starts a fresh read at once.
+      // Opening a lane asks twice at once (the branch support probe and the
+      // pane's own read). An ask shares a read that has not started reading
+      // git yet: that read still sees every commit made before the ask. Once
+      // it has, a commit may have landed after its snapshot, so the ask
+      // starts a fresh read at once.
       const current = branchReads.get(laneId);
-      if (current && !current.readingWorkingTree) return current.read;
+      if (current && !current.readingGit) return current.read;
       return startBranchRead(laneId);
     },
 
@@ -540,16 +481,16 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       const { absPath, gitPath } = resolveGitFilePath(worktreePath, filePath);
 
       if (mode === "branch") {
-        // The file at the lane's starting point against the file on disk now.
+        // The file at the lane's starting point against its last commit.
         const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
         const original = await gitShowText(worktreePath, `${mergeBase}:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
-        const wt = readTextFileSafe(absPath, MAX_DIFF_SIDE_TEXT_BYTES);
-        const isBinary = Boolean(original.isBinary || wt.isBinary);
+        const head = await gitShowText(worktreePath, `HEAD:${gitPath}`, MAX_DIFF_SIDE_TEXT_BYTES);
+        const isBinary = Boolean(original.isBinary || head.isBinary);
         return {
           path: gitPath,
           mode,
           original: { exists: original.exists, text: original.text, size: original.size, isTruncated: original.isTruncated },
-          modified: { exists: wt.exists, text: wt.text, size: wt.size, isTruncated: wt.isTruncated },
+          modified: { exists: head.exists, text: head.text, size: head.size, isTruncated: head.isTruncated },
           ...(isBinary ? { isBinary: true } : {})
         };
       }
@@ -628,25 +569,21 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       let args: string[];
 
       if (mode === "branch") {
-        // One file of the branch diff, built the same way as the list, so an
-        // untracked file reads as added rather than missing. A renamed file
-        // needs its source in the diff too, or it reads as a new file: the
-        // whole tree is staged and the rename looked up before the patch.
-        const realIndexPath = readRealIndexPath(worktreePath);
+        // One file of the committed branch diff, built the same way as the
+        // list. A renamed file needs its source in the diff too, or it reads
+        // as a new file, so the rename is looked up before the patch.
         const { mergeBase } = await resolveBranchCompareBase(worktreePath, baseRef, branchRef);
-        const res = await withWorkingTreeIndex(worktreePath, async (env) => {
-          const names = await runGit(
-            ["diff", "--cached", "--name-status", "-z", "--find-renames", mergeBase],
-            { cwd: worktreePath, env, timeoutMs: 20_000 },
-          );
-          const oldPath = names.exitCode === 0
-            ? parseNameStatusRecords(names.stdout).find((record) => record.path === gitPath)?.oldPath ?? null
-            : null;
-          return runGit(
-            ["diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", mergeBase, "--", ...(oldPath ? [oldPath] : []), gitPath],
-            { cwd: worktreePath, env, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
-          );
-        }, realIndexPath);
+        const names = await runGit(
+          ["diff", "--name-status", "-z", "--find-renames", mergeBase, "HEAD"],
+          { cwd: worktreePath, timeoutMs: 20_000 },
+        );
+        const oldPath = names.exitCode === 0
+          ? parseNameStatusRecords(names.stdout).find((record) => record.path === gitPath)?.oldPath ?? null
+          : null;
+        const res = await runGit(
+          ["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--find-renames", "--patch", mergeBase, "HEAD", "--", ...(oldPath ? [oldPath] : []), gitPath],
+          { cwd: worktreePath, timeoutMs: 20_000, maxOutputBytes: MAX_DIFF_PATCH_BYTES },
+        );
         if (res.exitCode !== 0) throw new Error(res.stderr.trim() || "git diff failed");
         return {
           mode,

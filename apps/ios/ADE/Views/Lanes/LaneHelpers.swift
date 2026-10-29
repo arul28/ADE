@@ -2,25 +2,6 @@ import SwiftUI
 
 // MARK: - Utility functions
 
-@ViewBuilder
-func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
-  if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-    ADEKitTag(text: "Conflict", color: ADEColor.danger)
-  } else if snapshot.lane.status.dirty {
-    ADEKitTag(text: "Dirty", color: ADEColor.warning)
-  } else if snapshot.runtime.bucket == "running" {
-    ADEKitTag(text: "Running", color: ADEColor.success)
-  } else if snapshot.runtime.bucket == "awaiting-input" {
-    ADEKitTag(text: "Activity", color: ADEColor.warning)
-  } else if snapshot.lane.archivedAt != nil {
-    ADEKitTag(text: "Archived")
-  } else if let rebaseSuggestion = snapshot.rebaseSuggestion {
-    ADEKitTag(text: "\(rebaseSuggestion.behindCount)\u{2193}", color: ADEColor.warning)
-  } else {
-    EmptyView()
-  }
-}
-
 func laneActivitySummary(_ snapshot: LaneListSnapshot) -> String? {
   if let agentText = summarizeState(snapshot.stateSnapshot?.agentSummary) {
     return agentText
@@ -191,37 +172,14 @@ func flattenedString(_ value: RemoteJSONValue?) -> String? {
   }
 }
 
-func laneStackGraphOrder(_ snapshots: [LaneListSnapshot]) -> [LaneListSnapshot] {
-  let childrenByParent = Dictionary(grouping: snapshots) { snapshot in
-    snapshot.lane.parentLaneId ?? "__root__"
-  }
-  let primaryId = snapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id
-
-  func visit(parentId: String?) -> [LaneListSnapshot] {
-    let key = parentId ?? "__root__"
-    let children = (childrenByParent[key] ?? []).sorted { lhs, rhs in
-      lhs.lane.createdAt < rhs.lane.createdAt
-    }
-    return children.flatMap { child in
-      [child] + visit(parentId: child.lane.id)
-    }
-  }
-
-  let primaryBranch = primaryId.flatMap { id in snapshots.first(where: { $0.lane.id == id }) }.map { [$0] + visit(parentId: $0.lane.id) } ?? []
-  let seen = Set(primaryBranch.map(\.lane.id))
-  let remaining = snapshots.filter { !seen.contains($0.lane.id) }
-  let remainingIds = Set(remaining.map(\.lane.id))
-  let roots = remaining
-    .filter { ($0.lane.parentLaneId == nil) || !remainingIds.contains($0.lane.parentLaneId!) }
+/// The Lanes list order: the primary lane first, then every other lane
+/// oldest first.
+func laneListDisplayOrder(_ snapshots: [LaneListSnapshot]) -> [LaneListSnapshot] {
+  let primary = snapshots.filter { $0.lane.laneType == "primary" }
+  let others = snapshots
+    .filter { $0.lane.laneType != "primary" }
     .sorted { $0.lane.createdAt < $1.lane.createdAt }
-  let groupedRemaining = roots.flatMap { root in
-    [root] + visit(parentId: root.lane.id).filter { remainingIds.contains($0.lane.id) }
-  }
-  return primaryBranch + groupedRemaining
-}
-
-func laneTreeDisplayDepth(for lane: LaneSummary) -> Int {
-  max(0, lane.stackDepth)
+  return primary + others
 }
 
 func runtimeTint(bucket: String) -> Color {

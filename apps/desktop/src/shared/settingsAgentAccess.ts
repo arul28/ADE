@@ -47,10 +47,7 @@ export const SETTING_OWNER_ONLY_EXPLANATION: Record<SettingOwnerOnlyReason, stri
 /** Settings an agent may change. Everything else is only the person's. */
 const AGENT_CAN_CHANGE: readonly string[] = [
   "lanes-git.lanes",
-  "lanes-git.new-lane-base",
-  "lanes-git.auto-rebase",
-  "lanes-git.rebase-suggestions",
-  "lanes-git.rebase-min-behind",
+  "lanes-git.new-lane-start",
   "lanes-git.lane-templates",
   // `ade secrets set` is how an agent stores a key it was handed for the work.
   "secrets.secrets",

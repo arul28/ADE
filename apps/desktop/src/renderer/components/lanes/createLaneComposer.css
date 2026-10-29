@@ -1,6 +1,6 @@
 /*
- * The new-lane composer: a name field, the three ways to start a lane, one or
- * two aligned rows of choices, then optional extras. Every list opens in a
+ * The new-lane composer: a name field, the two ways to start a lane (a new
+ * branch or an existing one), aligned rows of choices, then optional extras. Every list opens in a
  * popover, so the dialog never grows past one screen.
  */
 
@@ -8,7 +8,6 @@
 .cl-composer, .cl-pop {
   --cl-new: #34d399;
   --cl-import: #38bdf8;
-  --cl-child: #a78bfa;
   --cl-linear: #7c86f0;
 }
 .cl-composer {
@@ -17,9 +16,8 @@
   gap: 16px;
 }
 /* The current mode's colour, used by its switch and its field icon. */
-[data-mode="primary"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-new); }
+[data-mode="new"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-new); }
 [data-mode="existing"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-import); }
-[data-mode="child"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-child); }
 
 /* ── Name ─────────────────────────────────────────────────────────────────── */
 .cl-name {
@@ -86,10 +84,10 @@
 .cl-dot:hover > i, .cl-dot[data-state="open"] > i { transform: scale(1.15); }
 .cl-dot:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); }
 
-/* ── Mode switch: New branch · Import branch · Child lane ─────────────────── */
+/* ── Mode switch: New branch · Existing branch ───────────────────────────── */
 .cl-modes {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 4px;
   padding: 4px;
   border-radius: 12px;
@@ -115,7 +113,6 @@
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .cl-mode[data-mode="existing"] { --c: var(--cl-import); }
-.cl-mode[data-mode="child"] { --c: var(--cl-child); }
 .cl-mode > svg { flex: none; color: color-mix(in srgb, var(--c) 70%, var(--kit-text-3)); transition: color 120ms ease; }
 .cl-mode:hover:not(:disabled) { color: var(--color-fg); background: var(--kit-hover); }
 /* Selected is a fill; focus is the ring below. Two edges stacked on one
@@ -226,10 +223,31 @@
 .cl-tag[data-tone="ok"] { --c: var(--kit-ok); }
 
 /* A quiet line under a field; wraps instead of cutting off. */
+/* On: three equal segments across the control column. */
+.cl-on { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+.cl-on > button { justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-on > button:disabled { opacity: 0.4; cursor: default; }
+
+/* A hint with the "Project default" mark (or the button that makes it so) on its right. */
+.cl-hint-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }
+.cl-default {
+  flex: none;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
+.cl-default[data-action="true"] { color: var(--kit-text-2); cursor: pointer; text-decoration: underline; text-underline-offset: 2px; text-decoration-color: var(--kit-rule); }
+.cl-default[data-action="true"]:hover { color: var(--color-fg); text-decoration-color: currentColor; }
+.cl-default[data-action="true"]:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); outline-offset: 2px; border-radius: 3px; }
+
 .cl-hint { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); padding-left: 2px; }
 .cl-hint b { font-weight: 500; color: var(--kit-text-2); }
 .cl-hint code { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-2); word-break: break-all; }
-.cl-hint[data-tone="warn"], .cl-hint[data-tone="warn"] code { color: var(--kit-warn); }
+.cl-hint[data-tone="warn"], .cl-hint[data-tone="warn"] code, .cl-hint[data-tone="warn"] b { color: var(--kit-warn); }
 
 /* ── Extras: Attach Linear issue · Use a template ─────────────────────────── */
 .cl-extras { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -328,7 +346,11 @@
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%);
+  /* The card tint over the theme's solid background: a theme whose card colour
+     is translucent must not let the dialog behind show through. */
+  background:
+    linear-gradient(color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%), color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%)),
+    var(--color-bg);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.25);
   color: var(--color-fg);
   outline: none;

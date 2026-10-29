@@ -75,9 +75,7 @@ export function summarizeLane(lane: CtoRemoteLane | LaneSummary) {
     id: lane.id,
     name: lane.name,
     branchRef: lane.branchRef,
-    parentLaneId: lane.parentLaneId,
     worktreePath: lane.worktreePath,
-    childCount: lane.childCount,
     status: lane.status,
   };
 }

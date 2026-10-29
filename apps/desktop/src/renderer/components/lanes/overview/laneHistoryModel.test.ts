@@ -5,7 +5,6 @@ import {
   dayLabel,
   filterLaneHistory,
   groupLaneHistoryByDay,
-  laneRebaseNeed,
   normalizeProvider,
   parseCoAuthorProvider,
   providerActiveAt,
@@ -24,10 +23,6 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     baseRef: "main",
     branchRef: "refs/heads/ade/lane-one",
     worktreePath: "/tmp/lane-one",
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: { dirty: false, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     color: null,
@@ -253,32 +248,4 @@ describe("day grouping", () => {
       [dayLabel(Date.parse("2026-09-20T09:00:00"), NOW), 1],
     ]);
   });
-});
-
-describe("laneRebaseNeed", () => {
-  it("says when the lane needs a rebase", () => {
-    const behind = lane({ status: { ...lane().status, behind: 3 } });
-    expect(laneRebaseNeed({ lane: behind, rebaseSuggestion: null, autoRebaseStatus: null })?.label).toBe("3 commits behind main");
-    expect(laneRebaseNeed({
-      lane: behind,
-      rebaseSuggestion: {
-        laneId: "lane-1",
-        parentLaneId: "p",
-        parentHeadSha: "x",
-        behindCount: 4,
-        baseLabel: "Parent lane",
-        lastSuggestedAt: "",
-        deferredUntil: null,
-        dismissedAt: null,
-        hasPr: false,
-      },
-      autoRebaseStatus: null,
-    })).toEqual({ label: "4 commits behind Parent lane · rebase needed", tone: "warning", source: "suggestion" });
-    expect(laneRebaseNeed({ lane: lane({ status: { ...lane().status, rebaseInProgress: true } }), rebaseSuggestion: null, autoRebaseStatus: null })?.tone)
-      .toBe("danger");
-    expect(laneRebaseNeed({ lane: lane(), rebaseSuggestion: null, autoRebaseStatus: null })).toBeNull();
-    expect(laneRebaseNeed({ lane: lane({ laneType: "primary", status: { ...lane().status, behind: 2 } }), rebaseSuggestion: null, autoRebaseStatus: null }))
-      .toBeNull();
-  });
-
 });

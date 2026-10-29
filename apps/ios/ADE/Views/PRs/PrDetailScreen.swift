@@ -56,7 +56,6 @@ struct PrDetailView: View {
   @State private var actionRuns: [PrActionRun] = []
   @State private var activityEvents: [PrActivityEvent] = []
   @State private var deployments: [PrDeployment] = []
-  @State private var groupMembers: [PrGroupMemberSummary] = []
   @State private var capabilities: PrActionCapabilities?
   @State private var unavailableDetailParts: [String] = []
   @State private var selectedTab: PrDetailTab = .overview
@@ -67,7 +66,6 @@ struct PrDetailView: View {
   @State private var cleanupChoice: PrCleanupChoice = .archive
   @State private var cleanupConfirmationPresented = false
   @State private var filesWorkspaceId: String?
-  @State private var stackPresentation: PrStackPresentation?
   @State private var laneLinkItem: GitHubPrListItem?
   @State private var autoMapRequest: PrAutoMapRequest?
   @State private var editorSheet: PrDetailEditorSheet?
@@ -422,7 +420,6 @@ struct PrDetailView: View {
 
   private var stackLabel: String? {
     if let stack = nativeStackMembership { return "Stack \(stack.position) of \(stack.size)" }
-    if currentPr.linkedGroupId != nil, !groupMembers.isEmpty { return "Stack of \(groupMembers.count)" }
     return nil
   }
 
@@ -524,10 +521,6 @@ struct PrDetailView: View {
 
   fileprivate func presentations<Content: View>(_ content: Content) -> some View {
     content
-    .sheet(item: $stackPresentation) { presentation in
-      PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
-        .environmentObject(syncService)
-    }
     .sheet(item: $autoMapRequest) { request in
       PrAutoMapSheet(
         item: request.item,
@@ -1073,11 +1066,6 @@ struct PrDetailView: View {
       if let capabilitiesTask {
         capabilities = await capabilitiesTask.value
       }
-      if let groupId = pr?.linkedGroupId {
-        groupMembers = try await syncService.fetchPullRequestGroupMembers(groupId: groupId)
-      } else {
-        groupMembers = []
-      }
       unavailableDetailParts = []
       errorMessage = refreshError?.localizedDescription
     } catch {
@@ -1199,7 +1187,6 @@ struct PrDetailView: View {
     actionRuns = entry.actionRuns
     activityEvents = entry.activityEvents
     deployments = entry.deployments
-    groupMembers = entry.groupMembers
     capabilities = entry.capabilities
     unavailableDetailParts = entry.unavailableParts
     // Treat the cache as a successful prior load so the UI shows content (not
@@ -1228,7 +1215,6 @@ struct PrDetailView: View {
         actionRuns: actionRuns,
         activityEvents: activityEvents,
         deployments: deployments,
-        groupMembers: groupMembers,
         capabilities: capabilities,
         unavailableParts: unavailableDetailParts,
         loadedAt: Date()
@@ -1465,10 +1451,6 @@ struct PrDetailView: View {
     UIApplication.shared.open(url)
   }
 
-  private func openStack(groupId: String, groupName: String?) {
-    stackPresentation = PrStackPresentation(id: groupId, groupName: groupName)
-  }
-
   @MainActor
   private func openFileInFiles(_ file: PrFile) async {
     let laneId = currentPr.laneId
@@ -1533,8 +1515,7 @@ struct PrDetailView: View {
           machineName: machineContext.machineName(forLaneId: currentPr.laneId),
           stackLabel: stackLabel,
           onOpenLane: currentPr.laneId.isEmpty ? nil : openCurrentLane,
-          onOpenStack: currentPr.linkedGroupId.map { groupId in { openStack(groupId: groupId, groupName: currentPr.linkedGroupName) } }
-            ?? (nativeStackMembership != nil ? { openGitHub(urlString: currentPr.githubUrl) } : nil),
+          onOpenStack: nativeStackMembership != nil ? { openGitHub(urlString: currentPr.githubUrl) } : nil,
           canCreateLane: canAutoMapCurrentPr && githubItem != nil,
           canLinkLane: canMapCurrentPr,
           onCreateLane: presentCreateLane,

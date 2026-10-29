@@ -36,8 +36,7 @@ ade lanes list --json   # stable JSON for scripts and agents
     ade projects list --text                # list registered projects
     ade lanes list --text                   # list lanes in the active project
     ade lanes create "fix-checkout-flow"    # create a lane from the default branch
-    ade lanes create "auth-ui" --parent auth-base  # stack a lane on another lane
-    ade lanes reparent auth-ui --parent auth-base  # restack an existing lane
+    ade lanes create --name auth-ui --from auth-base --on local
     ade lanes delete <lane-id> --force --delete-branch
     ```
   </Accordion>
@@ -79,7 +78,7 @@ ade lanes list --json   # stable JSON for scripts and agents
     Attach and update Linear issues through ADE's own Linear connection — no API key needed.
 
     ```bash
-    ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex
+    ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --type subagent
     ade linear attach --this-session --issue-id ENG-431
     ade linear comment "Pushed a fix; CI running"
     ade linear set-state ENG-431 <state-id>

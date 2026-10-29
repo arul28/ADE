@@ -13,9 +13,6 @@ struct LanesAcrossMachinesPreviewHost: View {
     type: String = "worktree",
     branch: String,
     color: String?,
-    parent: String? = nil,
-    depth: Int = 0,
-    children: Int = 0,
     status: LaneStatus = LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)
   ) -> LaneSummary {
     LaneSummary(
@@ -27,10 +24,6 @@ struct LanesAcrossMachinesPreviewHost: View {
       branchRef: branch,
       worktreePath: "/tmp/\(id)",
       attachedRootPath: nil,
-      parentLaneId: parent,
-      childCount: children,
-      stackDepth: depth,
-      parentStatus: nil,
       isEditProtected: false,
       status: status,
       color: color,
@@ -57,10 +50,10 @@ struct LanesAcrossMachinesPreviewHost: View {
   }
 
   private let studio: [LaneListSnapshot] = [
-    snapshot(lane("s-main", "Primary", type: "primary", branch: "main", color: "#3B82F6", children: 2), running: 1),
-    snapshot(lane("s-sync", "fix sync loop", branch: "ade/fix-sync-loop-2f81", color: "#A855F7", parent: "s-main", depth: 1,
+    snapshot(lane("s-main", "Primary", type: "primary", branch: "main", color: "#3B82F6"), running: 1),
+    snapshot(lane("s-sync", "fix sync loop", branch: "ade/fix-sync-loop-2f81", color: "#A855F7",
                   status: LaneStatus(dirty: true, ahead: 3, behind: 1, remoteBehind: 0, rebaseInProgress: false)), awaiting: 1),
-    snapshot(lane("s-docs", "docs refresh", branch: "ade/docs-refresh-91aa", color: "#22C55E", parent: "s-main", depth: 1)),
+    snapshot(lane("s-docs", "docs refresh", branch: "ade/docs-refresh-91aa", color: "#22C55E")),
   ]
 
   private var macbook: [LaneListSnapshot] {
@@ -113,7 +106,6 @@ struct LanesAcrossMachinesPreviewHost: View {
                   }
                   LaneTreeRow(
                     snapshot: snapshot,
-                    depth: laneTreeDisplayDepth(for: snapshot.lane),
                     pullRequest: nil,
                     isPinned: false,
                     isOpen: snapshot.lane.id == "s-sync",
@@ -123,7 +115,7 @@ struct LanesAcrossMachinesPreviewHost: View {
                     onSelectLane: { _ in },
                     onOpen: {},
                     machine: chips.chip(forLaneId: snapshot.lane.id),
-                    showsMachineChip: laneTreeDisplayDepth(for: snapshot.lane) == 0
+                    showsMachineChip: snapshot.id == group.first?.id
                   )
                 }
               }

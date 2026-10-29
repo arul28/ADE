@@ -171,8 +171,8 @@ struct WorkToolActivityPresentation: Equatable {
 /// transcript was removed (see `handleSubagentSelection`): the phone shows the
 /// subagent card — label, model, status, latest summary, result — and never
 /// replaces the thread with a read-only copy of the agent's own work. Separate
-/// subagent chats (`--type subagent`) and child lanes are unaffected; they are
-/// full chats with their own rows.
+/// subagent chats (`--type subagent`) are unaffected; they are full chats with
+/// their own rows.
 struct WorkSubagentCapability: Equatable {
   let canList: Bool
 

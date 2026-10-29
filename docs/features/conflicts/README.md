@@ -3,22 +3,20 @@
 ADE's conflict feature surfaces integration risk before it becomes a
 merge-time emergency. A single shared service powers conflict
 detection, pairwise risk computation, merge simulation, rebase-need
-scanning, AI resolution proposals, and external CLI resolver runs.
-There is no dedicated "Conflicts" tab in the app — conflict signal
+scanning, and AI resolution proposals. There is no dedicated "Conflicts" tab in the app — conflict signal
 is projected into the surfaces where it matters:
 
 - **Lanes**: status badges and overlap chips on lane rows, inline
   merge simulation, rebase banner.
 - **Graph**: project-wide `RiskMatrix`, pairwise overlap tooltips,
   edge-click merge simulation.
-- **PRs**: blocked/manual rebase UIs, integration (merge-plan)
-  pairwise simulation, issue resolution.
+- **PRs**: conflict analysis on PR rows and issue resolution.
 
 ## Where this runs
 
 Conflict prediction (`git merge-tree` runs), pairwise risk
-computation, the prediction job engine, AI proposal preparation /
-dispatch / apply, and external CLI resolver runs all execute inside
+computation, the prediction job engine, and AI proposal preparation /
+dispatch / apply all execute inside
 the **active ADE runtime** for the window's project binding — the
 local machine runtime for local-bound windows or the SSH-attached remote
 runtime for remote-bound windows. The renderer routes
@@ -26,8 +24,8 @@ runtime for remote-bound windows. The renderer routes
 `callProjectRuntimeActionOr("conflicts", …)` in
 `apps/desktop/src/preload/preload.ts` and only falls back to the
 desktop's in-process IPC handlers when no runtime is bound. Remote-
-bound windows therefore predict conflicts, run merge simulations,
-and execute external CLI resolvers on the remote machine — the
+bound windows therefore predict conflicts and run merge simulations
+on the remote machine — the
 worktrees and pack artifacts they read are on the remote host. The
 `RiskMatrix` renderer components only hold view
 state; they call out to the runtime for every prediction.
@@ -40,7 +38,7 @@ behavior):
 
 | File | Responsibility |
 |------|---------------|
-| `apps/desktop/src/main/services/conflicts/conflictService.ts` | Prediction, simulation, risk matrix, proposals, external resolver runs, rebase needs, AI rebase (4.6k lines) |
+| `apps/desktop/src/main/services/conflicts/conflictService.ts` | Prediction, simulation, risk matrix, proposals, rebase needs, AI rebase (3k lines) |
 | `apps/desktop/src/main/services/git/git.ts` | `runGit`, `runGitOrThrow`, `runGitMergeTree`, conflict type normalization |
 | `apps/desktop/src/main/services/git/gitConflictState.ts` | `detectConflictKind` for live merge/rebase state |
 | `apps/desktop/src/main/services/shared/remoteTrackingBranch.ts` | `fetchRemoteTrackingBranch` |
@@ -51,13 +49,12 @@ Renderer:
 | File | Responsibility |
 |------|---------------|
 | `renderer/components/lanes/mergeSimulation/*` | Conflict file diff, merge simulation panel, language detection |
-| `renderer/components/shared/conflictResolver/ResolverTerminalModal.tsx` | External CLI resolver terminal modal |
 | `renderer/components/prs/ConflictFilePreview.tsx` | Conflict marker preview (re-used from PR flows) |
 
 Detail docs in this folder:
 
 - [`detection.md`](./detection.md) — the prediction engine (periodic + realtime).
-- [`simulation.md`](./simulation.md) — pre-flight merge simulation, merge plans, AI resolution, external resolver.
+- [`simulation.md`](./simulation.md) — pre-flight merge simulation, merge plans, AI resolution.
 
 ## Status model
 
@@ -157,7 +154,6 @@ Storage:
 
 - `<projectRoot>/.ade/artifacts/packs/conflicts/v2/<laneId>__<peerKey>.md` — conflict pack v2 markdown
 - `<projectRoot>/.ade/artifacts/packs/conflicts/predictions/<laneId>.json` — per-lane prediction summary
-- `<projectRoot>/.ade/artifacts/packs/external-resolver-runs/<runId>/` — external resolver run artifacts (prompt, stdout, patch, summary)
 
 Pack freshness metadata: `predictionAt`, `lastRecomputedAt`,
 `stalePolicy.ttlMs`, plus coverage metadata `strategy`, `truncated`,
@@ -238,25 +234,13 @@ Proposals (AI + apply/undo):
 | `ade.conflicts.applyProposal` | Apply via `git apply --3way`, record operation |
 | `ade.conflicts.undoProposal` | Reverse-apply via `git apply -R` |
 
-External resolver (Codex/Claude CLI):
-
-| Channel | Description |
-|---------|-------------|
-| `ade.conflicts.runExternalResolver` | Spawn CLI session, attach/track via session service |
-| `ade.conflicts.listExternalResolverRuns` | Run history for a lane |
-| `ade.conflicts.commitExternalResolverRun` | Stage + commit the resolver's changes |
-| `ade.conflicts.prepareResolverSession` | Build scenario, cwd, integration lane selection |
-| `ade.conflicts.attachResolverSession`, `.finalizeResolverSession`, `.cancelResolverSession` | Session lifecycle |
-| `ade.conflicts.suggestResolverTarget` | Heuristic target lane suggestion |
-
-Rebase needs / AI rebase:
+Rebase needs:
 
 | Channel | Description |
 |---------|-------------|
 | `ade.conflicts.scanRebaseNeeds` | Compute rebase needs for all lanes |
 | `ade.conflicts.getRebaseNeed` | Single-lane rebase need |
-| `ade.conflicts.dismissRebase` / `.deferRebase` | Suppress a rebase need |
-| `ade.conflicts.rebaseLane` | Run AI-assisted rebase |
+| `ade.conflicts.rebaseLane` | Rebase a lane onto its base (`ade git rebase --lane`) |
 
 ## Surface split
 
@@ -265,9 +249,8 @@ Conflict intelligence lives where it's useful:
 - **Lanes**: status badges, overlap counts, "Open in Graph" jump.
 - **Graph**: `RiskMatrix` with animated transitions, cell tooltips
   with overlap file lists, merge simulation from edge clicks.
-- **PRs > Rebase**: rebase continue/abort, manual attention surface
-  for failed auto-rebases, upstream rebase chain view.
-- **PRs > Integration**: pairwise matrix for merge-plan proposals.
+- **PRs**: per-PR conflict analysis; an update that hits conflicts
+  hands a resolve prompt to the lane's chat.
 
 All surfaces consume the same service. Keeping prediction,
 simulation, and proposals behind a single service means the
@@ -283,8 +266,6 @@ surfaces are rendering views rather than re-implementing logic.
 - `prediction-updated` — an individual prediction row changed
   outside a batch.
 - `rebase-started`, `rebase-completed` — AI rebase lifecycle.
-- `resolver-run-started`, `resolver-run-completed`,
-  `resolver-run-failed` — external resolver lifecycle.
 
 ## Key constants
 
@@ -297,8 +278,6 @@ In `conflictService.ts`:
 - `PREFILTER_MAX_TOUCHED_FILES = 800` — touched-file cap per lane
   heuristic.
 - `STALE_MS = 5 * 60_000` — 5-minute staleness cutoff.
-- `EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024` — 32 MB hard
-  cap on external resolver diff output.
 - `PREPARED_TTL_MS = 20 * 60_000` — prepared proposal preview TTL.
 
 ## Gotchas

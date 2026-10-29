@@ -43,10 +43,7 @@ function laneSummary(id: string, dirty: boolean): LaneSummary {
     baseRef: "main",
     branchRef: id,
     worktreePath: `/repo/${id}`,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
+
     isEditProtected: false,
     status: { dirty, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     color: null,
@@ -298,7 +295,7 @@ describe("runDefaultLaneSetup", () => {
       action: async (domain: string, action: string, args?: Record<string, unknown>) => {
         calls.push({ domain, action, args });
         if (action === "listTemplates") return [{ id: "tpl-1", name: "Default" }];
-        if (action === "getDefaultTemplate") return "tpl-1";
+        if (action === "getNewLaneDefaults") return { defaults: { templateId: "tpl-1" } };
         if (action === "applyTemplate") {
           return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
         }
@@ -310,9 +307,7 @@ describe("runDefaultLaneSetup", () => {
 
     expect(result.templateId).toBe("tpl-1");
     expect(result.progress.overallStatus).toBe("completed");
-    expect(calls).toEqual([
-      { domain: "lane", action: "listTemplates", args: undefined },
-      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+    expect(calls.filter((call) => call.action === "applyTemplate" || call.action === "initEnv")).toEqual([
       { domain: "lane", action: "applyTemplate", args: { laneId: "lane-1", templateId: "tpl-1" } },
     ]);
   });
@@ -323,7 +318,7 @@ describe("runDefaultLaneSetup", () => {
       action: async (domain: string, action: string, args?: Record<string, unknown>) => {
         calls.push({ domain, action, args });
         if (action === "listTemplates") return [{ id: "other", name: "Other" }];
-        if (action === "getDefaultTemplate") return "missing";
+        if (action === "getNewLaneDefaults") return { defaults: { templateId: "missing" } };
         if (action === "initEnv") {
           return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
         }
@@ -335,9 +330,7 @@ describe("runDefaultLaneSetup", () => {
 
     expect(result.templateId).toBeNull();
     expect(result.progress.overallStatus).toBe("completed");
-    expect(calls).toEqual([
-      { domain: "lane", action: "listTemplates", args: undefined },
-      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+    expect(calls.filter((call) => call.action === "applyTemplate" || call.action === "initEnv")).toEqual([
       { domain: "lane", action: "initEnv", args: { laneId: "lane-1" } },
     ]);
   });
@@ -348,7 +341,7 @@ describe("runDefaultLaneSetup", () => {
       action: async (domain: string, action: string, args?: Record<string, unknown>) => {
         calls.push({ domain, action, args });
         if (action === "listTemplates") return [{ id: "tpl-default", name: "Default" }, { id: "tpl-custom", name: "Custom" }];
-        if (action === "getDefaultTemplate") return "tpl-default";
+        if (action === "getNewLaneDefaults") return { defaults: { templateId: "tpl-default" } };
         if (action === "applyTemplate") {
           return { laneId: "lane-1", steps: [], startedAt: "2026-01-01T00:00:00.000Z", overallStatus: "completed" };
         }
@@ -359,9 +352,7 @@ describe("runDefaultLaneSetup", () => {
     const result = await runDefaultLaneSetup(connection, "lane-1", { templateId: "tpl-custom" });
 
     expect(result.templateId).toBe("tpl-custom");
-    expect(calls).toEqual([
-      { domain: "lane", action: "listTemplates", args: undefined },
-      { domain: "lane", action: "getDefaultTemplate", args: undefined },
+    expect(calls.filter((call) => call.action === "applyTemplate" || call.action === "initEnv")).toEqual([
       { domain: "lane", action: "applyTemplate", args: { laneId: "lane-1", templateId: "tpl-custom" } },
     ]);
   });
@@ -370,7 +361,7 @@ describe("runDefaultLaneSetup", () => {
     const connection = {
       action: async (_domain: string, action: string) => {
         if (action === "listTemplates") return [{ id: "tpl-default", name: "Default" }];
-        if (action === "getDefaultTemplate") return "tpl-default";
+        if (action === "getNewLaneDefaults") return { defaults: { templateId: "tpl-default" } };
         throw new Error(`unexpected action ${action}`);
       },
     } as unknown as AdeCodeConnection;

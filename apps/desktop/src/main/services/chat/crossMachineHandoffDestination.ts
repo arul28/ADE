@@ -134,7 +134,6 @@ export type CrossMachineLaneOriginRecord = {
   destinationLaneId: string;
   sourceMachineKey: string;
   sourceLaneId: string;
-  sourceParentLaneId: string | null;
 };
 
 const laneImportKey = (importId: string): string => `agent-chat-cross-machine-lane-import:v1:${importId}`;
@@ -464,7 +463,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
         destinationLaneId,
         sourceMachineKey,
         sourceLaneId: payload.sourceLane.laneId,
-        sourceParentLaneId: payload.sourceLane.parentLaneId,
       } satisfies CrossMachineLaneOriginRecord);
     };
     const branchRef = await requireGitBranch(runGit, payload.branchRef, deps.projectRoot);
@@ -472,15 +470,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
     if (!/^[0-9a-f]{40,64}$/i.test(headSha)) throw new Error("The batch lane import has an invalid source commit.");
     if (payload.gitBundle) {
       validateHandoffGitBundle({ source: { headSha }, gitBundle: payload.gitBundle });
-    }
-    if (payload.sourceLane.parentLaneId && !payload.destinationParentLaneId) {
-      throw new Error("The destination parent lane must arrive before this lane.");
-    }
-    const parentLane = payload.destinationParentLaneId
-      ? await laneService.getSummary(payload.destinationParentLaneId, { includeStatus: false })
-      : null;
-    if (payload.destinationParentLaneId && (!parentLane || parentLane.archivedAt)) {
-      throw new Error("The destination parent lane is unavailable or archived.");
     }
     const origin = await requireGitOutput(
       runGit,
@@ -594,9 +583,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
       if (lane && payload.gitBundle && lane.laneType === "primary") {
         throw new Error(primaryCheckoutRefusal(lane.name, branchRef));
       }
-      if (reusedLane && lane && payload.destinationParentLaneId && lane.parentLaneId !== payload.destinationParentLaneId) {
-        warnings.push(`Reused lane '${lane.name}' keeps its existing parent.`);
-      }
       if (lane && !payload.gitBundle) {
         // Reused only when it is already exactly the source commit and clean:
         // nothing is written into it (a primary checkout included).
@@ -620,7 +606,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
           fetchEnv: await deps.gitEnv(),
           importLane: (input) => laneService.importBranch({
             ...input,
-            parentLaneId: payload.destinationParentLaneId ?? null,
             // The bundle may carry commits the person never pushed.
             publishUpstream: false,
           }),
@@ -643,7 +628,6 @@ export function createCrossMachineHandoffDestination<TManaged extends { session:
           branchRef,
           name: payload.sourceLane.name,
           description: `Received from ${payload.sourceMachineName}`,
-          parentLaneId: payload.destinationParentLaneId ?? null,
           publishUpstream: false,
         });
         bindLane(lane.id);

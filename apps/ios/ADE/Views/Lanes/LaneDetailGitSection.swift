@@ -1,27 +1,6 @@
 import SwiftUI
 
 extension LaneDetailScreen {
-  // MARK: - Rebase banner
-
-  @ViewBuilder
-  var rebaseBannerSection: some View {
-    if let detail,
-       let suggestion = detail.rebaseSuggestion,
-       !rebaseSuggestionDismissed,
-       suggestion.dismissedAt == nil {
-      LaneDetailRebaseBanner(
-        behindCount: suggestion.behindCount,
-        parentLabel: detail.lane.baseRef,
-        hasPr: suggestion.hasPr,
-        canRunLiveActions: canRunLiveActions,
-        onViewRebase: {
-          requestGitConfirmation(.rebaseLane)
-        },
-        onDismiss: handleRebaseSuggestionDismiss
-      )
-    }
-  }
-
   // MARK: - Conflict section
 
   @ViewBuilder

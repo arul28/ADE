@@ -294,8 +294,6 @@ const LONG_RUNNING_LOCAL_RUNTIME_ACTION_TIMEOUTS: ReadonlyMap<string, number> = 
   // LANE_GIT_WRITE_ACTION_TIMEOUT_MS. A shorter budget reported failure while
   // the daemon kept writing the tree to a successful completion.
   ["lane.create", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
-  ["lane.createChild", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
-  ["lane.createFromUnstaged", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.importBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["lane.switchBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],
   ["git.checkoutBranch", LANE_GIT_WRITE_ACTION_TIMEOUT_MS],

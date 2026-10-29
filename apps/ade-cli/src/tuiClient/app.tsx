@@ -23,7 +23,6 @@ import {
   resolveProviderGroupForModel,
   selectSupportedReasoningEffort,
 } from "../../../desktop/src/shared/modelRegistry";
-import { resolveStableLaneBaseBranch } from "../../../desktop/src/shared/laneBaseResolution";
 import { LAUNCH_PROFILE_TITLE, LAUNCH_PROFILE_TOOL_TYPE, resolveClaudeCliModelForLaunch } from "../../../desktop/src/shared/cliLaunch";
 import type { PinnedCliProvider } from "../../../desktop/src/main/services/pty/pinnedProviderCli";
 import { getAgentSkillRootCandidates } from "../../../desktop/src/shared/agentSkillRoots";
@@ -300,6 +299,8 @@ import {
 import {
   buildNewLaneSubmission,
   cycleNewLaneColor,
+  cycleNewLaneFrom,
+  cycleNewLaneOn,
   cycleNewLaneStart,
   filterNewLaneBranchMatches,
   newLaneFormFieldRowOffsets,
@@ -310,6 +311,7 @@ import {
   normalizeNewLaneStart,
   toggleNewLaneBranchSource,
 } from "./newLaneForm";
+import { plainLaneStartBranch } from "../../../desktop/src/shared/laneStart";
 import {
   ChatView,
   resolveFileChangeDiffAction,
@@ -719,7 +721,7 @@ export function inlineRowCellOrder(opts: {
 }
 
 // Turn a git conflict into a right-pane detail body + a one-line notice. Used by
-// /pull and /reparent so a rebase/merge conflict is surfaced instead of being
+// /pull so a rebase/merge conflict is surfaced instead of being
 // silently reported as success.
 export function formatGitConflictReport(state: GitConflictState): { title: string; body: string; summary: string } {
   const label = state.kind === "rebase" ? "Rebase" : "Merge";
@@ -1527,37 +1529,6 @@ function laneWorktreeUnavailableMessage(lane: LaneSummary | null | undefined): s
   return `Lane "${lane.name}" is missing its worktree at ${pathLabel}. Restore or recreate the lane before starting a chat.`;
 }
 
-function collectDescendantLaneIds(rootId: string, lanes: LaneSummary[]): Set<string> {
-  const childrenByParent = new Map<string, LaneSummary[]>();
-  for (const lane of lanes) {
-    if (!lane.parentLaneId) continue;
-    const children = childrenByParent.get(lane.parentLaneId) ?? [];
-    children.push(lane);
-    childrenByParent.set(lane.parentLaneId, children);
-  }
-  const descendants = new Set<string>();
-  const stack = [...(childrenByParent.get(rootId) ?? [])];
-  while (stack.length) {
-    const lane = stack.pop();
-    if (!lane || descendants.has(lane.id)) continue;
-    descendants.add(lane.id);
-    stack.push(...(childrenByParent.get(lane.id) ?? []));
-  }
-  return descendants;
-}
-
-function reparentTargetsForLane(lane: LaneSummary, lanes: LaneSummary[]): LaneSummary[] {
-  const descendants = collectDescendantLaneIds(lane.id, lanes);
-  return lanes
-    .filter((candidate) => !candidate.archivedAt && candidate.id !== lane.id && !descendants.has(candidate.id))
-    .sort((left, right) => {
-      const leftPrimary = left.laneType === "primary" ? 0 : 1;
-      const rightPrimary = right.laneType === "primary" ? 0 : 1;
-      if (leftPrimary !== rightPrimary) return leftPrimary - rightPrimary;
-      return left.name.localeCompare(right.name);
-    });
-}
-
 function prBranchNameFromRef(ref: string | null | undefined): string {
   let value = (ref ?? "").trim();
   value = value.replace(/^refs\/heads\//, "");
@@ -1568,14 +1539,7 @@ function prBranchNameFromRef(ref: string | null | undefined): string {
 
 export function defaultPrTitleForLane(sourceLane: LaneSummary | null | undefined, lanes: LaneSummary[]): string {
   const sourceName = sourceLane?.name?.trim() || "Source lane";
-  const parentLane = sourceLane?.parentLaneId
-    ? lanes.find((lane) => lane.id === sourceLane.parentLaneId) ?? null
-    : null;
-  const targetBranch = resolveStableLaneBaseBranch({
-    lane: sourceLane,
-    parent: parentLane,
-    primaryBranchRef: "main",
-  });
+  const targetBranch = prBranchNameFromRef(sourceLane?.baseRef || "main");
   const targetLane = targetBranch
     ? lanes.find((lane) => lane.id !== sourceLane?.id && prBranchNameFromRef(lane.branchRef) === targetBranch)
     : null;
@@ -1610,7 +1574,7 @@ function resolveLaneReference(lanes: LaneSummary[], reference: string): LaneSumm
   if (exact) return exact;
   // Only accept partial-name matches when they resolve uniquely. The previous
   // implementation picked the first `includes()` hit, which could silently
-  // pick the wrong lane (and target the wrong rebase) for `/reparent`.
+  // pick the wrong lane.
   const partialMatches = lanes.filter((lane) => lane.name.toLowerCase().includes(normalized));
   return partialMatches.length === 1 ? partialMatches[0] ?? null : null;
 }
@@ -3140,7 +3104,7 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
-    && (fieldName === "start" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
+    && (fieldName === "start" || fieldName === "from" || fieldName === "on" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
   ) return false;
   return true;
 }
@@ -3847,6 +3811,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     );
   }, []);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const newLaneChoiceRevisionRef = useRef(0);
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
   // The Activity chip survives a refresh, so R does not drop the filter.
@@ -7897,19 +7862,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPaneFocus("details");
   }, [setFormConfirmArmed, setPaneFocus, stashActiveInput]);
 
-  const openNewLaneForm = useCallback(() => {
-    const activeLaneName = lanes.find((lane) => lane.id === activeLaneIdRef.current)?.name ?? null;
+  const openNewLaneForm = useCallback((initialStart?: { from: string; branch: string; on: string }) => {
+    const revision = ++newLaneChoiceRevisionRef.current;
     openForm({
       kind: "form",
       title: "New lane",
       command: "new-lane",
-      fields: newLaneFormFields("primary", { activeLaneName }),
+      fields: newLaneFormFields("new", { from: initialStart?.from }),
     });
     // Fetch branch names once for the typeahead (async — the form opens
     // immediately and the matches appear when the result lands). Stashed on
     // the form content so RightPane stays a pure renderer.
     const conn = connectionRef.current;
     const laneId = activeLaneIdRef.current;
+    if (initialStart) setFormValues(previous => ({ ...previous, ...initialStart }));
+    if (conn && !initialStart) {
+      void conn.action<{ defaults: { start: { from: string; branch?: string; on: string } } }>("lane", "getNewLaneDefaults").then(snapshot => {
+        if (newLaneChoiceRevisionRef.current !== revision || rightPaneRef.current.kind !== "form" || rightPaneRef.current.command !== "new-lane") return;
+        setFormValues(previous => ({ ...previous, from: snapshot.defaults.start.from, branch: snapshot.defaults.start.branch ?? "", on: snapshot.defaults.start.on }));
+        setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+          ? { ...previous, fields: newLaneFormFields("new", { from: snapshot.defaults.start.from }) } : previous);
+      }).catch(() => {
+        if (newLaneChoiceRevisionRef.current === revision) addNotice("Could not load new-lane defaults. Reopen the form to retry.", "error");
+      });
+    }
     if (conn && laneId) {
       void listGitBranches(conn, laneId)
         .then((branches) => {
@@ -7920,27 +7896,16 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         })
         .catch(() => {});
     }
-  }, [lanes, openForm]);
+  }, [addNotice, openForm]);
 
   const openMoveUnstagedForm = useCallback(() => {
-    const laneId = activeLaneIdRef.current;
-    const lane = lanes.find((entry) => entry.id === laneId) ?? activeLane;
-    if (!laneId || !lane) {
-      setRightPane({ kind: "details", title: "Move unstaged", body: "No active lane is selected." });
-      focusDetails();
+    const lane = lanes.find(entry => entry.id === activeLaneIdRef.current) ?? activeLane;
+    if (!lane?.branchRef) {
+      addNotice("The active lane has no branch.", "error");
       return;
     }
-    openForm({
-      kind: "form",
-      title: "Move unstaged → new lane",
-      command: "new-lane-from-unstaged",
-      laneId,
-      description: `Carries unstaged + untracked changes from ${lane.name} into a new child lane.`,
-      fields: [
-        { name: "name", label: "Name", required: true, placeholder: "rescue-work" },
-      ],
-    });
-  }, [activeLane, focusDetails, lanes, openForm]);
+    openNewLaneForm({ from: "branch", branch: plainLaneStartBranch(lane.branchRef), on: "uncommitted" });
+  }, [activeLane, addNotice, lanes, openNewLaneForm]);
 
   const openLaneDeleteForm = useCallback((laneIdArg?: string) => {
     const laneId = laneIdArg ?? activeLaneIdRef.current;
@@ -11891,71 +11856,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       setRightPane({ kind: "list", title: "Recent commits", rows: routeRows(log), emptyText: "No commits." });
       return;
     }
-    if (name === "/reparent") {
-      const showReparentDetails = (body: string): void => {
-        setRightPane({ kind: "details", title: "Reparent lane", body });
-      };
-      if (!laneId) {
-        showReparentDetails("No active lane is selected.");
-        return;
-      }
-      const lane = lanes.find((entry) => entry.id === laneId) ?? null;
-      if (!lane) {
-        showReparentDetails(`Lane ${laneId} is not loaded.`);
-        return;
-      }
-      if (lane.laneType === "primary") {
-        showReparentDetails("Primary lane cannot be reparented.");
-        return;
-      }
-      const targets = reparentTargetsForLane(lane, lanes);
-      const parsed = splitFirstArg(args);
-      if (!parsed.first) {
-        const rows = targets.map((target) => {
-          const current = target.id === (lane.parentLaneId ?? "") ? "current" : target.laneType;
-          return `${target.id.padEnd(18)} ${target.name} · ${target.branchRef} · ${current}`;
-        });
-        showReparentDetails([
-          "Usage: /reparent <parent-lane-id|parent-name> [stack-base-ref]",
-          "",
-          "Moves the active lane under another parent and runs git rebase. The optional stack-base-ref overrides the parent branch, for example origin/main.",
-          "",
-          rows.length ? rows.join("\n") : "No valid parent lanes are available.",
-        ].join("\n"));
-        return;
-      }
-      const parent = resolveLaneReference(targets, parsed.first);
-      if (!parent) {
-        showReparentDetails(`No valid parent lane matched "${parsed.first}". Run /reparent to list targets.`);
-        return;
-      }
-      const stackBaseBranchRef = parsed.rest.trim();
-      const result = await conn.action("lane", "reparent", {
-        laneId,
-        newParentLaneId: parent.id,
-        ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
-      });
-      // Reparent rebases the lane onto its new parent, which can stop on
-      // conflicts. Surface them instead of reporting an unconditional success.
-      const reparentConflict = await conn
-        .action<GitConflictState>("git", "getConflictState", { laneId })
-        .catch(() => null);
-      if (reparentConflict?.inProgress && reparentConflict.kind) {
-        const report = formatGitConflictReport(reparentConflict);
-        setRightPane({ kind: "details", title: report.title, body: report.body });
-        setRightOpen(true);
-        addNotice(report.summary, "error");
-        await refreshState();
-        return;
-      }
-      showReparentDetails(renderObject(result, 20));
-      addNotice(
-        `Reparented ${lane.name} under ${parent.name}${stackBaseBranchRef ? ` using ${stackBaseBranchRef}` : ""}.`,
-        "success",
-      );
-      await refreshState();
-      return;
-    }
     if (name === "/lane rename") {
       if (args.trim()) {
         await renameLane(laneId, args);
@@ -13232,7 +13132,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       }
       const tokens = args.split(/\s+/).filter(Boolean);
 
-      // Resolve an in-progress conflict from a previous pull/reparent.
+      // Resolve an in-progress conflict from a previous pull.
       if (tokens.includes("--continue") || tokens.includes("--abort")) {
         const wantContinue = tokens.includes("--continue");
         const state = await conn.action<GitConflictState>("git", "getConflictState", { laneId });
@@ -13563,7 +13463,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const name = requireField("name", "Name");
       if (!name) return;
       const linearIssueInput = values.linearIssue?.trim() ?? "";
-      if (normalizeNewLaneStart(values.start) === "import" && linearIssueInput) {
+      if (normalizeNewLaneStart(values.start) === "existing" && linearIssueInput) {
         addNotice("Linear issue attachment is not supported when importing an existing branch.", "error");
         return;
       }
@@ -13583,9 +13483,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         addNotice(submission.message, "error");
         return;
       }
-      const created = submission.kind === "createChild"
-        ? await conn.action<LaneSummary>("lane", "createChild", submission.payload)
-        : submission.kind === "importBranch"
+      const created = submission.kind === "importBranch"
           ? await conn.action<LaneSummary>("lane", "importBranch", submission.payload)
           : await conn.action<LaneSummary>("lane", "create", submission.payload);
       // Desktop-parity color picker: lane create payloads don't carry a color,
@@ -13618,38 +13516,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       setDrawerLaneId(created.id);
       setSelectedDrawerLaneId(created.id);
-      return;
-    }
-
-    if (form.command === "new-lane-from-unstaged") {
-      const sourceLaneId = form.laneId ?? activeLaneIdRef.current;
-      if (!sourceLaneId) {
-        addNotice("No active lane to rescue from.", "error");
-        return;
-      }
-      const name = requireField("name", "Name");
-      if (!name) return;
-      try {
-        const created = await conn.action<LaneSummary>("lane", "createFromUnstaged", {
-          sourceLaneId,
-          name,
-        });
-        selectActiveLaneId(created.id);
-        selectActiveSessionId(null);
-        setDrawerLaneId(created.id);
-        setSelectedDrawerLaneId(created.id);
-        setSelectedDrawerChatId(null);
-        setSelectedWorkChatAction(null);
-        setWorkSelectedKey(`lane:${created.id}`);
-        setRightOpen(false);
-        setRightPane({ kind: "empty" });
-        lastUserOpenedPaneRef.current = null;
-        focusAfterDetails();
-        addNotice(`Moved unstaged work to ${created.name}.`, "success");
-        await refreshState();
-      } catch (err) {
-        addNotice(err instanceof Error ? err.message : String(err), "error");
-      }
       return;
     }
 
@@ -16758,7 +16624,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const top = filterNewLaneBranchMatches({
           branches: rightPane.branches,
           query: values[field.name] ?? "",
-          remote: field.name === "baseBranch" ? true : normalizeNewLaneBranchSource(values.branchSource) === "remote",
+          remote: normalizeNewLaneStart(values.start) === "existing" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.on || "remote") === "remote",
           limit: 1,
         })[0];
         if (top) {
@@ -17192,24 +17058,37 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const field = fields[formFieldIndex] ?? fields[0] ?? null;
       const nextValues = currentFormValues();
       if (field?.name === "start") {
-        // 1-3 follow the vertical option order (primary / branch / child).
-        const startByKey: Record<string, string> = { "1": "primary", "2": "import", "3": "child" };
+        // Number keys follow the mode order.
+        const startByKey: Record<string, string> = { "1": "new", "2": "existing" };
         const cycled = key.leftArrow || key.rightArrow
           ? cycleNewLaneStart(nextValues.start, key.leftArrow ? -1 : 1)
           : startByKey[input];
         if (cycled && cycled !== normalizeNewLaneStart(nextValues.start)) {
-          const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+          newLaneChoiceRevisionRef.current++;
           setFormValues({ ...nextValues, start: cycled });
           // Rebuild the visible fields for the chosen mode (desktop dialog
           // parity: each "Start from" mode shows its own inputs). The start
           // row keeps the same index across modes so focus stays put.
           setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
-            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(cycled), { activeLaneName }) }
+            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(cycled), { from: nextValues.from }) }
             : previous);
           setPrompt("");
           return;
         }
         if (cycled) {
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+      if (field?.name === "from" || field?.name === "on") {
+        if (key.leftArrow || key.rightArrow) {
+          const delta = key.leftArrow ? -1 : 1;
+          const next = field.name === "from" ? cycleNewLaneFrom(nextValues.from, delta) : cycleNewLaneOn(nextValues.on, delta);
+          newLaneChoiceRevisionRef.current++;
+          setFormValues({ ...nextValues, [field.name]: next });
+          if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(nextValues.start), { from: next }) } : previous);
           setPrompt("");
           return;
         }
@@ -18469,11 +18348,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   setPrompt("");
                   return;
                 }
-                const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+                newLaneChoiceRevisionRef.current++;
                 setFormValues((prev) => ({ ...prev, start: nextStart }));
                 setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
-                  ? { ...previous, fields: newLaneFormFields(nextStart, { activeLaneName }) }
+                  ? { ...previous, fields: newLaneFormFields(nextStart, { from: formValues.from }) }
                   : previous);
+                setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && (field.name === "from" || field.name === "on")) {
+                const next = field.name === "from" ? cycleNewLaneFrom(formValues.from, 1) : cycleNewLaneOn(formValues.on, 1);
+                newLaneChoiceRevisionRef.current++;
+                setFormValues(prev => ({ ...prev, [field.name]: next }));
+                if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+                  ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(formValues.start), { from: next }) } : previous);
                 setPrompt("");
                 return;
               }

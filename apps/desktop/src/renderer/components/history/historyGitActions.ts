@@ -372,13 +372,10 @@ export async function runHistoryGitAction(args: {
         }
         const laneName = (await promptDialog({ title: "Lane name", defaultValue: trimmedBranchName }))?.trim();
         if (!laneName) return;
-        const remote = await window.ade.git.getOriginRemote({ laneId });
         const lane = await window.ade.lanes.create({
           name: laneName,
-          parentLaneId: laneId,
           branchName: trimmedBranchName,
           startPoint: commit.sha,
-          ...(remote.branch ? { baseBranch: remote.branch } : {}),
         });
         onNotice?.(`Created lane ${lane.name}`);
         navigate?.(`/lanes?laneId=${encodeURIComponent(lane.id)}`);

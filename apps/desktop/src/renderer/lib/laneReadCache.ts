@@ -19,13 +19,11 @@ function projectKey(projectRoot: string | null | undefined): string {
   return projectRoot?.trim() || "active";
 }
 
-function normalizeLaneArgs(args: ListLanesArgs): Required<Pick<ListLanesArgs, "includeArchived" | "includeStatus" | "includeConflictStatus" | "includeRebaseSuggestions" | "includeAutoRebaseStatus">> {
+function normalizeLaneArgs(args: ListLanesArgs): Required<Pick<ListLanesArgs, "includeArchived" | "includeStatus" | "includeConflictStatus">> {
   return {
     includeArchived: args.includeArchived === true,
     includeStatus: args.includeStatus === true,
     includeConflictStatus: args.includeConflictStatus === true,
-    includeRebaseSuggestions: args.includeRebaseSuggestions === true,
-    includeAutoRebaseStatus: args.includeAutoRebaseStatus === true,
   };
 }
 

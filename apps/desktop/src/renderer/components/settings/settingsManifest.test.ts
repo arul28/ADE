@@ -218,18 +218,17 @@ describe("settings manifest", () => {
     expect(resolveSettingsHash("not-an-anchor")).toBeNull();
   });
 
-  it("finds the auto-rebase toggle by its plain name — the Cmd-K case that failed before", () => {
-    const results = searchSettingsEntries("rebase");
+  it("finds a setting by its plain name — the Cmd-K case that failed before", () => {
+    const results = searchSettingsEntries("lane templates");
     const ids = results.map((entry) => entry.id);
-    expect(ids).toContain("lanes-git.auto-rebase");
-    expect(ids).toContain("lanes-git.rebase-suggestions");
+    expect(ids).toContain("lanes-git.lane-templates");
     // Label matches outrank keyword-only matches.
     expect(results[0]?.tab).toBe("lanes-git");
   });
 
   it("finds settings by keyword when the label does not contain the query", () => {
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
-    expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
+    expect(searchSettingsEntries("uncommitted").map((e) => e.id)).toContain("lanes-git.new-lane-start");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
     expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
     expect(searchSettingsEntries("crash").map((e) => e.id)).toContain("general.diagnostics-sharing");
@@ -292,7 +291,7 @@ describe("settings manifest", () => {
   it("lists a tab's groups in first-appearance order with no duplicates", () => {
     const groups = settingsGroupsForTab("lanes-git");
     expect(groups[0]).toBe("Lanes");
-    expect(groups).toContain("Rebase & stacking");
+    expect(groups).toContain("New lanes");
     expect(new Set(groups).size).toBe(groups.length);
   });
 
@@ -410,18 +409,13 @@ describe("settings command palette entries", () => {
     expect(new Set(commands.map((command) => command.id)).size).toBe(commands.length);
   });
 
-  it("finds the auto-rebase toggle by name and routes to its card", () => {
-    const results = filterPalette(commands, "rebase");
-    const autoRebase = results.find((command) => command.id === "setting-lanes-git.auto-rebase");
-    expect(autoRebase).toBeDefined();
-    expect(autoRebase!.title).toBe("Auto-rebase child lanes");
-    expect(autoRebase!.hint).toContain("Lanes");
-    expect(autoRebase!.path).toBe("/settings?tab=lanes-git#auto-rebase");
-  });
-
-  it("surfaces the rebase notification control for the same query", () => {
-    const ids = filterPalette(commands, "rebase").map((command) => command.id);
-    expect(ids).toContain("setting-lanes-git.rebase-suggestions");
+  it("finds a setting by name and routes to its card", () => {
+    const results = filterPalette(commands, "lane templates");
+    const templates = results.find((command) => command.id === "setting-lanes-git.lane-templates");
+    expect(templates).toBeDefined();
+    expect(templates!.title).toBe("Lane templates");
+    expect(templates!.hint).toContain("Lanes");
+    expect(templates!.path).toBe("/settings?tab=lanes-git#lane-templates");
   });
 
   it("reaches settings whose label does not contain the query", () => {
@@ -445,7 +439,7 @@ describe("settings command palette entries", () => {
   });
 
   it("agrees with the manifest's own search on which entries match", () => {
-    for (const query of ["rebase", "theme", "sound", "storage"]) {
+    for (const query of ["templates", "theme", "sound", "storage"]) {
       const paletteIds = new Set(
         filterPalette(commands, query)
           .filter((command) => command.id.startsWith("setting-"))

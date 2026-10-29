@@ -45,9 +45,7 @@ import type { createConflictService } from "../../../../desktop/src/main/service
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
-import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
-import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -153,10 +151,6 @@ type SyncServiceArgs = {
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
-  rebaseSuggestionService?: ReturnType<
-    typeof createRebaseSuggestionService
-  > | null;
-  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   computerUseArtifactBrokerService: ReturnType<
     typeof createComputerUseArtifactBrokerService
   >;
@@ -1009,8 +1003,6 @@ export function createSyncService(args: SyncServiceArgs) {
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,
-    rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
-    autoRebaseService: args.autoRebaseService ?? undefined,
     // Late-bound: the host service starts after this command service exists.
     getLanePresenceStamp: () => hostService?.getLanePresenceStamp() ?? "",
     getModelPickerStore: args.getModelPickerStore,
@@ -1227,8 +1219,6 @@ export function createSyncService(args: SyncServiceArgs) {
       portAllocationService: args.portAllocationService,
       laneEnvironmentService: args.laneEnvironmentService,
       laneTemplateService: args.laneTemplateService,
-      rebaseSuggestionService: args.rebaseSuggestionService ?? undefined,
-      autoRebaseService: args.autoRebaseService ?? undefined,
       dispatchDeeplinkUrl: args.dispatchDeeplinkUrl,
       computerUseArtifactBrokerService: args.computerUseArtifactBrokerService,
       pinStore,

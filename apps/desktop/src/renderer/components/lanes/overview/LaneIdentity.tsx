@@ -11,6 +11,7 @@ import {
   NotePencil,
 } from "@phosphor-icons/react";
 import type { GitUpstreamSyncStatus, LaneSummary, OpenProjectBinding } from "../../../../shared/types";
+import { plainLaneStartBranch } from "../../../../shared/laneStart";
 import { relativeWhen } from "../../../lib/format";
 import { revealLabel } from "../../../lib/platform";
 import { ProviderLogo } from "../../shared/ProviderLogos";
@@ -20,6 +21,8 @@ import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneBranchSwitcher } from "../detail/LaneBranchSwitcher";
 import { LinearIssueBadge } from "../LinearIssueBadge";
 import { COLORS, toneText } from "../laneDesignTokens";
+import type { LaneRebaseLine } from "../laneRebaseNeeds";
+import { LaneCatchUpButton, LaneCatchUpMenu } from "../LaneCatchUpMenu";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
@@ -64,6 +67,31 @@ function StatusGlyph({ item }: { item: LaneStatusItem }) {
   return <span aria-hidden className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: color }} />;
 }
 
+/** The small "Catch up" button after the status line's behind fact, with its menu. */
+function CatchUpAction({
+  lane,
+  line,
+  pin,
+  machineId,
+  hasPr,
+}: {
+  lane: LaneSummary;
+  line: LaneRebaseLine;
+  pin: OpenProjectBinding | null;
+  machineId: string | null;
+  hasPr: boolean;
+}) {
+  return (
+    <LaneCatchUpMenu
+      lane={lane}
+      line={line}
+      target={{ ok: true, laneId: lane.id, pin, machineId }}
+      hasPr={hasPr}
+      trigger={(state) => <LaneCatchUpButton state={state} title={line.title} testId="lane-catch-up-action" />}
+    />
+  );
+}
+
 /**
  * The top of the lane overview: the lane's name and branch, where it came
  * from, a few actions, and its git state in one line. No card: the name is
@@ -73,8 +101,9 @@ function StatusGlyph({ item }: { item: LaneStatusItem }) {
 export function LaneIdentity({
   lane,
   accent,
-  primaryLane,
-  parentLane,
+  compareBase,
+  rebaseLine,
+  hasPr = false,
   upstream,
   createdBy,
   active,
@@ -87,13 +116,16 @@ export function LaneIdentity({
   onOpenHistory,
   onReveal,
   onOpenMenu,
-  onSelectLane,
   statusStale = false,
 }: {
   lane: LaneSummary;
   accent: string;
-  primaryLane: LaneSummary | null;
-  parentLane: LaneSummary | null;
+  /** The branch ahead/behind is measured against: the open PR's base, else the lane's base. */
+  compareBase: string;
+  /** The quiet "behind" line, when the lane needs one; adds the Catch up menu. */
+  rebaseLine: LaneRebaseLine | null;
+  /** The lane has a pull request, so its branch is pushed (no "Rebase now"). */
+  hasPr?: boolean;
   upstream: GitUpstreamSyncStatus | null;
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
@@ -114,7 +146,6 @@ export function LaneIdentity({
   onOpenHistory?: () => void;
   onReveal: () => void;
   onOpenMenu: (anchor: DOMRect) => void;
-  onSelectLane: (laneId: string) => void;
   /**
    * The lane's git status was not measured within the freshness window (a read
    * is out, or failed): its facts render quietly, never as current.
@@ -122,8 +153,13 @@ export function LaneIdentity({
   statusStale?: boolean;
 }) {
   const isPrimary = lane.laneType === "primary";
-  const baseLabel = (parentLane?.branchRef ?? lane.baseRef ?? "").replace(/^refs\/heads\//, "") || "base";
-  const status = laneStatusItems({ lane, baseLabel, upstream });
+  const fromLabel = plainLaneStartBranch(lane.baseRef) || "base";
+  // "Up to date" would contradict a lane that still needs a rebase.
+  const status = laneStatusItems({ lane, baseLabel: compareBase, upstream })
+    .filter((item) => !(rebaseLine && item.glyph === "check"));
+  // "3 behind main" is already a status fact; the rebase line adds Catch up
+  // after it. "Built on work now in main" has no status fact, so it is its own.
+  const behindShown = status.some((item) => item.key === "behind");
   const menuRef = React.useRef<HTMLSpanElement>(null);
 
   return (
@@ -194,27 +230,13 @@ export function LaneIdentity({
         {/* One line that never wraps: the branch gives way first. */}
         <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[12px] text-muted-fg" data-testid="lane-identity-meta">
           <span className="-ml-2 -mr-1 flex min-w-0 shrink">
-            <LaneBranchSwitcher lane={lane} primaryLane={primaryLane} active={active} pin={pin} machineId={machineId} />
+            <LaneBranchSwitcher lane={lane} active={active} pin={pin} machineId={machineId} />
           </span>
           <Sep />
           {isPrimary ? (
             <span className="shrink-0">Primary lane</span>
-          ) : parentLane ? (
-            <span className="inline-flex min-w-0 shrink items-center">
-              <span className="min-w-0 truncate">
-                stacked on{" "}
-                <button
-                  type="button"
-                  className="text-fg/80 underline-offset-2 transition-colors hover:text-fg hover:underline"
-                  onClick={() => onSelectLane(parentLane.id)}
-                  data-testid="lane-identity-parent"
-                >
-                  {parentLane.name}
-                </button>
-              </span>
-            </span>
           ) : (
-            <span className="shrink-0">from <span className="text-fg/80">{baseLabel}</span></span>
+            <span className="shrink-0">from <span className="text-fg/80">{fromLabel}</span></span>
           )}
           {!isPrimary && lane.createdAt ? (
             <>
@@ -241,13 +263,20 @@ export function LaneIdentity({
         </div>
       </div>
 
-      {/* One line; a narrow column clips the last facts rather than wrapping. */}
-      <div className="flex min-w-0 items-center gap-x-4 overflow-hidden whitespace-nowrap text-[12.5px] text-fg/75" data-testid="lane-status-line">
+      {/* Each fact stays whole; a narrow column wraps them onto a second line instead of cutting one off. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-[12.5px] text-fg/75" data-testid="lane-status-line">
+        {rebaseLine && (rebaseLine.kind === "built_on_merged" || !behindShown) ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={rebaseLine.title} data-status="rebase">
+            <span aria-hidden className="kit-dot" data-state="warn" />
+            {rebaseLine.text}
+            <CatchUpAction lane={lane} line={rebaseLine} pin={pin} machineId={machineId} hasPr={hasPr} />
+          </span>
+        ) : null}
         {status.map((item) => (
           <span
             key={item.key}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 tabular-nums transition-opacity duration-150",
+              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums transition-opacity duration-150",
               statusStale && isLaneStatusFact(item) && "opacity-50",
             )}
             title={item.title}
@@ -256,6 +285,9 @@ export function LaneIdentity({
           >
             <StatusGlyph item={item} />
             {item.text}
+            {item.key === "behind" && rebaseLine?.kind === "behind" ? (
+              <CatchUpAction lane={lane} line={rebaseLine} pin={pin} machineId={machineId} hasPr={hasPr} />
+            ) : null}
           </span>
         ))}
       </div>

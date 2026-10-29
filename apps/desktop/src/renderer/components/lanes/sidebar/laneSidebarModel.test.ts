@@ -30,10 +30,6 @@ function makeLane(overrides: Partial<LaneSummary> & { id: string }): LaneSummary
     branchRef: `feature/${overrides.id}`,
     worktreePath: `/tmp/${overrides.id}`,
     attachedRootPath: null,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
     color: null,
@@ -62,51 +58,14 @@ function makeAgent(overrides: Partial<LaneAgent>): LaneAgent {
 }
 
 describe("buildLaneSidebarRows", () => {
-  const primary = makeLane({ id: "primary", laneType: "primary", createdAt: "2026-01-01T00:00:00.000Z" });
-
-  it("puts primary first, top-level lanes newest first, and stacks under their parent", () => {
-    const older = makeLane({ id: "older", parentLaneId: "primary", createdAt: "2026-09-01T00:00:00.000Z" });
+  it("puts primary first, then lanes newest first", () => {
+    const primary = makeLane({ id: "primary", laneType: "primary", createdAt: "2026-01-01T00:00:00.000Z" });
+    const older = makeLane({ id: "older", createdAt: "2026-09-01T00:00:00.000Z" });
     const newer = makeLane({ id: "newer", createdAt: "2026-09-10T00:00:00.000Z" });
-    const childB = makeLane({ id: "child-b", parentLaneId: "older", createdAt: "2026-09-05T00:00:00.000Z" });
-    const childA = makeLane({ id: "child-a", parentLaneId: "older", createdAt: "2026-09-03T00:00:00.000Z" });
 
-    const rows = buildLaneSidebarRows([childB, newer, older, primary, childA]);
+    const rows = buildLaneSidebarRows([older, newer, primary]);
 
-    expect(rows.map((row) => [row.lane.id, row.depth])).toEqual([
-      ["primary", 0],
-      ["newer", 0],
-      ["older", 0],
-      ["child-a", 1],
-      ["child-b", 1],
-    ]);
-  });
-
-  it("stops indenting after two levels so deep stacks keep their names in view", () => {
-    const a = makeLane({ id: "a" });
-    const b = makeLane({ id: "b", parentLaneId: "a" });
-    const c = makeLane({ id: "c", parentLaneId: "b" });
-    const d = makeLane({ id: "d", parentLaneId: "c" });
-
-    const rows = buildLaneSidebarRows([primary, a, b, c, d]);
-
-    expect(rows.map((row) => [row.lane.id, row.depth, row.indentLevel])).toEqual([
-      ["primary", 0, 0],
-      ["a", 0, 0],
-      ["b", 1, 1],
-      ["c", 2, 2],
-      ["d", 3, 2],
-    ]);
-  });
-
-  it("promotes a lane whose parent is filtered out, and survives a parent cycle", () => {
-    const orphan = makeLane({ id: "orphan", parentLaneId: "missing" });
-    const loopA = makeLane({ id: "loop-a", parentLaneId: "loop-b" });
-    const loopB = makeLane({ id: "loop-b", parentLaneId: "loop-a" });
-
-    const rows = buildLaneSidebarRows([orphan, loopA, loopB]);
-
-    expect(rows.map((row) => row.lane.id).sort()).toEqual(["loop-a", "loop-b", "orphan"]);
-    expect(rows.find((row) => row.lane.id === "orphan")?.depth).toBe(0);
+    expect(rows.map((row) => row.lane.id)).toEqual(["primary", "newer", "older"]);
   });
 });
 
@@ -210,8 +169,6 @@ describe("classifyLaneState", () => {
       agents: [],
       runtime: null,
       prs: undefined,
-      rebaseSuggestion: null,
-      autoRebaseStatus: null,
       nowMs: NOW,
       ...rest,
     };
@@ -234,8 +191,6 @@ describe("classifyLaneState", () => {
       [{ prs: [makePr({ checksStatus: "failing" })] }, "PR checks are failing"],
       [{ prs: [makePr({ reviewStatus: "changes_requested" })] }, "PR has changes requested"],
       [{ prs: [makePr({ state: "draft", mergeConflicts: true })] }, "PR has merge conflicts"],
-      [{ autoRebaseStatus: { state: "rebaseConflict" } }, "Rebase hit conflicts"],
-      [{ autoRebaseStatus: { state: "rebaseFailed" } }, "Rebase failed"],
     ];
     for (const [overrides, reason] of cases) {
       expect(classifyLaneState(input(overrides))).toBe("needs-you");
@@ -258,9 +213,10 @@ describe("classifyLaneState", () => {
     expect(classifyLaneState(input({ lastCommitAt: new Date(NOW - LANE_ACTIVE_WINDOW_MS - 60_000).toISOString() }))).toBe("quiet");
   });
 
-  it("is Behind main when behind its base or a rebase is suggested", () => {
+  it("is Behind main when behind its base or built on merged work", () => {
     expect(classifyLaneState(input({ behind: 4 }))).toBe("behind");
-    expect(classifyLaneState(input({ rebaseSuggestion: { behindCount: 2 } }))).toBe("behind");
+    expect(classifyLaneState(input({ rebaseNeed: { kind: "behind", behindBy: 2 } }))).toBe("behind");
+    expect(classifyLaneState(input({ rebaseNeed: { kind: "built_on_merged", behindBy: 0 } }))).toBe("behind");
   });
 
   it("is Done when the current PR merged, even if behind", () => {
@@ -298,12 +254,11 @@ describe("classifyLaneState", () => {
 
 describe("buildLaneSidebarLayout", () => {
   const primary = makeLane({ id: "primary", laneType: "primary", createdAt: "2026-01-01T00:00:00.000Z" });
-  const parent = makeLane({ id: "parent", parentLaneId: "primary", createdAt: "2026-09-01T00:00:00.000Z" });
-  const sameGroupChild = makeLane({ id: "same", parentLaneId: "parent", createdAt: "2026-09-02T00:00:00.000Z" });
-  const otherGroupChild = makeLane({ id: "other", name: "Other", parentLaneId: "parent", createdAt: "2026-09-03T00:00:00.000Z" });
+  const parent = makeLane({ id: "parent", createdAt: "2026-09-01T00:00:00.000Z" });
+  const sameGroupChild = makeLane({ id: "same", createdAt: "2026-09-02T00:00:00.000Z" });
+  const otherGroupChild = makeLane({ id: "other", name: "Other", createdAt: "2026-09-03T00:00:00.000Z" });
   const done = makeLane({ id: "done", createdAt: "2026-09-04T00:00:00.000Z" });
   const lanes = [primary, parent, sameGroupChild, otherGroupChild, done];
-  const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const stateByLaneId = new Map<string, LaneStateGroupId | "primary">([
     ["primary", "primary"],
     ["parent", "behind"],
@@ -312,28 +267,23 @@ describe("buildLaneSidebarLayout", () => {
     ["done", "done"],
   ]);
 
-  it("pins Primary, orders groups, hides empty ones, and hints split stacks", () => {
-    const layout = buildLaneSidebarLayout({ lanes, groupBy: "state", stateByLaneId, lanesById });
+  it("pins Primary, orders groups and hides empty ones", () => {
+    const layout = buildLaneSidebarLayout({ lanes, groupBy: "state", stateByLaneId });
     if (layout.groupBy !== "state") throw new Error("expected state layout");
     expect(layout.pinned.map((row) => row.lane.id)).toEqual(["primary"]);
     expect(layout.groups.map((group) => group.id)).toEqual(["active", "behind", "done"]);
     const behind = layout.groups.find((group) => group.id === "behind")!;
-    expect(behind.rows.map((row) => [row.lane.id, row.depth, row.parentHint ?? null])).toEqual([
-      ["parent", 0, null],
-      ["same", 1, null],
-    ]);
-    const active = layout.groups.find((group) => group.id === "active")!;
-    expect(active.rows.map((row) => [row.lane.id, row.depth, row.parentHint])).toEqual([["other", 0, "parent"]]);
+    expect(behind.rows.map((row) => row.lane.id)).toEqual(["same", "parent"]);
   });
 
   it("walks visible rows in screen order and skips collapsed groups", () => {
-    const layout = buildLaneSidebarLayout({ lanes, groupBy: "state", stateByLaneId, lanesById });
-    expect(laneSidebarVisibleLaneIds(layout, new Set())).toEqual(["primary", "other", "parent", "same", "done"]);
+    const layout = buildLaneSidebarLayout({ lanes, groupBy: "state", stateByLaneId });
+    expect(laneSidebarVisibleLaneIds(layout, new Set())).toEqual(["primary", "other", "same", "parent", "done"]);
     expect(laneSidebarVisibleLaneIds(layout, new Set([laneStateGroupSectionId("behind")]))).toEqual(["primary", "other", "done"]);
   });
 
-  it("falls back to the plain stack tree", () => {
-    const layout = buildLaneSidebarLayout({ lanes, groupBy: "stack", stateByLaneId, lanesById });
+  it("lists every lane in one list", () => {
+    const layout = buildLaneSidebarLayout({ lanes, groupBy: "list", stateByLaneId });
     expect(laneSidebarVisibleLaneIds(layout, new Set([laneStateGroupSectionId("behind")]))).toEqual(
       buildLaneSidebarRows(lanes).map((row) => row.lane.id),
     );
@@ -341,7 +291,7 @@ describe("buildLaneSidebarLayout", () => {
 
   it("offers bulk actions only on Done, Behind main and Stale", () => {
     expect(laneGroupBulkActions("done")).toEqual(["archive"]);
-    expect(laneGroupBulkActions("behind")).toEqual(["rebase"]);
+    expect(laneGroupBulkActions("behind")).toEqual(["catchUp"]);
     expect(laneGroupBulkActions("stale")).toEqual(["archive", "delete"]);
     expect(laneGroupBulkActions("needs-you")).toEqual([]);
     expect(laneGroupBulkActions("active")).toEqual([]);

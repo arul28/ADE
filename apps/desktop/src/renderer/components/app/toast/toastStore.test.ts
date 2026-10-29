@@ -283,7 +283,6 @@ function makeRebaseRun(overrides: Partial<RebaseRun> = {}): RebaseRun {
   return {
     runId: "run-1",
     rootLaneId: "lane-1",
-    scope: "lane_only",
     pushMode: "none",
     state: "completed",
     startedAt: "2026-07-02T12:00:00.000Z",
@@ -294,7 +293,6 @@ function makeRebaseRun(overrides: Partial<RebaseRun> = {}): RebaseRun {
       {
         laneId: "lane-1",
         laneName: "Root Lane",
-        parentLaneId: null,
         status: "succeeded",
         preHeadSha: null,
         postHeadSha: "sha-after",
@@ -407,7 +405,6 @@ describe("useLaneEventToasts", () => {
           {
             laneId: "lane-1",
             laneName: "Root Lane",
-            parentLaneId: null,
             status: "succeeded",
             preHeadSha: null,
             postHeadSha: "sha-after",
@@ -418,7 +415,6 @@ describe("useLaneEventToasts", () => {
           {
             laneId: "lane-2",
             laneName: "Child Lane",
-            parentLaneId: "lane-1",
             status: "conflict",
             preHeadSha: "sha-before",
             postHeadSha: null,

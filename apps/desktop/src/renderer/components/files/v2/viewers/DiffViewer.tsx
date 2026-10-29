@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { DiffMode, FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
 import { hostSupportsBranchDiff } from "../../../../lib/branchDiffSupport";
 import { extractError } from "../../../../lib/format";
@@ -35,20 +35,36 @@ export function DiffViewer({
 }) {
   const [mode, setMode] = useState<DiffMode>("unstaged");
   const [branchSupported, setBranchSupported] = useState(false);
+  // A mode the user picked sticks across files; until then each file opens on
+  // its newest change (the viewer is reused when another file opens).
+  const userPickedModeRef = useRef(false);
 
-  // Branch is the default where the host has it: a committed lane's file
-  // otherwise opens on "no changes".
+  // Open on the file's newest change: its uncommitted edits when it has
+  // some, else what the lane committed (Branch, where the host has it), so a
+  // committed lane's file does not open on "no changes".
   useEffect(() => {
     let cancelled = false;
-    void hostSupportsBranchDiff(laneId).then((supported) => {
+    void Promise.all([
+      hostSupportsBranchDiff(laneId),
+      window.ade.diff.getChanges({ laneId }).catch((error) => {
+        console.warn("files.diff_viewer.changes_read_failed", error);
+        return null;
+      }),
+    ]).then(([supported, changes]) => {
       if (cancelled) return;
       setBranchSupported(supported);
-      if (supported) setMode((current) => (current === "unstaged" ? "branch" : current));
+      const matches = (file: { path: string }) => file.path === path;
+      const opening: DiffMode | null = changes?.unstaged.some(matches)
+        ? "unstaged"
+        : changes?.staged.some(matches)
+          ? "staged"
+          : supported ? "branch" : null;
+      if (!userPickedModeRef.current) setMode(opening ?? "unstaged");
     });
     return () => {
       cancelled = true;
     };
-  }, [laneId]);
+  }, [laneId, path]);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [patch, setPatch] = useState<FilePatch | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);
@@ -119,7 +135,10 @@ export function DiffViewer({
               <button
                 key={m}
                 type="button"
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  userPickedModeRef.current = true;
+                  setMode(m);
+                }}
                 className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
                 style={{ color: isActive ? "var(--color-accent-fg)" : COLORS.textMuted, background: isActive ? COLORS.accent : "transparent" }}
               >

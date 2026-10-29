@@ -60,17 +60,6 @@ export function describeLanePrIssues(
   return issues;
 }
 
-export function buildLaneRebaseRecommendedLaneIds(args: {
-  lanes: LaneSummary[];
-  selectedLaneIds: string[];
-}): string[] {
-  const laneById = new Map(args.lanes.map((lane) => [lane.id, lane]));
-  return args.selectedLaneIds.filter((laneId) => {
-    const lane = laneById.get(laneId);
-    return Boolean(lane && (lane.status.behind > 0 || lane.status.rebaseInProgress));
-  });
-}
-
 export function buildLanePrWarnings(args: {
   lanes: LaneSummary[];
   selectedLaneIds: string[];

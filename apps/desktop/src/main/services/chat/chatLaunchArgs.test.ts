@@ -66,12 +66,17 @@ describe("chatLaunchArgs (desktop action + sync host share this parser)", () => 
 describe("parseChatLaunchLaneConfig (composer's configured new lane)", () => {
   it("keeps a valid recipe, trimming strings and dropping empty ones", () => {
     expect(parseChatLaunchLaneConfig({
-      mode: "child",
-      parentLaneId: " lane-1 ",
+      mode: "new",
+      start: { from: "branch", branch: " origin/develop ", on: "local" },
       templateId: " tpl-1 ",
       color: "#abcdef",
       branchRef: "   ",
-    })).toEqual({ mode: "child", parentLaneId: "lane-1", templateId: "tpl-1", color: "#abcdef" });
+    })).toEqual({
+      mode: "new",
+      start: { from: "branch", branch: "develop", on: "local" },
+      templateId: "tpl-1",
+      color: "#abcdef",
+    });
   });
 
   it("keeps a well-formed Linear issue but drops a malformed one", () => {
@@ -87,14 +92,14 @@ describe("parseChatLaunchLaneConfig (composer's configured new lane)", () => {
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
     };
-    expect(parseChatLaunchLaneConfig({ mode: "root", linearIssue: validIssue })?.linearIssue)
+    expect(parseChatLaunchLaneConfig({ mode: "new", linearIssue: validIssue })?.linearIssue)
       .toMatchObject({ id: "issue-1", identifier: "ADE-1", title: "Ship it" });
     // Only an id: the canonical parser rejects it, so it never reaches lane creation.
-    expect(parseChatLaunchLaneConfig({ mode: "root", linearIssue: { id: "issue-1" } })).toEqual({ mode: "root" });
+    expect(parseChatLaunchLaneConfig({ mode: "new", linearIssue: { id: "issue-1" } })).toEqual({ mode: "new" });
   });
 
   it("rejects an unknown mode", () => {
-    expect(parseChatLaunchLaneConfig({ mode: "nope", parentLaneId: "lane-1" })).toBeUndefined();
+    expect(parseChatLaunchLaneConfig({ mode: "nope", branchRef: "feature" })).toBeUndefined();
     expect(parseChatLaunchLaneConfig("not-an-object")).toBeUndefined();
   });
 });

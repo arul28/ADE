@@ -1,31 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { GitBranch, Warning } from "@phosphor-icons/react";
 import type { GitCommitSummary, LaneSummary, OpenProjectBinding, PrSummary } from "../../../../shared/types";
 import { isWebClientMode } from "../../../lib/webClientMode";
 import { revealLaneWorktree } from "../../../lib/revealLaneWorktree";
 import { selectActiveProjectStateKey, useAppStore } from "../../../state/appStore";
 import { getLaneAccent } from "../laneColorPalette";
 import type { LaneAgent } from "../laneAgents";
-import { lanePrTagRoutePath, type LaneTabPrTag } from "../lanePageModel";
-import { laneBranchLabel } from "../sidebar/laneSidebarModel";
+import { lanePrTagRoutePath } from "../lanePageModel";
+import { laneCompareBase, type LaneRebaseLine } from "../laneRebaseNeeds";
 import { LaneBuildOutputNotice } from "./LaneBuildOutputNotice";
+import { LaneCatchUpFailureBanner } from "../LaneCatchUpMenu";
 import { LaneChangesSection } from "./LaneChangesSection";
 import { LaneChatsSection } from "./LaneChatsSection";
 import { LaneHistoryFeed } from "./LaneHistoryFeed";
 import { LaneIdentity } from "./LaneIdentity";
 import { LanePrSection } from "./LanePrSection";
-import { LaneStackSection } from "./LaneStackSection";
 import {
   buildLaneHistory,
   filterLaneHistory,
-  laneRebaseNeed,
   selectLaneCommits,
   type LaneHistoryEntry,
   type LaneHistoryFilter,
   type LaneHistoryPr,
-  type LaneNoticeTone,
-  type LaneRebaseSource,
 } from "./laneHistoryModel";
 import {
   buildLaneChatRows,
@@ -34,7 +30,6 @@ import {
   laneOverviewSections,
   splitLanePrs,
 } from "./laneOverviewModel";
-import { Banner } from "../../ui/notice";
 import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
 import { historyCommitsPath } from "../../history/historyUrlHydration";
 import { useTurnStallClock } from "../../../lib/useTurnStallClock";
@@ -60,8 +55,8 @@ const EMPTY_SECTION_IDS: string[] = [];
 /**
  * Set when the lane lives on a machine other than the one the project tab is
  * bound to. Every read the dashboard makes then goes to `pin`, and the lane
- * list it resolves parents/children against is that machine's own — never the
- * tab's, where a lane with the same id may be a different lane.
+ * list it resolves the lane against is that machine's own — never the tab's,
+ * where a lane with the same id may be a different lane.
  */
 export type LaneDashboardMachine = {
   pin: OpenProjectBinding;
@@ -101,47 +96,9 @@ export function recentActivityWindow(args: {
   return { count: args.total, moreLabel: args.hasMoreCommits ? "Show older" : null };
 }
 
-/** One quiet row when the lane needs a rebase or one went wrong. */
-function RebaseNotice({
-  label,
-  tone,
-  source,
-  onOpen,
-  onDismiss,
-}: {
-  label: string;
-  tone: LaneNoticeTone;
-  source: LaneRebaseSource;
-  onOpen: () => void;
-  onDismiss: (() => void) | null;
-}) {
-  return (
-    <Banner
-      layout="inline"
-      testId="lane-rebase-notice"
-      style={{ margin: "0 -8px" }}
-      model={{
-        id: `lane-rebase-notice:${source}`,
-        tone: tone === "danger" ? "error" : "warning",
-        icon: tone === "danger"
-          ? <Warning size={13} weight="fill" />
-          : <GitBranch size={13} weight="bold" />,
-        title: label,
-        actions: [{
-          label: source === "suggestion" ? "Rebase…" : "Review",
-          onClick: onOpen,
-        }],
-        dismiss: onDismiss
-          ? { onDismiss, label: "Dismiss", title: "Dismiss until the base moves again" }
-          : false,
-      }}
-    />
-  );
-}
-
 /**
  * The left column of the Lanes tab: the lane's name and git state, its pull
- * request, its chats, its stack, what it changes, and its recent activity.
+ * request, its chats, what it changes, and its recent activity.
  * Every read is scoped to this one lane, and a section with nothing to show
  * is left out. The page is only mounted while the tab is active.
  */
@@ -150,17 +107,9 @@ export function LaneDashboard({
   colorIndex,
   active = true,
   agents = EMPTY_AGENTS,
-  colorIndexByLaneId,
-  prTagsByLaneId,
-  showRebaseSuggestions,
-  rebaseError,
-  onOpenRebase,
-  onDismissRebaseSuggestion,
-  onDismissAutoRebase,
+  rebaseLine,
   onStartChat,
   onSelectCommit,
-  onSelectLane,
-  onOpenPrTag,
   onOpenLaneMenu,
   machine = null,
 }: {
@@ -169,19 +118,11 @@ export function LaneDashboard({
   active?: boolean;
   /** The lane's live roster from the page; a change in it re-reads the chat rows. */
   agents?: LaneAgent[];
-  colorIndexByLaneId: ReadonlyMap<string, number>;
-  prTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
-  /** False when the project turned rebase suggestions off. Failures still show. */
-  showRebaseSuggestions: boolean;
-  rebaseError: string | null;
-  onOpenRebase: (laneId: string) => void;
-  onDismissRebaseSuggestion: (laneId: string) => void;
-  onDismissAutoRebase: (laneId: string) => void;
+  /** The quiet "3 behind main" line, when the lane is behind; it carries the Catch up menu. */
+  rebaseLine: LaneRebaseLine | null;
   onStartChat: ((laneId: string) => void) | null;
   /** Opens a commit in the Git pane next to the overview. */
   onSelectCommit: (commit: GitCommitSummary) => void;
-  onSelectLane: (laneId: string) => void;
-  onOpenPrTag: (pr: LaneTabPrTag) => void;
   /** Opens the lane's context menu under the given button. */
   onOpenLaneMenu: (laneId: string, anchor: DOMRect) => void;
   /** The lane's machine, when it is not the tab's. See {@link LaneDashboardMachine}. */
@@ -195,18 +136,6 @@ export function LaneDashboard({
   const selectLane = useAppStore((s) => s.selectLane);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lane = useMemo(() => lanes.find((row) => row.id === laneId) ?? null, [laneId, lanes]);
-  // Snapshots (runtime, rebase suggestions) are the tab machine's only.
-  const boundSnapshot = useAppStore((s) => s.laneSnapshots.find((row) => row.lane.id === laneId) ?? null);
-  const snapshot = machine ? null : boundSnapshot;
-  const primaryLane = useMemo(() => lanes.find((row) => row.laneType === "primary") ?? null, [lanes]);
-  const parentLane = useMemo(
-    () => (lane?.parentLaneId ? lanes.find((row) => row.id === lane.parentLaneId) ?? null : null),
-    [lane?.parentLaneId, lanes],
-  );
-  const childLanes = useMemo(
-    () => lanes.filter((row) => row.parentLaneId === laneId && !row.archivedAt),
-    [laneId, lanes],
-  );
 
   // Folded sections, saved per project like the sidebar's folded groups, so
   // a section stays folded as you move between lanes.
@@ -302,16 +231,6 @@ export function LaneDashboard({
   );
   const createdBy = useMemo(() => (lane ? laneCreatedBy(lane, historySessions) : null), [historySessions, lane]);
 
-  const rebase = lane
-    ? laneRebaseNeed({
-      lane,
-      rebaseSuggestion: showRebaseSuggestions ? snapshot?.rebaseSuggestion : null,
-      autoRebaseStatus: snapshot?.autoRebaseStatus,
-      parentName: parentLane?.name ?? null,
-    })
-    : null;
-  // A plain "behind" count is already in the status line.
-  const notice = rebase && rebase.tone !== "muted" ? rebase : null;
 
   const openChat = useCallback((sessionId: string) => {
     // The Work tab stays mounted, so its listener focuses the chat; the
@@ -358,20 +277,13 @@ export function LaneDashboard({
     return <div className="h-full" data-testid="lane-dashboard" />;
   }
 
-  const baseLabel = laneBranchLabel(parentLane?.branchRef ?? lane.baseRef) || "base";
+  const baseLabel = rebaseLine?.baseBranch ?? laneCompareBase(lane);
   const sections = laneOverviewSections({
     prs: prs.all,
     chatCount: chatRows.length,
-    hasParent: parentLane != null,
-    childCount: childLanes.length,
     livePrFileCount: prDetail?.files.length ?? 0,
     laneCommitCount: laneCommits.length,
   });
-  const dismissNotice = notice?.source === "suggestion"
-    ? () => onDismissRebaseSuggestion(laneId)
-    : notice?.source === "auto-rebase"
-      ? () => onDismissAutoRebase(laneId)
-      : null;
   // Reveal resolves the lane on the tab's machine, so it is never offered for
   // a lane on another machine.
   const canReveal = !machine && !isWebClientMode() && !isRemoteProject && Boolean(lane.worktreePath) && Boolean(window.ade?.lanes?.revealWorktree);
@@ -387,8 +299,10 @@ export function LaneDashboard({
           <LaneIdentity
             lane={lane}
             accent={accent}
-            primaryLane={primaryLane}
-            parentLane={parentLane}
+            compareBase={baseLabel}
+            rebaseLine={rebaseLine}
+            // Catch-ups run on the lane's machine: `pin` and `machineId` below.
+            hasPr={currentPr != null}
             upstream={upstream}
             createdBy={createdBy}
             active={active}
@@ -401,31 +315,11 @@ export function LaneDashboard({
             onOpenHistory={() => navigate(historyCommitsPath(laneId, machine?.machineId))}
             onReveal={() => { void revealLaneWorktree(lane.id); }}
             onOpenMenu={(anchor) => onOpenLaneMenu(laneId, anchor)}
-            onSelectLane={onSelectLane}
             // A lane on another machine carries that machine's own read.
             statusStale={!machine && boundLaneStatusStale}
           />
-          {notice ? (
-            <RebaseNotice
-              label={notice.label}
-              tone={notice.tone}
-              source={notice.source}
-              onOpen={() => onOpenRebase(laneId)}
-              onDismiss={dismissNotice}
-            />
-          ) : null}
           <LaneBuildOutputNotice laneId={laneId} pin={pin} active={active} />
-          {rebaseError ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "lane-rebase-error",
-                tone: "error",
-                title: rebaseError,
-                report: { surface: "lane_rebase" },
-              }}
-            />
-          ) : null}
+          <LaneCatchUpFailureBanner laneId={lane.id} pin={pin} />
         </div>
 
         {sections.pr && currentPr ? (
@@ -449,18 +343,6 @@ export function LaneDashboard({
             baseLabel={baseLabel}
             trailerProviderBySha={trailerProviderBySha}
             onSelectCommit={onSelectCommit}
-          />
-        ) : null}
-
-        {sections.stack ? (
-          <LaneStackSection
-            lane={lane}
-            parent={parentLane}
-            children={childLanes}
-            colorIndexByLaneId={colorIndexByLaneId}
-            prTagsByLaneId={prTagsByLaneId}
-            onSelectLane={onSelectLane}
-            onOpenPr={onOpenPrTag}
           />
         ) : null}
 

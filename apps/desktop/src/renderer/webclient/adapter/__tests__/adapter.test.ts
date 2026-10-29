@@ -2365,7 +2365,7 @@ describe("createAdeWebAdapter", () => {
 
   it("unwraps refreshed lane and PR envelopes to preserve renderer array contracts", async () => {
     fake.descriptors = descriptors(["lanes.refreshSnapshots", "prs.refresh"]);
-    const laneSnapshot = { lane: { id: "lane-1" }, runtime: {}, rebaseSuggestion: null };
+    const laneSnapshot = { lane: { id: "lane-1" }, runtime: {} };
     const pr = { id: "pr-1", title: "Ship web client" };
     fake.commandResults.set("lanes.refreshSnapshots", {
       refreshedCount: 1,
@@ -2583,8 +2583,6 @@ describe("createAdeWebAdapter", () => {
       "prs.getStatus",
       "prs.getChecks",
       "prs.getGitHubSnapshot",
-      "prs.getMergeContexts",
-      "prs.getMergeContext",
       "lanes.list",
       "github.getStatus",
     ]);
@@ -2617,23 +2615,12 @@ describe("createAdeWebAdapter", () => {
     fake.commandResults.set("prs.getStatus", { prId: "pr-1", isMergeable: true });
     fake.commandResults.set("prs.getChecks", [{ id: "check-1", status: "completed" }]);
     fake.commandResults.set("prs.getGitHubSnapshot", { repoPullRequests: [{ linkedPrId: "pr-1" }] });
-    fake.commandResults.set("prs.getMergeContexts", {
-      "pr-1": {
-        prId: "pr-1",
-        groupId: null,
-        groupType: null,
-        sourceLaneIds: [],
-        targetLaneId: null,
-        integrationLaneId: null,
-        members: [],
-      },
-    });
     fake.commandResults.set("lanes.list", [{ id: "lane-1" }]);
 
     const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
     adapter.bindProject(project, "project-1");
 
-    const [list, lanePr, conflicts, statusA, statusB, checks, github, contextsA, contextsB, lanesA, lanesB] = await Promise.all([
+    const [list, lanePr, conflicts, statusA, statusB, checks, github, lanesA, lanesB] = await Promise.all([
       adapter.ade.prs.listAll(),
       adapter.ade.prs.getForLane("lane-1"),
       adapter.ade.prs.listWithConflicts({ includeConflictAnalysis: false }),
@@ -2641,8 +2628,6 @@ describe("createAdeWebAdapter", () => {
       adapter.ade.prs.getStatus("pr-1"),
       adapter.ade.prs.getChecks("pr-1"),
       adapter.ade.prs.getGitHubSnapshot(),
-      adapter.ade.prs.getMergeContexts(["pr-1"]),
-      adapter.ade.prs.getMergeContexts(["pr-1"]),
       adapter.ade.lanes.list({ includeStatus: false }),
       adapter.ade.lanes.list({ includeStatus: false }),
     ]);
@@ -2653,7 +2638,6 @@ describe("createAdeWebAdapter", () => {
     expect(checks).toEqual([{ id: "check-1", status: "completed" }]);
     expect(conflicts).toEqual([{ ...pr, conflictAnalysis: null }]);
     expect(github).toMatchObject({ repoPullRequests: [{ linkedPrId: "pr-1" }] });
-    expect(contextsA).toEqual(contextsB);
     expect(lanesA).toEqual(lanesB);
     // The expensive mobile aggregate (per-lane rebase git sweep) must not be
     // what a plain list read costs on web.
@@ -2664,8 +2648,6 @@ describe("createAdeWebAdapter", () => {
     expect(fake.commandCalls.filter((call) => call.action === "prs.getStatus")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "prs.getChecks")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "prs.getGitHubSnapshot")).toHaveLength(1);
-    expect(fake.commandCalls.filter((call) => call.action === "prs.getMergeContexts")).toHaveLength(1);
-    expect(fake.commandCalls.filter((call) => call.action === "prs.getMergeContext")).toHaveLength(0);
 
     fake.emitTables(["pull_requests", "pull_request_snapshots", "github_pr_projections"]);
     fake.emitTables(["pull_requests"]);
@@ -2939,8 +2921,6 @@ describe("createAdeWebAdapter", () => {
     adapter.bindProject(project, "project-1");
 
     await expect(adapter.ade.prs.reconcileNow(pin)).rejects.toThrow(/cross-machine web routing is not implemented/);
-    expect(() => adapter.ade.prs.onAiResolutionEvent(() => undefined, pin))
-      .toThrow(/cross-machine web routing is not implemented/);
     expect(fake.commandCalls).toHaveLength(0);
 
     adapter.dispose();

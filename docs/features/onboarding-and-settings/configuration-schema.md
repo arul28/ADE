@@ -66,14 +66,6 @@ type ProjectConfigFile = {
   automations?: ConfigAutomationRule[];
   environments?: EnvironmentMapping[];
   github?: { prPollingIntervalSeconds?: number };
-  git?: {
-    autoRebaseOnHeadChange?: boolean;
-    newLaneBaseSource?: "local" | "remote";
-    /** How a lane that fell behind its parent is surfaced. */
-    rebaseSuggestions?: "off" | "badge" | "banner";
-    /** Don't suggest until the lane is at least this far behind. */
-    rebaseSuggestionMinBehind?: number;
-  };
   ai?: AiConfig;
   laneEnvInit?: LaneEnvInitConfig;
   laneTemplates?: ConfigLaneTemplate[];
@@ -289,7 +281,7 @@ a `local.yaml` with no value gets 7 days. See
 Policy enforced by the lane cleanup service. UI lives in
 `StorageSection.tsx` (Project → Storage & cleanup → Rules), not
 `LaneBehaviorSection.tsx` — that section owns lane *behavior*
-(base source, auto-rebase, rebase noise), not storage rules.
+(start defaults and templates), not storage rules.
 
 ## Port allocation and proxy
 
@@ -534,12 +526,7 @@ the git block with `defaultEffectiveGitConfig()` from
 `shared/types/config.ts` rather than by hand — including in tests — so
 adding a git setting doesn't require editing every fixture.
 
-`git.rebaseSuggestions` defaults to `banner`
-and `git.rebaseSuggestionMinBehind` to `1`,
-which together reproduce the pre-setting behavior. `off` is honored in
-`rebaseSuggestionService` *before* the scan runs, so it skips the
-remote-tracking fetch and per-lane behind-count rather than just hiding
-the result.
+
 
 ## No trust gate
 

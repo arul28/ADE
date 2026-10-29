@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
+import { normalizeLaneStart } from "../../../shared/laneStart";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -216,15 +217,26 @@ function parseRemoteMcpTurnLabel(value: unknown): { connectionId: string; label:
 }
 
 /**
+ * A launch's lane mode, including the names older clients and saved launch
+ * records use: `import` is `existing`; `root` and `child` are `new`.
+ */
+export function normalizeChatLaunchLaneMode(mode: unknown): ChatLaunchLaneConfig["mode"] | null {
+  if (mode === "new" || mode === "root" || mode === "child") return "new";
+  if (mode === "existing" || mode === "import") return "existing";
+  return null;
+}
+
+/**
  * The optional lane recipe a client may attach to a new-lane launch. Unknown
- * modes are dropped (a launch that only carried the mode is a default root
- * lane); every other field is optional and trimmed.
+ * modes are dropped (the launch then uses the project's new-lane defaults); a
+ * malformed `start` is refused. Every other field is optional and trimmed.
  */
 export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig | undefined {
   if (!isRecord(value)) return undefined;
-  const mode = value.mode === "child" ? "child" : value.mode === "import" ? "import" : value.mode === "root" ? "root" : null;
+  const mode = normalizeChatLaunchLaneMode(value.mode);
   if (!mode) return undefined;
-  const parentLaneId = asTrimmedString(value.parentLaneId);
+  const start = mode === "new" && value.start != null ? normalizeLaneStart(value.start) : null;
+  if (mode === "new" && value.start != null && !start) throw new Error("Invalid lane start.");
   const branchRef = asTrimmedString(value.branchRef);
   const templateId = asTrimmedString(value.templateId);
   const color = asTrimmedString(value.color);
@@ -233,11 +245,12 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
   return {
     mode,
-    ...(parentLaneId ? { parentLaneId } : {}),
+    ...(start ? { start } : {}),
     ...(branchRef ? { branchRef } : {}),
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
+    ...(mode === "new" && value.autoName === true ? { autoName: true } : {}),
   };
 }
 
@@ -262,7 +275,6 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     prompt: typeof record.prompt === "string" ? record.prompt : "",
     ...(asTrimmedString(record.displayPrompt) ? { displayPrompt: asTrimmedString(record.displayPrompt) } : {}),
     ...(attachments?.length ? { attachments } : {}),
-    ...(asTrimmedString(record.baseBranch) ? { baseBranch: asTrimmedString(record.baseBranch) } : {}),
     ...(laneConfig ? { laneConfig } : {}),
     ...(asTrimmedString(record.modelId) ? { modelId: asTrimmedString(record.modelId) } : {}),
     ...(asTrimmedString(record.provider) ? { provider: asTrimmedString(record.provider) } : {}),

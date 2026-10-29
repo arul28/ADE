@@ -76,8 +76,9 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["auth", new Set(["status"])],
   ["machines", new Set(["list", "show"])],
   ["projects", new Set(["list"])],
-  ["lanes", new Set(["list", "show", "actions", "reclaim-preview"])],
-  ["lane", new Set(["list", "show", "actions", "reclaim-preview"])],
+  // `defaults` reads the new-lane defaults; `defaults set` is refused below.
+  ["lanes", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
+  ["lane", new Set(["list", "show", "actions", "reclaim-preview", "defaults"])],
   ["git", new Set(["status", "branches", "is-reachable"])],
   ["diff", new Set(["changes", "file", "patch", "actions"])],
   ["files", new Set(["tree", "read", "search", "workspaces", "quick-open"])],
@@ -379,6 +380,9 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
   if (allowed === true) return { ok: true, args };
   if (!(allowed instanceof Set)) return refuse();
   const sub = args[1];
+  // `lanes defaults set` changes the project's new-lane defaults. Look past
+  // the global flags (`--json`, `--pretty`) the CLI strips before it parses.
+  if ((command === "lanes" || command === "lane") && sub === "defaults" && args.slice(2).includes("set")) return refuse();
   // `actions run` passed checkActionsCommand's read-only test before getting here.
   if (command === "actions" && sub === "run" && words[0] === "run") return { ok: true, args };
   if (sub && allowed.has(sub)) return { ok: true, args };

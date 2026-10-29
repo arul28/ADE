@@ -6,7 +6,6 @@ import {
   prRouteCoordinatesKey,
   prRouteTargetsEqual,
   readStoredPrsRoute,
-  resolvePrsActiveTab,
   writeStoredPrsRoute,
 } from "./prsRouteState";
 
@@ -30,11 +29,10 @@ describe("prsRouteState", () => {
     expect(
       parsePrsRouteState({
         search: "?tab=normal&prId=pr-123&laneId=lane-search",
-        hash: "#/prs?tab=workflows&workflow=integration",
+        hash: "#/prs?tab=github",
       }),
     ).toEqual({
-      tab: "workflows",
-      workflowTab: "integration",
+      tab: "github",
       laneId: null,
       prId: null,
       prNumber: null,
@@ -52,11 +50,10 @@ describe("prsRouteState", () => {
     expect(
       parsePrsRouteState({
         search: "",
-        hash: "#/prs?tab=workflows&workflow=rebase&laneId=lane-456&prId=pr-789",
+        hash: "#/prs?tab=normal&laneId=lane-456&prId=pr-789",
       }),
     ).toEqual({
-      tab: "workflows",
-      workflowTab: "rebase",
+      tab: "normal",
       laneId: "lane-456",
       prId: "pr-789",
       prNumber: null,
@@ -77,7 +74,6 @@ describe("prsRouteState", () => {
       }),
     ).toEqual({
       tab: "normal",
-      workflowTab: null,
       laneId: null,
       prId: "pr-1",
       prNumber: null,
@@ -96,7 +92,6 @@ describe("prsRouteState", () => {
       buildPrsRouteSearch({
         activeTab: "normal",
         selectedPrId: "pr-1",
-        selectedRebaseItemId: null,
         eventId: "evt-5",
         threadId: "thr-3",
         commitSha: "abc",
@@ -126,7 +121,6 @@ describe("prsRouteState", () => {
       selectedPrNumber: 123,
       repoOwner: "ade-dev",
       repoName: "ade",
-      selectedRebaseItemId: null,
     })).toBe("?tab=normal&pr=123&repoOwner=ade-dev&repoName=ade");
   });
 
@@ -142,124 +136,32 @@ describe("prsRouteState", () => {
     )).toBe(true);
   });
 
-  it("builds normal and workflow route searches with the expected ids", () => {
-    expect(
-      buildPrsRouteSearch({
-        activeTab: "normal",
-        selectedPrId: "pr-123",
-        selectedRebaseItemId: "lane-ignored",
-      }),
-    ).toBe("?tab=normal&prId=pr-123");
-
-    expect(
-      buildPrsRouteSearch({
-        activeTab: "rebase",
-        selectedPrId: "pr-123",
-        selectedRebaseItemId: "lane-456",
-      }),
-    ).toBe("?tab=workflows&workflow=rebase&laneId=lane-456");
-  });
-
   it("stores the last PRs route per project without falling back across projects", () => {
     writeStoredPrsRoute("/prs?tab=normal&prId=project-a", "/tmp/project-a");
     writeStoredPrsRoute("/prs?tab=normal&prId=project-b", "/tmp/project-b");
     writeStoredPrsRoute("/files", "/tmp/project-b");
-    writeStoredPrsRoute("/prs?tab=workflows&workflow=integration");
+    writeStoredPrsRoute("/prs?tab=normal&prId=unscoped");
 
     expect(readStoredPrsRoute("/tmp/project-a")).toBe("/prs?tab=normal&prId=project-a");
     expect(readStoredPrsRoute("/tmp/project-b")).toBe("/prs?tab=normal&prId=project-b");
     expect(readStoredPrsRoute("/tmp/project-c")).toBeNull();
-    expect(readStoredPrsRoute()).toBe("/prs?tab=workflows&workflow=integration");
+    expect(readStoredPrsRoute()).toBe("/prs?tab=normal&prId=unscoped");
   });
 });
 
-describe("resolvePrsActiveTab", () => {
-  it("routes a stale tab=normal + hash workflow=rebase to the rebase workflow", () => {
-    const parsed = parsePrsRouteState({
-      search: "?tab=normal",
-      hash: "#/prs?tab=workflows&workflow=rebase&laneId=lane-1",
-    });
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(resolved.isWorkflowRoute).toBe(true);
-    expect(resolved.effectiveWorkflow).toBe("rebase");
-    expect(resolved.activeTab).toBe("rebase");
-  });
-
-  it("falls back to integration when tab=workflows has no workflow param", () => {
-    const parsed = parsePrsRouteState({ search: "?tab=workflows" });
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(resolved.isWorkflowRoute).toBe(true);
-    expect(resolved.effectiveWorkflow).toBeNull();
-    expect(resolved.activeTab).toBe("integration");
-  });
-
-  it("keeps tab=normal on the normal tab when no workflow signal is present", () => {
-    const parsed = parsePrsRouteState({ search: "?tab=normal&prId=pr-1" });
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(resolved.isWorkflowRoute).toBe(false);
-    expect(resolved.activeTab).toBe("normal");
-  });
-
-  it("returns normal when the route has no tab or workflow signal", () => {
-    const parsed = parsePrsRouteState({ search: "" });
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(resolved.isWorkflowRoute).toBe(false);
-    expect(resolved.activeTab).toBe("normal");
-  });
-
-  it("keeps legacy prId-only routes on the normal PR surface", () => {
+describe("parsePrsRouteState tab signals", () => {
+  it("keeps legacy prId-only routes on the GitHub view", () => {
     const parsed = parsePrsRouteState({ search: "?prId=pr-123" });
-    const resolved = resolvePrsActiveTab(parsed);
     expect(parsed.prId).toBe("pr-123");
     expect(parsed.tab).toBeNull();
-    expect(resolved.isWorkflowRoute).toBe(false);
-    expect(resolved.activeTab).toBe("normal");
   });
 
-  it("prefers the hash workflow over a stale outer search workflow (BrowserRouter mock mode)", () => {
-    // Outer URL like `/?tab=workflows&workflow=integration#/prs?tab=workflows&workflow=rebase`
-    // In BrowserRouter mock mode the outer search is stale; the inner hash is the
-    // current in-app location and must win.
-    const parsed = parsePrsRouteState({
-      search: "?tab=workflows&workflow=integration",
-      hash: "#/prs?tab=workflows&workflow=rebase",
-    });
-    expect(parsed.workflowTab).toBe("rebase");
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(resolved.isWorkflowRoute).toBe(true);
-    expect(resolved.effectiveWorkflow).toBe("rebase");
-    expect(resolved.activeTab).toBe("rebase");
-  });
-
-  it("keeps hash lane ids with the hash workflow when outer search is stale", () => {
-    const parsed = parsePrsRouteState({
-      search: "?tab=workflows&workflow=rebase&laneId=old",
-      hash: "#/prs?tab=workflows&workflow=rebase&laneId=new",
-    });
-    expect(parsed.workflowTab).toBe("rebase");
-    expect(parsed.laneId).toBe("new");
-  });
-
-  it("defaults a bare hash workflows route to integration even when outer search says normal", () => {
-    const parsed = parsePrsRouteState({
-      search: "?tab=normal",
-      hash: "#/prs?tab=workflows",
-    });
-    const resolved = resolvePrsActiveTab(parsed);
-    expect(parsed.tab).toBe("workflows");
-    expect(resolved.isWorkflowRoute).toBe(true);
-    expect(resolved.activeTab).toBe("integration");
-  });
-
-  it("ignores invalid hash route signals instead of dropping valid search params", () => {
-    const parsed = parsePrsRouteState({
-      search: "?tab=normal&prId=pr-123",
-      hash: "#/prs?tab=bogus",
-    });
-    const resolved = resolvePrsActiveTab(parsed);
+  it.each([
+    ["an old Workflows link", "#/prs?tab=workflows&workflow=rebase&laneId=lane-1"],
+    ["an unknown tab", "#/prs?tab=bogus"],
+  ])("ignores %s in the hash instead of dropping valid search params", (_label, hash) => {
+    const parsed = parsePrsRouteState({ search: "?tab=normal&prId=pr-123", hash });
     expect(parsed.tab).toBe("normal");
     expect(parsed.prId).toBe("pr-123");
-    expect(resolved.isWorkflowRoute).toBe(false);
-    expect(resolved.activeTab).toBe("normal");
   });
 });

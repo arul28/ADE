@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
 
+## [1.2.126] - 2026-10-29
+
+### Desktop and web
+
+- One way to start a lane (new or existing branch, from the default, primary or a chosen branch), lane defaults per account, no child lanes (#1962).
+- ADE MCP is one server per account with MCP Apps views and answer cards; MCP import finds provider-configured servers (#1945, #1950).
+- Provider pages show a branded banner, 30-day usage and the initial context window; new What's new page and tips (#1960, #1963, #1957).
+- Live effort changes for running Claude turns (#1946); liquid glass boot logo (#1952); update install from the native menu (#1943).
+- One failure template for notices (#1951); menus and hover cards stay on screen (#1959); 60 fps What's new videos (#1954); agent skill and prompt fixes (#1958); slow sync spawn logging in the brain (#1961).
+- Fixes for the long-chat blank gap, agent CLI brain connection, coordinator Needs you, app/brain drift and web app parity (#1955, #1956, #1949, #1953, #1947).
+
+### iOS
+
+- Compact iPhone Duo front-screen header and no keyboard layout loops (#1948), new lane choices (#1962) and the running-effort chip (#1946), in TestFlight build 118.
+
 ## [1.2.125] - 2026-10-27
 
 ### Desktop and web
@@ -2783,7 +2798,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.124...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.126...HEAD
+[1.2.126]: https://github.com/arul28/ADE/compare/v1.2.125...v1.2.126
 [1.2.125]: https://github.com/arul28/ADE/compare/v1.2.124...v1.2.125
 [1.2.124]: https://github.com/arul28/ADE/compare/v1.2.123...v1.2.124
 [1.2.123]: https://github.com/arul28/ADE/compare/v1.2.122...v1.2.123

@@ -1199,7 +1199,7 @@ chat pane mount, which happens either way.
 
   Attachments in parallel mode are capped by
   `PARALLEL_CHAT_MAX_ATTACHMENTS = 12`. The same attachment list is
-  sent to every child lane, so the cap is enforced both when toggling
+  sent to every created lane, so the cap is enforced both when toggling
   parallel mode and when adding files.
 
 - **Work auto-create launch behavior.** A single-model local launch on

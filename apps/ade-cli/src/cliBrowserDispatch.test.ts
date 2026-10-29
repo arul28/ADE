@@ -166,7 +166,7 @@ describe("browser positional grammar", () => {
     expect(buildCliPlan(["browser", "open", "--url", "--help"]).kind).toBe("help");
     expect(buildCliPlan(["lanes", "list", "--text", "--help"]).kind).toBe("help");
     expect(
-      buildCliPlan(["lanes", "reparent", "lane-child", "--stack-base-branch", "develop", "--help"]).kind,
+      buildCliPlan(["lanes", "create", "--from", "--help"]).kind,
     ).toBe("help");
   });
 });

@@ -29,8 +29,8 @@ import { extractError } from "../../lib/format";
  * `LaneCombobox` target dropdown (no free-text) → title / description / create.
  * There are no section labels: the source is visibly immutable (lock glyph, no
  * box) and the target is visibly a dropdown, so the old uppercase captions and
- * the two identical 46px tiles they distinguished are gone. Integration PR
- * creation lives in the full composer ("Open in PRs tab").
+ * the two identical 46px tiles they distinguished are gone. Draft and merge
+ * method live in the full composer ("Open in PRs tab").
  *
  * Linear magic words and the "Open in ADE" deeplink footer are owned by
  * prService on create (idempotently), so the editable fields stay clean.
@@ -98,10 +98,9 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     () =>
       resolveLaneBaseBranch({
         lane,
-        lanes,
         primaryBranchRef: primaryLane?.branchRef ?? null,
       }),
-    [lane, lanes, primaryLane?.branchRef],
+    [lane, primaryLane?.branchRef],
   );
 
   // Target options: every other live lane (one branch per lane = lane.branchRef).
@@ -200,8 +199,8 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     }
   }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, sessionId, title]);
 
-  // The full integration composer lives in the PRs tab; this hands off with the
-  // lane pre-selected.
+  // The full composer lives in the PRs tab; this hands off with the lane
+  // pre-selected.
   const openFullComposer = useCallback(() => {
     const params = new URLSearchParams({ tab: "normal", create: "1", sourceLaneId: laneId, target: "primary" });
     navigate(`/prs?${params.toString()}`);
@@ -337,7 +336,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         )}
       </button>
 
-      {/* Hand off to the full PRs-tab composer for integration and review steps. */}
+      {/* Hand off to the full PRs-tab composer for draft and merge-method steps. */}
       <button
         type="button"
         onClick={openFullComposer}

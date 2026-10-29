@@ -14,8 +14,6 @@ struct LaneManageSheet: View {
   @State private var displayedName: String
   @State private var renameText: String
   @State private var renamePresented = false
-  @State private var selectedParentLaneId: String
-  @State private var baseBranchOverride: String = ""
   @State private var colorText: String
   @State private var iconText: String
   @State private var tagsText: String
@@ -36,10 +34,8 @@ struct LaneManageSheet: View {
     self.onDeleted = onDeleted
     self.onRenamed = onRenamed
     self.onComplete = onComplete
-    let primaryLaneId = allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
     _displayedName = State(initialValue: snapshot.lane.name)
     _renameText = State(initialValue: snapshot.lane.name)
-    _selectedParentLaneId = State(initialValue: snapshot.lane.parentLaneId ?? primaryLaneId)
     _colorText = State(initialValue: snapshot.lane.color ?? "")
     _iconText = State(initialValue: snapshot.lane.icon?.rawValue ?? "")
     _tagsText = State(initialValue: snapshot.lane.tags.joined(separator: ", "))
@@ -50,85 +46,11 @@ struct LaneManageSheet: View {
   private var availableTabs: [ManageLaneTab] {
     var tabs: [ManageLaneTab] = [.delete]
     tabs.append(.appearance)
-    if !isPrimary { tabs.append(.stack) }
     tabs.append(.archive)
     return tabs
   }
 
-  private var descendantIds: Set<String> {
-    var result = Set<String>()
-    func collectDescendants(of parentId: String) {
-      for s in allLaneSnapshots where s.lane.parentLaneId == parentId {
-        if result.insert(s.lane.id).inserted {
-          collectDescendants(of: s.lane.id)
-        }
-      }
-    }
-    collectDescendants(of: snapshot.lane.id)
-    return result
-  }
-
-  private var reparentCandidates: [LaneSummary] {
-    let excluded = descendantIds
-    return allLaneSnapshots
-      .map(\.lane)
-      .filter { $0.id != snapshot.lane.id && $0.archivedAt == nil && !excluded.contains($0.id) }
-      .sorted { lhs, rhs in
-        if lhs.laneType == "primary" && rhs.laneType != "primary" { return true }
-        if lhs.laneType != "primary" && rhs.laneType == "primary" { return false }
-        return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
-      }
-  }
-
   private var canArchive: Bool { !isPrimary }
-
-  private var primaryLaneId: String {
-    allLaneSnapshots.first(where: { $0.lane.laneType == "primary" })?.lane.id ?? ""
-  }
-
-  private var effectiveCurrentParentId: String {
-    snapshot.lane.parentLaneId ?? primaryLaneId
-  }
-
-  private var defaultStackBaseBranch: String {
-    reparentCandidates.first(where: { $0.id == selectedParentLaneId })?.branchRef ?? ""
-  }
-
-  private var trimmedBaseOverride: String {
-    baseBranchOverride.trimmingCharacters(in: .whitespacesAndNewlines)
-  }
-
-  private var reparentParentChanged: Bool {
-    selectedParentLaneId != effectiveCurrentParentId
-  }
-
-  private var reparentBaseChanged: Bool {
-    let normalizedOverride = LaneManageSheet.normalizeBranchRefForCompare(trimmedBaseOverride)
-    let normalizedExisting = LaneManageSheet.normalizeBranchRefForCompare(snapshot.lane.baseRef)
-    let normalizedDefault = LaneManageSheet.normalizeBranchRefForCompare(defaultStackBaseBranch)
-    if normalizedOverride.isEmpty {
-      return !normalizedExisting.isEmpty && normalizedExisting != normalizedDefault
-    }
-    return normalizedOverride != normalizedExisting
-  }
-
-  private static func normalizeBranchRefForCompare(_ ref: String) -> String {
-    var value = ref.trimmingCharacters(in: .whitespacesAndNewlines)
-    if value.hasPrefix("refs/heads/") {
-      value = String(value.dropFirst("refs/heads/".count))
-    }
-    if value.hasPrefix("origin/") {
-      value = String(value.dropFirst("origin/".count))
-    }
-    return value
-  }
-
-  private var canApplyReparent: Bool {
-    guard canRunLiveActions else { return false }
-    if snapshot.lane.status.dirty || snapshot.lane.status.rebaseInProgress { return false }
-    guard !selectedParentLaneId.isEmpty else { return false }
-    return reparentParentChanged || reparentBaseChanged
-  }
 
   private var canRunLiveActions: Bool {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
@@ -241,8 +163,6 @@ struct LaneManageSheet: View {
       deleteTab
     case .appearance:
       appearanceTab
-    case .stack:
-      stackTab
     case .archive:
       archiveTab
     }
@@ -545,65 +465,6 @@ struct LaneManageSheet: View {
     .adeKitCard(padding: 14)
   }
 
-  @ViewBuilder
-  private var stackTab: some View {
-    if isPrimary {
-      EmptyView()
-    } else {
-      VStack(alignment: .leading, spacing: 12) {
-        ADEEyebrow("Parent lane")
-
-        if snapshot.lane.status.dirty {
-          ADESettingsNotice(message: "Commit or stash changes before moving this lane.", tone: .warn)
-        }
-
-        if snapshot.lane.status.rebaseInProgress {
-          ADESettingsNotice(message: "Finish or abort the rebase in progress first.", tone: .warn)
-        }
-
-        if reparentCandidates.isEmpty {
-          Text("No valid parent")
-            .font(.system(size: 12.5))
-            .foregroundStyle(ADEColor.textMuted)
-        } else if reparentCandidates.count > 4 {
-          ScrollView {
-            reparentCandidateStack
-          }
-          .frame(maxHeight: 280)
-        } else {
-          reparentCandidateStack
-        }
-
-        LaneTextField(
-          defaultStackBaseBranch.isEmpty
-            ? "Base branch (optional)"
-            : "Base branch (default: \(defaultStackBaseBranch))",
-          text: $baseBranchOverride
-        )
-        .textInputAutocapitalization(.never)
-        .autocorrectionDisabled()
-
-        Text("Runs git rebase; a failed rebase is rolled back.")
-          .font(.system(size: 12))
-          .foregroundStyle(ADEColor.textMuted)
-
-        ADEKitActionButton(title: "Apply stack change", symbol: "arrow.triangle.swap") {
-          Task {
-            await performAction("reparent lane") {
-              try await syncService.reparentLane(
-                snapshot.lane.id,
-                newParentLaneId: selectedParentLaneId,
-                stackBaseBranchRef: trimmedBaseOverride.isEmpty ? nil : trimmedBaseOverride
-              )
-            }
-          }
-        }
-        .disabled(!canApplyReparent)
-      }
-      .adeKitCard(padding: 14)
-    }
-  }
-
   private var archiveTab: some View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 10) {
@@ -633,20 +494,6 @@ struct LaneManageSheet: View {
       }
     }
     .adeKitCard(padding: 14)
-  }
-
-  private var reparentCandidateStack: some View {
-    LaneChoiceList(items: reparentCandidates) { lane in
-      LaneChoiceRow(
-        title: lane.name,
-        subtitle: normalizedPrBranchName(lane.branchRef),
-        systemImage: lane.laneType == "primary" ? "house" : "arrow.triangle.branch",
-        isSelected: selectedParentLaneId == lane.id
-      ) {
-        selectedParentLaneId = lane.id
-        baseBranchOverride = ""
-      }
-    }
   }
 
   @ViewBuilder

@@ -1,7 +1,9 @@
 import type { AdeCardIcon, AdeCardPayload, AdeCardRow } from "./adeCard";
+import type { LaneStart } from "./laneStart";
 import type {
   ChatLaunchArgs,
   ChatLaunchKind,
+  ChatLaunchLaneConfig,
   ChatLaunchPhase,
   ChatLaunchQueueMessageArgs,
   ChatLaunchQueuedMessage,
@@ -19,6 +21,19 @@ import type {
  */
 
 export const CHAT_LAUNCH_STAGE_ORDER: readonly ChatLaunchStageId[] = ["fetch", "checkout", "environment", "agent"];
+
+/**
+ * The start a launch's new lane uses: the lane config's own, else the
+ * project's default start. Null when the launch works on an existing branch.
+ * A launch shows the `fetch` stage exactly when this brings pushed work.
+ */
+export function chatLaunchLaneStart(
+  laneConfig: ChatLaunchLaneConfig | null | undefined,
+  defaultStart: LaneStart,
+): LaneStart | null {
+  if (laneConfig?.mode === "existing") return null;
+  return laneConfig?.start ?? defaultStart;
+}
 
 /** `ade_card` id prefix of a launch's setup card: `lane-setup:<launchId>`. */
 export const LANE_SETUP_CARD_ID_PREFIX = "lane-setup:";
@@ -77,7 +92,7 @@ export function createChatLaunchSnapshot(args: {
     laneName: args.laneName,
     laneNaming: false,
     branchRef: null,
-    baseRef: launch.baseBranch?.trim() || null,
+    baseRef: null,
     worktreePath: null,
     templateName: args.templateName ?? null,
     title: launch.title?.trim() || clipLaunchTitle(launch.displayPrompt?.trim() || prompt || "New chat", 80) || "New chat",

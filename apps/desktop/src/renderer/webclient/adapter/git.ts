@@ -97,6 +97,7 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
     "undoLastHeadChange",
     "redoLastHeadChange",
     "sync",
+    "mergeBaseIn",
     "push",
     "checkoutBranch",
   ];

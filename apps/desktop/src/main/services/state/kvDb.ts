@@ -74,6 +74,19 @@ const RETIRED_REVIEW_TABLES = [
 const RETIRED_PR_AI_SUMMARY_TABLES = ["pull_request_ai_summaries"] as const;
 
 /**
+ * The retired PRs "Workflows" area: integration groups and proposals, and the
+ * rebase suggestion dismiss/defer state. All were CRRs. Members go before
+ * their groups (foreign key).
+ */
+const RETIRED_PR_WORKFLOW_TABLES = [
+  "pr_group_members",
+  "pr_groups",
+  "integration_proposals",
+  "rebase_dismissed",
+  "rebase_deferred",
+] as const;
+
+/**
  * The retired project notes table. It was a CRR, so an older peer can still
  * send changes for it; those are ignored like the other retired tables.
  */
@@ -87,6 +100,7 @@ const SYNC_RETIRED_TABLES = new Set([
   ...RETIRED_EXECUTION_TABLES,
   ...RETIRED_REVIEW_TABLES,
   ...RETIRED_PR_AI_SUMMARY_TABLES,
+  ...RETIRED_PR_WORKFLOW_TABLES,
   ...RETIRED_PROJECT_NOTES_TABLES,
 ]);
 
@@ -217,8 +231,6 @@ export type AdeDbSyncApi = {
  *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "agent-chat:scheduled-work:v1" -> durable Claude wakeup/cron/loop scheduler state
  *   "macDesktop.resolution"       -> MacDesktopResolutionPreset
- *   "auto-rebase:<laneId>"        -> StoredStatus
- *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */
 
 export type AdeDb = {
@@ -1578,17 +1590,56 @@ function deleteAllRowsWithoutCrrReplication(
   runStatement(db, `delete from ${quoteIdentifier(tableName)}`);
 }
 
+/**
+ * Lanes no longer stack on other lanes. `parent_lane_id` stays on `lanes` and
+ * `lane_branch_profiles` (`lanes` is a phone-critical CRR, which cr-sqlite
+ * cannot rebuild), but nothing reads or writes it. This clears it once: a lane
+ * that tracked another lane's branch goes back to the project's default branch
+ * (the primary lane's base), and the old auto-rebase and rebase-suggestion KV
+ * rows are dropped. Runs on every open; a cleared database matches nothing.
+ */
+function retireLaneStacking(db: DatabaseSyncType): void {
+  if (rawHasTable(db, "lanes") && rawHasColumn(db, "lanes", "parent_lane_id")) {
+    runStatement(
+      db,
+      `
+        update lanes
+           set base_ref = (
+             select p.base_ref from lanes p
+              where p.project_id = lanes.project_id
+                and p.lane_type = 'primary'
+                and p.status != 'archived'
+              limit 1
+           )
+         where parent_lane_id is not null
+           and lane_type != 'primary'
+           and exists (
+             select 1 from lanes parent
+              where parent.id = lanes.parent_lane_id
+                and parent.lane_type != 'primary'
+           )
+           and exists (
+             select 1 from lanes p
+              where p.project_id = lanes.project_id
+                and p.lane_type = 'primary'
+                and p.status != 'archived'
+           )
+      `,
+    );
+    runStatement(db, "update lanes set parent_lane_id = null where parent_lane_id is not null");
+  }
+  if (rawHasTable(db, "lane_branch_profiles") && rawHasColumn(db, "lane_branch_profiles", "parent_lane_id")) {
+    runStatement(db, "update lane_branch_profiles set parent_lane_id = null where parent_lane_id is not null");
+  }
+  if (rawHasTable(db, "kv")) {
+    runStatement(db, "delete from kv where key like 'auto_rebase:%' or key like 'rebase:suggestion:%'");
+  }
+}
+
 function removeLegacyQueueStorage(db: DatabaseSyncType, logger?: Logger): void {
   if (rawHasTable(db, "queue_landing_state")) {
     deleteAllRowsWithoutCrrReplication(db, "queue_landing_state", logger);
     runStatement(db, "drop table if exists queue_landing_state");
-  }
-  if (rawHasTable(db, "pr_group_members") && rawHasTable(db, "pr_groups")) {
-    runStatement(
-      db,
-      "delete from pr_group_members where group_id in (select id from pr_groups where group_type = 'queue')",
-    );
-    runStatement(db, "delete from pr_groups where group_type = 'queue'");
   }
   if (rawHasTable(db, "kv")) {
     runStatement(db, "delete from kv where key = 'queue_landing_state.wiped_for_stacked_overhaul.v1'");
@@ -1786,6 +1837,7 @@ function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void
 const RETIRED_TABLE_DROPS = [
   { tables: RETIRED_REVIEW_TABLES, tag: "retired-review-schema", event: "db.retired_review_schema_cleaned" },
   { tables: RETIRED_PR_AI_SUMMARY_TABLES, tag: "retired-pr-ai-summary-schema", event: "db.retired_pr_ai_summary_schema_cleaned" },
+  { tables: RETIRED_PR_WORKFLOW_TABLES, tag: "retired-pr-workflow-schema", event: "db.retired_pr_workflow_schema_cleaned" },
   { tables: RETIRED_PROJECT_NOTES_TABLES, tag: "retired-project-notes-schema", event: "db.retired_project_notes_schema_cleaned" },
 ] as const;
 
@@ -3630,6 +3682,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // could not describe how it shipped. Captured at land() and on the poller's
   // transition to merged; null for PRs merged before this shipped.
   safeAddColumn(db, "alter table pull_requests add column merged_by_login text");
+  // The head commit a PR had when it merged. A lane whose history holds it is
+  // "built on merged work" and needs a rebase (see conflictService rebase needs).
+  safeAddColumn(db, "alter table pull_requests add column merged_head_sha text");
   safeAddColumn(db, "alter table pull_requests add column merged_by_avatar_url text");
   safeAddColumn(db, "alter table pull_requests add column merge_method text");
   // Denormalized so the merged view survives the snapshot purge on detach.
@@ -3989,96 +4044,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     `);
   }
   db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
-
-  // Integration workflow groups.
-  db.run(`
-    create table if not exists pr_groups (
-      id text primary key,
-      project_id text not null,
-      group_type text not null,
-      name text,
-      auto_rebase integer not null default 0,
-      ci_gating integer not null default 0,
-      target_branch text,
-      created_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_pr_groups_project on pr_groups(project_id)");
-
-  db.run(`
-    create table if not exists pr_group_members (
-      id text primary key,
-      group_id text not null,
-      pr_id text not null,
-      lane_id text not null,
-      position integer not null,
-      role text not null,
-      foreign key(group_id) references pr_groups(id),
-      foreign key(pr_id) references pull_requests(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
-  db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
-
-  // Integration proposals table (dry-merge simulation results)
-  db.run(`
-    create table if not exists integration_proposals (
-      id text primary key,
-      project_id text not null,
-      source_lane_ids_json text not null,
-      base_branch text not null,
-      steps_json text not null,
-      title text default '',
-      body text default '',
-      draft integer not null default 0,
-      integration_lane_name text default '',
-      status text not null default 'proposed',
-      integration_lane_id text,
-      resolution_state_json text,
-      pairwise_results_json text not null default '[]',
-      lane_summaries_json text not null default '[]',
-      overall_outcome text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
-  safeAddColumn(db, "alter table integration_proposals add column linked_group_id text");
-  safeAddColumn(db, "alter table integration_proposals add column linked_pr_id text");
-  safeAddColumn(db, "alter table integration_proposals add column workflow_display_state text not null default 'active'");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_state text not null default 'none'");
-  safeAddColumn(db, "alter table integration_proposals add column closed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column merged_at text");
-  safeAddColumn(db, "alter table integration_proposals add column completed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_declined_at text");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_completed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column preferred_integration_lane_id text");
-  safeAddColumn(db, "alter table integration_proposals add column merge_into_head_sha text");
-
-  // Rebase dismiss/defer persistence
-  db.run(`
-    create table if not exists rebase_dismissed (
-      lane_id text not null,
-      project_id text not null,
-      dismissed_at text not null,
-      primary key(lane_id, project_id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_rebase_dismissed_project on rebase_dismissed(project_id)");
-  db.run(`
-    create table if not exists rebase_deferred (
-      lane_id text not null,
-      project_id text not null,
-      deferred_until text not null,
-      primary key(lane_id, project_id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_rebase_deferred_project on rebase_deferred(project_id)");
-
 
   db.run(`
     create table if not exists computer_use_artifacts (
@@ -5095,6 +5060,7 @@ export async function openKvDb(
     }
 
     removeLegacyQueueStorage(db, logger);
+    retireLaneStacking(db);
 
     if (crsqliteLoaded) {
       loadCrsqliteIfAvailable();

@@ -1,18 +1,13 @@
 import React from "react";
-import { useNavigate } from "react-router-dom";
 import * as RadixDialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
+import { CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import type {
   MergeMethod,
   PrSummary,
-  IntegrationProposal,
-  IntegrationProposalStep,
-  CreateIntegrationPrResult,
   GitUpstreamSyncStatus,
   GitBranchSummary,
-  LaneSummary,
 } from "../../../shared/types";
 import {
   buildLinearPrReference,
@@ -24,9 +19,8 @@ import { confirmDialog } from "../ui/dialog/confirm";
 import { Dialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
-import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
+import { describeLanePrIssues } from "./shared/lanePrWarnings";
 
-type CreateMode = "normal" | "integration";
 export type CreatePrModalInitialValues = {
   sourceLaneId?: string | null;
   target?: "primary" | null;
@@ -57,11 +51,6 @@ const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
   { id: "squash", label: "Squash", desc: "Combine all commits into one. Clean, linear history." },
   { id: "merge", label: "Merge", desc: "Create a merge commit. Preserves individual commits and branch topology." },
   { id: "rebase", label: "Rebase", desc: "Replay commits on top of base. Linear history, keeps each commit." },
-];
-
-const MODES: { id: CreateMode; label: string; icon: React.ElementType; desc: string }[] = [
-  { id: "normal", label: "Single PR", icon: GitPullRequest, desc: "Single lane creates one PR." },
-  { id: "integration", label: "Integration workflow", icon: GitMerge, desc: "Merge multiple lanes into one integration branch, then open a PR." },
 ];
 
 /* ── label style helper ────────────────────────────────────────────── */
@@ -100,16 +89,6 @@ const textareaStyle: React.CSSProperties = {
   ...inputStyle,
   resize: "none" as const,
 };
-
-/** Regex for characters/patterns not allowed in git branch names. */
-const INVALID_GIT_REF_RE = /[\s~^:?*\[\\]|\.{2}|^\/|\/$/;
-
-function StepOutcome({ outcome }: { outcome: IntegrationProposalStep["outcome"] }) {
-  if (outcome === "clean") return <CheckCircle size={14} weight="fill" style={{ color: C.success }} />;
-  if (outcome === "conflict") return <Warning size={14} weight="fill" style={{ color: C.warning }} />;
-  if (outcome === "blocked") return <Warning size={14} weight="fill" style={{ color: C.error }} />;
-  return <div style={{ height: 14, width: 14, background: C.textDisabled, borderRadius: 0 }} />;
-}
 
 function CreatePrErrorBanner({ message }: { message: string }) {
   return (
@@ -240,189 +219,14 @@ async function runWithDirtyWorktreeConfirmation<T>(args: {
   }
 }
 
-function buildLaneWarningSummaries(args: {
-  selectedLaneIds: string[];
-  lanes: Array<{ id: string; name: string }>;
-  allLanes: LaneSummary[];
-  laneWarningItemsById: Record<string, string[]>;
-  pullRequests: PrSummary[];
-  targetBranch?: string;
-  primaryBranchRef?: string | null;
-}): LaneWarningSummary[] {
-  return args.selectedLaneIds
-    .map((laneId) => {
-      const lane = args.lanes.find((entry) => entry.id === laneId);
-      const baseMessages = args.laneWarningItemsById[laneId] ?? [];
-      const targetDiffMessage = describePrTargetDiff({
-        lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
-        lanes: args.allLanes,
-        targetBranch: args.targetBranch ?? null,
-        primaryBranchRef: args.primaryBranchRef ?? null,
-      });
-      const parentMergedMessage = describeMergedParentIssue({
-        lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
-        lanes: args.allLanes,
-        pullRequests: args.pullRequests,
-        primaryBranchRef: args.primaryBranchRef ?? null,
-      });
-      const messages = [
-        ...baseMessages,
-        ...(targetDiffMessage ? [targetDiffMessage] : []),
-        ...(parentMergedMessage ? [parentMergedMessage] : []),
-      ];
-      if (!lane || messages.length === 0) return null;
-      return { laneId, laneName: lane.name, messages };
-    })
-    .filter((item): item is LaneWarningSummary => item != null);
-}
-
-function outcomeColor(outcome: string): string {
-  if (outcome === "clean") return C.success;
-  if (outcome === "conflict") return C.warning;
-  return C.error;
-}
-
-function getCreateActionLabel(mode: CreateMode, busy: boolean): string {
-  if (busy) {
-    return mode === "integration" ? "SAVING..." : "CREATING...";
-  }
-  return mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR";
-}
-
-function resolveDefaultBaseBranchForLane(args: {
-  lane: LaneSummary | null;
-  lanes: LaneSummary[];
-  primaryBranchRef?: string | null;
-  pullRequests?: PrSummary[];
-}): string {
-  const lane = args.lane;
-  if (lane?.parentLaneId) {
-    const parentPr = args.pullRequests?.find((pr) => pr.laneId === lane.parentLaneId && pr.state === "merged");
-    if (parentPr?.baseBranch) return parentPr.baseBranch;
-  }
-  return resolveLaneBaseBranch(args);
-}
-
-function describeMergedParentIssue(args: {
-  lane: LaneSummary | null;
-  lanes: LaneSummary[];
-  pullRequests: PrSummary[];
-  primaryBranchRef?: string | null;
-}): string | null {
-  const lane = args.lane;
-  if (!lane?.parentLaneId) return null;
-  const parent = args.lanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
-  if (!parent || parent.laneType === "primary") return null;
-  const parentPr = args.pullRequests.find((pr) => pr.laneId === parent.id && pr.state === "merged");
-  if (!parentPr) return null;
-  const targetBranch = parentPr.baseBranch || branchNameFromRef(args.primaryBranchRef ?? "main") || "main";
-  return `The lane this builds on ("${parent.name}") has already merged. Update this lane from ${targetBranch} before creating its PR so the diff starts from merged code.`;
-}
-
-function LaneCheckboxList({
-  lanes: displayLanes,
-  selectedIds,
-  warningItemsById,
-  onToggle,
-  maxHeight = 240,
-}: {
-  lanes: Array<{ id: string; name: string; branchRef: string }>;
-  selectedIds: string[];
-  warningItemsById: Record<string, string[]>;
-  onToggle: (laneId: string) => void;
-  maxHeight?: number;
-}) {
-  return (
-    <div style={{
-      maxHeight,
-      overflowY: "auto",
-      background: C.bgInput,
-      border: `1px solid ${C.border}`,
-      borderRadius: 0,
-      padding: 8,
-    }}>
-      {displayLanes.map((lane) => {
-        const checked = selectedIds.includes(lane.id);
-        const warningCount = warningItemsById[lane.id]?.length ?? 0;
-        return (
-          <label
-            key={lane.id}
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 10,
-              padding: "8px 10px",
-              cursor: "pointer",
-              background: checked ? C.accentSubtleBg : "transparent",
-              borderRadius: 0,
-              transition: "background 0.1s",
-              marginBottom: 2,
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={checked}
-              onChange={() => onToggle(lane.id)}
-              style={{ accentColor: C.accent }}
-            />
-            <span style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: 12,
-              fontWeight: 600,
-              color: C.textPrimary,
-              flex: 1,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}>
-              {lane.name}
-            </span>
-            <span style={{
-              fontFamily: "var(--font-sans)",
-              fontSize: 11,
-              color: C.textMuted,
-            }}>
-              {lane.branchRef}
-            </span>
-            {warningCount > 0 ? (
-              <span
-                title={`${warningCount} readiness warning${warningCount === 1 ? "" : "s"}`}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 4,
-                  fontSize: 10,
-                  fontFamily: MONO_FONT,
-                  color: C.warning,
-                  background: `color-mix(in srgb, ${C.warning} 9%, transparent)`,
-                  border: `1px solid color-mix(in srgb, ${C.warning} 19%, transparent)`,
-                  padding: "2px 6px",
-                }}
-              >
-                <Warning size={10} weight="fill" />
-                {warningCount}
-              </span>
-            ) : null}
-          </label>
-        );
-      })}
-    </div>
-  );
-}
-
 function LaneWarningPanel({
   items,
   loading,
-  rebaseLaneIds,
-  onOpenRebase,
 }: {
   items: LaneWarningSummary[];
   loading: boolean;
-  rebaseLaneIds: string[];
-  onOpenRebase: (laneId: string) => void;
 }) {
   if (!items.length && !loading) return null;
-  const primaryRebaseLaneId = rebaseLaneIds[0] ?? null;
   return (
     <Banner
       layout="inline"
@@ -452,18 +256,8 @@ function LaneWarningPanel({
                 Checking remote sync status...
               </div>
             ) : null}
-            {primaryRebaseLaneId ? (
-              <div style={{ fontSize: 10, color: C.textMuted, fontFamily: MONO_FONT }}>
-                Review rebase status before PR creation{rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.
-              </div>
-            ) : null}
           </div>
         ),
-        actions: primaryRebaseLaneId ? [{
-          label: "Open Rebase/Merge tab",
-          title: `Review rebase status before PR creation${rebaseLaneIds.length > 1 ? ` (${rebaseLaneIds.length} lanes)` : ""}.`,
-          onClick: () => onOpenRebase(primaryRebaseLaneId),
-        }] : undefined,
       }}
     />
   );
@@ -482,11 +276,8 @@ export function CreatePrModal({
   onCreated?: (created: PrSummary[]) => void | Promise<void>;
   initialValues?: CreatePrModalInitialValues | null;
 }) {
-  const navigate = useNavigate();
   const lanes = useAppStore((s) => s.lanes);
   const primaryLane = React.useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
-
-  const [mode, setMode] = React.useState<CreateMode>("normal");
 
   // Internal numeric step for stepper (1=BRANCH, 2=DETAILS, 3=REVIEW)
   const [numericStep, setNumericStep] = React.useState(1);
@@ -507,16 +298,6 @@ export function CreatePrModal({
   // Body
   const [normalBody, setNormalBody] = React.useState("");
 
-  // Integration PR
-  const [integrationSources, setIntegrationSources] = React.useState<string[]>([]);
-  const [integrationBaseBranch, setIntegrationBaseBranch] = React.useState("");
-  const [integrationName, setIntegrationName] = React.useState("");
-  const [integrationTitle, setIntegrationTitle] = React.useState("");
-  const [integrationBody, setIntegrationBody] = React.useState("");
-  const [integrationDraft, setIntegrationDraft] = React.useState(false);
-  const [integrationMergeIntoLaneId, setIntegrationMergeIntoLaneId] = React.useState("");
-  const [proposal, setProposal] = React.useState<IntegrationProposal | null>(null);
-  const [simulating, setSimulating] = React.useState(false);
   const [laneSyncStatusById, setLaneSyncStatusById] = React.useState<Record<string, GitUpstreamSyncStatus | null>>({});
   const [laneSyncLoadingById, setLaneSyncLoadingById] = React.useState<Record<string, boolean>>({});
   const [knownPrs, setKnownPrs] = React.useState<PrSummary[]>([]);
@@ -565,31 +346,14 @@ export function CreatePrModal({
     return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, normalBaseBranch]);
 
-  const integrationBranchSelectOptions = React.useMemo(() => {
-    const v = integrationBaseBranch.trim();
-    if (!v.length) return targetBranchOptions;
-    return [v, ...targetBranchOptions.filter((b) => b !== v)];
-  }, [targetBranchOptions, integrationBaseBranch]);
-
   // Execute
   const [busy, setBusy] = React.useState(false);
   const [execError, setExecError] = React.useState<string | null>(null);
   const [results, setResults] = React.useState<PrSummary[] | null>(null);
-  const [integrationResult, setIntegrationResult] = React.useState<CreateIntegrationPrResult | null>(null);
-  const [integrationProgress, setIntegrationProgress] = React.useState<string | null>(null);
-  const [integrationBranchError, setIntegrationBranchError] = React.useState<string | null>(null);
-
-  const openRebaseTab = React.useCallback((laneId: string) => {
-    onOpenChange(false);
-    const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
-    navigate({ pathname: "/prs", search: `?${search.toString()}` });
-  }, [navigate, onOpenChange]);
-
   // Reset on close
   React.useEffect(() => {
     if (open) return;
     const id = setTimeout(() => {
-      setMode("normal");
       setNumericStep(1);
       setMergeMethod("squash");
       setNormalLaneId("");
@@ -604,18 +368,6 @@ export function CreatePrModal({
       setExecError(null);
       setResults(null);
       setNormalBody("");
-      setIntegrationSources([]);
-      setIntegrationBaseBranch("");
-      setIntegrationMergeIntoLaneId("");
-      setIntegrationName("");
-      setIntegrationTitle("");
-      setIntegrationBody("");
-      setIntegrationDraft(false);
-      setProposal(null);
-      setSimulating(false);
-      setIntegrationResult(null);
-      setIntegrationProgress(null);
-      setIntegrationBranchError(null);
       setAvailableBranches([]);
       setBranchLoadError(null);
       setKnownPrs([]);
@@ -723,20 +475,14 @@ export function CreatePrModal({
 
   React.useEffect(() => {
     if (!open) return;
-    const primaryBranch = branchNameFromRef(primaryLane?.branchRef ?? "main");
-    setIntegrationBaseBranch((current) => current || primaryBranch);
-  }, [open, primaryLane?.branchRef]);
-
-  React.useEffect(() => {
-    if (!open) return;
     if (!selectedNormalLane) {
       normalBaseBranchDefaultRef.current = "";
       setNormalBaseBranch("");
       return;
     }
-    const nextDefault = resolveDefaultBaseBranchForLane({
+    // The lane's open PR base, else its base (the project's default branch).
+    const nextDefault = resolveLaneBaseBranch({
       lane: selectedNormalLane,
-      lanes,
       primaryBranchRef: primaryLane?.branchRef ?? null,
       pullRequests: knownPrs,
     });
@@ -770,12 +516,9 @@ export function CreatePrModal({
     if (sourceLaneId && !sourceLane && lanes.length === 0) return;
     appliedInitialValuesKeyRef.current = key;
 
-    setMode("normal");
     setNumericStep(1);
     setExecError(null);
     setResults(null);
-    setIntegrationResult(null);
-    setProposal(null);
 
     if (sourceLane) {
       setNormalLaneId(sourceLane.id);
@@ -786,103 +529,35 @@ export function CreatePrModal({
     }
   }, [initialValues, lanes, open, primaryLane?.branchRef]);
 
-  const handleSimulate = async () => {
-    if (integrationSources.length === 0) return;
-    setSimulating(true);
-    setExecError(null);
-    setProposal(null);
-    try {
-      const trimmedIntegrationBaseBranch = integrationBaseBranch.trim();
-      const baseBranch = trimmedIntegrationBaseBranch || branchNameFromRef(primaryLane?.branchRef ?? "main");
-      const mergeInto = integrationMergeIntoLaneId.trim();
-      if (mergeInto && integrationSources.includes(mergeInto)) {
-        setExecError("Merge-into lane cannot be one of the source lanes.");
-        return;
-      }
-      const result = await window.ade.prs.simulateIntegration({
-        sourceLaneIds: integrationSources,
-        baseBranch,
-        mergeIntoLaneId: mergeInto || null,
-      });
-      setProposal(result);
-      // Auto-generate a name if empty
-      if (!integrationName) {
-        setIntegrationName(`integration/${Date.now().toString(36)}`);
-      }
-    } catch (err: unknown) {
-      setExecError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSimulating(false);
-    }
-  };
-
   const handleCreate = async () => {
     setBusy(true);
     setExecError(null);
-    setIntegrationProgress(null);
-    let lastProgressLabel: string | null = null;
     try {
-      if (mode === "normal") {
-        const lane = lanes.find((l) => l.id === normalLaneId);
-        const linearIssue = lane?.linearIssue ?? null;
-        const title = normalTitle.trim() || normalDefaultTitle || lane?.name || "PR";
-        const body = linearIssue
-          ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
-          : normalBody;
-        const pr = await runWithDirtyWorktreeConfirmation({
-          confirmMessage: "Continue and create the PR anyway?",
-          run: async (allowDirtyWorktree) => await window.ade.prs.createFromLane({
-            laneId: normalLaneId,
-            title,
-            body,
-            draft: normalDraft,
-            ...(linearIssue ? { closeLinearIssueOnMerge: normalCloseLinearIssueOnMerge } : {}),
-            ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
-            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
-          })
-        });
-        setResults([pr]);
-        await onCreated?.([pr]);
-        setNumericStep(3);
-      } else if (mode === "integration") {
-        if (!proposal) {
-          setExecError("Run a simulation first to create a proposal.");
-          setBusy(false);
-          return;
-        }
-        lastProgressLabel = "Saving proposal";
-        setIntegrationProgress("Saving proposal...");
-        await window.ade.prs.updateProposal({
-          proposalId: proposal.proposalId,
-          title: integrationTitle || "Integration workflow",
-          body: integrationBody,
-          draft: integrationDraft,
-          integrationLaneName: integrationName || `integration/${Date.now().toString(36)}`,
-          preferredIntegrationLaneId: integrationMergeIntoLaneId.trim() || null,
-        });
-        lastProgressLabel = "Creating integration lane";
-        setIntegrationProgress("Creating integration lane...");
-        await runWithDirtyWorktreeConfirmation({
-          confirmMessage: "Continue and prepare the integration lane anyway?",
-          run: async (allowDirtyWorktree) => window.ade.prs.createIntegrationLaneForProposal({
-            proposalId: proposal.proposalId,
-            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {}),
-          }),
-        });
-        setIntegrationProgress(null);
-        // No PR created — proposal saved for later commit from Integration tab
-        setResults([]);
-        setNumericStep(3);
-      }
+      const lane = lanes.find((l) => l.id === normalLaneId);
+      const linearIssue = lane?.linearIssue ?? null;
+      const title = normalTitle.trim() || normalDefaultTitle || lane?.name || "PR";
+      const body = linearIssue
+        ? ensureLinearPrReference(normalBody, linearIssue, normalCloseLinearIssueOnMerge, { preserveExisting: false })
+        : normalBody;
+      const pr = await runWithDirtyWorktreeConfirmation({
+        confirmMessage: "Continue and create the PR anyway?",
+        run: async (allowDirtyWorktree) => await window.ade.prs.createFromLane({
+          laneId: normalLaneId,
+          title,
+          body,
+          draft: normalDraft,
+          ...(linearIssue ? { closeLinearIssueOnMerge: normalCloseLinearIssueOnMerge } : {}),
+          ...(normalBaseBranch.trim() ? { baseBranch: normalBaseBranch.trim() } : {}),
+          ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
+        })
+      });
+      setResults([pr]);
+      await onCreated?.([pr]);
+      setNumericStep(3);
     } catch (err: unknown) {
       const rawMsg = err instanceof Error ? err.message : String(err);
       const msg = rawMsg.replace(/^Error invoking remote method '[^']+': (?:Error: )?/, "");
-      if (mode === "integration" && lastProgressLabel) {
-        setExecError(`Failed during "${lastProgressLabel}": ${msg}`);
-      } else {
-        setExecError(msg);
-      }
-      setIntegrationProgress(null);
+      setExecError(msg);
       // Stay on current step so user can see the error and retry
     } finally {
       setBusy(false);
@@ -891,40 +566,8 @@ export function CreatePrModal({
 
   const nonPrimaryLanes = React.useMemo(() => lanes.filter((l) => l.laneType !== "primary"), [lanes]);
 
-  const integrationMergeIntoOptions = React.useMemo(
-    () => [...nonPrimaryLanes].sort((a, b) => a.name.localeCompare(b.name)),
-    [nonPrimaryLanes],
-  );
-
-  React.useEffect(() => {
-    if (!integrationMergeIntoLaneId) return;
-    if (integrationSources.includes(integrationMergeIntoLaneId)) {
-      setIntegrationMergeIntoLaneId("");
-      setProposal(null);
-    }
-  }, [integrationMergeIntoLaneId, integrationSources]);
-
-  const toggleIntegrationSource = (laneId: string) => {
-    setIntegrationSources((prev) =>
-      prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId]
-    );
-    // Clear proposal when sources change
-    setProposal(null);
-  };
-
-  const integrationNameTrimmed = integrationName.trim();
-  const integrationBranchValid = integrationNameTrimmed.length > 0 && !INVALID_GIT_REF_RE.test(integrationNameTrimmed) && !integrationNameTrimmed.startsWith("/") && !integrationNameTrimmed.endsWith("/") && !integrationNameTrimmed.endsWith(".lock") && !integrationNameTrimmed.endsWith(".");
-
-  const canCreateIntegration =
-    integrationSources.length >= 2 &&
-    !!proposal &&
-    proposal.overallOutcome !== "blocked" &&
-    integrationBranchValid;
-
   /* Can user advance to step 2 or submit from step 2? Same readiness check. */
-  const canProceed =
-    (mode === "normal" && !!normalLaneId) ||
-    (mode === "integration" && canCreateIntegration);
+  const canProceed = !!normalLaneId;
 
   const goToStep2 = () => {
     setExecError(null);
@@ -950,45 +593,18 @@ export function CreatePrModal({
     const baseMessages = laneWarningItemsById[selectedNormalLane.id] ?? [];
     const targetDiffMessage = describePrTargetDiff({
       lane: selectedNormalLane,
-      lanes,
       targetBranch: normalBaseBranch,
       primaryBranchRef: primaryLane?.branchRef ?? null,
-    });
-    const parentMergedMessage = describeMergedParentIssue({
-      lane: selectedNormalLane,
-      lanes,
       pullRequests: knownPrs,
-      primaryBranchRef: primaryLane?.branchRef ?? null,
     });
     const messages = [
       ...baseMessages,
       ...(targetDiffMessage ? [targetDiffMessage] : []),
-      ...(parentMergedMessage ? [parentMergedMessage] : []),
     ];
     if (!messages.length) return [];
     return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
-  }, [knownPrs, laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
-  const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
-    return buildLaneWarningSummaries({
-      selectedLaneIds: integrationSources,
-      lanes,
-      allLanes: nonPrimaryLanes,
-      laneWarningItemsById,
-      pullRequests: knownPrs,
-      targetBranch: integrationBaseBranch,
-      primaryBranchRef: primaryLane?.branchRef ?? null,
-    });
-  }, [integrationBaseBranch, integrationSources, knownPrs, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef]);
+  }, [knownPrs, laneWarningItemsById, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
   const selectedNormalLoading = Boolean(normalLaneId) && laneSyncLoadingById[normalLaneId] === true;
-  const selectedIntegrationLoading = integrationSources.some((laneId) => laneSyncLoadingById[laneId] === true);
-  const selectedNormalRebaseLaneIds = React.useMemo(
-    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: normalLaneId ? [normalLaneId] : [] }),
-    [lanes, normalLaneId],
-  );
-  const selectedIntegrationRebaseLaneIds = React.useMemo(
-    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: integrationSources }),
-    [integrationSources, lanes],
-  );
 
   return (
     <Dialog
@@ -996,7 +612,7 @@ export function CreatePrModal({
       onOpenChange={(next) => { if (!next && busy) return; onOpenChange(next); }}
       title="Create pull request"
       description={
-        numericStep === 1 ? "Configure branch and PR type"
+        numericStep === 1 ? "Configure branch"
           : numericStep === 2 ? "Enter PR details"
             : numericStep === 3 ? "Review results"
               : undefined
@@ -1105,67 +721,7 @@ export function CreatePrModal({
             {numericStep === 1 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 
-                {/* PR Type Selector Cards */}
-                <div>
-                  <span style={labelStyle}>PR TYPE</span>
-                  <div style={{ display: "flex", gap: 8 }}>
-                    {MODES.map((m) => {
-                      const Icon = m.icon;
-                      const selected = mode === m.id;
-                      return (
-                        <button
-                          key={m.id}
-                          onClick={() => setMode(m.id)}
-                          style={{
-                            flex: 1,
-                            display: "flex",
-                            flexDirection: "column",
-                            alignItems: "center",
-                            gap: 6,
-                            padding: "14px 8px",
-                            background: selected ? C.accentSubtleBg : "transparent",
-                            border: selected
-                              ? `1px solid ${C.accent}`
-                              : `1px solid ${C.borderSubtle}`,
-                            borderRadius: 0,
-                            cursor: "pointer",
-                            transition: "all 0.15s",
-                            outline: "none",
-                          }}
-                        >
-                          <Icon
-                            size={20}
-                            weight="regular"
-                            style={{ color: selected ? C.accent : C.textMuted }}
-                          />
-                          <span style={{
-                            fontSize: 10,
-                            fontWeight: 700,
-                            fontFamily: "var(--font-sans)",
-                            textTransform: "uppercase" as const,
-                            letterSpacing: "1px",
-                            color: selected ? C.textPrimary : C.textSecondary,
-                          }}>
-                            {m.label}
-                          </span>
-                          <span style={{
-                            fontSize: 10,
-                            fontFamily: "var(--font-sans)",
-                            color: C.textMuted,
-                            textAlign: "center",
-                            lineHeight: "14px",
-                          }}>
-                            {m.desc}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                </div>
-
-                {/* ── Normal mode: Source / Target branch ─────────── */}
-                {mode === "normal" && (
-                  <>
+                {/* ── Source / Target branch ─────────── */}
                     <div>
                       <span style={labelStyle}>SOURCE BRANCH</span>
                       <div style={{ position: "relative" }}>
@@ -1289,265 +845,11 @@ export function CreatePrModal({
                         <LaneWarningPanel
                           items={selectedNormalWarnings}
                           loading={selectedNormalLoading}
-                          rebaseLaneIds={selectedNormalRebaseLaneIds}
-                          onOpenRebase={openRebaseTab}
                         />
                       </div>
                     )}
-                  </>
-                )}
-
-                {/* ── Integration mode: Source lanes + simulation ─── */}
-                {mode === "integration" && (
-                  <>
-                    <div>
-                      <span style={labelStyle}>TARGET BRANCH</span>
-                      <div style={{ position: "relative" }}>
-                        <BranchIcon
-                          size={14}
-                          weight="bold"
-                          style={{
-                            position: "absolute",
-                            left: 12,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            color: C.textMuted,
-                            pointerEvents: "none",
-                            zIndex: 1,
-                          }}
-                        />
-                        <input
-                          list="integrationBranchOptions"
-                          value={integrationBaseBranch}
-                          onChange={(e) => {
-                            setIntegrationBaseBranch(e.target.value);
-                            setProposal(null);
-                          }}
-                          aria-label="Target branch"
-                          placeholder="Type or select a branch"
-                          style={selectStyle}
-                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
-                          onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                        />
-                        <datalist id="integrationBranchOptions">
-                          {integrationBranchSelectOptions.map((name) => (
-                            <option key={name} value={name} />
-                          ))}
-                        </datalist>
-                      </div>
-                    </div>
-
-                    <div>
-                      <span style={labelStyle}>SOURCE LANES TO INTEGRATE (SELECT 2+)</span>
-                      <LaneCheckboxList
-                        lanes={nonPrimaryLanes}
-                        selectedIds={integrationSources}
-                        warningItemsById={laneWarningItemsById}
-                        onToggle={toggleIntegrationSource}
-                        maxHeight={200}
-                      />
-                      <LaneWarningPanel
-                        items={selectedIntegrationWarnings}
-                        loading={selectedIntegrationLoading}
-                        rebaseLaneIds={selectedIntegrationRebaseLaneIds}
-                        onOpenRebase={openRebaseTab}
-                      />
-                    </div>
-
-                    <div>
-                      <span style={labelStyle}>MERGE INTO (OPTIONAL)</span>
-                      <select
-                        aria-label="Merge integration into existing lane"
-                        value={integrationMergeIntoLaneId}
-                        onChange={(e) => {
-                          setIntegrationMergeIntoLaneId(e.target.value);
-                          setProposal(null);
-                        }}
-                        style={selectStyle}
-                        onFocus={(ev) => { ev.currentTarget.style.borderColor = C.accent; }}
-                        onBlur={(ev) => { ev.currentTarget.style.borderColor = C.borderSubtle; }}
-                      >
-                        <option value="">New integration lane</option>
-                        {integrationMergeIntoOptions.map((lane) => (
-                          <option key={lane.id} value={lane.id} disabled={integrationSources.includes(lane.id)}>
-                            {lane.name}{integrationSources.includes(lane.id) ? " (source)" : ""}
-                          </option>
-                        ))}
-                      </select>
-                      <div style={{
-                        marginTop: 6,
-                        fontSize: 10,
-                        fontFamily: "var(--font-sans)",
-                        color: C.textMuted,
-                        lineHeight: "14px",
-                      }}>
-                        Creates a new integration lane and prepares merge commits there. When an existing lane is selected, simulation includes conflicts against that lane&apos;s current HEAD.
-                      </div>
-                    </div>
-
-                    {/* Simulate button */}
-                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <button
-                        disabled={integrationSources.length < 2 || simulating}
-                        onClick={() => void handleSimulate()}
-                        style={{
-                          background: "transparent",
-                          border: `1px solid ${C.accentBorder}`,
-                          borderRadius: 0,
-                          color: (integrationSources.length < 2 || simulating) ? C.textDisabled : C.accent,
-                          fontFamily: "var(--font-sans)",
-                          fontSize: 11,
-                          fontWeight: 600,
-                          padding: "8px 14px",
-                          cursor: (integrationSources.length < 2 || simulating) ? "not-allowed" : "pointer",
-                          opacity: (integrationSources.length < 2 || simulating) ? 0.5 : 1,
-                          display: "flex",
-                          alignItems: "center",
-                          gap: 6,
-                        }}
-                      >
-                        {simulating && <CircleNotch size={12} className="animate-spin" />}
-                        {simulating ? "SIMULATING..." : "PREVIEW INTEGRATION"}
-                      </button>
-                      {integrationSources.length < 2 && (
-                        <span style={{
-                          fontSize: 11,
-                          fontFamily: "var(--font-sans)",
-                          color: C.textDisabled,
-                        }}>
-                          Select at least 2 lanes
-                        </span>
-                      )}
-                    </div>
-
-                    {/* Simulation results */}
-                    {proposal && (
-                      <div style={{
-                        background: C.bgInput,
-                        border: `1px solid ${C.border}`,
-                        borderRadius: 0,
-                        padding: 16,
-                      }}>
-                        <div style={{
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          marginBottom: 12,
-                        }}>
-                          <span style={{
-                            ...labelStyle,
-                            marginBottom: 0,
-                          }}>MERGE PREVIEW</span>
-                          <span style={{
-                            fontSize: 10,
-                            fontWeight: 700,
-                            fontFamily: "var(--font-sans)",
-                            textTransform: "uppercase" as const,
-                            letterSpacing: "1px",
-                            padding: "4px 8px",
-                            borderRadius: 0,
-                            color: outcomeColor(proposal.overallOutcome),
-                            background: `color-mix(in srgb, ${outcomeColor(proposal.overallOutcome)} 9%, transparent)`,
-                          }}>
-                            {proposal.overallOutcome.toUpperCase()}
-                          </span>
-                        </div>
-                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                          {proposal.steps.map((s) => (
-                            <div key={s.laneId} style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              fontSize: 12,
-                              fontFamily: "var(--font-sans)",
-                            }}>
-                              <StepOutcome outcome={s.outcome} />
-                              <span style={{ color: C.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {s.laneName}
-                              </span>
-                              <span style={{ fontSize: 11, color: C.textMuted, fontVariantNumeric: "tabular-nums" }}>
-                                +{s.diffStat.insertions} -{s.diffStat.deletions} ({s.diffStat.filesChanged} files)
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                        {proposal.steps.some((s) => s.conflictingFiles.length > 0) && (
-                          <div style={{ marginTop: 10 }}>
-                            <div style={{
-                              fontSize: 10,
-                              fontWeight: 700,
-                              fontFamily: "var(--font-sans)",
-                              textTransform: "uppercase" as const,
-                              letterSpacing: "1px",
-                              color: C.warning,
-                              marginBottom: 6,
-                            }}>
-                              CONFLICTING FILES
-                            </div>
-                            {proposal.steps
-                              .flatMap((s) => s.conflictingFiles.map((f) => ({ lane: s.laneName, path: f.path })))
-                              .map((f, i) => (
-                                <div key={i} style={{
-                                  fontSize: 11,
-                                  fontFamily: "var(--font-sans)",
-                                  color: `color-mix(in srgb, ${C.warning} 60%, transparent)`,
-                                  paddingLeft: 8,
-                                  lineHeight: "18px",
-                                }}>
-                                  {f.path}
-                                </div>
-                              ))}
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <div>
-                      <span style={labelStyle}>INTEGRATION BRANCH NAME</span>
-                      <input
-                        type="text"
-                        value={integrationName}
-                        onChange={(e) => {
-                          const val = e.target.value;
-                          setIntegrationName(val);
-                          const trimmed = val.trim();
-                          if (trimmed.length === 0) {
-                            setIntegrationBranchError(null);
-                          } else if (INVALID_GIT_REF_RE.test(trimmed)) {
-                            setIntegrationBranchError("Branch name contains invalid characters (spaces, ~, ^, :, ?, *, [, \\, or consecutive dots).");
-                          } else if (trimmed.startsWith("/") || trimmed.endsWith("/")) {
-                            setIntegrationBranchError("Branch name must not start or end with \"/\".");
-                          } else if (trimmed.endsWith(".lock") || trimmed.endsWith(".")) {
-                            setIntegrationBranchError("Branch name must not end with \".lock\" or \".\".");
-                          } else {
-                            setIntegrationBranchError(null);
-                          }
-                        }}
-                        style={{
-                          ...inputStyle,
-                          ...(integrationBranchError ? { borderColor: C.error } : {}),
-                        }}
-                        placeholder="integration/feature-bundle"
-                        onFocus={(e) => { e.currentTarget.style.borderColor = integrationBranchError ? C.error : C.accent; }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = integrationBranchError ? C.error : C.borderSubtle; }}
-                      />
-                      {integrationBranchError && (
-                        <div style={{
-                          fontSize: 11,
-                          fontFamily: "var(--font-sans)",
-                          color: C.error,
-                          marginTop: 4,
-                        }}>
-                          {integrationBranchError}
-                        </div>
-                      )}
-                    </div>
-                  </>
-                )}
-
-                {/* ── Merge method (single PR only) ─────────────── */}
-                {mode !== "integration" && (
-                  <div>
+                {/* ── Merge method ─────────────── */}
+                <div>
                     <span style={labelStyle}>MERGE METHOD (ON LAND)</span>
                     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
                       {MERGE_METHODS.map((m) => {
@@ -1611,7 +913,6 @@ export function CreatePrModal({
                       })}
                     </div>
                   </div>
-                )}
 
                 {execError ? <CreatePrErrorBanner message={execError} /> : null}
               </div>
@@ -1622,9 +923,6 @@ export function CreatePrModal({
             {/* ════════════════════════════════════════════════════ */}
             {numericStep === 2 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-
-                {mode === "normal" && (
-                  <>
                     <div>
                       <span style={labelStyle}>PULL REQUEST TITLE</span>
                       <input
@@ -1740,115 +1038,9 @@ export function CreatePrModal({
                     <LaneWarningPanel
                       items={selectedNormalWarnings}
                       loading={selectedNormalLoading}
-                      rebaseLaneIds={selectedNormalRebaseLaneIds}
-                      onOpenRebase={openRebaseTab}
                     />
-                  </>
-                )}
-
-                {mode === "integration" && (
-                  <>
-                    {/* Summary of what's being integrated */}
-                    <div style={{
-                      background: C.bgInput,
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 0,
-                      padding: 16,
-                    }}>
-                      <span style={labelStyle}>INTEGRATION SUMMARY</span>
-                      <div style={{
-                        fontSize: 12,
-                        fontFamily: "var(--font-sans)",
-                        color: C.textSecondary,
-                        marginBottom: 8,
-                      }}>
-                        {integrationSources.length} lanes into <span style={{ color: C.accent }}>{integrationName || "integration/..."}</span>
-                      </div>
-                      {proposal && (
-                        <span style={{
-                          fontSize: 10,
-                          fontWeight: 700,
-                          fontFamily: "var(--font-sans)",
-                          textTransform: "uppercase" as const,
-                          letterSpacing: "1px",
-                          padding: "4px 8px",
-                          borderRadius: 0,
-                          color: outcomeColor(proposal.overallOutcome),
-                          background: `color-mix(in srgb, ${outcomeColor(proposal.overallOutcome)} 9%, transparent)`,
-                        }}>
-                          {proposal.overallOutcome.toUpperCase()}
-                        </span>
-                      )}
-                    </div>
-
-                    <div>
-                      <span style={labelStyle}>PULL REQUEST TITLE</span>
-                      <input
-                        type="text"
-                        value={integrationTitle}
-                        onChange={(e) => setIntegrationTitle(e.target.value)}
-                        style={inputStyle}
-                        placeholder="Integration workflow"
-                        onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                      />
-                    </div>
-
-                    <div>
-                      <span style={labelStyle}>DESCRIPTION</span>
-                      <textarea
-                        value={integrationBody}
-                        onChange={(e) => setIntegrationBody(e.target.value)}
-                        rows={5}
-                        style={textareaStyle}
-                        placeholder="PR description (markdown)..."
-                        onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
-                        onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                      />
-                    </div>
-
-                    <label style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      fontFamily: "var(--font-sans)",
-                      fontSize: 12,
-                      color: C.textPrimary,
-                      cursor: "pointer",
-                    }}>
-                      <input
-                        type="checkbox"
-                        checked={integrationDraft}
-                        onChange={(e) => setIntegrationDraft(e.target.checked)}
-                        style={{ accentColor: C.accent }}
-                      />
-                      CREATE AS DRAFT
-                    </label>
-                    <LaneWarningPanel
-                      items={selectedIntegrationWarnings}
-                      loading={selectedIntegrationLoading}
-                      rebaseLaneIds={selectedIntegrationRebaseLaneIds}
-                      onOpenRebase={openRebaseTab}
-                    />
-                  </>
-                )}
-
                 {execError ? <CreatePrErrorBanner message={execError} /> : null}
 
-                {integrationProgress && (
-                  <div style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 8,
-                    fontSize: 11,
-                    fontFamily: "var(--font-sans)",
-                    color: C.accent,
-                    padding: "8px 0",
-                  }}>
-                    <CircleNotch size={12} className="animate-spin" />
-                    {integrationProgress}
-                  </div>
-                )}
               </div>
             )}
 
@@ -1857,40 +1049,6 @@ export function CreatePrModal({
             {/* ════════════════════════════════════════════════════ */}
             {numericStep === 3 && (
               <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-                {/* Proposal saved (integration mode, no PRs created) */}
-                {results && results.length === 0 && mode === "integration" && !execError && (
-                  <div>
-                    <div style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 8,
-                      marginBottom: 12,
-                    }}>
-                      <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
-                      <span style={{
-                        fontFamily: "var(--font-sans)",
-                        fontSize: 16,
-                        fontWeight: 700,
-                        color: C.textPrimary,
-                      }}>
-                        Proposal Saved
-                      </span>
-                    </div>
-                    <div style={{
-                      background: C.bgInput,
-                      border: `1px solid ${C.border}`,
-                      padding: "12px 16px",
-                      fontFamily: "var(--font-sans)",
-                      fontSize: 12,
-                      color: C.textSecondary,
-                    }}>
-                      Lifecycle: <span style={{ color: C.accent, fontWeight: 700 }}>Proposal</span> → <span style={{ color: C.accent, fontWeight: 700 }}>Integration lane</span> → <span style={{ color: C.accent, fontWeight: 700 }}>GitHub PR</span>.
-                      {" "}
-                      ADE has already prepared the integration lane{integrationName ? ` "${integrationName}"` : ""}. Continue in the <span style={{ color: C.accent, fontWeight: 700 }}>INTEGRATION</span> tab to review it and create the GitHub PR.
-                    </div>
-                  </div>
-                )}
 
                 {/* Created PRs */}
                 {results && results.length > 0 && (
@@ -1962,49 +1120,6 @@ export function CreatePrModal({
                           </button>
                         </div>
                       ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Integration merge results */}
-                {integrationResult && integrationResult.mergeResults.length > 0 && (
-                  <div>
-                    <span style={labelStyle}>MERGE RESULTS</span>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                      {integrationResult.mergeResults.map((mr) => {
-                        const laneName = lanes.find((l) => l.id === mr.laneId)?.name ?? mr.laneId;
-                        return (
-                          <div key={mr.laneId} style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            fontFamily: "var(--font-sans)",
-                            fontSize: 12,
-                            padding: "6px 0",
-                          }}>
-                            {mr.success ? (
-                              <CheckCircle size={14} weight="fill" style={{ color: C.success }} />
-                            ) : (
-                              <Warning size={14} weight="fill" style={{ color: C.error }} />
-                            )}
-                            <span style={{ color: C.textPrimary, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {laneName}
-                            </span>
-                            {mr.error && (
-                              <span style={{
-                                fontSize: 11,
-                                color: C.error,
-                                maxWidth: 200,
-                                overflow: "hidden",
-                                textOverflow: "ellipsis",
-                                whiteSpace: "nowrap",
-                              }}>
-                                {mr.error}
-                              </span>
-                            )}
-                          </div>
-                        );
-                      })}
                     </div>
                   </div>
                 )}
@@ -2131,7 +1246,7 @@ export function CreatePrModal({
                   }}
                 >
                   {busy && <CircleNotch size={12} className="animate-spin" />}
-                  {getCreateActionLabel(mode, busy)}
+                  {busy ? "CREATING..." : "CREATE PR"}
                 </button>
               )}
               {numericStep === 3 && results && (

@@ -14,6 +14,7 @@ import {
   type SyncProtocolVersion,
 } from "../../../../desktop/src/shared/types";
 import { safeJsonParse } from "../../../../desktop/src/main/services/shared/utils";
+import { MIN_SUPPORTED_MOBILE_APP_BUILD } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import {
   decodeSyncBinaryFrame,
   encodeSyncBinaryFrame,
@@ -328,12 +329,29 @@ type VersionMismatchSocket = {
   close(code?: number, reason?: string): void;
 };
 
+type VersionMismatchPayload = Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }>;
+
+/**
+ * The hello_error for an iPhone build older than `MIN_SUPPORTED_MOBILE_APP_BUILD`.
+ * The version fields carry build numbers: the phone's, and the minimum.
+ */
+export function mobileAppTooOldHelloError(appBuild: number): VersionMismatchPayload {
+  return {
+    code: "protocol_version_mismatch",
+    message: "This version of ADE on your iPhone is too old for this computer. Update ADE from TestFlight or the App Store to keep using it.",
+    receivedVersion: appBuild,
+    currentVersion: MIN_SUPPORTED_MOBILE_APP_BUILD,
+    minSupportedVersion: MIN_SUPPORTED_MOBILE_APP_BUILD,
+    updateTarget: "client",
+  };
+}
+
 export function sendSyncProtocolVersionMismatchAndClose(
   socket: VersionMismatchSocket,
-  error: SyncProtocolVersionMismatchError,
+  error: SyncProtocolVersionMismatchError | { requestId: string | null; payload: VersionMismatchPayload },
   beforeClose?: () => void,
-): Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }> {
-  const payload = error.toHelloErrorPayload();
+): VersionMismatchPayload {
+  const payload = error instanceof SyncProtocolVersionMismatchError ? error.toHelloErrorPayload() : error.payload;
   const response = encodeSyncEnvelope({
     type: "hello_error",
     requestId: error.requestId,

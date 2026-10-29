@@ -701,7 +701,7 @@ The `ade` surface evolves. Don't assume flag names or output shapes from this pl
 3. **Read the exact create invocation.** `ade prs --help` then `ade prs create --help`. Note the actual required flags — expect something like `--lane <id>`, `--base <branch>`, and an output format flag (`--json`, `--text`, or global `--json`). Do not trust any specific invocation this playbook gives you; trust the help output.
 4. **Resolve current branch → lane id.**
    - `ade lanes list --json` (or whatever the help shows) and filter by the field that holds the branch name (commonly `branchRef` or `branch`).
-   - If the branch isn't a registered lane, read `ade lanes --help` to find the import/register subcommand (commonly `ade lanes import --branch <name>`). Run it, then re-list.
+   - If the branch isn't a registered lane, open it with `ade lanes create --name <name> --existing-branch <branch>`, then re-list.
    - If import's flag names differ from what you expect, re-read the help. Don't guess.
 5. **Create the PR** with the exact invocation the help documented. Read any error carefully — they mean different things:
    - **Usage error** (unknown flag, missing arg) → re-read `--help`, fix, retry. Do not fall back yet.

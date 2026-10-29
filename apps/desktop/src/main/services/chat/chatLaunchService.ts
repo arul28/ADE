@@ -7,11 +7,11 @@ import type {
   AgentChatSuggestLaneNameArgs,
   AutoLaneIdentitySuggestion,
   ChatLaunchArgs,
+  ChatLaunchLaneConfig,
   ChatLaunchChatArgs,
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
   ChatLaunchIdArgs,
-  ChatLaunchLaneConfig,
   ChatLaunchPhase,
   ChatLaunchQueueMessageArgs,
   ChatLaunchSnapshot,
@@ -23,9 +23,11 @@ import type {
   LaneEnvInitProgress,
   LaneLinearIssue,
   LaneSummary,
+  NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
 import type { AdeCardPayload } from "../../../shared/adeCard";
-import { createChatLaunchSnapshot, isChatLaunchTerminal, toQueuedMessage } from "../../../shared/chatLaunch";
+import { chatLaunchLaneStart, createChatLaunchSnapshot, isChatLaunchTerminal, toQueuedMessage } from "../../../shared/chatLaunch";
+import { DEFAULT_LANE_START, laneStartSourceBranch, type LaneStart } from "../../../shared/laneStart";
 import {
   deriveDeterministicLaneNameFromPrompt,
   deriveDeterministicLaneTitleFromPrompt,
@@ -45,7 +47,7 @@ import { createLaneSetupTranscriptCard, type LaneSetupCardState } from "./chatLa
  *
  * The client reserves the chat's session id (= launchId) and the lane id, calls
  * `start`, and opens the chat immediately. This service then walks the stages —
- * fetch base, check out files, lane environment (default template / project
+ * fetch the start branch, check out files, lane environment (default template / project
  * env config), start agent — and publishes a full snapshot on every change.
  * Everything a client shows (thread card, sidebar row, slide-out, iOS) is
  * rendered from those snapshots, so every surface agrees. Records persist
@@ -56,23 +58,16 @@ type LaneServiceLike = {
   create: (
     args: {
       name: string;
-      baseBranch?: string;
+      start?: LaneStart | null;
       branchName?: string;
       /** Bound to the new lane the same way a manual create binds it. */
       linearIssue?: LaneLinearIssue | null;
     },
     options?: LaneCreateRuntimeOptions,
   ) => Promise<LaneSummary>;
-  /**
-   * child-mode launches. `createChild` is the path that resolves a remote base
-   * override (fetches/creates the local tracking branch), which a bare
-   * `create({ parentLaneId })` does not.
-   */
-  createChild?: (
-    args: { parentLaneId: string; name: string; baseBranchRef?: string; linearIssue?: LaneLinearIssue | null },
-    options?: LaneCreateRuntimeOptions,
-  ) => Promise<LaneSummary>;
-  /** import-mode launches adopt an existing branch instead of cutting a new one. */
+  /** The project's new-lane defaults, plus its default and primary branches. */
+  getNewLaneDefaults?: () => NewLaneDefaultsSnapshot;
+  /** existing-branch launches work on that branch instead of cutting a new one. */
   importBranch?: (
     args: { branchRef: string; name: string },
     options?: { laneId?: string },
@@ -100,12 +95,12 @@ type AgentChatServiceLike = {
 };
 
 export type ChatLaunchBaseResolution = {
-  /** The ref to branch from, or null for the lane service's default base. */
+  /** `origin/<branch>` once it resolves, or null when the remote has no such branch. */
   baseRef: string | null;
   /**
    * Remote fetch outcome: "ok"; "timeout" (still running when the launch
    * stopped waiting) or "failed" (git reported an error) — both branch from
-   * the last-known ref; or "skipped" (local base).
+   * the last-known ref; or "skipped" (nothing to fetch with).
    */
   fetch: "ok" | "timeout" | "failed" | "skipped";
   /** git's error for a failed fetch. */
@@ -120,7 +115,7 @@ export type ChatLaunchBaseResolution = {
   stale?: boolean;
 };
 
-/** Progress the base resolution reports while the fetch stage runs. */
+/** Progress the start-branch fetch reports while the fetch stage runs. */
 export type ChatLaunchBaseProgress = {
   /** Cancel aborts the in-flight `git fetch` instead of leaving it to finish. */
   signal?: AbortSignal;
@@ -133,10 +128,11 @@ export type ChatLaunchServiceDeps = {
   logger: Logger;
   laneService: LaneServiceLike;
   agentChatService: AgentChatServiceLike;
-  /** True when the project creates lanes from the local base (no fetch stage). */
-  usesLocalLaneBase: () => boolean;
-  /** Fetch the remote and pick the base ref, the same way every base-less lane create does. */
-  resolveBase: (progress?: ChatLaunchBaseProgress) => Promise<ChatLaunchBaseResolution>;
+  /**
+   * Fetch the branch a new lane starts from (`on: "remote"` only) and
+   * report `origin/<branch>` and how fresh it is (`fetchLaneStartBranch`).
+   */
+  fetchStartBranch: (args: ChatLaunchBaseProgress & { branch: string }) => Promise<ChatLaunchBaseResolution>;
   /** Resolve a ref to its commit sha in the project checkout (for the stage detail). */
   resolveCommit: (ref: string) => Promise<string | null>;
   planEnvironment: (templateId?: string | null) => ChatLaunchEnvironmentPlan;
@@ -195,11 +191,6 @@ function autoLaneGenericSuffix(date: Date): string {
 }
 
 const temporaryAutoLaneBranch = (): string => `ade/${randomUUID().replace(/-/g, "").slice(0, 8)}`;
-
-/** A child or imported lane is not cut from a remote base, so no fetch stage runs. */
-function laneConfigSkipsFetch(config: ChatLaunchLaneConfig | null | undefined): boolean {
-  return config?.mode === "child" || config?.mode === "import";
-}
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms).unref?.());
 
@@ -263,6 +254,15 @@ export function describeUnfetchedBase(args: {
     age.push(`it is at least ${resolution.behindLocal} commit${resolution.behindLocal === 1 ? "" : "s"} behind your local ${baseRef.replace(/^[^/]+\//, "")}`);
   }
   return { detail, warning: `${baseRef} may be out of date: ${age.join(", ")}. This lane may be missing recent changes.` };
+}
+
+/**
+ * Whether the launch names the lane itself: a plain auto-create, or a recipe
+ * whose name nobody chose. Such a lane gets a placeholder branch and a title
+ * from the prompt once it exists.
+ */
+function laneIsAutoNamed(record: { laneConfig?: ChatLaunchLaneConfig | null }): boolean {
+  return !record.laneConfig || record.laneConfig.autoName === true;
 }
 
 export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
@@ -450,13 +450,44 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
   // Stages
   // ---------------------------------------------------------------------------
 
-  const runFetchStage = async (record: LaunchRecord): Promise<string | null> => {
-    if (record.baseBranch) return record.baseBranch;
+  /** The project's new-lane defaults right now, or null when the lane service has none. */
+  const laneDefaults = (): NewLaneDefaultsSnapshot | null => {
+    try {
+      return deps.laneService.getNewLaneDefaults?.() ?? null;
+    } catch (error) {
+      logger.warn("chat_launch.lane_defaults_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  };
+
+  /** Where this launch's new lane starts; null when it works on an existing branch. */
+  const launchStart = (record: LaunchRecord): LaneStart | null =>
+    record.laneConfig?.mode === "existing"
+      ? null
+      : record.start ?? laneDefaults()?.defaults.start ?? DEFAULT_LANE_START;
+
+  /**
+   * Fetch the branch the lane starts from. Returns true when the fetch ran,
+   * so the lane create skips its own fetch.
+   */
+  const runFetchStage = async (record: LaunchRecord): Promise<boolean> => {
     const stage = stageOf(record, "fetch");
-    if (!stage) return null;
+    if (!stage) return false;
+    const start = launchStart(record);
+    const defaults = laneDefaults();
+    const branch = start
+      ? laneStartSourceBranch(start, { defaultBranch: defaults?.defaultBranch, primaryBranch: defaults?.primaryBranch })
+      : "";
+    if (!start || start.on !== "remote" || !branch) {
+      // Nothing to fetch here; the lane create resolves (or explains) the start itself.
+      setStage(record, "fetch", "skipped");
+      publish(record);
+      return false;
+    }
     setStage(record, "fetch", "running");
     publish(record, { persist: false });
-    const resolution = await deps.resolveBase({
+    const resolution = await deps.fetchStartBranch({
+      branch,
       signal: runtimeFor(record.snapshot.launchId).abort.signal,
       onWaitingForStaleFetch: ({ remoteRef, lastFetchedAtMs }) => {
         if (disposed || record.snapshot.phase === "cancelled") return;
@@ -467,14 +498,25 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       },
     });
     assertActive(record);
+    if (resolution.fetch === "skipped") {
+      setStage(record, "fetch", "skipped");
+      publish(record);
+      return false;
+    }
     const sha = resolution.baseRef ? await deps.resolveCommit(resolution.baseRef).catch(() => null) : null;
-    // A base that does not resolve (a configured upstream whose remote ref is
-    // gone) must not fail the checkout; fall back to the lane service default.
+    // A remote ref that does not resolve must not fail the checkout: the lane
+    // create falls back to the local branch and says so.
     const baseRef = sha ? resolution.baseRef : null;
     record.snapshot.baseRef = baseRef;
     const at = sha ? ` at ${sha.slice(0, 7)}` : "";
     if (!baseRef) {
-      setStage(record, "fetch", "skipped", { detail: "No remote base; using the local base" });
+      if (resolution.fetch === "ok") {
+        setStage(record, "fetch", "skipped", { detail: `No origin/${branch} on the remote; using local ${branch}` });
+      } else {
+        const reason = shortFetchError(resolution.fetchError);
+        const what = resolution.fetch === "timeout" ? "Fetch timed out" : `Fetch failed${reason ? ` (${reason})` : ""}`;
+        setStage(record, "fetch", "warning", { detail: `${what}; using local ${branch}` });
+      }
     } else if (resolution.fetch === "failed" || resolution.fetch === "timeout" || resolution.stale) {
       const { detail, warning } = describeUnfetchedBase({ resolution, baseRef, at, nowMs: now().getTime() });
       setStage(record, "fetch", "warning", { detail, error: warning });
@@ -482,7 +524,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       setStage(record, "fetch", "done", { detail: `${baseRef}${at}` });
     }
     publish(record);
-    return baseRef;
+    return true;
   };
 
   const startLaneNaming = (record: LaunchRecord, lane: Pick<LaneSummary, "id" | "name" | "branchRef">): void => {
@@ -537,7 +579,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     record.snapshot.baseRef ??= lane.baseRef ?? null;
   };
 
-  const runCheckoutStage = async (record: LaunchRecord, baseRef: string | null): Promise<void> => {
+  const runCheckoutStage = async (record: LaunchRecord, startFetched: boolean): Promise<void> => {
     const runtime = runtimeFor(record.snapshot.launchId);
     const interrupted = findInterruptedLane(record);
     if (interrupted) {
@@ -547,7 +589,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       assertActive(record);
       // A user-configured lane keeps the name they chose; only a prompt-derived
       // auto-create lane is AI-renamed.
-      if (!record.laneConfig) startLaneNaming(record, interrupted);
+      if (laneIsAutoNamed(record)) startLaneNaming(record, interrupted);
       return;
     }
     if (record.checkoutAttempted && deps.laneService.cleanupReservedWorktree) {
@@ -575,7 +617,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     };
     const config = record.laneConfig;
     let lane: LaneSummary;
-    if (config?.mode === "import") {
+    if (config?.mode === "existing") {
       if (!config.branchRef) throw new Error("Importing a branch needs a branch ref.");
       if (!deps.laneService.importBranch) throw new Error("This runtime cannot import an existing branch.");
       lane = await deps.laneService.importBranch(
@@ -587,31 +629,23 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
         // opened, restart recovery, and cleanup all address the same lane.
         { laneId: record.snapshot.laneId },
       );
-    } else if (config?.mode === "child" && config.parentLaneId) {
-      if (!deps.laneService.createChild) throw new Error("This runtime cannot create child lanes.");
-      lane = await deps.laneService.createChild(
-        {
-          parentLaneId: config.parentLaneId,
-          name: record.snapshot.laneName,
-          ...(baseRef ? { baseBranchRef: baseRef } : {}),
-          ...(config.linearIssue ? { linearIssue: config.linearIssue } : {}),
-        },
-        runtimeOptions,
-      );
     } else {
+      const start = launchStart(record);
       lane = await deps.laneService.create(
         {
           name: record.snapshot.laneName,
           // A configured lane derives its branch from the user's name; an
           // auto-create lane gets a placeholder branch and is renamed after.
-          ...(record.laneConfig ? {} : { branchName: temporaryAutoLaneBranch() }),
-          ...(baseRef ? { baseBranch: baseRef } : {}),
+          ...(laneIsAutoNamed(record) ? { branchName: temporaryAutoLaneBranch() } : {}),
+          ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },
-        runtimeOptions,
+        // The fetch stage already fetched the start branch.
+        startFetched ? { ...runtimeOptions, skipStartFetch: true } : runtimeOptions,
       );
     }
     adoptLane(record, lane);
+    if (lane.createdFrom?.startRef) record.snapshot.baseRef = lane.createdFrom.startRef;
     // Appearance is a nicety; a color collision must never fail the launch.
     if (config?.color && deps.laneService.updateAppearance) {
       try {
@@ -624,16 +658,20 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       clearTimeout(runtime.progressTimer);
       runtime.progressTimer = null;
     }
-    setStage(record, "checkout", "done", {
+    // The start's fallbacks (no local branch, nothing to copy, a copy that
+    // failed) finished the checkout another way than asked: say so.
+    const notes = lane.createdFrom?.notes ?? [];
+    setStage(record, "checkout", notes.length ? "warning" : "done", {
       percent: 100,
       detail: totalFiles > 0 ? `${totalFiles.toLocaleString("en-US")} files` : null,
+      ...(notes.length ? { error: notes.join(" ") } : {}),
     });
     publish(record);
     // A cancel that raced the checkout's last moments still owns this lane.
     assertActive(record);
     // Keep the user's configured name and its derived branch; only a
     // prompt-derived auto-create lane is AI-renamed.
-    if (!record.laneConfig) startLaneNaming(record, lane);
+    if (laneIsAutoNamed(record)) startLaneNaming(record, lane);
   };
 
   /**
@@ -787,10 +825,10 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       record.snapshot.error = null;
       if (!record.snapshot.laneCreated) {
         activeStage = "fetch";
-        const baseRef = await runFetchStage(record);
+        const startFetched = await runFetchStage(record);
         assertActive(record);
         activeStage = "checkout";
-        await runCheckoutStage(record, baseRef);
+        await runCheckoutStage(record, startFetched);
       }
       assertActive(record);
 
@@ -879,14 +917,17 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const laneName = args.laneName?.trim()
       || deriveDeterministicLaneTitleFromPrompt(prompt)
       || deriveDeterministicLaneNameFromPrompt(prompt, { genericSuffix: autoLaneGenericSuffix(now()) });
-    const baseBranch = args.baseBranch?.trim() || null;
     const laneConfig = args.laneConfig ?? null;
+    // Fixed now, so the stages shown and the lane created agree even if the
+    // project's defaults change mid-launch.
+    const start = chatLaunchLaneStart(laneConfig, laneDefaults()?.defaults.start ?? DEFAULT_LANE_START);
+    // No template asked for: the project's default template (its new-lane defaults).
     const environment = deps.planEnvironment(laneConfig?.templateId ?? null);
     const snapshot = createChatLaunchSnapshot({
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
-      includeFetch: !baseBranch && !laneConfigSkipsFetch(laneConfig) && !deps.usesLocalLaneBase(),
+      includeFetch: start?.on === "remote",
       includeEnvironment: environment.hasEnvironment,
       templateName: environment.templateName,
       nowIso: nowIso(),
@@ -894,7 +935,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const record: LaunchRecord = {
       snapshot,
       chat,
-      baseBranch,
+      start,
       laneConfig,
       provider: args.provider ?? chat?.create.provider ?? null,
       templateId: environment.templateId,
@@ -934,10 +975,10 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     // A lane whose create inserted its row but never returned (restart
     // mid-checkout) is this launch's too, even though laneCreated is false.
     if (record.snapshot.laneCreated || findInterruptedLane(record)) {
-      // An import lane adopted a pre-existing branch the user already had.
+      // An existing-branch lane adopted a branch the user already had.
       // Deleting the lane row is this launch's to do; deleting that branch
       // (local or remote) is not — the manual delete defaults to keeping it.
-      const importedBranch = record.laneConfig?.mode === "import";
+      const importedBranch = record.laneConfig?.mode === "existing";
       try {
         await deps.laneService.delete({
           laneId: record.snapshot.laneId,

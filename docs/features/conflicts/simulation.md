@@ -1,8 +1,7 @@
 # Merge simulation and resolution
 
-Pre-flight conflict checking, one-shot merge simulation, AI
-resolution proposals, and external CLI resolver runs all live
-alongside detection in
+Pre-flight conflict checking, one-shot merge simulation, and AI
+resolution proposals all live alongside detection in
 `apps/desktop/src/main/services/conflicts/conflictService.ts`.
 
 ## One-shot merge simulation
@@ -47,21 +46,6 @@ Consumers:
 
 - The `conflicts.simulateMerge` runtime action and the CTO `simulateMerge`
   tool. The desktop renderer has no bridge for it.
-- Integration tab → per-pair simulation (via `prService.simulateIntegration`,
-  not `conflictService.simulateMerge`).
-
-## Chained simulation
-
-`simulateChainedMerge` covers multi-lane sequential merges (the
-merge-plan flow). For each step in stack-depth order:
-
-1. Simulate the merge of the current source onto the running
-   chain state.
-2. If clean, apply it to an in-memory chain tree and continue.
-3. If conflicted, stop and report the blocked step.
-
-This feeds the Integration tab's merge plan view where the user sees
-"lanes 1-3 merge cleanly; lane 4 conflicts with lane 2."
 
 ## AI resolution proposal
 
@@ -150,92 +134,6 @@ Patch files live at
 `<worktree>/.ade/tmp/conflict-proposals/proposal-<uuid>.patch` and
 are cleaned up on proposal rejection/application.
 
-## External CLI resolver
-
-`runExternalResolver(args)` runs a Codex / Claude CLI session in the
-target lane's worktree (single-source) or a dedicated integration
-lane (multi-source). Resolution happens interactively; the resolver
-runs with full repo access and produces changes that ADE then
-commits via the explicit `commitExternalResolverRun` step.
-
-### CWD policy
-
-- **Single source lane** (`sourceLaneIds.length === 1`): cwd =
-  source lane's worktree.
-- **Multi-source integration merge** (`sourceLaneIds.length > 1`):
-  cwd = integration lane's worktree. The integration lane is
-  created automatically via `ensureIntegrationLane` if not
-  supplied.
-- **Explicit override**: caller may pass `cwdLaneId` to force a
-  specific worktree.
-
-Scenario is recorded as `ResolverSessionScenario`:
-`"single-merge" | "integration-merge"`.
-
-### Execution
-
-1. `prepareResolverSession(...)` — builds prompt, conflict
-   context, picks model/reasoning effort/permission mode, writes
-   the initial `ExternalResolverRunRecord` to
-   `<packsRoot>/external-resolver-runs/<runId>/run.json`.
-2. Command template resolution via
-   `resolveExternalResolverCommand(provider)`. Templates support
-   `{{promptFile}}`, `{{projectRoot}}`, `{{targetLaneId}}`,
-   `{{sourceLaneIds}}`, `{{runDir}}` placeholders.
-3. Spawn the CLI with:
-   - `cwd: cwdLane.worktreePath`
-   - `stdio: ["ignore", "pipe", "pipe"]`
-   - `timeout: 8 * 60_000` (8 min)
-   - 8 MB stdout/stderr caps per stream.
-4. Write `output.log` with combined stdout + stderr.
-5. Capture changes via `git diff --binary` (32 MB cap). Write to
-   `changes.patch` if non-empty.
-6. Update the run record with `status`, `completedAt`, `command`,
-   `changedFiles`, `summary`, `patchPath`, `logPath`, `warnings`,
-   `error`.
-
-### Insufficient-context guard
-
-If context validation fails at prepare time, the run is recorded
-as `status: "blocked"` with `warnings` like
-`missing_context:<repoRelativePath>`. The runner short-circuits
-without spawning the CLI. This prevents speculative patches in
-situations where ADE knows it's missing required file content.
-
-### Commit workflow
-
-`commitExternalResolverRun({ runId, message? })`:
-
-1. Re-read the run record; reject if not `completed`, if already
-   committed, or if no patch artifact exists.
-2. Read the patch body and extract touched paths via
-   `extractCommitPathsFromUnifiedDiff`.
-3. Normalize paths to repo-relative via `ensureRelativeRepoPath`.
-4. `git add -- <paths>` + `git commit -m <message> -- <paths>`.
-5. Read the resulting `commitSha` and persist
-   `committedAt` / `commitSha` / `commitMessage` on the run record.
-
-Commit message defaults to
-`"Resolve conflicts via ADE <provider> external resolver"`.
-
-### Session tracking
-
-When `sessionService` is wired in, the resolver can surface inside
-the Sessions surface and the terminal modal
-(`renderer/components/shared/conflictResolver/ResolverTerminalModal.tsx`).
-`attachResolverSession`, `finalizeResolverSession`, and
-`cancelResolverSession` bridge between the run record and session
-state.
-
-### Suggesting a target
-
-`suggestResolverTarget(args)` picks a reasonable default target
-lane for the UI given the scenario:
-
-- Single-source: the source lane.
-- Multi-source: heuristic prefers existing integration lanes over
-  creating a new one; ties break by most recently touched.
-
 ## User configuration (`local.yaml`)
 
 Users can persist resolution preferences under
@@ -252,36 +150,18 @@ ai:
 ```
 
 The conflict resolution dialog reads and writes these values via
-`projectConfigService`. Merge simulation runs from the integration and lane surfaces.
+`projectConfigService`. Merge simulation runs from the lane surfaces.
 
 ## Gotchas
 
 - **Context completeness is strict.** Both
   `relevantFilesForConflict[]` and `fileContexts[]` must be present
   and non-empty to dispatch. Partial context blocks the run.
-- **External resolver runs are not transactional.** The CLI may
-  complete partial work even when reporting `status !== 0`. The
-  commit workflow is a separate explicit step so the user can
-  review before committing.
 - **Patch files accumulate on disk** under
   `<worktree>/.ade/tmp/conflict-proposals/` if proposals are neither
   applied nor rejected. `deletePatchFile` runs after apply/undo.
   Consider adding a sweep for orphaned patches in long-running
   projects.
-- **`git diff --binary` can produce huge output.** The 32 MB cap is
-  a hard stop; warnings `git_diff_stdout_truncated` /
-  `git_diff_stderr_truncated` flag truncation so the UI can warn.
-- **Provider-specific command templates** come from
-  `projectConfigService` and may be empty. When missing, the
-  service records `resolver_command_missing_in_config` and returns
-  a failed run rather than throwing.
-- **Process signals** (SIGTERM, etc) are recorded as
-  `process_signal:<signal>` warnings so postmortem debugging can
-  distinguish "CLI crashed" from "CLI exited non-zero cleanly."
-- **Integration lane auto-creation** happens only for multi-source
-  runs. If you manually create an integration lane first and pass
-  it via `cwdLaneId`, the service does not try to create a second
-  one — it respects the override.
 - **TTL for prepared previews (20 min)** may force re-prepare if the
   user takes too long between preview and dispatch. The dispatch
   path re-prepares transparently.

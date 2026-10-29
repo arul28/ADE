@@ -2,7 +2,6 @@ import { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useRef } from 
 import type { LaneDiffMode } from "../../../shared/types";
 import type { BrowserTabMentionTarget } from "../../../shared/browserTabMention";
 import { useWorkSurfaceMountRef, workSurfaceKey } from "../../lib/workToolOnScreen";
-import { useNavigate } from "react-router-dom";
 import { Play } from "@phosphor-icons/react";
 import type { ComponentType, ReactNode } from "react";
 import type {
@@ -35,7 +34,6 @@ import {
 import { ChatTerminalDrawer } from "../chat/ChatTerminalDrawer";
 import { FilesTab } from "../files/FilesTab";
 import { LaneGitActionsPane } from "../lanes/LaneGitActionsPane";
-import { settingsRouteFor } from "../settings/settingsManifest";
 import { cn } from "../ui/cn";
 import { isReadOnlyWorkTool, type WorkToolContext } from "./workTools";
 import { WORK_TOOL_CHROME_CHIP, WorkToolEmptyLine } from "./workToolChrome";
@@ -280,7 +278,6 @@ function WorkGitTool({
   onSelectCommit,
   onClearDiffSelection,
 }: WorkToolPanelProps) {
-  const navigate = useNavigate();
   const mountScope = useWorkToolMountScope(runtimePin);
   if (!laneId) return <NoLaneEmptyLine />;
   if (pinnedMachineOffline) {
@@ -296,8 +293,6 @@ function WorkGitTool({
         key={`work-git:${mountScope}:${laneId}`}
         laneId={laneId}
         runtimePin={runtimePin}
-        autoRebaseEnabled={false}
-        onOpenSettings={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
         onSelectFile={onSelectFile}
         onSelectCommit={onSelectCommit}
         onClearDiffSelection={onClearDiffSelection}

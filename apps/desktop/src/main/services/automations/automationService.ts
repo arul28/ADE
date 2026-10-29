@@ -3402,12 +3402,8 @@ export function createAutomationService({
           trigger.issue?.url ?? trigger.pr?.url ?? null,
           trigger.summary ?? null,
         ].filter(Boolean).join("\n");
-      const parentLaneId = trimToNull(action.parentLaneId);
-      const lane = await laneService.create({
-        name: laneName,
-        description,
-        ...(parentLaneId ? { parentLaneId } : {}),
-      });
+      // Starts the way the project's new-lane defaults say.
+      const lane = await laneService.create({ name: laneName, description });
       trigger.laneId = lane.id;
       trigger.laneName = lane.name;
       trigger.branch = lane.branchRef;

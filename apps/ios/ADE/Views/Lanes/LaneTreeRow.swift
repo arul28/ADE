@@ -1,30 +1,9 @@
 import SwiftUI
 
-private enum LaneTreeMetrics {
-  static let indent: CGFloat = 20
-  static let elbowWidth: CGFloat = 14
-  static let elbowHeight: CGFloat = 22
-  static let strokeColor = ADEKit.rule
-  static let strokeWidth: CGFloat = 1
-}
-
-private struct LaneTreeElbowShape: Shape {
-  func path(in rect: CGRect) -> Path {
-    var path = Path()
-    let midX = rect.minX + 2
-    let midY = rect.midY
-    path.move(to: CGPoint(x: midX, y: rect.minY))
-    path.addLine(to: CGPoint(x: midX, y: midY))
-    path.addLine(to: CGPoint(x: rect.maxX, y: midY))
-    return path
-  }
-}
-
-/// One lane as a row of the Lanes list: indented under its parent with an
-/// elbow, tapping opens it, long-press shows its menu over a peek.
+/// One lane as a row of the Lanes list: tapping opens it, long-press shows
+/// its menu over a peek.
 struct LaneTreeRow: View {
   let snapshot: LaneListSnapshot
-  let depth: Int
   let pullRequest: LanePrTag?
   let isPinned: Bool
   let isOpen: Bool
@@ -35,26 +14,12 @@ struct LaneTreeRow: View {
   /// Pushes the lane's detail through the list's navigation path.
   let onOpen: () -> Void
   var machine: LaneMachineChip? = nil
-  /// A child sits indented under its parent's row, which names the machine;
-  /// repeating it squeezed the branch name.
+  /// Off where a section header already names the machine; repeating it
+  /// squeezed the branch name.
   var showsMachineChip = true
-
-  private var isChild: Bool { snapshot.lane.laneType != "primary" && depth > 0 }
 
   var body: some View {
     HStack(alignment: .top, spacing: 0) {
-      if depth > 0 {
-        ForEach(0..<depth, id: \.self) { _ in
-          Color.clear.frame(width: LaneTreeMetrics.indent)
-        }
-      }
-      if isChild {
-        LaneTreeElbowShape()
-          .stroke(LaneTreeMetrics.strokeColor, lineWidth: LaneTreeMetrics.strokeWidth)
-          .frame(width: LaneTreeMetrics.elbowWidth, height: LaneTreeMetrics.elbowHeight)
-          .padding(.top, 12)
-          .padding(.leading, ADEKit.inset)
-      }
       if machine?.isLive == false {
         // The last roster of a machine the phone has no live link to: shown,
         // dimmed, no actions (the desktop's offline rule).
@@ -82,7 +47,6 @@ struct LaneTreeRow: View {
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
-      depth: depth,
       pullRequest: pullRequest,
       transitionNamespace: transitionNamespace,
       isSelectedTransitionSource: isSelectedTransitionSource,

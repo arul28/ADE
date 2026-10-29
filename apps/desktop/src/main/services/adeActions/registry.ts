@@ -6,7 +6,7 @@ import path from "node:path";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../shared/githubIssueList";
 import { readImageFileAsDataUrl } from "../chat/imageAttachmentConverter";
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import type { AdeRuntime } from "../../../../../ade-cli/src/bootstrap";
 import { ingestSceneSnapshot } from "../scenes/sceneSnapshotIngest";
 import {
@@ -140,10 +140,7 @@ import {
 } from "../automations/webhookAutomationFactory";
 import { defaultAutomationChatModelId } from "../automations/automationService";
 import type { AutomationWebhookListEntry, SessionAttentionSource } from "../../../shared/types";
-import {
-  buildPrAiResolutionContextKey,
-  isTrackedAgentCliToolType,
-} from "../../../shared/types";
+import { isTrackedAgentCliToolType } from "../../../shared/types";
 import {
   claimDraft,
   createDraft,
@@ -168,17 +165,7 @@ import type {
   ListSessionsArgs,
   ListLanesArgs,
   UpdateSessionMetaArgs,
-  PrAgentPermissionMode,
-  PrAiResolutionContext,
-  PrAiResolutionEventPayload,
-  PrAiResolutionGetSessionResult,
-  PrAiResolutionInputArgs,
-  PrAiResolutionSessionInfo,
-  PrAiResolutionSessionStatus,
-  PrAiResolutionStartArgs,
-  PrAiResolutionStartResult,
   ReadTranscriptTailArgs,
-  PrAiResolutionStopArgs,
   ProxyStatus,
   AiFeatureKey,
   AiSettingsStatus,
@@ -190,7 +177,6 @@ import type {
   CtoLinearQuickView,
   LinearConnectionStatus,
 } from "../../../shared/types";
-import { getModelById } from "../../../shared/modelRegistry";
 import {
   LEGACY_MAX_CHAT_ATTACHMENT_BYTES,
   legacyAttachmentCapMessage,
@@ -232,7 +218,6 @@ export { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
-import { mapPermissionModeForModelFamily } from "../prs/resolverUtils";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
@@ -2156,15 +2141,15 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   };
   /**
    * The lane id a positional lane action runs against. Two callers hand it over
-   * two ways: `ade lanes children` / `ade lanes stack` send it positionally (an
-   * `argsList` holding one string), while an automation step — whose editor
-   * renders the schema's `laneId` param — and `run_ade_action`'s `args` send the
-   * object `{ laneId }`. `getChildren`, `getStackChain`, `getDeleteRisk` and
-   * `cancelDelete` take a bare lane id and pass it straight to a
-   * `select * from lanes` lookup, and `node:sqlite` refuses an object as a bound
-   * parameter ("Unsupported database value at parameter 1: object"), so reading
-   * both shapes here is what keeps the object out of the query. `lane.getSummary`
-   * needs only the object shape; these four also have positional callers.
+   * two ways: a CLI command sends it positionally (an `argsList` holding one
+   * string), while an automation step — whose editor renders the schema's
+   * `laneId` param — and `run_ade_action`'s `args` send the object `{ laneId }`.
+   * `getDeleteRisk` and `cancelDelete` take a bare lane id and pass it straight
+   * to a `select * from lanes` lookup, and `node:sqlite` refuses an object as a
+   * bound parameter ("Unsupported database value at parameter 1: object"), so
+   * reading both shapes here is what keeps the object out of the query.
+   * `lane.getSummary` needs only the object shape; these two also have
+   * positional callers.
    */
   const readLaneIdActionArg = (args: unknown, actionName: string): string =>
     typeof args === "string"
@@ -2179,10 +2164,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         includeStatus: record.includeStatus !== false,
       });
     },
-    getChildren: async (args?: unknown) =>
-      runtime.laneService.getChildren(readLaneIdActionArg(args, "lane.getChildren")),
-    getStackChain: async (args?: unknown) =>
-      runtime.laneService.getStackChain(readLaneIdActionArg(args, "lane.getStackChain")),
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
     cancelDelete: async (args?: unknown) =>
@@ -2198,8 +2179,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           sessionService: runtime.sessionService,
           ptyService: runtime.ptyService,
           agentChatService: runtime.agentChatService ?? null,
-          rebaseSuggestionService: runtime.rebaseSuggestionService ?? null,
-          autoRebaseService: runtime.autoRebaseService ?? null,
           conflictService: runtime.conflictService ?? null,
           syncService: runtime.syncService ?? null,
           logger: runtime.logger,
@@ -2207,12 +2186,9 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         lanes,
         {
           includeConflictStatus: args?.includeConflictStatus !== false,
-          includeRebaseSuggestions: args?.includeRebaseSuggestions !== false,
-          includeAutoRebaseStatus: args?.includeAutoRebaseStatus !== false,
         },
       );
     },
-    listRebaseSuggestions: () => runtime.rebaseSuggestionService?.listSuggestions() ?? [],
     /**
      * Branch-drift status read. Returns `null` when the worktree HEAD still
      * matches the lane's recorded branch — the common case — so agents can poll
@@ -2307,21 +2283,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       } catch (error) {
         return { ...result, setupWarning: getErrorMessage(error) };
       }
-    },
-    dismissRebaseSuggestion: async (args?: { laneId?: string }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      await runtime.rebaseSuggestionService?.dismiss({ laneId });
-    },
-    deferRebaseSuggestion: async (args?: { laneId?: string; minutes?: number }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args?.minutes ?? 60)));
-      await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
-    },
-    listAutoRebaseStatuses: () =>
-      runtime.autoRebaseService?.listStatuses() ?? [],
-    dismissAutoRebaseStatus: async (args?: { laneId?: string }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      await runtime.autoRebaseService?.dismissStatus({ laneId });
     },
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");
@@ -3103,394 +3064,6 @@ type TerminalDomainService = {
   listWatches(args?: unknown): unknown;
 };
 
-type PrAiRuntimeSession = {
-  sessionId: string;
-  ptyId: string | null;
-  runId: string;
-  provider: "codex" | "claude";
-  contextKey: string;
-  context: PrAiResolutionContext;
-  modelId: string;
-  reasoning: string | null;
-  permissionMode: PrAgentPermissionMode;
-  pollTimer: ReturnType<typeof setInterval> | null;
-  finalizing: boolean;
-};
-
-type PrAiRuntimeBridge = {
-  getSession(args?: unknown): Promise<PrAiResolutionGetSessionResult>;
-  start(args?: unknown): Promise<PrAiResolutionStartResult>;
-  input(args?: unknown): Promise<void>;
-  stop(args?: unknown): Promise<void>;
-};
-
-const prAiRuntimeBridges = new WeakMap<AdeRuntime, PrAiRuntimeBridge>();
-
-function inferPrAiProvider(modelId: string): "codex" | "claude" {
-  const descriptor = getModelById(modelId);
-  return descriptor?.family === "anthropic" ? "claude" : "codex";
-}
-
-function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
-  const sourceLaneIds = new Set<string>();
-  const add = (value: string | null | undefined) => {
-    const normalized = typeof value === "string" ? value.trim() : "";
-    if (normalized) sourceLaneIds.add(normalized);
-  };
-  for (const laneId of context.sourceLaneIds ?? []) {
-    add(laneId);
-  }
-  add(context.sourceLaneId ?? null);
-  if (context.sourceTab !== "integration") {
-    add(context.laneId ?? null);
-  }
-  return Array.from(sourceLaneIds);
-}
-
-function mapExternalResolverStatusToPrAi(status: string): PrAiResolutionSessionStatus {
-  if (status === "completed") return "completed";
-  if (status === "failed" || status === "blocked") return "failed";
-  if (status === "canceled") return "cancelled";
-  return "running";
-}
-
-function buildPrAiDisplayText(context: PrAiResolutionContext): string {
-  if (context.sourceTab === "rebase") return "Resolve this rebase with AI.";
-  if (context.sourceTab === "integration") {
-    return context.proposalId
-      ? "Resolve this integration proposal with AI."
-      : "Resolve this integration PR with AI.";
-  }
-  return "Resolve this PR with AI.";
-}
-
-function emitPrAiResolutionRuntimeEvent(runtime: AdeRuntime, payload: PrAiResolutionEventPayload): void {
-  runtime.eventBuffer.push({
-    timestamp: nowIso(),
-    category: "runtime",
-    payload: { type: "pr_ai_resolution_event", event: payload },
-  });
-}
-
-function readSummaryPermissionMode(summary: unknown): PrAgentPermissionMode | null {
-  const record = asActionRecord(summary);
-  return typeof record.permissionMode === "string"
-    ? record.permissionMode as PrAgentPermissionMode
-    : null;
-}
-
-function buildPrAiSessionInfo(args: {
-  context: PrAiResolutionContext;
-  contextKey: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  model: string | null;
-  modelId: string | null;
-  reasoning: string | null;
-  permissionMode: PrAgentPermissionMode | null;
-  status: PrAiResolutionSessionStatus;
-}): PrAiResolutionSessionInfo {
-  return {
-    contextKey: args.contextKey,
-    sessionId: args.sessionId,
-    provider: args.provider,
-    model: args.model,
-    modelId: args.modelId,
-    reasoning: args.reasoning,
-    permissionMode: args.permissionMode,
-    context: args.context,
-    status: args.status,
-  };
-}
-
-function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
-  const existing = prAiRuntimeBridges.get(runtime);
-  if (existing) return existing;
-
-  const prAiSessions = new Map<string, PrAiRuntimeSession>();
-  const prAiSessionsByContextKey = new Map<string, string>();
-
-  const clearSession = (sessionId: string): void => {
-    const session = prAiSessions.get(sessionId);
-    if (!session) return;
-    if (session.pollTimer) clearInterval(session.pollTimer);
-    if (prAiSessionsByContextKey.get(session.contextKey) === sessionId) {
-      prAiSessionsByContextKey.delete(session.contextKey);
-    }
-    prAiSessions.delete(sessionId);
-  };
-
-  const finalize = async (
-    sessionId: string,
-    opts: { forceStatus?: "cancelled" | "completed" | "failed"; message?: string } = {},
-  ): Promise<void> => {
-    const session = prAiSessions.get(sessionId);
-    if (!session || session.finalizing) return;
-    session.finalizing = true;
-    try {
-      const detail = runtime.sessionService.get(sessionId);
-      const derivedExitCode = opts.forceStatus === "cancelled"
-        ? 130
-        : (detail?.exitCode ?? (detail?.status === "completed" ? 0 : 1));
-      try {
-        await runtime.conflictService.finalizeResolverSession({
-          runId: session.runId,
-          exitCode: derivedExitCode,
-        });
-      } catch (error) {
-        runtime.logger.debug("ade_actions.prs_ai_resolution_finalize_failed", {
-          sessionId,
-          runId: session.runId,
-          error: getErrorMessage(error),
-        });
-      }
-
-      const status = opts.forceStatus
-        ?? (detail?.status === "disposed"
-          ? "cancelled"
-          : derivedExitCode === 0
-            ? "completed"
-            : "failed");
-      emitPrAiResolutionRuntimeEvent(runtime, {
-        sessionId,
-        status,
-        message: opts.message ?? null,
-        timestamp: nowIso(),
-      });
-    } finally {
-      clearSession(sessionId);
-    }
-  };
-
-  const bridge: PrAiRuntimeBridge = {
-    async getSession(args?: unknown): Promise<PrAiResolutionGetSessionResult> {
-      const context = (asActionRecord(args).context ?? {}) as PrAiResolutionContext;
-      const contextKey = buildPrAiResolutionContextKey(context);
-      const liveSessionId = prAiSessionsByContextKey.get(contextKey);
-      const agentChatService = requireService(runtime.agentChatService, "Agent chat service not available.");
-      const sessionSummaries = await agentChatService.listSessions();
-
-      if (liveSessionId) {
-        const liveSession = prAiSessions.get(liveSessionId);
-        if (liveSession) {
-          const summary = sessionSummaries.find((entry) => entry.sessionId === liveSessionId) ?? null;
-          const summaryRecord = asActionRecord(summary);
-          return buildPrAiSessionInfo({
-            context: liveSession.context,
-            contextKey,
-            sessionId: liveSessionId,
-            provider: liveSession.provider,
-            model: typeof summaryRecord.model === "string" ? summaryRecord.model : liveSession.modelId,
-            modelId: typeof summaryRecord.modelId === "string" ? summaryRecord.modelId : liveSession.modelId,
-            reasoning: typeof summaryRecord.reasoningEffort === "string" ? summaryRecord.reasoningEffort : liveSession.reasoning,
-            permissionMode: readSummaryPermissionMode(summary) ?? liveSession.permissionMode,
-            status: "running",
-          });
-        }
-        prAiSessionsByContextKey.delete(contextKey);
-      }
-
-      const persistedRun = runtime.conflictService
-        .listExternalResolverRuns({ limit: 200 })
-        .find((entry) => entry.resolverContextKey === contextKey && entry.sessionId);
-      if (!persistedRun?.sessionId) return null;
-
-      const summary = sessionSummaries.find((entry) => entry.sessionId === persistedRun.sessionId) ?? null;
-      const summaryRecord = asActionRecord(summary);
-      return buildPrAiSessionInfo({
-        context,
-        contextKey,
-        sessionId: persistedRun.sessionId,
-        provider: persistedRun.provider === "claude" ? "claude" : "codex",
-        model: typeof summaryRecord.model === "string" ? summaryRecord.model : persistedRun.model ?? null,
-        modelId: typeof summaryRecord.modelId === "string" ? summaryRecord.modelId : persistedRun.model ?? null,
-        reasoning: typeof summaryRecord.reasoningEffort === "string" ? summaryRecord.reasoningEffort : persistedRun.reasoningEffort ?? null,
-        permissionMode: readSummaryPermissionMode(summary) ?? persistedRun.permissionMode ?? null,
-        status: mapExternalResolverStatusToPrAi(persistedRun.status),
-      });
-    },
-    async start(args?: unknown): Promise<PrAiResolutionStartResult> {
-      const startArgs = asActionRecord(args) as unknown as PrAiResolutionStartArgs;
-      const context = (startArgs.context ?? {}) as PrAiResolutionContext;
-      const model = typeof startArgs.model === "string" ? startArgs.model.trim() : "";
-      const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
-      const sourceLaneIds = collectPrAiSourceLaneIds(context);
-      const permissionMode: PrAgentPermissionMode = startArgs.permissionMode ?? "default";
-      const reasoning = typeof startArgs.reasoning === "string" && startArgs.reasoning.trim().length > 0
-        ? startArgs.reasoning.trim()
-        : null;
-      const additionalInstructions = typeof startArgs.additionalInstructions === "string" && startArgs.additionalInstructions.trim().length > 0
-        ? startArgs.additionalInstructions.trim()
-        : null;
-      let runId = "";
-
-      if (!model) {
-        const sessionId = randomUUID();
-        const error = "Model is required to start AI resolution.";
-        emitPrAiResolutionRuntimeEvent(runtime, { sessionId, status: "failed", message: error, timestamp: nowIso() });
-        return { sessionId, provider: "codex", ptyId: null, status: "failed", error, context };
-      }
-      if (!targetLaneId) {
-        const sessionId = randomUUID();
-        const error = "Target lane is required to start AI resolution.";
-        emitPrAiResolutionRuntimeEvent(runtime, { sessionId, status: "failed", message: error, timestamp: nowIso() });
-        return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
-      }
-      if (sourceLaneIds.length === 0) {
-        const sessionId = randomUUID();
-        const error = "At least one source lane is required to start AI resolution.";
-        emitPrAiResolutionRuntimeEvent(runtime, { sessionId, status: "failed", message: error, timestamp: nowIso() });
-        return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
-      }
-
-      try {
-        const provider = inferPrAiProvider(model);
-        const modelDescriptor = getModelById(model);
-        const prep = await runtime.conflictService.prepareResolverSession({
-          provider,
-          targetLaneId,
-          sourceLaneIds,
-          cwdLaneId: typeof context.integrationLaneId === "string" && context.integrationLaneId.trim().length > 0
-            ? context.integrationLaneId.trim()
-            : (typeof context.laneId === "string" && context.laneId.trim().length > 0 ? context.laneId.trim() : undefined),
-          proposalId: typeof context.proposalId === "string" && context.proposalId.trim().length > 0
-            ? context.proposalId.trim()
-            : undefined,
-          sourceTab: context.sourceTab,
-          scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge"),
-          model,
-          reasoningEffort: reasoning,
-          permissionMode,
-          additionalInstructions,
-          originSurface: context.sourceTab === "integration" || context.sourceTab === "rebase" ? context.sourceTab : "manual",
-        });
-        runId = prep.runId;
-        if (prep.status === "blocked") {
-          const sessionId = randomUUID();
-          const reason = prep.contextGaps.length
-            ? prep.contextGaps.map((gap) => gap.message).join(", ")
-            : "Resolver session blocked due to insufficient context.";
-          emitPrAiResolutionRuntimeEvent(runtime, { sessionId, status: "failed", message: reason, timestamp: nowIso() });
-          return { sessionId, provider, ptyId: null, status: "failed", error: reason, context };
-        }
-
-        const agentChatService = requireService(runtime.agentChatService, "Agent chat service not available.");
-        const session = await agentChatService.createSession({
-          laneId: prep.cwdLaneId,
-          provider,
-          model: modelDescriptor?.shortId ?? model,
-          ...(modelDescriptor?.id ? { modelId: modelDescriptor.id } : {}),
-          ...(reasoning ? { reasoningEffort: reasoning } : {}),
-          permissionMode: mapPermissionModeForModelFamily(permissionMode, modelDescriptor?.family),
-        });
-        const promptText = fs.readFileSync(prep.promptFilePath, "utf8");
-        const runtimeContext: PrAiResolutionContext = {
-          ...context,
-          laneId: prep.cwdLaneId,
-          targetLaneId,
-          sourceLaneId: sourceLaneIds[0] ?? context.sourceLaneId ?? context.laneId ?? null,
-          sourceLaneIds,
-          integrationLaneId: prep.integrationLaneId ?? context.integrationLaneId ?? null,
-        };
-        const contextKey = buildPrAiResolutionContextKey(runtimeContext);
-        const runtimeSession: PrAiRuntimeSession = {
-          sessionId: session.id,
-          ptyId: null,
-          runId: prep.runId,
-          provider,
-          contextKey,
-          context: runtimeContext,
-          modelId: model,
-          reasoning,
-          permissionMode,
-          pollTimer: null,
-          finalizing: false,
-        };
-        await runtime.conflictService.attachResolverSession({
-          runId: prep.runId,
-          ptyId: null,
-          sessionId: session.id,
-          command: [],
-        });
-        runtimeSession.pollTimer = setInterval(() => {
-          const current = prAiSessions.get(runtimeSession.sessionId);
-          if (!current || current.finalizing) return;
-          const detail = runtime.sessionService.get(runtimeSession.sessionId);
-          if (!detail || detail.status === "running") return;
-          void finalize(runtimeSession.sessionId);
-        }, 1_000);
-        prAiSessions.set(runtimeSession.sessionId, runtimeSession);
-        prAiSessionsByContextKey.set(contextKey, runtimeSession.sessionId);
-        emitPrAiResolutionRuntimeEvent(runtime, {
-          sessionId: runtimeSession.sessionId,
-          status: "running",
-          message: null,
-          timestamp: nowIso(),
-        });
-        void agentChatService.sendMessage({
-          sessionId: runtimeSession.sessionId,
-          text: promptText,
-          displayText: buildPrAiDisplayText(runtimeContext),
-          ...(reasoning ? { reasoningEffort: reasoning } : {}),
-        }).catch(async (error: unknown) => {
-          runtime.logger.warn("ade_actions.prs_ai_resolution_send_failed", {
-            sessionId: runtimeSession.sessionId,
-            runId: prep.runId,
-            error: getErrorMessage(error),
-          });
-          await finalize(runtimeSession.sessionId, { forceStatus: "failed", message: getErrorMessage(error) });
-        });
-        return {
-          sessionId: runtimeSession.sessionId,
-          provider,
-          ptyId: null,
-          status: "started",
-          error: null,
-          context: runtimeContext,
-        };
-      } catch (error) {
-        if (runId) {
-          try {
-            await runtime.conflictService.finalizeResolverSession({ runId, exitCode: 1 });
-          } catch {
-            // Preserve the original error.
-          }
-        }
-        const sessionId = randomUUID();
-        const message = getErrorMessage(error);
-        emitPrAiResolutionRuntimeEvent(runtime, { sessionId, status: "failed", message, timestamp: nowIso() });
-        return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error: message, context };
-      }
-    },
-    async input(args?: unknown): Promise<void> {
-      const inputArgs = asActionRecord(args) as unknown as PrAiResolutionInputArgs;
-      const sessionId = typeof inputArgs.sessionId === "string" ? inputArgs.sessionId.trim() : "";
-      const text = typeof inputArgs.text === "string" ? inputArgs.text : "";
-      if (!sessionId || !text.length) return;
-      if (!prAiSessions.has(sessionId)) throw new Error(`AI resolution session not found: ${sessionId}`);
-      const agentChatService = requireService(runtime.agentChatService, "Agent chat service not available.");
-      const sessionDetail = runtime.sessionService.get(sessionId);
-      if (sessionDetail?.status === "running") {
-        await agentChatService.steerUserMessage({ sessionId, text });
-        return;
-      }
-      await agentChatService.sendMessage({ sessionId, text });
-    },
-    async stop(args?: unknown): Promise<void> {
-      const stopArgs = asActionRecord(args) as unknown as PrAiResolutionStopArgs;
-      const sessionId = typeof stopArgs.sessionId === "string" ? stopArgs.sessionId.trim() : "";
-      if (!sessionId) return;
-      if (!prAiSessions.has(sessionId)) return;
-      const agentChatService = requireService(runtime.agentChatService, "Agent chat service not available.");
-      await agentChatService.interrupt({ sessionId });
-      await finalize(sessionId, { forceStatus: "cancelled", message: "AI resolution stopped by user." });
-    },
-  };
-
-  prAiRuntimeBridges.set(runtime, bridge);
-  return bridge;
-}
-
 function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
   const prService = runtime.prService;
   if (!prService) return null;
@@ -3513,18 +3086,6 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
       return ifNoneMatch === signature
         ? { signature, notModified: true }
         : { prs, signature, notModified: false };
-    },
-    aiResolutionGetSession(args?: unknown) {
-      return getPrAiRuntimeBridge(runtime).getSession(args);
-    },
-    aiResolutionStart(args?: unknown) {
-      return getPrAiRuntimeBridge(runtime).start(args);
-    },
-    aiResolutionInput(args?: unknown) {
-      return getPrAiRuntimeBridge(runtime).input(args);
-    },
-    aiResolutionStop(args?: unknown) {
-      return getPrAiRuntimeBridge(runtime).stop(args);
     },
   };
 }

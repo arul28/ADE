@@ -21,8 +21,6 @@ function createMockLaneService() {
     getSummary: vi.fn().mockResolvedValue(null),
     refreshSnapshots: vi.fn().mockResolvedValue({ lanes: [] }),
     create: vi.fn().mockResolvedValue({ id: "lane-1" }),
-    createChild: vi.fn().mockResolvedValue({ id: "child-1" }),
-    createFromUnstaged: vi.fn().mockResolvedValue({ id: "unstaged-1" }),
     importBranch: vi.fn().mockResolvedValue({ id: "imported-1" }),
     previewBranchSwitch: vi.fn().mockResolvedValue({
       laneId: "lane-1",
@@ -41,13 +39,10 @@ function createMockLaneService() {
     ]),
     adoptAttached: vi.fn().mockResolvedValue({ ok: true }),
     rename: vi.fn(),
-    reparent: vi.fn().mockResolvedValue({ ok: true }),
     updateAppearance: vi.fn(),
     archive: vi.fn().mockResolvedValue(undefined),
     unarchive: vi.fn().mockResolvedValue(undefined),
     delete: vi.fn().mockResolvedValue(undefined),
-    getStackChain: vi.fn().mockResolvedValue([]),
-    getChildren: vi.fn().mockResolvedValue([]),
     rebaseStart: vi.fn().mockResolvedValue({ runId: "run-1" }),
     rebasePush: vi.fn().mockResolvedValue({ ok: true }),
     rebaseRollback: vi.fn().mockResolvedValue({ ok: true }),
@@ -84,16 +79,6 @@ function createMockPrService() {
     replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
     setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
     reactToComment: vi.fn().mockResolvedValue(undefined),
-    simulateIntegration: vi.fn().mockResolvedValue({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" }),
-    commitIntegration: vi.fn().mockResolvedValue({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] }),
-    listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
-    updateIntegrationProposal: vi.fn().mockResolvedValue(undefined),
-    deleteIntegrationProposal: vi.fn().mockResolvedValue({ proposalId: "proposal-1", integrationLaneId: null, deletedIntegrationLane: false }),
-    dismissIntegrationCleanup: vi.fn().mockResolvedValue({ proposalId: "proposal-1", cleanupState: "declined" }),
-    cleanupIntegrationWorkflow: vi.fn().mockResolvedValue({ proposalId: "proposal-1", archivedLaneIds: [], skippedLaneIds: [], workflowDisplayState: "history", cleanupState: "completed" }),
-    createIntegrationLaneForProposal: vi.fn().mockResolvedValue({ integrationLaneId: "lane-int", mergedCleanLanes: [], conflictingLanes: [] }),
-    startIntegrationResolution: vi.fn().mockResolvedValue({ conflictFiles: [], mergedClean: true, integrationLaneId: "lane-int" }),
-    recheckIntegrationStep: vi.fn().mockResolvedValue({ resolution: "resolved", remainingConflictFiles: [], allResolved: true, message: null }),
     getGithubSnapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-04-01T00:00:00Z", repoPullRequests: [], externalPullRequests: [], live: true }),
     getReviewThreads: vi.fn().mockResolvedValue([]),
     getActionRuns: vi.fn().mockResolvedValue([]),
@@ -105,7 +90,6 @@ function createMockPrService() {
       stacks: [],
       capabilities: {},
       createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
-      workflowCards: [],
       live: true,
     }),
   } as any;
@@ -281,16 +265,6 @@ function createMockConflictService() {
     getLaneStatus: vi.fn().mockResolvedValue(null),
     listOverlaps: vi.fn().mockResolvedValue([]),
     getBatchAssessment: vi.fn().mockResolvedValue({ lanes: [] }),
-    dismissRebase: vi.fn(),
-    deferRebase: vi.fn(),
-  } as any;
-}
-
-function createMockRebaseSuggestionService() {
-  return {
-    listSuggestions: vi.fn().mockResolvedValue([]),
-    dismiss: vi.fn().mockResolvedValue(undefined),
-    defer: vi.fn().mockResolvedValue(undefined),
   } as any;
 }
 
@@ -363,7 +337,6 @@ describe("createSyncRemoteCommandService", () => {
   let linearIssueTracker: ReturnType<typeof createMockLinearIssueTracker>;
   let linearCredentialService: ReturnType<typeof createMockLinearCredentialService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
-  let rebaseSuggestionService: ReturnType<typeof createMockRebaseSuggestionService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
   beforeEach(() => {
@@ -378,7 +351,6 @@ describe("createSyncRemoteCommandService", () => {
     linearIssueTracker = createMockLinearIssueTracker();
     linearCredentialService = createMockLinearCredentialService();
     conflictService = createMockConflictService();
-    rebaseSuggestionService = createMockRebaseSuggestionService();
     service = createSyncRemoteCommandService({
       laneService,
       prService,
@@ -391,7 +363,6 @@ describe("createSyncRemoteCommandService", () => {
       linearCredentialService,
       getLinearIssueTracker: () => linearIssueTracker,
       conflictService,
-      rebaseSuggestionService,
       ctoMemoryService: {
         getSnapshot: () => CTO_MEMORY_SNAPSHOT,
       } as any,
@@ -582,8 +553,6 @@ describe("createSyncRemoteCommandService", () => {
         includeArchived: true,
         includeStatus: undefined,
         includeConflictStatus: undefined,
-        includeRebaseSuggestions: undefined,
-        includeAutoRebaseStatus: undefined,
       });
     });
 
@@ -595,20 +564,15 @@ describe("createSyncRemoteCommandService", () => {
         includeArchived: true,
         includeStatus: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       })) as { snapshots: Array<{ lane: unknown }> };
 
       expect(laneService.refreshSnapshots).toHaveBeenCalledWith({
         includeArchived: true,
         includeStatus: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       });
       expect(conflictService.getBatchAssessment).not.toHaveBeenCalled();
-      expect(rebaseSuggestionService.listSuggestions).not.toHaveBeenCalled();
-      expect(result.snapshots.map((entry) => entry.lane)).toEqual([lane]);
+      expect(result.snapshots.map((entry) => entry.lane)).toEqual([{ ...lane, childCount: 0, stackDepth: 0 }]);
     });
 
     // This is the emitter phones actually read. Shipped iOS builds decode
@@ -640,38 +604,19 @@ describe("createSyncRemoteCommandService", () => {
 
       expect(laneService.getSummary).toHaveBeenCalledWith("lane-1", { includeStatus: true });
       expect(laneService.list).not.toHaveBeenCalled();
-      expect(rebaseSuggestionService.listSuggestions).toHaveBeenCalledWith({ lanes: [lane] });
-      expect(result.lane).toBe(lane);
-    });
-
-    it("lanes.getDetail includes the parent lane when computing rebase suggestions", async () => {
-      const lane = { id: "lane-child", name: "Child", parentLaneId: "lane-parent" };
-      const parent = { id: "lane-parent", name: "Parent" };
-      laneService.getSummary.mockImplementation(async (laneId: string) => {
-        if (laneId === "lane-child") return lane;
-        if (laneId === "lane-parent") return parent;
-        return null;
-      });
-      laneService.getStackChain.mockResolvedValue([parent, lane]);
-
-      await service.execute(makePayload("lanes.getDetail", { laneId: "lane-child" }));
-
-      expect(laneService.getSummary).toHaveBeenCalledWith("lane-child", { includeStatus: true });
-      expect(laneService.getSummary).toHaveBeenCalledWith("lane-parent", { includeStatus: true });
-      expect(laneService.list).not.toHaveBeenCalled();
-      expect(rebaseSuggestionService.listSuggestions).toHaveBeenCalledWith({ lanes: [lane, parent] });
+      expect(result.lane).toEqual({ ...lane, childCount: 0, stackDepth: 0 });
     });
 
     it("lanes.create parses name and routes to laneService.create", async () => {
       await service.execute(makePayload("lanes.create", {
         name: "my-lane",
         description: "desc",
-        baseBranch: "main",
+        start: { from: "branch", branch: "main", on: "local" },
       }));
       expect(laneService.create).toHaveBeenCalledWith({
         name: "my-lane",
         description: "desc",
-        baseBranch: "main",
+        start: { from: "branch", branch: "main", on: "local" },
       });
     });
 
@@ -701,7 +646,8 @@ describe("createSyncRemoteCommandService", () => {
 
       // Without the flag (the lane sheet, older phones) nothing is set up here.
       await withSetup.execute(makePayload("lanes.create", { name: "Sheet lane" }));
-      expect(await withSetup.execute(makePayload("lanes.create", { name: "Phone lane", setup: "default" }))).toEqual(lane);
+      expect(await withSetup.execute(makePayload("lanes.create", { name: "Phone lane", setup: "default" })))
+        .toEqual({ ...lane, childCount: 0, stackDepth: 0 });
       expect(laneService.create).toHaveBeenLastCalledWith(expect.not.objectContaining({ setup: expect.anything() }));
 
       const [setUpLane] = await started;
@@ -712,22 +658,6 @@ describe("createSyncRemoteCommandService", () => {
     it("lanes.create throws when name is missing", async () => {
       await expect(service.execute(makePayload("lanes.create", {})))
         .rejects.toThrow("lanes.create requires name.");
-    });
-
-    it("lanes.createChild parses name + parentLaneId", async () => {
-      await service.execute(makePayload("lanes.createChild", {
-        name: "child-lane",
-        parentLaneId: "parent-1",
-      }));
-      expect(laneService.createChild).toHaveBeenCalledWith({
-        name: "child-lane",
-        parentLaneId: "parent-1",
-      });
-    });
-
-    it("lanes.createChild throws when parentLaneId is missing", async () => {
-      await expect(service.execute(makePayload("lanes.createChild", { name: "child" })))
-        .rejects.toThrow("lanes.createChild requires parentLaneId.");
     });
 
     it("lanes.importBranch parses branchRef and optional metadata", async () => {
@@ -743,7 +673,7 @@ describe("createSyncRemoteCommandService", () => {
         description: "Imported from mobile",
         baseBranch: "main",
       });
-      expect(result).toEqual({ id: "imported-1" });
+      expect(result).toEqual({ id: "imported-1", childCount: 0, stackDepth: 0 });
     });
 
     it("lanes.importBranch throws when branchRef is missing", async () => {
@@ -893,11 +823,6 @@ describe("createSyncRemoteCommandService", () => {
       );
       expect(cleanupLaneEnvironment).toHaveBeenCalledWith(lane, envInitConfig);
       expect(release).toHaveBeenCalledWith("lane-1");
-    });
-
-    it("lanes.getStackChain requires laneId", async () => {
-      await expect(service.execute(makePayload("lanes.getStackChain", {})))
-        .rejects.toThrow("lanes.getStackChain requires laneId.");
     });
   });
 
@@ -1055,46 +980,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ id: "comment-1", body: "Looks good" });
     });
 
-    it("prs.simulateIntegration parses source lanes, base branch, and merge target", async () => {
-      const result = await service.execute(makePayload("prs.simulateIntegration", {
-        sourceLaneIds: ["lane-a", "lane-b"],
-        baseBranch: "main",
-        persist: true,
-        mergeIntoLaneId: "lane-int",
-      }));
-      expect(prService.simulateIntegration).toHaveBeenCalledWith({
-        sourceLaneIds: ["lane-a", "lane-b"],
-        baseBranch: "main",
-        persist: true,
-        mergeIntoLaneId: "lane-int",
-      });
-      expect(result).toEqual({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" });
-    });
-
-    it("prs.commitIntegration parses proposal metadata and options", async () => {
-      const result = await service.execute(makePayload("prs.commitIntegration", {
-        proposalId: "proposal-1",
-        integrationLaneName: "Mobile integration",
-        title: "Integration PR",
-        body: "Body",
-        draft: true,
-        pauseOnConflict: true,
-        allowDirtyWorktree: false,
-        preferredIntegrationLaneId: null,
-      }));
-      expect(prService.commitIntegration).toHaveBeenCalledWith({
-        proposalId: "proposal-1",
-        integrationLaneName: "Mobile integration",
-        title: "Integration PR",
-        body: "Body",
-        draft: true,
-        pauseOnConflict: true,
-        allowDirtyWorktree: false,
-        preferredIntegrationLaneId: null,
-      });
-      expect(result).toEqual({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] });
-    });
-
     it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
       const policy = service.getPolicy("prs.getMobileSnapshot");
       expect(policy).not.toBeNull();
@@ -1106,7 +991,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toHaveProperty("stacks");
       expect(result).toHaveProperty("capabilities");
       expect(result).toHaveProperty("createCapabilities");
-      expect(result).toHaveProperty("workflowCards");
       expect(result).toHaveProperty("live", true);
     });
   });
@@ -2580,8 +2464,6 @@ describe("createSyncRemoteCommandService", () => {
         includeArchived: undefined,
         includeStatus: undefined,
         includeConflictStatus: undefined,
-        includeRebaseSuggestions: undefined,
-        includeAutoRebaseStatus: undefined,
       });
     });
 
@@ -2879,13 +2761,11 @@ describe("createSyncRemoteCommandService", () => {
     it("lanes.rebaseStart parses laneId and optional fields", async () => {
       await service.execute(makePayload("lanes.rebaseStart", {
         laneId: "lane-1",
-        scope: "chain",
         pushMode: "force",
       }));
       expect(laneService.rebaseStart).toHaveBeenCalledWith(
         expect.objectContaining({
           laneId: "lane-1",
-          scope: "chain",
           pushMode: "force",
         }),
       );
@@ -2907,31 +2787,6 @@ describe("createSyncRemoteCommandService", () => {
         runId: "run-1",
         laneIds: [],
       }))).rejects.toThrow("lanes.rebasePush requires laneIds.");
-    });
-
-    it("lanes.dismissRebaseSuggestion hides the banner without dismissing the rebase need", async () => {
-      const result = await service.execute(makePayload("lanes.dismissRebaseSuggestion", {
-        laneId: "lane-1",
-      }));
-      expect(rebaseSuggestionService.dismiss).toHaveBeenCalledWith({ laneId: "lane-1" });
-      expect(conflictService.dismissRebase).not.toHaveBeenCalled();
-      expect(result).toEqual({ ok: true });
-    });
-
-    it("lanes.deferRebaseSuggestion clamps minutes and snoozes the banner without deferring the rebase need", async () => {
-      await service.execute(makePayload("lanes.deferRebaseSuggestion", {
-        laneId: "lane-1",
-        minutes: 1,
-      }));
-      expect(rebaseSuggestionService.defer).toHaveBeenCalledWith({ laneId: "lane-1", minutes: 5 });
-      expect(conflictService.deferRebase).not.toHaveBeenCalled();
-
-      await service.execute(makePayload("lanes.deferRebaseSuggestion", {
-        laneId: "lane-1",
-        minutes: 60 * 24 * 30,
-      }));
-      expect(rebaseSuggestionService.defer).toHaveBeenLastCalledWith({ laneId: "lane-1", minutes: 7 * 24 * 60 });
-      expect(conflictService.deferRebase).not.toHaveBeenCalled();
     });
   });
 

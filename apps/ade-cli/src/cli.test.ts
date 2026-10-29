@@ -18,7 +18,6 @@ import {
   checkLinearReadiness,
   detectAccountLoginMode,
   describeLastFailureForStartupLog,
-  detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatChatResumeNow,
   formatChatContinueOnAccount,
@@ -3829,7 +3828,7 @@ describe("ADE CLI", () => {
       "auto",
       "--lane-name",
       "fix-login",
-      "--base",
+      "--from",
       "origin/main",
       "--provider",
       "codex",
@@ -3847,16 +3846,24 @@ describe("ADE CLI", () => {
     ]);
 
     const executePlan = expectExecutePlan(plan);
-    expect(executePlan.steps).toHaveLength(3);
-    expect(executePlan.steps[0]?.params).toEqual({
+    // The saved new-lane defaults, the lane, the session, then the kickoff.
+    expect(executePlan.steps).toHaveLength(4);
+    expect(executePlan.steps[0]?.params).toMatchObject({
+      arguments: { domain: "lane", action: "getNewLaneDefaults" },
+    });
+    // `--from` replaces the saved start point; the saved `on` is kept.
+    const laneParams = (executePlan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+      laneDefaults: { defaults: { start: { from: "primary", on: "uncommitted" } } },
+    });
+    expect(laneParams).toEqual({
       name: "create_lane",
       arguments: {
         name: "fix-login",
-        baseBranch: "origin/main",
+        start: { from: "branch", branch: "main", on: "uncommitted" },
       },
     });
 
-    const createParams = (executePlan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+    const createParams = (executePlan.steps[2]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
       lane: { id: "lane-new" },
     });
     expect(createParams).toMatchObject({
@@ -3878,7 +3885,7 @@ describe("ADE CLI", () => {
       },
     });
 
-    const sendParams = (executePlan.steps[2]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+    const sendParams = (executePlan.steps[3]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
       session: { domain: "chat", action: "createSession", result: { sessionId: "chat-new" } },
     });
     expect(sendParams).toMatchObject({
@@ -4084,31 +4091,6 @@ describe("ADE CLI", () => {
     ])).toThrow(/--type must be subagent or peer/);
   });
 
-  it("builds the unmerged-work child-lane nudge when the current lane is ahead", () => {
-    const notice = detectUnmergedLaneCreateNudge(
-      { newLaneName: "next-task", cwd: "/tmp/worktree", currentLaneId: "lane-current" },
-      (gitArgs) => {
-        const command = gitArgs.join(" ");
-        if (command === "symbolic-ref --quiet --short refs/remotes/origin/HEAD") {
-          return { status: 0, stdout: "origin/main\n" };
-        }
-        if (command === "rev-list --count origin/main..HEAD") {
-          return { status: 0, stdout: "3\n" };
-        }
-        if (command === "branch --show-current") {
-          return { status: 0, stdout: "feature/current\n" };
-        }
-        return { status: 1, stdout: "" };
-      },
-    );
-
-    expect(notice).toBe([
-      '⚠ Lane "feature/current" has 3 commit(s) not on main.',
-      "  To carry them into the new lane instead:",
-      "    ade lanes child --lane lane-current --name next-task",
-      "  Continuing off remote main (origin/main).",
-    ].join("\n"));
-  });
 
   it("rejects unknown providers for new chat before launching", () => {
     expect(() =>
@@ -4830,7 +4812,7 @@ describe("ADE CLI", () => {
       expect(launch).not.toHaveProperty("chatSessionId");
     });
 
-    it("--auto-create-lane keeps --parent as the spawn-lineage session, not the lane parent", () => {
+    it("--auto-create-lane keeps --parent as the spawn-lineage session", () => {
       delete process.env.ADE_CHAT_SESSION_ID;
       const plan = buildCliPlan([
         "new", "chat",
@@ -4845,24 +4827,6 @@ describe("ADE CLI", () => {
       const staticPlan = expectStaticPlan(plan);
       const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
       expect(value.launch.orchestrationParentSessionId).toBe("parent-session-1");
-      expect(value.createLane ?? {}).not.toHaveProperty("parentLaneId");
-    });
-
-    it("--auto-create-lane --parent-lane still sets the lane parent without touching lineage", () => {
-      delete process.env.ADE_CHAT_SESSION_ID;
-      const plan = buildCliPlan([
-        "new", "chat",
-        "--mode", "chat",
-        "--auto-create-lane",
-        "--lane-name", "spawn-target",
-        "--provider", "codex",
-        "--parent-lane", "lane-parent-1",
-        "--print-config",
-      ]);
-      const staticPlan = expectStaticPlan(plan);
-      const value = staticPlan.value as { launch: Record<string, unknown>; createLane?: Record<string, unknown> };
-      expect(value.createLane?.parentLaneId).toBe("lane-parent-1");
-      expect(value.launch).not.toHaveProperty("orchestrationParentSessionId");
     });
 
     it("rejects agent spawn types for plain shell terminals", () => {
@@ -6761,7 +6725,7 @@ describe("ADE CLI", () => {
     const plan = buildCliPlan([
       "chat", "launch", "fix", "the", "flaky", "test",
       "--provider", "claude", "--model", "anthropic/claude-opus-5", "--effort", "high",
-      "--permissions", "full-auto", "--fast", "--base", "origin/main", "--lane-name", "flaky-test",
+      "--permissions", "full-auto", "--fast", "--from", "origin/main", "--on", "local", "--lane-name", "flaky-test",
       "--launch-id", launchId, "--wait", "--timeout-ms", "5000",
     ]);
     expect(plan.kind).toBe("chat-launch");
@@ -6774,7 +6738,7 @@ describe("ADE CLI", () => {
       launchId: launchId.toLowerCase(),
       prompt: "fix the flaky test",
       laneName: "flaky-test",
-      baseBranch: "origin/main",
+      laneConfig: { mode: "new", start: { from: "branch", branch: "main", on: "local" } },
       chat: {
         create: {
           provider: "claude",
@@ -6790,6 +6754,7 @@ describe("ADE CLI", () => {
     const parsed = parseChatLaunchArgs(plan.launchArgs);
     expect(parsed.launchId).toBe(launchId.toLowerCase());
     expect(parsed.laneId).toBe(plan.launchArgs.laneId);
+    expect(parsed.laneConfig).toEqual({ mode: "new", start: { from: "branch", branch: "main", on: "local" } });
     expect(parsed.chat?.create).toMatchObject({ provider: "claude", reasoningEffort: "high", fastMode: true });
     expect(parsed.chat?.message.text).toBe("fix the flaky test");
   });
@@ -6798,6 +6763,22 @@ describe("ADE CLI", () => {
     const first = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
     const second = buildCliPlan(["chat", "launch", "--prompt", "hello"]);
     if (first.kind !== "chat-launch" || second.kind !== "chat-launch") throw new Error("expected chat-launch");
+    // No lane flags: the brain applies the saved defaults and names the lane.
+    expect(first.launchArgs.laneConfig).toBeUndefined();
+    const existing = buildCliPlan(["chat", "launch", "hello", "--existing-branch", "origin/topic"]);
+    if (existing.kind !== "chat-launch") throw new Error("expected chat-launch");
+    expect(existing.launchArgs.laneConfig).toEqual({ mode: "existing", branchRef: "origin/topic" });
+    const partial = buildCliPlan(["chat", "launch", "hello", "--on", "local"]);
+    if (partial.kind !== "chat-launch") throw new Error("expected chat-launch");
+    // A partial start is completed from the saved defaults at launch time.
+    expect(partial.startOverrides).toEqual({ on: "local" });
+    expect(partial.launchArgs.laneConfig).toBeUndefined();
+    expect(() => buildCliPlan(["chat", "launch", "hello", "--existing-branch", "topic", "--from", "main"])).toThrow(/cannot be combined/);
+    expect(() => buildCliPlan(["chat", "launch", "hello", "--base", "main"])).toThrow(/Unsupported/);
+    const auto = buildCliPlan(["new", "chat", "--auto-create-lane", "--existing-branch", "topic", "--no-parent"]);
+    if (auto.kind !== "execute") throw new Error("expected execute");
+    const create = auto.steps[0]?.params;
+    expect(typeof create === "function" ? create({}) : create).toMatchObject({ name: "import_lane", arguments: { branchRef: "topic" } });
     expect(first.wait).toBe(false);
     expect(first.launchArgs.launchId).not.toBe(second.launchArgs.launchId);
     expect((first.launchArgs.chat as { create: { provider: string } }).create.provider).toBe("codex");
@@ -9406,9 +9387,6 @@ describe("ADE CLI", () => {
 
   it("validates required arguments before service execution", () => {
     expect(() => buildCliPlan(["lanes", "create"])).toThrow(/name is required/);
-    expect(() => buildCliPlan(["lanes", "child", "--name", "child"])).toThrow(
-      /parent lane is required/,
-    );
     expect(() => buildCliPlan(["diff", "file", "--lane", "main"])).toThrow(
       /path is required/,
     );
@@ -9796,29 +9774,19 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("renders a compact lane graph", () => {
-    const graph = renderLaneGraph({
+  it("lists lanes one per line with id and branch", () => {
+    const listed = renderLaneGraph({
       lanes: [
         { id: "main", name: "main", branchRef: "main" },
-        {
-          id: "child",
-          name: "child",
-          branchRef: "feature",
-          parentLaneId: "main",
-        },
-        {
-          id: "sibling",
-          name: "sibling",
-          branchRef: "feature-2",
-          parentLaneId: "main",
-        },
+        { id: "feature", name: "feature", branchRef: "feature-1" },
       ],
     });
 
-    expect(graph).toContain("ADE lanes");
-    expect(graph).toContain("\\- main (id: main) [main]");
-    expect(graph).toContain("|- child (id: child) [feature]");
-    expect(graph).toContain("\\- sibling (id: sibling) [feature-2]");
+    expect(listed.split("\n")).toEqual([
+      "ADE lanes",
+      "main (id: main) [main]",
+      "feature (id: feature) [feature-1]",
+    ]);
   });
 
   it("renders linked Linear issue identifiers in lane graph and detail text", () => {
@@ -9840,7 +9808,7 @@ describe("ADE CLI", () => {
     };
 
     expect(renderLaneGraph({ lanes: [lane] })).toContain(
-      "\\- ADE-69 Fix linked lane (id: lane-linear) [ade-69-fix-linked-lane] {ADE-69, ADE-70}",
+      "ADE-69 Fix linked lane (id: lane-linear) [ade-69-fix-linked-lane] {ADE-69, ADE-70}",
     );
 
     const detail = formatOutput(
@@ -10552,53 +10520,6 @@ describe("ADE CLI", () => {
     expect(openPrs.steps[0]?.params).toEqual({
       name: "prs_list_open",
       arguments: {},
-    });
-  });
-
-  it("forwards lane reparent stack base branch override to the runtime action", () => {
-    const reparent = buildCliPlan([
-      "lanes",
-      "reparent",
-      "lane-child",
-      "--parent",
-      "lane-parent",
-      "--stack-base-branch",
-      "develop",
-    ]);
-    expect(reparent.kind).toBe("execute");
-    if (reparent.kind !== "execute") return;
-    expect(reparent.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "lane",
-        action: "reparent",
-        args: {
-          laneId: "lane-child",
-          newParentLaneId: "lane-parent",
-          stackBaseBranchRef: "develop",
-        },
-      },
-    });
-
-    const reparentDefault = buildCliPlan([
-      "lanes",
-      "reparent",
-      "lane-child",
-      "--parent",
-      "lane-parent",
-    ]);
-    expect(reparentDefault.kind).toBe("execute");
-    if (reparentDefault.kind !== "execute") return;
-    expect(reparentDefault.steps[0]?.params).toEqual({
-      name: "run_ade_action",
-      arguments: {
-        domain: "lane",
-        action: "reparent",
-        args: {
-          laneId: "lane-child",
-          newParentLaneId: "lane-parent",
-        },
-      },
     });
   });
 
@@ -11489,8 +11410,6 @@ describe("ADE CLI", () => {
       "create",
       "--name",
       "Linked lane",
-      "--base",
-      "main",
       "--branch-name",
       "ade-123-linked-lane",
       "--linear-issue-json",
@@ -11499,11 +11418,12 @@ describe("ADE CLI", () => {
 
     expect(plan.kind).toBe("execute");
     if (plan.kind !== "execute") return;
-    expect(plan.steps[0]?.params).toEqual({
+    expect(plan.steps).toHaveLength(1);
+    const params = plan.steps[0]?.params;
+    expect(typeof params === "function" ? params({}) : params).toEqual({
       name: "create_lane",
       arguments: {
         name: "Linked lane",
-        baseBranch: "main",
         branchName: "ade-123-linked-lane",
         linearIssue: {
           id: "issue-1",
@@ -11712,32 +11632,10 @@ describe("ADE CLI", () => {
     }
   });
 
-  it("builds lanes create-from-linear as a single create_lane step without --start-chat", () => {
+  it("chains create_lane -> chat createSession -> attach Linear issue -> kickoff for lanes create --linear-issue-json --start-chat", () => {
     const plan = buildCliPlan([
       "lanes",
-      "create-from-linear",
-      "--linear-issue-json",
-      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
-      "--base",
-      "main",
-    ]);
-    expect(plan.kind).toBe("execute");
-    if (plan.kind !== "execute") return;
-    expect(plan.steps).toHaveLength(1);
-    expect(plan.steps[0]?.params).toEqual({
-      name: "create_lane",
-      arguments: {
-        name: "Fix OAuth",
-        linearIssue: { id: "issue-1", identifier: "ENG-431", title: "Fix OAuth" },
-        baseBranch: "main",
-      },
-    });
-  });
-
-  it("chains create_lane -> chat createSession -> attach Linear issue -> kickoff for create-from-linear --start-chat", () => {
-    const plan = buildCliPlan([
-      "lanes",
-      "create-from-linear",
+      "create",
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth","url":"https://linear.app/x/ENG-431"}',
       "--start-chat",
@@ -11804,7 +11702,7 @@ describe("ADE CLI", () => {
   it("forwards provider-native Droid autonomy through Linear and personal launches", () => {
     const linearPlan = expectExecutePlan(buildCliPlan([
       "lanes",
-      "create-from-linear",
+      "create",
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
       "--start-chat",
@@ -11848,10 +11746,10 @@ describe("ADE CLI", () => {
     });
   });
 
-  it("requires and persists a spawn type when create-from-linear starts a child chat", () => {
+  it("requires and persists a spawn type when lanes create --start-chat starts a child chat", () => {
     const baseArgs = [
       "lanes",
-      "create-from-linear",
+      "create",
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
       "--start-chat",
@@ -11881,10 +11779,10 @@ describe("ADE CLI", () => {
   // an unknown or mis-cased provider, a shell, a permission mode the provider
   // has no answer for, and a Droid tier on a non-Droid chat are all refused
   // here exactly as they are there.
-  it("runs the shared launch-arg rules for create-from-linear --start-chat", () => {
+  it("runs the shared launch-arg rules for lanes create --linear-issue-json --start-chat", () => {
     const baseArgs = [
       "lanes",
-      "create-from-linear",
+      "create",
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
       "--start-chat",
@@ -11917,10 +11815,10 @@ describe("ADE CLI", () => {
   // Without `--start-chat` this command launches nothing, so a lineage flag
   // has no session to record. Silently ignoring it loses the parentage the
   // caller asked for.
-  it("rejects create-from-linear spawn-lineage flags without --start-chat", () => {
+  it("rejects lanes create --linear-issue-json spawn-lineage flags without --start-chat", () => {
     const baseArgs = [
       "lanes",
-      "create-from-linear",
+      "create",
       "--linear-issue-json",
       '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
     ];
@@ -11940,14 +11838,12 @@ describe("ADE CLI", () => {
     expect(() => buildCliPlan([...baseArgs, "--parent-session-id=chat-1"])).toThrow(
       /^--parent-session-id requires --start-chat/,
     );
-    // `--parent` on this command is the parent LANE, which needs no chat.
-    expect(() => buildCliPlan([...baseArgs, "--parent", "lane-parent"])).not.toThrow();
   });
 
-  it("builds a per-issue create_lane step for batch-create-from-linear", () => {
+  it("builds a per-issue create_lane step for lanes create --linear-issues-json", () => {
     const plan = buildCliPlan([
       "lanes",
-      "batch-create-from-linear",
+      "create",
       "--linear-issues-json",
       '[{"id":"i1","identifier":"ENG-1","title":"A"},{"id":"i2","identifier":"ENG-2","title":"B"}]',
     ]);
@@ -11958,7 +11854,8 @@ describe("ADE CLI", () => {
     expect(plan.steps[0]?.key).toBe("ENG-1");
     expect(plan.steps[0]?.optional).toBe(true);
     expect(plan.steps[1]?.key).toBe("ENG-2");
-    expect(plan.steps[0]?.params).toMatchObject({
+    const params = plan.steps[0]?.params;
+    expect(typeof params === "function" ? params({}) : params).toMatchObject({
       name: "create_lane",
       arguments: { name: "A", linearIssue: { identifier: "ENG-1" } },
     });
@@ -11968,12 +11865,12 @@ describe("ADE CLI", () => {
     expect(() =>
       buildCliPlan([
         "lanes",
-        "batch-create-from-linear",
-        "--issue-id",
-        "ENG-1",
+        "create",
+        "--linear-issues-json",
+        '[{"id":"i1","identifier":"ENG-1","title":"A"}]',
         "--start-chat",
       ]),
-    ).toThrow(/creates lanes only/);
+    ).toThrow(/Multiple issues create lanes only/);
   });
 
   it("maps chat create --from-linear-issue to create + attach + kickoff", () => {
@@ -16963,12 +16860,7 @@ describe("ADE CLI", () => {
         result: {
           lanes: [
             { id: "main", name: "main", branchRef: "main" },
-            {
-              id: "child",
-              name: "child",
-              branchRef: "feature",
-              parentLaneId: "main",
-            },
+            { id: "feature", name: "feature", branchRef: "feature-1" },
           ],
         },
       },
@@ -16976,10 +16868,8 @@ describe("ADE CLI", () => {
     expect(summarized).toMatchObject({
       lanes: expect.any(Array),
     });
-    expect((summarized as any).visual).toContain("\\- main (id: main) [main]");
-    expect((summarized as any).visual).toContain(
-      "\\- child (id: child) [feature]",
-    );
+    expect((summarized as any).visual).toContain("main (id: main) [main]");
+    expect((summarized as any).visual).toContain("feature (id: feature) [feature-1]");
   });
 });
 

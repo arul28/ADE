@@ -227,8 +227,8 @@ export type WorkSessionListOrganization =
  * `by-time` branch in `SessionListPane` to grow a board case.
  */
 export type WorkViewMode = "list" | "board";
-/** Lanes sidebar grouping. "state" is the default; "stack" is the plain stack tree. */
-export type LanesSidebarGroupBy = "state" | "stack";
+/** Lanes sidebar grouping. "state" is the default; "list" is one flat list, newest first. */
+export type LanesSidebarGroupBy = "state" | "list";
 /**
  * A Cursor-style grid: a set of chat/CLI sessions that share the work area in a
  * resizable split layout. `sessionIds` is the membership (drives the sidebar
@@ -560,7 +560,7 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
     // Additive like the other lanes keys: an older blob has no grouping and
     // lands on the State default.
-    lanesGroupBy: candidate.lanesGroupBy === "stack" ? "stack" : "state",
+    lanesGroupBy: candidate.lanesGroupBy === "list" ? "list" : "state",
     lanesCollapsedGroupIds: normalizeUniqueStringArray(candidate.lanesCollapsedGroupIds),
     lanesCollapsedSectionIds: normalizeUniqueStringArray(candidate.lanesCollapsedSectionIds),
     browserTunnelAlwaysKeys: normalizeUniqueStringArray(candidate.browserTunnelAlwaysKeys),
@@ -1770,8 +1770,6 @@ export type AppState = {
     includeStatus?: boolean;
     includeSnapshots?: boolean;
     includeConflictStatus?: boolean;
-    includeRebaseSuggestions?: boolean;
-    includeAutoRebaseStatus?: boolean;
   }) => Promise<void>;
   /**
    * Schedules one coalesced lane read WITH git status when this store's lane
@@ -1812,22 +1810,18 @@ export function useActiveProjectRoot(): string | null {
   return useAppStore(selectActiveProjectRoot);
 }
 
-export type LaneInspectorTab = "terminals" | "context" | "stack" | "merge";
+export type LaneInspectorTab = "terminals" | "context" | "merge";
 
 type LaneRefreshRequest = {
   includeStatus: boolean;
   includeSnapshots: boolean;
   includeConflictStatus: boolean;
-  includeRebaseSuggestions: boolean;
-  includeAutoRebaseStatus: boolean;
 };
 
 function normalizeLaneRefreshRequest(options?: {
   includeStatus?: boolean;
   includeSnapshots?: boolean;
   includeConflictStatus?: boolean;
-  includeRebaseSuggestions?: boolean;
-  includeAutoRebaseStatus?: boolean;
 }): LaneRefreshRequest {
   const includeStatus = options?.includeStatus ?? true;
   const includeSnapshots = options?.includeSnapshots ?? includeStatus;
@@ -1835,8 +1829,6 @@ function normalizeLaneRefreshRequest(options?: {
     includeStatus,
     includeSnapshots,
     includeConflictStatus: includeSnapshots && (options?.includeConflictStatus ?? true),
-    includeRebaseSuggestions: includeSnapshots && (options?.includeRebaseSuggestions ?? true),
-    includeAutoRebaseStatus: includeSnapshots && (options?.includeAutoRebaseStatus ?? true),
   };
 }
 
@@ -1845,8 +1837,6 @@ function mergeLaneRefreshRequests(current: LaneRefreshRequest, next: LaneRefresh
     includeStatus: current.includeStatus || next.includeStatus,
     includeSnapshots: current.includeSnapshots || next.includeSnapshots,
     includeConflictStatus: current.includeConflictStatus || next.includeConflictStatus,
-    includeRebaseSuggestions: current.includeRebaseSuggestions || next.includeRebaseSuggestions,
-    includeAutoRebaseStatus: current.includeAutoRebaseStatus || next.includeAutoRebaseStatus,
   };
 }
 
@@ -1857,7 +1847,7 @@ function withPreservedLaneStatus(
 ): LaneSummary {
   const previousLane = previousLanesById.get(lane.id) ?? previousSnapshotsById.get(lane.id)?.lane;
   return previousLane
-    ? { ...lane, status: previousLane.status, parentStatus: previousLane.parentStatus }
+    ? { ...lane, status: previousLane.status }
     : lane;
 }
 
@@ -2041,8 +2031,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         void get().refreshLanes({
           includeStatus: true,
           includeConflictStatus: false,
-          includeRebaseSuggestions: false,
-          includeAutoRebaseStatus: false,
         }).catch((err) => {
           console.debug("Scheduled lane refresh failed:", err);
         });
@@ -3012,8 +3000,6 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         includeArchived: false,
         includeStatus: currentRequest.includeStatus,
         includeConflictStatus: currentRequest.includeConflictStatus,
-        includeRebaseSuggestions: currentRequest.includeRebaseSuggestions,
-        includeAutoRebaseStatus: currentRequest.includeAutoRebaseStatus,
       };
       const rawLaneSnapshots = currentRequest.includeSnapshots
         ? await listLaneSnapshotsCoalesced(snapshotArgs, { projectRoot: requestedProjectKey })
@@ -3143,9 +3129,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && activeProjectKey === requestProjectKey
         && (activeRequest.includeStatus || !request.includeStatus)
         && (activeRequest.includeSnapshots || !request.includeSnapshots)
-        && (activeRequest.includeConflictStatus || !request.includeConflictStatus)
-        && (activeRequest.includeRebaseSuggestions || !request.includeRebaseSuggestions)
-        && (activeRequest.includeAutoRebaseStatus || !request.includeAutoRebaseStatus);
+        && (activeRequest.includeConflictStatus || !request.includeConflictStatus);
       if (!activeSatisfies) {
         pendingLaneRefreshRequest = pendingLaneRefreshRequest
           ? mergeLaneRefreshRequests(pendingLaneRefreshRequest, request)

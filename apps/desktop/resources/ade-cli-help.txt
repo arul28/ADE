@@ -52,7 +52,7 @@ Agent-focused command-line interface for ADE.
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -216,7 +216,7 @@ Agent-focused command-line interface for ADE.
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -502,7 +502,7 @@ Git
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop|drop        Use ADE lane stash actions
                                                     pop/drop resolve the saved stash OID before changing it
-    $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
+    $ ade git rebase --lane <lane>                  Rebase the lane onto its base
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
@@ -1035,7 +1035,7 @@ Agent-focused command-line interface for ADE.
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -1303,7 +1303,7 @@ Agent-focused command-line interface for ADE.
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -2062,7 +2062,7 @@ Agent-focused command-line interface for ADE.
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal

@@ -261,7 +261,7 @@ function buildCtoEnvironmentKnowledge(): string {
   "  - primary: the main checkout (repo root). Always exists.",
   "  - worktree: an isolated git worktree at .ade/worktrees/<lane-id>/. Created by ADE for feature branches.",
   "  - attached: an external worktree the user linked to ADE.",
-  "  Lanes have a parent (baseRef), can be stacked (child lanes), and carry metadata: color, icon, tags, status (dirty/ahead/behind/rebaseInProgress).",
+  "  Lanes compare against a base (their open PR's base branch, else the default branch) and carry metadata: color, icon, tags, status (dirty/ahead/behind/rebaseInProgress).",
   "  Tools: listLanes, inspectLane, createLane, deleteLane, renameLane, archiveLane.",
   "",
   "Native ADE Chat: A persistent AI chat session in the ADE UI with streaming responses, tool approval flow, file diff display, and full service integration. This is the primary way work gets done in ADE.",

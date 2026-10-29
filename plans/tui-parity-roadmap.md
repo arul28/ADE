@@ -2959,15 +2959,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
         "apps/desktop/src/renderer/components/prs/PrRebaseBanner.tsx",
         "docs/features/conflicts/README.md"
       ]
-    },
-    {
-      "feature": "External CLI resolver (Codex/Claude) with live terminal session",
-      "description": "PrAiResolverPanel embeds a full AgentChatPane resolver session (model/reasoning/permission picker, optional resolver instructions, running/completed/failed status chips) wired to prs.aiResolutionStart/onAiResolutionEvent; conflictService runs the CLI in the lane/integration worktree and commits via an explicit commitExternalResolverRun step.",
-      "keyFiles": [
-        "apps/desktop/src/renderer/components/prs/shared/PrAiResolverPanel.tsx",
-        "apps/desktop/src/renderer/components/prs/shared/PrResolverLaunchControls.tsx",
-        "docs/features/conflicts/simulation.md"
-      ]
     }
   ],
   "tuiStatus": [
@@ -3020,16 +3011,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "gap": "No AI-assisted conflict resolution available in the TUI at all.",
       "tuiFiles": [
         "apps/ade-cli/src/tuiClient/app.tsx"
-      ]
-    },
-    {
-      "feature": "External CLI resolver session",
-      "status": "missing",
-      "details": "conflicts.runExternalResolver / prepareResolverSession / commitExternalResolverRun and prs.aiResolution* are not wired. The TUI has TerminalPane and AgentChatPane equivalents but never launches a resolver session.",
-      "gap": "No way to spawn or commit an external resolver run from the TUI.",
-      "tuiFiles": [
-        "apps/ade-cli/src/tuiClient/app.tsx",
-        "apps/ade-cli/src/tuiClient/components/TerminalPane.tsx"
       ]
     },
     {
@@ -3118,12 +3099,6 @@ Land the three P0 performance fixes first (coalescer → shared aggregation → 
       "description": "Implement prepare -> request -> apply/undo against conflicts.prepareProposal/requestProposal/applyProposal/undoProposal: show preview stats, proposal explanation + confidence, an apply-mode selector (unstaged/staged/commit), and an undo command. Reuse existing form/right-pane primitives.",
       "effort": "L",
       "priority": "P1"
-    },
-    {
-      "title": "Offer an external-resolver session launcher",
-      "description": "Add a command to launch conflicts.runExternalResolver / prs.aiResolution* into the existing TerminalPane/AgentChatPane, with an explicit commit step (commitExternalResolverRun), matching PrAiResolverPanel. Largest effort due to session lifecycle and worktree/cwd policy.",
-      "effort": "XL",
-      "priority": "P2"
     }
   ],
   "_key": "review-conflicts",

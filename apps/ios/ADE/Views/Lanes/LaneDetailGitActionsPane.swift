@@ -37,10 +37,10 @@ struct LaneDetailGitActionsPane: View {
   let onCherryPickCommit: (GitCommitSummary) -> Void
   let onSwitchBranch: () -> Void
   let onRebaseLane: () -> Void
-  let onRebaseDescendants: () -> Void
   let onRebaseAndPush: () -> Void
   let onForcePush: () -> Void
   let onOpenLinkedPullRequest: (PullRequestListItem) -> Void
+  /// A new lane from this lane's branch with a copy of its uncommitted changes.
   let onCreateLaneFromChanges: () -> Void
   /// Reads the lane's branch changes; nil when the host predates branch diffs.
   var loadBranchChanges: (() async throws -> BranchDiffChanges)? = nil
@@ -57,8 +57,8 @@ struct LaneDetailGitActionsPane: View {
   private var unstagedFiles: [FileChange] { detail.diffChanges?.unstaged ?? [] }
   private var syncStatus: GitUpstreamSyncStatus? { detail.syncStatus }
   private var actionsEnabled: Bool { canRunLiveActions && busyAction == nil }
-  private var canRescueUnstaged: Bool {
-    !unstagedFiles.isEmpty && stagedFiles.isEmpty && actionsEnabled
+  private var canCopyChangesToNewLane: Bool {
+    !unstagedFiles.isEmpty && actionsEnabled
   }
 
   /// The lane's git, as the same inset-grouped rows the Overview uses: what
@@ -226,7 +226,6 @@ struct LaneDetailGitActionsPane: View {
       Button { onStashPush(stashMessage) } label: { Label("Stash changes", systemImage: "tray.and.arrow.down") }
       Divider()
       Button { onRebaseLane() } label: { Label("Rebase lane", systemImage: "arrow.triangle.branch") }
-      Button { onRebaseDescendants() } label: { Label("Rebase + descendants", systemImage: "arrow.triangle.branch") }
       Button { onRebaseAndPush() } label: { Label("Rebase and push", systemImage: "arrow.up.and.down.text.horizontal") }
       Button(role: .destructive) { onForcePush() } label: { Label("Force push (lease)", systemImage: "arrow.up.forward.circle") }
     } label: {
@@ -262,9 +261,9 @@ struct LaneDetailGitActionsPane: View {
               .disabled(!actionsEnabled)
           } menu: {
             Button(action: onStageAll) { Label("Stage all", systemImage: "plus.circle") }
-            if canRescueUnstaged {
+            if canCopyChangesToNewLane {
               Button(action: onCreateLaneFromChanges) {
-                Label("New lane with changes", systemImage: "arrow.turn.down.right")
+                Label("New lane with these changes", systemImage: "plus.square.on.square")
               }
             }
             Divider()
