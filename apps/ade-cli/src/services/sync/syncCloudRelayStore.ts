@@ -334,7 +334,7 @@ export function createSyncCloudRelayStore(args: {
       return { enabled: true, changedAt: null };
     }
     if (preferenceCache && preferenceCache.stamp === stamp) return preferenceCache.value;
-    const raw = safeJsonParse<{ enabled?: unknown; changedAt?: unknown }>(
+    const parsed = safeJsonParse<{ enabled?: unknown; changedAt?: unknown } | null>(
       (() => {
         try {
           return fs.readFileSync(preferencePath, "utf8");
@@ -344,8 +344,9 @@ export function createSyncCloudRelayStore(args: {
       })(),
       {},
     );
-    // Anything but an explicit `false` reads as on: a damaged file must not
-    // quietly cut a computer off from its phones.
+    // Anything but an explicit `false` reads as on: a damaged file (or valid
+    // JSON that isn't an object) must not quietly cut a computer off.
+    const raw = parsed && typeof parsed === "object" ? parsed : {};
     const value: SyncRelayPreference = {
       enabled: raw.enabled !== false,
       changedAt: typeof raw.changedAt === "string" ? raw.changedAt : null,

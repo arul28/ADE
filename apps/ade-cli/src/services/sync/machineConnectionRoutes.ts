@@ -159,8 +159,21 @@ export async function readMachineConnectionRoutes(args: {
 }
 
 export async function setMachineRelayEnabled(enabled: boolean): Promise<MachineConnectionRoutes> {
-  relayStore().setRelayEnabled(enabled);
+  // Read everything slow first. Turning the relay off closes it within a
+  // second, and a caller that came in over the relay must get its answer
+  // before that, so nothing is awaited after the setting is saved.
+  const before = await readMachineConnectionRoutes();
+  const preference = relayStore().setRelayEnabled(enabled);
   // Each listener re-publishes for its own scope and handles its own errors.
   for (const listener of [...relayPreferenceListeners]) listener();
-  return await readMachineConnectionRoutes();
+  return {
+    ...before,
+    relay: {
+      ...before.relay,
+      enabled,
+      connected: enabled && before.relay.connected,
+      changedAt: preference.changedAt,
+      error: enabled ? before.relay.error : null,
+    },
+  };
 }

@@ -118,7 +118,8 @@ export function useMachineRoutesControl(args: {
   const { enabled, rows, machines, relayRoutedKeys, reloadMachines } = args;
   const { byKey, load, setRelayEnabled } = useMachineRoutesState();
   const [busyKey, setBusyKey] = useState<string | null>(null);
-  const [relayError, setRelayError] = useState<string | null>(null);
+  /** The last failed relay change, kept with the row it belongs to. */
+  const [relayError, setRelayError] = useState<{ key: string; message: string } | null>(null);
   const [pendingOff, setPendingOff] = useState<RoutesRow | null>(null);
   const timers = useRef<number[]>([]);
   useEffect(() => () => {
@@ -181,7 +182,10 @@ export function useMachineRoutesControl(args: {
       if (on) later(() => void load(machineKey), 2_500);
       later(reloadMachines, 4_000);
     } catch (error) {
-      setRelayError(error instanceof Error && error.message ? error.message : "Couldn't change ADE Relay.");
+      setRelayError({
+        key: row.key,
+        message: error instanceof Error && error.message ? error.message : "Couldn't change ADE Relay.",
+      });
     } finally {
       setBusyKey(null);
     }
@@ -225,10 +229,10 @@ export function useMachineRoutesControl(args: {
           relay={relaySwitchFor(row)}
           note={live || row.thisMac || row.connected ? null : "From your account. Connect to this computer for live details."}
         />
-        {relayError && pendingOff == null && busyKey == null ? (
+        {relayError?.key === row.key && pendingOff == null && busyKey == null ? (
           <Banner
             layout="inline"
-            model={{ id: "relay-switch-error", tone: "error", title: relayError, report: { surface: "account_relay_switch" } }}
+            model={{ id: "relay-switch-error", tone: "error", title: relayError.message, report: { surface: "account_relay_switch" } }}
           />
         ) : null}
       </>
@@ -259,7 +263,7 @@ export function useMachineRoutesControl(args: {
       httpsReady={pendingRoutes?.tailnetHttps.state === "published"}
       tailscaleReady={pendingRoutes?.tailscale.state === "running"}
       busy={busyKey === pendingOff.key}
-      error={relayError}
+      error={relayError?.key === pendingOff.key ? relayError.message : null}
       onConfirm={() => void changeRelay(pendingOff, false)}
       onCancel={() => {
         setPendingOff(null);
