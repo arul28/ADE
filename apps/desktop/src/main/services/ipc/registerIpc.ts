@@ -169,6 +169,7 @@ import {
   createAccountMachineInventoryFetcher,
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
+import { createAccountConnectionRoutesBridge } from "../account/accountConnectionRoutes";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
@@ -385,6 +386,7 @@ import type {
   AdeAccountLocalMachineIdentity,
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
+  MachineConnectionRoutes,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
@@ -12419,6 +12421,18 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  // Each computer's routes are read and changed on that computer: this one
+  // through its own brain, any other over the live paired connection to it.
+  const accountConnectionRoutes = createAccountConnectionRoutesBridge({
+    callBrainAccountAction: createBrainAccountActionCaller(
+      localRuntimeConnectionPool,
+      LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+    ),
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity().machineKey,
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
+  });
   const accountMachineInventoryFetcher = createAccountMachineInventoryFetcher({
     listMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
@@ -12747,6 +12761,33 @@ export function registerIpc({
     IPC.accountGetMachineInventory,
     async (_event, arg: { machineKey?: string }): Promise<MachineInventoryDetail> => {
       return await accountMachineInventoryFetcher(arg?.machineKey ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountGetConnectionRoutes,
+    async (_event, arg: { machineKey?: string | null; refresh?: boolean }): Promise<MachineConnectionRoutes> => {
+      return await accountConnectionRoutes.getRoutes({
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        refresh: arg?.refresh === true,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountSetRelayEnabled,
+    async (_event, arg: { machineKey?: string | null; enabled?: unknown }): Promise<MachineConnectionRoutes> => {
+      if (typeof arg?.enabled !== "boolean") throw new Error("Choose on or off for ADE Relay.");
+      const routes = await accountConnectionRoutes.setRelayEnabled({
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        enabled: arg.enabled,
+      });
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: arg.enabled ? "relay_turned_on" : "relay_turned_off" },
+      });
+      return routes;
     },
   );
 

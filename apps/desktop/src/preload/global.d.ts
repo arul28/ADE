@@ -148,6 +148,7 @@ import type {
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
 import type { InstalledBrowser } from "../shared/browserTargets";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
+import type { MachineConnectionRoutes } from "../shared/types/account";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -4622,6 +4623,14 @@ declare global {
           machineKey?: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<MachineInventoryDetail>;
+        getConnectionRoutes?: (args?: {
+          machineKey?: string | null;
+          refresh?: boolean;
+        }) => Promise<MachineConnectionRoutes>;
+        setRelayEnabled?: (args: {
+          machineKey?: string | null;
+          enabled: boolean;
+        }) => Promise<MachineConnectionRoutes>;
         renameMachine: (
           machineKey: string,
           customName: string | null,

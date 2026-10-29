@@ -62,6 +62,10 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { providerColor } from "../usage/providerColors";
 import { Banner } from "../ui/notice/Banner";
 import { ModernRows, ModernSection } from "../settings/primitives";
+import { machineRouteItems } from "./machineRouteModel";
+import { MachineRoutesPanel, RelayOffDialog, RoutePills, type RelaySwitchModel } from "./MachineRoutes";
+import { PrivateNetworkSection } from "./PrivateNetworkSection";
+import { LOCAL_ROUTES_KEY, routesAvailable, useMachineRoutes } from "./useMachineRoutes";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -395,6 +399,14 @@ export function YourMacsCard() {
   } | null>(null);
   const [expandedMachineKey, setExpandedMachineKey] = useState<string | null>(null);
   const [inventoryByMachine, setInventoryByMachine] = useState<Record<string, MachineInventoryViewState>>({});
+  // Each computer's own report of its routes. Read live, never inferred from
+  // another computer; the directory's endpoints fill in until it answers.
+  const routesEnabled = !webMode && routesAvailable();
+  const machineRoutes = useMachineRoutes();
+  const { load: loadRoutes, setRelayEnabled } = machineRoutes;
+  const [relayBusyKey, setRelayBusyKey] = useState<string | null>(null);
+  const [relayError, setRelayError] = useState<string | null>(null);
+  const [pendingRelayOff, setPendingRelayOff] = useState<ComputerDisplayRow | null>(null);
   // Returns what it loaded as well as storing it: the reconnect flow reports
   // its outcome from the directory's own answer, and reading it back out of
   // state would race the render that has not happened yet.
@@ -509,6 +521,26 @@ export function YourMacsCard() {
     };
   }, [load, retryDirectory, usingWorkspaceRoster]);
 
+  // This computer's routes: on open, on focus, and every 30 seconds while the
+  // page is visible. The brain caches Tailscale's answer for a minute, so a
+  // read here is one local RPC, not a `tailscale` process.
+  useEffect(() => {
+    if (!routesEnabled) return;
+    const refresh = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      void loadRoutes(null);
+    };
+    refresh();
+    const interval = window.setInterval(refresh, MACHINES_REFRESH_MS);
+    window.addEventListener("focus", refresh);
+    document.addEventListener("visibilitychange", refresh);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refresh);
+      document.removeEventListener("visibilitychange", refresh);
+    };
+  }, [loadRoutes, routesEnabled]);
+
   const isThisMac = useCallback(
     (machine: AdeAccountMachine): boolean => {
       if (!localIdentity) return false;
@@ -560,6 +592,54 @@ export function YourMacsCard() {
     );
   }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
+  // A computer this one holds a live connection to can report its own routes,
+  // including whether its owner turned ADE Relay off. Read once per
+  // connection; expanding the row reads again.
+  const connectedRouteKeys = useMemo(
+    () => rows
+      .filter((row) => !row.thisMac && row.connected && row.accountMachine)
+      .map((row) => row.accountMachine!.machineKey)
+      .sort()
+      .join(","),
+    [rows],
+  );
+  useEffect(() => {
+    if (!routesEnabled || !connectedRouteKeys) return;
+    for (const machineKey of connectedRouteKeys.split(",")) {
+      void loadRoutes(machineKey);
+    }
+  }, [connectedRouteKeys, loadRoutes, routesEnabled]);
+
+  const routesStateFor = useCallback(
+    (row: ComputerDisplayRow) => {
+      if (row.thisMac) return machineRoutes.byKey[LOCAL_ROUTES_KEY];
+      const machineKey = row.accountMachine?.machineKey;
+      return machineKey ? machineRoutes.byKey[machineKey] : undefined;
+    },
+    [machineRoutes.byKey],
+  );
+
+  const changeRelay = useCallback(async (row: ComputerDisplayRow, enabled: boolean) => {
+    const machineKey = row.thisMac ? null : row.accountMachine?.machineKey ?? null;
+    if (!row.thisMac && !machineKey) return;
+    setRelayBusyKey(row.key);
+    setRelayError(null);
+    try {
+      await setRelayEnabled(machineKey, enabled);
+      setPendingRelayOff(null);
+      // The directory drops or regains the relay endpoint on the machine's
+      // next publish; read it again shortly so the pills follow.
+      window.setTimeout(() => {
+        invalidateAccountMachines();
+        void load();
+      }, 4_000);
+    } catch (error) {
+      setRelayError(error instanceof Error && error.message ? error.message : "Couldn't change ADE Relay.");
+    } finally {
+      setRelayBusyKey(null);
+    }
+  }, [load, setRelayEnabled]);
+
   // Counted off the rows' own resolved presence, never the raw directory flag:
   // a machine that announced a suspend is still inside the 90-second online
   // window, so counting it here would put "2 online" above a row saying Asleep.
@@ -573,6 +653,9 @@ export function YourMacsCard() {
       return;
     }
     setExpandedMachineKey(machine.machineKey);
+    if (routesEnabled && (row.thisMac || row.connected)) {
+      void loadRoutes(row.thisMac ? null : machine.machineKey);
+    }
     const existing = inventoryByMachine[machine.machineKey];
     if (existing?.status === "ready" || existing?.status === "loading") return;
     // Two different reasons, two different sentences. A machine that is awake
@@ -622,7 +705,7 @@ export function YourMacsCard() {
         },
       }));
     }
-  }, [expandedMachineKey, inventoryByMachine]);
+  }, [expandedMachineKey, inventoryByMachine, loadRoutes, routesEnabled]);
 
   /**
    * Is THIS computer missing from its own account directory?
@@ -813,6 +896,18 @@ export function YourMacsCard() {
     || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured"));
 
   return (
+    <>
+    {routesEnabled ? (
+      <PrivateNetworkSection
+        state={machineRoutes.byKey[LOCAL_ROUTES_KEY]}
+        machines={machines}
+        onRecheck={() => {
+          void loadRoutes(null, { refresh: true });
+          invalidateAccountMachines();
+          void load();
+        }}
+      />
+    ) : null}
     <ModernSection
       group="Computers"
       anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
@@ -952,6 +1047,29 @@ export function YourMacsCard() {
             const renaming = Boolean(machine && renamingKey === machine.machineKey);
             const inventoryState = machine ? inventoryByMachine[machine.machineKey] : undefined;
             const expanded = Boolean(machine && expandedMachineKey === machine.machineKey);
+            const routesState = routesEnabled ? routesStateFor(row) : undefined;
+            const liveRoutes = routesState?.routes ?? null;
+            const routeItems = machine ? machineRouteItems(machine, liveRoutes) : [];
+            const relaySwitch: RelaySwitchModel | null = routesEnabled && machine
+              ? {
+                machineLabel: row.thisMac ? "this computer" : row.name,
+                enabled: liveRoutes?.relay.enabled
+                  ?? machine.reachableEndpoints.some((endpoint) => endpoint.kind === "relay"),
+                unavailableReason: !row.thisMac && !row.connected
+                  ? "Connect to this computer to change its relay setting."
+                  : !liveRoutes
+                    ? routesState?.status === "error" ? routesState.message : "Checking this computer…"
+                    : null,
+                busy: relayBusyKey === row.key,
+                onChange: (enabled) => {
+                  if (enabled) void changeRelay(row, true);
+                  else {
+                    setRelayError(null);
+                    setPendingRelayOff(row);
+                  }
+                },
+              }
+              : null;
             return (
               <div key={row.key} className="ade-acct-machine">
                 <div className="ade-acct-machine-row">
@@ -959,7 +1077,7 @@ export function YourMacsCard() {
                     <button
                       type="button"
                       className="ade-acct-caret"
-                      aria-label={`${expanded ? "Hide" : "Show"} provider inventory for ${row.name}`}
+                      aria-label={`${expanded ? "Hide" : "Show"} details for ${row.name}`}
                       aria-expanded={expanded}
                       onClick={() => void toggleMachineInventory(row)}
                     >
@@ -1050,6 +1168,9 @@ export function YourMacsCard() {
                       </>
                     )}
                   </div>
+                  {!renaming && routeItems.length > 0 ? (
+                    <RoutePills items={routeItems} dimmed={!row.awake} />
+                  ) : null}
                   {renaming ? (
                     <span style={{ width: 28, flexShrink: 0 }} />
                   ) : (
@@ -1070,6 +1191,24 @@ export function YourMacsCard() {
                 </div>
                 {expanded && machine ? (
                   <div data-machine-inventory-detail className="ade-acct-inventory">
+                    {routeItems.length > 0 ? (
+                      <>
+                        <InventoryGroupLabel>Connection</InventoryGroupLabel>
+                        <MachineRoutesPanel
+                          items={routeItems}
+                          relay={relaySwitch}
+                          note={liveRoutes
+                            ? null
+                            : row.thisMac || row.connected
+                              ? null
+                              : "From your account. Connect to this computer for live details."}
+                        />
+                        {relayError && relayBusyKey == null && pendingRelayOff == null ? (
+                          <div className="ade-routes-error">{relayError}</div>
+                        ) : null}
+                        <div className="ade-acct-inventory-split" aria-hidden />
+                      </>
+                    ) : null}
                     {inventoryState?.status === "loading" ? (
                       <div role="status" className="ade-acct-inventory-empty">
                         Loading provider inventory…
@@ -1319,6 +1458,20 @@ export function YourMacsCard() {
           }}
         />
       ) : null}
+      {pendingRelayOff ? (
+        <RelayOffDialog
+          machineName={pendingRelayOff.name}
+          httpsReady={(routesStateFor(pendingRelayOff)?.routes?.tailnetHttps.state ?? null) === "published"}
+          tailscaleReady={(routesStateFor(pendingRelayOff)?.routes?.tailscale.state ?? null) === "running"}
+          busy={relayBusyKey === pendingRelayOff.key}
+          error={relayError}
+          onConfirm={() => void changeRelay(pendingRelayOff, false)}
+          onCancel={() => {
+            setPendingRelayOff(null);
+            setRelayError(null);
+          }}
+        />
+      ) : null}
       {pendingForget ? (
         <ConfirmSheet
           title={`Forget ${pendingForget.name} on this browser?`}
@@ -1334,5 +1487,6 @@ export function YourMacsCard() {
         />
       ) : null}
     </ModernSection>
+    </>
   );
 }

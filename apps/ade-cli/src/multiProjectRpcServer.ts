@@ -113,6 +113,7 @@ import {
 } from "./services/account/accountMachineDirectoryService";
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
+import { readMachineConnectionRoutes, setMachineRelayEnabled } from "./services/sync/machineConnectionRoutes";
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
 import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
@@ -2329,7 +2330,11 @@ export function createMultiProjectRpcRequestHandler(
         // Re-pairing this machine into the account is a machine-operator act,
         // not something a subagent may perform on the owner's behalf.
         || action === "repairMachinePairing"
-        || action === "startSyncHost";
+        || action === "startSyncHost"
+        // Routes name this computer's tailnet address; the relay switch
+        // changes who can reach it. Both are the owner's, not a subagent's.
+        || action === "getConnectionRoutes"
+        || action === "setRelayEnabled";
       if (ctoOnlyAccountAction && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -2416,6 +2421,27 @@ export function createMultiProjectRpcRequestHandler(
           result: { state: "ok", message: null, machine: snapshot },
           statusHints: {},
         };
+      }
+      if (action === "getConnectionRoutes" || action === "setRelayEnabled") {
+        const actionArgs = isRecord(params.args) ? params.args : {};
+        const fallbackStore = createSyncCloudRelayStore({
+          filePath: path.join(resolveMachineAdeLayout().secretsDir, "sync-cloud-relay.json"),
+        });
+        if (action === "getConnectionRoutes") {
+          const result = await readMachineConnectionRoutes({
+            fallbackStore,
+            refresh: actionArgs.refresh === true,
+          });
+          return { domain: "account", action, result, statusHints: {} };
+        }
+        if (typeof actionArgs.enabled !== "boolean") {
+          throw new JsonRpcError(
+            JsonRpcErrorCode.invalidParams,
+            "account.setRelayEnabled requires enabled to be true or false.",
+          );
+        }
+        const result = await setMachineRelayEnabled({ enabled: actionArgs.enabled, fallbackStore });
+        return { domain: "account", action, result, statusHints: {} };
       }
       if (action === "startSyncHost") {
         if (!options.startSyncHost) {

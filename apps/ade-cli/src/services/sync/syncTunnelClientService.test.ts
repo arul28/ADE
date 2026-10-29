@@ -492,7 +492,7 @@ describe("createSyncTunnelClientService", () => {
     }
   });
 
-  it("keeps Relay offline signed out, resumes on sign-in, and closes when token refresh fails", async () => {
+  it("keeps Relay offline signed out or turned off, resumes when allowed, and closes when token refresh fails", async () => {
     const relay = new WebSocketServer({ host: "127.0.0.1", port: 0 });
     await new Promise<void>((resolve, reject) => {
       relay.once("listening", resolve);
@@ -502,9 +502,14 @@ describe("createSyncTunnelClientService", () => {
     const relayPort = typeof address === "object" && address ? address.port : 0;
     let signedIn = false;
     let leaseValid = true;
+    let relayEnabled = true;
     let connections = 0;
-    relay.on("connection", () => {
+    let closes = 0;
+    relay.on("connection", (socket) => {
       connections += 1;
+      socket.on("close", () => {
+        closes += 1;
+      });
     });
     const originalFetch = globalThis.fetch;
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
@@ -513,6 +518,7 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
+      isRelayEnabled: () => relayEnabled,
       getAccountLease: async () => signedIn && leaseValid
         ? { userId: "relay-owner" }
         : null,
@@ -532,6 +538,27 @@ describe("createSyncTunnelClientService", () => {
       await vi.waitFor(() => {
         expect(connections).toBe(1);
         expect(service.getStatus().connected).toBe(true);
+      }, { timeout: 3_000 });
+
+      // The owner turns ADE Relay off: the live control socket closes, the
+      // status says why, and no redial happens while it stays off.
+      relayEnabled = false;
+      await vi.waitFor(() => {
+        expect(closes).toBe(1);
+        expect(service.getStatus()).toMatchObject({
+          connected: false,
+          activeTunnels: 0,
+          relayTurnedOff: true,
+          lastError: "ADE Relay is turned off on this computer.",
+        });
+      }, { timeout: 3_000 });
+      expect(connections).toBe(1);
+
+      // Exactly one more dial: none happened while it was off.
+      relayEnabled = true;
+      await vi.waitFor(() => {
+        expect(connections).toBe(2);
+        expect(service.getStatus()).toMatchObject({ connected: true, relayTurnedOff: false });
       }, { timeout: 3_000 });
 
       leaseValid = false;

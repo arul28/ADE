@@ -269,6 +269,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     web: "account",
     group: "Account",
   },
+  // Desktop only: a browser can't read a computer's Tailscale or change its relay.
+  {
+    id: "account.privateNetwork",
+    label: "Private network",
+    keywords: ["tailscale", "tailnet", "magicdns", "https", "certificates", "relay", "ade relay", "turn off relay", "private", "network", "routes", "connection"],
+    tab: "account",
+    anchor: "account-private-network",
+    scope: "account",
+    web: "hidden",
+    group: "Account",
+  },
   {
     id: "account.computers",
     label: "Your computers",

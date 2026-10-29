@@ -138,6 +138,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
       logger: args.logger,
       configStore: args.configStore,
       isAccountSignedIn: lease.isAccountSignedIn,
+      isRelayEnabled: () => args.configStore.isRelayEnabled(),
       getAccountLease: lease.getAccountLease,
       onPublicationStateChanged: args.onPublicationStateChanged,
       // The analytics sink is machine-scoped and shared, so capturing it in this
@@ -154,6 +155,19 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // means the gate's very first `start()` already has a bridge to validate
   // against, since no later event would re-trigger validation.
   if (args.hostListener) tunnel.attachHostListener(args.hostListener);
+  // The Account page reads this machine's relay state from here, and a
+  // setting change re-publishes at once rather than on the next heartbeat.
+  const { registerMachineRelayRoute, onMachineRelayPreferenceChanged } = await import("./machineConnectionRoutes");
+  // `gate` is assigned below; the route only reads it once someone asks.
+  let gateRef: RelayTunnelAuthorityGate | null = null;
+  registerMachineRelayRoute({
+    store: args.configStore,
+    tunnel,
+    isRunning: () => gateRef?.isRunning() === true,
+  });
+  const stopPreferenceListener = onMachineRelayPreferenceChanged(() => {
+    void Promise.resolve(args.onPublicationStateChanged("route-state-changed")).catch(() => {});
+  });
   // ADE MCP rides this same control socket. Machine-level, like the
   // tunnel, so attaching it again from a second scope is a no-op.
   const { getSharedRemoteMcpService } = await import("../remoteMcp/remoteMcpShared");
@@ -174,12 +188,20 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // Only the runtime holding the machine-wide sync host lease may register the
   // tunnel. See relayTunnelAuthorityGate for why the old "has a listener" gate
   // let secondary brains evict the real host.
-  const gate = createRelayTunnelAuthorityGate({
+  const leaseGate = createRelayTunnelAuthorityGate({
     hostListener: args.hostListener,
     tunnel,
     holdsLease: holdsSyncHostSingleton,
     subscribe: onSyncHostSingletonAuthorityChanged,
     logger: args.logger,
   });
+  const gate: RelayTunnelAuthorityGate = {
+    isRunning: () => leaseGate.isRunning(),
+    dispose: () => {
+      stopPreferenceListener();
+      leaseGate.dispose();
+    },
+  };
+  gateRef = gate;
   return { tunnel, gate };
 }

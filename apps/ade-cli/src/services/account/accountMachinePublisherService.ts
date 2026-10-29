@@ -707,6 +707,14 @@ export function buildAccountMachineRegistration(args: {
     }
   }
 
+  // The secure tailnet route, for browsers: a hosted web page may only open
+  // `wss://`, and Tailscale's HTTPS certificate is what makes that possible
+  // without the relay.
+  const httpsUrl = args.snapshot.routeHealth.tailscale.httpsUrl?.trim();
+  if (httpsUrl && args.snapshot.routeHealth.tailscale.tailscaleReachable) {
+    add({ kind: "tailnet", url: httpsUrl });
+  }
+
   const identity = connectInfo.hostIdentity;
   return withMachinePowerPublication({
     machineKey,

@@ -70,6 +70,7 @@ import type { InstalledBrowser } from "../shared/browserTargets";
 import { projectBindingKey } from "../shared/projectIdentity";
 import { machineNameForBinding } from "../shared/machineIdentity";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
+import type { MachineConnectionRoutes } from "../shared/types/account";
 import {
   loopbackOriginLabel,
   parseLoopbackUrl,
@@ -12976,6 +12977,21 @@ const adeBridge = {
       }
       return ipcRenderer.invoke(IPC.accountGetMachineInventory, { machineKey: normalizedMachineKey });
     },
+    /**
+     * One computer's routes, read on that computer. `machineKey` omitted (or
+     * this computer's key) asks the local brain; any other key goes over the
+     * live paired connection to that computer, resolved in main.
+     */
+    getConnectionRoutes: (args?: {
+      machineKey?: string | null;
+      refresh?: boolean;
+    }): Promise<MachineConnectionRoutes> =>
+      ipcRenderer.invoke(IPC.accountGetConnectionRoutes, args ?? {}),
+    setRelayEnabled: (args: {
+      machineKey?: string | null;
+      enabled: boolean;
+    }): Promise<MachineConnectionRoutes> =>
+      ipcRenderer.invoke(IPC.accountSetRelayEnabled, args),
     renameMachine: (machineKey: string, customName: string | null): Promise<AdeAccountMachine> =>
       ipcRenderer.invoke(IPC.accountRenameMachine, { machineKey, customName }),
     getLocalMachineIdentity: (): Promise<AdeAccountLocalMachineIdentity> =>

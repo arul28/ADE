@@ -98,6 +98,7 @@ import type {
   SyncRelayAuthorizationLease,
   SyncHostReadinessSnapshot,
   SyncTailnetDiscoveryStatus,
+  MachineTailnetHttpsRoute,
   SyncTerminalHistoryResponsePayload,
   SyncTerminalDataPayload,
   SyncTerminalExitPayload,
@@ -297,6 +298,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
+import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
+import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
   createSyncRemoteCommandService,
@@ -564,6 +567,53 @@ export function staleAdeTailnetServePorts(
     const forward = (value as { TCPForward?: unknown } | null)?.TCPForward;
     if (forward !== `127.0.0.1:${port}`) continue;
     stale.push(port);
+  }
+  return stale.sort((left, right) => left - right);
+}
+
+/**
+ * The secure Tailscale route sits this far above the sync port, so each ADE
+ * channel on a machine (each with its own sync port) gets its own HTTPS port,
+ * and none of them can land inside the range the sync listener binds.
+ */
+export const SYNC_TAILNET_HTTPS_PORT_OFFSET = 10_000;
+
+export function tailnetHttpsPortFor(syncPort: number): number {
+  return syncPort + SYNC_TAILNET_HTTPS_PORT_OFFSET;
+}
+
+/**
+ * HTTPS Serve entries ADE published for an earlier sync port and never tore
+ * down. Same rule as the TCP ones: only ADE's exact shape (an HTTPS port in
+ * ADE's offset range proxying `/` to 127.0.0.1 on the matching sync port).
+ */
+export function staleAdeTailnetHttpsPorts(
+  serveStatusJson: string,
+  currentHttpsPort: number | null,
+): number[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(serveStatusJson);
+  } catch {
+    return [];
+  }
+  const root = parsed as { TCP?: unknown; Web?: unknown } | null;
+  const tcp = root?.TCP;
+  const web = root?.Web;
+  if (!tcp || typeof tcp !== "object" || !web || typeof web !== "object") return [];
+  const stale: number[] = [];
+  for (const [key, value] of Object.entries(tcp as Record<string, unknown>)) {
+    const port = Number.parseInt(key, 10);
+    if (!Number.isInteger(port) || port === currentHttpsPort) continue;
+    const syncPort = port - SYNC_TAILNET_HTTPS_PORT_OFFSET;
+    if (syncPort < DEFAULT_SYNC_HOST_PORT || syncPort > SYNC_HOST_MAX_PORT) continue;
+    if ((value as { HTTPS?: unknown } | null)?.HTTPS !== true) continue;
+    const proxiesToAde = Object.entries(web as Record<string, unknown>).some(([hostPort, entry]) => {
+      if (!hostPort.endsWith(`:${port}`)) return false;
+      const handlers = (entry as { Handlers?: Record<string, { Proxy?: unknown }> } | null)?.Handlers;
+      return handlers?.["/"]?.Proxy === `http://127.0.0.1:${syncPort}`;
+    });
+    if (proxiesToAde) stale.push(port);
   }
   return stale.sort((left, right) => left - right);
 }
@@ -3287,6 +3337,15 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   let tailnetServeLastFailureSignature: string | null = null;
   let tailnetServePublishSequence = 0;
   let tailnetServeActivePublishToken = 0;
+  // The HTTPS Serve route beside the TCP one, and the port it is published on
+  // (null while nothing is), so teardown targets exactly what ADE added.
+  let tailnetHttpsRoute: MachineTailnetHttpsRoute = {
+    state: "unavailable",
+    url: null,
+    error: "Tailscale has not been checked yet.",
+  };
+  let tailnetHttpsServedPort: number | null = null;
+  let tailnetHttpsPublishSequence = 0;
   let discoveryEnabled = args.discoveryEnabled !== false;
   // A peer owns one serialized chat -> changeset poll chain. Keeping the
   // in-flight gate per peer prevents a slow transcript filesystem read from
@@ -4690,6 +4749,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
+          void publishTailnetHttps(port).catch(() => {});
         }
       })
       .catch((error: unknown) => {
@@ -4807,7 +4867,146 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   };
 
+  const setTailnetHttpsRoute = (next: MachineTailnetHttpsRoute): void => {
+    const changed = next.state !== tailnetHttpsRoute.state
+      || next.url !== tailnetHttpsRoute.url
+      || next.error !== tailnetHttpsRoute.error;
+    tailnetHttpsRoute = next;
+    if (changed) {
+      setTimeout(() => {
+        if (!disposed) args.onStateChanged?.();
+      }, 0);
+    }
+  };
+
+  /**
+   * `tailscale serve --https` in front of the sync listener, so a browser on
+   * the tailnet can open `wss://<name>.ts.net:<port>`. Needs MagicDNS and
+   * HTTPS certificates on the tailnet; when either is off the route says which,
+   * so the Account page can link straight to the switch.
+   */
+  const publishTailnetHttps = async (port: number, options?: { force?: boolean }): Promise<void> => {
+    if (disposed || !discoveryEnabled || !shouldAttemptTailnetServiceAdvertise()) return;
+    const sequence = ++tailnetHttpsPublishSequence;
+    const isCurrent = () => !disposed
+      && sequence === tailnetHttpsPublishSequence
+      && tailnetServePort === port;
+    const status = await readTailscaleLocalStatus(options?.force ? { maxAgeMs: 2_000 } : undefined);
+    if (!isCurrent()) return;
+    if (status.state === "not_installed") {
+      setTailnetHttpsRoute({ state: "unavailable", url: null, error: "Tailscale isn't installed on this computer." });
+      return;
+    }
+    if (status.state !== "running") {
+      setTailnetHttpsRoute({ state: "unavailable", url: null, error: "Tailscale isn't connected on this computer." });
+      return;
+    }
+    if (!status.dnsName || status.magicDnsEnabled === false) {
+      setTailnetHttpsRoute({ state: "needs_magic_dns", url: null, error: "MagicDNS is off for your tailnet." });
+      return;
+    }
+    if (!status.httpsCertsEnabled) {
+      setTailnetHttpsRoute({ state: "needs_https_certs", url: null, error: "HTTPS certificates are off for your tailnet." });
+      return;
+    }
+    const httpsPort = tailnetHttpsPortFor(port);
+    const url = `wss://${status.dnsName}:${httpsPort}`;
+    if (!options?.force && tailnetHttpsServedPort === httpsPort && tailnetHttpsRoute.state === "published" && tailnetHttpsRoute.url === url) {
+      return;
+    }
+    setTailnetHttpsRoute({ state: "publishing", url: null, error: null });
+    const cli = resolveTailscaleCliPath();
+    try {
+      await execFileAsync(
+        cli,
+        ["serve", "--bg", `--https=${httpsPort}`, `http://127.0.0.1:${port}`],
+        { timeout: 15_000, windowsHide: true },
+      );
+      if (!isCurrent()) return;
+      tailnetHttpsServedPort = httpsPort;
+      setTailnetHttpsRoute({ state: "published", url, error: null });
+      args.logger.info("sync_host.tailnet_https_published", { httpsPort, syncPort: port });
+      void reclaimStaleTailnetHttpsServes(httpsPort).catch(() => {});
+    } catch (error: unknown) {
+      if (!isCurrent()) return;
+      const stderr = typeof (error as { stderr?: unknown })?.stderr === "string"
+        ? String((error as { stderr?: string }).stderr).trim()
+        : "";
+      const message = error instanceof Error ? error.message : String(error);
+      const text = `${message}\n${stderr}`;
+      // Tailscale refuses `--https` with a pointer to the admin page when the
+      // tailnet has certificates off, even if `CertDomains` said otherwise a
+      // minute ago.
+      const certsOff = /https/i.test(text) && /(not enabled|disabled|enable https|cert)/i.test(text);
+      setTailnetHttpsRoute(certsOff
+        ? { state: "needs_https_certs", url: null, error: "HTTPS certificates are off for your tailnet." }
+        : { state: "failed", url: null, error: stderr || message });
+      args.logger.warn("sync_host.tailnet_https_publish_failed", {
+        httpsPort,
+        syncPort: port,
+        error: message,
+        stderr: stderr || null,
+      });
+    }
+  };
+
+  const unpublishTailnetHttps = async (): Promise<void> => {
+    tailnetHttpsPublishSequence += 1;
+    const servedPort = tailnetHttpsServedPort;
+    tailnetHttpsServedPort = null;
+    setTailnetHttpsRoute({ state: "unavailable", url: null, error: null });
+    if (servedPort == null || !shouldAttemptTailnetServiceAdvertise()) return;
+    try {
+      await execFileAsync(
+        resolveTailscaleCliPath(),
+        ["serve", `--https=${servedPort}`, "off"],
+        { timeout: 10_000, windowsHide: true },
+      );
+    } catch (error: unknown) {
+      args.logger.warn("sync_host.tailnet_https_unpublish_failed", {
+        httpsPort: servedPort,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  // Same housekeeping as the TCP entries: an HTTPS entry left by an earlier
+  // sync port proxies into nothing. Probe before each teardown so a sibling
+  // ADE's live entry is never removed.
+  const reclaimStaleTailnetHttpsServes = async (currentHttpsPort: number): Promise<void> => {
+    const cli = resolveTailscaleCliPath();
+    let stale: number[];
+    try {
+      const { stdout } = await execFileAsync(cli, ["serve", "status", "--json"], { timeout: 10_000, windowsHide: true });
+      stale = staleAdeTailnetHttpsPorts(stdout, currentHttpsPort);
+    } catch {
+      return;
+    }
+    for (const httpsPort of stale) {
+      if (disposed || httpsPort === tailnetHttpsServedPort) continue;
+      if (await isLocalPortServing(httpsPort - SYNC_TAILNET_HTTPS_PORT_OFFSET)) continue;
+      try {
+        await execFileAsync(cli, ["serve", `--https=${httpsPort}`, "off"], { timeout: 10_000, windowsHide: true });
+      } catch {
+        // One stubborn entry must not stop the rest.
+      }
+    }
+  };
+
+  const unregisterTailnetRoute = registerMachineTailnetRoute({
+    tcp: () => ({
+      published: tailnetDiscoveryStatus.state === "published",
+      error: tailnetDiscoveryStatus.state === "published" ? null : tailnetDiscoveryStatus.error,
+    }),
+    https: () => ({ ...tailnetHttpsRoute }),
+    recheckHttps: async () => {
+      if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
+      await publishTailnetHttps(tailnetServePort, { force: true });
+    },
+  });
+
   const unpublishTailnetDiscovery = async (): Promise<void> => {
+    await unpublishTailnetHttps();
     if (!tailnetServeSignature) return;
     tailnetServeActivePublishToken = ++tailnetServePublishSequence;
     tailnetServeSignature = null;
@@ -9893,7 +10092,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
-      return { ...tailnetDiscoveryStatus };
+      return { ...tailnetDiscoveryStatus, https: { ...tailnetHttpsRoute } };
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
@@ -10023,6 +10222,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(accountLeaseTimer);
       rosterFanout.dispose();
       unpublishLanDiscovery();
+      unregisterTailnetRoute();
       try {
         await unpublishTailnetDiscovery();
       } catch {

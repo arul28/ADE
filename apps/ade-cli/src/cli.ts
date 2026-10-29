@@ -28140,9 +28140,12 @@ async function runServe(
         // Same gate the scoped path applies: never advertise a relay URL the
         // tunnel has deliberately stopped dialing, or a phone that saved it
         // keeps retrying a route only this machine knows is dead.
-        wssUrl: tunnelStatus?.accountLeaseValid && !tunnelStatus.controlSuppressed
+        wssUrl: tunnelStatus?.accountLeaseValid
+          && !tunnelStatus.controlSuppressed
+          && machineCloudRelayStore.isRelayEnabled()
           ? machineCloudRelayStore.getRelayWssUrl()
           : null,
+        turnedOff: !machineCloudRelayStore.isRelayEnabled(),
         status: tunnelStatus,
       },
       accountDirectory: getAccountDirectoryHealth(),
@@ -28244,7 +28247,10 @@ async function runServe(
       secretsDir: layout.secretsDir,
       localDeviceIdPath,
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
-      getCloudRelayWssUrl: () => machineCloudRelayStore.getRelayWssUrl(),
+      // A computer whose owner turned ADE Relay off never offers the route.
+      getCloudRelayWssUrl: () => machineCloudRelayStore.isRelayEnabled()
+        ? machineCloudRelayStore.getRelayWssUrl()
+        : null,
       personalChatScope,
       // The same roster, transcript resolver and project routing a project
       // sync host gets below, so a phone's roster socket that lands here while

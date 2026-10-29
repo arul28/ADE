@@ -63,6 +63,7 @@ const OWNER_ONLY: Record<Exclude<SettingOwnerOnlyReason, "preference">, readonly
   ],
   "sign-in": [
     "account.profile",
+    "account.privateNetwork",
     "account.computers",
     "mcp.servers",
     "mcp.found",
