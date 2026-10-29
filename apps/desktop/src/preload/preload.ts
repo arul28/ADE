@@ -7250,7 +7250,7 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.lanesGetNewLaneDefaults),
       ),
     setNewLaneDefaults: async (
-      args: { defaults: NewLaneDefaults },
+      args: { defaults: Partial<NewLaneDefaults> },
       pin?: OpenProjectBinding | null,
     ): Promise<NewLaneDefaultsSnapshot> =>
       callPinnedOrBoundRuntimeActionOr<NewLaneDefaultsSnapshot>(pin, "lane", "setNewLaneDefaults", { args }, () =>

@@ -2,22 +2,31 @@ import type { LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/t
 import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette";
 import { linearIssueBranchName } from "../../../desktop/src/shared/linearIssueBranch";
 
-import { LANE_START_FROM_LABEL, LANE_START_BRING_LABEL, type LaneStartFrom, type LaneStartBring } from "../../../desktop/src/shared/laneStart";
+import {
+  LANE_START_BRING_VALUES,
+  LANE_START_FROM_VALUES,
+  normalizeLaneStart,
+  plainLaneStartBranch,
+  type LaneStart,
+  type LaneStartBring,
+  type LaneStartFrom,
+} from "../../../desktop/src/shared/laneStart";
 
-export type NewLaneStart = "primary" | "import";
+/** `new` cuts a new branch; `existing` works directly on a branch that already exists. */
+export type NewLaneStart = "new" | "existing";
 export type NewLaneBranchSource = "remote" | "local";
 
-export const NEW_LANE_START_ORDER: readonly NewLaneStart[] = ["primary", "import"];
+export const NEW_LANE_START_ORDER: readonly NewLaneStart[] = ["new", "existing"];
 
 export function normalizeNewLaneStart(value: string | null | undefined): NewLaneStart {
-  return value === "import" ? value : "primary";
+  return value === "existing" ? value : "new";
 }
 
 export function cycleNewLaneStart(value: string | null | undefined, delta: number): NewLaneStart {
   const current = normalizeNewLaneStart(value);
   const index = NEW_LANE_START_ORDER.indexOf(current);
   const next = (index + delta + NEW_LANE_START_ORDER.length) % NEW_LANE_START_ORDER.length;
-  return NEW_LANE_START_ORDER[next] ?? "primary";
+  return NEW_LANE_START_ORDER[next] ?? "new";
 }
 
 export function normalizeNewLaneBranchSource(value: string | null | undefined): NewLaneBranchSource {
@@ -29,30 +38,25 @@ export function toggleNewLaneBranchSource(value: string | null | undefined): New
 }
 
 export const NEW_LANE_START_LABEL: Record<NewLaneStart, string> = {
-  primary: "new branch",
-  import: "existing branch",
+  new: "new branch",
+  existing: "existing branch",
 };
 
 /** One-line option descriptions; each must fit next to its label at 44 cols. */
 export const NEW_LANE_START_HINT: Record<NewLaneStart, string> = {
-  primary: "new lane off the base branch",
-  import: "start from existing branch",
+  new: "new lane off the base branch",
+  existing: "start from existing branch",
 };
-
-export const NEW_LANE_FROM_ORDER: readonly LaneStartFrom[] = ["default", "primary", "branch"];
-export const NEW_LANE_BRING_ORDER: readonly LaneStartBring[] = ["pushed", "local", "uncommitted"];
-export const NEW_LANE_FROM_LABEL = LANE_START_FROM_LABEL;
-export const NEW_LANE_BRING_LABEL = LANE_START_BRING_LABEL;
 
 function cycleChoice<T extends string>(values: readonly T[], value: string | null | undefined, delta: number): T {
   const index = Math.max(0, values.findIndex(item => item === value));
   return values[((index + delta) % values.length + values.length) % values.length]!;
 }
 export function cycleNewLaneFrom(value: string | null | undefined, delta: number): LaneStartFrom {
-  return cycleChoice(NEW_LANE_FROM_ORDER, value, delta);
+  return cycleChoice(LANE_START_FROM_VALUES, value, delta);
 }
 export function cycleNewLaneBring(value: string | null | undefined, delta: number): LaneStartBring {
-  return cycleChoice(NEW_LANE_BRING_ORDER, value, delta);
+  return cycleChoice(LANE_START_BRING_VALUES, value, delta);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +110,7 @@ export function newLaneFormFields(
     { name: "color", label: "Color", initialValue: "" },
     { name: "start", label: "Mode", initialValue: start },
   ];
-  if (start === "import") {
+  if (start === "existing") {
     fields.push({ name: "branchSource", label: "Source", initialValue: "local" });
     fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
   } else {
@@ -213,7 +217,7 @@ export function newLaneCreateAction(args: {
   const start = normalizeNewLaneStart(args.values.start);
   const name = args.values.name?.trim() ?? "";
   if (!name) return { label: "create lane", enabled: false, reason: "name required" };
-  if (start === "import") {
+  if (start === "existing") {
     const branch = args.values.branch?.trim() ?? "";
     if (!branch) return { label: "import branch", enabled: false, reason: "branch required" };
     return { label: `import ${branch}`, enabled: true, reason: null };
@@ -229,7 +233,7 @@ export function newLaneCreateAction(args: {
 export type NewLaneSubmission =
   | {
       kind: "create";
-      payload: { name: string; start: { from: "default" | "primary" | "branch"; branch?: string; bring: "pushed" | "local" | "uncommitted" }; branchName?: string; linearIssue?: LaneLinearIssue | null };
+      payload: { name: string; start: LaneStart; branchName?: string; linearIssue?: LaneLinearIssue | null };
       color?: string;
       templateId?: string;
     }
@@ -263,7 +267,7 @@ export function buildNewLaneSubmission(args: {
       }
     : {};
 
-  if (start === "import") {
+  if (start === "existing") {
     if (linearIssueInput) {
       return {
         kind: "error",
@@ -286,15 +290,19 @@ export function buildNewLaneSubmission(args: {
 
   const from = args.values.from?.trim() || "default";
   const bring = args.values.bring?.trim() || "pushed";
-  if (!["default", "primary", "branch"].includes(from)) return { kind: "error", message: "Start from must be default, primary, or branch." };
-  if (!["pushed", "local", "uncommitted"].includes(bring)) return { kind: "error", message: "Bring must be pushed, local, or uncommitted." };
-  const branch = args.values.branch?.trim().replace(/^origin\//, "");
-  if (from === "branch" && !branch) return { kind: "error", message: "Branch is required." };
+  if (!(LANE_START_FROM_VALUES as readonly string[]).includes(from)) {
+    return { kind: "error", message: `Start from must be ${LANE_START_FROM_VALUES.join(", ")}.` };
+  }
+  if (!(LANE_START_BRING_VALUES as readonly string[]).includes(bring)) {
+    return { kind: "error", message: `Bring must be ${LANE_START_BRING_VALUES.join(", ")}.` };
+  }
+  const laneStart = normalizeLaneStart({ from, branch: plainLaneStartBranch(args.values.branch), bring });
+  if (!laneStart) return { kind: "error", message: "Branch is required." };
   return {
     kind: "create",
     payload: {
       name,
-      start: { from: from as "default" | "primary" | "branch", bring: bring as "pushed" | "local" | "uncommitted", ...(from === "branch" ? { branch } : {}) },
+      start: laneStart,
       ...withLinearIssue,
     },
     ...withColor,

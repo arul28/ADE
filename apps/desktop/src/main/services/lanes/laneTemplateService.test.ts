@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createLaneTemplateService } from "./laneTemplateService";
+import { createProjectNewLaneSettings } from "./newLaneSettingsStore";
 import { resolveSetupScriptConfig, unsupportedWindowsScriptPathError } from "./setupScriptConfig";
 import type {
   LaneTemplate,
@@ -7,7 +11,6 @@ import type {
   ProjectConfigSnapshot,
   ProjectConfigFile,
 } from "../../../shared/types";
-import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import { defaultEffectiveGitConfig } from "../../../shared/types/config";
 
 function makeLogger() {
@@ -79,6 +82,16 @@ function makeProjectConfigService(snapshot: ProjectConfigSnapshot) {
   } as any;
 }
 
+function makeNewLaneSettings(configService: ReturnType<typeof makeProjectConfigService>) {
+  const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-templates-"));
+  return createProjectNewLaneSettings({
+    projectRoot,
+    adeDir: path.join(projectRoot, ".ade"),
+    projectConfigService: configService,
+    logger: makeLogger(),
+  });
+}
+
 describe("laneTemplateService", () => {
   let logger: ReturnType<typeof makeLogger>;
 
@@ -97,7 +110,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -114,7 +127,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -136,7 +149,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -155,7 +168,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -174,7 +187,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -192,7 +205,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -207,7 +220,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -216,68 +229,6 @@ describe("laneTemplateService", () => {
   });
 
   describe("setDefaultTemplateId", () => {
-    it("updates local config", () => {
-      const snapshot = makeSnapshot({
-        effective: { laneTemplates: [makeTemplate({ id: "tpl-new", name: "New Default" })] },
-      });
-      const configService = makeProjectConfigService(snapshot);
-
-      const service = createLaneTemplateService({
-        projectConfigService: configService,
-
-        logger,
-      });
-
-      service.setDefaultTemplateId("tpl-new");
-
-      expect(configService.save).toHaveBeenCalledTimes(1);
-      const savedArg = configService.save.mock.calls[0][0];
-      expect(savedArg.local.defaultLaneTemplate).toBe("tpl-new");
-      expect(logger.info).toHaveBeenCalledWith("lane_template.default_set", { templateId: "tpl-new" });
-    });
-
-    it("with null clears default", () => {
-      const snapshot = makeSnapshot({
-        local: { defaultLaneTemplate: "tpl-old" },
-      });
-      const configService = makeProjectConfigService(snapshot);
-
-      const service = createLaneTemplateService({
-        projectConfigService: configService,
-
-        logger,
-      });
-
-      service.setDefaultTemplateId(null);
-
-      expect(configService.save).toHaveBeenCalledTimes(1);
-      const savedArg = configService.save.mock.calls[0][0];
-      expect(savedArg.local.defaultLaneTemplate).toBeUndefined();
-      expect(logger.info).toHaveBeenCalledWith("lane_template.default_set", { templateId: null });
-    });
-
-    it("stores an explicit no-default sentinel when overriding a shared default", () => {
-      const snapshot = makeSnapshot({
-        shared: { defaultLaneTemplate: "tpl-shared" },
-        effective: {
-          laneTemplates: [makeTemplate({ id: "tpl-shared" })],
-          defaultLaneTemplate: "tpl-shared"
-        },
-      });
-      const configService = makeProjectConfigService(snapshot);
-
-      const service = createLaneTemplateService({
-        projectConfigService: configService,
-
-        logger,
-      });
-
-      service.setDefaultTemplateId(null);
-
-      const savedArg = configService.save.mock.calls[0][0];
-      expect(savedArg.local.defaultLaneTemplate).toBe(NO_DEFAULT_LANE_TEMPLATE);
-    });
-
     it("rejects unknown defaults before saving", () => {
       const snapshot = makeSnapshot({
         effective: { laneTemplates: [makeTemplate({ id: "tpl-live" })] },
@@ -286,7 +237,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -306,7 +257,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -327,8 +278,10 @@ describe("laneTemplateService", () => {
 
     it("carries the setup script into env init so it actually runs", () => {
       const snapshot = makeSnapshot();
+      const configService = makeProjectConfigService(snapshot);
       const service = createLaneTemplateService({
-        projectConfigService: makeProjectConfigService(snapshot),
+        projectConfigService: configService,
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -351,7 +304,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -405,7 +358,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 
@@ -428,7 +381,7 @@ describe("laneTemplateService", () => {
 
       const service = createLaneTemplateService({
         projectConfigService: configService,
-
+        newLaneSettings: makeNewLaneSettings(configService),
         logger,
       });
 

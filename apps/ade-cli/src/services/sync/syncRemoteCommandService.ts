@@ -336,7 +336,7 @@ import {
 import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import type { LaneSummary } from "../../../../desktop/src/shared/types";
-import { normalizeLaneStart, normalizeNewLaneDefaults } from "../../../../desktop/src/shared/laneStart";
+import { normalizeLaneStart, type NewLaneDefaults } from "../../../../desktop/src/shared/laneStart";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
 import {
@@ -2027,9 +2027,10 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
 /** 10 MB of bytes as base64 (4 characters per 3 bytes). */
 const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
 
-/** `start` omitted (or malformed): the lane service applies the project's new-lane defaults. */
+/** `start` omitted: the lane service applies the project's new-lane defaults. A malformed one is refused. */
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
-  const start = normalizeLaneStart(value.start);
+  const start = value.start == null ? null : normalizeLaneStart(value.start);
+  if (value.start != null && !start) throw new Error("Invalid lane start.");
   return {
     name: requireString(value.name, "lanes.create requires name."),
     ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
@@ -4882,12 +4883,23 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   // the phone's New lane sheet opens on the same choice as the desktop dialog.
   register("lanes.getNewLaneDefaults", { viewerAllowed: true }, async () => args.laneService.getNewLaneDefaults());
   // A phone write like `cto.setHomeMachine`: paired devices may call it.
+  // Only the fields sent change; the lane service merges and validates them.
   register("lanes.setNewLaneDefaults", { viewerAllowed: true }, async (payload) => {
     const raw = isRecord(payload.defaults) ? payload.defaults : null;
-    if (!raw || !normalizeLaneStart(raw.start)) {
-      throw new Error("lanes.setNewLaneDefaults requires defaults.start with from and bring.");
+    if (!raw) throw new Error("lanes.setNewLaneDefaults requires defaults.");
+    const defaults: Partial<NewLaneDefaults> = {};
+    if (raw.start !== undefined) {
+      const start = normalizeLaneStart(raw.start);
+      if (!start) throw new Error("Invalid lane start.");
+      defaults.start = start;
     }
-    return args.laneService.setNewLaneDefaults({ defaults: normalizeNewLaneDefaults(raw) });
+    if (raw.templateId !== undefined) {
+      if (raw.templateId !== null && typeof raw.templateId !== "string") {
+        throw new Error("lanes.setNewLaneDefaults templateId must be a string or null.");
+      }
+      defaults.templateId = raw.templateId;
+    }
+    return args.laneService.setNewLaneDefaults({ defaults });
   });
   // The template reads above shipped without their writes, so a remote client
   // could list templates and "save" one into nothing.

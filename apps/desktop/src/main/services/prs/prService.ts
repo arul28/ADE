@@ -7526,7 +7526,7 @@ export function createPrService({
     });
 
     // The lane's compare base: its open PR's base, else the default branch.
-    const defaultBaseBranch = laneService.getCompareBase(recorded.id) ?? branchNameFromLaneRef(recorded.baseRef);
+    const defaultBaseBranch = laneService.getCompareBase(recorded.id);
     const baseBranch = (args.baseBranch ?? defaultBaseBranch).trim();
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
@@ -13820,7 +13820,7 @@ export function createPrService({
       if (lane.archivedAt) continue;
       const existingPr = prByLaneId.get(lane.id) ?? null;
       // The lane's compare base: its open PR's base, else the default branch.
-      const defaultBaseBranch = laneService.getCompareBase(lane.id) ?? branchNameFromLaneRef(lane.baseRef);
+      const defaultBaseBranch = laneService.getCompareBase(lane.id);
       const dirty = lane.status?.dirty === true;
       // Same `ahead` count the lane list already shows against that compare
       // base; keep wording aligned with that UI signal.

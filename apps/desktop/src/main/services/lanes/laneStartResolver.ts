@@ -120,9 +120,19 @@ export async function copyUncommittedChanges(args: {
   try {
     const indexPathResult = await runGit(["rev-parse", "--git-path", "index"], { cwd: args.fromPath, timeoutMs: 10_000 });
     const tmpIndex = path.join(tmpDir, "index");
-    if (indexPathResult.exitCode === 0) {
-      const indexPath = path.resolve(args.fromPath, indexPathResult.stdout.trim());
-      await fs.promises.copyFile(indexPath, tmpIndex).catch(() => undefined);
+    if (indexPathResult.exitCode !== 0) {
+      throw new Error(indexPathResult.stderr.trim() || "Couldn't find the folder's git index.");
+    }
+    // Start from the folder's real index. Only a folder with no index yet may
+    // start empty: an empty index would turn ignored-but-tracked files into
+    // deletions in the copy.
+    const indexPath = path.resolve(args.fromPath, indexPathResult.stdout.trim());
+    try {
+      await fs.promises.copyFile(indexPath, tmpIndex);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") {
+        throw new Error(`Couldn't read the folder's git index. ${error instanceof Error ? error.message : String(error)}`.trim());
+      }
     }
     const env = { GIT_INDEX_FILE: tmpIndex };
     const add = await runGit(["add", "-A"], { cwd: args.fromPath, timeoutMs: 120_000, env });

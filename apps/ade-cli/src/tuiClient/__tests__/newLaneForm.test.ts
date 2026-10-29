@@ -52,15 +52,15 @@ function linearIssue(overrides: Partial<LaneLinearIssue> = {}): LaneLinearIssue 
 
 describe("new lane choices", () => {
   it("shows branch typeahead only when a branch is needed", () => {
-    expect(newLaneTypeaheadField(newLaneFormFields("primary", { from: "default" }))).toBeNull();
-    expect(newLaneTypeaheadField(newLaneFormFields("primary", { from: "primary" }))).toBeNull();
-    expect(newLaneTypeaheadField(newLaneFormFields("primary", { from: "branch" }))).toBe("branch");
-    expect(newLaneTypeaheadField(newLaneFormFields("import"))).toBe("branch");
-    expect(newLaneFormFields("import").some(field => field.name === "bring")).toBe(false);
+    expect(newLaneTypeaheadField(newLaneFormFields("new", { from: "default" }))).toBeNull();
+    expect(newLaneTypeaheadField(newLaneFormFields("new", { from: "primary" }))).toBeNull();
+    expect(newLaneTypeaheadField(newLaneFormFields("new", { from: "branch" }))).toBe("branch");
+    expect(newLaneTypeaheadField(newLaneFormFields("existing"))).toBe("branch");
+    expect(newLaneFormFields("existing").some(field => field.name === "bring")).toBe(false);
   });
   it("cycles choices and wraps in both directions", () => {
-    expect(cycleNewLaneStart("primary", 1)).toBe("import");
-    expect(cycleNewLaneStart("import", 1)).toBe("primary");
+    expect(cycleNewLaneStart("new", 1)).toBe("existing");
+    expect(cycleNewLaneStart("existing", 1)).toBe("new");
     expect(cycleNewLaneFrom("default", 1)).toBe("primary");
     expect(cycleNewLaneFrom("primary", 1)).toBe("branch");
     expect(cycleNewLaneFrom("default", -1)).toBe("branch");
@@ -68,9 +68,9 @@ describe("new lane choices", () => {
     expect(cycleNewLaneBring("local", 1)).toBe("uncommitted");
     expect(cycleNewLaneBring("pushed", -1)).toBe("uncommitted");
     expect(toggleNewLaneBranchSource("local")).toBe("remote");
-    expect(normalizeNewLaneStart("unknown")).toBe("primary");
-    expect(NEW_LANE_START_LABEL.import).toBe("existing branch");
-    expect(newLaneStartForClickRow(2)).toBe("import");
+    expect(normalizeNewLaneStart("unknown")).toBe("new");
+    expect(NEW_LANE_START_LABEL.existing).toBe("existing branch");
+    expect(newLaneStartForClickRow(2)).toBe("existing");
     expect(newLaneStartForClickRow(3)).toBeNull();
     expect(cycleNewLaneColor("", 1)).toBe(LANE_COLOR_PALETTE[0]?.hex);
     expect(newLaneColorIndex("not-a-color")).toBe(0);
@@ -96,17 +96,17 @@ describe("new lane submission", () => {
     expect(newLaneCreateAction({ values: { name: "feature", from: "branch" }, fields: [] }).enabled).toBe(false);
   });
   it("imports the selected existing branch", () => {
-    expect(submit({ name: "feature", start: "import", branch: "origin/topic", color: "#60a5fa" })).toEqual({
+    expect(submit({ name: "feature", start: "existing", branch: "origin/topic", color: "#60a5fa" })).toEqual({
       kind: "importBranch", payload: { name: "feature", branchRef: "origin/topic" }, color: "#60a5fa",
     });
-    expect(submit({ name: "feature", start: "import" })).toEqual({ kind: "error", message: "Branch is required." });
+    expect(submit({ name: "feature", start: "existing" })).toEqual({ kind: "error", message: "Branch is required." });
   });
   it("keeps the issue and template on new branches", () => {
     const issue = linearIssue();
     expect(buildNewLaneSubmission({ values: { name: "feature", templateId: "tpl", linearIssue: "ADE-123" }, lanes, activeLaneId: "lane-1", linearIssue: issue })).toEqual({
       kind: "create", payload: { name: "feature", start: { from: "default", bring: "pushed" }, branchName: "ade-123-fix-setup-parity", linearIssue: issue }, templateId: "tpl",
     });
-    expect(buildNewLaneSubmission({ values: { name: "feature", start: "import", branch: "topic", linearIssue: "ADE-123" }, lanes, activeLaneId: "lane-1", linearIssue: issue })).toEqual({
+    expect(buildNewLaneSubmission({ values: { name: "feature", start: "existing", branch: "topic", linearIssue: "ADE-123" }, lanes, activeLaneId: "lane-1", linearIssue: issue })).toEqual({
       kind: "error", message: "Linear issue attachment is not supported when importing an existing branch.",
     });
   });

@@ -1204,8 +1204,7 @@ Lane management (selected):
 | Channel | Signature |
 |---------|-----------|
 | `ade.lanes.list` | `(args: ListLanesArgs) => LaneSummary[]` |
-| `ade.lanes.create` | `(args: CreateLaneArgs) => LaneSummary` |
-| `ade.lanes.createFromUnstaged` | `(args: CreateLaneFromUnstagedArgs, pin?) => LaneSummary` |
+| `ade.lanes.create` | `(args: CreateLaneArgs, pin?) => LaneSummary` — `start` omitted uses the project's new-lane defaults. To carry a lane's uncommitted changes into a new lane, pass `start: { from: "branch", branch: <that lane's branch>, bring: "uncommitted" }`: the new lane starts at that branch's local tip and gets a copy of the changes; the source folder is left as it is. The result's `createdFrom` says where the lane started and how many files were copied. |
 | `ade.lanes.importBranch` | `(args: { branchRef: string }) => LaneSummary` |
 | `ade.lanes.rename` / `.updateAppearance` / `.archive` / `.delete` | lane edit operations; `.delete` is also surfaced as `lane.delete` through the generic ADE action registry |
 | `ade.lanes.reclaim.risk` | `(args: { laneId }) => LaneReclaimRisk` — exact ownership/safety preflight with estimated worktree and generated-data bytes, active/dirty/unmerged warnings, hard blockers, and retry state. Also surfaced as `lane.getReclaimRisk`. |

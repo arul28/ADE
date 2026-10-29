@@ -222,11 +222,22 @@ function parseRemoteMcpTurnLabel(value: unknown): { connectionId: string; label:
  * malformed `start` is dropped the same way. Every other field is optional
  * and trimmed.
  */
+/**
+ * A launch's lane mode, including the names older clients and saved launch
+ * records use: `import` is `existing`; `root` and `child` are `new`.
+ */
+export function normalizeChatLaunchLaneMode(mode: unknown): ChatLaunchLaneConfig["mode"] | null {
+  if (mode === "new" || mode === "root" || mode === "child") return "new";
+  if (mode === "existing" || mode === "import") return "existing";
+  return null;
+}
+
 export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig | undefined {
   if (!isRecord(value)) return undefined;
-  const mode = value.mode === "new" ? "new" : value.mode === "existing" ? "existing" : null;
+  const mode = normalizeChatLaunchLaneMode(value.mode);
   if (!mode) return undefined;
-  const start = mode === "new" ? normalizeLaneStart(value.start) : null;
+  const start = mode === "new" && value.start != null ? normalizeLaneStart(value.start) : null;
+  if (mode === "new" && value.start != null && !start) throw new Error("Invalid lane start.");
   const branchRef = asTrimmedString(value.branchRef);
   const templateId = asTrimmedString(value.templateId);
   const color = asTrimmedString(value.color);

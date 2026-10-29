@@ -49,6 +49,12 @@ export type LaneStatus = {
    * only while drift exists. Absent means no drift (or `switched`).
    */
   branchDriftKind?: LaneBranchDriftKind | null;
+  /**
+   * The branch `ahead`/`behind` are counted against: the open PR's base
+   * branch, else the project's default branch. The primary lane uses its
+   * upstream branch name.
+   */
+  compareBase?: string;
 };
 
 /**
@@ -903,7 +909,8 @@ export type NewLaneDefaultsSnapshot = {
 
 /** How a lane that was just created started; returned by `create` only. */
 export type LaneCreatedFrom = {
-  start: LaneStart;
+  /** Null when the lane started at an exact commit (`startPoint`). */
+  start: LaneStart | null;
   /** The branch the start pointed at, e.g. `main`. */
   sourceBranch: string;
   /** The ref the lane branched from: `origin/main`, `main`, or a commit. */

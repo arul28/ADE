@@ -2339,7 +2339,7 @@ declare global {
         ) => Promise<LaneTemplate | null>;
         getNewLaneDefaults: (pin?: OpenProjectBinding | null) => Promise<NewLaneDefaultsSnapshot>;
         setNewLaneDefaults: (
-          args: { defaults: NewLaneDefaults },
+          args: { defaults: Partial<NewLaneDefaults> },
           pin?: OpenProjectBinding | null,
         ) => Promise<NewLaneDefaultsSnapshot>;
         getDefaultTemplate: (pin?: OpenProjectBinding | null) => Promise<string | null>;

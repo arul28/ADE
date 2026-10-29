@@ -9,6 +9,10 @@ import {
 } from "../../../shared/laneStart";
 import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 import type { LaneTemplate, NewLaneSettingsScope, ProjectConfigSnapshot } from "../../../shared/types";
+import { canonicalGitOriginUrl } from "../github/githubSshAlias";
+import type { Logger } from "../logging/logger";
+import { readGitOriginUrlFromConfigOrGit } from "../projects/recentProjectSummary";
+import { pathKey } from "../shared/pathCompare";
 
 /** The slice of the brain's account settings store this module needs. */
 export type NewLaneAccountStore = {
@@ -22,13 +26,21 @@ export type NewLaneAccountStore = {
  * project's `.ade` folder, so choices still save, on this computer only.
  */
 export function createFileNewLaneAccountStore(filePath: string): NewLaneAccountStore {
+  // A missing file is an empty store. Any other read or parse failure throws,
+  // so a write never replaces a damaged file with a single key.
   const readAll = (): Record<string, unknown> => {
+    let raw: string;
     try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as unknown;
-      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {};
-    } catch {
-      return {};
+      raw = fs.readFileSync(filePath, "utf8");
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return {};
+      throw error;
     }
+    const parsed = JSON.parse(raw) as unknown;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      throw new Error(`New-lane settings file is not a JSON object: ${filePath}`);
+    }
+    return parsed as Record<string, unknown>;
   };
   return {
     get: (scope, key) => readAll()[`${scope}|${key}`],
@@ -94,7 +106,7 @@ function asTemplates(value: unknown): LaneTemplate[] | null {
  */
 export function createNewLaneSettingsStore(args: {
   projectRoot: string;
-  store: NewLaneAccountStore | null;
+  store: NewLaneAccountStore;
   /** False when `store` is the per-computer file stand-in rather than the account. */
   accountBacked?: boolean;
   readOriginUrl: () => string | null;
@@ -103,12 +115,16 @@ export function createNewLaneSettingsStore(args: {
     defaultTemplateId?: string | null;
     templates?: LaneTemplate[] | null;
   };
+  logger?: Pick<Logger, "warn"> | null;
 }) {
   const location = (): { scope: string; suffix: string; kind: NewLaneSettingsScope["kind"]; repo: string | null } => {
     let origin: string | null = null;
     try {
       origin = args.readOriginUrl();
-    } catch {
+    } catch (error) {
+      args.logger?.warn("lanes.new_lane_settings.origin_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       origin = null;
     }
     const repoScope = accountRepoScopeKey(origin);
@@ -120,22 +136,26 @@ export function createNewLaneSettingsStore(args: {
         repo: repoScope.slice("repo:".length),
       };
     }
-    const hash = createHash("sha256").update(args.projectRoot).digest("hex").slice(0, 16);
+    // Keyed on the path as the platform compares it, so `C:\Repo` and
+    // `c:/repo` are the same project on Windows.
+    const hash = createHash("sha256").update(pathKey(args.projectRoot)).digest("hex").slice(0, 16);
     return { scope: ACCOUNT_SCOPE_ALL, suffix: `.local.${hash}`, kind: "this-computer", repo: null };
   };
 
   const read = (key: string): unknown => {
-    if (!args.store) return undefined;
     const where = location();
     try {
       return args.store.get(where.scope, `${key}${where.suffix}`);
-    } catch {
+    } catch (error) {
+      args.logger?.warn("lanes.new_lane_settings.read_failed", {
+        key,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return undefined;
     }
   };
 
   const write = (key: string, value: unknown): void => {
-    if (!args.store) throw new Error("Account settings aren't available on this computer yet. Sign in to ADE and try again.");
     const where = location();
     args.store.set(where.scope, `${key}${where.suffix}`, value);
   };
@@ -177,3 +197,26 @@ export function createNewLaneSettingsStore(args: {
 }
 
 export type NewLaneSettingsStore = ReturnType<typeof createNewLaneSettingsStore>;
+
+/**
+ * A project's new-lane settings as every host builds them: in the account
+ * store, per repository, when the host has one; otherwise in
+ * `<adeDir>/new-lane-settings.json` on this computer. The project's old
+ * per-computer config is the fallback until something is saved.
+ */
+export function createProjectNewLaneSettings(args: {
+  projectRoot: string;
+  adeDir: string;
+  accountStore?: NewLaneAccountStore | null;
+  projectConfigService: { get(): ProjectConfigSnapshot };
+  logger: Pick<Logger, "warn">;
+}): NewLaneSettingsStore {
+  return createNewLaneSettingsStore({
+    projectRoot: args.projectRoot,
+    store: args.accountStore ?? createFileNewLaneAccountStore(path.join(args.adeDir, "new-lane-settings.json")),
+    accountBacked: Boolean(args.accountStore),
+    readOriginUrl: () => canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(args.projectRoot)),
+    legacy: () => legacyNewLaneSettingsFromConfig(args.projectConfigService.get()),
+    logger: args.logger,
+  });
+}

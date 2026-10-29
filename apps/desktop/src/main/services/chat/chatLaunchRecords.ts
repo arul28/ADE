@@ -3,6 +3,7 @@ import path from "node:path";
 import type { ChatLaunchChatArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "../../../shared/types";
 import { normalizeLaneStart, type LaneStart } from "../../../shared/laneStart";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
+import { normalizeChatLaunchLaneMode } from "./chatLaunchArgs";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 
@@ -65,9 +66,8 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   // Records written by an earlier ADE named the modes root/import and carried
   // no start. An adopted branch must stay "existing": its cleanup keeps the
   // user's branch.
-  const mode: string | undefined = record.laneConfig?.mode;
-  if (record.laneConfig && mode !== "new" && mode !== "existing") {
-    record.laneConfig = { ...record.laneConfig, mode: mode === "import" ? "existing" : "new" };
+  if (record.laneConfig) {
+    record.laneConfig = { ...record.laneConfig, mode: normalizeChatLaunchLaneMode(record.laneConfig.mode) ?? "new" };
   }
   record.start = record.laneConfig?.mode === "existing" ? null : normalizeLaneStart(record.start);
   return record;

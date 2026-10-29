@@ -93,7 +93,6 @@ import {
   type ComputerUseProofProvenanceInput,
 } from "../../desktop/src/shared/types/computerUseArtifacts";
 import { normalizeLaneStart } from "../../desktop/src/shared/laneStart";
-import { resolveLaneCompareBase } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ACTION_NOT_CALLABLE_CODE,
@@ -1598,7 +1597,8 @@ async function runNewLaneSetup(
   toolArgs: Record<string, unknown>,
 ): Promise<{ templateId: string | null; progress: LaneEnvInitProgress | null; error?: string } | null> {
   if (toolArgs.skipSetup === true) return null;
-  const templateId = asOptionalTrimmedString(toolArgs.templateId) ?? runtime.laneService.getNewLaneDefaults().defaults.templateId ?? null;
+  // The default template only when it still exists, the same check chat launches use.
+  const templateId = asOptionalTrimmedString(toolArgs.templateId) ?? runtime.laneTemplateService?.getDefaultTemplateId() ?? null;
   try {
     if (!runtime.laneEnvironmentService) throw new Error("Lane environment service not available.");
     const progress = await runLaneEnvironmentSetup(
@@ -3033,20 +3033,8 @@ function branchNameForPrTitle(ref: string | null | undefined): string {
 async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBranch?: string | null): Promise<string> {
   const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false }).catch(() => []);
   const sourceLane = lanes.find((lane) => lane.id === laneId) ?? null;
-  const laneInfo = (() => {
-    try {
-      return typeof runtime.laneService.getLaneBaseAndBranch === "function"
-        ? runtime.laneService.getLaneBaseAndBranch(laneId)
-        : null;
-    } catch {
-      return null;
-    }
-  })();
   const sourceName = asOptionalTrimmedString(sourceLane?.name) || laneId;
-  const openPr = (runtime.prService?.listAll?.({ laneId }) ?? []).find(pr =>
-    (pr.state === "open" || pr.state === "draft") && branchNameForPrTitle(pr.headBranch) === branchNameForPrTitle(sourceLane?.branchRef));
-  const stableBaseBranch = resolveLaneCompareBase({ prBaseBranch: openPr?.baseBranch, defaultBranch: runtime.project?.baseRef || "main" });
-  const targetBranch = branchNameForPrTitle(baseBranch || stableBaseBranch || laneInfo?.baseRef || runtime.project?.baseRef || "main");
+  const targetBranch = branchNameForPrTitle(baseBranch || runtime.laneService.getCompareBase(laneId));
   const targetLane = targetBranch
     ? lanes.find((lane) => lane.id !== laneId && branchNameForPrTitle(lane.branchRef) === targetBranch)
     : null;
@@ -4239,8 +4227,7 @@ export function scopeMacDesktopAdeActionArgs(
       `run_ade_action:mac_desktop.${action}`,
     );
   }
-  // Only `laneId` counts here: `parentLaneId` is a lane-domain argument, and
-  // this domain would drop it anyway.
+  // Only `laneId` counts here.
   const requestedLaneId = asOptionalTrimmedString(rest.laneId);
   if (sessionLaneId && requestedLaneId && requestedLaneId !== sessionLaneId) {
     throw new JsonRpcError(
@@ -7087,8 +7074,6 @@ async function runTool(args: {
 
   if (name === "merge_lane") {
     const laneId = assertNonEmptyString(toolArgs.laneId, "laneId");
-
-
     const message = asOptionalTrimmedString(toolArgs.message);
     const deleteSourceLane = asBoolean(toolArgs.deleteSourceLane, false);
 
@@ -7097,9 +7082,9 @@ async function runTool(args: {
     if (!source) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Lane not found: ${laneId}`);
     }
-    const parentLaneId = assertNonEmptyString(toolArgs.targetLaneId, "targetLaneId");
-    const parent = runtime.laneService.getLaneBaseAndBranch(parentLaneId);
-    const preHead = (await runGit(["rev-parse", "HEAD"], { cwd: parent.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
+    const targetLaneId = assertNonEmptyString(toolArgs.targetLaneId, "targetLaneId");
+    const target = runtime.laneService.getLaneBaseAndBranch(targetLaneId);
+    const preHead = (await runGit(["rev-parse", "HEAD"], { cwd: target.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
 
     const mergeArgs = ["merge", "--no-ff"];
     if (message) {
@@ -7108,13 +7093,13 @@ async function runTool(args: {
     mergeArgs.push(source.branchRef);
 
     const mergeResult = await runGit(mergeArgs, {
-      cwd: parent.worktreePath,
+      cwd: target.worktreePath,
       timeoutMs: 180_000
     });
 
     if (mergeResult.exitCode !== 0) {
       const unmerged = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-        cwd: parent.worktreePath,
+        cwd: target.worktreePath,
         timeoutMs: 12_000
       });
       const conflictedFiles = parseDiffNameOnly(unmerged.stdout);
@@ -7123,13 +7108,13 @@ async function runTool(args: {
         merged: false,
         status: "conflict",
         laneId,
-        targetLaneId: parentLaneId,
+        targetLaneId,
         conflictedFiles,
         error: mergeResult.stderr.trim() || mergeResult.stdout.trim() || "Merge failed"
       };
     }
 
-    const postHead = (await runGit(["rev-parse", "HEAD"], { cwd: parent.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
+    const postHead = (await runGit(["rev-parse", "HEAD"], { cwd: target.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
 
     if (deleteSourceLane) {
       await runtime.laneService.delete({
@@ -7143,7 +7128,7 @@ async function runTool(args: {
       merged: true,
       status: "clean",
       laneId,
-      targetLaneId: parentLaneId,
+      targetLaneId,
       preHeadSha: preHead,
       postHeadSha: postHead,
       deleteSourceLane

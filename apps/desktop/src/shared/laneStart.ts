@@ -1,3 +1,5 @@
+import { branchNameFromLaneRef } from "./laneBaseResolution";
+
 /**
  * Where a new lane's branch starts, and how much work it brings along.
  *
@@ -42,11 +44,7 @@ export const DEFAULT_NEW_LANE_DEFAULTS: NewLaneDefaults = { start: DEFAULT_LANE_
 
 /** A branch name as the user would type it: no `refs/heads/`, `refs/remotes/` or `origin/` prefix. */
 export function plainLaneStartBranch(value: string | null | undefined): string {
-  let name = (value ?? "").trim();
-  if (name.startsWith("refs/heads/")) name = name.slice("refs/heads/".length);
-  else if (name.startsWith("refs/remotes/")) name = name.slice("refs/remotes/".length).replace(/^[^/]+\//, "");
-  else if (name.startsWith("origin/")) name = name.slice("origin/".length);
-  return name;
+  return branchNameFromLaneRef(value);
 }
 
 /** A valid `LaneStart` from untrusted input (JSON, YAML, sync payloads), or null. */
@@ -114,16 +112,3 @@ export const LANE_START_BRING_HINT: Record<LaneStartBring, string> = {
   local: "Starts from your local copy, including commits you haven't pushed.",
   uncommitted: "Your local copy plus a copy of its uncommitted changes. The original folder is left as it is.",
 };
-
-/**
- * One sentence for a start, e.g. "origin/main, fetched first" or
- * "develop with its uncommitted changes". Used by the dialog summary, settings
- * and CLI output.
- */
-export function describeLaneStart(start: LaneStart, sourceBranch: string): string {
-  const branch = sourceBranch || (start.from === "branch" ? plainLaneStartBranch(start.branch) : "");
-  const name = branch || (start.from === "primary" ? "the primary lane's branch" : "the default branch");
-  if (start.bring === "pushed") return branch ? `origin/${branch}, fetched first` : `${name} on the remote, fetched first`;
-  if (start.bring === "local") return `${name}, local commits included`;
-  return `${name} with a copy of its uncommitted changes`;
-}

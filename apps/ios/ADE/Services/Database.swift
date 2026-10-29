@@ -3194,6 +3194,8 @@ final class DatabaseService {
     // "nothing ran". `checks_missing_required` is a JSON array of context names.
     try ensureColumn(tableName: "pull_requests", columnName: "checks_reason", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "checks_missing_required", definition: "text")
+    // The head commit a PR had when it merged, so a lane built on that work can be told to rebase.
+    try ensureColumn(tableName: "pull_requests", columnName: "merged_head_sha", definition: "text")
     try exec("""
       create table if not exists pull_request_chat_sessions (
         id text primary key,

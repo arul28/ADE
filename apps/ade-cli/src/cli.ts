@@ -124,6 +124,17 @@ import { initBrainSentry } from "./sentry/initBrain";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
+import {
+  DEFAULT_LANE_START,
+  LANE_START_BRING_LABEL,
+  LANE_START_BRING_VALUES,
+  LANE_START_FROM_LABEL,
+  laneStartRefLabel,
+  laneStartSourceBranch,
+  normalizeLaneStart,
+  plainLaneStartBranch,
+  type LaneStart,
+} from "../../desktop/src/shared/laneStart";
 import { ARCHIVE_ITEM_KINDS, type ArchiveItemKind } from "../../desktop/src/shared/types/archive";
 import { archiveKindCountParts } from "../../desktop/src/shared/archive";
 import {
@@ -6269,10 +6280,14 @@ function newLaneSetupFailed(result: unknown): boolean {
   return isRecord(setup.progress) && asString(setup.progress.overallStatus)?.toLowerCase() === "failed";
 }
 
-function readLaneStartFlags(args: string[]): { from?: string; bring?: string } {
+type LaneStartFlags = { from?: string; bring?: string };
+
+function readLaneStartFlags(args: string[]): LaneStartFlags {
   const from = readValue(args, ["--from"]);
   const bring = readValue(args, ["--bring"]);
-  if (bring && !["pushed", "local", "uncommitted"].includes(bring)) throw new CliUsageError("--bring must be pushed, local, or uncommitted.");
+  if (bring && !(LANE_START_BRING_VALUES as readonly string[]).includes(bring)) {
+    throw new CliUsageError(`--bring must be one of: ${LANE_START_BRING_VALUES.join(", ")}.`);
+  }
   return { ...(from ? { from } : {}), ...(bring ? { bring } : {}) };
 }
 /** An action step's result, out of its `{ domain, action, result }` envelope. */
@@ -6285,23 +6300,48 @@ function savedLaneStart(value: unknown): unknown {
   const defaults = unwrappedRecord(value).defaults;
   return isRecord(defaults) ? defaults.start ?? null : null;
 }
-function mergeLaneStart(changes: { from?: string; bring?: string }, value: unknown): JsonObject {
-  const prior = isRecord(value) ? value : { from: "default", bring: "pushed" };
+/** `--from` / `--bring` laid over a saved start (or the built-in one). */
+function mergeLaneStart(changes: LaneStartFlags, saved: unknown): LaneStart {
+  const prior = normalizeLaneStart(saved) ?? DEFAULT_LANE_START;
   const from = changes.from;
-  const branch = from && from !== "default" && from !== "primary" ? from.replace(/^origin\//, "") : null;
-  return { from: branch ? "branch" : from ?? prior.from, ...(branch ? { branch } : !from && prior.from === "branch" ? { branch: prior.branch } : {}), bring: changes.bring ?? prior.bring };
+  const branch = from && from !== "default" && from !== "primary" ? plainLaneStartBranch(from) : null;
+  const start = normalizeLaneStart({
+    from: from ? (branch ? "branch" : from) : prior.from,
+    branch: from ? branch : prior.branch,
+    bring: changes.bring ?? prior.bring,
+  });
+  if (!start) throw new CliUsageError("--from must be default, primary, or a branch name.");
+  return start;
+}
+/**
+ * How a lane-creating plan applies `--from` / `--bring`: with neither, no
+ * extra step and no `start` (the brain uses the project's saved defaults);
+ * otherwise a step that reads the defaults, and a `start` with the flags laid
+ * over them.
+ */
+function laneStartFromFlags(flags: LaneStartFlags | null, key = "laneDefaults"): {
+  steps: InvocationStep[];
+  args: (values: JsonObject) => JsonObject;
+} {
+  if (!flags || (!flags.from && !flags.bring)) return { steps: [], args: () => ({}) };
+  return {
+    steps: [actionStep(key, "lane", "getNewLaneDefaults")],
+    args: (values) => ({ start: mergeLaneStart(flags, savedLaneStart(values[key])) }),
+  };
 }
 function formatLaneDefaultsText(value: unknown): string {
   const snapshot = unwrappedRecord(value);
   // Never print built-in values as if they were the project's.
   if (!isRecord(snapshot.defaults)) return "ADE couldn't read this project's new-lane defaults. The brain may need a newer ADE.";
   const defaults = snapshot.defaults;
-  const start = isRecord(defaults.start) ? defaults.start : {};
-  const branch = start.from === "branch" ? asString(start.branch) : start.from === "primary" ? asString(snapshot.primaryBranch) : asString(snapshot.defaultBranch);
-  const from = start.from === "primary" ? "Primary lane's branch" : start.from === "branch" ? "Branch" : "Default branch";
-  const bring = start.bring === "local" ? "Local commits" : start.bring === "uncommitted" ? "Local + uncommitted" : "Pushed work (fetch first)";
+  const start = normalizeLaneStart(defaults.start) ?? DEFAULT_LANE_START;
+  const branch = laneStartSourceBranch(start, {
+    defaultBranch: asString(snapshot.defaultBranch),
+    primaryBranch: asString(snapshot.primaryBranch),
+  });
+  const ref = laneStartRefLabel(start, branch);
   const scope = isRecord(snapshot.scope) ? snapshot.scope : {};
-  return `New lanes start from: ${from}${branch ? ` (${branch})` : ""} · ${bring}${branch ? ` → ${start.bring === "pushed" ? "origin/" : ""}${branch}` : ""}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
+  return `New lanes start from: ${LANE_START_FROM_LABEL[start.from]}${branch ? ` (${branch})` : ""} · ${LANE_START_BRING_LABEL[start.bring]}${ref ? ` → ${ref}` : ""}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
 }
 
 function formatLaneCreateResultText(value: unknown): string {
@@ -6631,10 +6671,15 @@ function buildLanePlan(args: string[]): CliPlan {
     const noTemplate = readFlag(args, ["--no-template"]);
     if (template != null && noTemplate) throw new CliUsageError("Choose --template or --no-template.");
     const steps: InvocationStep[] = [actionStep("defaults", "lane", "getNewLaneDefaults")];
+    // The brain merges what is sent into the saved defaults, so only the
+    // changed fields go; a start change still needs the saved start to lay
+    // `--from` / `--bring` over.
     if (set) steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: (values) => {
-      const snapshot = unwrappedRecord(values.defaults);
-      const defaults = isRecord(snapshot.defaults) ? snapshot.defaults : {};
-      return { name: "run_ade_action", arguments: { domain: "lane", action: "setNewLaneDefaults", args: { defaults: { ...defaults, start: mergeLaneStart(changes, defaults.start), ...(template != null ? { templateId: template } : noTemplate ? { templateId: null } : {}) } } } };
+      const patch: JsonObject = {
+        ...(changes.from || changes.bring ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}),
+        ...(template != null ? { templateId: template } : noTemplate ? { templateId: null } : {}),
+      };
+      return { name: "run_ade_action", arguments: { domain: "lane", action: "setNewLaneDefaults", args: { defaults: patch } } };
     }});
     return { kind: "execute", label: "lane defaults", steps, shapeResult: values => unwrapActionEnvelope(set ? values.result : values.defaults), formatText: formatLaneDefaultsText };
   }
@@ -6659,10 +6704,14 @@ function buildLanePlan(args: string[]): CliPlan {
     if (parsedIssue) input.linearIssue = parsedIssue;
     if (requestedTemplateId != null) input.templateId = requestedTemplateId;
     if (noTemplate) input.skipSetup = true;
-    const steps: InvocationStep[] = [];
-    if (!existing && (changes.from || changes.bring)) steps.push(actionStep("defaults", "lane", "getNewLaneDefaults"));
-    steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: existing ? "import_lane" : "create_lane", arguments: { ...input, ...(existing ? { branchRef: existing } : changes.from || changes.bring ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}) } }) });
-    return { kind: "execute", label: "lane create", formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, steps };
+    const start = laneStartFromFlags(existing ? null : changes, "defaults");
+    const steps: InvocationStep[] = [
+      ...start.steps,
+      { key: "result", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: existing ? "import_lane" : "create_lane", arguments: { ...input, ...(existing ? { branchRef: existing } : start.args(values)) } }) },
+    ];
+    // The new lane's template setup runs inside the create call; wait for it.
+    const setupTimeoutMs = newLaneSetupTimeoutMs();
+    return { kind: "execute", label: "lane create", formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, ...(setupTimeoutMs != null ? { minTimeoutMs: setupTimeoutMs } : {}), steps };
   }
   if (
     sub === "link-linear-issue" ||
@@ -6878,7 +6927,6 @@ function buildLanePlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (["child", "children", "stack", "reparent", "import", "import-branch", "split-unstaged", "create-from-linear", "create-from-linear-issue", "create-from-issue", "batch-create-from-linear", "batch-create-from-linear-issue", "batch-create-from-issue"].includes(sub)) throw new CliUsageError(`Unknown lanes command: ${sub}`);
   return {
     kind: "execute",
     label: `lane ${sub}`,
@@ -7384,10 +7432,10 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const steps: InvocationStep[] = [];
   if (lane.autoCreateLane) {
     const create = { ...(lane.createLaneArgs ?? {}) };
-    const flags = isRecord(create._startFlags) ? create._startFlags as { from?: string; bring?: string } : null;
+    const start = laneStartFromFlags(isRecord(create._startFlags) ? create._startFlags as LaneStartFlags : null);
     delete create._startFlags;
-    if (flags) steps.push(actionStep("laneDefaults", "lane", "getNewLaneDefaults"));
-    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: create.branchRef ? "import_lane" : "create_lane", arguments: { ...create, ...(flags ? { start: mergeLaneStart(flags, savedLaneStart(values.laneDefaults)) } : {}) } }) });
+    steps.push(...start.steps);
+    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: create.branchRef ? "import_lane" : "create_lane", arguments: { ...create, ...start.args(values) } }) });
   }
   // The new lane's template setup runs inside `create_lane`.
   const laneSetupTimeoutMs = lane.autoCreateLane ? newLaneSetupTimeoutMs() : null;
@@ -7754,9 +7802,10 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
     : {};
 
   const steps: InvocationStep[] = [];
-  if (startFlags.from || startFlags.bring) steps.push(actionStep("defaults", "lane", "getNewLaneDefaults"));
+  const start = laneStartFromFlags(startFlags, "defaults");
+  steps.push(...start.steps);
   const laneInput = collectGenericObjectArgs(args, createInput);
-  steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: "create_lane", arguments: { ...laneInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, savedLaneStart(values.defaults)) } : {}) } }) });
+  steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: "create_lane", arguments: { ...laneInput, ...start.args(values) } }) });
 
   if (startChat) {
     steps.push({
@@ -7851,6 +7900,7 @@ function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[
   const branchName = readValue(args, ["--branch-name"]);
   const templateId = readValue(args, ["--template"]);
   const skipSetup = readFlag(args, ["--no-template"]);
+  const start = laneStartFromFlags(startFlags, "defaults");
   const steps: InvocationStep[] = issues.map((issue, index) => {
     const key =
       asString(issue.identifier) ?? asString(issue.id) ?? `issue-${index + 1}`;
@@ -7867,11 +7917,11 @@ function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[
     };
     return {
       key, method: "ade/actions/call", unwrapToolResult: true,
-      params: values => ({ name: "create_lane", arguments: { ...createInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, savedLaneStart(values.defaults)) } : {}) } }),
+      params: values => ({ name: "create_lane", arguments: { ...createInput, ...start.args(values) } }),
       optional: true,
     };
   });
-  if (startFlags.from || startFlags.bring) steps.unshift(actionStep("defaults", "lane", "getNewLaneDefaults"));
+  steps.unshift(...start.steps);
   const setupTimeoutMs = newLaneSetupTimeoutMs();
   return {
     kind: "execute",
@@ -10295,9 +10345,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   };
   maybePut(launchArgs, "laneName", laneName);
   const needsDefaults = Boolean(!existingBranch && (startOverrides.from || startOverrides.bring) && !(startOverrides.from && startOverrides.bring));
-  launchArgs.laneConfig = existingBranch
-    ? { mode: "existing", branchRef: existingBranch }
-    : { mode: "new", ...(!needsDefaults && startOverrides.from && startOverrides.bring ? { start: mergeLaneStart(startOverrides, null) } : {}) };
+  // A plain launch sends no lane config, so the brain names the lane itself.
+  // A start given in part is completed from the project defaults at launch.
+  if (existingBranch) launchArgs.laneConfig = { mode: "existing", branchRef: existingBranch };
+  else if (startOverrides.from && startOverrides.bring) launchArgs.laneConfig = { mode: "new", start: mergeLaneStart(startOverrides, null) };
   maybePut(launchArgs, "modelId", modelArg);
   maybePut(launchArgs, "title", title);
   // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
@@ -10383,11 +10434,9 @@ async function runChatLaunchCommand(
       const raw = await connection.request("ade/actions/call", {
         name: "run_ade_action", arguments: { domain: "lane", action: "getNewLaneDefaults", args: {} },
       });
-      const snapshot = unwrapActionEnvelope(unwrapToolResult(raw));
-      if (!isRecord(snapshot) || !isRecord(snapshot.defaults) || !isRecord(snapshot.defaults.start)) {
-        throw new CliExecutionError("Could not load new-lane defaults.", { result: snapshot });
-      }
-      launchArgs = { ...launchArgs, laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, snapshot.defaults.start) } };
+      const saved = savedLaneStart(unwrapToolResult(raw));
+      if (!saved) throw new CliExecutionError("Could not load new-lane defaults.", { result: unwrapToolResult(raw) });
+      launchArgs = { ...launchArgs, laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, saved) } };
     }
     const started = await callChat("startLaunch", launchArgs);
     if (!isRecord(started) || typeof started.launchId !== "string") {

@@ -311,6 +311,7 @@ import {
   normalizeNewLaneStart,
   toggleNewLaneBranchSource,
 } from "./newLaneForm";
+import { plainLaneStartBranch } from "../../../desktop/src/shared/laneStart";
 import {
   ChatView,
   resolveFileChangeDiffAction,
@@ -7867,7 +7868,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       kind: "form",
       title: "New lane",
       command: "new-lane",
-      fields: newLaneFormFields("primary", { from: initialStart?.from }),
+      fields: newLaneFormFields("new", { from: initialStart?.from }),
     });
     // Fetch branch names once for the typeahead (async — the form opens
     // immediately and the matches appear when the result lands). Stashed on
@@ -7880,7 +7881,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         if (newLaneChoiceRevisionRef.current !== revision || rightPaneRef.current.kind !== "form" || rightPaneRef.current.command !== "new-lane") return;
         setFormValues(previous => ({ ...previous, from: snapshot.defaults.start.from, branch: snapshot.defaults.start.branch ?? "", bring: snapshot.defaults.start.bring }));
         setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
-          ? { ...previous, fields: newLaneFormFields("primary", { from: snapshot.defaults.start.from }) } : previous);
+          ? { ...previous, fields: newLaneFormFields("new", { from: snapshot.defaults.start.from }) } : previous);
       }).catch(() => {
         if (newLaneChoiceRevisionRef.current === revision) addNotice("Could not load new-lane defaults. Reopen the form to retry.", "error");
       });
@@ -7903,7 +7904,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("The active lane has no branch.", "error");
       return;
     }
-    openNewLaneForm({ from: "branch", branch: lane.branchRef.replace(/^origin\//, ""), bring: "uncommitted" });
+    openNewLaneForm({ from: "branch", branch: plainLaneStartBranch(lane.branchRef), bring: "uncommitted" });
   }, [activeLane, addNotice, lanes, openNewLaneForm]);
 
   const openLaneDeleteForm = useCallback((laneIdArg?: string) => {
@@ -13462,7 +13463,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const name = requireField("name", "Name");
       if (!name) return;
       const linearIssueInput = values.linearIssue?.trim() ?? "";
-      if (normalizeNewLaneStart(values.start) === "import" && linearIssueInput) {
+      if (normalizeNewLaneStart(values.start) === "existing" && linearIssueInput) {
         addNotice("Linear issue attachment is not supported when importing an existing branch.", "error");
         return;
       }
@@ -16623,7 +16624,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const top = filterNewLaneBranchMatches({
           branches: rightPane.branches,
           query: values[field.name] ?? "",
-          remote: normalizeNewLaneStart(values.start) === "import" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.bring || "pushed") === "pushed",
+          remote: normalizeNewLaneStart(values.start) === "existing" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.bring || "pushed") === "pushed",
           limit: 1,
         })[0];
         if (top) {
@@ -17058,7 +17059,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const nextValues = currentFormValues();
       if (field?.name === "start") {
         // Number keys follow the mode order.
-        const startByKey: Record<string, string> = { "1": "primary", "2": "import" };
+        const startByKey: Record<string, string> = { "1": "new", "2": "existing" };
         const cycled = key.leftArrow || key.rightArrow
           ? cycleNewLaneStart(nextValues.start, key.leftArrow ? -1 : 1)
           : startByKey[input];

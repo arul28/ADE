@@ -513,7 +513,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     trackedFileCount: status.trackedFileCount ?? null,
     rebaseInProgress: status.rebaseInProgress,
     headBranchRef: status.headBranchRef ?? null,
-    branchDriftKind: status.branchDriftKind ?? null
+    branchDriftKind: status.branchDriftKind ?? null,
+    ...(status.compareBase ? { compareBase: status.compareBase } : {}),
   };
 }
 
@@ -1691,13 +1692,18 @@ export function createLaneService({
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
 
-  // Late-bound: the host wires the account-backed store once account settings
-  // exist. Without one, new lanes use the built-in defaults.
+  // Late-bound: the host wires the project's new-lane settings store (and the
+  // template check that needs the template service) after construction.
+  // Without a store, new lanes use the built-in defaults.
   let newLaneSettings: NewLaneSettingsStore | null = null;
+  let validateNewLaneTemplateId: ((templateId: string) => void) | null = null;
   const getNewLaneDefaultsForCreate = (): NewLaneDefaults => {
     try {
       return newLaneSettings?.getDefaults() ?? DEFAULT_NEW_LANE_DEFAULTS;
-    } catch {
+    } catch (error) {
+      logger.warn("lanes.new_lane_defaults_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
       return DEFAULT_NEW_LANE_DEFAULTS;
     }
   };
@@ -3867,6 +3873,7 @@ export function createLaneService({
         return status;
       }
       let baseRef = compareBase;
+      let compareBaseName = branchNameFromLaneRef(compareBase);
 
       // The primary lane compares against its upstream tracking ref instead of
       // base_ref (which equals branchRef, giving 0 behind).
@@ -3880,6 +3887,7 @@ export function createLaneService({
         );
         if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
           baseRef = upstreamRes.stdout.trim();
+          compareBaseName = branchNameFromLaneRef(row.branch_ref);
         } else {
           const originRes = await runGit(
             ["rev-parse", "--verify", `origin/${row.branch_ref}`],
@@ -3887,6 +3895,7 @@ export function createLaneService({
           );
           if (originRes.exitCode === 0 && originRes.stdout.trim()) {
             baseRef = originRes.stdout.trim();
+            compareBaseName = branchNameFromLaneRef(row.branch_ref);
           }
         }
       }
@@ -3897,6 +3906,7 @@ export function createLaneService({
       const status = await computeServiceLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
         worktreeRootVerified: true,
       });
+      if (compareBaseName) status.compareBase = compareBaseName;
       statusCache.set(laneId, status);
       recentLaneStatus.set(laneId, { status: cloneLaneStatus(status), at: computedAt, inputs: statusInputs });
       return status;
@@ -6228,8 +6238,8 @@ export function createLaneService({
           return {
             ...lane,
             createdFrom: {
-              start: { from: "branch", branch: requestedStartPoint, bring: "local" },
-              sourceBranch: requestedStartPoint,
+              start: null,
+              sourceBranch: "",
               startRef: requestedStartPoint,
               startSha: resolvedHead,
               copiedFiles: 0,
@@ -6239,7 +6249,12 @@ export function createLaneService({
           };
         }
 
-        const effectiveStart = normalizeLaneStart(start) ?? getNewLaneDefaultsForCreate().start;
+        let effectiveStart = getNewLaneDefaultsForCreate().start;
+        if (start != null) {
+          const requestedStart = normalizeLaneStart(start);
+          if (!requestedStart) throw new Error("Invalid lane start.");
+          effectiveStart = requestedStart;
+        }
         const rows = getAllLaneRows(false);
         const folders: LaneStartFolder[] = rows
           .filter((row) => row.worktree_path && row.branch_ref)
@@ -6269,6 +6284,9 @@ export function createLaneService({
         let copiedFiles = 0;
         if (resolved.copyFrom && lane.worktreePath) {
           try {
+            // Copy only from a folder that really is that worktree's root; a
+            // stale path could point into another repository.
+            await assertExpectedGitWorktreeRoot(resolved.copyFrom.worktreePath);
             copiedFiles = await copyUncommittedChanges({ fromPath: resolved.copyFrom.worktreePath, toPath: lane.worktreePath });
             if (copiedFiles === 0) notes.push(`${resolved.copyFrom.name} had no uncommitted changes to copy.`);
           } catch (error) {
@@ -9200,9 +9218,16 @@ export function createLaneService({
       onWorktreeLaneCreated = hook ?? null;
     },
 
-    /** Late-bind the account-backed new-lane settings (defaults and templates). */
-    setNewLaneSettingsStore(store: NewLaneSettingsStore | null): void {
+    /**
+     * Late-bind the project's new-lane settings (defaults and templates) and
+     * the check that a template id exists, which needs the template service.
+     */
+    setNewLaneSettingsStore(
+      store: NewLaneSettingsStore | null,
+      options: { validateTemplateId?: ((templateId: string) => void) | null } = {},
+    ): void {
       newLaneSettings = store;
+      validateNewLaneTemplateId = options.validateTemplateId ?? null;
     },
 
     /**
@@ -9228,17 +9253,31 @@ export function createLaneService({
     /**
      * The branch a lane compares against for ahead/behind, conflicts, rebases
      * and a new PR's base: its open PR's base branch, else the project's
-     * default branch. Null for an unknown lane.
+     * default branch. The default branch for an unknown lane.
      */
-    getCompareBase(laneId: string): string | null {
+    getCompareBase(laneId: string): string {
+      const defaultBranch = branchNameFromLaneRef(defaultBaseRef) || defaultBaseRef;
       const row = getLaneRow(laneId);
-      if (!row) return null;
-      return branchNameFromLaneRef(compareBaseForRow(row)) || null;
+      if (!row) return defaultBranch;
+      return branchNameFromLaneRef(compareBaseForRow(row)) || defaultBranch;
     },
 
-    setNewLaneDefaults(args: { defaults: NewLaneDefaults }): NewLaneDefaultsSnapshot {
+    /** Merges the given fields into the saved defaults; fields left out keep their value. */
+    setNewLaneDefaults(args: { defaults: Partial<NewLaneDefaults> }): NewLaneDefaultsSnapshot {
       if (!newLaneSettings) throw new Error("New-lane settings aren't available on this computer.");
-      newLaneSettings.setDefaults(args.defaults);
+      const patch = args.defaults ?? {};
+      const next: NewLaneDefaults = { ...getNewLaneDefaultsForCreate() };
+      if (patch.start !== undefined) {
+        const start = normalizeLaneStart(patch.start);
+        if (!start) throw new Error("Invalid lane start.");
+        next.start = start;
+      }
+      if (patch.templateId !== undefined) {
+        const templateId = typeof patch.templateId === "string" ? patch.templateId.trim() : "";
+        if (templateId) validateNewLaneTemplateId?.(templateId);
+        next.templateId = templateId || null;
+      }
+      newLaneSettings.setDefaults(next);
       return laneServiceApi.getNewLaneDefaults();
     },
 

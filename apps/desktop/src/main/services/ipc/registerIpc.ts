@@ -8032,7 +8032,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.lanesGetNewLaneDefaults, async () => ensureLaneContext().laneService.getNewLaneDefaults());
 
-  ipcMain.handle(IPC.lanesSetNewLaneDefaults, async (_event, args: { defaults: NewLaneDefaults }) =>
+  ipcMain.handle(IPC.lanesSetNewLaneDefaults, async (_event, args: { defaults: Partial<NewLaneDefaults> }) =>
     ensureLaneContext().laneService.setNewLaneDefaults(args));
 
   ipcMain.handle(IPC.lanesSetDefaultTemplate, async (_event, args: { templateId: string | null }) => {

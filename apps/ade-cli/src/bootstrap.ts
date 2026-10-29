@@ -73,8 +73,7 @@ import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/cha
 import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
-import { createFileNewLaneAccountStore, createNewLaneSettingsStore, legacyNewLaneSettingsFromConfig } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
-import { readGitOriginUrl } from "./services/account/machineBridge";
+import { createProjectNewLaneSettings } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
 import { createPortAllocationService } from "../../desktop/src/main/services/lanes/portAllocationService";
 import { createLaneProxyService } from "../../desktop/src/main/services/lanes/laneProxyService";
 import { createProxyService, type ProxyService } from "./services/proxy/proxyService";
@@ -1408,19 +1407,22 @@ export async function createAdeRuntime(args: {
     // New-lane defaults and templates follow the account, per repository
     // (`repo:<origin>`). A brain without the account store keeps them in a
     // file in this project's `.ade` folder instead.
-    const newLaneSettings = createNewLaneSettingsStore({
+    const newLaneSettings = createProjectNewLaneSettings({
       projectRoot,
-      store: accountSettingsStore ?? createFileNewLaneAccountStore(path.join(paths.adeDir, "new-lane-settings.json")),
-      accountBacked: Boolean(accountSettingsStore),
-      readOriginUrl: () => readGitOriginUrl(projectRoot),
-      legacy: () => legacyNewLaneSettingsFromConfig(projectConfigService.get()),
+      adeDir: paths.adeDir,
+      accountStore: accountSettingsStore,
+      projectConfigService,
+      logger,
     });
-    laneService.setNewLaneSettingsStore(newLaneSettings);
-
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
       logger,
-      getNewLaneSettings: () => newLaneSettings,
+      newLaneSettings,
+    });
+    laneService.setNewLaneSettingsStore(newLaneSettings, {
+      validateTemplateId: (templateId) => {
+        if (!laneTemplateService.getTemplate(templateId)) throw new Error(`Unknown lane template: ${templateId}`);
+      },
     });
 
     // Archiving a lane brings down the Docker services its env init started —

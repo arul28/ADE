@@ -668,8 +668,7 @@ export function createConflictService({
   };
 
   /** The branch a lane compares against: its open PR's base, else the default branch. */
-  const compareBaseForLane = (lane: Pick<LaneSummary, "id" | "baseRef">): string =>
-    laneService.getCompareBase(lane.id) ?? lane.baseRef;
+  const compareBaseForLane = (lane: Pick<LaneSummary, "id">): string => laneService.getCompareBase(lane.id);
 
   const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
 
