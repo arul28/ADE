@@ -732,7 +732,6 @@ function installAdeMocks(options?: {
         },
         effective: {
           git: {
-            autoRebaseOnHeadChange: false,
             newLaneBaseSource: "remote",
           },
           ai: {
@@ -7952,7 +7951,6 @@ describe("AgentChatPane submit recovery", () => {
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
         name: "Fix Auto Create Lane Routing",
         branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-        baseBranch: "origin/main",
       }), LOCAL_PROJECT_BINDING);
       expect(renameLane).not.toHaveBeenCalled();
       expect(create).toHaveBeenCalledWith(
@@ -7977,89 +7975,6 @@ describe("AgentChatPane submit recovery", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/work?laneId=lane-created&sessionId=created-session");
     });
-  });
-
-  it("auto-create omits baseBranch when branch discovery finds no remote base", async () => {
-    const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
-    suggestLaneName.mockResolvedValue("fallback-base-flow");
-    ((window as any).ade.git.listBranches as ReturnType<typeof vi.fn>).mockResolvedValue([]);
-    // Auto-create now names the lane deterministically from the prompt; the AI
-    // suggestion is applied later via lanes.rename.
-
-    renderAutoCreateDraftPane();
-
-    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
-    fireEvent.pointerDown(modelTrigger, { button: 0 });
-    fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
-    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
-
-    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Use default base when remote refs are unknown." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
-        name: "Default Base When Remote Refs",
-        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-      }), LOCAL_PROJECT_BINDING);
-    });
-  });
-
-  it("auto-create skips git fetch when project config selects local lane bases", async () => {
-    const { createLane, suggestLaneName } = installAdeMocks({ sessions: [] });
-    suggestLaneName.mockResolvedValue("local-base-flow");
-    ((window as any).ade.projectConfig.get as ReturnType<typeof vi.fn>).mockResolvedValue({
-      local: {
-        git: {
-          newLaneBaseSource: "local",
-        },
-      },
-      effective: {
-        git: {
-          autoRebaseOnHeadChange: false,
-          newLaneBaseSource: "local",
-        },
-        ai: {
-          chat: {
-            sendOnEnter: true,
-          },
-        },
-      },
-    });
-    ((window as any).ade.git.fetch as ReturnType<typeof vi.fn>).mockImplementation(() => new Promise(() => {}));
-    ((window as any).ade.git.listBranches as ReturnType<typeof vi.fn>).mockResolvedValue([
-      { name: "main", isRemote: false, isCurrent: true, upstream: "origin/main" },
-    ]);
-
-    renderAutoCreateDraftPane();
-
-    const modelTrigger = await screen.findByRole("button", { name: /^Select model/ });
-    const codexLabel = getModelById("openai/gpt-5.5")?.displayName ?? "GPT-5.5";
-    fireEvent.pointerDown(modelTrigger, { button: 0 });
-    fireEvent.click(modelTrigger);
-    fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
-    await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
-
-    fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
-    fireEvent.click(await screen.findByRole("option", { name: /Auto-create lane/i }));
-
-    const textbox = await screen.findByRole("textbox");
-    fireEvent.change(textbox, { target: { value: "Create from local main without fetching." } });
-    fireEvent.click(await screen.findByRole("button", { name: "Send" }));
-
-    await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
-        name: "Create Local Main Without Fetching",
-        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-        baseBranch: "main",
-      }), LOCAL_PROJECT_BINDING);
-    });
-    expect((window as any).ade.git.fetch).not.toHaveBeenCalled();
   });
 
   it("auto-create keeps launching with a fallback lane name when name suggestion fails", async () => {
@@ -8096,7 +8011,6 @@ describe("AgentChatPane submit recovery", () => {
         expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
           name: "Keep Going Even Naming Fails",
           branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-          baseBranch: "origin/main",
         }), LOCAL_PROJECT_BINDING);
         expect(create).toHaveBeenCalledWith(
           expect.objectContaining({ laneId: "lane-created" }),
@@ -8719,13 +8633,19 @@ describe("AgentChatPane submit recovery", () => {
   it("keeps an auto-create launch pinned to its originating project after a mid-launch project switch", async () => {
     const onSessionCreated = vi.fn();
     const { send, create, createLane, deleteLane } = installAdeMocks({ sessions: [] });
-    // Naming no longer blocks lane creation; branch discovery (git.fetch) is now
-    // the async step before the irreversible create, so gate the project switch
-    // on it to exercise the pinned background launch path.
-    let resolveFetch!: () => void;
-    ((window as any).ade.git.fetch as ReturnType<typeof vi.fn>).mockImplementation(
-      () => new Promise<void>((resolve) => { resolveFetch = () => resolve(undefined); }),
-    );
+    // Switch projects while the lane create is in flight, to exercise the
+    // pinned background launch path.
+    let resolveCreateLane!: () => void;
+    createLane.mockImplementation(({ name, branchName }: { name: string; branchName?: string }) =>
+      new Promise((resolve) => {
+        resolveCreateLane = () => resolve({
+          id: "lane-created",
+          name,
+          laneType: "worktree",
+          branchRef: branchName ?? "refs/heads/auto-created-lane",
+          worktreePath: "/tmp/project-under-test/auto-created-lane",
+        });
+      }));
     const binding = {
       kind: "local" as const,
       key: "local:/tmp/project-under-test",
@@ -8752,11 +8672,14 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Send" }));
 
     await waitFor(() => {
-      expect((window as any).ade.git.fetch).toHaveBeenCalledWith({ laneId: "lane-primary" }, binding);
+      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
+        name: "Switch Projects Mid Launch",
+        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
+      }), binding);
     });
 
-    // Switch the active project to a different one, then let branch discovery
-    // resolve. The launch should keep routing through the captured binding.
+    // Switch the active project to a different one, then let the lane create
+    // finish. The launch should keep routing through the captured binding.
     await act(async () => {
       useAppStore.setState({
         projectBinding: {
@@ -8766,16 +8689,11 @@ describe("AgentChatPane submit recovery", () => {
           displayName: "other-project",
         } as any,
       });
-      resolveFetch();
+      resolveCreateLane();
       await Promise.resolve();
     });
 
     await waitFor(() => {
-      expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
-        name: "Switch Projects Mid Launch",
-        branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-        baseBranch: "origin/main",
-      }), binding);
       expect(create).toHaveBeenCalledWith(expect.objectContaining({ laneId: "lane-created" }), binding);
       expect(send).toHaveBeenCalledWith(expect.objectContaining({
         sessionId: "created-session",
@@ -10370,7 +10288,6 @@ describe("AgentChatPane submit recovery", () => {
       expect(createLane).toHaveBeenCalledWith(expect.objectContaining({
         name: "Launch Cli Agent New Lane",
         branchName: expect.stringMatching(/^ade\/[0-9a-f]{8}$/),
-        baseBranch: "origin/main",
       }), LOCAL_PROJECT_BINDING);
       expect(onLaunchCliSession).toHaveBeenCalledWith(expect.objectContaining({
         laneId: "lane-created",

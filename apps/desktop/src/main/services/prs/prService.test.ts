@@ -275,7 +275,7 @@ function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
     getLaneBaseAndBranch: vi.fn(),
-    getCompareBase: vi.fn(() => null),
+    getCompareBase: vi.fn(() => "main"),
     updateBranchRef: vi.fn(),
     delete: vi.fn(async () => undefined),
   } as any;

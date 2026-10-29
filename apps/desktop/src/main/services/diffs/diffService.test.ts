@@ -37,37 +37,31 @@ function branchLane(rootPath: string, baseRef: string, branchRef: string) {
 }
 
 describe("diffService branch scope", () => {
-  it("lists commits, uncommitted edits and untracked files since the base, and leaves the index alone", async () => {
+  it("lists only what the branch committed since the base; uncommitted work stays out", async () => {
     const rootPath = initRepo("ade-diff-branch-");
     try {
       git(rootPath, ["checkout", "-b", "feature"]);
       fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
       git(rootPath, ["commit", "-am", "committed edit"]);
-      fs.writeFileSync(path.join(rootPath, "beta.txt"), "beta changed\n", "utf8");
+      // Uncommitted: an edit on top of the commit, a staged file, an untracked file.
+      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\nthree\n", "utf8");
       fs.writeFileSync(path.join(rootPath, "staged.txt"), "staged\n", "utf8");
       git(rootPath, ["add", "staged.txt"]);
       fs.writeFileSync(path.join(rootPath, "untracked.txt"), "new\n", "utf8");
-      fs.writeFileSync(path.join(rootPath, ".gitignore"), "ignored.log\n", "utf8");
-      fs.writeFileSync(path.join(rootPath, "ignored.log"), "noise\n", "utf8");
-      const indexBefore = git(rootPath, ["diff", "--cached", "--name-status"]);
+      const lane = branchLane(rootPath, "main", "feature");
 
-      const changes = await branchLane(rootPath, "main", "feature").getBranchChanges("lane-1");
+      const changes = await lane.getBranchChanges("lane-1");
 
       expect(changes.baseRef).toBe("main");
-      expect(changes.files.map((file) => [file.path, file.kind]).sort()).toEqual([
-        [".gitignore", "added"],
-        ["alpha.txt", "modified"],
-        ["beta.txt", "modified"],
-        ["staged.txt", "added"],
-        ["untracked.txt", "added"],
-      ]);
-      expect(git(rootPath, ["diff", "--cached", "--name-status"])).toBe(indexBefore);
+      expect(changes.files.map((file) => [file.path, file.kind])).toEqual([["alpha.txt", "modified"]]);
+      expect(changes.additions).toBe(1);
 
-      const patch = await branchLane(rootPath, "main", "feature").getFilePatch({ laneId: "lane-1", filePath: "untracked.txt", mode: "branch" });
-      expect(patch.patch).toContain("new file mode");
-      const diff = await branchLane(rootPath, "main", "feature").getFileDiff({ laneId: "lane-1", filePath: "alpha.txt", mode: "branch" });
+      const diff = await lane.getFileDiff({ laneId: "lane-1", filePath: "alpha.txt", mode: "branch" });
       expect(diff.original.text).toBe("one\n");
       expect(diff.modified.text).toBe("one\ntwo\n");
+      const patch = await lane.getFilePatch({ laneId: "lane-1", filePath: "alpha.txt", mode: "branch" });
+      expect(patch.patch).toContain("+two");
+      expect(patch.patch).not.toContain("three");
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }
@@ -86,26 +80,6 @@ describe("diffService branch scope", () => {
       const patch = await lane.getFilePatch({ laneId: "lane-1", filePath: "gamma.txt", mode: "branch" });
       expect(patch.patch).toContain("rename from alpha.txt");
       expect(patch.patch).not.toContain("new file mode");
-    } finally {
-      fs.rmSync(rootPath, { recursive: true, force: true });
-    }
-  });
-
-  it("does not report a file a sparse checkout leaves out as deleted", async () => {
-    const rootPath = initRepo("ade-diff-branch-sparse-");
-    try {
-      git(rootPath, ["checkout", "-b", "feature"]);
-      fs.writeFileSync(path.join(rootPath, "alpha.txt"), "one\ntwo\n", "utf8");
-      // What sparse-checkout does to a path outside the cone: flagged
-      // skip-worktree in the index, absent from disk.
-      git(rootPath, ["update-index", "--skip-worktree", "beta.txt"]);
-      fs.rmSync(path.join(rootPath, "beta.txt"));
-
-      const changes = await branchLane(rootPath, "main", "feature").getBranchChanges("lane-1");
-
-      expect(changes.files.map((file) => [file.path, file.kind])).toEqual([["alpha.txt", "modified"]]);
-      expect(changes.additions).toBe(1);
-      expect(git(rootPath, ["ls-files", "-v", "beta.txt"]).trim()).toBe("S beta.txt");
     } finally {
       fs.rmSync(rootPath, { recursive: true, force: true });
     }

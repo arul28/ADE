@@ -156,7 +156,7 @@ describe("conflictService conflict context integrity", () => {
         projectId,
         projectRoot: repoRoot,
         laneService: {
-          getCompareBase: () => null,
+          getCompareBase: () => "main",
           list: async () => [laneSummary],
           getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" }),
         } as any,
@@ -213,7 +213,7 @@ describe("conflictService conflict context integrity", () => {
       projectId,
       projectRoot: repoRoot,
       laneService: {
-        getCompareBase: () => null,
+        getCompareBase: () => "main",
         list: async () => [laneSummary],
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
@@ -299,7 +299,7 @@ describe("conflictService conflict context integrity", () => {
       projectId,
       projectRoot: repoRoot,
       laneService: {
-        getCompareBase: () => null,
+        getCompareBase: () => "main",
         list: async () => [laneSummary],
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
@@ -359,7 +359,7 @@ describe("conflictService conflict context integrity", () => {
       projectId,
       projectRoot: repoRoot,
       laneService: {
-        getCompareBase: () => null,
+        getCompareBase: () => "main",
         list: async () => [laneSummary],
         getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/lane-1" })
       } as any,
@@ -435,7 +435,7 @@ describe("conflictService conflict context integrity", () => {
         projectId,
         projectRoot: repoRoot,
         laneService: {
-          getCompareBase: () => null,
+          getCompareBase: () => "main",
           list: async () => [rootLane],
           getLaneBaseAndBranch: () => ({ worktreePath: repoRoot, baseRef: "main", branchRef: "feature/root-lane" }),
         } as any,

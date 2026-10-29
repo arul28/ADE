@@ -492,7 +492,7 @@ describe("laneService create", () => {
         if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
           return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
-        if (args[0] === "rev-parse" && args[1] === "main") {
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet" && args[3] === "refs/heads/main^{commit}") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
         }
         if (args[0] === "push" && args[1] === "-u") {
@@ -526,7 +526,7 @@ describe("laneService create", () => {
         worktreesDir: path.join(repoRoot, "worktrees"),
       });
 
-      createPromise = service.create({ name: "Race lane" });
+      createPromise = service.create({ name: "Race lane", start: { from: "default", on: "local" } });
       await vi.waitFor(() => {
         expect(pendingWorktree).not.toBeNull();
       });
@@ -575,7 +575,7 @@ describe("laneService create", () => {
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
         const laneBranchGitStub = defaultLaneBranchGitStub(args);
         if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "abc123456789") {
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "abc123456789^{commit}") {
           return { exitCode: 0, stdout: "sha-selected\n", stderr: "" };
         }
         if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
@@ -619,6 +619,7 @@ describe("laneService create", () => {
       expect(lane.baseRef).toBe("main");
       expect(lane.branchRef).toBe("history/point");
       expect(worktreeStartPoint).toBe("sha-selected");
+      expect(lane.createdFrom).toMatchObject({ startRef: "abc123456789", startSha: "sha-selected" });
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -2725,7 +2726,7 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
-  it("skips rebasing when the parent head is already an ancestor of the lane head", async () => {
+  it("skips rebasing when the compare base is already an ancestor of the lane head", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-skip-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-skip", repoRoot });
@@ -2739,7 +2740,11 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args[2]).toBe("sha-origin-main");
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
@@ -2911,7 +2916,7 @@ describe("laneService rebaseStart", () => {
     expect(afterRollback.base_ref).toBe("release-9");
   });
 
-  it("rejects overlapping rebase runs for the same stack while one is active", async () => {
+  it("rejects an overlapping rebase run for the same lane while one is active", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-overlap-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-overlap", repoRoot });
@@ -2925,6 +2930,9 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation((args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return Promise.resolve(laneBranchGitStub);
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return Promise.resolve({ exitCode: 0, stdout: "sha-origin-main\n", stderr: "" });
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
       }
@@ -2948,10 +2956,12 @@ describe("laneService rebaseStart", () => {
     });
 
     const firstRun = service.rebaseStart({ laneId: "lane-child", actor: "user" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await vi.waitFor(() => {
+      expect(resolveRebase, "the first run reached git rebase").not.toBeNull();
+    });
 
-    await expect(service.rebaseStart({ laneId: "lane-parent", actor: "user" })).rejects.toThrow(
-      /already active for this lane stack/i,
+    await expect(service.rebaseStart({ laneId: "lane-child", actor: "user" })).rejects.toThrow(
+      /already active for this lane/i,
     );
 
     if (!resolveRebase) {
@@ -3305,6 +3315,9 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -5767,7 +5780,7 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
       if (worktreeAdded && args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
       if (args[0] === "branch" && args[1] === "-D") {
         branchDeleted = true;
         return { exitCode: 0, stdout: "", stderr: "" };
