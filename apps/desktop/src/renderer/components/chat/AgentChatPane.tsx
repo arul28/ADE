@@ -555,7 +555,6 @@ import {
 
 import { playAgentTurnCompletionSound } from "../../lib/agentTurnCompletionSound";
 
-/** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
 /**
  * The pin a draft's new-lane defaults are read with: the machine the draft
  * launches on, or null for the tab's own machine (the unpinned route, and the
@@ -569,6 +568,7 @@ function newLaneDefaultsPin(
   return launchBinding;
 }
 
+/** A Devin Cloud failure without Electron's `Error invoking remote method` wrapper. */
 function devinCloudErrorMessage(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   return stripElectronErrorWrapper(raw) || "Devin Cloud request failed.";
@@ -1349,8 +1349,9 @@ function createDeterministicAutoLaneName(prompt: string, options: { genericSuffi
  * here.
  */
 function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLaneConfig {
-  const { name: _name, ...recipe } = config;
-  return recipe;
+  const { name, ...recipe } = config;
+  // An unnamed recipe is named like a plain auto-create, from the prompt.
+  return recipe.mode === "new" && !name.trim() ? { ...recipe, autoName: true } : recipe;
 }
 
 function createTemporaryAutoLaneBranch(): string {
@@ -12613,8 +12614,8 @@ export function AgentChatPane({
         assertActive?.();
         const createArgs = {
           name: laneName,
-          // A configured lane derives its branch from the user's name.
-          ...(configured ? {} : { branchName: createTemporaryAutoLaneBranch() }),
+          // A lane the user named derives its branch from that name.
+          ...(configuredName ? {} : { branchName: createTemporaryAutoLaneBranch() }),
           ...(configured?.start ? { start: configured.start } : {}),
           ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };

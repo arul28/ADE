@@ -217,12 +217,6 @@ function parseRemoteMcpTurnLabel(value: unknown): { connectionId: string; label:
 }
 
 /**
- * The optional lane recipe a client may attach to a new-lane launch. Unknown
- * modes are dropped (the launch then uses the project's new-lane defaults); a
- * malformed `start` is dropped the same way. Every other field is optional
- * and trimmed.
- */
-/**
  * A launch's lane mode, including the names older clients and saved launch
  * records use: `import` is `existing`; `root` and `child` are `new`.
  */
@@ -232,6 +226,11 @@ export function normalizeChatLaunchLaneMode(mode: unknown): ChatLaunchLaneConfig
   return null;
 }
 
+/**
+ * The optional lane recipe a client may attach to a new-lane launch. Unknown
+ * modes are dropped (the launch then uses the project's new-lane defaults); a
+ * malformed `start` is refused. Every other field is optional and trimmed.
+ */
 export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig | undefined {
   if (!isRecord(value)) return undefined;
   const mode = normalizeChatLaunchLaneMode(value.mode);
@@ -251,6 +250,7 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
     ...(linearIssue ? { linearIssue } : {}),
+    ...(mode === "new" && value.autoName === true ? { autoName: true } : {}),
   };
 }
 

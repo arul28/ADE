@@ -311,6 +311,8 @@ button.kit-row:hover, a.kit-row:hover { background: var(--kit-hover); }
 /* A compact button for a control row inside a card, and the red text tone
    for the destructive choice beside quieter ones (Delete next to Keep). */
 .kit-btn[data-size="sm"] { height: 26px; padding: 0 10px; font-size: 12px; }
+/* An inline action inside a line of text (a lane row's "Rebase"): the line's height. */
+.kit-btn[data-size="xs"] { height: 16px; padding: 0 5px; border-radius: 4px; font-size: 11px; line-height: 16px; }
 .kit-btn[data-tone="crit"] { color: var(--kit-crit); }
 
 /* A text field or select for card surfaces, the height of a .kit-btn. */

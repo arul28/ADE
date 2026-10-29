@@ -7,6 +7,7 @@ import type {
   AgentChatSuggestLaneNameArgs,
   AutoLaneIdentitySuggestion,
   ChatLaunchArgs,
+  ChatLaunchLaneConfig,
   ChatLaunchChatArgs,
   ChatLaunchCompleteClientArgs,
   ChatLaunchEvent,
@@ -253,6 +254,15 @@ export function describeUnfetchedBase(args: {
     age.push(`it is at least ${resolution.behindLocal} commit${resolution.behindLocal === 1 ? "" : "s"} behind your local ${baseRef.replace(/^[^/]+\//, "")}`);
   }
   return { detail, warning: `${baseRef} may be out of date: ${age.join(", ")}. This lane may be missing recent changes.` };
+}
+
+/**
+ * Whether the launch names the lane itself: a plain auto-create, or a recipe
+ * whose name nobody chose. Such a lane gets a placeholder branch and a title
+ * from the prompt once it exists.
+ */
+function laneIsAutoNamed(record: { laneConfig?: ChatLaunchLaneConfig | null }): boolean {
+  return !record.laneConfig || record.laneConfig.autoName === true;
 }
 
 export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
@@ -579,7 +589,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       assertActive(record);
       // A user-configured lane keeps the name they chose; only a prompt-derived
       // auto-create lane is AI-renamed.
-      if (!record.laneConfig) startLaneNaming(record, interrupted);
+      if (laneIsAutoNamed(record)) startLaneNaming(record, interrupted);
       return;
     }
     if (record.checkoutAttempted && deps.laneService.cleanupReservedWorktree) {
@@ -626,7 +636,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
           name: record.snapshot.laneName,
           // A configured lane derives its branch from the user's name; an
           // auto-create lane gets a placeholder branch and is renamed after.
-          ...(record.laneConfig ? {} : { branchName: temporaryAutoLaneBranch() }),
+          ...(laneIsAutoNamed(record) ? { branchName: temporaryAutoLaneBranch() } : {}),
           ...(start ? { start } : {}),
           ...(config?.linearIssue ? { linearIssue: config.linearIssue } : {}),
         },
@@ -661,7 +671,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     assertActive(record);
     // Keep the user's configured name and its derived branch; only a
     // prompt-derived auto-create lane is AI-renamed.
-    if (!record.laneConfig) startLaneNaming(record, lane);
+    if (laneIsAutoNamed(record)) startLaneNaming(record, lane);
   };
 
   /**

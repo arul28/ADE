@@ -191,6 +191,11 @@ export type ChatLaunchLaneConfig = {
   color?: string | null;
   /** Linear issue bound to the new lane. */
   linearIssue?: LaneLinearIssue | null;
+  /**
+   * New mode: nobody chose the lane's name, so the launch names it like a
+   * plain auto-create (placeholder branch, then a title from the prompt).
+   */
+  autoName?: boolean;
 };
 
 export type ChatLaunchArgs = {

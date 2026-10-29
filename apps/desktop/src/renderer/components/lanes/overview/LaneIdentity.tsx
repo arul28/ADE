@@ -72,9 +72,7 @@ function RebaseAction({ line, onRebase }: { line: LaneRebaseLine; onRebase: () =
     <button
       type="button"
       className="kit-btn kit-btn-ghost shrink-0"
-      data-size="sm"
-      // Negative block margin keeps the 26px button from growing the line.
-      style={{ marginBlock: -4 }}
+      data-size="xs"
       title={line.title}
       onClick={onRebase}
       data-testid="lane-rebase-action"

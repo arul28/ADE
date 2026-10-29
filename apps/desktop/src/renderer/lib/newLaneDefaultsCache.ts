@@ -19,10 +19,14 @@ type Entry = {
   failed?: boolean;
   /** What the entry was read with, so an account change can re-read it. */
   args?: ReadArgs;
+  /** May be out of date (nobody was watching for account changes); the next read refreshes it. */
+  stale?: boolean;
 };
 
 const cache = new Map<string, Entry>();
 const listeners = new Set<() => void>();
+/** How many mounted readers follow each cache key. */
+const watchedKeys = new Map<string, number>();
 let stopAccountSettingsWatch: (() => void) | null = null;
 
 function cacheKey(projectRoot: string | null | undefined, pin: OpenProjectBinding | null | undefined): string {
@@ -34,24 +38,38 @@ function notify(): void {
   for (const listener of listeners) listener();
 }
 
-/** Re-read every cached machine when the account's settings change. */
-function refreshAllCached(): void {
-  for (const entry of cache.values()) {
-    if (entry.args) void getNewLaneDefaultsCached({ ...entry.args, force: true });
+function markAllStale(): void {
+  for (const [key, entry] of cache) cache.set(key, { ...entry, stale: true });
+}
+
+/**
+ * The account's settings changed (another computer or the phone saved them):
+ * re-read what someone is looking at; anything else is read again on its next use.
+ */
+function refreshWatchedOrMarkStale(): void {
+  for (const [key, entry] of cache) {
+    if ((watchedKeys.get(key) ?? 0) > 0 && entry.args) void getNewLaneDefaultsCached({ ...entry.args, force: true });
+    else cache.set(key, { ...entry, stale: true });
   }
 }
 
-function addListener(listener: () => void): () => void {
+function addListener(key: string, listener: () => void): () => void {
   listeners.add(listener);
+  watchedKeys.set(key, (watchedKeys.get(key) ?? 0) + 1);
   if (!stopAccountSettingsWatch) {
     const onChanged = window.ade?.accountSettings?.onChanged;
-    if (typeof onChanged === "function") stopAccountSettingsWatch = onChanged(refreshAllCached);
+    if (typeof onChanged === "function") stopAccountSettingsWatch = onChanged(refreshWatchedOrMarkStale);
   }
   return () => {
     listeners.delete(listener);
+    const count = (watchedKeys.get(key) ?? 1) - 1;
+    if (count > 0) watchedKeys.set(key, count);
+    else watchedKeys.delete(key);
     if (listeners.size === 0 && stopAccountSettingsWatch) {
       stopAccountSettingsWatch();
       stopAccountSettingsWatch = null;
+      // Changes made while nobody watched are not seen; read again next time.
+      markAllStale();
     }
   };
 }
@@ -64,8 +82,12 @@ export function getNewLaneDefaultsCached(args: {
   const key = cacheKey(args.projectRoot, args.pin);
   const existing = cache.get(key);
   if (!args.force) {
-    if (existing?.value !== undefined) return Promise.resolve(existing.value);
     if (existing?.promise) return existing.promise;
+    if (existing?.value !== undefined) {
+      // Show the last value at once and bring it up to date behind it.
+      if (existing.stale) void getNewLaneDefaultsCached({ ...args, force: true });
+      return Promise.resolve(existing.value);
+    }
   }
   const readArgs: ReadArgs = { projectRoot: args.projectRoot, pin: args.pin };
   const read = window.ade?.lanes?.getNewLaneDefaults;
@@ -140,7 +162,7 @@ export function useNewLaneDefaultsState(args: {
   useEffect(() => {
     if (!enabled) return;
     const sync = () => setState(read());
-    const stop = addListener(sync);
+    const stop = addListener(key, sync);
     sync();
     void getNewLaneDefaultsCached(args);
     return stop;

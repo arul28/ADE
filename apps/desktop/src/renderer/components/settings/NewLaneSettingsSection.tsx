@@ -224,8 +224,7 @@ function ScopeChip({ scope }: { scope: NewLaneSettingsScope }) {
   const account = scope.kind === "account-repo";
   return (
     <span
-      className="kit-tag"
-      style={{ gap: 5 }}
+      className="kit-tag gap-[5px]"
       title={account
         ? `Saved to your ADE account for ${scope.repo}. Every computer and phone that opens this repository uses it.`
         : "This project has no remote, so these settings are saved on this computer only."}

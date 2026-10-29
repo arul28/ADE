@@ -4212,6 +4212,7 @@ app.whenReady().then(async () => {
       adeDir: adePaths.adeDir,
       projectConfigService,
       logger,
+      readOriginUrl: () => readGitOriginUrl(projectRoot),
     });
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,

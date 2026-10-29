@@ -10345,10 +10345,12 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   };
   maybePut(launchArgs, "laneName", laneName);
   const needsDefaults = Boolean(!existingBranch && (startOverrides.from || startOverrides.bring) && !(startOverrides.from && startOverrides.bring));
-  // A plain launch sends no lane config, so the brain names the lane itself.
+  // The brain names the lane from the prompt unless --lane-name chose one.
   // A start given in part is completed from the project defaults at launch.
   if (existingBranch) launchArgs.laneConfig = { mode: "existing", branchRef: existingBranch };
-  else if (startOverrides.from && startOverrides.bring) launchArgs.laneConfig = { mode: "new", start: mergeLaneStart(startOverrides, null) };
+  else if (startOverrides.from && startOverrides.bring) {
+    launchArgs.laneConfig = { mode: "new", start: mergeLaneStart(startOverrides, null), ...(laneName ? {} : { autoName: true }) };
+  } else if (laneName && !needsDefaults) launchArgs.laneConfig = { mode: "new" };
   maybePut(launchArgs, "modelId", modelArg);
   maybePut(launchArgs, "title", title);
   // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
@@ -10436,7 +10438,10 @@ async function runChatLaunchCommand(
       });
       const saved = savedLaneStart(unwrapToolResult(raw));
       if (!saved) throw new CliExecutionError("Could not load new-lane defaults.", { result: unwrapToolResult(raw) });
-      launchArgs = { ...launchArgs, laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, saved) } };
+      launchArgs = {
+        ...launchArgs,
+        laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, saved), ...(launchArgs.laneName ? {} : { autoName: true }) },
+      };
     }
     const started = await callChat("startLaunch", launchArgs);
     if (!isRecord(started) || typeof started.launchId !== "string") {

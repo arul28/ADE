@@ -174,7 +174,7 @@ function RebaseLineHint({
       <button
         type="button"
         className="kit-btn kit-btn-ghost shrink-0"
-        data-size="sm"
+        data-size="xs"
         data-testid="lane-sidebar-rebase"
         onClick={(event) => {
           event.stopPropagation();

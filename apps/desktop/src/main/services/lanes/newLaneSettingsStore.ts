@@ -210,12 +210,23 @@ export function createProjectNewLaneSettings(args: {
   accountStore?: NewLaneAccountStore | null;
   projectConfigService: { get(): ProjectConfigSnapshot };
   logger: Pick<Logger, "warn">;
+  /** The host's own origin reader (the desktop's is cached and never starts git). */
+  readOriginUrl?: () => string | null;
 }): NewLaneSettingsStore {
+  const readOrigin = args.readOriginUrl ?? (() => canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(args.projectRoot)));
+  // Every settings read resolves the storage key from the origin; a remote
+  // changes rarely, so one read serves the next minute of them.
+  let origin: { value: string | null; at: number } | null = null;
+  const readOriginUrl = (): string | null => {
+    const now = Date.now();
+    if (!origin || now - origin.at > 60_000) origin = { value: readOrigin(), at: now };
+    return origin.value;
+  };
   return createNewLaneSettingsStore({
     projectRoot: args.projectRoot,
     store: args.accountStore ?? createFileNewLaneAccountStore(path.join(args.adeDir, "new-lane-settings.json")),
     accountBacked: Boolean(args.accountStore),
-    readOriginUrl: () => canonicalGitOriginUrl(readGitOriginUrlFromConfigOrGit(args.projectRoot)),
+    readOriginUrl,
     legacy: () => legacyNewLaneSettingsFromConfig(args.projectConfigService.get()),
     logger: args.logger,
   });
