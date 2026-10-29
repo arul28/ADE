@@ -680,9 +680,20 @@ async function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
+  // A folder named from another computer (`--machine`) arrives as typed there:
+  // `~` means this computer's home, and a relative path would land wherever
+  // this brain happens to run, so it is refused.
+  const resolvedParentDir = /^~(?=$|[\\/])/.test(parentDir)
+    ? path.join(os.homedir(), parentDir.slice(1))
+    : parentDir;
+  if (!path.isAbsolute(resolvedParentDir))
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `projects.clone needs a full folder path, not "${parentDir}".`,
+    );
   return {
     url,
-    parentDir,
+    parentDir: resolvedParentDir,
     ...(name ? { name } : {}),
     ...(githubAuthHeader ? { githubAuthHeader } : {}),
   };

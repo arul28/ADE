@@ -205,17 +205,24 @@ export const fetchOnFreshConnection: typeof fetch = (input, init) => new Promise
     });
     response.on("end", () => {
       done();
-      const responseHeaders = new Headers();
-      for (const [key, value] of Object.entries(response.headers)) {
-        if (Array.isArray(value)) for (const item of value) responseHeaders.append(key, item);
-        else if (value !== undefined) responseHeaders.set(key, value);
+      // Inside a stream listener a throw would be uncaught and take the brain
+      // down: `new Response` refuses a status outside 200–599, which the
+      // parser accepts, and `Headers` refuses a malformed header.
+      try {
+        const responseHeaders = new Headers();
+        for (const [key, value] of Object.entries(response.headers)) {
+          if (Array.isArray(value)) for (const item of value) responseHeaders.append(key, item);
+          else if (value !== undefined) responseHeaders.set(key, value);
+        }
+        const status = response.statusCode ?? 502;
+        resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks), {
+          status,
+          statusText: response.statusMessage ?? "",
+          headers: responseHeaders,
+        }));
+      } catch (error) {
+        reject(error);
       }
-      const status = response.statusCode ?? 502;
-      resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks), {
-        status,
-        statusText: response.statusMessage ?? "",
-        headers: responseHeaders,
-      }));
     });
   });
   request.end(payload ?? undefined);

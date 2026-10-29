@@ -8,7 +8,7 @@ import type {
   RemoteMcpConnectionSummary,
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
-import { isOnRemovableVolume, readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
+import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
@@ -188,11 +188,18 @@ export function createRemoteMcpProtocol(deps: {
   const folderGone = (project: RemoteMcpProject): string =>
     `${project.displayName}'s folder is gone (${project.rootPath}). Clone it again with projects_clone, `
     + "or remove the stale entry with [\"projects\",\"prune\"].";
-  /** What a run says when its folder vanished between the pick and the start. */
-  const missingFolderMessage = (project: RemoteMcpProject | null, cwd: string): string =>
-    project
-      ? (isOnRemovableVolume(project.rootPath) ? driveNotConnected(project) : folderGone(project))
-      : `The folder ${cwd} isn't on ${deps.machineName()}.`;
+  /**
+   * What a run says when its folder vanished between the pick and the start,
+   * from a fresh look at the folder: a deleted folder on a drive that is
+   * plugged in is gone, not disconnected.
+   */
+  const missingFolderMessage = async (project: RemoteMcpProject | null, cwd: string): Promise<string> => {
+    if (!project) return `The folder ${cwd} isn't on ${deps.machineName()}.`;
+    const [state] = await readProjectFolderStates([project], { fresh: true });
+    if (state === "driveMissing") return driveNotConnected(project);
+    if (state === "gone") return folderGone(project);
+    return `${project.displayName}'s folder (${project.rootPath}) can't be read on ${deps.machineName()} right now. Try again shortly.`;
+  };
 
   /**
    * The project a call runs in. Without `project`, the most recently opened
@@ -416,7 +423,7 @@ export function createRemoteMcpProtocol(deps: {
     const runIn = (cwd: string, project: RemoteMcpProject | null) => runAdeForRemote({
       argv: verdict.args,
       cwd,
-      missingCwdMessage: missingFolderMessage(project, cwd),
+      missingCwdMessage: () => missingFolderMessage(project, cwd),
       timeoutMs,
       connectionId: connection.id,
       connectionLabel: connection.label,

@@ -270,6 +270,8 @@ export function createRemoteMcpService(args: {
     }
     if (relayDownSince !== null) return;
     relayDownSince = now();
+    // A read may have cleared the clock without stopping the last drop's timer.
+    if (relayDownReportTimer) clearTimeout(relayDownReportTimer);
     relayDownReportTimer = setTimeout(() => {
       relayDownReportTimer = null;
       refresh();

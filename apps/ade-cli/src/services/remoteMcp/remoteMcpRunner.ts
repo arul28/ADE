@@ -175,8 +175,8 @@ export async function runAdeForRemote(args: {
   stdin?: string | null;
   /** Per-stream cap. Typed tools raise it, then trim the parsed JSON themselves. */
   maxOutputBytes?: number;
-  /** The answer when `cwd` is not there (a drive unplugged since the project was picked). */
-  missingCwdMessage?: string;
+  /** The answer when `cwd` is not there (a drive unplugged since the project was picked); read only then. */
+  missingCwdMessage?: () => Promise<string>;
 }): Promise<RemoteRunResult> {
   const launchStarted = Date.now();
   // Never start in a folder that is not there: the spawn would fail with a
@@ -185,7 +185,7 @@ export async function runAdeForRemote(args: {
     return {
       exitCode: null,
       stdout: "",
-      stderr: args.missingCwdMessage ?? `The folder ${args.cwd} isn't on this computer.`,
+      stderr: (await args.missingCwdMessage?.()) ?? `The folder ${args.cwd} isn't on this computer.`,
       timedOut: false,
       truncated: false,
       durationMs: Date.now() - launchStarted,

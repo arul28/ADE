@@ -231,8 +231,11 @@ export function createRemoteMcpStore(args: {
       const current = read();
       const replaced = input.clientKey
         ? current.filter((entry) => entry.clientKey === input.clientKey
+          // Same reach only: a sign-in on one computer's address never
+          // replaces the app's account-wide connection, or the reverse.
           || (input.legacyClientKey !== undefined && entry.clientKey === input.legacyClientKey
-            && entry.redirectHost === (input.redirectHost ?? null)))
+            && entry.redirectHost === (input.redirectHost ?? null)
+            && (entry.machineKey ?? null) === (input.machineKey ?? null)))
         : [];
       if (current.length - replaced.length >= MAX_REMOTE_MCP_CONNECTIONS) {
         throw new Error(

@@ -75,11 +75,6 @@ function volumeRoots(rootPath: string): string[] {
   return depths.filter((depth) => depth < parts.length).map((depth) => parts.slice(0, depth + 1).join("/"));
 }
 
-/** Whether a project's folder lives on a volume that can be disconnected (a drive, a share, a mount). */
-export function isOnRemovableVolume(rootPath: string): boolean {
-  return volumeRoots(rootPath).length > 0;
-}
-
 /** Whether `root` is a mount point: another device than its parent folder. */
 async function isMountPoint(root: string): Promise<boolean> {
   const [own, parent] = await Promise.all([fs.promises.stat(root), fs.promises.stat(path.dirname(root))]);

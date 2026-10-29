@@ -267,6 +267,8 @@ type PendingSignIn = {
   request: AuthorizeRequest;
   /** PKCE verifier for the ADE (Clerk) leg. Never leaves this computer. */
   accountVerifier: string;
+  /** Began on the account address; false on this computer's own (what its pages promise). */
+  accountMount: boolean;
   expiresAt: number;
   /** Set once the ADE sign-in checked out; the accept form must echo it. */
   consent: { csrf: string; account: SignedInAccount } | null;
@@ -308,7 +310,7 @@ export function createRemoteMcpAuthorizationState() {
 
   return {
     /** Starts the ADE account leg. The oldest unfinished sign-in is dropped past the cap. */
-    beginSignIn(request: AuthorizeRequest): { nonce: string; accountChallenge: string } {
+    beginSignIn(request: AuthorizeRequest, accountMount: boolean): { nonce: string; accountChallenge: string } {
       sweep();
       while (signIns.size >= MAX_PENDING_SIGN_INS) {
         const oldest = signIns.keys().next().value;
@@ -317,15 +319,17 @@ export function createRemoteMcpAuthorizationState() {
       }
       const nonce = randomBytes(24).toString("base64url");
       const accountVerifier = randomBytes(48).toString("base64url");
-      signIns.set(nonce, { request, accountVerifier, expiresAt: now() + SIGN_IN_TTL_MS, consent: null });
+      signIns.set(nonce, { request, accountVerifier, accountMount, expiresAt: now() + SIGN_IN_TTL_MS, consent: null });
       return { nonce, accountChallenge: pkceChallengeFor(accountVerifier) };
     },
 
     /** The sign-in waiting on the ADE account step, or null. */
-    pendingAccountStep(nonce: string): { request: AuthorizeRequest; accountVerifier: string } | null {
+    pendingAccountStep(nonce: string): { request: AuthorizeRequest; accountVerifier: string; accountMount: boolean } | null {
       sweep();
       const pending = signIns.get(nonce);
-      return pending && !pending.consent ? { request: pending.request, accountVerifier: pending.accountVerifier } : null;
+      return pending && !pending.consent
+        ? { request: pending.request, accountVerifier: pending.accountVerifier, accountMount: pending.accountMount }
+        : null;
     },
 
     /** The ADE account checked out: the person may now accept. Returns the form's CSRF value. */
@@ -343,12 +347,12 @@ export function createRemoteMcpAuthorizationState() {
     },
 
     /** Single use: the accept form spends the sign-in whatever happens next. */
-    takeConsent(nonce: string, csrf: string): { request: AuthorizeRequest; account: SignedInAccount } | null {
+    takeConsent(nonce: string, csrf: string): { request: AuthorizeRequest; account: SignedInAccount; accountMount: boolean } | null {
       sweep();
       const pending = signIns.get(nonce);
       signIns.delete(nonce);
       if (!pending?.consent || !sameSecret(pending.consent.csrf, csrf)) return null;
-      return { request: pending.request, account: pending.consent.account };
+      return { request: pending.request, account: pending.consent.account, accountMount: pending.accountMount };
     },
 
     issueAuthCode(pending: Omit<PendingAuthCode, "expiresAt">): string {

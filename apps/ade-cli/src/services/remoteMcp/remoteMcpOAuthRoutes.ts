@@ -116,14 +116,15 @@ export function createRemoteMcpOAuthRoutes(deps: {
 
   // A web sign-in can begin on the account address but always comes back to
   // this computer (the Clerk state names its endpoint key). The `iss` an app
-  // gets back must be the issuer it started with, and the allow page must say
-  // what it grants (the account or this computer), so remember both per sign-in.
-  const signInIssuers = new Map<string, { issuer: string; accountMount: boolean; at: number }>();
-  const rememberIssuer = (nonce: string, issuer: string, accountMount: boolean): void => {
+  // gets back must be the issuer it started with, so remember it per sign-in.
+  // (What the sign-in grants, the account or this computer, rides on the
+  // pending sign-in itself.)
+  const signInIssuers = new Map<string, { issuer: string; at: number }>();
+  const rememberIssuer = (nonce: string, issuer: string): void => {
     for (const [key, value] of signInIssuers) {
       if (deps.now() - value.at > SIGN_IN_ISSUER_TTL_MS || signInIssuers.size >= MAX_SIGN_IN_ISSUERS) signInIssuers.delete(key);
     }
-    signInIssuers.set(nonce, { issuer, accountMount, at: deps.now() });
+    signInIssuers.set(nonce, { issuer, at: deps.now() });
   };
   const issuerFor = (nonce: string, fallback: string): string => signInIssuers.get(nonce)?.issuer ?? fallback;
 
@@ -212,8 +213,8 @@ export function createRemoteMcpOAuthRoutes(deps: {
     if (unavailable || !ready) {
       return html(409, renderSignInPage({ request: authRequest, target, error: unavailable }));
     }
-    const { nonce, accountChallenge } = authorization.beginSignIn(authRequest);
-    rememberIssuer(nonce, serverBase, accountMount);
+    const { nonce, accountChallenge } = authorization.beginSignIn(authRequest, accountMount);
+    rememberIssuer(nonce, serverBase);
     const signIn = new URL(`${withoutTrailingSlash(ready.oauth.issuer)}/oauth/authorize`);
     signIn.searchParams.set("response_type", "code");
     signIn.searchParams.set("client_id", ready.oauth.clientId);
@@ -288,7 +289,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
     if (!csrf) return expiredSignIn();
     return html(200, renderConsentPage({
       request: authRequest,
-      target: signInTarget(signInIssuers.get(nonce)?.accountMount ?? false),
+      target: signInTarget(pending.accountMount),
       account: owner,
       nonce,
       csrf,
@@ -305,11 +306,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
     const taken = authorization.takeConsent(nonce, params.get("csrf") ?? "");
     if (!taken) return expiredSignIn();
     const issuer = issuerFor(nonce, serverBase);
-    // What the allow page said it grants: the account, or this computer only
-    // (the same default the page used when the sign-in's address is unknown).
-    const accountMount = signInIssuers.get(nonce)?.accountMount ?? false;
     signInIssuers.delete(nonce);
-    const { request: authRequest } = taken;
+    // What the allow page said it grants: the account, or this computer only.
+    const { request: authRequest, accountMount } = taken;
     if (params.get("decision") !== "allow") return denyToApp(authRequest, issuer);
     const scope: RemoteMcpScope = params.get("access") === "read" ? "read" : "write";
     const issued = authorization.issueAuthCode({
