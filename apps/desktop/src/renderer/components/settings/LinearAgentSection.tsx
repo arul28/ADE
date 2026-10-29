@@ -34,9 +34,9 @@ function laneModeLabel(mode: string | null): string {
   return "Primary lane";
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, wide = false }: { label: string; children: React.ReactNode; wide?: boolean }) {
   return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+    <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0, ...(wide ? { gridColumn: "1 / -1" } : null) }}>
       <span style={LABEL}>{label}</span>
       {children}
     </label>
@@ -280,12 +280,14 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
                 <div
                   style={{
                     display: "grid",
-                    gridTemplateColumns: hasReasoning ? "minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1.6fr) minmax(0, 1fr)",
+                    // The model gets its own row: a name like "Claude Opus 5.5"
+                    // needs the width, and the card is half the page.
+                    gridTemplateColumns: hasReasoning ? "repeat(2, minmax(0, 1fr))" : "minmax(0, 1fr)",
                     gap: 10,
                     alignItems: "start",
                   }}
                 >
-                  <Field label="Model">
+                  <Field label="Model" wide>
                     <ModelPicker value={effectiveModelId} onChange={(next) => { setModelId(next); setEffort(null); }} hidePermissionRail triggerClassName="w-full justify-between" />
                   </Field>
                   {hasReasoning ? (

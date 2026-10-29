@@ -1417,6 +1417,21 @@ function browserMockGateState(): BrowserMockGateState | null {
 }
 
 /** Whether the page URL carries `?<name>` (a browser-preview switch). */
+/** `?mockGithubOff`: this machine has no GitHub sign-in at all. */
+function browserMockGithubStatus<T extends { credentialStates: Array<Record<string, unknown>> }>(connected: T): T {
+  if (!browserMockFlag("mockGithubOff")) return connected;
+  return {
+    ...connected,
+    tokenStored: false,
+    authSource: "none",
+    writeAuthSource: "none",
+    userLogin: null,
+    scopes: [],
+    connected: false,
+    credentialStates: connected.credentialStates.map((credential) => ({ ...credential, available: false, activeFor: [], state: "unavailable" })),
+  };
+}
+
 function browserMockFlag(name: string): boolean {
   try {
     return new URLSearchParams(window.location.search).has(name);
@@ -1546,6 +1561,8 @@ function browserMockFirstRun(): boolean {
  * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
  * - `?mockRunningChats`: Activity reports three running chats (the grid).
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
+ * - `?mockGithubOff` / `?mockJiraOff`: GitHub or Jira is not connected
+ *   (the Integrations pages' sign-in steps).
  * - `?mockUsageLow`: Codex's weekly limit is at 12% left (plan running low).
  */
 function seedBrowserMockSuggestions(): void {
@@ -9129,7 +9146,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       openDoc: resolvedArg(undefined),
     },
     github: {
-      getStatus: resolved({
+      getStatus: async () => browserMockGithubStatus({
         tokenStored: true,
         patTokenStored: false,
         tokenDecryptionFailed: false,
@@ -9309,7 +9326,9 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onStatusChanged: noop,
     },
     jira: {
-      getConnectionStatus: resolved({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
+      getConnectionStatus: async () => browserMockFlag("mockJiraOff")
+        ? { connected: false, siteUrl: null, email: null, account: null, error: null, checkedAt: new Date().toISOString() }
+        : { connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() },
       connect: resolvedArg({ connected: true, siteUrl: "https://ade.atlassian.net", email: "morgan@example.com", account: MOCK_JIRA_ACCOUNT, error: null, checkedAt: new Date().toISOString() }),
       disconnect: resolved({ connected: false, siteUrl: null, email: null, account: null, error: null, checkedAt: new Date().toISOString() }),
       listProjects: async (args: any = {}) => MOCK_JIRA_PROJECTS.filter((project) => !args.query || `${project.key} ${project.name}`.toLowerCase().includes(String(args.query).toLowerCase())),
