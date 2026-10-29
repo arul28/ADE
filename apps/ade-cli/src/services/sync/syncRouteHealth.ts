@@ -2,6 +2,7 @@ import type { SyncRouteHealth } from "../../../../desktop/src/shared/types";
 import type { SyncLoopbackValidationStatus } from "./syncLoopbackProbe";
 import {
   RELAY_IDENTITY_ROTATION_CAPPED_MESSAGE,
+  RELAY_TURNED_OFF_MESSAGE,
   type SyncTunnelClientStatus,
 } from "./syncTunnelClientService";
 
@@ -62,8 +63,10 @@ export type DeriveListenerHealthArgs = {
 };
 
 export type BuildRelayRouteHealthArgs = {
-  /** This runtime can host phone pairing at all. There is no user toggle. */
+  /** This runtime can host phone pairing at all. */
   relayConfigured: boolean;
+  /** The owner turned ADE Relay off on this computer. */
+  relayTurnedOff?: boolean;
   relayAccountSignedIn: boolean;
   loopbackAdeValidated: boolean;
   listenerReason: string | null;
@@ -121,6 +124,7 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
   relayControlConnected: boolean;
   relayBridgeValidated: boolean;
 }): string | null {
+  if (args.relayConfigured && args.relayTurnedOff) return RELAY_TURNED_OFF_MESSAGE;
   if (args.relayConfigured && !args.relayAccountSignedIn) return "Sign in to ADE to use ADE Relay.";
   if (!args.relayEnabled) return null;
   if (!args.loopbackAdeValidated) {
@@ -151,7 +155,7 @@ function resolveRelaySkipReason(args: BuildRelayRouteHealthArgs & {
 }
 
 export function buildRelayRouteHealth(args: BuildRelayRouteHealthArgs): RelayRouteHealth {
-  const relayEnabled = args.relayConfigured && args.relayAccountSignedIn;
+  const relayEnabled = args.relayConfigured && args.relayAccountSignedIn && args.relayTurnedOff !== true;
   const relayControlConnected = args.tunnelStatus?.connected === true;
   const relayBridgeValidated = args.tunnelStatus?.relayBridgeValidated === true;
   const skipReason = resolveRelaySkipReason({
@@ -162,6 +166,7 @@ export function buildRelayRouteHealth(args: BuildRelayRouteHealthArgs): RelayRou
   });
   return {
     enabled: relayEnabled,
+    turnedOff: args.relayTurnedOff === true,
     relayControlConnected,
     relayBridgeValidated,
     lastFailureAt: args.tunnelStatus?.lastFailureAt

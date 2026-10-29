@@ -10,6 +10,21 @@ const DEFAULT_RELAY_URL = DEFAULT_ADE_TUNNEL_RELAY_URL;
 /** The identity file's name inside the machine secrets directory. */
 export const SYNC_CLOUD_RELAY_FILE_NAME = "sync-cloud-relay.json";
 
+/**
+ * The owner's ADE Relay setting for this computer, beside the identity file.
+ *
+ * Kept out of the identity file on purpose: that file is rewritten under a
+ * lock with a backup copy, and a preference must never be able to cost a
+ * machine its key. Absent means on.
+ */
+export const SYNC_RELAY_PREFERENCE_FILE_NAME = "sync-relay-preference.json";
+
+export type SyncRelayPreference = {
+  enabled: boolean;
+  /** ISO time of the last change; null while it is the default. */
+  changedAt: string | null;
+};
+
 const IDENTITY_ROTATION_LOCK_STALE_MS = 30_000;
 const IDENTITY_ROTATION_LOCK_VERSION = 1;
 const IDENTITY_CONFIG_LOCK_WAIT_MS = 2_000;
@@ -302,6 +317,43 @@ export function createSyncCloudRelayStore(args: {
   now?: () => number;
 }) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
+  const preferencePath = path.join(path.dirname(args.filePath), SYNC_RELAY_PREFERENCE_FILE_NAME);
+  /**
+   * Keyed on mtime and size: the preference is read on every relay
+   * eligibility check, and the on and off files differ in size, so a flip
+   * inside one coarse timestamp tick still reads fresh.
+   */
+  let preferenceCache: { stamp: string; value: SyncRelayPreference } | null = null;
+  const readRelayPreference = (): SyncRelayPreference => {
+    let stamp: string;
+    try {
+      const stat = fs.statSync(preferencePath);
+      stamp = `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      preferenceCache = null;
+      return { enabled: true, changedAt: null };
+    }
+    if (preferenceCache && preferenceCache.stamp === stamp) return preferenceCache.value;
+    const parsed = safeJsonParse<{ enabled?: unknown; changedAt?: unknown } | null>(
+      (() => {
+        try {
+          return fs.readFileSync(preferencePath, "utf8");
+        } catch {
+          return "";
+        }
+      })(),
+      {},
+    );
+    // Anything but an explicit `false` reads as on: a damaged file (or valid
+    // JSON that isn't an object) must not quietly cut a computer off.
+    const raw = parsed && typeof parsed === "object" ? parsed : {};
+    const value: SyncRelayPreference = {
+      enabled: raw.enabled !== false,
+      changedAt: typeof raw.changedAt === "string" ? raw.changedAt : null,
+    };
+    preferenceCache = { stamp, value };
+    return value;
+  };
   const rotationLockPath = `${args.filePath}.rotate.lock`;
   const backupPath = `${args.filePath}${IDENTITY_BACKUP_SUFFIX}`;
   const lockWaitMs = Math.max(0, args.lockWaitMs ?? IDENTITY_CONFIG_LOCK_WAIT_MS);
@@ -950,6 +1002,22 @@ export function createSyncCloudRelayStore(args: {
         // Bookkeeping only — the confirmation is still true if the prune fails.
       }
       return confirmed;
+    },
+
+    /** The owner's ADE Relay setting for this computer. */
+    getRelayPreference(): SyncRelayPreference {
+      return readRelayPreference();
+    },
+
+    isRelayEnabled(): boolean {
+      return readRelayPreference().enabled;
+    },
+
+    setRelayEnabled(enabled: boolean): SyncRelayPreference {
+      const value: SyncRelayPreference = { enabled, changedAt: new Date(now()).toISOString() };
+      writeFileAtomic(preferencePath, `${JSON.stringify(value, null, 2)}\n`, { fsync: true, mode: 0o600 });
+      preferenceCache = null;
+      return value;
     },
 
     /** `wss://<host>/connect/<machineKey>` — the value the QR integration reads. */

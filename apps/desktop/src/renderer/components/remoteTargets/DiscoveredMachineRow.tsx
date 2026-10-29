@@ -1,12 +1,13 @@
-import { PlugsConnected } from "@phosphor-icons/react";
+import { PlugsConnected, WifiHigh } from "@phosphor-icons/react";
 import type { RemoteRuntimeDiscoveredMachine } from "../../../shared/types";
-import { primaryButton, outlineButton } from "../lanes/laneDesignTokens";
+import { outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import {
   discoveredRoute,
   type MachineSection,
 } from "./remoteMachineModel";
 import {
+  connectButtonStyle,
   helperTextStyle,
   machineRowStyle,
   nameStyle,
@@ -40,18 +41,20 @@ export function DiscoveredMachineRow({
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "minmax(0,1fr) auto",
+            gridTemplateColumns: "auto minmax(0,1fr) auto",
             gap: 12,
             alignItems: "center",
           }}
         >
-          <div style={{ minWidth: 0, display: "grid", gap: 5 }}>
+          <span className="ade-cx-found-icon" aria-hidden>
+            <WifiHigh size={17} weight="bold" />
+          </span>
+          <div style={{ minWidth: 0, display: "grid", gap: 3 }}>
             <div style={nameStyle}>{machine.machineName}</div>
-            <div style={subTextStyle}>Found nearby</div>
-            <div style={helperTextStyle}>
+            <div style={unavailable ? helperTextStyle : subTextStyle}>
               {unavailable && machine.unsupportedReason
                 ? machine.unsupportedReason
-                : "Ready to connect"}
+                : "Found on your network · ready to pair"}
             </div>
           </div>
           <div
@@ -69,11 +72,7 @@ export function DiscoveredMachineRow({
                   disabled={!route || busy}
                   onClick={() => onConnect(machine)}
                   style={{
-                    ...primaryButton({
-                      height: 30,
-                      padding: "0 10px",
-                      fontSize: 11,
-                    }),
+                    ...connectButtonStyle,
                     opacity: route && !busy ? 1 : 0.55,
                   }}
                 >
@@ -87,7 +86,7 @@ export function DiscoveredMachineRow({
                   disabled={busy}
                   onClick={() => onToggleTest(machine.id)}
                   style={outlineButton({
-                    height: 30,
+                    height: 28,
                     padding: "0 10px",
                     fontSize: 11,
                   })}
@@ -100,7 +99,7 @@ export function DiscoveredMachineRow({
         </div>
       </div>
       {testOpen ? (
-        <div id={`remote-discovered-test-${machine.id}`}>
+        <div id={`remote-discovered-test-${machine.id}`} className="ade-cx-inset">
           <ConnectionDoctorPanel machineId={machine.id} machineName={machine.machineName} />
         </div>
       ) : null}

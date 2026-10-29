@@ -64,6 +64,8 @@ export type SyncTunnelClientStatus = {
    * phone tunnels.
    */
   mcpEndpointKey?: string;
+  /** The owner turned ADE Relay off on this computer. */
+  relayTurnedOff?: boolean;
 };
 
 /** The ADE MCP endpoint key for a relay identity (see SyncTunnelClientStatus). */
@@ -214,6 +216,8 @@ export const MAX_CONTROL_REPLACED_REATTEMPTS = 3;
  */
 export const CONTROL_REPLACED_REARM_MS = 10 * 60_000;
 export const RELAY_SIGN_IN_REQUIRED_MESSAGE = "Sign in to ADE to use ADE Relay.";
+/** What a computer whose owner turned ADE Relay off says instead of a failure. */
+export const RELAY_TURNED_OFF_MESSAGE = "ADE Relay is turned off on this computer.";
 /**
  * What a machine says once it has spent its rotation budget on relay claim
  * conflicts. It names the only safe next step: minting another identity would
@@ -705,11 +709,25 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const relayHttpUrl = (): string => args.configStore.getRelayUrl() || defaultRelayUrl();
   const createWebSocket = args.createWebSocket
     ?? ((url: string, options?: { headers?: Record<string, string> }) => new WebSocket(url, options));
+  // The owner's setting for this computer, read from the identity store's
+  // sibling file. Off closes the control socket and every tunnel within one
+  // lease poll, and keeps them closed. An unreadable setting reads as on.
+  const relayTurnedOff = (): boolean => {
+    try {
+      return args.configStore.isRelayEnabled() === false;
+    } catch {
+      return false;
+    }
+  };
+  const ineligibleMessage = (): string =>
+    relayTurnedOff() ? RELAY_TURNED_OFF_MESSAGE : RELAY_SIGN_IN_REQUIRED_MESSAGE;
   const computeAccountEligibility = (): boolean =>
-    (args.isAccountSignedIn?.() ?? true)
+    !relayTurnedOff()
+    && (args.isAccountSignedIn?.() ?? true)
     && (!args.getAccountLease || accountLeaseUserId != null);
   const accountSignedIn = (): boolean => {
     if (accountEligible !== true) return false;
+    if (relayTurnedOff()) return false;
     try {
       return args.isAccountSignedIn?.() ?? true;
     } catch {
@@ -978,7 +996,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     // directly, which would redial straight back into the eviction war.
     if (controlReplacedStopped) return;
     if (!accountSignedIn()) {
-      lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
+      lastError = ineligibleMessage();
       return;
     }
     connectingControl = true;
@@ -1359,7 +1377,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     if (!identityAtStart.accountEligible) {
       if (bridgeIdentityIsCurrent(identityAtStart)) {
         clearBridgeValidation();
-        recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
+        recordFailure(ineligibleMessage());
       }
       return false;
     }
@@ -1387,7 +1405,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         loopbackProbe,
       );
       if (stopped || !bridgeIdentityIsCurrent(identityAtStart)) {
-        if (!stopped && !accountSignedIn()) recordFailure(RELAY_SIGN_IN_REQUIRED_MESSAGE);
+        if (!stopped && !accountSignedIn()) recordFailure(ineligibleMessage());
         return false;
       }
       validatedPort = port;
@@ -2053,14 +2071,19 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
       bridgeOpenFailure = null;
       resetSelfProbeForControlGeneration();
     }
+    const becameEligible = accountEligible === false && nextEligibility;
     accountEligible = nextEligibility;
     if (!nextEligibility) {
       clearReconnect();
-      lastError = RELAY_SIGN_IN_REQUIRED_MESSAGE;
-      closeRelayConnections("account lease unavailable");
+      lastError = ineligibleMessage();
+      closeRelayConnections(relayTurnedOff() ? "relay turned off" : "account lease unavailable");
       return;
     }
-    if (lastError === RELAY_SIGN_IN_REQUIRED_MESSAGE) lastError = null;
+    if (lastError === RELAY_SIGN_IN_REQUIRED_MESSAGE || lastError === RELAY_TURNED_OFF_MESSAGE) lastError = null;
+    // The close that followed going ineligible armed a backoff redial. Coming
+    // back (signing in, the owner turning ADE Relay on) is a deliberate act,
+    // so dial now rather than wait it out.
+    if (becameEligible) clearReconnect();
     if (!control && !connectingControl && !reconnectTimer) await connectControl();
   };
 
@@ -2258,7 +2281,8 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         accountLeaseValid: eligible,
         connected: eligible && connected,
         activeTunnels: eligible ? tunnels.size : 0,
-        lastError: eligible ? lastError : RELAY_SIGN_IN_REQUIRED_MESSAGE,
+        lastError: eligible ? lastError : ineligibleMessage(),
+        relayTurnedOff: relayTurnedOff(),
         bridgeOpenFailure: eligible ? currentBridgeOpenFailure : null,
         lastControlError,
         relayBridgeValidated: eligible

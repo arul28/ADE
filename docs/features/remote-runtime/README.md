@@ -1827,6 +1827,18 @@ forwarding to `127.0.0.1` on the **same** port — so a hand-rolled
 `tailscale serve` is left alone, and the live port is re-checked inside the loop
 because reclaiming frees exactly the low ports a restarting host prefers.
 
+Beside the TCP entry, ADE publishes a secure route for browsers:
+`tailscale serve --bg --https=<sync port + 10000> http://127.0.0.1:<sync port>`
+(`publishTailnetHttps`), advertised to the account directory as a `tailnet`
+endpoint with `url: wss://<name>.ts.net:<port>`. It needs MagicDNS and HTTPS
+certificates on the tailnet; `tailscale status --json` (`CertDomains`, read by
+`tailscaleLocalStatus.ts` with a one-minute cache) says which is missing, and
+the route reports `needs_magic_dns` / `needs_https_certs` so Settings ›
+Account › Private network can link to the switch. The hosted web client keeps
+the URL as an explicit WSS endpoint and prefers it to the relay on later
+connects. Stale HTTPS entries are reclaimed by the same rule as the TCP ones
+(`staleAdeTailnetHttpsPorts`).
+
 Diagnosing this needs `netstat -an -p tcp` or `tailscale serve status`, **not**
 `lsof`: tailscaled runs as root, so a user-level probe reports the ports as
 having no holder, which reads as "free" and is the opposite of the truth.

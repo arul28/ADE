@@ -8,6 +8,7 @@ import type {
   AgentChatPermissionMode,
   AgentChatSpawnKind,
 } from "./chat";
+import type { MachineTailnetHttpsRoute } from "./account";
 import type { PersonalChatRemoteCommandAction } from "./personalChats";
 import type { ChatLaunchEvent } from "./chatLaunch";
 import type {
@@ -399,6 +400,8 @@ export type SyncTailnetDiscoveryStatus = {
   updatedAt: string | null;
   error: string | null;
   stderr: string | null;
+  /** The secure `tailscale serve --https` route beside the TCP one. Absent from older hosts. */
+  https?: MachineTailnetHttpsRoute;
 };
 
 export type SyncAccountDirectoryState =
@@ -797,9 +800,13 @@ export type SyncRouteHealth = {
     lastFailureAt: string | null;
     reason: string | null;
     lastSuccessAt: string | null;
+    /** `wss://<name>.ts.net:<port>` while the HTTPS route is published and reachable. */
+    httpsUrl?: string | null;
   };
   relay: {
     enabled: boolean;
+    /** The owner turned ADE Relay off on this computer. */
+    turnedOff?: boolean;
     relayControlConnected: boolean;
     relayBridgeValidated: boolean;
     lastFailureAt: string | null;
@@ -2740,6 +2747,8 @@ export type SyncRemoteCommandAction =
   | "analytics.getStatus"
   | "analytics.setClientEnabled"
   | "account.getMachineInventory"
+  | "account.getConnectionRoutes"
+  | "account.setRelayEnabled"
   | ProviderAccountRemoteCommandAction
   | "usage.getAdeStats"
   | "usage.getGithubContributions"
@@ -3265,6 +3274,13 @@ export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
   /** Allows only an authenticated phone/browser controller, never a desktop viewer. */
   controllerAllowed?: boolean;
+  /**
+   * Narrows `viewerAllowed` to desktops paired as runtime hosts: a machine
+   * setting another of the owner's computers may change, but a phone or a
+   * browser tab may not (it could cut the computer off where only someone at
+   * it could undo that).
+   */
+  runtimeHostOnly?: boolean;
   requiresApproval?: boolean;
   localOnly?: boolean;
   queueable?: boolean;

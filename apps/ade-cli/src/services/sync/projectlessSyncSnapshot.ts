@@ -59,6 +59,8 @@ export type ProjectlessSyncSnapshotArgs = {
     accountSignedIn: boolean;
     /** This machine's relay URL, already gated on the tunnel being usable. */
     wssUrl: string | null;
+    /** The owner turned ADE Relay off on this computer. */
+    turnedOff?: boolean;
     status: SyncTunnelClientStatus | null;
   };
   accountDirectory: SyncAccountDirectoryHealth;
@@ -131,10 +133,11 @@ export function buildProjectlessSyncSnapshot(
     });
 
   // Same contract as the scoped path: relay is configured whenever this runtime
-  // can host phone pairing and enabled once the account is signed in. There is
-  // no user toggle.
+  // can host phone pairing and enabled once the account is signed in, unless
+  // the owner turned it off on this computer.
   const relayRouteHealth = buildRelayRouteHealth({
     relayConfigured: hosting,
+    relayTurnedOff: args.relay.turnedOff === true,
     relayAccountSignedIn: args.relay.accountSignedIn
       && (args.relay.status?.accountLeaseValid ?? true),
     loopbackAdeValidated,

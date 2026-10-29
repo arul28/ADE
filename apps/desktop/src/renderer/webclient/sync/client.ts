@@ -604,6 +604,45 @@ export class AdeSyncClient {
     return paired.environment;
   }
 
+  /**
+   * Keeps each saved computer's Tailscale HTTPS routes in step with the
+   * account directory. A browser learns a computer's routes when it pairs, so
+   * one paired before the computer published `wss://<name>.ts.net:<port>`
+   * would otherwise go through ADE Relay forever. Only routes the verified
+   * directory lists, only for computers this browser already paired with.
+   */
+  async adoptDirectoryTailnetRoutes(
+    machines: readonly AdeAccountMachine[],
+    ownerUserId: string | null,
+    relayBaseUrls: readonly string[] = [],
+  ): Promise<void> {
+    const isTailnetWss = (url: string) => {
+      try {
+        const parsed = new URL(url);
+        return parsed.protocol === "wss:" && isTailnetHostname(parsed.hostname);
+      } catch {
+        return false;
+      }
+    };
+    for (const machine of machines) {
+      const hostDeviceId = machine.deviceId?.trim();
+      if (!hostDeviceId) continue;
+      const environment = await this.envStore.findByHostDeviceId(hostDeviceId);
+      // Same rule as account pairing: never touch another account's computer.
+      if (!environment) continue;
+      if (environment.accountOwnerUserId != null && environment.accountOwnerUserId !== ownerUserId) continue;
+      const directoryRoutes = accountMachinePairedSyncEndpoints(machine, relayBaseUrls).filter(isTailnetWss);
+      // Through the persistence queue, reading the record inside it, so a
+      // connect saving a new secret or last-good route at the same time wins.
+      await this.persistCurrentEnvironment((current) => {
+        const saved = current.explicitWssEndpoints ?? [];
+        const next = [...saved.filter((url) => !isTailnetWss(url)), ...directoryRoutes];
+        const unchanged = next.length === saved.length && next.every((url, index) => url === saved[index]);
+        return unchanged ? current : { ...current, explicitWssEndpoints: next };
+      }, environment.envId);
+    }
+  }
+
   async removeAccountOwnedEnvironments(ownerUserId: string): Promise<string[]> {
     await this.drainEnvironmentPersistence();
     const removedIds = await this.envStore.removeAccountOwnedEnvironments(ownerUserId);

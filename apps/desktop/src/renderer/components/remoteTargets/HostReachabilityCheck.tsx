@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { CircleNotch } from "@phosphor-icons/react";
 import { outlineButton } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
@@ -104,9 +104,12 @@ function ErrorLine({ error }: { error: string }) {
 export function HostReachabilityCheck({
   check = window.ade?.sync?.checkLocalReachability,
   prompt = "Can your other devices reach this computer?",
+  leading = null,
 }: {
   check?: ReachabilityCheck | undefined;
   prompt?: string;
+  /** Shown in place of the prompt before a check runs (the popover's route badges). */
+  leading?: ReactNode;
 } = {}) {
   const { running, report, error, run } = useReachabilityRun(check);
   if (typeof check !== "function") return null;
@@ -119,7 +122,7 @@ export function HostReachabilityCheck({
           <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 600, color: "var(--color-fg)" }}>
             {report.title}
           </span>
-        ) : (
+        ) : leading ?? (
           <span style={{ ...helperTextStyle, flex: 1, minWidth: 0 }}>{prompt}</span>
         )}
         {button}

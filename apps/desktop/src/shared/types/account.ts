@@ -279,3 +279,79 @@ export type AdeAccountPairMachineProgress = {
   stage: "relay" | "tailnet" | "lan" | "verifying" | "opening";
   label: string;
 };
+
+/**
+ * Where Tailscale stands on one computer, read from its own
+ * `tailscale status --json`. `not_installed` means the CLI was not found;
+ * `unknown` means it ran but its answer could not be read.
+ */
+export type MachineTailscaleState =
+  | "running"
+  | "needs_login"
+  | "stopped"
+  | "starting"
+  | "not_installed"
+  | "unknown";
+
+export type MachineTailscaleStatus = {
+  state: MachineTailscaleState;
+  /** This computer's MagicDNS name, such as `my-mac.tail1234.ts.net`. */
+  dnsName: string | null;
+  /** Null when Tailscale did not say (signed out, not installed). */
+  magicDnsEnabled: boolean | null;
+  /** The tailnet can issue HTTPS certificates (`CertDomains` is non-empty). */
+  httpsCertsEnabled: boolean | null;
+  /** When this computer's Tailscale sign-in expires, ISO. Null when it never does. */
+  keyExpiry: string | null;
+  checkedAt: string;
+};
+
+/**
+ * The secure Tailscale route: `tailscale serve --https` in front of the sync
+ * listener, so a browser can open `wss://<name>.ts.net:<port>`.
+ */
+export type MachineTailnetHttpsState =
+  | "published"
+  | "publishing"
+  /** The tailnet has HTTPS certificates turned off. */
+  | "needs_https_certs"
+  /** MagicDNS is off, so there is no name to put a certificate on. */
+  | "needs_magic_dns"
+  /** Tailscale is missing, signed out, or this ADE process does not host sync. */
+  | "unavailable"
+  | "failed";
+
+export type MachineTailnetHttpsRoute = {
+  state: MachineTailnetHttpsState;
+  url: string | null;
+  error: string | null;
+};
+
+/**
+ * One computer's connection routes, as that computer reports them. Read with
+ * `account.getConnectionRoutes` from the computer itself, never inferred from
+ * another machine.
+ */
+export type MachineConnectionRoutes = {
+  machineKey: string;
+  checkedAt: string;
+  tailscale: MachineTailscaleStatus;
+  /**
+   * Plain tailnet route (`tailscale serve --tcp`) for apps and phones.
+   * `observed` is false when the ADE process that answered doesn't host sync,
+   * so it can't see the route; read the account directory instead.
+   */
+  tailnet: { observed: boolean; published: boolean; error: string | null };
+  tailnetHttps: MachineTailnetHttpsRoute;
+  relay: {
+    /** The owner's setting on this computer. On unless turned off. */
+    enabled: boolean;
+    /** False when the ADE process that answered doesn't run the relay connection. */
+    observed: boolean;
+    /** This computer's relay connection is up right now. */
+    connected: boolean;
+    /** When the setting last changed, ISO. Null while it is the default. */
+    changedAt: string | null;
+    error: string | null;
+  };
+};

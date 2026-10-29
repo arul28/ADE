@@ -51,6 +51,11 @@ import {
 } from "../../../../desktop/src/shared/ctoHomeMachine";
 import { runWithAbortSignal } from "./abortSignal";
 import {
+  readMachineConnectionRoutes,
+  readRelayEnabledArg,
+  setMachineRelayEnabled,
+} from "./machineConnectionRoutes";
+import {
   buildSyncResultTooLargeError,
   SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES,
   SYNC_RESULT_TOO_LARGE_ERROR_CODE,
@@ -514,6 +519,12 @@ export function evaluateRemoteCommandPolicy(args: {
     return {
       code: "forbidden_command",
       message: `Remote command ${action} is not available to paired controller devices.`,
+    };
+  }
+  if (policy.runtimeHostOnly && args.peer.pairingRecord?.runtimeHostGranted !== true) {
+    return {
+      code: "forbidden_command",
+      message: `Remote command ${action} needs a computer connected through your ADE account. Reconnect it from Your computers, then try again.`,
     };
   }
   if (policy.localOnly || policy.requiresApproval) {
@@ -8107,6 +8118,16 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
       aiIntegrationService: args.aiIntegrationService,
     });
   }, "runtime");
+
+  // This computer's own routes and its ADE Relay switch, for the Account page
+  // on another of the owner's computers. Machine-level, so they answer the
+  // same from any project scope. Any paired device may read the routes; only
+  // a paired ADE computer may flip the switch.
+  register("account.getConnectionRoutes", { viewerAllowed: true }, async (payload) =>
+    await readMachineConnectionRoutes({ refresh: payload.refresh === true }), "runtime");
+
+  register("account.setRelayEnabled", { viewerAllowed: true, runtimeHostOnly: true }, async (payload) =>
+    await setMachineRelayEnabled(readRelayEnabledArg(payload.enabled)), "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");

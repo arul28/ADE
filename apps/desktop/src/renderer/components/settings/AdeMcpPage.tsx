@@ -162,6 +162,7 @@ function machineState(machine: RemoteMcpMachine, status: RemoteMcpStatus): Machi
   if (!machine.supported) return { dot: "warn", text: "Not joined yet. Open the latest ADE on it." };
   if (!machine.included) return { dot: null, text: "Left out. Apps can't reach it." };
   if (machine.isThisMachine) {
+    if (status.relayTurnedOff) return { dot: "warn", text: "ADE Relay is turned off here (Settings › Account)." };
     if (!status.relayConnected) return { dot: "warn", text: "ADE Relay isn't connected here." };
     return status.thisMachineServing
       ? { dot: "ok", text: "Online, answering." }
@@ -334,7 +335,9 @@ export function AdeMcpPage() {
       dot: "warn",
       text: status.relayConnected
         ? "None of your included computers is online, so apps can't reach it right now."
-        : "ADE Relay isn't connected here, and no other computer is answering.",
+        : status.relayTurnedOff
+          ? "ADE Relay is turned off here (Settings › Account), and no other computer is answering."
+          : "ADE Relay isn't connected here, and no other computer is answering.",
     };
   })();
 

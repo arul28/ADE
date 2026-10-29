@@ -4,7 +4,7 @@ import { resolveTheme, resolveThemeById, STYLESHEET_THEME_IDS } from "../../../s
 import { cn } from "../ui/cn";
 import { createBackdropRenderer, type BackdropRenderer } from "./workToolPickerBackdropRenderer";
 import { useActiveScene } from "../../scene/useScene";
-import { backdropThemeFromScene } from "../../scene/scenePalette";
+import { backdropThemeFromScene, type ScenePalette } from "../../scene/scenePalette";
 import { SceneImageLayer } from "../../scene/SceneImageLayer";
 
 export {
@@ -58,8 +58,15 @@ export function WorkToolPickerBackdrop({
   playing = true,
   clockOrigin,
   field,
+  colors,
 }: {
   theme: ThemeId;
+  /**
+   * Paint the mesh from these colours instead of the theme or the scene (the
+   * Account banner uses the profile picture's). Always a mesh, even on the
+   * `plain` scene, since the colours are the point.
+   */
+  colors?: ScenePalette | null;
   className?: string;
   /** False keeps the last frame and stops the 30 fps loop. */
   playing?: boolean;
@@ -86,10 +93,10 @@ export function WorkToolPickerBackdrop({
   // A scene picture either fills the window field itself or, everywhere else
   // (and when the user asked for colours only), lends the mesh its colours.
   const scene = useActiveScene();
-  const showPicture = field === "window" && scene.kind === "image" && scene.showImage;
+  const showPicture = !colors && field === "window" && scene.kind === "image" && scene.showImage;
   // The `plain` scene: the flat CSS background below, with no mesh and no loop.
-  const still = scene.kind === "plain";
-  const scenePalette = scene.kind === "image" ? scene.palette : null;
+  const still = !colors && scene.kind === "plain";
+  const scenePalette = colors ?? (scene.kind === "image" ? scene.palette : null);
   const override = useMemo(
     () => (scenePalette ? backdropThemeFromScene(scenePalette, theme) : undefined),
     [scenePalette, theme],

@@ -149,6 +149,7 @@ import type {
 import type { EditorTarget, OpenPathInEditorRemote, OpenPathTarget } from "../shared/editorTargets";
 import type { InstalledBrowser } from "../shared/browserTargets";
 import type { MachineInventoryDetail } from "../shared/types/machineInventory";
+import type { MachineConnectionRoutes } from "../shared/types/account";
 import type {
   AdeCleanupResult,
   AdeProjectEvent,
@@ -4545,6 +4546,16 @@ declare global {
           machineKey?: string,
           pin?: OpenProjectBinding | null,
         ) => Promise<MachineInventoryDetail>;
+        /** The signed-in account's own profile picture, as a data URL (for reading its colours). */
+        getAvatarDataUrl?: () => Promise<string | null>;
+        getConnectionRoutes?: (args?: {
+          machineKey?: string | null;
+          refresh?: boolean;
+        }) => Promise<MachineConnectionRoutes>;
+        setRelayEnabled?: (args: {
+          machineKey?: string | null;
+          enabled: boolean;
+        }) => Promise<MachineConnectionRoutes>;
         renameMachine: (
           machineKey: string,
           customName: string | null,

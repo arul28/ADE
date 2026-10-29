@@ -3,11 +3,15 @@ import { useLocation, useNavigate } from "react-router-dom";
 import {
   ArrowLeft,
   ArrowRight,
+  At,
+  Check,
   CircleNotch,
+  Copy,
   GithubLogo,
-  Laptop,
+  IdentificationCard,
   Question,
   SignOut,
+  UserCircle,
   WarningCircle,
   X,
 } from "@phosphor-icons/react";
@@ -23,7 +27,6 @@ import {
 } from "../lanes/laneDesignTokens";
 import {
   accountAvatarImage,
-  accountInitials,
   accountProviderCaption,
   accountSessionState,
   accountSessionTitle,
@@ -40,7 +43,8 @@ import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { ModernPage, ModernRows, ModernSection } from "../settings/primitives";
+import { ModernPage, ModernSection } from "../settings/primitives";
+import { AccountHero, type AccountThisComputer } from "./AccountHero";
 import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSection";
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
@@ -328,36 +332,103 @@ export function SignInCard({
 
 
 // ---------------------------------------------------------------------------
-// Signed-in: sign-out row (honest single-machine scope, behind a confirmation).
+// Signed-in: the account's own details, and sign out (this computer only).
 // ---------------------------------------------------------------------------
 
-function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
-  const [confirming, setConfirming] = useState(false);
-
+function CopyIdButton({ value }: { value: string }) {
+  const [copied, setCopied] = useState(false);
+  const write = window.ade?.app?.writeClipboardText;
+  if (!write) return null;
   return (
-    <>
-      <ModernRows>
-        <div className="ade-ap-rowcard">
-          <span className="ade-acct-glyph" aria-hidden>
-            <Laptop size={16} />
-          </span>
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div className="ade-ap-rowtitle">Signed in on this computer</div>
-            <div className="ade-ap-rowhint">Signing out only affects this computer. Your other computers and phones stay signed in.</div>
-          </div>
-          <button
-            type="button"
-            className="ade-acct-btn"
-            data-tone="danger"
-            disabled={signingOut}
-            onClick={() => setConfirming(true)}
-          >
-            {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
-            Sign out
-          </button>
-        </div>
-      </ModernRows>
+    <button
+      type="button"
+      className="ade-acct-btn ade-acct-icon-btn"
+      data-variant="ghost"
+      aria-label={copied ? "Copied" : "Copy account ID"}
+      title={copied ? "Copied" : "Copy account ID"}
+      onClick={() => {
+        void write(value).then(() => {
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1_500);
+        }).catch(() => {});
+      }}
+    >
+      {copied ? <Check size={13} weight="bold" /> : <Copy size={13} weight="bold" />}
+    </button>
+  );
+}
 
+function AccountDetailsSection({
+  status,
+  providerCaption,
+  showRepoBridge,
+  onDismissRepoBridge,
+  onConnectGithub,
+  onSignOut,
+  signingOut,
+}: {
+  status: AdeAccountStatus;
+  providerCaption: string | null;
+  showRepoBridge: boolean;
+  onDismissRepoBridge: () => void;
+  onConnectGithub: () => void;
+  onSignOut: () => void;
+  signingOut: boolean;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  return (
+    <ModernSection
+      group="Account"
+      anchor="account-profile"
+      title="Account"
+      icon={<UserCircle size={15} weight="bold" />}
+      tone="violet"
+    >
+      <dl className="ade-acct-facts">
+        <div className="ade-acct-fact">
+          <dt><At size={13} weight="bold" />Email</dt>
+          <dd>
+            <span className="ade-acct-fact-value">{status.email ?? "Your ADE account"}</span>
+            {providerCaption ? <span className="ade-acct-fact-note">{providerCaption}</span> : null}
+          </dd>
+        </div>
+        {status.userId ? (
+          <div className="ade-acct-fact">
+            <dt><IdentificationCard size={13} weight="bold" />Account ID</dt>
+            <dd>
+              <span className="ade-acct-fact-value ade-net-mono" title={status.userId}>{status.userId}</span>
+              <CopyIdButton value={status.userId} />
+            </dd>
+          </div>
+        ) : null}
+        {showRepoBridge ? (
+          <div className="ade-acct-fact">
+            <dt><GithubLogo size={13} weight="fill" />GitHub</dt>
+            <dd>
+              <span className="ade-acct-fact-note">Not connected. Lanes, pull requests and checks need it.</span>
+              <button type="button" className="ade-acct-btn" onClick={onConnectGithub}>Connect GitHub</button>
+              <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion." }}>
+                <button type="button" onClick={onDismissRepoBridge} aria-label="Dismiss" className="ade-acct-btn ade-acct-icon-btn" data-variant="ghost">
+                  <X size={13} weight="bold" />
+                </button>
+              </SmartTooltip>
+            </dd>
+          </div>
+        ) : null}
+      </dl>
+      <div className="ade-acct-signout">
+        <span className="ade-acct-fact-note">Signing out only affects this computer. Your other computers and phones stay signed in.</span>
+        <button
+          type="button"
+          className="ade-acct-btn"
+          data-tone="danger"
+          disabled={signingOut}
+          onClick={() => setConfirming(true)}
+        >
+          {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
+          Sign out of this computer
+        </button>
+      </div>
       {confirming ? (
         <ConfirmSheet
           title="Sign out of ADE?"
@@ -372,64 +443,7 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
           onCancel={() => setConfirming(false)}
         />
       ) : null}
-    </>
-  );
-}
-
-/** The profile card: avatar, name, email, and the facts about this sign-in. */
-function ProfileCard({
-  status,
-  avatarImage,
-  avatarBroken,
-  onAvatarError,
-  ringTint,
-  providerCaption,
-}: {
-  status: AdeAccountStatus;
-  avatarImage: string | null;
-  avatarBroken: boolean;
-  onAvatarError: () => void;
-  ringTint: string;
-  providerCaption: string | null;
-}) {
-  return (
-    <div className="ade-acct-profile" style={{ "--ade-acct-tint": ringTint } as CSSProperties}>
-      <div className="ade-acct-profile-main">
-        <span className="ade-acct-avatar">
-          {avatarImage && !avatarBroken ? (
-            <img src={avatarImage} alt="" width={64} height={64} draggable={false} onError={onAvatarError} />
-          ) : (
-            <span className="ade-acct-monogram">{accountInitials(status)}</span>
-          )}
-          <span className="ade-acct-avatar-dot" aria-hidden />
-        </span>
-        <div className="ade-acct-who">
-          {status.name ? <div className="ade-acct-name">{status.name}</div> : null}
-          <div className={status.name ? "ade-acct-email" : "ade-acct-name"}>{status.email ?? "Your ADE account"}</div>
-        </div>
-      </div>
-      <div className="ade-acct-facts">
-        <div className="ade-acct-fact">
-          <span className="kit-eyebrow">Session</span>
-          <span className="ade-acct-fact-value">
-            <span className="kit-dot" data-state="ok" aria-hidden />
-            <span>Active on this computer</span>
-          </span>
-        </div>
-        <div className="ade-acct-fact">
-          <span className="kit-eyebrow">Sign-in</span>
-          <span className="ade-acct-fact-value">
-            <span>{providerCaption ?? "ADE account"}</span>
-          </span>
-        </div>
-        <div className="ade-acct-fact">
-          <span className="kit-eyebrow">Account ID</span>
-          <span className="ade-acct-fact-value kit-num" title={status.userId ?? undefined}>
-            <span>{status.userId ?? "—"}</span>
-          </span>
-        </div>
-      </div>
-    </div>
+    </ModernSection>
   );
 }
 
@@ -451,6 +465,7 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
+  const [thisComputer, setThisComputer] = useState<AccountThisComputer | null>(null);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
   const backRef = useRef<HTMLButtonElement>(null);
 
@@ -532,55 +547,25 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
 
   const signedInContent = (
     <ModernPage>
-      <ProfileCard
-          status={status}
-          avatarImage={avatarImage}
-          avatarBroken={avatarBroken}
-          onAvatarError={() => setAvatarBroken(true)}
-          ringTint={ringTint}
-          providerCaption={providerCaption}
-        />
-
-      {/* GitHub repo bridge — identity stays decoupled from repo connection */}
-      {showRepoBridge ? (
-        <ModernSection group="Account" title="GitHub" hint="Your identity and your GitHub repo access stay separate — link it when you're ready.">
-          <div className="ade-ap-rowcard">
-            <span className="ade-acct-glyph" aria-hidden>
-              <GithubLogo size={17} weight="fill" />
-            </span>
-            <div style={{ minWidth: 0, flex: 1 }}>
-              <div className="ade-ap-rowtitle">Connect your repos & PRs too?</div>
-              <div className="ade-ap-rowhint">Lanes, pull requests and checks read from GitHub once it is connected.</div>
-            </div>
-            <button
-              type="button"
-              className="ade-acct-btn"
-              onClick={() => navigate(settingsRouteFor("integrations.github"))}
-            >
-              Connect GitHub
-            </button>
-            <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion for this session." }}>
-              <button
-                type="button"
-                onClick={dismissRepoBridge}
-                aria-label="Dismiss"
-                className="ade-acct-btn ade-acct-icon-btn"
-                data-variant="ghost"
-              >
-                <X size={13} weight="bold" />
-              </button>
-            </SmartTooltip>
-          </div>
-        </ModernSection>
-      ) : null}
-
-      <YourMacsCard />
-
-      <OtherMachinesUpdateSection group="Account" />
-
-      <ModernSection group="Account" title="Session">
-        <SignOutCard onSignOut={() => void handleSignOut()} signingOut={signingOut} />
-      </ModernSection>
+      <AccountHero
+        status={status}
+        avatarImage={avatarImage}
+        avatarBroken={avatarBroken}
+        onAvatarError={() => setAvatarBroken(true)}
+        tint={ringTint}
+        providerCaption={providerCaption}
+        thisComputer={thisComputer}
+      />
+      <YourMacsCard onThisComputer={setThisComputer} between={<OtherMachinesUpdateSection group="Account" compact />} />
+      <AccountDetailsSection
+        status={status}
+        providerCaption={providerCaption}
+        showRepoBridge={showRepoBridge}
+        onDismissRepoBridge={dismissRepoBridge}
+        onConnectGithub={() => navigate(settingsRouteFor("integrations.github"))}
+        onSignOut={() => void handleSignOut()}
+        signingOut={signingOut}
+      />
       {signOutError ? (
         <Banner
           layout="inline"

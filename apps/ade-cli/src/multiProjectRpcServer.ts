@@ -113,9 +113,14 @@ import {
 } from "./services/account/accountMachineDirectoryService";
 import { buildDegradedProjectlessSyncSnapshot } from "./services/sync/projectlessSyncSnapshot";
 import { createSyncCloudRelayStore } from "./services/sync/syncCloudRelayStore";
+import {
+  readMachineConnectionRoutes,
+  readRelayEnabledArg,
+  setMachineRelayEnabled,
+} from "./services/sync/machineConnectionRoutes";
 import { selectAccountMachine } from "../../desktop/src/shared/accountDirectory";
 import { buildAccountMachineSnapshot, findMachineByMentionId } from "../../desktop/src/shared/accountMachineSnapshot";
-import type { AdeAccountMachine } from "../../desktop/src/shared/types/account";
+import type { AdeAccountMachine, MachineConnectionRoutes } from "../../desktop/src/shared/types/account";
 import { ATTENTION_SNAPSHOT_INCLUDE_MESSAGES, type AttentionItem } from "../../desktop/src/shared/types/attention";
 import type { MachinePairingRepairResult } from "./services/account/machinePairingRepair";
 import { mapPlatform } from "./services/sync/syncProtocol";
@@ -2329,7 +2334,11 @@ export function createMultiProjectRpcRequestHandler(
         // Re-pairing this machine into the account is a machine-operator act,
         // not something a subagent may perform on the owner's behalf.
         || action === "repairMachinePairing"
-        || action === "startSyncHost";
+        || action === "startSyncHost"
+        // Routes name this computer's tailnet address; the relay switch
+        // changes who can reach it. Both are the owner's, not a subagent's.
+        || action === "getConnectionRoutes"
+        || action === "setRelayEnabled";
       if (ctoOnlyAccountAction && !callerHasRoleAtLeast(role, "cto")) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
@@ -2416,6 +2425,22 @@ export function createMultiProjectRpcRequestHandler(
           result: { state: "ok", message: null, machine: snapshot },
           statusHints: {},
         };
+      }
+      if (action === "getConnectionRoutes" || action === "setRelayEnabled") {
+        const actionArgs = isRecord(params.args) ? params.args : {};
+        let result: MachineConnectionRoutes;
+        if (action === "getConnectionRoutes") {
+          result = await readMachineConnectionRoutes({ refresh: actionArgs.refresh === true });
+        } else {
+          let enabled: boolean;
+          try {
+            enabled = readRelayEnabledArg(actionArgs.enabled);
+          } catch (error) {
+            throw new JsonRpcError(JsonRpcErrorCode.invalidParams, (error as Error).message);
+          }
+          result = await setMachineRelayEnabled(enabled);
+        }
+        return { domain: "account", action, result, statusHints: {} };
       }
       if (action === "startSyncHost") {
         if (!options.startSyncHost) {
