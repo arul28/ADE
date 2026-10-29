@@ -305,39 +305,45 @@ describe("sync host authority", () => {
 });
 
 describe("isSameChannelSyncHostOwner", () => {
-  const betaEnv = {
-    ADE_PACKAGE_CHANNEL: "beta",
-    ADE_HOME: "/Users/example/.ade-beta",
+  const alphaEnv = {
+    ADE_PACKAGE_CHANNEL: "alpha",
+    ADE_HOME: "/Users/example/.ade-alpha",
   } as NodeJS.ProcessEnv;
 
   it("matches owners by ADE home when recorded", () => {
-    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-beta" }), betaEnv)).toBe(true);
-    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade" }), betaEnv)).toBe(false);
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-alpha" }), alphaEnv)).toBe(true);
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade" }), alphaEnv)).toBe(false);
   });
 
   it("falls back to service name, then channel, when the home is unknown", () => {
     expect(isSameChannelSyncHostOwner(
-      owner({ adeHome: null, serviceName: "com.ade.runtime.beta" }),
-      betaEnv,
+      owner({ adeHome: null, serviceName: "com.ade.runtime.alpha" }),
+      alphaEnv,
     )).toBe(true);
     expect(isSameChannelSyncHostOwner(
       owner({ adeHome: null, serviceName: "com.ade.runtime" }),
-      betaEnv,
+      alphaEnv,
     )).toBe(false);
     expect(isSameChannelSyncHostOwner(
-      owner({ adeHome: null, serviceName: null, packageChannel: "beta" }),
-      betaEnv,
+      owner({ adeHome: null, serviceName: null, packageChannel: "alpha" }),
+      alphaEnv,
     )).toBe(true);
     expect(isSameChannelSyncHostOwner(
       owner({ adeHome: null, serviceName: null, packageChannel: null }),
-      betaEnv,
+      alphaEnv,
     )).toBe(false);
   });
 
   it("treats stable defaults as same-channel for a stable install", () => {
     const stableEnv = {} as NodeJS.ProcessEnv;
     expect(isSameChannelSyncHostOwner(owner(), stableEnv)).toBe(true);
-    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-beta" }), stableEnv)).toBe(false);
+    expect(isSameChannelSyncHostOwner(owner({ adeHome: "/Users/example/.ade-alpha" }), stableEnv)).toBe(false);
+    // A leftover ADE_PACKAGE_CHANNEL=beta is Stable, so this brain's own lock
+    // (recorded with no channel) is its own channel.
+    expect(isSameChannelSyncHostOwner(
+      owner({ adeHome: null, serviceName: null, packageChannel: null }),
+      { ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv,
+    )).toBe(true);
   });
 });
 

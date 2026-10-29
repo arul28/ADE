@@ -6678,6 +6678,7 @@ app.whenReady().then(async () => {
         // The machine runtime owns sync and the real storage doctor in this mode;
         // this dormant fallback has no authoritative local peer signal.
         hasSyncPeers: () => true,
+        appVersion: shippedVersionOrNull(app.getVersion()),
       }),
     ]);
     if (registered.status === "rejected") {

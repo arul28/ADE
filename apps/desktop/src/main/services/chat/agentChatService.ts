@@ -5385,6 +5385,12 @@ type ManagedChatSession = {
    */
   awaitingInputAtLoad?: boolean;
   /**
+   * When the user last sent a message, from the transcript, as restart
+   * recovery found it. A message after the last automatic resume means the
+   * user stepped in, so the resume streak starts again.
+   */
+  lastUserMessageBeforeRestartRecovery?: string | null;
+  /**
    * When its parent's "+ child chats" Stop stopped this chat. Its stopped
    * report then lands as a quiet notice instead of waking the parent the user
    * just stopped.
@@ -21896,7 +21902,15 @@ export function createAgentChatService(args: {
     const idleSince = managed.idleSinceBeforeRestartRecovery !== undefined
       ? managed.idleSinceBeforeRestartRecovery
       : managed.session.idleSinceAt;
-    return nextRestartResumeStreak(previous, idleSince);
+    return nextRestartResumeStreak(previous, idleSince, managed.lastUserMessageBeforeRestartRecovery ?? null);
+  };
+  /** The newest message the user typed (not an automatic wake), or null. */
+  const latestUserMessageAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const envelope = events[index]!;
+      if (envelope.event.type === "user_message" && !envelope.event.metadata?.scheduledWake) return envelope.timestamp;
+    }
+    return null;
   };
   const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
     restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
@@ -21985,8 +21999,12 @@ export function createAgentChatService(args: {
     if (managed.restartRecoveryDone) return null;
     managed.restartRecoveryDone = true;
     managed.idleSinceBeforeRestartRecovery = managed.session.idleSinceAt ?? null;
-    const awaitingUser = managed.awaitingInputAtLoad
-      ?? readPersistedState(managed.session.id)?.awaitingInput === true;
+    managed.lastUserMessageBeforeRestartRecovery = latestUserMessageAt(transcriptEvents);
+    // Either source saying "waiting for the user" holds the resume: the state
+    // read at load (a persist with no runtime drops the flag later), or the
+    // file now (a sibling that owned the chat may have asked since).
+    const awaitingUser = managed.awaitingInputAtLoad === true
+      || readPersistedState(managed.session.id)?.awaitingInput === true;
     let resumeHold: RestartResumeHold | null = null;
     // Read before `reopen` clears the row's end time.
     const recent = cutOffRecently(sessionService.get(managed.session.id));

@@ -880,7 +880,8 @@ export function isSameChannelSyncHostOwner(
   owner: SyncHostSingletonOwner,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
+  // As currentOwner() records it: a leftover "beta" is Stable.
+  const currentChannel = liveChannelFromEnv(env.ADE_PACKAGE_CHANNEL);
   const currentAdeHome = env.ADE_HOME?.trim() || adeHomeForChannel(currentChannel);
   if (owner.adeHome) {
     return adeHomeComparisonKey(owner.adeHome) === adeHomeComparisonKey(currentAdeHome);

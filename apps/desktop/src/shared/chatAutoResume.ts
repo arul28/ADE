@@ -343,10 +343,12 @@ export function restartResumeHold(args: {
   capped: boolean;
   settledOrArchived: boolean;
 }): RestartResumeHold | null {
-  if (!args.continueEnabled) return "disabled";
   if (args.settledOrArchived) return "settled";
-  if (!args.recent) return "stale";
+  // Before the setting and the age: the notice must ask for the answer, not
+  // offer a generic "retry or continue".
   if (args.awaitingUser) return "awaiting_user";
+  if (!args.continueEnabled) return "disabled";
+  if (!args.recent) return "stale";
   if (args.capped) return "capped";
   return null;
 }
@@ -376,9 +378,10 @@ export function restartInterruptedNotice(args: {
 /**
  * The streak the next restart-resume of a chat would have, from its previous
  * resume row (same deterministic id) and when the chat last finished a turn.
- * The streak starts again when the user stepped in (the row was cancelled), a
- * resumed turn finished normally after the row fired, or the row came from an
- * update the user accepted (streak 0).
+ * The streak starts again when the user stepped in (the row was cancelled, or
+ * a message of theirs came after the row fired), a resumed turn finished
+ * normally after the row fired, or the row came from an update the user
+ * accepted (streak 0).
  */
 export function nextRestartResumeStreak(
   previous: {
@@ -389,12 +392,16 @@ export function nextRestartResumeStreak(
     restartResumeStreak?: number | null;
   } | null | undefined,
   idleSinceAt: string | null | undefined,
+  lastUserMessageAt?: string | null,
 ): number {
   if (!previous || previous.source !== UPDATE_RESUME_SCHEDULED_WORK_SOURCE) return 1;
   if (previous.status === "cancelled") return 1;
   const firedAt = previous.lastFiredAt ?? previous.terminalAt ?? null;
-  const finishedAt = idleSinceAt ? Date.parse(idleSinceAt) : Number.NaN;
-  if (firedAt != null && Number.isFinite(finishedAt) && finishedAt > firedAt) return 1;
+  const after = (iso: string | null | undefined): boolean => {
+    const at = iso ? Date.parse(iso) : Number.NaN;
+    return firedAt != null && Number.isFinite(at) && at > firedAt;
+  };
+  if (after(idleSinceAt) || after(lastUserMessageAt)) return 1;
   return (previous.restartResumeStreak ?? 0) + 1;
 }
 

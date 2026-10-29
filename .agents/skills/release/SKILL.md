@@ -143,7 +143,7 @@ background. It does not need the desktop draft. TestFlight builds will move
 to CI with the Beta track; until then this script is still the path:
 
 ```bash
-IOS_SHA=${BETA_SHA:-$(git rev-parse origin/main)}   # iOS-only release: main's head
+IOS_SHA=$(git rev-parse origin/main)   # iOS is not promoted from a beta yet: main's head, the code scope.sh counted
 git checkout $IOS_SHA
 bash scripts/release-tools/ios-testflight.sh <mv> <build> $IOS_SHA   # run_in_background, timeout ≥ 90 min
 ```
@@ -210,7 +210,7 @@ One short block:
 |---|---|
 | `main`'s `ci-pass` red before notes | Read the failed job. Flaky → rerun it. Secret-scan false positive → allowlist it in `.gitleaks.toml` in a PR. Real → stop. |
 | Release `verify` job fails | Get `ci-pass` green on the same SHA, then `gh run rerun <id> --failed`. |
-| A failed release left its tag behind | `release-publish.yml` creates the tag before the draft. To build again at a different commit, delete the tag first: `git push origin :refs/tags/v<V>` (only when no release is public). |
+| A failed release left its tag behind | `release-publish.yml` creates the tag before the draft. To build again at a different commit, delete the private draft and the tag first: `gh release delete v<V> --repo arul28/ADE --yes` (drafts only; never a public release), then `git push origin :refs/tags/v<V>`. |
 | No beta to promote | `beta.yml` failing: read the **Beta build failed** issue. Beta too new: wait, or `gh workflow run beta.yml -f force=true` only if the owner asks. |
 | Mac job: Apple network error | `gh run rerun <id> --failed`, once. |
 | Notarization stuck > 15 min | `gh run cancel <id>`, then `gh run rerun <id> --failed`. |

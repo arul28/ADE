@@ -174,10 +174,12 @@ describe("restart resume streak and hold", () => {
     ["a resumed turn cut off again, idle from before it fired", fired, new Date(500).toISOString(), 3],
     ["after the resumed turn finished", fired, new Date(2_000).toISOString(), 1],
     ["after the user stepped in", { ...fired, status: "cancelled" }, null, 1],
+    ["after a message of the user's, even one cut off", fired, null, 1, new Date(2_000).toISOString()],
+    ["a message from before the last resume", fired, null, 3, new Date(500).toISOString()],
     ["after an update the user accepted", { ...fired, restartResumeStreak: 0 }, null, 1],
     ["after another kind of wake", { ...fired, source: "auto_resume_limit" }, null, 1],
-  ] as const)("streak: %s", (_label, previous, idleSinceAt, expected) => {
-    expect(nextRestartResumeStreak(previous, idleSinceAt)).toBe(expected);
+  ] as const)("streak: %s", (_label, previous, idleSinceAt, expected, lastUserMessageAt?: string) => {
+    expect(nextRestartResumeStreak(previous, idleSinceAt, lastUserMessageAt)).toBe(expected);
   });
 
   const base = { continueEnabled: true, recent: true, awaitingUser: false, capped: false, settledOrArchived: false };
@@ -187,7 +189,8 @@ describe("restart resume streak and hold", () => {
     ["waits at the cap", { ...base, capped: true }, "capped"],
     ["leaves old work alone", { ...base, recent: false }, "stale"],
     ["leaves a settled chat alone", { ...base, settledOrArchived: true, awaitingUser: true }, "settled"],
-    ["respects the setting first", { ...base, continueEnabled: false, capped: true }, "disabled"],
+    ["respects the setting before the cap", { ...base, continueEnabled: false, capped: true }, "disabled"],
+    ["names an open question before the setting", { ...base, continueEnabled: false, awaitingUser: true }, "awaiting_user"],
   ] as const)("hold: %s", (_label, args, hold) => {
     expect(restartResumeHold(args)).toBe(hold);
   });
