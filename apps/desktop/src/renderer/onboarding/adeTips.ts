@@ -549,7 +549,7 @@ export function tipActionAvailable(action: AdeTipAction | undefined): boolean {
   return true;
 }
 
-/** Where project-only tips send someone with no project open. */
+/** Where a page-of-a-project tip sends someone with no project open. */
 const OPEN_PROJECT_SPOTS: readonly SpotlightSpot[] = [
   spot("project-row", "Open a project first, then try it again from ADE Tips."),
   spot("add-project", "Add a project first, then try it again from ADE Tips."),
@@ -624,7 +624,7 @@ export function runTipAction(action: AdeTipAction, goTo: (destination: GoToDesti
     }));
     return;
   }
-  if (place.to !== "home" && !hasProject && action.settingId !== "agents.providers") {
+  if (place.to !== "home" && !hasProject) {
     goTo("home");
     showSpotlight({ spots: OPEN_PROJECT_SPOTS });
     return;

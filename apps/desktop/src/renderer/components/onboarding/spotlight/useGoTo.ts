@@ -16,8 +16,8 @@ import { onDraftPage } from "../tour/onboardingTourSteps";
  * - a route (`"/work"`, `"/prs"`, `"/settings?tab=…#…"`): that page of the open
  *   project.
  *
- * Settings can open standalone without a project. Other destinations go Home
- * when no project is open.
+ * Anything but Home needs an open project; with none, it goes Home, where the
+ * projects are.
  */
 export type GoToDestination = "home" | "draft" | `/${string}`;
 
@@ -67,12 +67,6 @@ export function useGoTo(): (destination: GoToDestination) => void {
     runRef.current += 1;
     const run = runRef.current;
     const store = useAppStore.getState();
-    if (store.project == null && destination.startsWith("/settings?")) {
-      if (store.isNewTabOpen) store.cancelNewTab();
-      store.setStandaloneSettingsOpen(true);
-      navigate(destination);
-      return;
-    }
     // Home, or nowhere else to go yet: every other place needs a project.
     if (destination === "home" || store.project == null) {
       store.openNewTab();

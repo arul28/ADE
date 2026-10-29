@@ -2139,9 +2139,8 @@ to appear, fades after six seconds or on any click or Escape, and leaves the
 user where they landed if the control never shows. A tip that lives inside a
 chat (rewind, comments, PR watch) rings the open chat's control when there is
 one, else a chat row with "Open a chat and…". With no project open, a project
-tip goes Home and rings the projects ("Open a project first"); provider tips
-open standalone Settings instead. All of it is navigation in the front window:
-no call reaches a machine.
+tip goes Home and rings the projects ("Open a project first"). All of it is
+navigation in the front window: no call reaches a machine.
 
 Tips also come to the user now and then (`useFeatureTipCard`): a while into a
 project session, one tip they have not tried shows as the corner card ("Tip",
