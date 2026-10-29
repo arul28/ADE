@@ -20,13 +20,14 @@ import type {
   NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
 import {
-  LANE_START_BRING_LABEL,
-  LANE_START_BRING_VALUES,
+  LANE_START_ON_LABEL,
+  LANE_START_ON_VALUES,
   LANE_START_FROM_LABEL,
+  isSavableDefaultLaneStart,
+  laneStartSentence,
   plainLaneStartBranch,
   sameLaneStart,
   type LaneStart,
-  type LaneStartBring,
 } from "../../../shared/laneStart";
 import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
@@ -46,7 +47,6 @@ import {
   startBranchItems,
   startFromPickerRef,
   startPickerRef,
-  startRefLabel,
   startSourceBranch,
 } from "./laneStartOptions";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
@@ -63,8 +63,8 @@ export type CreateLaneSetupStep = {
 };
 
 const MODE_LABEL: Record<CreateLaneMode, string> = {
-  new: "New branch",
-  existing: "Existing branch",
+  new: "Create new branch",
+  existing: "Use existing branch",
 };
 
 const MODE_HELP: Record<CreateLaneMode, string> = {
@@ -83,21 +83,6 @@ const MODE_TOUR: Record<CreateLaneMode, string> = {
 };
 
 const MODE_ORDER: readonly CreateLaneMode[] = ["new", "existing"];
-
-/** What each "Bring" choice means for the branch the lane starts from. */
-function bringHint(bring: LaneStartBring, refLabel: string, holder: LaneSummary | null): string {
-  if (bring === "pushed") {
-    return refLabel ? `Fetches first, then branches from ${refLabel}.` : "Fetches first, then branches from the remote copy.";
-  }
-  if (bring === "local") {
-    return refLabel
-      ? `Branches from your local ${refLabel}, including commits you haven't pushed.`
-      : "Branches from your local copy, including commits you haven't pushed.";
-  }
-  if (!holder) return "Copies uncommitted changes from the lane that has this branch open.";
-  const primary = holder.laneType === "primary";
-  return `Branches from your local ${refLabel} and copies the uncommitted changes in ${primary ? "Primary" : `the ${holder.name} lane`}. ${primary ? "Primary" : "That lane"} keeps them too.`;
-}
 
 function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranchOption[]): string {
   const branch = branches.find((candidate) => candidate.name === branchName);
@@ -306,7 +291,6 @@ export function CreateLaneDialog({
     [createBranches, lanes, newLaneDefaults],
   );
   const startSource = startSourceBranch(createStart, newLaneDefaults);
-  const startRef = startRefLabel(createStart, newLaneDefaults);
   // The folder whose uncommitted changes "Local + uncommitted" copies.
   const startHolder = laneHoldingBranch(startSource, lanes);
   const startMissing = createStart.from === "primary" && newLaneDefaults !== null && !newLaneDefaults.primaryBranch;
@@ -348,7 +332,7 @@ export function CreateLaneDialog({
     : (busy
       || machineMissing
       || !createLaneName.trim()
-      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.bring === "uncommitted" && uncommittedBlocked)))
+      || (createMode === "new" && (startBranchMissing || startMissing || (createStart.on === "uncommitted" && uncommittedBlocked)))
       || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
       || selectedLinearBranchConflict);
 
@@ -552,7 +536,7 @@ export function CreateLaneDialog({
         </div>
 
         <div className="cl-rows">
-          {/* New branch: where it starts, and what it brings along */}
+          {/* New branch: which branch it starts from, on the remote or local copy */}
           {createMode === "new" ? (
             <>
               <span className="cl-label">Start from</span>
@@ -585,46 +569,46 @@ export function CreateLaneDialog({
                     emptyLabel="No branches found in this repo."
                     ariaLabel="Start from"
                     onSelect={(ref) => {
-                      setCreateStart(startFromPickerRef(ref, createStart.bring));
+                      setCreateStart(startFromPickerRef(ref, createStart.on));
                       setOpenChip(null);
                     }}
                   />
                 </ComposerPopover>
               </div>
 
-              <span className="cl-label">Bring</span>
+              <span className="cl-label">On</span>
               <div className="cl-cell">
-                <div className="kit-seg cl-bring" data-case="sentence" role="radiogroup" aria-label="Bring">
-                  {LANE_START_BRING_VALUES.map((bring) => {
-                    const blocked = bring === "uncommitted" && uncommittedBlocked;
+                <div className="kit-seg cl-on" data-case="sentence" role="radiogroup" aria-label="On">
+                  {LANE_START_ON_VALUES.map((on) => {
+                    const blocked = on === "uncommitted" && uncommittedBlocked;
                     return (
                       <button
-                        key={bring}
+                        key={on}
                         type="button"
                         role="radio"
-                        aria-checked={createStart.bring === bring}
+                        aria-checked={createStart.on === on}
                         disabled={locked || blocked}
                         title={blocked
                           ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
                           : undefined}
-                        onClick={() => setCreateStart({ ...createStart, bring })}
+                        onClick={() => setCreateStart({ ...createStart, on })}
                       >
-                        {LANE_START_BRING_LABEL[bring]}
+                        {LANE_START_ON_LABEL[on]}
                       </button>
                     );
                   })}
                 </div>
                 <div className="cl-hint-row">
-                  <span className="cl-hint" data-tone={createStart.bring === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
-                    {createStart.bring === "uncommitted" && uncommittedBlocked
+                  <span className="cl-hint" data-tone={createStart.on === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
+                    {createStart.on === "uncommitted" && uncommittedBlocked
                       ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
-                      : bringHint(createStart.bring, startRef, startHolder)}
+                      : startSource ? laneStartSentence(createStart, startSource) : null}
                   </span>
                   {newLaneDefaults && startIsDefault ? (
                     <span className="cl-default" title="Auto-create lane and ade lanes create start this way too. Change it in Settings › Lanes › New lanes.">
                       Project default
                     </span>
-                  ) : newLaneDefaults && onMakeStartDefault && startSource && !locked ? (
+                  ) : newLaneDefaults && onMakeStartDefault && startSource && isSavableDefaultLaneStart(createStart) && !locked ? (
                     <button
                       type="button"
                       className="cl-default"
@@ -692,10 +676,10 @@ export function CreateLaneDialog({
                   </span>
                 ) : createImportBranch ? (
                   <span className="cl-hint">
-                    No new branch is made. The lane's commits go onto <b>{plainLaneStartBranch(createImportBranch)}</b>.
+                    This lane will use the existing branch <b>{plainLaneStartBranch(createImportBranch)}</b>. No new branch is made.
                   </span>
                 ) : (
-                  <span className="cl-hint">The lane works directly on the branch you pick.</span>
+                  <span className="cl-hint">This lane will use the branch you pick. No new branch is made.</span>
                 )}
               </div>
             </>

@@ -8,7 +8,6 @@ import {
 import {
   ModernRow,
   ModernRows,
-  ModernSection,
   SettingsDisclosure,
   SettingsSelect,
   SettingsTextField,
@@ -27,6 +26,7 @@ import type {
   LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { NewLaneStep } from "./NewLaneSettingsSection";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -215,14 +215,13 @@ function removeAt<T>(items: T[], index: number): T[] {
  * Matches `lanes-git.lane-templates` in `settingsManifest.ts`. Every state of
  * this section renders it, so a Cmd-K result or `?tab=lanes-git#lane-templates`
  * deeplink lands here whether templates are still loading or one is open in the
- * editor. `SettingsManagerPage` owns the id and its `data-settings-anchor`
- * mirror, the way `SettingsCard` does, so settings search can filter this
- * section too.
+ * editor. `NewLaneStep` sets the id and its `data-settings-anchor` mirror, so
+ * settings search can filter this step too.
  */
 const ANCHOR = "lane-templates";
 
-const TITLE = "Lane templates";
-const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
+const TITLE = "Template";
+const DESCRIPTION = "Set up new lanes the same way: copy files in, install packages, run a script.";
 
 export function LaneTemplatesSection() {
   // A project's templates follow the account (per repository); they are read
@@ -315,15 +314,15 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <NewLaneStep anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <p className="ade-modern-muted">Loading templates...</p>
-      </ModernSection>
+      </NewLaneStep>
     );
   }
 
   if (editing) {
     return (
-      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <NewLaneStep anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <div className="ade-lt-editor">
           <TemplateEditor
             template={editing}
@@ -331,13 +330,12 @@ export function LaneTemplatesSection() {
             onCancel={() => setEditing(null)}
           />
         </div>
-      </ModernSection>
+      </NewLaneStep>
     );
   }
 
   return (
-    <ModernSection
-      group={TITLE}
+    <NewLaneStep
       anchor={ANCHOR}
       title={TITLE}
       hint={DESCRIPTION}
@@ -371,8 +369,8 @@ export function LaneTemplatesSection() {
         <>
           <ModernRows>
             <ModernRow
-              title="Set up new lanes with"
-              hint="Auto-create lane uses it too. The New lane dialog starts with it picked, and you can choose another there."
+              title="New lanes use"
+              hint="Auto-create lane too. You can pick another when you make a lane."
               control={(
                 <SettingsSelect
                   value={defaultId ?? ""}
@@ -400,7 +398,7 @@ export function LaneTemplatesSection() {
           </div>
         </>
       )}
-    </ModernSection>
+    </NewLaneStep>
   );
 }
 

@@ -2376,15 +2376,6 @@ export function LaneGitActionsPane({
 
       <div className="ml-auto flex shrink-0 items-center gap-0.5">
         <WorkToolChromeButton
-          label={amendCommit ? "Amend commit" : "Commit"}
-          shortcut={`${modifierKeyLabel}+Enter`}
-          onClick={() => { void submitCommit(); }}
-          disabled={(!hasStaged && !amendCommit) || busyAction != null}
-          testId="git-pane-commit"
-        >
-          <GitCommit size={16} />
-        </WorkToolChromeButton>
-        <WorkToolChromeButton
           label={`Pull (${syncMode})`}
           onClick={() => runPull(syncMode)}
           disabled={!laneId || busyAction != null || pullBlockedByConflict}

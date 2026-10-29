@@ -185,9 +185,9 @@ export type GitStashSummary = {
 };
 
 /**
- * `branch` is everything the lane changed since its base: the merge-base of the
- * base and HEAD against the working tree, so commits, uncommitted edits and
- * untracked files read as one diff per file.
+ * `branch` is what the lane committed since its base: the merge-base of the
+ * base and HEAD against HEAD. Uncommitted edits are `unstaged`/`staged`, so
+ * the two never overlap.
  */
 export type DiffMode = "unstaged" | "staged" | "commit" | "branch";
 
@@ -208,7 +208,7 @@ export type DiffChanges = {
   staged: FileChange[];
 };
 
-/** `git.getBranchChanges`: every file the lane changed since its base. */
+/** `git.getBranchChanges`: every file the lane's commits changed since its base. */
 export type BranchDiffChanges = {
   /** The ref the lane is compared with, as shown ("main", "origin/main"). */
   baseRef: string;

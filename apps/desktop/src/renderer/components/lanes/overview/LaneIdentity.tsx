@@ -71,8 +71,8 @@ function RebaseAction({ line, onRebase }: { line: LaneRebaseLine; onRebase: () =
   return (
     <button
       type="button"
-      className="kit-btn kit-btn-ghost shrink-0"
-      data-size="xs"
+      className="kit-btn shrink-0"
+      data-size="sm"
       title={line.title}
       onClick={onRebase}
       data-testid="lane-rebase-action"
@@ -221,7 +221,7 @@ export function LaneIdentity({
         {/* One line that never wraps: the branch gives way first. */}
         <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[12px] text-muted-fg" data-testid="lane-identity-meta">
           <span className="-ml-2 -mr-1 flex min-w-0 shrink">
-            <LaneBranchSwitcher lane={lane} primaryLane={primaryLane} active={active} pin={pin} machineId={machineId} />
+            <LaneBranchSwitcher lane={lane} active={active} pin={pin} machineId={machineId} />
           </span>
           <Sep />
           {isPrimary ? (

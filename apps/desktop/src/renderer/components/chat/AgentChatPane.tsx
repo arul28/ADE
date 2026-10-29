@@ -13010,9 +13010,9 @@ export function AgentChatPane({
       originClientId: getChatLaunchOriginClientId(),
     });
     // Predict the stages the host will report so the card has its shape from
-    // the first frame. Only `fetch` depends on the start: a lane that brings
-    // pushed work fetches first. Unread defaults assume the built-in default
-    // (pushed work).
+    // the first frame. Only `fetch` depends on the start: a lane that starts
+    // on the remote fetches first. Unread defaults assume the built-in default
+    // (the default branch on the remote).
     const knownDefaults = peekNewLaneDefaultsCached({
       projectRoot,
       pin: newLaneDefaultsPin(launchBinding, useAppStore.getState().projectBinding),
@@ -13021,7 +13021,7 @@ export function AgentChatPane({
       configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
       knownDefaults?.defaults.start ?? DEFAULT_LANE_START,
     );
-    const includeFetch = launchStart?.bring === "pushed";
+    const includeFetch = launchStart?.on === "remote";
     registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
     insertOptimisticChatLaunch(
       launchBinding,
@@ -14646,7 +14646,7 @@ export function AgentChatPane({
           const suffix = parallelLaneModelSuffix(desc);
           const laneName = `${baseName}-${suffix}`;
           const childLane = await window.ade.lanes.create(
-            { name: laneName, start: { from: "branch", branch: sourceBranch, bring: "local" } },
+            { name: laneName, start: { from: "branch", branch: sourceBranch, on: "local" } },
             launchBinding,
           );
           createdLaneIds.push(childLane.id);

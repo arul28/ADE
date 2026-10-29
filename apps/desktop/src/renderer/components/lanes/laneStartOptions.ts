@@ -19,11 +19,11 @@ export function startPickerRef(start: LaneStart): string {
   return plainLaneStartBranch(start.branch);
 }
 
-/** The start a picker id stands for, keeping the chosen `bring`. */
-export function startFromPickerRef(ref: string, bring: LaneStart["bring"]): LaneStart {
-  if (ref === START_DEFAULT_REF) return { from: "default", bring };
-  if (ref === START_PRIMARY_REF) return { from: "primary", bring };
-  return { from: "branch", branch: plainLaneStartBranch(ref), bring };
+/** The start a picker id stands for, keeping the chosen `on`. */
+export function startFromPickerRef(ref: string, on: LaneStart["on"]): LaneStart {
+  if (ref === START_DEFAULT_REF) return { from: "default", on };
+  if (ref === START_PRIMARY_REF) return { from: "primary", on };
+  return { from: "branch", branch: plainLaneStartBranch(ref), on };
 }
 
 /** The branch a start points at right now, on the machine the snapshot came from. */
@@ -105,5 +105,5 @@ export function describeAutoCreateStart(snapshot: NewLaneDefaultsSnapshot): stri
   const start = snapshot.defaults.start;
   const ref = startRefLabel(start, snapshot);
   if (!ref) return null;
-  return start.bring === "uncommitted" ? `from ${ref} + changes` : `from ${ref}`;
+  return start.on === "uncommitted" ? `from ${ref} + changes` : `from ${ref}`;
 }

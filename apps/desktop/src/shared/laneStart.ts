@@ -1,7 +1,7 @@
 import { branchNameFromLaneRef } from "./laneBaseResolution";
 
 /**
- * Where a new lane's branch starts, and how much work it brings along.
+ * Where a new lane's branch starts: which branch, and on which copy of it.
  *
  * One shape for every surface that makes a lane: the New lane dialog (desktop,
  * phone, `ade code`), Auto-create lane, `ade lanes create`, agent tools and the
@@ -13,23 +13,28 @@ import { branchNameFromLaneRef } from "./laneBaseResolution";
  * - `from: "branch"`   a branch the caller names in `branch` (a plain name such
  *                      as `develop`, never `origin/develop`).
  *
- * - `bring: "pushed"`       fetch, then start from `origin/<branch>`.
- * - `bring: "local"`        start from the local branch tip, unpushed commits included.
- * - `bring: "uncommitted"`  the local tip plus a COPY of the uncommitted changes
- *                           in the folder that has the branch checked out. The
- *                           source folder is never changed.
+ * - `on: "remote"`       fetch, then start from `origin/<branch>`.
+ * - `on: "local"`        start from the local branch tip, unpushed commits included.
+ * - `on: "uncommitted"`  the local tip plus a COPY of the uncommitted changes
+ *                        in the folder that has the branch checked out. The
+ *                        source folder is never changed.
  */
 export type LaneStartFrom = "default" | "primary" | "branch";
-export type LaneStartBring = "pushed" | "local" | "uncommitted";
+export type LaneStartOn = "remote" | "local" | "uncommitted";
 
 export type LaneStart = {
   from: LaneStartFrom;
   /** Required when `from` is `"branch"`; ignored otherwise. */
   branch?: string | null;
-  bring: LaneStartBring;
+  on: LaneStartOn;
 };
 
-/** How every new lane in a project starts unless the caller picks otherwise. */
+/**
+ * How every new lane in a project starts unless the caller picks otherwise.
+ * A saved start is the default branch or the primary lane's branch, never a
+ * named branch: whoever wants every lane to start from `develop` checks out
+ * `develop` in the primary lane.
+ */
 export type NewLaneDefaults = {
   start: LaneStart;
   /** The template a new lane is set up with; null for none. */
@@ -37,9 +42,11 @@ export type NewLaneDefaults = {
 };
 
 export const LANE_START_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary", "branch"];
-export const LANE_START_BRING_VALUES: readonly LaneStartBring[] = ["pushed", "local", "uncommitted"];
+/** The starts a project can save as its default. */
+export const LANE_START_DEFAULT_FROM_VALUES: readonly LaneStartFrom[] = ["default", "primary"];
+export const LANE_START_ON_VALUES: readonly LaneStartOn[] = ["remote", "local", "uncommitted"];
 
-export const DEFAULT_LANE_START: LaneStart = { from: "default", bring: "pushed" };
+export const DEFAULT_LANE_START: LaneStart = { from: "default", on: "remote" };
 export const DEFAULT_NEW_LANE_DEFAULTS: NewLaneDefaults = { start: DEFAULT_LANE_START, templateId: null };
 
 /** A branch name as the user would type it: no `refs/heads/`, `refs/remotes/` or `origin/` prefix. */
@@ -52,27 +59,33 @@ export function normalizeLaneStart(value: unknown): LaneStart | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const from = record.from;
-  const bring = record.bring;
+  const on = record.on;
   if (typeof from !== "string" || !(LANE_START_FROM_VALUES as readonly string[]).includes(from)) return null;
-  if (typeof bring !== "string" || !(LANE_START_BRING_VALUES as readonly string[]).includes(bring)) return null;
+  if (typeof on !== "string" || !(LANE_START_ON_VALUES as readonly string[]).includes(on)) return null;
   if (from === "branch") {
     const branch = plainLaneStartBranch(typeof record.branch === "string" ? record.branch : "");
     if (!branch) return null;
-    return { from, branch, bring: bring as LaneStartBring };
+    return { from, branch, on: on as LaneStartOn };
   }
-  return { from: from as LaneStartFrom, bring: bring as LaneStartBring };
+  return { from: from as LaneStartFrom, on: on as LaneStartOn };
+}
+
+/** A start a project may save as its default: not a named branch. */
+export function isSavableDefaultLaneStart(start: LaneStart): boolean {
+  return (LANE_START_DEFAULT_FROM_VALUES as readonly string[]).includes(start.from);
 }
 
 export function normalizeNewLaneDefaults(value: unknown): NewLaneDefaults {
   if (!value || typeof value !== "object" || Array.isArray(value)) return DEFAULT_NEW_LANE_DEFAULTS;
   const record = value as Record<string, unknown>;
-  const start = normalizeLaneStart(record.start) ?? DEFAULT_LANE_START;
+  const parsed = normalizeLaneStart(record.start);
+  const start = parsed && isSavableDefaultLaneStart(parsed) ? parsed : DEFAULT_LANE_START;
   const templateId = typeof record.templateId === "string" && record.templateId.trim() ? record.templateId.trim() : null;
   return { start, templateId };
 }
 
 export function sameLaneStart(a: LaneStart, b: LaneStart): boolean {
-  if (a.from !== b.from || a.bring !== b.bring) return false;
+  if (a.from !== b.from || a.on !== b.on) return false;
   return a.from !== "branch" || plainLaneStartBranch(a.branch) === plainLaneStartBranch(b.branch);
 }
 
@@ -92,7 +105,7 @@ export function laneStartSourceBranch(
 /** The ref a start begins at, as the user reads it: `origin/main` or `main`. */
 export function laneStartRefLabel(start: LaneStart, sourceBranch: string): string {
   if (!sourceBranch) return "";
-  return start.bring === "pushed" ? `origin/${sourceBranch}` : sourceBranch;
+  return start.on === "remote" ? `origin/${sourceBranch}` : sourceBranch;
 }
 
 export const LANE_START_FROM_LABEL: Record<LaneStartFrom, string> = {
@@ -101,14 +114,19 @@ export const LANE_START_FROM_LABEL: Record<LaneStartFrom, string> = {
   branch: "A specific branch",
 };
 
-export const LANE_START_BRING_LABEL: Record<LaneStartBring, string> = {
-  pushed: "Pushed work",
-  local: "Local commits",
+export const LANE_START_ON_LABEL: Record<LaneStartOn, string> = {
+  remote: "Remote",
+  local: "Local",
   uncommitted: "Local + uncommitted",
 };
 
-export const LANE_START_BRING_HINT: Record<LaneStartBring, string> = {
-  pushed: "Fetches first, then starts from what's on the remote.",
-  local: "Starts from your local copy, including commits you haven't pushed.",
-  uncommitted: "Your local copy plus a copy of its uncommitted changes. The original folder is left as it is.",
-};
+/**
+ * The sentence under a start, naming the branch: "Lane will be created from
+ * local main, and uncommitted work will be copied over." `subject` is "Lane"
+ * or "New lanes".
+ */
+export function laneStartSentence(start: LaneStart, sourceBranch: string, subject = "Lane"): string {
+  if (start.on === "remote") return `${subject} will be created from the latest ${sourceBranch} on the remote.`;
+  if (start.on === "local") return `${subject} will be created from local ${sourceBranch}, including commits you haven't pushed.`;
+  return `${subject} will be created from local ${sourceBranch}, and uncommitted work will be copied over.`;
+}

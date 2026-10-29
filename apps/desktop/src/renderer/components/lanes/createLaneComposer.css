@@ -223,10 +223,10 @@
 .cl-tag[data-tone="ok"] { --c: var(--kit-ok); }
 
 /* A quiet line under a field; wraps instead of cutting off. */
-/* Bring: three equal segments across the control column. */
-.cl-bring { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
-.cl-bring > button { justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cl-bring > button:disabled { opacity: 0.4; cursor: default; }
+/* On: three equal segments across the control column. */
+.cl-on { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+.cl-on > button { justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-on > button:disabled { opacity: 0.4; cursor: default; }
 
 /* A hint with the "Project default" mark (or the button that makes it so) on its right. */
 .cl-hint-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; min-width: 0; }

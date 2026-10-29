@@ -131,7 +131,7 @@ import {
 import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
 import { copyUncommittedChanges, resolveLaneStart, type LaneStartFolder } from "./laneStartResolver";
 import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
-import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, type NewLaneDefaults } from "../../../shared/laneStart";
+import { DEFAULT_NEW_LANE_DEFAULTS, isSavableDefaultLaneStart, normalizeLaneStart, plainLaneStartBranch, type NewLaneDefaults } from "../../../shared/laneStart";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -9270,6 +9270,11 @@ export function createLaneService({
       if (patch.start !== undefined) {
         const start = normalizeLaneStart(patch.start);
         if (!start) throw new Error("Invalid lane start.");
+        // A named branch is a per-lane pick. A project that wants every lane
+        // on `develop` checks it out in the primary lane and saves "primary".
+        if (!isSavableDefaultLaneStart(start)) {
+          throw new Error("New lanes can start from the default branch or the primary lane's branch. Pick a specific branch per lane instead.");
+        }
         next.start = start;
       }
       if (patch.templateId !== undefined) {

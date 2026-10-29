@@ -440,44 +440,36 @@ mode concept):
   which surface as errors instead of silent no-ops.
 - **Diff** — `AdeDiffViewer` backed by `diffService`. Read-only views
   use `@pierre/diffs`; editable working-tree views use `MonacoDiffView`.
-  Scopes: **Branch** (the default where the host supports it), staged vs
-  working tree (**Uncommitted**), HEAD vs index (**Staged**), or a commit.
+  Scopes: **Branch** (committed work), staged vs working tree
+  (**Uncommitted**), HEAD vs index (**Staged**), or a commit.
 
 ### Branch scope
 
-`DiffMode` `branch` is everything a lane changed since its base: the file at
-merge-base(base, HEAD) against the file on disk now, so commits, uncommitted
-edits and untracked files read as one diff per file. `diffService.getBranchChanges`
-lists the files with line counts by diffing `--cached` against a throwaway
-index (`GIT_INDEX_FILE` in the OS temp directory: a copy of the real index,
-or `read-tree HEAD` when there is none, then `add -A`, which honours
-`.gitignore`), so the user's own index is never touched. Starting from the
-real index means `add` re-hashes only files whose stat changed, and a sparse
-checkout's skip-worktree entries stay present instead of reading as deleted.
-An ask for a lane shares an in-flight read that has not started reading the
-working tree yet (opening a lane asks twice); once it has, a later ask starts
-a fresh read, so an edit made after that read's snapshot is never missed.
-A single-file patch looks up the file's rename first, so a renamed file
-shows as a rename rather than a new file. The temp file is removed whatever
-happens. `getFileDiff` /
-`getFilePatch` take `mode: "branch"` the same way.
+`DiffMode` `branch` is what a lane committed since its base: the file at
+merge-base(base, HEAD) against the file at HEAD. Uncommitted edits are the
+`unstaged`/`staged` modes, so the two never overlap. `diffService.getBranchChanges`
+lists the files with line counts (`git diff <merge-base> HEAD`). An ask for a
+lane shares an in-flight read that has not started reading git yet (opening a
+lane asks twice); once it has, a later ask starts a fresh read, so a commit
+made after that read's snapshot is never missed. A single-file patch looks up
+the file's rename first, so a renamed file shows as a rename rather than a new
+file. `getFileDiff` / `getFilePatch` take `mode: "branch"` the same way.
 
-The base is the lane's `base_ref`; a lane that is its own base (the primary
-lane on `main`) compares with that branch's upstream, else `origin/<base>`, so
-unpushed work shows. A base that does not resolve, or a lane with no history in
-common with it, is an error ("The base branch "x" was not found."), never an
-empty diff that reads as "nothing changed".
+The base is the lane's compare base (its open PR's base, else the default
+branch); the primary lane compares with its branch's upstream, else
+`origin/<base>`, so unpushed work shows. A base that does not resolve, or a lane
+with no history in common with it, is an error ("The base branch "x" was not
+found."), never an empty diff that reads as "nothing changed".
 
 An older host reads an unknown mode as `unstaged` without complaint, so clients
 offer Branch only once `git.getBranchChanges` answered (remote command, the
 `diff` action domain, `diff.getBranchChanges` in the web adapter): the Files
 viewer asks once per lane; iOS checks the advertised command. The Git pane
-(`LaneGitActionsPane`) shows **Branch | Uncommitted**: it opens on Uncommitted
-while there is something to commit and on Branch when the tree is clean, which
-is when Uncommitted would read "nothing to commit" for a lane full of
-committed work, and the user's pick sticks for the lane. Branch rows are
-read-only; staging and discarding stay in Uncommitted. The CLI form is
-`ade diff changes --lane <id> --mode branch --text`.
+(`LaneGitActionsPane`) shows three sections top to bottom, with no toggle:
+**Uncommitted changes** (staged and unstaged, stage/discard, the commit box,
+an empty state when clean), **Committed on this branch** (read-only, vs the
+compare base; hidden on a host without branch diffs), and **History**. The CLI
+form is `ade diff changes --lane <id> --mode branch --text`.
 - **Conflict** — 3-way merge. Base / Ours / Theirs / Result panes.
   Interactive "Accept Ours", "Accept Theirs", "Accept Both". Resolves
   via `conflictService`.

@@ -940,7 +940,7 @@ describe("LaneGitActionsPane rescue action", () => {
     };
 
     renderPane();
-    await user.click(await screen.findByTestId("git-pane-commit"));
+    await user.click(await screen.findByTestId("git-pane-commit-inline"));
 
     await waitFor(() => {
       expect(screen.getByText(/Type a commit message, then commit/)).toBeTruthy();

@@ -6283,7 +6283,6 @@ function newLaneSetupFailed(result: unknown): boolean {
 type LaneStartFlags = { from?: string; on?: string };
 
 function readLaneStartFlags(args: string[]): LaneStartFlags {
-  if (findFlagName(args, ["--bring"])) throw new CliUsageError("Unsupported lane creation flag: --bring. Use --on.");
   const from = readValue(args, ["--from"]);
   const on = readValue(args, ["--on"]);
   if (on && !(LANE_START_ON_VALUES as readonly string[]).includes(on)) {

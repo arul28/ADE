@@ -93,34 +93,53 @@
 .ade-ms-privacy { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; margin-top: 4px; }
 .ade-ms-privacy > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 
-/* ── New lanes: where they start ───────────────────────────────────── */
+/* ── New lanes: one flow of steps under the tab ─────────────────────── */
 
-.ade-nl { display: flex; flex-direction: column; gap: 10px; }
-.ade-nl-eyebrow { margin-top: 6px; color: var(--kit-text-3); }
-.ade-nl-eyebrow:first-child { margin-top: 0; }
-.ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.ade-nl-loading { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-.ade-nl-loading > span { height: 128px; border-radius: var(--radius-lg); }
+/* The tab's steps, 28px apart: Start from, On, Template. */
+.ade-nl-flow { display: flex; flex-direction: column; gap: 28px; min-width: 0; }
 
-/* Who the settings follow: the repo inside the header's `.kit-tag`. */
+/* Who uses these settings, and where they are saved. */
+.ade-nl-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
+}
+.ade-nl-meta code { font-family: var(--font-mono); font-size: 11.5px; color: var(--kit-text-2); }
+.ade-nl-meta-end { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .ade-nl-scope-repo { color: var(--kit-text-3); }
 
-/* "A specific branch": the branch field, aligned under the cards. */
-.ade-nl-branch {
-  display: grid;
-  grid-template-columns: 64px minmax(0, 360px);
+.ade-nl-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; scroll-margin-top: 16px; }
+.ade-nl-step-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.ade-nl-step-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-nl-step-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-3); }
+.ade-nl-step-actions { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.ade-nl-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ade-nl-choice { gap: 4px; }
+.ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-nl-loading { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.ade-nl-loading > span { height: 72px; border-radius: var(--radius-lg); }
+
+/* "The primary lane is on [develop ⌄]": the lane header's branch switcher. */
+.ade-nl-primary {
+  display: flex;
   align-items: center;
-  gap: 12px;
-  padding: 2px 0 4px;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  font-size: 12.5px;
+  color: var(--kit-text-2);
 }
-.ade-nl-branch-label { font-size: 12px; color: var(--kit-text-3); }
+.ade-nl-primary-hint { color: var(--kit-text-3); }
 
 /* The one-line answer under the choices. */
 .ade-nl-summary {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-top: 6px;
   padding: 10px 12px;
   border-radius: var(--radius-lg);
   background: var(--kit-panel-bg);
@@ -130,7 +149,6 @@
   color: var(--kit-text-2);
 }
 .ade-nl-summary > svg { flex: none; margin-top: 2px; color: var(--kit-text-3); }
-.ade-nl-summary b { font-weight: 500; color: var(--color-fg); font-family: var(--font-mono); font-size: 12px; }
 
 /* ── Lane templates ─────────────────────────────────────────────────── */
 

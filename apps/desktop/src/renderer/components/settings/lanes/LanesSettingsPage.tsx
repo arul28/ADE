@@ -36,13 +36,13 @@ type View = {
 };
 
 const LANES_VIEWS: readonly View[] = [
-  { id: "lanes", label: "Your lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
   {
     id: "new-lanes",
     label: "New lanes",
     icon: <GitFork size={13} weight="duotone" />,
     anchors: ["new-lane-start", "lane-templates"],
   },
+  { id: "lanes", label: "Your lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
 ];
 
 const STORAGE_VIEWS: readonly View[] = [
@@ -66,9 +66,9 @@ function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | 
 }
 
 /**
- * Settings → Project → Lanes: the lanes themselves (stale ones first, with a
- * safe bulk archive), and how new lanes start: where they branch from and the
- * template that sets them up.
+ * Settings → Project → Lanes: how new lanes start (the branch, which copy of
+ * it, and the template that sets them up), and the lanes themselves (stale
+ * ones first, with a safe bulk archive).
  */
 export function LanesSettingsPage() {
   return <ProjectViewsPage allViews={LANES_VIEWS} label="Lanes settings" />;
@@ -224,10 +224,10 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         return <ArchiveSection />;
       case "new-lanes":
         return (
-          <>
+          <div className="ade-nl-flow">
             <NewLaneSettingsSection />
             <LaneTemplatesSection />
-          </>
+          </div>
         );
       case "cleanup-rules":
         return (

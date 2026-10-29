@@ -359,7 +359,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
    * Load what the form reads from the chosen machine: the project's new-lane
    * defaults there, its branches (via its Primary lane), git identity, and lane
    * templates. Re-run whenever the target machine changes; the name, color and
-   * Linear issue are kept. No fetch: a lane that starts from pushed work
+   * Linear issue are kept. No fetch: a lane that starts on the remote
    * fetches when it is created.
    */
   const machineDataKeyRef = useRef<string | null>(null);
@@ -376,7 +376,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
 
     // Fresh on every open: another computer may have changed them. An older
     // brain without new-lane defaults answers null, and the form keeps the
-    // built-in default (pushed work from the default branch).
+    // built-in default (the default branch on the remote).
     const defaultsRead = getNewLaneDefaultsCached({ projectRoot: getActiveProjectRoot(), pin, force: true });
     setCreateBranchesLoading(Boolean(primary));
     if (primary) {
@@ -518,7 +518,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       case "creating":
         return createMode === "existing"
           ? "Opening the branch in a new lane..."
-          : createStart.bring === "pushed"
+          : createStart.on === "remote"
             ? "Fetching, then creating the lane's branch..."
             : "Creating the lane's branch...";
       case "appearance":
@@ -530,7 +530,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       default:
         return laneCreated ? "Lane exists. Finish setup or retry the failed step." : null;
     }
-  }, [createMode, createSetupPhase, createStart.bring, laneCreated, selectedTemplateId]);
+  }, [createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
 
   const createSetupSteps = useMemo<CreateLaneSetupStep[]>(() => {
     if (!createBusy && !laneCreated) return [];
@@ -541,7 +541,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
     else laneState = "pending";
     const steps: CreateLaneSetupStep[] = [{
       label: laneLabel,
-      detail: createMode === "new" && createStart.bring === "pushed"
+      detail: createMode === "new" && createStart.on === "remote"
         ? "Fetch, then check out the branch in its own folder."
         : "Check out the branch in its own folder.",
       state: laneState,
@@ -554,7 +554,7 @@ export const CreateLaneDialogHost = memo(function CreateLaneDialogHost({
       state: createSetupPhase === "environment" ? "active" : "pending",
     });
     return steps;
-  }, [createBusy, createMode, createSetupPhase, createStart.bring, laneCreated, selectedTemplateId]);
+  }, [createBusy, createMode, createSetupPhase, createStart.on, laneCreated, selectedTemplateId]);
 
   /** Run post-create setup for a lane that already exists. Used as the retry path
    *  when environment setup fails (stay-open mode). */

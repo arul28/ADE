@@ -1228,10 +1228,10 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "lanes-git.new-lane-start",
-    label: "Where new lanes start",
+    label: "New lanes start from",
     keywords: [
       "auto-create", "auto create", "new lane", "start", "base", "branch", "default branch", "main",
-      "primary", "remote", "local", "fetch", "pushed", "uncommitted", "changes", "copy",
+      "primary", "switch branch", "on", "remote", "local", "fetch", "uncommitted", "changes", "copy",
     ],
     tab: "lanes-git",
     anchor: "new-lane-start",
@@ -1241,8 +1241,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "lanes-git.lane-templates",
-    label: "Lane templates",
-    keywords: ["template", "scaffold", "preset", "default lane", "setup", "install", "script", "auto-create"],
+    label: "New lane template",
+    keywords: ["template", "lane templates", "scaffold", "preset", "default lane", "setup", "install", "script", "auto-create"],
     tab: "lanes-git",
     anchor: "lane-templates",
     scope: "account-repo",
