@@ -361,6 +361,8 @@ Which servers it applies to, per provider:
 | Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
 | Pi | Unchanged. Pi starts the servers in its own `mcp.json` itself, and stops a stdio server's whole process group, `npx` wrappers included. | Re-pointed (ADE hands these over itself) |
 
+## Background jobs start no MCP servers
+
 Background jobs (titles, summaries and other one-shots) start none of the
 user's servers on any provider. Claude (`--strict-mcp-config`), Codex (by
 name, below), Copilot (config discovery off and every configured name
@@ -391,8 +393,13 @@ writing a new one and renaming it (Grok does) replaces only the link, so when
 the job ends ADE copies such a file back over the real one, unless the real
 one changed during the job. A refreshed token is kept. Droid, Kimi and Muse
 get no copy when their file lists no server. When a link cannot be made, the
-job runs on the real folder as before. Servers a plugin adds (a Grok or Droid
-plugin, a Claude plugin Grok imports) are not in these files and still start.
+job runs on the real folder as before. Copies older than six hours (a
+crashed brain, a removal Windows refused) are removed when the next copy is
+made. Kimi and Grok jobs also run in ADE's scratch folder rather than the
+project, like Droid's and Devin's: in a project the user trusted, Grok starts
+the project's `.grok/config.toml` and `.mcp.json` servers (measured on
+1.0.46). Servers a plugin adds (a Grok or Droid plugin, a Claude plugin Grok
+imports) are not in these files and still start.
 
 Cursor one-shots run on a home of their own,
 `<ADE home>/provider-task-homes/cursor-home`, instead of the user's:

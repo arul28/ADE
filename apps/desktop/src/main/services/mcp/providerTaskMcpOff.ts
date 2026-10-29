@@ -35,12 +35,12 @@ import { ensurePrivateDirectory, writePrivateFile } from "../../../../../ade-cli
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { captureError } from "../../../shared/sentry/capture";
 import { parseJsonc } from "../../../shared/theme/jsonc";
-import { resolveMuseConfigDir } from "../ai/museAuth";
 import {
   devinConfigDir,
   factoryConfigHome,
   grokConfigHome,
   kimiCodeConfigHome,
+  museConfigDir,
 } from "../shared/providerConfigHomes";
 import { readText } from "./mcpProviderConfigScan";
 
@@ -50,10 +50,19 @@ export type ProviderTaskMcpProvider = "droid" | "kimi" | "grok" | "muse" | "devi
 export type ProviderTaskMcpOff = { env: Record<string, string>; close: () => void };
 
 type Entry = { omit: true } | { text: string } | { dir: Folder };
-/** `source` is the real folder whose other entries are linked in; null for none. */
-type Folder = { source: string | null; entries: Record<string, Entry> };
+/**
+ * `source` is the real folder whose other entries are linked in; null for
+ * none. `skipUnlinkable`: an entry that cannot be linked is left out instead
+ * of failing the copy, for a parent folder (`~/.config`, `%APPDATA%`) whose
+ * other entries belong to other programs.
+ */
+type Folder = { source: string | null; entries: Record<string, Entry>; skipUnlinkable?: boolean };
 
 type LinkedFile = { real: string; copy: string; ino: bigint; mtimeNs: bigint; size: bigint };
+
+const CURSOR_HOME_NAME = "cursor-home";
+/** Longer than any job runs; a copy this old was left by a crash or a removal Windows refused. */
+const STALE_COPY_MS = 6 * 60 * 60 * 1000;
 
 /** One folder per user for every copy, made private once; each copy is a fresh folder inside it. */
 function taskHomesRoot(): string {
@@ -62,9 +71,24 @@ function taskHomesRoot(): string {
   return root;
 }
 
+/** Remove copies a crashed brain or a refused removal left behind. `rmSync` never follows a link. */
+function sweepStaleCopies(root: string): void {
+  const now = Date.now();
+  for (const name of fs.readdirSync(root)) {
+    if (name === CURSOR_HOME_NAME) continue;
+    const dir = path.join(root, name);
+    try {
+      const stat = fs.lstatSync(dir);
+      if (stat.isDirectory() && now - stat.mtimeMs > STALE_COPY_MS) fs.rmSync(dir, { recursive: true, force: true });
+    } catch (error) {
+      captureError(error, { fingerprint: ["mcp", "provider_task_home_sweep"] });
+    }
+  }
+}
+
 /** The home Cursor's one-shot workers run on, so `~/.cursor/mcp.json` is never read. */
 export function providerTaskCursorHome(): string {
-  const home = path.join(taskHomesRoot(), "cursor-home");
+  const home = path.join(taskHomesRoot(), CURSOR_HOME_NAME);
   ensurePrivateDirectory(home);
   return home;
 }
@@ -103,7 +127,11 @@ const GROK_COMPAT_VENDORS = ["claude", "cursor", "codex"] as const;
  */
 export function grokTaskConfigToml(text: string): string {
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
-  const ownCompat = lines.some((line) => /^\s*(\[\s*compat\s*\]|compat\s*[.=])/.test(line));
+  const ownCompat = lines.some((line) => {
+    const header = line.match(/^\s*\[\[?\s*([^\]]+?)\s*\]\]?\s*(#.*)?$/)?.[1]?.trim();
+    if (header) return /^["']?compat\b/.test(header) && !/^compat\.(claude|cursor|codex)$/.test(header);
+    return /^\s*["']?compat["']?\s*[.=]/.test(line);
+  });
   const out: string[] = [];
   const seen = new Set<string>();
   let table = "";
@@ -156,18 +184,22 @@ function providerFolder(provider: ProviderTaskMcpProvider, env: NodeJS.ProcessEn
     case "grok": {
       // Always: Grok also imports Claude's and Cursor's servers.
       const home = grokConfigHome({ env });
-      const config = grokTaskConfigToml(readText(path.join(home, "config.toml")) ?? "");
+      const configPath = path.join(home, "config.toml");
+      const text = readText(configPath);
+      // Present but unreadable (or too large to read): a copy would drop the user's settings.
+      if (text == null && fs.existsSync(configPath)) return null;
+      const config = grokTaskConfigToml(text ?? "");
       return { envKey: "GROK_HOME", folder: { source: home, entries: { "config.toml": { text: config } } } };
     }
     case "muse": {
-      const museDir = resolveMuseConfigDir(env);
+      const museDir = museConfigDir({ env });
       const settingsPath = path.join(museDir, "settings.json");
       if (!hasMcpServers(settingsPath)) return null;
       const settings = withoutMcpServers(readText(settingsPath));
       if (settings == null) return null;
       return {
         envKey: "XDG_CONFIG_HOME",
-        folder: { source: path.dirname(museDir), entries: { [path.basename(museDir)]: { dir: { source: museDir, entries: { "settings.json": { text: settings } } } } } },
+        folder: { source: path.dirname(museDir), skipUnlinkable: true, entries: { [path.basename(museDir)]: { dir: { source: museDir, entries: { "settings.json": { text: settings } } } } } },
       };
     }
     case "devin": {
@@ -179,16 +211,28 @@ function providerFolder(provider: ProviderTaskMcpProvider, env: NodeJS.ProcessEn
       const config = withoutMcpServers(configText, {
         read_config_from: { ...(userImports && typeof userImports === "object" ? userImports : {}), ...DEVIN_IMPORTS_OFF },
       });
-      if (config == null) return null;
+      // Older Devins keep servers in `config.local.json` too, and newer ones
+      // move them from there into the dedicated files at startup.
+      const localPath = path.join(devinDir, "config.local.json");
+      const localText = readText(localPath);
+      const local = localText == null ? null : withoutMcpServers(localText);
+      if (config == null || (localText != null && local == null)) return null;
+      if (localText == null && fs.existsSync(localPath)) return null;
       return {
         envKey: process.platform === "win32" ? "APPDATA" : "XDG_CONFIG_HOME",
         folder: {
           source: path.dirname(devinDir),
+          skipUnlinkable: true,
           entries: {
             [path.basename(devinDir)]: {
               dir: {
                 source: devinDir,
-                entries: { "config.json": { text: config }, "mcp_config.json": { omit: true }, "mcp_config.local.json": { omit: true } },
+                entries: {
+                  "config.json": { text: config },
+                  ...(local != null ? { "config.local.json": { text: local } } : {}),
+                  "mcp_config.json": { omit: true },
+                  "mcp_config.local.json": { omit: true },
+                },
               },
             },
           },
@@ -231,7 +275,13 @@ function buildFolder(target: string, folder: Folder, linked: LinkedFile[], links
       }
       // A socket or pipe cannot be hard-linked on Windows.
       if (process.platform === "win32" && !stat.isDirectory() && !stat.isFile()) continue;
-      linkEntry(realPath, copyPath, stat.isDirectory());
+      try {
+        linkEntry(realPath, copyPath, stat.isDirectory());
+      } catch (error) {
+        if (!folder.skipUnlinkable) throw error;
+        captureError(error, { fingerprint: ["mcp", "provider_task_home_link_skipped"], tags: { platform: process.platform } });
+        continue;
+      }
       links.push(copyPath);
       if (stat.isFile()) linked.push({ real: realPath, copy: copyPath, ino: stat.ino, mtimeNs: stat.mtimeNs, size: stat.size });
     }
@@ -307,7 +357,9 @@ export function openProviderTaskMcpOff(provider: ProviderTaskMcpProvider, env: N
   const links: string[] = [];
   let root: string;
   try {
-    root = fs.mkdtempSync(path.join(taskHomesRoot(), `${provider}-`));
+    const homes = taskHomesRoot();
+    sweepStaleCopies(homes);
+    root = fs.mkdtempSync(path.join(homes, `${provider}-`));
   } catch (error) {
     captureError(error, { fingerprint: ["mcp", "provider_task_home_create"], tags: { provider } });
     return none;

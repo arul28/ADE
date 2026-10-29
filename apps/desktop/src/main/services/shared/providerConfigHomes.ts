@@ -96,6 +96,18 @@ export function openCodeConfigDir(args: HomeArg = {}): string {
   return path.join(xdgConfigHome(args), "opencode");
 }
 
+/**
+ * Muse's config folder on every platform: `$XDG_CONFIG_HOME/muse`, else
+ * `$HOME/.config/muse`, else `%USERPROFILE%\.config\muse` (no `%APPDATA%` branch).
+ */
+export function museConfigDir(args: HomeArg = {}): string {
+  const env = args.env ?? process.env;
+  const xdg = trimmed(env.XDG_CONFIG_HOME);
+  if (xdg) return path.join(xdg, "muse");
+  const home = args.homeDir?.trim() || trimmed(env.HOME) || trimmed(env.USERPROFILE) || homedir();
+  return path.join(home, ".config", "muse");
+}
+
 /** Devin's user config folder: `%APPDATA%\devin` on Windows, `<XDG config>/devin` elsewhere. */
 export function devinConfigDir(args: HomeArg & { platform?: NodeJS.Platform } = {}): string {
   const env = args.env ?? process.env;
