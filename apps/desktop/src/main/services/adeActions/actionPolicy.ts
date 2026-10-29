@@ -923,6 +923,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "ensureMuseBinary",
     "pinnedToolStatus",
     "pinnedToolDownload",
+    "getProviderContextInventory",
     "antigravitySignInStatus",
     "antigravitySignInStart",
     "antigravitySignInComplete",
