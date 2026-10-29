@@ -69,7 +69,10 @@ import {
   STANDALONE_TAB_IDS,
   TabContent,
   decodeSettingsHash,
+  integrationIdForAnchor,
+  openIntegrationFromUrl,
 } from "../settings/settingsTabContent";
+import { isIntegrationId } from "../settings/integrations/integrationBrand";
 
 /**
  * The settings shell. Tabs, ordering, deep links, and search all resolve
@@ -338,13 +341,20 @@ export function SettingsPage({
     );
   }, [active, location.hash, location.pathname, navigate, resolvedTab, searchParams, tabParam]);
 
-  // `?integration=github|linear|cli` predates the manifest.
+  // `?integration=github|linear|jira|cli` with no tab predates the manifest.
+  // GitHub, Linear and Jira are the Integrations tab's own sub-pages now, so
+  // their links only gain the tab; the CLI moved to its own setting.
   useEffect(() => {
-    if (!active) return;
+    if (!active || tabParam) return;
     const integration = searchParams.get("integration")?.trim().toLowerCase() ?? "";
-    if (!integration) return;
-    if (!["github", "linear", "cli"].includes(integration)) return;
-    const entry = resolveSettingsHash(integration === "cli" ? "ade-cli" : integration);
+    if (isIntegrationId(integration)) {
+      const nextParams = new URLSearchParams(searchParams);
+      nextParams.set("tab", "integrations");
+      navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: location.hash }, { replace: true });
+      return;
+    }
+    if (integration !== "cli") return;
+    const entry = resolveSettingsHash("ade-cli");
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", entry?.tab ?? "integrations");
     nextParams.delete("integration");
@@ -356,12 +366,14 @@ export function SettingsPage({
       },
       { replace: true },
     );
-  }, [active, location.pathname, navigate, searchParams]);
+  }, [active, location.hash, location.pathname, navigate, searchParams, tabParam]);
 
   const navigateToTab = useCallback((next: SettingsTabId, hash?: string, machineId?: string) => {
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
+    // One integration's page belongs to the Integrations tab only.
+    if (next !== "integrations") nextParams.delete("integration");
     // The machine travels with Machines pages only. Account and Project pages
     // have no machine, and a stale one in the URL would mislead the next link.
     // Appearance describes this computer's own screen, so it never carries one.
@@ -411,11 +423,17 @@ export function SettingsPage({
       return { matchesThisTab: null as SettingEntry[] | null, matchesOtherTabs: [] as SettingEntry[] };
     }
     const all = searchSettingsEntries(trimmedQuery);
+    // Integrations mount one integration's page at a time (or the grid), so a
+    // match on another integration's page is a link, like another tab's.
+    const openIntegration = section === "integrations" ? openIntegrationFromUrl(searchParams, location.hash) : null;
+    const elsewhere = (entry: SettingEntry) =>
+      entry.tab !== section
+      || (section === "integrations" && integrationIdForAnchor(entry.anchor) !== openIntegration);
     return {
-      matchesThisTab: all.filter((entry) => entry.tab === section),
-      matchesOtherTabs: all.filter((entry) => entry.tab !== section),
+      matchesThisTab: all.filter((entry) => !elsewhere(entry)),
+      matchesOtherTabs: all.filter(elsewhere),
     };
-  }, [trimmedQuery, section]);
+  }, [trimmedQuery, section, searchParams, location.hash]);
 
   // Searching hides non-matching cards on this tab. Sections own their own
   // markup, so the filter runs over the `data-settings-anchor` ids the
@@ -454,7 +472,10 @@ export function SettingsPage({
         .some((card) => card.style.display !== "none");
       group.style.display = hasVisibleCard ? "" : "none";
     });
-  }, [trimmedQuery, matchesThisTab, section]);
+    // `location.search` and `location.hash`: a sub-page (one provider or
+    // integration, opened by its param or a deeplink) mounts new cards without
+    // changing the tab, and they need the filter too.
+  }, [trimmedQuery, matchesThisTab, section, location.search, location.hash]);
 
   const projectDisplayName = useAppStore((state) => state.project?.displayName);
   const hasOpenProject = Boolean(projectDisplayName);

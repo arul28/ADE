@@ -129,10 +129,6 @@ export function IntegrationHero({
   );
 }
 
-export function IntegrationChip({ children }: { children: ReactNode }) {
-  return <span className="ade-ig-chip">{children}</span>;
-}
-
 /**
  * One card on an integration page. `anchor` is the settings deeplink target:
  * search results and `ade://settings/…` links scroll to it.
@@ -178,34 +174,6 @@ export function IntegrationCard({
       </header>
       {children ? <div className="ade-ig-card-body">{children}</div> : null}
     </section>
-  );
-}
-
-/** A row inside a card: title and a quiet line on the left, a control on the right. */
-export function IntegrationRow({
-  title,
-  hint,
-  control,
-  anchor,
-  children,
-}: {
-  title: ReactNode;
-  hint?: ReactNode;
-  control?: ReactNode;
-  anchor?: string;
-  children?: ReactNode;
-}) {
-  return (
-    <div className="ade-ig-row" id={anchor} data-settings-anchor={anchor}>
-      <div className="ade-ig-row-main">
-        <div className="ade-ig-row-copy">
-          <div className="ade-ig-row-title">{title}</div>
-          {hint ? <div className="ade-ig-row-hint">{hint}</div> : null}
-        </div>
-        {control ? <div className="ade-ig-row-control">{control}</div> : null}
-      </div>
-      {children}
-    </div>
   );
 }
 

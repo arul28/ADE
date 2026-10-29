@@ -3,7 +3,7 @@
  * accent, a banner with the maker's own art on the right, and the logo
  * standing on it in 3D (`SolidLogo`, shared with the provider pages).
  */
-import type { CSSProperties, ReactNode } from "react";
+import type { CSSProperties } from "react";
 import { JIRA_LOGO_PATH } from "../../lanes/jiraBrand";
 import { LINEAR_LOGO_PATH } from "../../lanes/linearBrand";
 import type { ProviderBrandLogo } from "../providers/providerBrand";
@@ -42,13 +42,9 @@ export type IntegrationBrand = {
   banner: CSSProperties;
   /** The maker's banner, standing at the right of the hero. */
   art: string;
-  /** Where the art sits, when its mark is not centered (Jira's sits low). */
-  artStyle?: CSSProperties;
   /** Dark text on a light banner. */
   lightBanner?: boolean;
   logo: Extract<ProviderBrandLogo, { kind: "solid" }>;
-  /** The flat mark for small places (the grid's tiles, card heads). */
-  mark: (size: number) => ReactNode;
 };
 
 const BRANDS: Record<IntegrationId, IntegrationBrand> = {
@@ -66,7 +62,6 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
     art: githubArt,
     lightBanner: true,
     logo: { kind: "solid", mark: mark(GITHUB_LOGO_PATH), face: "#24292F", side: "#0B0D10", size: 80 },
-    mark: mark(GITHUB_LOGO_PATH),
   },
   linear: {
     id: "linear",
@@ -81,7 +76,6 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
     },
     art: linearArt,
     logo: { kind: "solid", mark: mark(LINEAR_LOGO_PATH), face: "#FFFFFF", side: "#1C2266", size: 76 },
-    mark: mark(LINEAR_LOGO_PATH),
   },
   jira: {
     id: "jira",
@@ -95,10 +89,8 @@ const BRANDS: Record<IntegrationId, IntegrationBrand> = {
       ].join(", "),
     },
     art: jiraArt,
-    artStyle: { height: "78%" },
     lightBanner: true,
     logo: { kind: "solid", mark: mark(JIRA_LOGO_PATH), face: "#2684FF", side: "#0B3F99", size: 76 },
-    mark: mark(JIRA_LOGO_PATH),
   },
 };
 

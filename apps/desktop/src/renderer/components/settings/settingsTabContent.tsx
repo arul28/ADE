@@ -176,13 +176,23 @@ function AgentsTabContent() {
 }
 
 /**
- * The integration a `#hash` deeplink lands in: every integrations anchor
- * starts with its integration's id (`github-connection`, `jira-projects`, and
- * the legacy bare `#github` / `#linear`).
+ * The integration a settings anchor or `#hash` deeplink belongs to: every
+ * integrations anchor starts with its integration's id (`github-connection`,
+ * `jira-projects`, and the legacy bare `#github` / `#linear`).
  */
-function integrationIdFromHash(hash: string): IntegrationId | null {
-  const head = decodeSettingsHash(hash).split("-")[0] ?? "";
+export function integrationIdForAnchor(anchorOrHash: string): IntegrationId | null {
+  const head = decodeSettingsHash(anchorOrHash).split("-")[0] ?? "";
   return isIntegrationId(head) ? head : null;
+}
+
+/**
+ * The integration page the URL has open, or null for the grid. A hash wins: a
+ * settings search result keeps the query string, so a stale `integration=`
+ * from the page open before it must not override its target.
+ */
+export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: string): IntegrationId | null {
+  const param = searchParams.get("integration")?.trim();
+  return integrationIdForAnchor(hash) ?? (isIntegrationId(param) ? param : null);
 }
 
 /**
@@ -195,8 +205,7 @@ function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | nu
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { pin } = useSettingsMachineScope();
-  const param = searchParams.get("integration")?.trim();
-  const requested = isIntegrationId(param) ? param : integrationIdFromHash(location.hash);
+  const requested = openIntegrationFromUrl(searchParams, location.hash);
   const sections = (TAB_SECTIONS.integrations ?? []).filter(
     (section) => !machine || !section.machine || machineSectionAvailable(section.machine, machine),
   );

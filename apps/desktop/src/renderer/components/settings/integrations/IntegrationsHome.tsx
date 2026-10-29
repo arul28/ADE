@@ -6,6 +6,7 @@
 import React, { useEffect, useState } from "react";
 import { CaretRight } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
+import { captureError } from "../../../../shared/sentry/capture";
 import { INTEGRATION_IDS, integrationBrand, integrationThemeVars, type IntegrationId } from "./integrationBrand";
 import type { IntegrationTone } from "./IntegrationChrome";
 import { SolidLogo } from "../providers/ProviderHero";
@@ -69,7 +70,14 @@ export function IntegrationsHome({
     for (const id of INTEGRATION_IDS) {
       readSummary(id, pin)
         .then((summary) => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: summary })); })
-        .catch(() => { if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: UNKNOWN })); });
+        .catch((error: unknown) => {
+          captureError(error, {
+            tags: { feature: "integrations_settings", action: "read_status", integration: id },
+            fingerprint: ["integrations_settings", "read_status", id],
+            handled: true,
+          });
+          if (!cancelled) setSummaries((prev) => ({ ...prev, [id]: UNKNOWN }));
+        });
     }
     return () => { cancelled = true; };
     // A rebuilt pin with the same key is the same machine.

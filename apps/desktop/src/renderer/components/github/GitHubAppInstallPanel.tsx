@@ -9,6 +9,7 @@ import type {
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
 import { IntegrationCard } from "../settings/integrations/IntegrationChrome";
+import { Banner } from "../ui/notice";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import {
   deriveGithubAccountAuthState,
@@ -55,6 +56,8 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
   } = useGithubAppUserAuth(pin);
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
+  // A failed sign-in step; shown as an error, apart from progress messages.
+  const [deviceError, setDeviceError] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -142,6 +145,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
     if (!window.ade?.github?.startAppUserDeviceAuth) return;
     setAuthLoading(true);
     setDeviceMessage(null);
+    setDeviceError(null);
     setDeviceCodeCopied(false);
     try {
       const session = await window.ade.github.startAppUserDeviceAuth(pin);
@@ -149,7 +153,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       // The code is approved in a browser, which is always This computer's.
       openExternalUrl(session.verificationUriComplete ?? session.verificationUri);
     } catch (error) {
-      setDeviceMessage(deviceAuthErrorCopy(error));
+      setDeviceError(deviceAuthErrorCopy(error));
     } finally {
       setAuthLoading(false);
     }
@@ -162,9 +166,10 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       const next = await window.ade.github.clearAppUserAuth(pin);
       setAppAuth(next ?? null);
       setDeviceSession(null);
+      setDeviceError(null);
       setDeviceMessage("ADE's GitHub authorization was removed on this machine.");
     } catch (error) {
-      setDeviceMessage(deviceAuthErrorCopy(error));
+      setDeviceError(deviceAuthErrorCopy(error));
     } finally {
       setDisconnecting(false);
       setDisconnectArmed(false);
@@ -225,22 +230,25 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         } catch (error) {
           if (cancelled) return;
           setDeviceSession(null);
-          setDeviceMessage(deviceAuthErrorCopy(error));
+          setDeviceError(deviceAuthErrorCopy(error));
         }
         return;
       }
       setDeviceSession(null);
-      setDeviceMessage(deviceAuthMessageCopy(result.message));
-      if (result.status === "authorized") {
-        autoRenewCountRef.current = 0;
-        setDeviceMessage("GitHub authorization is complete. Checking repository access...");
-        await loadStatus(true, { retryAfterAuthorization: true });
-        // Post-fix auto-heal: now that the App is authorized, kick a one-shot
-        // reconcile so this project's PR badges light up without a manual refresh.
-        // Swallow rejections (e.g. a project transition tearing down the runtime)
-        // so this fire-and-forget can never surface as an unhandled rejection.
-        void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+      if (result.status !== "authorized") {
+        setDeviceMessage(null);
+        setDeviceError(deviceAuthMessageCopy(result.message));
+        return;
       }
+      autoRenewCountRef.current = 0;
+      setDeviceError(null);
+      setDeviceMessage("GitHub authorization is complete. Checking repository access...");
+      await loadStatus(true, { retryAfterAuthorization: true });
+      // Post-fix auto-heal: now that the App is authorized, kick a one-shot
+      // reconcile so this project's PR badges light up without a manual refresh.
+      // Swallow rejections (e.g. a project transition tearing down the runtime)
+      // so this fire-and-forget can never surface as an unhandled rejection.
+      void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
       cancelled = true;
@@ -456,6 +464,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         </div>
       ) : null}
       {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+      {deviceError ? <p style={{ ...authMessageStyle, color: COLORS.danger }}>{deviceError}</p> : null}
       {accountState === "missing" && !deviceSession && !accountChecking ? (
         <p style={authMessageStyle}>Authorize once so ADE can check which repositories the app is installed on.</p>
       ) : null}
@@ -570,6 +579,9 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
               ) : null}
               {deviceBlock}
               {deviceMessage ? <p className="ade-ig-note">{deviceMessage}</p> : null}
+              {deviceError ? (
+                <Banner layout="inline" model={{ id: "github-app-auth-error", tone: "error", title: "GitHub authorization didn't finish", detail: deviceError }} />
+              ) : null}
               {!accountChecking && (accountCta || disconnectControl) ? (
                 <div className="ade-ig-step-actions">
                   {accountCta}
