@@ -197,16 +197,6 @@ export function formatSpend(usd: number): string {
   return usd > 0 ? formatCost(usd) : "$0.00";
 }
 
-/** Map a status string to Tailwind text+border classes (automations style). */
-export function statusToneAutomation(status: string | null): string {
-  if (status === "succeeded") return "border-emerald-500/40 text-emerald-300";
-  if (status === "failed") return "border-red-500/40 text-red-300";
-  if (status === "running") return "border-amber-500/40 text-amber-300";
-  if (status === "skipped") return "border-border text-muted-fg";
-  if (status === "cancelled") return "border-border text-muted-fg";
-  return "border-border text-muted-fg";
-}
-
 /** Extract a human-readable error message from an unknown thrown value. */
 export function extractError(err: unknown): string {
   return err instanceof Error ? err.message : String(err);

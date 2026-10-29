@@ -31,6 +31,7 @@ import type { createLaneService } from "../lanes/laneService";
 import { isRecord, nowIso } from "../shared/utils";
 import type { AutomationPrLaneService } from "./automationPrBranchLane";
 import type { TriggerContext } from "./automationService";
+import { automationRunNeedsLane } from "../../../shared/automationRunLane";
 
 /** `resolvePlaceholders` from automationService, passed in so this module does not import it back. */
 export type ResolvePlaceholders = (node: unknown, trigger: TriggerContext) => unknown;
@@ -196,8 +197,6 @@ function trimToNull(value: unknown): string | null {
   return trimmed.length ? trimmed : null;
 }
 
-const requiresTriggerLane = (rule: AutomationRule): boolean => rule.execution?.laneMode === "require-on-trigger";
-
 /** The test event, plan, and throwaway lane. Nothing here writes a run. */
 export function createAutomationTestRuns({
   projectRoot,
@@ -313,7 +312,7 @@ export function createAutomationTestRuns({
     if (rule.execution?.laneMode === "pr-branch" && !trigger.pr?.number && !trigger.laneId) {
       problems.push("This automation works in a pull request's branch. Pick a pull request to test with.");
     }
-    if (mode === "live" && requiresTriggerLane(rule) && !trigger.laneId) {
+    if (mode === "live" && automationRunNeedsLane(rule) && !trigger.laneId) {
       problems.push("This automation works in the trigger's lane. Pick a lane to test with.");
     }
     const type = trigger.triggerType;

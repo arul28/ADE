@@ -308,6 +308,25 @@ const resolvedArg =
   <T>(v: T) =>
   async (_a: any) =>
     v;
+/** A failed built-in run: the "Clean up merged lanes" template run by hand. */
+const BROWSER_MOCK_FAILED_RUN = {
+  id: "run-2",
+  automationId: "auto-clean-up-merged-lanes",
+  chatSessionId: null,
+  triggerType: "manual",
+  startedAt: new Date(Date.now() - 2 * 60_000).toISOString(),
+  endedAt: new Date(Date.now() - 2 * 60_000 + 4).toISOString(),
+  status: "failed",
+  executionKind: "built-in",
+  actionsCompleted: 0,
+  actionsTotal: 1,
+  errorMessage: "No lane to delete. This step deletes the lane its trigger names; pick a lane when you run it by hand, or set a target lane on the step.",
+  spendUsd: 0,
+  confidence: null,
+  triggerMetadata: { reason: "clean-up-merged-lanes", scheduledAt: new Date(Date.now() - 2 * 60_000).toISOString() },
+  summary: null,
+  billingCode: "auto:clean-up-merged-lanes",
+};
 /** Mirrors `createLoginImportUnavailableStub` in the hosted web adapter. */
 const LOGIN_IMPORT_UNAVAILABLE = {
   ok: false as const,
@@ -6880,6 +6899,33 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                     "Recent runs consistently produced concise PR follow-up notes.",
                 },
               },
+              {
+                id: "auto-clean-up-merged-lanes",
+                name: "Clean up merged lanes",
+                description: "When a lane is merged, delete it and its local branch so the workspace stays tidy.",
+                enabled: true,
+                mode: "monitor",
+                triggers: [{ type: "lane.merged" }],
+                trigger: { type: "lane.merged" },
+                execution: {
+                  kind: "built-in",
+                  builtIn: { actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }] },
+                },
+                executor: { mode: "automation-bot" },
+                prompt: "",
+                reviewProfile: "quick",
+                toolPalette: ["git"],
+                contextSources: [],
+                guardrails: {},
+                outputs: { disposition: "comment-only", createArtifact: true },
+                verification: { verifyBeforePublish: false, mode: "intervention" },
+                billingCode: "auto:clean-up-merged-lanes",
+                actions: [{ type: "delete-lane", laneDeleteOptions: { deleteBranch: true, deleteRemoteBranch: false } }],
+                running: false,
+                lastRunAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+                lastRunStatus: "failed",
+                confidence: null,
+              },
             ],
       ),
       toggle: resolvedArg([]),
@@ -6968,7 +7014,23 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
               },
             ],
       ),
-      getRunDetail: resolvedArg({
+      getRunDetail: async (runId: unknown) => (runId === BROWSER_MOCK_FAILED_RUN.id ? {
+        run: BROWSER_MOCK_FAILED_RUN,
+        rule: null,
+        chatSession: null,
+        actions: [{
+          id: "run-2-step-1",
+          runId: BROWSER_MOCK_FAILED_RUN.id,
+          actionIndex: 0,
+          actionType: "delete-lane",
+          startedAt: BROWSER_MOCK_FAILED_RUN.startedAt,
+          endedAt: BROWSER_MOCK_FAILED_RUN.endedAt,
+          status: "failed",
+          errorMessage: BROWSER_MOCK_FAILED_RUN.errorMessage,
+          output: BROWSER_MOCK_FAILED_RUN.errorMessage,
+        }],
+        ingressEvent: null,
+      } : {
         run: {
           id: "run-1",
           automationId: "auto-session-review",
@@ -7030,10 +7092,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           receivedAt: now,
         },
       }),
-      listRuns: resolvedArg(
+      // Each rule's history shows only its own runs.
+      listRuns: async (args: { automationId?: string } = {}) => (
         USE_ADE_DB_SNAPSHOT && Array.isArray(ADE_DB_AUTOMATIONS?.runs)
           ? ADE_DB_AUTOMATIONS.runs
           : [
+              BROWSER_MOCK_FAILED_RUN,
               {
                 id: "run-1",
                 automationId: "auto-session-review",
@@ -7057,8 +7121,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
                   "Summarized the latest PR update and suggested next review points.",
                 billingCode: "auto:session-review",
               },
-            ],
-      ),
+            ]
+      ).filter((run: { automationId?: string }) => !args?.automationId || run.automationId === args.automationId),
       getIngressStatus: resolved({
         webhookGateway: {
           enabled: true,

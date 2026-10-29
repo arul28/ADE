@@ -103,6 +103,7 @@ function githubClause(type: string, trigger: AutomationTrigger): string {
     return trigger.targetBranch ? `${subject} is merged into ${trigger.targetBranch}` : `${subject} is merged`;
   }
   if (type.endsWith("_review_submitted")) return `${subject} gets a review`;
+  if (type.endsWith("_checks_failed")) return `${subject}'s checks fail`;
   return `${subject} changes`;
 }
 

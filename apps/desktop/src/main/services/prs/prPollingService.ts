@@ -188,6 +188,9 @@ export function createPrPollingService({
       previousReviewStatus: PrSummary["reviewStatus"] | null;
       previousMergeConflicts: boolean | null;
       previousBehindBaseBy: number | null;
+      /** This poll announced the PR's head red (the "checks failing" toast's rule). */
+      checksFailureAnnounced: boolean;
+      prChanged: boolean;
     }>;
     polledAt: string;
   }) => void | Promise<void>;
@@ -422,19 +425,29 @@ export function createPrPollingService({
         previousReviewStatus: PrSummary["reviewStatus"] | null;
         previousMergeConflicts: boolean | null;
         previousBehindBaseBy: number | null;
+        checksFailureAnnounced: boolean;
+        prChanged: boolean;
       }> = [];
       for (const pr of prs) {
         const prev = lastByPrId.get(pr.id) ?? null;
         const prevFingerprint = lastFingerprintByPrId.get(pr.id) ?? null;
         const nextFingerprint = getPrFingerprint(pr);
         const mergeReady = isMergeReady(pr);
-        const changed =
+        const failure = rememberChecksFailure(
+          prev
+            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
+            : null,
+          pr,
+        );
+        // An announced failure is a change even when no field moved: a new
+        // head is only announced on the poll after it appeared, still red.
+        const prChanged =
           !prev
           || prevFingerprint !== nextFingerprint
           || prev.checksStatus !== pr.checksStatus
           || prev.reviewStatus !== pr.reviewStatus
           || prev.state !== pr.state;
-        if (changed) {
+        if (prChanged || failure.announce) {
           changedPrs.push(pr);
           changes.push({
             pr,
@@ -443,15 +456,10 @@ export function createPrPollingService({
             previousReviewStatus: prev?.reviewStatus ?? null,
             previousMergeConflicts: prev?.mergeConflicts ?? null,
             previousBehindBaseBy: prev?.behindBaseBy ?? null,
+            checksFailureAnnounced: failure.announce,
+            prChanged,
           });
         }
-
-        const failure = rememberChecksFailure(
-          prev
-            ? { headSha: prev.headSha, announced: prev.checksFailureAnnounced }
-            : null,
-          pr,
-        );
         const shouldNotifyStatusKind = (kind: PrNotificationKind): boolean => {
           if (pr.state !== "open" && pr.state !== "draft") return false;
           if (!prev) return false;

@@ -101,7 +101,8 @@ export function buildChatAppearanceRootStyle(params: {
   const padScale = transcriptTimelinePaddingScale(params.transcriptDensity);
   const padX = Math.round(20 * padScale * 100) / 100;
   const padTop = Math.round(20 * padScale * 100) / 100;
-  const padBot = Math.round(32 * padScale * 100) / 100;
+  // The composer's own height is reserved separately (the overlay inset).
+  const padBot = Math.round(16 * padScale * 100) / 100;
   const bubble = transcriptBubblePaddingPx(params.transcriptDensity);
 
   return {

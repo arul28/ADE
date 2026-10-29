@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { motion } from "motion/react";
 import { useSearchParams } from "react-router-dom";
-import { ClockCounterClockwise, PencilSimple, Play } from "@phosphor-icons/react";
+import { ClockCounterClockwise, PencilSimple, Play, Trash } from "@phosphor-icons/react";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor } from "../../../shared/modelRegistry";
 import type {
   AiSettingsStatus,
@@ -37,6 +37,7 @@ import { parseMachineScopedId } from "../../state/foreignMachineReads";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { clearStoredAutomationDraft, loadStoredAutomationDraft, storeAutomationDraft } from "./automationDraftStore";
 import { automationFeaturesNeedingNewerAde, explainAutomationActionError } from "../../../shared/automationFeatureVersions";
+import { automationRunLaneNeed } from "../../../shared/automationRunLane";
 
 const CHOOSE_MACHINE_HINT = "Choose the machine this automation runs on.";
 
@@ -687,9 +688,11 @@ export function AutomationsWorkspace({
         setError(blocked);
         return;
       }
-      if (rule.execution?.laneMode === "require-on-trigger") {
+      const laneNeed = automationRunLaneNeed(rule);
+      if (laneNeed !== "none") {
         setManualRunRule(rule);
-        setManualRunLaneId(lanesForMachine(entry.machine)[0]?.id ?? "");
+        // Never preselect the lane a run will delete.
+        setManualRunLaneId(laneNeed === "lane-to-delete" ? "" : lanesForMachine(entry.machine)[0]?.id ?? "");
         return;
       }
       void runRuleNow(entry);
@@ -1066,21 +1069,35 @@ function ManualRunModal({
   onCancel: () => void;
   onRun: () => void;
 }) {
+  const deletes = automationRunLaneNeed(rule) === "lane-to-delete";
+  // The primary lane is the project checkout; it is never a lane to delete.
+  const choices = deletes ? lanes.filter((lane) => lane.laneType !== "primary") : lanes;
+  // Steps that delete a lane the rule names run too; the confirmation says so.
+  const alsoDeletes = deletes
+    ? (rule.execution?.builtIn?.actions ?? [])
+      .filter((action) => action.type === "delete-lane" && action.targetLaneId?.trim())
+      .map((action) => lanes.find((lane) => lane.id === action.targetLaneId)?.name ?? action.targetLaneId!)
+    : [];
   return (
     <Dialog
       open
       onOpenChange={(open) => {
         if (!open) onCancel();
       }}
-      title="Choose a lane for this run"
-      description={`${rule.name} requires a lane when triggered.`}
+      title={deletes ? "Choose the lane to delete" : "Choose a lane for this run"}
+      tone={deletes ? "error" : "neutral"}
+      description={deletes
+        ? `${rule.name} deletes the lane its trigger names. Run by hand, it deletes the lane you pick here${
+          alsoDeletes.length ? `, and also ${alsoDeletes.join(", ")}` : ""
+        }.`
+        : `${rule.name} requires a lane when triggered.`}
       width={448}
       actions={[
         { label: "Cancel", variant: "secondary", onClick: onCancel },
         {
-          label: "Run",
+          label: deletes ? "Delete lane" : "Run",
           variant: "solid",
-          icon: <Play size={12} weight="fill" />,
+          icon: deletes ? <Trash size={12} weight="fill" /> : <Play size={12} weight="fill" />,
           disabled: !laneId || pending,
           onClick: onRun,
         },
@@ -1089,14 +1106,15 @@ function ManualRunModal({
       <label className="block space-y-1.5">
         <span className="text-[10px] uppercase tracking-[0.1em] text-muted-fg/60">Lane</span>
         <select className={inputCls} value={laneId} onChange={(e) => onLaneId(e.target.value)}>
-          {lanes.map((lane) => (
+          {deletes ? <option value="">Choose a lane</option> : null}
+          {choices.map((lane) => (
             <option key={lane.id} value={lane.id}>
               {lane.name}
             </option>
           ))}
         </select>
       </label>
-      {!lanes.length ? (
+      {!choices.length ? (
         <Banner
           model={{
             id: "automation-no-active-lanes",

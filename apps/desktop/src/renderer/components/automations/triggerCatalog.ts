@@ -69,6 +69,7 @@ export const TRIGGER_SOURCES: readonly TriggerSourceDef[] = [
       { value: "github.pr_closed", label: "PR closed" },
       { value: "github.pr_commented", label: "PR commented on" },
       { value: "github.pr_review_submitted", label: "PR review submitted" },
+      { value: "github.pr_checks_failed", label: "PR checks failed" },
       { value: "github.issue_opened", label: "Issue opened" },
       { value: "github.issue_edited", label: "Issue edited" },
       { value: "github.issue_closed", label: "Issue closed" },

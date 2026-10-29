@@ -60,6 +60,8 @@ export type AutomationRun = {
   triggerMetadata: Record<string, unknown> | null;
   summary: string | null;
   billingCode: string | null;
+  /** The run had to pass verification before publishing. Older brains omit it. */
+  verificationRequired?: boolean;
 };
 
 export type AutomationActionResult = {

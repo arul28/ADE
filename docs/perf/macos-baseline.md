@@ -958,6 +958,8 @@ CPU is % of one core.
 | "Thinking" shimmer text: style recalcs / renderer | `loop-cost.mjs shimmer` | 240-250/s; 14.6-16.6% | 61/s; 7.0% | 100/s; 10% |
 | Agent working (dots, pulse dot, Working label, top-bar pulse): compositor ticks / renderer / GPU | `loop-cost.mjs working-set` | 240/s; 7.2-8.5%; 6.4-7.4% | 41-47/s; 6.2% (one run 12.4%, machine noise); 6.6% | 60/s; 10%; 9% |
 | Lanes working mark (60 steps/s, compositor): not adopted, unchanged | `loop-cost.mjs lane-spin` | 240/s; 7.6%; 8.8% | same | — |
+| Chat working indicator (sparkle glyph, twinkle, label sheen; 30 steps/s), one running chat: frames / GPU / renderer. Replaces the thinking dots in the chat; measured 2026-10-28 on `bf09cd4b0` + this branch, 120 Hz, load ~3 | `loop-cost.mjs thinking` | 120/s; 22-24%; 15% | 31/s; 17-18%; 14% | 31/s; 23%; 18% |
+| Same, three running chats on screen (split view): the clock shares one frame for all three | `loop-cost.mjs thinking3` | 120/s; 36-40%; 13-17% | 31/s; 21%; 14-15% | 31/s; 26%; 19% |
 
 Any running infinite CSS animation makes Chromium service every display
 frame, whatever its `steps()` say: a compositor loop ticks the compositor and
