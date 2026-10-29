@@ -948,6 +948,10 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const rebase: Record<string, unknown> = {
     scanNeeds: () => call("rebase.scanNeeds", {}, []),
+    // No offline answer: "no need" would read as "no conflicts".
+    getNeed: (laneId: string) => call("rebase.getNeed", { laneId }, () => {
+      throw new Error("Couldn't check for conflicts.");
+    }),
     onEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
   };
 

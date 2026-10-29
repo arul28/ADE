@@ -7105,6 +7105,10 @@ function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistr
 function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("rebase.scanNeeds", { viewerAllowed: true }, async () =>
     requireService(args.conflictService, "Conflict service not available.").scanRebaseNeeds());
+  // One lane, computed fresh (with its conflict prediction): the Catch up menu.
+  register("rebase.getNeed", { viewerAllowed: true }, async (payload) =>
+    requireService(args.conflictService, "Conflict service not available.")
+      .getRebaseNeed(parseConflictLaneArgs(payload, "rebase.getNeed").laneId));
   register("history.listOperations", { viewerAllowed: true }, async (payload) =>
     requireService(args.operationService, "Operation service not available.").list(parseListOperationsArgs(payload)));
   register("github.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload): Promise<GitHubStatus> =>

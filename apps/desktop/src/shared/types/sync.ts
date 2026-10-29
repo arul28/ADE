@@ -3028,6 +3028,7 @@ export type SyncRemoteCommandAction =
   | "conflicts.listOverlaps"
   | "conflicts.getBatchAssessment"
   | "rebase.scanNeeds"
+  | "rebase.getNeed"
   | "history.listOperations"
   | "github.getStatus"
   | "github.getRemoteStatus"

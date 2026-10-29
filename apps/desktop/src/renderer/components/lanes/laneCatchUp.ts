@@ -7,16 +7,20 @@ import type { LaneRebaseLine } from "./laneRebaseNeeds";
  * What a lane's Catch up menu offers. "Ask an agent" is always there; the two
  * direct ways are offered only when they are safe:
  *
- * - **Rebase now**: nothing uncommitted, no rebase or merge in progress, no
- *   predicted conflict, and the branch was never pushed (a rebase would
- *   rewrite pushed history).
- * - **Merge <base> in**: nothing uncommitted, nothing in progress, no
- *   predicted conflict. It rewrites nothing, so a pushed branch is fine.
+ * - **Rebase now**: nothing uncommitted, no rebase or merge in progress, a
+ *   conflict check that found none, and the branch was never pushed (a
+ *   rebase would rewrite pushed history).
+ * - **Merge <base> in**: nothing uncommitted, nothing in progress, a conflict
+ *   check that found none. It rewrites nothing, so a pushed branch is fine.
  *
- * When neither is safe, `blocker` names why, in a few words.
+ * An unknown conflict answer (`conflictPredicted: null`) is not safe: the
+ * direct ways wait for the check. When neither is safe, `blocker` names why,
+ * in a few words.
  */
 export type LaneCatchUpFacts = {
   line: Pick<LaneRebaseLine, "conflictPredicted" | "conflictingFiles">;
+  /** The menu's conflict check, run on the lane's machine when it opens. */
+  conflictCheck: "checking" | "done" | "failed";
   dirty: boolean;
   /** A rebase or merge is in progress in the lane. */
   inProgress: boolean;
@@ -42,7 +46,11 @@ export function laneCatchUpOptions(facts: LaneCatchUpFacts): LaneCatchUpOptions 
         : "Conflicts expected"
       : facts.dirty
         ? "Uncommitted changes"
-        : null;
+        : facts.line.conflictPredicted !== false
+          ? facts.conflictCheck === "checking"
+            ? "Checking for conflicts…"
+            : "Couldn't check for conflicts"
+          : null;
   const rebase = shared == null && facts.pushed === false;
   const merge = shared == null && facts.mergeAvailable;
   if (rebase || merge) return { rebase, merge, blocker: null };

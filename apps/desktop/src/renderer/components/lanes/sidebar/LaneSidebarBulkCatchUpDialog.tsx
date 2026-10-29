@@ -87,6 +87,8 @@ export function LaneSidebarBulkCatchUpDialog({
   const busy = progress != null;
   // Whether each lane's branch is on the remote, read once per machine on open.
   const [syncPushed, setSyncPushed] = useState<ReadonlyMap<string, boolean> | null>(null);
+  // A fresh conflict check per lane, on its own machine; missing = couldn't check.
+  const [conflicts, setConflicts] = useState<ReadonlyMap<string, { predicted: boolean; files: string[] }> | null>(null);
   // Keyed on the lanes and their machines, not the array: the page rebuilds it on every refresh.
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
@@ -99,9 +101,26 @@ export function LaneSidebarBulkCatchUpDialog({
     if (!open) {
       setProgress(null);
       setSyncPushed(null);
+      setConflicts(null);
       return;
     }
     let cancelled = false;
+    void Promise.all(targets.map(async (item) => {
+      if (!item.target.ok) return [];
+      try {
+        const need = await window.ade.rebase?.getNeed(item.target.laneId, item.target.pin);
+        if (need === undefined) throw new Error("This machine can't check for conflicts.");
+        const result = need
+          ? { predicted: need.conflictPredicted, files: need.conflictPredicted ? need.conflictingFiles ?? [] : [] }
+          : { predicted: false, files: [] as string[] };
+        return [[item.key, result] as const];
+      } catch (error) {
+        console.warn("lane_catch_up.conflict_check_failed", error);
+        return [];
+      }
+    })).then((entries) => {
+      if (!cancelled) setConflicts(new Map(entries.flat()));
+    });
     const byMachine = new Map<string, { pin: LaneCatchUpTarget & { ok: true }; items: LaneBulkCatchUpTarget[] }>();
     for (const item of targets) {
       if (!item.target.ok) continue;
@@ -129,8 +148,12 @@ export function LaneSidebarBulkCatchUpDialog({
     const statusPushed = item.hasPr || (item.lane.status?.remoteBehind ?? -1) >= 0;
     const pushed = statusPushed ? true : syncPushed?.get(item.key) ?? null;
     if (!item.target.ok) return { item, pushed, plan: { kind: "agent", reason: item.target.reason } as Plan };
+    const checked = conflicts?.get(item.key);
     const options = laneCatchUpOptions({
-      line: item.line,
+      line: checked
+        ? { conflictPredicted: checked.predicted, conflictingFiles: checked.files }
+        : { conflictPredicted: null, conflictingFiles: [] },
+      conflictCheck: conflicts == null ? "checking" : checked ? "done" : "failed",
       dirty: Boolean(item.lane.status?.dirty),
       inProgress: Boolean(item.lane.status?.rebaseInProgress),
       pushed,
@@ -142,10 +165,10 @@ export function LaneSidebarBulkCatchUpDialog({
         ? { kind: "merge" }
         : { kind: "agent", reason: options.blocker ?? "Needs a closer look" };
     return { item, pushed, plan };
-  }), [mergeAvailable, syncPushed, targets]);
+  }), [conflicts, mergeAvailable, syncPushed, targets]);
 
   const direct = rows.filter((row) => row.plan.kind !== "agent");
-  const checking = open && syncPushed == null;
+  const checking = open && (syncPushed == null || conflicts == null);
 
   const run = async () => {
     const failures: string[] = [];

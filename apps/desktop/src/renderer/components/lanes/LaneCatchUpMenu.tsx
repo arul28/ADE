@@ -190,11 +190,30 @@ export function LaneCatchUpMenu({
   // remote, and which chat would get the draft.
   const [syncPushed, setSyncPushed] = useState<boolean | null>(null);
   const [chats, setChats] = useState<AgentChatSessionSummary[] | null>(null);
+  // A fresh conflict check (`git merge-tree` against the base) on the lane's
+  // own machine, so a lane on another computer is checked like a local one.
+  const [check, setCheck] = useState<
+    { state: "checking" } | { state: "done"; predicted: boolean; files: string[] } | { state: "failed" }
+  >({ state: "checking" });
   useEffect(() => {
     if (!open || !laneId) return;
     let cancelled = false;
     setSyncPushed(null);
     setChats(null);
+    setCheck({ state: "checking" });
+    // A host without the check rejects here, which reads as "couldn't check".
+    void Promise.resolve().then(() => window.ade.rebase.getNeed(laneId, pin))
+      .then((need) => {
+        if (cancelled) return;
+        // No need means nothing to catch up with now: nothing to conflict.
+        setCheck(need
+          ? { state: "done", predicted: need.conflictPredicted, files: need.conflictPredicted ? need.conflictingFiles ?? [] : [] }
+          : { state: "done", predicted: false, files: [] });
+      })
+      .catch((error) => {
+        console.warn("lane_catch_up.conflict_check_failed", error);
+        if (!cancelled) setCheck({ state: "failed" });
+      });
     void window.ade.git.getSyncStatus({ laneId }, pin)
       .then((status) => { if (!cancelled) setSyncPushed(status ? status.hasUpstream : null); })
       .catch(() => {});
@@ -209,8 +228,12 @@ export function LaneCatchUpMenu({
   // A tracked upstream or a PR means pushed for sure; otherwise ask git.
   const statusPushed = hasPr || (lane.status?.remoteBehind ?? -1) >= 0;
   const pushed = statusPushed ? true : syncPushed;
+  const checkedLine = check.state === "done"
+    ? { conflictPredicted: check.predicted, conflictingFiles: check.files }
+    : { conflictPredicted: null, conflictingFiles: [] as string[] };
   const options = laneCatchUpOptions({
-    line,
+    line: checkedLine,
+    conflictCheck: check.state,
     dirty: Boolean(lane.status?.dirty),
     inProgress: inProgress || Boolean(lane.status?.rebaseInProgress),
     pushed,
@@ -225,9 +248,9 @@ export function LaneCatchUpMenu({
     behindBy: line.behindBy,
     mergedPrNumber: line.mergedPrNumber,
     pushed,
-    conflictingFiles: line.conflictingFiles,
+    conflictingFiles: check.state === "done" ? check.files : line.conflictingFiles,
     failure,
-  }), [lane.branchRef, lane.name, line, pushed]);
+  }), [check, lane.branchRef, lane.name, line, pushed]);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -385,7 +408,7 @@ export function LaneCatchUpMenu({
               data-testid="lane-catch-up-blocker"
             >
               <Warning size={12} weight="fill" className="shrink-0" style={{ color: COLORS.warning }} />
-              <span className="min-w-0 truncate" title={line.conflictingFiles.join("\n") || undefined}>{options.blocker}</span>
+              <span className="min-w-0 truncate" title={checkedLine.conflictingFiles.join("\n") || undefined}>{options.blocker}</span>
             </div>
           ) : null}
         </div>
