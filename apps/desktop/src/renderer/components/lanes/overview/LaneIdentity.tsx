@@ -265,10 +265,10 @@ export function LaneIdentity({
         </div>
       </div>
 
-      {/* One line; a narrow column clips the last facts rather than wrapping. */}
-      <div className="flex min-w-0 items-center gap-x-4 overflow-hidden whitespace-nowrap text-[12.5px] text-fg/75" data-testid="lane-status-line">
+      {/* Each fact stays whole; a narrow column wraps them onto a second line instead of cutting one off. */}
+      <div className="flex min-w-0 flex-wrap items-center gap-x-4 gap-y-1.5 text-[12.5px] text-fg/75" data-testid="lane-status-line">
         {rebaseLine && (rebaseLine.kind === "built_on_merged" || !behindShown) ? (
-          <span className="inline-flex shrink-0 items-center gap-1.5" title={rebaseLine.title} data-status="rebase">
+          <span className="inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap" title={rebaseLine.title} data-status="rebase">
             <span aria-hidden className="kit-dot" data-state="warn" />
             {rebaseLine.text}
             <CatchUpAction lane={lane} line={rebaseLine} pin={pin} machineId={machineId} hasPr={hasPr} />
@@ -278,7 +278,7 @@ export function LaneIdentity({
           <span
             key={item.key}
             className={cn(
-              "inline-flex shrink-0 items-center gap-1.5 tabular-nums transition-opacity duration-150",
+              "inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap tabular-nums transition-opacity duration-150",
               statusStale && isLaneStatusFact(item) && "opacity-50",
             )}
             title={item.title}

@@ -80,6 +80,8 @@ export type GitHubTabViewChrome = {
   onSync: () => void;
   error: string | null;
   onConnectGitHub: () => void;
+  /** Drawn at the end of the search row (the page's Create PR button). */
+  searchRowAction?: React.ReactNode;
 };
 
 type GitHubTabViewList = {
@@ -245,13 +247,16 @@ function GitHubTabListColumn({
   );
   return (
     <div className={PRS_LIST_ROOT_CLASS}>
-      <div style={{ display: "flex", padding: "0 10px 6px", flexShrink: 0 }}>
-        <GitHubPrSearchInput
-          value={chrome.searchQuery}
-          onChange={chrome.onSearchQueryChange}
-          onSubmit={chrome.onSearchSubmit}
-          placeholder={chrome.listFilters ? "Search, or label:x author:y assignee:z" : undefined}
-        />
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px 6px", flexShrink: 0 }}>
+        <div style={{ display: "flex", flex: 1, minWidth: 0 }}>
+          <GitHubPrSearchInput
+            value={chrome.searchQuery}
+            onChange={chrome.onSearchQueryChange}
+            onSubmit={chrome.onSearchSubmit}
+            placeholder={chrome.listFilters ? "Search, or label:x author:y assignee:z" : undefined}
+          />
+        </div>
+        {chrome.searchRowAction}
       </div>
       <div
         ref={filterRow.ref}

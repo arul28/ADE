@@ -83,6 +83,8 @@ export type GitHubTabProps = {
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   /** False while the PRs tab is hidden; other machines are only read while it shows. */
   active?: boolean;
+  /** The page's Create PR button, shown at the end of the search row. */
+  searchRowAction?: React.ReactNode;
 };
 
 export function GitHubTab({
@@ -97,6 +99,7 @@ export function GitHubTab({
   onSortChange,
   onRefreshAll,
   active = true,
+  searchRowAction,
 }: GitHubTabProps) {
   const navigate = useNavigate();
   const machineIndex = usePrMachineIndex(active);
@@ -908,6 +911,7 @@ export function GitHubTab({
           onSync: () => { void handleSync(); },
           error,
           onConnectGitHub: () => navigate(settingsRouteFor("integrations.github")),
+          searchRowAction,
         }}
         list={{
           parentRef: listRef,

@@ -361,24 +361,29 @@ function PRsPageInner({ active }: { active: boolean }) {
     </div>
   ) : null;
 
-  // The list column: Create PR on top, then an empty host that the GitHub
-  // view fills with its own controls and list.
+  const createPrButton = (
+    <button
+      type="button"
+      data-tour="prs.createBtn"
+      aria-label="Create PR"
+      title="Create PR"
+      onClick={() => openCreatePr()}
+      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-tone-[#C4B5FD] transition-colors duration-150 hover:bg-[rgba(167,139,250,0.14)] hover:text-tone-[#EDE9FE]"
+      style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.16)" }}
+    >
+      <Plus size={13} weight="bold" />
+    </button>
+  );
+  const listReady = !errorContent && !loadingContent;
+
+  // The list column: an empty host that the GitHub view fills with its own
+  // controls and list. Create PR sits at the end of its search row; while the
+  // list is loading or failed, it has a row of its own.
   const listColumn = (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="prs-list-column" data-tour="prs.list">
-      <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-2 pt-1">
-        <div className="min-w-0 flex-1" />
-        <button
-          type="button"
-          data-tour="prs.createBtn"
-          aria-label="Create PR"
-          title="Create PR"
-          onClick={() => openCreatePr()}
-          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-tone-[#C4B5FD] transition-colors duration-150 hover:bg-[rgba(167,139,250,0.14)] hover:text-tone-[#EDE9FE]"
-          style={{ background: "rgba(167,139,250,0.08)", border: "1px solid rgba(167,139,250,0.16)" }}
-        >
-          <Plus size={13} weight="bold" />
-        </button>
-      </div>
+      {listReady ? null : (
+        <div className="flex shrink-0 items-center justify-end px-2.5 pb-2 pt-1">{createPrButton}</div>
+      )}
       <div ref={setListHost} className="flex min-h-0 flex-1 flex-col" />
     </div>
   );
@@ -408,6 +413,7 @@ function PRsPageInner({ active }: { active: boolean }) {
               onSortChange={handleGithubSortChange}
               onRefreshAll={handleRefresh}
               active={active}
+              searchRowAction={createPrButton}
             />
           )}
         </PrsListHostProvider>
