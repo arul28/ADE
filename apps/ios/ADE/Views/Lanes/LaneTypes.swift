@@ -82,14 +82,12 @@ enum LaneDetailSection: String, CaseIterable, Identifiable {
 
 enum LaneGitConfirmation: Identifiable {
   case rebaseLane
-  case rebaseDescendants
   case forcePush
   case rebaseAndPush
 
   var id: String {
     switch self {
     case .rebaseLane: return "rebase-lane"
-    case .rebaseDescendants: return "rebase-descendants"
     case .forcePush: return "force-push"
     case .rebaseAndPush: return "rebase-and-push"
     }
@@ -98,7 +96,6 @@ enum LaneGitConfirmation: Identifiable {
   var title: String {
     switch self {
     case .rebaseLane: return "Rebase this lane?"
-    case .rebaseDescendants: return "Rebase lane and descendants?"
     case .forcePush: return "Force push?"
     case .rebaseAndPush: return "Rebase and push?"
     }
@@ -107,9 +104,7 @@ enum LaneGitConfirmation: Identifiable {
   var message: String {
     switch self {
     case .rebaseLane:
-      return "ADE will replay this lane on top of its parent. Review the lane status before continuing."
-    case .rebaseDescendants:
-      return "ADE will replay this lane and child lanes. Review affected lanes before continuing."
+      return "ADE will replay this lane on top of its base branch. Review the lane status before continuing."
     case .forcePush:
       return "This updates the remote branch with force-with-lease. Review the lane status before continuing."
     case .rebaseAndPush:
@@ -120,7 +115,6 @@ enum LaneGitConfirmation: Identifiable {
   var confirmTitle: String {
     switch self {
     case .rebaseLane: return "Rebase lane"
-    case .rebaseDescendants: return "Rebase all"
     case .forcePush: return "Force push"
     case .rebaseAndPush: return "Rebase and push"
     }
@@ -129,7 +123,6 @@ enum LaneGitConfirmation: Identifiable {
   var actionLabel: String {
     switch self {
     case .rebaseLane: return "rebase lane"
-    case .rebaseDescendants: return "rebase descendants"
     case .forcePush: return "force push"
     case .rebaseAndPush: return "rebase and push"
     }
@@ -201,39 +194,32 @@ enum LaneFileConfirmation: Identifiable {
   }
 }
 
+/// The two ways to make a lane, as on desktop: a fresh branch that starts
+/// from a branch you pick, or a lane that works directly on an existing branch.
 enum LaneCreateMode: String, CaseIterable, Identifiable {
-  case primary
-  case child
-  case importBranch
-  case rescueUnstaged
+  case newBranch
+  case existingBranch
 
   var id: String { rawValue }
 
-  /// Short label for segmented pickers on phone screens.
   var title: String {
     switch self {
-    case .primary:
-      return "Primary"
-    case .child:
-      return "Child"
-    case .importBranch:
-      return "Import"
-    case .rescueUnstaged:
-      return "Rescue"
+    case .newBranch: return "New branch"
+    case .existingBranch: return "Existing branch"
     }
   }
 
-  /// Full description for accessibility and subtitles.
-  var fullTitle: String {
+  var help: String {
     switch self {
-    case .primary:
-      return "Primary lane"
-    case .child:
-      return "Child lane"
-    case .importBranch:
-      return "Import existing branch"
-    case .rescueUnstaged:
-      return "Rescue unstaged work"
+    case .newBranch: return "Makes a fresh branch for this lane, starting from the branch you pick."
+    case .existingBranch: return "The lane works directly on a branch that already exists. No new branch is made."
+    }
+  }
+
+  var symbol: String {
+    switch self {
+    case .newBranch: return "plus.square.on.square"
+    case .existingBranch: return "arrow.triangle.branch"
     }
   }
 }
@@ -257,7 +243,6 @@ struct LaneDeleteSelection: Equatable {
 enum ManageLaneTab: String, CaseIterable, Identifiable {
   case delete
   case appearance
-  case stack
   case archive
 
   var id: String { rawValue }
@@ -266,7 +251,6 @@ enum ManageLaneTab: String, CaseIterable, Identifiable {
     switch self {
     case .delete: return "Delete"
     case .appearance: return "Appearance"
-    case .stack: return "Restack"
     case .archive: return "Archive"
     }
   }
@@ -275,7 +259,6 @@ enum ManageLaneTab: String, CaseIterable, Identifiable {
     switch self {
     case .delete: return "trash"
     case .appearance: return "paintbrush"
-    case .stack: return "arrow.triangle.branch"
     case .archive: return "archivebox"
     }
   }

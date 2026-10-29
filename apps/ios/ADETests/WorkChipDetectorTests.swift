@@ -502,7 +502,7 @@ final class WorkChatLinkedPrSelectionTests: XCTestCase {
     LaneSummary(
       id: id, name: "Lane \(id)", description: nil, laneType: type, baseRef: "main",
       branchRef: branch, worktreePath: "/tmp/\(id)", attachedRootPath: nil,
-      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
       createdAt: "", archivedAt: nil, devicesOpen: nil
@@ -792,7 +792,7 @@ final class WorkChatLegacyHostPrDecodingTests: XCTestCase {
     let lane = LaneSummary(
       id: "lane-1", name: "Lane 1", description: nil, laneType: "worktree", baseRef: "main",
       branchRef: "feature/a", worktreePath: "/tmp/w", attachedRootPath: nil,
-      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
       createdAt: "", archivedAt: nil, devicesOpen: nil

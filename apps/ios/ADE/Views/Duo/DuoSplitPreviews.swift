@@ -56,7 +56,6 @@ private struct DuoLanesFixtureScreen: View {
             ForEach(DuoSplitFixtureData.lanes.filter(filter.matches)) { snapshot in
               LaneTreeRow(
                 snapshot: snapshot,
-                depth: snapshot.lane.laneType == "primary" ? 0 : 1,
                 pullRequest: nil,
                 isPinned: snapshot.lane.id == "s-sync",
                 isOpen: true,
@@ -170,7 +169,6 @@ private struct DuoLaneDetailFixture: View {
       onOpenPullRequest: { _ in },
       onCreatePullRequest: {},
       onRefresh: {},
-      onStackGraph: {},
       onOpenFiles: {},
       onManage: {},
       onCopyLaneLink: {},
@@ -185,9 +183,7 @@ private struct DuoLaneDetailFixture: View {
         canCreatePullRequest: true,
         onOpenPullRequest: { _ in },
         onCreatePullRequest: {},
-        onOpenChat: { _ in },
-        onOpenLane: { _ in },
-        onStackGraph: {}
+        onOpenChat: { _ in }
       )
     } git: {
       if diffOpen {
@@ -240,7 +236,6 @@ private struct DuoLaneDetailFixture: View {
           onCherryPickCommit: { _ in },
           onSwitchBranch: {},
           onRebaseLane: {},
-          onRebaseDescendants: {},
           onRebaseAndPush: {},
           onForcePush: {},
           onOpenLinkedPullRequest: { _ in },
@@ -389,9 +384,6 @@ private enum DuoSplitFixtureData {
     type: String = "worktree",
     branch: String,
     color: String?,
-    parent: String? = nil,
-    depth: Int = 0,
-    children: Int = 0,
     status: LaneStatus = LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)
   ) -> LaneSummary {
     LaneSummary(
@@ -403,10 +395,6 @@ private enum DuoSplitFixtureData {
       branchRef: branch,
       worktreePath: "/tmp/\(id)",
       attachedRootPath: nil,
-      parentLaneId: parent,
-      childCount: children,
-      stackDepth: depth,
-      parentStatus: nil,
       isEditProtected: false,
       status: status,
       color: color,
@@ -433,34 +421,25 @@ private enum DuoSplitFixtureData {
   }
 
   static let lanes: [LaneListSnapshot] = [
-    snapshot(lane("s-main", "Primary", type: "primary", branch: "main", color: "#3B82F6", children: 2), running: 1),
+    snapshot(lane("s-main", "Primary", type: "primary", branch: "main", color: "#3B82F6"), running: 1),
     snapshot(
       lane(
         "s-sync",
         "fix sync loop",
         branch: "ade/fix-sync-loop-2f81",
         color: "#A855F7",
-        parent: "s-main",
-        depth: 1,
         status: LaneStatus(dirty: true, ahead: 3, behind: 1, remoteBehind: 0, rebaseInProgress: false)
       ),
       awaiting: 1
     ),
-    snapshot(lane("s-docs", "docs refresh", branch: "ade/docs-refresh-91aa", color: "#22C55E", parent: "s-main", depth: 1)),
+    snapshot(lane("s-docs", "docs refresh", branch: "ade/docs-refresh-91aa", color: "#22C55E")),
   ]
 
   static func laneDetail(_ snapshot: LaneListSnapshot) -> LaneDetailPayload {
     LaneDetailPayload(
       lane: snapshot.lane,
       runtime: snapshot.runtime,
-      stackChain: [
-        StackChainItem(laneId: "s-main", laneName: "Primary", branchRef: "main", depth: 0, parentLaneId: nil, status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)),
-        StackChainItem(laneId: snapshot.lane.id, laneName: snapshot.lane.name, branchRef: snapshot.lane.branchRef, depth: 1, parentLaneId: "s-main", status: snapshot.lane.status),
-      ],
-      children: [],
       stateSnapshot: nil,
-      rebaseSuggestion: nil,
-      autoRebaseStatus: nil,
       conflictStatus: nil,
       overlaps: [],
       syncStatus: GitUpstreamSyncStatus(

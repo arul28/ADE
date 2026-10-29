@@ -15,14 +15,14 @@ enum LaneMachineFilter: Equatable {
 
 struct LaneListPresentation: Equatable {
   var filteredSnapshots: [LaneListSnapshot]
-  var stackOrderedSnapshots: [LaneListSnapshot]
+  var orderedSnapshots: [LaneListSnapshot]
   var lanePrTagsByLaneId: [String: LanePrTag]
   /// Rows each quick filter would show (before search), for its chip.
   var quickFilterCounts: [LaneQuickFilter: Int] = [:]
 
   static let empty = LaneListPresentation(
     filteredSnapshots: [],
-    stackOrderedSnapshots: [],
+    orderedSnapshots: [],
     lanePrTagsByLaneId: [:]
   )
 }
@@ -107,8 +107,8 @@ extension LanesTabView {
     .padding(.horizontal, 2)
   }
 
-  var stackOrderedSnapshots: [LaneListSnapshot] {
-    laneListPresentation.stackOrderedSnapshots
+  var orderedSnapshots: [LaneListSnapshot] {
+    laneListPresentation.orderedSnapshots
   }
 
   var lanePrTagsByLaneId: [String: LanePrTag] {
@@ -130,7 +130,7 @@ extension LanesTabView {
     }
     let next = LaneListPresentation(
       filteredSnapshots: filtered,
-      stackOrderedSnapshots: laneStackGraphOrder(filtered),
+      orderedSnapshots: laneListDisplayOrder(filtered),
       lanePrTagsByLaneId: lanePrTagByLaneId(
         snapshots: laneSnapshots,
         pullRequests: pullRequests,
@@ -171,8 +171,8 @@ extension LanesTabView {
     }
   }
 
-  /// The other machines the filter shows, each with its rows filtered the
-  /// same way as the focused list and in stack order.
+  /// The other machines the filter shows, each with its rows filtered and
+  /// ordered the same way as the focused list.
   var visibleRemoteMachineLanes: [(machine: LaneRemoteMachinesModel.MachineLanes, snapshots: [LaneListSnapshot])] {
     remoteLanes.machines.compactMap { machine in
       switch machineFilter {
@@ -187,7 +187,7 @@ extension LanesTabView {
         pinnedLaneIds: pinnedLaneIds
       )
       guard !filtered.isEmpty else { return nil }
-      return (machine, laneStackGraphOrder(filtered))
+      return (machine, laneListDisplayOrder(filtered))
     }
   }
 
@@ -295,7 +295,6 @@ extension LanesTabView {
   @ViewBuilder
   func laneListRow(
     _ snapshot: LaneListSnapshot,
-    depth: Int,
     pullRequest: LanePrTag?,
     showsMachineChip: Bool,
     chips: LaneMachineChips
@@ -309,7 +308,6 @@ extension LanesTabView {
     let isDuoSelected = duoLayout.isWide && duoSelectedLaneId == laneId
     LaneTreeRow(
       snapshot: snapshot,
-      depth: depth,
       pullRequest: pullRequest,
       isPinned: pinned,
       isOpen: openLaneIds.contains(laneId),
@@ -384,7 +382,7 @@ extension LanesTabView {
   }
 
   /// The lane rows: the focused machine's lanes (primary first, then the
-  /// stack tree), then each other machine's lanes under its name.
+  /// rest oldest first), then each other machine's lanes under its name.
   @ViewBuilder
   var laneListSections: some View {
     // Built once per pass, not once per row.
@@ -413,13 +411,11 @@ extension LanesTabView {
       .padding(.top, 32)
       .adeFlatRow(separator: .hidden)
     } else {
-      if showsFocusedMachineLanes, !stackOrderedSnapshots.isEmpty {
+      if showsFocusedMachineLanes, !orderedSnapshots.isEmpty {
         Section {
-          ForEach(stackOrderedSnapshots) { snapshot in
-            let depth = snapshot.lane.laneType == "primary" ? 0 : laneTreeDisplayDepth(for: snapshot.lane)
+          ForEach(orderedSnapshots) { snapshot in
             laneListRow(
               snapshot,
-              depth: depth,
               pullRequest: lanePrTagsByLaneId[snapshot.lane.id],
               // Each machine's lanes are their own section, named in its
               // header: a machine chip on every row only repeated it.
@@ -429,17 +425,15 @@ extension LanesTabView {
           }
         } header: {
           if !remoteLanes.machines.isEmpty {
-            ADEFlatSectionHeader(focusedMachineName, detail: "\(stackOrderedSnapshots.count)")
+            ADEFlatSectionHeader(focusedMachineName, detail: "\(orderedSnapshots.count)")
           }
         }
       }
       ForEach(remoteSections, id: \.machine.machineKey) { entry in
         Section {
           ForEach(entry.snapshots) { snapshot in
-            let depth = laneTreeDisplayDepth(for: snapshot.lane)
             laneListRow(
               snapshot,
-              depth: depth,
               pullRequest: nil,
               showsMachineChip: false,
               chips: chips

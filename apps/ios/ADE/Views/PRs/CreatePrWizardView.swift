@@ -147,17 +147,10 @@ struct CreatePrWizardView: View {
     lanes
       .filter { $0.archivedAt == nil && $0.laneType == "integration" && $0.id != selectedOption?.id }
       .map { lane in
-        let childNote: String = {
-          switch lane.childCount {
-          case 0: return "integration"
-          case 1: return "stacked · 1 child"
-          default: return "stacked · \(lane.childCount) children"
-          }
-        }()
-        return IntegrationTargetOption(
+        IntegrationTargetOption(
           id: lane.branchRef,
           branchRef: lane.branchRef,
-          subtitle: childNote
+          subtitle: "integration"
         )
       }
   }
@@ -1040,7 +1033,7 @@ fileprivate enum PrStrategyChoice: String {
 
   var helper: String {
     switch self {
-    case .prTarget: return "Recommended · auto-rebase on"
+    case .prTarget: return "Recommended"
     case .laneBase: return "Best for long-lived branches"
     }
   }

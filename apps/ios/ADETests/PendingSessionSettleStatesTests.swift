@@ -486,7 +486,7 @@ final class PendingSessionSettleOverlayWiringTests: XCTestCase {
     LaneSummary(
       id: id, name: "Lane", description: nil, laneType: "worktree", baseRef: "main",
       branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil,
-      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
       createdAt: "", archivedAt: nil, devicesOpen: nil
@@ -860,7 +860,7 @@ final class PendingAttentionClearWiringTests: XCTestCase {
     LaneSummary(
       id: id, name: "Lane", description: nil, laneType: "worktree", baseRef: "main",
       branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil,
-      parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false,
+      isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil,
       createdAt: "", archivedAt: nil, devicesOpen: nil

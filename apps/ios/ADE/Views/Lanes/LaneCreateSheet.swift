@@ -21,6 +21,53 @@ func machineChoiceSubtitle(runningCount: Int, isLeastBusy: Bool) -> String {
   return isLeastBusy ? "\(running) · least busy" : running
 }
 
+/// A branch name as the user would type it: no `refs/heads/`, `refs/remotes/<remote>/`
+/// or `origin/` prefix (`plainLaneStartBranch` in `shared/laneStart.ts`).
+func plainLaneStartBranch(_ value: String?) -> String {
+  var name = (value ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+  if name.hasPrefix("refs/heads/") {
+    name = String(name.dropFirst("refs/heads/".count))
+  } else if name.hasPrefix("refs/remotes/") {
+    name = String(name.dropFirst("refs/remotes/".count))
+    if let slash = name.firstIndex(of: "/") {
+      name = String(name[name.index(after: slash)...])
+    }
+  } else if name.hasPrefix("origin/") {
+    name = String(name.dropFirst("origin/".count))
+  }
+  return name
+}
+
+/// The lane that has `branch` checked out: the folder "Local + uncommitted"
+/// copies from, and the lane an existing branch is already open in.
+func laneHoldingBranch(_ branch: String, lanes: [LaneSummary]) -> LaneSummary? {
+  guard !branch.isEmpty else { return nil }
+  return lanes.first { $0.archivedAt == nil && plainLaneStartBranch($0.branchRef) == branch }
+}
+
+/// How a lane reads in a sentence: the primary lane is "Primary".
+func laneHolderLabel(_ lane: LaneSummary) -> String {
+  lane.laneType == "primary" ? "Primary" : lane.name
+}
+
+/// What each "Bring" choice means for the branch the lane starts from.
+func laneStartBringHint(_ bring: LaneStart.Bring, refLabel: String, holder: LaneSummary?) -> String {
+  switch bring {
+  case .pushed:
+    return refLabel.isEmpty
+      ? "Fetches first, then branches from the remote copy."
+      : "Fetches first, then branches from \(refLabel)."
+  case .local:
+    return refLabel.isEmpty
+      ? "Branches from your local copy, including commits you haven't pushed."
+      : "Branches from your local \(refLabel), including commits you haven't pushed."
+  case .uncommitted:
+    guard let holder else { return "Copies uncommitted changes from the lane that has this branch open." }
+    let place = laneHolderLabel(holder)
+    return "Branches from your local \(refLabel) and copies the uncommitted changes in \(place). \(place) keeps them too."
+  }
+}
+
 struct LaneCreateSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -29,23 +76,23 @@ struct LaneCreateSheet: View {
   let lanes: [LaneSummary]
   let showsModePicker: Bool
   /// The project on another machine that a new lane goes to (a machine-marked
-  /// project id). Nil for the focused machine. Modes that start from a lane
-  /// (child, rescue) reach that lane's machine by its namespaced id instead.
+  /// project id). Nil for the focused machine.
   let target: LaneCreateTarget?
   let onComplete: @MainActor (String) async -> Void
 
   @State private var name = ""
   @State private var description = ""
   @State private var createMode: LaneCreateMode
-  @State private var selectedParentLaneId = ""
-  @State private var selectedBaseBranch = ""
-  // Desktop parity: new lanes base off the remote-tracking ref by default so a
-  // stale local primary checkout never becomes the branch point. "local" is an
-  // explicit opt-in, same as desktop's create-lane dialog.
-  @State private var baseSource: LaneBaseSource = .remote
-  @State private var remoteRefsFetched = false
+  /// New branch: where it starts and what it brings. Pre-filled from the
+  /// project's saved defaults unless the caller passed a start.
+  @State private var start: LaneStart
+  @State private var startIsPreset: Bool
+  @State private var defaults: NewLaneDefaultsSnapshot?
+  @State private var showsBranchList = false
+  @State private var branchQuery = ""
+  /// Existing branch: the branch the lane works on.
   @State private var selectedImportBranch = ""
-  @State private var selectedRescueLaneId = ""
+  @State private var autoNameFromBranch: String?
   @State private var templates: [LaneTemplate] = []
   @State private var selectedTemplateId: String?
   @State private var branches: [GitBranchSummary] = []
@@ -63,26 +110,11 @@ struct LaneCreateSheet: View {
     case progress
   }
 
-  enum LaneBaseSource: String, CaseIterable, Identifiable {
-    case remote
-    case local
-
-    var id: String { rawValue }
-    var title: String { self == .remote ? "Remote" : "Local" }
-    var subtitle: String { self == .remote ? "Use fetched upstream" : "Use your local branch tip" }
-  }
-
-  private var supportsTemplates: Bool {
-    switch createMode {
-    case .primary, .child, .importBranch: return true
-    case .rescueUnstaged: return false
-    }
-  }
-
   init(
     primaryLane: LaneSummary?,
     lanes: [LaneSummary],
-    initialMode: LaneCreateMode = .primary,
+    initialMode: LaneCreateMode = .newBranch,
+    initialStart: LaneStart? = nil,
     showsModePicker: Bool = true,
     target: LaneCreateTarget? = nil,
     onComplete: @escaping @MainActor (String) async -> Void
@@ -93,6 +125,9 @@ struct LaneCreateSheet: View {
     self.target = target
     self.onComplete = onComplete
     _createMode = State(initialValue: initialMode)
+    _start = State(initialValue: initialStart ?? .builtInDefault)
+    _startIsPreset = State(initialValue: initialStart != nil)
+    _showsBranchList = State(initialValue: initialStart?.from == .branch)
   }
 
   var body: some View {
@@ -145,333 +180,412 @@ struct LaneCreateSheet: View {
 
   @ViewBuilder
   private var formContent: some View {
-      ScrollView {
-        VStack(alignment: .leading, spacing: 24) {
-          LaneFormSection(title: "Create lane", subtitle: createSubtitle) {
-            VStack(alignment: .leading, spacing: 10) {
-              LaneTextField("Lane name", text: $name)
-              LaneTextField("Description", text: $description)
+    ScrollView {
+      VStack(alignment: .leading, spacing: 24) {
+        LaneFormSection(title: "Create lane", subtitle: createMode.help) {
+          VStack(alignment: .leading, spacing: 10) {
+            if showsModePicker {
+              ADEKitSegmented(
+                selection: $createMode,
+                options: LaneCreateMode.allCases.map { (value: $0, title: $0.title) }
+              )
             }
-          }
-
-          LaneFormSection(title: showsModePicker ? "Mode" : modeSectionTitle) {
-            VStack(alignment: .leading, spacing: 12) {
-              if showsModePicker {
-                LazyVGrid(columns: [GridItem(.adaptive(minimum: 132), spacing: 8)], alignment: .leading, spacing: 8) {
-                  ForEach(LaneCreateMode.allCases) { mode in
-                    LaneOptionButton(
-                      title: mode.title,
-                      subtitle: modeSubtitle(mode),
-                      systemImage: modeSymbol(mode),
-                      isSelected: createMode == mode
-                    ) {
-                      createMode = mode
-                    }
-                  }
-                }
-              }
-
-              switch createMode {
-              case .primary:
-                VStack(alignment: .leading, spacing: 12) {
-                  baseSourcePicker
-                  branchOptionList(
-                    branches: baseBranchOptions,
-                    emptyText: baseSource == .remote
-                      ? "No remote-tracking branches found."
-                      : "No local branches found.",
-                    selection: $selectedBaseBranch
-                  )
-                }
-              case .child:
-                VStack(alignment: .leading, spacing: 12) {
-                  laneOptionList(
-                    lanes: lanes.filter { $0.archivedAt == nil },
-                    emptyText: "No lanes available.",
-                    selection: $selectedParentLaneId
-                  )
-                }
-              case .importBranch:
-                VStack(alignment: .leading, spacing: 12) {
-                  ADEEyebrow("Existing branch")
-                  branchOptionList(
-                    branches: branches,
-                    emptyText: "No branches found.",
-                    selection: $selectedImportBranch
-                  )
-                  ADEEyebrow("Base branch")
-                  branchOptionList(
-                    branches: branches.filter { !$0.isRemote },
-                    emptyText: "No local base branches found.",
-                    selection: $selectedBaseBranch
-                  )
-                }
-              case .rescueUnstaged:
-                VStack(alignment: .leading, spacing: 12) {
-                  laneOptionList(
-                    lanes: lanes.filter { $0.archivedAt == nil && $0.status.dirty },
-                    emptyText: "No lanes with unstaged changes.",
-                    selection: $selectedRescueLaneId
-                  )
-                }
-              }
-            }
-          }
-
-          LaneFormSection(title: "Color") {
-            VStack(alignment: .leading, spacing: 8) {
-              if let hex = selectedColorHex, let name = LaneColorPalette.name(forHex: hex) {
-                Text(name)
-                  .font(.system(size: 12.5))
-                  .foregroundStyle(ADEColor.textSecondary)
-              }
-              LaneColorSwatchPicker(
-                selectedHex: selectedColorHex,
-                usedColors: LaneColorPalette.colorsInUse(amongLanes: lanes)
-              ) { next in
-                selectedColorHex = next
-              }
-            }
-          }
-
-          if supportsTemplates {
-            LaneFormSection(title: "Template") {
-              VStack(spacing: 0) {
-                templateRow(id: nil, name: "None", description: "Skip environment setup.")
-                ForEach(templates) { template in
-                  Rectangle().fill(ADEKit.rule).frame(height: 0.75)
-                  templateRow(id: template.id, name: template.name, description: template.description)
-                }
-              }
-            }
-          }
-
-          if let notice = queuedNotice {
-            ADENoticeCard(
-              title: "Queued on machine",
-              message: notice,
-              icon: "arrow.trianglehead.2.clockwise.rotate.90",
-              tint: ADEColor.warning,
-              actionTitle: "Dismiss",
-              action: { self.queuedNotice = nil }
-            )
-          }
-
-          if let errorMessage {
-            ADESettingsNotice(message: errorMessage, tone: .crit)
+            LaneTextField("Lane name", text: $name)
+            LaneTextField("Description", text: $description)
           }
         }
-        .padding(16)
-      }
-      .adeScreenBackground()
-      .adeNavigationGlass()
-      .navigationTitle(showsModePicker ? "Create lane" : navigationTitleForMode)
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { dismiss() }
-            .disabled(busy)
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          Button(createActionTitle) {
-            Task { await submit() }
-          }
-          .disabled(!canSubmit || busy)
-        }
-      }
-      .task {
-        await loadOptions()
-      }
-  }
 
-  @MainActor
-  private func modeSubtitle(_ mode: LaneCreateMode) -> String {
-    switch mode {
-    case .primary: return "Start from a base branch"
-    case .child: return "Stack under a parent lane"
-    case .importBranch: return "Adopt an existing branch"
-    case .rescueUnstaged: return "Move dirty changes"
+        switch createMode {
+        case .newBranch:
+          startFromSection
+          bringSection
+        case .existingBranch:
+          existingBranchSection
+        }
+
+        LaneFormSection(title: "Color") {
+          VStack(alignment: .leading, spacing: 8) {
+            if let hex = selectedColorHex, let name = LaneColorPalette.name(forHex: hex) {
+              Text(name)
+                .font(.system(size: 12.5))
+                .foregroundStyle(ADEColor.textSecondary)
+            }
+            LaneColorSwatchPicker(
+              selectedHex: selectedColorHex,
+              usedColors: LaneColorPalette.colorsInUse(amongLanes: lanes)
+            ) { next in
+              selectedColorHex = next
+            }
+          }
+        }
+
+        LaneFormSection(title: "Template") {
+          VStack(spacing: 0) {
+            templateRow(id: nil, name: "None", description: "Skip environment setup.")
+            ForEach(templates) { template in
+              Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+              templateRow(id: template.id, name: template.name, description: template.description)
+            }
+          }
+        }
+
+        if let notice = queuedNotice {
+          ADENoticeCard(
+            title: "Queued on machine",
+            message: notice,
+            icon: "arrow.trianglehead.2.clockwise.rotate.90",
+            tint: ADEColor.warning,
+            actionTitle: "Dismiss",
+            action: { self.queuedNotice = nil }
+          )
+        }
+
+        if let errorMessage {
+          ADESettingsNotice(message: errorMessage, tone: .crit)
+        }
+      }
+      .padding(16)
+    }
+    .adeScreenBackground()
+    .adeNavigationGlass()
+    .navigationTitle(showsModePicker ? "New lane" : createMode.title)
+    .navigationBarTitleDisplayMode(.inline)
+    .toolbar {
+      ToolbarItem(placement: .cancellationAction) {
+        Button("Cancel") { dismiss() }
+          .disabled(busy)
+      }
+      ToolbarItem(placement: .confirmationAction) {
+        Button("Create") {
+          Task { await submit() }
+        }
+        .disabled(!canSubmit || busy)
+      }
+    }
+    .task {
+      await loadOptions()
     }
   }
 
-  private func modeSymbol(_ mode: LaneCreateMode) -> String {
-    switch mode {
-    case .primary: return "plus.square.on.square"
-    case .child: return "square.stack.3d.up"
-    case .importBranch: return "arrow.triangle.branch"
-    case .rescueUnstaged: return "cross.case"
+  // MARK: - New branch
+
+  /// The branch the start points at right now: the project's default branch,
+  /// the primary lane's branch, or the one picked.
+  private var startSourceBranch: String {
+    switch start.from {
+    case .branch:
+      return plainLaneStartBranch(start.branch)
+    case .primary:
+      if let defaults { return plainLaneStartBranch(defaults.primaryBranch) }
+      return plainLaneStartBranch(primaryLane?.branchRef)
+    case .default:
+      if let defaults { return plainLaneStartBranch(defaults.defaultBranch) }
+      return plainLaneStartBranch(primaryLane?.baseRef)
+    }
+  }
+
+  /// `origin/main` or `main`: where the new branch begins.
+  private var startRefLabel: String {
+    let source = startSourceBranch
+    guard !source.isEmpty else { return "" }
+    return start.bring == .pushed ? "origin/\(source)" : source
+  }
+
+  /// The lane whose uncommitted changes "Local + uncommitted" copies.
+  private var startHolder: LaneSummary? {
+    laneHoldingBranch(startSourceBranch, lanes: lanes)
+  }
+
+  private var uncommittedBlocked: Bool { startHolder == nil }
+
+  private var uncommittedBlockedReason: String {
+    let source = startSourceBranch
+    return "\(source.isEmpty ? "This branch" : source) isn't open in any lane, so there are no uncommitted changes to copy."
+  }
+
+  private var startFromSection: some View {
+    LaneFormSection(title: "Start from") {
+      VStack(alignment: .leading, spacing: 10) {
+        LaneChoiceRow(
+          title: "Default branch",
+          subtitle: defaultBranchLabel,
+          systemImage: "arrow.triangle.branch",
+          isSelected: start.from == .default
+        ) {
+          chooseStart(.default)
+        }
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+        LaneChoiceRow(
+          title: "Primary lane's branch",
+          subtitle: primaryBranchLabel,
+          systemImage: "house",
+          isSelected: start.from == .primary
+        ) {
+          chooseStart(.primary)
+        }
+        Rectangle().fill(ADEKit.rule).frame(height: 0.75)
+        LaneChoiceRow(
+          title: "A specific branch",
+          subtitle: start.from == .branch ? plainLaneStartBranch(start.branch) : nil,
+          systemImage: "list.bullet",
+          isSelected: start.from == .branch
+        ) {
+          showsBranchList = true
+          if start.from != .branch {
+            start = LaneStart(from: .branch, branch: start.branch, bring: start.bring)
+          }
+        }
+        if showsBranchList && start.from == .branch {
+          branchSearchField
+          branchOptionList(
+            items: startBranchItems,
+            emptyText: branches.isEmpty ? "No branches found." : "No branches match.",
+            selected: plainLaneStartBranch(start.branch)
+          ) { item in
+            start = LaneStart(from: .branch, branch: item.id, bring: start.bring)
+          }
+        }
+      }
+    }
+  }
+
+  private var defaultBranchLabel: String? {
+    let branch = defaults.map { plainLaneStartBranch($0.defaultBranch) } ?? plainLaneStartBranch(primaryLane?.baseRef)
+    return branch.isEmpty ? nil : branch
+  }
+
+  private var primaryBranchLabel: String {
+    let branch = defaults.map { plainLaneStartBranch($0.primaryBranch) } ?? plainLaneStartBranch(primaryLane?.branchRef)
+    return branch.isEmpty ? "no branch checked out" : branch
+  }
+
+  private func chooseStart(_ from: LaneStart.From) {
+    showsBranchList = false
+    start = LaneStart(from: from, bring: start.bring)
+  }
+
+  private var bringSection: some View {
+    LaneFormSection(title: "Bring") {
+      VStack(alignment: .leading, spacing: 8) {
+        ADEKitSegmented(
+          selection: Binding(
+            get: { start.bring },
+            set: { bring in
+              // "Local + uncommitted" needs a lane with this branch open.
+              if bring == .uncommitted && uncommittedBlocked {
+                ADEHaptics.warning()
+                return
+              }
+              start.bring = bring
+            }
+          ),
+          options: LaneStart.Bring.allCases.map { (value: $0, title: $0.title) }
+        )
+        if start.bring == .uncommitted && uncommittedBlocked {
+          hintText(uncommittedBlockedReason, warn: true)
+        } else {
+          hintText(laneStartBringHint(start.bring, refLabel: startRefLabel, holder: startHolder), warn: false)
+          if uncommittedBlocked {
+            hintText("Local + uncommitted is off: \(uncommittedBlockedReason)", warn: false)
+          }
+        }
+      }
+    }
+  }
+
+  // MARK: - Existing branch
+
+  /// A branch already open in a lane is that lane; it cannot get a second one.
+  private var importHolder: LaneSummary? {
+    laneHoldingBranch(plainLaneStartBranch(selectedImportBranch), lanes: lanes)
+  }
+
+  private var existingBranchSection: some View {
+    LaneFormSection(title: "Branch") {
+      VStack(alignment: .leading, spacing: 10) {
+        branchSearchField
+        branchOptionList(
+          items: importBranchItems,
+          emptyText: branches.isEmpty ? "No branches found." : "No branches match.",
+          selected: selectedImportBranch
+        ) { item in
+          chooseImportBranch(item.id)
+        }
+        if let importHolder, !selectedImportBranch.isEmpty {
+          hintText(
+            "\(plainLaneStartBranch(selectedImportBranch)) is already open in \(laneHolderLabel(importHolder)). A branch can only be open in one lane at a time.",
+            warn: true
+          )
+        } else if !selectedImportBranch.isEmpty {
+          hintText("No new branch is made. The lane's commits go onto \(plainLaneStartBranch(selectedImportBranch)).", warn: false)
+        } else {
+          hintText("The lane works directly on the branch you pick.", warn: false)
+        }
+      }
+    }
+  }
+
+  /// Picking a branch names the lane after it, until the user types a name.
+  private func chooseImportBranch(_ branch: String) {
+    selectedImportBranch = branch
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty || trimmed == autoNameFromBranch {
+      let next = plainLaneStartBranch(branch)
+      name = next
+      autoNameFromBranch = next
+    }
+  }
+
+  // MARK: - Branch lists
+
+  private struct BranchItem: Identifiable {
+    /// The value the choice stores: a plain name (new branch) or the ref (existing branch).
+    let id: String
+    let title: String
+    let subtitle: String?
+    let isRemote: Bool
+  }
+
+  /// Every branch a lane can start from, once each: local branches, plus
+  /// remote branches with no local copy, by plain name.
+  private var startBranchItems: [BranchItem] {
+    var seen = Set<String>()
+    var items: [BranchItem] = []
+    for branch in branches where !branch.isRemote {
+      let plain = plainLaneStartBranch(branch.name)
+      guard !plain.isEmpty, seen.insert(plain).inserted else { continue }
+      items.append(BranchItem(id: plain, title: plain, subtitle: branchSubtitle(plain: plain, isCurrent: branch.isCurrent), isRemote: false))
+    }
+    for branch in branches where branch.isRemote {
+      let plain = plainLaneStartBranch(branch.name)
+      guard !plain.isEmpty, plain != "HEAD", seen.insert(plain).inserted else { continue }
+      items.append(BranchItem(id: plain, title: plain, subtitle: "remote only", isRemote: true))
+    }
+    return filteredBranchItems(items)
+  }
+
+  /// Every branch as git lists it, local first.
+  private var importBranchItems: [BranchItem] {
+    let ordered = branches.filter { !$0.isRemote } + branches.filter(\.isRemote)
+    let items = ordered
+      .filter { !$0.name.hasSuffix("/HEAD") }
+      .map { branch in
+        BranchItem(
+          id: branch.name,
+          title: branch.name,
+          subtitle: branch.isRemote ? "remote" : branchSubtitle(plain: plainLaneStartBranch(branch.name), isCurrent: branch.isCurrent),
+          isRemote: branch.isRemote
+        )
+      }
+    return filteredBranchItems(items)
+  }
+
+  private func branchSubtitle(plain: String, isCurrent: Bool) -> String? {
+    if let holder = laneHoldingBranch(plain, lanes: lanes) {
+      return "in \(laneHolderLabel(holder))"
+    }
+    return isCurrent ? "current" : nil
+  }
+
+  private func filteredBranchItems(_ items: [BranchItem]) -> [BranchItem] {
+    let query = branchQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return items }
+    return items.filter { $0.title.localizedCaseInsensitiveContains(query) }
+  }
+
+  @ViewBuilder
+  private var branchSearchField: some View {
+    if branches.count > 6 {
+      LaneTextField("Search branches", text: $branchQuery)
     }
   }
 
   @ViewBuilder
   private func branchOptionList(
-    branches: [GitBranchSummary],
+    items: [BranchItem],
     emptyText: String,
-    selection: Binding<String>
+    selected: String,
+    onSelect: @escaping (BranchItem) -> Void
   ) -> some View {
-    if branches.isEmpty {
+    if items.isEmpty {
       Text(emptyText)
         .font(.caption)
         .foregroundStyle(ADEColor.textMuted)
-    } else if branches.count > 4 {
+    } else if items.count > 4 {
       ScrollView {
-        branchOptionStack(branches: branches, selection: selection)
+        branchOptionStack(items: items, selected: selected, onSelect: onSelect)
       }
       .frame(maxHeight: 320)
       .scrollBounceBehavior(.basedOnSize)
     } else {
-      branchOptionStack(branches: branches, selection: selection)
+      branchOptionStack(items: items, selected: selected, onSelect: onSelect)
     }
   }
 
-  @ViewBuilder
   private func branchOptionStack(
-    branches: [GitBranchSummary],
-    selection: Binding<String>
+    items: [BranchItem],
+    selected: String,
+    onSelect: @escaping (BranchItem) -> Void
   ) -> some View {
-    LaneChoiceList(items: branches) { branch in
+    LaneChoiceList(items: items) { item in
       LaneChoiceRow(
-        title: branch.name,
-        subtitle: branch.isCurrent ? "current" : nil,
-        systemImage: branch.isRemote ? "cloud" : "arrow.triangle.branch",
-        isSelected: selection.wrappedValue == branch.name
+        title: item.title,
+        subtitle: item.subtitle,
+        systemImage: item.isRemote ? "cloud" : "arrow.triangle.branch",
+        isSelected: selected == item.id
       ) {
-        selection.wrappedValue = branch.name
+        onSelect(item)
       }
     }
   }
 
-  @ViewBuilder
-  private func laneOptionList(
-    lanes: [LaneSummary],
-    emptyText: String,
-    selection: Binding<String>
-  ) -> some View {
-    if lanes.isEmpty {
-      Text(emptyText)
-        .font(.caption)
-        .foregroundStyle(ADEColor.textMuted)
-    } else if lanes.count > 4 {
-      ScrollView {
-        laneOptionStack(lanes: lanes, selection: selection)
-      }
-      .frame(maxHeight: 320)
-      .scrollBounceBehavior(.basedOnSize)
-    } else {
-      laneOptionStack(lanes: lanes, selection: selection)
-    }
+  private func hintText(_ text: String, warn: Bool) -> some View {
+    Text(text)
+      .font(.system(size: 12.5))
+      .foregroundStyle(warn ? ADEColor.warning : ADEColor.textSecondary)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  @ViewBuilder
-  private func laneOptionStack(
-    lanes: [LaneSummary],
-    selection: Binding<String>
-  ) -> some View {
-    LaneChoiceList(items: lanes) { lane in
-      LaneChoiceRow(
-        title: lane.name,
-        subtitle: normalizedPrBranchName(lane.branchRef),
-        systemImage: lane.laneType == "primary" ? "house" : "arrow.triangle.branch",
-        isSelected: selection.wrappedValue == lane.id
-      ) {
-        selection.wrappedValue = lane.id
-      }
-    }
-  }
+  // MARK: - Load and submit
 
-  /// Options for the selected base source. Remote lists remote-tracking refs;
-  /// local lists local branches (the pre-existing behavior).
-  private var baseBranchOptions: [GitBranchSummary] {
-    baseSource == .remote
-      ? branches.filter(\.isRemote)
-      : branches.filter { !$0.isRemote }
-  }
-
-  private var baseSourcePicker: some View {
-    ADEKitSegmented(
-      selection: Binding(
-        get: { baseSource },
-        set: { source in
-          guard baseSource != source else { return }
-          baseSource = source
-          selectedBaseBranch = defaultBaseSelection(for: source)
-          if source == .remote {
-            Task { await refreshRemoteRefsIfNeeded() }
-          }
-        }
-      ),
-      options: LaneBaseSource.allCases.map { (value: $0, title: $0.title) }
-    )
-  }
-
-  /// Default ref per source: remote prefers the primary base branch's upstream,
-  /// then `origin/<base>`, then the first remote ref; local keeps the previous
-  /// behavior (current checkout first).
-  private func defaultBaseSelection(for source: LaneBaseSource) -> String {
-    let base = normalizedPrBranchName(primaryLane?.baseRef)
-    if source == .remote {
-      let remoteNames = Set(branches.filter(\.isRemote).map(\.name))
-      if let upstream = branches.first(where: { !$0.isRemote && $0.name == base })?.upstream,
-         !upstream.isEmpty, remoteNames.contains(upstream) {
-        return upstream
-      }
-      if !base.isEmpty, remoteNames.contains("origin/\(base)") {
-        return "origin/\(base)"
-      }
-      return branches.first(where: \.isRemote)?.name ?? ""
-    }
-    let locals = branches.filter { !$0.isRemote }
-    return locals.first(where: \.isCurrent)?.name ?? locals.first?.name ?? (primaryLane?.branchRef ?? "")
-  }
-
-  /// Freshen remote-tracking refs before offering them as bases. The advisory
-  /// fetch carries its own short timeout (and is never queued), so a slow
-  /// remote just falls back to the already-listed refs rather than blocking
-  /// the sheet (desktop's create dialog uses the same fetch-with-timeout
-  /// pattern).
-  @MainActor
-  private func refreshRemoteRefsIfNeeded() async {
-    guard !remoteRefsFetched, let primaryLane else { return }
-    remoteRefsFetched = true
-    let service = syncService
-    let laneId = primaryLane.id
-    try? await service.fetchGitAdvisory(laneId: laneId)
-    if let refreshed = try? await service.listBranches(laneId: laneId) {
-      branches = refreshed
-      if selectedBaseBranch.isEmpty || !branches.contains(where: { $0.name == selectedBaseBranch }) {
-        selectedBaseBranch = defaultBaseSelection(for: baseSource)
-      }
-    }
+  /// The lane whose checkout lists the branches: the primary lane, else any
+  /// lane of the same machine.
+  private var branchListLaneId: String? {
+    primaryLane?.id ?? lanes.first { $0.archivedAt == nil }?.id
   }
 
   @MainActor
   private func loadOptions() async {
+    if selectedColorHex == nil {
+      selectedColorHex = LaneColorPalette.nextAvailableColor(amongLanes: lanes)
+    }
+    // An older brain has no saved defaults: keep the built-in start.
+    let snapshot = await syncService.fetchNewLaneDefaults(
+      targetProjectId: target?.projectId,
+      targetProjectRootPath: target?.rootPath
+    )
+    defaults = snapshot
+    if let snapshot, !startIsPreset {
+      start = snapshot.defaults.start
+      showsBranchList = snapshot.defaults.start.from == .branch
+    }
     do {
-      async let templatesTask = syncService.fetchLaneTemplates()
-      async let defaultIdTask = syncService.fetchDefaultLaneTemplateId()
-      let (loadedTemplates, defaultId) = try await (templatesTask, defaultIdTask)
+      let loadedTemplates = try await syncService.fetchLaneTemplates()
       templates = loadedTemplates
-      if let defaultId, loadedTemplates.contains(where: { $0.id == defaultId }) {
-        selectedTemplateId = defaultId
+      let defaultTemplateId: String?
+      if let snapshot {
+        defaultTemplateId = snapshot.defaults.templateId
+      } else {
+        defaultTemplateId = try? await syncService.fetchDefaultLaneTemplateId()
+      }
+      if let defaultTemplateId, loadedTemplates.contains(where: { $0.id == defaultTemplateId }) {
+        selectedTemplateId = defaultTemplateId
       } else {
         selectedTemplateId = nil
       }
-      if let primaryLane {
-        branches = try await syncService.listBranches(laneId: primaryLane.id)
-        selectedBaseBranch = defaultBaseSelection(for: baseSource)
-        selectedImportBranch = primaryLane.branchRef
-        selectedRescueLaneId = lanes.first(where: { $0.status.dirty && $0.laneType != "primary" })?.id
-          ?? (primaryLane.status.dirty ? primaryLane.id : "")
-        if baseSource == .remote {
-          Task { await refreshRemoteRefsIfNeeded() }
-        }
-      }
-      if selectedRescueLaneId.isEmpty {
-        selectedRescueLaneId = lanes.first(where: { $0.status.dirty && $0.laneType != "primary" })?.id
-          ?? (lanes.first(where: { $0.status.dirty })?.id ?? "")
-      }
-      if selectedColorHex == nil {
-        selectedColorHex = LaneColorPalette.nextAvailableColor(amongLanes: lanes)
+      if let branchListLaneId {
+        branches = try await syncService.listBranches(laneId: branchListLaneId)
       }
     } catch {
       ADEHaptics.error()
@@ -486,28 +600,22 @@ struct LaneCreateSheet: View {
       errorMessage = nil
       let created: LaneSummary
       switch createMode {
-      case .primary:
+      case .newBranch:
         created = try await syncService.createLane(
           name: name,
           description: description,
-          parentLaneId: nil,
-          baseBranch: selectedBaseBranch,
+          start: start,
           targetProjectId: target?.projectId,
           targetProjectRootPath: target?.rootPath
         )
-      case .child:
-        created = try await syncService.createChildLane(name: name, parentLaneId: selectedParentLaneId, description: description)
-      case .importBranch:
+      case .existingBranch:
         created = try await syncService.importBranch(
           branchRef: selectedImportBranch,
           name: name,
           description: description,
-          baseBranch: selectedBaseBranch,
           targetProjectId: target?.projectId,
           targetProjectRootPath: target?.rootPath
         )
-      case .rescueUnstaged:
-        created = try await syncService.createFromUnstaged(sourceLaneId: selectedRescueLaneId, name: name, description: description)
       }
 
       if let hex = selectedColorHex, !hex.isEmpty {
@@ -520,7 +628,7 @@ struct LaneCreateSheet: View {
 
       await onComplete(created.id)
 
-      if supportsTemplates, let templateId = selectedTemplateId {
+      if let templateId = selectedTemplateId {
         envProgress = nil
         envPhase = .progress
         busy = false
@@ -539,60 +647,14 @@ struct LaneCreateSheet: View {
   }
 
   private var canSubmit: Bool {
-    let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
     switch createMode {
-    case .primary:
-      return !trimmedName.isEmpty && !selectedBaseBranch.isEmpty
-    case .child:
-      return !trimmedName.isEmpty && !selectedParentLaneId.isEmpty
-    case .importBranch:
-      return !trimmedName.isEmpty && !selectedImportBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !selectedBaseBranch.isEmpty
-    case .rescueUnstaged:
-      return !trimmedName.isEmpty && !selectedRescueLaneId.isEmpty
-    }
-  }
-
-  private var createActionTitle: String {
-    switch createMode {
-    case .primary:
-      return "Create"
-    case .child:
-      return "Create child"
-    case .importBranch:
-      return "Import"
-    case .rescueUnstaged:
-      return "Rescue"
-    }
-  }
-
-  private var createSubtitle: String {
-    switch createMode {
-    case .primary:
-      return "Create a lane from the selected base branch."
-    case .child:
-      return "Create a lane under another ADE lane."
-    case .importBranch:
-      return "Import an existing branch into ADE."
-    case .rescueUnstaged:
-      return "Split unstaged work into a new lane."
-    }
-  }
-
-  private var modeSectionTitle: String {
-    switch createMode {
-    case .primary: return "Base branch"
-    case .child: return "Parent lane"
-    case .importBranch: return "Branch to import"
-    case .rescueUnstaged: return "Source lane"
-    }
-  }
-
-  private var navigationTitleForMode: String {
-    switch createMode {
-    case .primary: return "New lane"
-    case .child: return "Child lane"
-    case .importBranch: return "Import branch"
-    case .rescueUnstaged: return "Rescue unstaged"
+    case .newBranch:
+      if start.from == .branch && plainLaneStartBranch(start.branch).isEmpty { return false }
+      if start.bring == .uncommitted && uncommittedBlocked { return false }
+      return true
+    case .existingBranch:
+      return !selectedImportBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && importHolder == nil
     }
   }
 

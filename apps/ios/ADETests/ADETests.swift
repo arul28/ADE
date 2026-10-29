@@ -834,7 +834,7 @@ final class ADETests: XCTestCase {
 
     let cases: [(args: [String: Any], machineKey: String?, stripped: [String: String])] = [
       (["laneId": laneA, "text": laneA], "mac-b", ["laneId": "lane-a", "text": laneA]),
-      (["parentLaneId": laneB, "name": "child"], "mac-b", ["parentLaneId": "lane-b"]),
+      (["sourceLaneId": laneB, "name": "copy"], "mac-b", ["sourceLaneId": "lane-b"]),
       (["laneId": "lane-a"], nil, ["laneId": "lane-a"]),
       ([:], nil, [:]),
     ]
@@ -847,23 +847,23 @@ final class ADETests: XCTestCase {
     }
     let list = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneIds": [laneA, laneB]]))
     XCTAssertEqual(list.args["laneIds"] as? [String], ["lane-a", "lane-b"])
-    XCTAssertThrowsError(try syncRemoteLaneTarget(args: ["laneId": laneA, "parentLaneId": otherMachineLane]))
+    XCTAssertThrowsError(try syncRemoteLaneTarget(args: ["laneId": laneA, "sourceLaneId": otherMachineLane]))
 
     let reply: [String: Any] = [
-      "lane": ["id": "lane-a", "laneType": "worktree", "worktreePath": "/w/a", "parentLaneId": "lane-p"],
-      "children": [["id": "lane-b", "laneType": "worktree", "worktreePath": "/w/b"]],
+      "lane": ["id": "lane-a", "laneType": "worktree", "worktreePath": "/w/a", "sourceLaneId": "lane-p"],
+      "lanes": [["id": "lane-b", "laneType": "worktree", "worktreePath": "/w/b"]],
       "sessions": [["id": "session-1", "laneId": "lane-a"]],
-      "stackChain": [["laneId": laneA]],
+      "items": [["laneId": laneA]],
     ]
     let tagged = try XCTUnwrap(syncTagRemoteLaneIds(in: reply, machineKey: "mac-b") as? [String: Any])
     let lane = try XCTUnwrap(tagged["lane"] as? [String: Any])
     XCTAssertEqual(lane["id"] as? String, laneA)
-    XCTAssertEqual(lane["parentLaneId"] as? String, workRemoteLaneId(machineKey: "mac-b", laneId: "lane-p"))
-    XCTAssertEqual(((tagged["children"] as? [[String: Any]])?.first?["id"]) as? String, laneB)
+    XCTAssertEqual(lane["sourceLaneId"] as? String, workRemoteLaneId(machineKey: "mac-b", laneId: "lane-p"))
+    XCTAssertEqual(((tagged["lanes"] as? [[String: Any]])?.first?["id"]) as? String, laneB)
     let session = try XCTUnwrap((tagged["sessions"] as? [[String: Any]])?.first)
     XCTAssertEqual(session["id"] as? String, "session-1", "A session id is not a lane id.")
     XCTAssertEqual(session["laneId"] as? String, laneA)
-    XCTAssertEqual(((tagged["stackChain"] as? [[String: Any]])?.first?["laneId"]) as? String, laneA, "Tagging twice is a no-op.")
+    XCTAssertEqual(((tagged["items"] as? [[String: Any]])?.first?["laneId"]) as? String, laneA, "Tagging twice is a no-op.")
 
     // The tagged reply's lane goes back to its machine as the plain id.
     let next = try XCTUnwrap(syncRemoteLaneTarget(args: ["laneId": try XCTUnwrap(lane["id"] as? String)]))
@@ -2052,21 +2052,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testLaneTreeDisplayDepthUsesPersistedStackDepth() {
-    var directChild = makeLaneSummary(id: "lane-child", name: "Child", laneType: "worktree", branchRef: "ade/child")
-    directChild.parentLaneId = "lane-primary"
-    directChild.stackDepth = 1
-    var grandchild = makeLaneSummary(id: "lane-grandchild", name: "Grandchild", laneType: "worktree", branchRef: "ade/grandchild")
-    grandchild.parentLaneId = directChild.id
-    grandchild.stackDepth = 2
-    var invalidDepth = directChild
-    invalidDepth.stackDepth = -1
-
-    XCTAssertEqual(laneTreeDisplayDepth(for: directChild), 1)
-    XCTAssertEqual(laneTreeDisplayDepth(for: grandchild), 2)
-    XCTAssertEqual(laneTreeDisplayDepth(for: invalidDepth), 0)
-  }
-
   func testTerminalDisplayPreservesAnsiRunsForRendering() {
     let display = workTerminalDisplay(
       raw: "\u{001B}[31mError\u{001B}[0m plain \u{001B}[32;1mOK\u{001B}[0m",
@@ -2169,41 +2154,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertNil(payload["projectId"])
     XCTAssertNil(payload["projectRootPath"])
-  }
-
-  func testMakeLanesReparentArgsUsesTrimmedParentLaneIdAndOmitsBaseOverride() throws {
-    let args = makeLanesReparentArgs(
-      laneId: "lane-1",
-      newParentLaneId: "  lane-primary  ",
-      stackBaseBranchRef: nil
-    )
-
-    XCTAssertEqual(args["laneId"] as? String, "lane-1")
-    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-primary")
-    // No stackBaseBranchRef in the payload -- host falls back to the parent's current branch.
-    XCTAssertNil(args["stackBaseBranchRef"])
-  }
-
-  func testMakeLanesReparentArgsIncludesTrimmedStackBaseBranchOverride() throws {
-    let args = makeLanesReparentArgs(
-      laneId: "lane-1",
-      newParentLaneId: "lane-parent",
-      stackBaseBranchRef: "  feature/integration  "
-    )
-
-    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-parent")
-    XCTAssertEqual(args["stackBaseBranchRef"] as? String, "feature/integration")
-  }
-
-  func testMakeLanesReparentArgsOmitsWhitespaceOnlyStackBaseBranchOverride() throws {
-    let args = makeLanesReparentArgs(
-      laneId: "lane-1",
-      newParentLaneId: "lane-parent",
-      stackBaseBranchRef: "   "
-    )
-
-    XCTAssertEqual(args["newParentLaneId"] as? String, "lane-parent")
-    XCTAssertNil(args["stackBaseBranchRef"])
   }
 
   func testMakePrGithubSnapshotArgsIncludesExternalClosedOnlyWhenRequested() throws {
@@ -10668,10 +10618,6 @@ final class ADETests: XCTestCase {
         branchRef: "dev",
         worktreePath: "/tmp/project",
         attachedRootPath: nil,
-        parentLaneId: nil,
-        childCount: 1,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: true,
         status: LaneStatus(dirty: true, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         color: "violet",
@@ -10690,10 +10636,6 @@ final class ADETests: XCTestCase {
         branchRef: "ade/linear-test",
         worktreePath: "/tmp/project/.ade/worktrees/linear-test",
         attachedRootPath: "/tmp/project/.ade/worktrees/linear-test",
-        parentLaneId: "lane-primary",
-        childCount: 0,
-        stackDepth: 1,
-        parentStatus: LaneStatus(dirty: true, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         isEditProtected: false,
         status: LaneStatus(dirty: false, ahead: 0, behind: 1, remoteBehind: 0, rebaseInProgress: false),
         color: nil,
@@ -10707,12 +10649,10 @@ final class ADETests: XCTestCase {
 
     let mirrored = database.fetchLanes(includeArchived: true)
     XCTAssertEqual(mirrored.map(\.id), ["lane-primary", "lane-child"])
-    XCTAssertEqual(mirrored.last?.parentLaneId, "lane-primary")
     XCTAssertEqual(mirrored.last?.status.behind, 1)
     XCTAssertEqual(mirrored.first?.isEditProtected, true)
     XCTAssertEqual(mirrored.first?.color, "violet")
     XCTAssertEqual(mirrored.last?.attachedRootPath, "/tmp/project/.ade/worktrees/linear-test")
-    XCTAssertEqual(mirrored.last?.parentStatus?.dirty, true)
     XCTAssertEqual(database.listWorkspaces().first?.isReadOnlyByDefault, false)
     database.close()
   }
@@ -10759,10 +10699,6 @@ final class ADETests: XCTestCase {
         branchRef: "dev",
         worktreePath: "/tmp/project",
         attachedRootPath: nil,
-        parentLaneId: nil,
-        childCount: 0,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: false,
         status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         color: nil,
@@ -10840,10 +10776,6 @@ final class ADETests: XCTestCase {
       branchRef: "main",
       worktreePath: "/tmp/project",
       attachedRootPath: nil,
-      parentLaneId: nil,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: nil,
       isEditProtected: true,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil,
@@ -10888,10 +10820,6 @@ final class ADETests: XCTestCase {
       branchRef: "main",
       worktreePath: "/tmp/project",
       attachedRootPath: nil,
-      parentLaneId: nil,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: nil,
       isEditProtected: true,
       status: LaneStatus(dirty: true, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil,
@@ -11010,10 +10938,6 @@ final class ADETests: XCTestCase {
       branchRef: "ade/ios-lanes",
       worktreePath: "/tmp/project/.ade/worktrees/ios-lanes",
       attachedRootPath: nil,
-      parentLaneId: "lane-primary",
-      childCount: 0,
-      stackDepth: 1,
-      parentStatus: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       isEditProtected: false,
       status: LaneStatus(dirty: true, ahead: 2, behind: 1, remoteBehind: 0, rebaseInProgress: false),
       color: "teal",
@@ -11032,10 +10956,6 @@ final class ADETests: XCTestCase {
       branchRef: "ade/old-lane",
       worktreePath: "/tmp/project/.ade/worktrees/old-lane",
       attachedRootPath: nil,
-      parentLaneId: "lane-primary",
-      childCount: 0,
-      stackDepth: 1,
-      parentStatus: nil,
       isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil,
@@ -11052,25 +10972,6 @@ final class ADETests: XCTestCase {
         LaneListSnapshot(
           lane: activeLane,
           runtime: LaneRuntimeSummary(bucket: "running", runningCount: 1, awaitingInputCount: 1, endedCount: 0, sessionCount: 2),
-          rebaseSuggestion: RebaseSuggestion(
-            laneId: "lane-child",
-            parentLaneId: "lane-primary",
-            parentHeadSha: "abc123",
-            behindCount: 1,
-            lastSuggestedAt: "2026-03-18T00:10:00.000Z",
-            deferredUntil: nil,
-            dismissedAt: nil,
-            hasPr: false
-          ),
-          autoRebaseStatus: AutoRebaseLaneStatus(
-            laneId: "lane-child",
-            parentLaneId: "lane-primary",
-            parentHeadSha: "abc123",
-            state: "awaitingManualRebase",
-            updatedAt: "2026-03-18T00:12:00.000Z",
-            conflictCount: 0,
-            message: "Parent advanced."
-          ),
           conflictStatus: ConflictStatus(
             laneId: "lane-child",
             status: "conflict-predicted",
@@ -11087,8 +10988,6 @@ final class ADETests: XCTestCase {
         LaneListSnapshot(
           lane: archivedLane,
           runtime: LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1),
-          rebaseSuggestion: nil,
-          autoRebaseStatus: nil,
           conflictStatus: nil,
           stateSnapshot: nil
         ),
@@ -11098,7 +10997,7 @@ final class ADETests: XCTestCase {
     let activeSnapshots = database.fetchLaneListSnapshots(includeArchived: false)
     XCTAssertEqual(activeSnapshots.map(\.lane.id), ["lane-child"])
     XCTAssertEqual(activeSnapshots.first?.runtime.bucket, "running")
-    XCTAssertEqual(activeSnapshots.first?.rebaseSuggestion?.behindCount, 1)
+    XCTAssertEqual(activeSnapshots.first?.conflictStatus?.overlappingFileCount, 2)
     XCTAssertEqual(activeSnapshots.first?.stateSnapshot?.agentSummary?["summary"], .string("Codex running"))
 
     let allSnapshots = database.fetchLaneListSnapshots(includeArchived: true)
@@ -11176,10 +11075,6 @@ final class ADETests: XCTestCase {
         branchRef: "main",
         worktreePath: "/tmp/project",
         attachedRootPath: nil,
-        parentLaneId: nil,
-        childCount: 1,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: true,
         status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         color: nil,
@@ -11190,31 +11085,10 @@ final class ADETests: XCTestCase {
         archivedAt: nil
       ),
       runtime: LaneRuntimeSummary(bucket: "awaiting-input", runningCount: 0, awaitingInputCount: 1, endedCount: 0, sessionCount: 1),
-      stackChain: [
-        StackChainItem(
-          laneId: "lane-primary",
-          laneName: "Primary",
-          branchRef: "main",
-          depth: 0,
-          parentLaneId: nil,
-          status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)
-        ),
-      ],
-      children: [],
       stateSnapshot: LaneStateSnapshotSummary(
         laneId: "lane-primary",
         agentSummary: ["summary": .string("Awaiting review")],
         updatedAt: "2026-03-18T00:20:00.000Z"
-      ),
-      rebaseSuggestion: nil,
-      autoRebaseStatus: AutoRebaseLaneStatus(
-        laneId: "lane-primary",
-        parentLaneId: nil,
-        parentHeadSha: nil,
-        state: "rebaseConflict",
-        updatedAt: "2026-03-18T00:21:00.000Z",
-        conflictCount: 1,
-        message: "Manual resolution required."
       ),
       conflictStatus: ConflictStatus(
         laneId: "lane-primary",
@@ -11314,11 +11188,7 @@ final class ADETests: XCTestCase {
     let detail = LaneDetailPayload(
       lane: snapshot.lane,
       runtime: snapshot.runtime,
-      stackChain: [],
-      children: [],
       stateSnapshot: nil,
-      rebaseSuggestion: nil,
-      autoRebaseStatus: nil,
       conflictStatus: nil,
       overlaps: [],
       syncStatus: nil,
@@ -12059,10 +11929,6 @@ final class ADETests: XCTestCase {
         branchRef: "main",
         worktreePath: "/tmp/project",
         attachedRootPath: nil,
-        parentLaneId: nil,
-        childCount: 0,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: true,
         status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         color: nil,
@@ -13312,10 +13178,6 @@ final class ADETests: XCTestCase {
         branchRef: branchRef,
         worktreePath: "/tmp/\(id)",
         attachedRootPath: nil,
-        parentLaneId: nil,
-        childCount: 0,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: false,
         status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
         color: nil,
@@ -13442,43 +13304,6 @@ final class ADETests: XCTestCase {
 
   }
 
-  func testLaneDeleteDependencyBatchesKeepAncestorsAfterSelectedDescendants() {
-    let status = LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false)
-    let runtime = LaneRuntimeSummary(bucket: "ended", runningCount: 0, awaitingInputCount: 0, endedCount: 1, sessionCount: 1)
-
-    func snapshot(_ id: String, parentLaneId: String? = nil) -> LaneListSnapshot {
-      var snapshot = makeLaneListSnapshot(
-        id: id,
-        name: id,
-        laneType: "worktree",
-        baseRef: "main",
-        branchRef: "ade/\(id)",
-        worktreePath: "/project/.ade/worktrees/\(id)",
-        description: nil,
-        status: status,
-        runtime: runtime,
-        createdAt: "2026-03-20T00:00:00.000Z",
-        archivedAt: nil
-      )
-      snapshot.lane.parentLaneId = parentLaneId
-      return snapshot
-    }
-
-    let batches = laneDeleteDependencyBatches(snapshots: [
-      snapshot("lane-parent"),
-      snapshot("lane-child-b", parentLaneId: "lane-parent"),
-      snapshot("lane-grandchild", parentLaneId: "lane-child-a"),
-      snapshot("lane-child-a", parentLaneId: "lane-parent"),
-      snapshot("lane-sibling"),
-    ])
-
-    XCTAssertEqual(batches, [
-      ["lane-child-b", "lane-grandchild", "lane-sibling"],
-      ["lane-child-a"],
-      ["lane-parent"],
-    ])
-  }
-
   @MainActor
   func testLaneDeleteBatchRunnerStartsTwoDeletesAtOnceAndPreservesOrder() async {
     enum DeleteError: Error {
@@ -13545,7 +13370,6 @@ final class ADETests: XCTestCase {
       _ snapshot: LaneListSnapshot,
       isPinned: Bool = false,
       isOpen: Bool = false,
-      depth: Int = 0,
       pullRequest: LanePrTag? = nil,
       isSelectedTransitionSource: Bool = false
     ) -> Int {
@@ -13553,7 +13377,6 @@ final class ADETests: XCTestCase {
         snapshot: snapshot,
         isPinned: isPinned,
         isOpen: isOpen,
-        depth: depth,
         pullRequest: pullRequest,
         isSelectedTransitionSource: isSelectedTransitionSource
       )
@@ -13591,7 +13414,6 @@ final class ADETests: XCTestCase {
       ("status.dirty", { $0.lane.status.dirty = true }),
       ("status.ahead", { $0.lane.status.ahead = 5 }),
       ("status.behind", { $0.lane.status.behind = 7 }),
-      ("childCount", { $0.lane.childCount = 3 }),
       ("devicesOpen", { $0.lane.devicesOpen = [DeviceMarker(deviceId: "d1", displayName: "Phone", platform: "ios")] }),
       ("linearIssue", { $0.lane.linearIssue = issue }),
       ("linearIssueLinks", { $0.lane.linearIssueLinks = [link, secondLink] }),
@@ -13615,7 +13437,6 @@ final class ADETests: XCTestCase {
 
     XCTAssertNotEqual(signature(makeSnapshot(), isPinned: true), base, "renderSignature must change when isPinned changes")
     XCTAssertNotEqual(signature(makeSnapshot(), isOpen: true), base, "renderSignature must change when isOpen changes")
-    XCTAssertNotEqual(signature(makeSnapshot(), depth: 2), base, "renderSignature must change when depth changes")
     XCTAssertNotEqual(
       signature(makeSnapshot(), isSelectedTransitionSource: true),
       base,
@@ -13652,10 +13473,6 @@ final class ADETests: XCTestCase {
       branchRef: "ade/mobile-audit-34b23435",
       worktreePath: "/tmp/mobile-audit",
       attachedRootPath: nil,
-      parentLaneId: "lane-primary",
-      childCount: 0,
-      stackDepth: 1,
-      parentStatus: nil,
       isEditProtected: false,
       status: LaneStatus(dirty: true, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: "#a78bfa",
@@ -13741,10 +13558,6 @@ final class ADETests: XCTestCase {
       branchRef: "ade/mobile-audit-34b23435",
       worktreePath: "/tmp/mobile-audit",
       attachedRootPath: nil,
-      parentLaneId: "lane-primary",
-      childCount: 0,
-      stackDepth: 1,
-      parentStatus: nil,
       isEditProtected: false,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: "#a78bfa",
@@ -14244,13 +14057,6 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(client.renameCalls.isEmpty)
   }
 
-  func testLaneDetailRebaseBannerAccessibilityLabelIncludesVisibleBadges() {
-    XCTAssertEqual(
-      laneDetailRebaseBannerAccessibilityLabel(behindCount: 1, parentLabel: "main", hasPr: true),
-      "Rebase suggested. 1 commit behind. PR open. Rebase this lane onto main to pick up new commits."
-    )
-  }
-
   func testLaneRootEmptyStateGuidesUnpairedUsersWhenNoCacheExists() {
     let emptyState = laneRootEmptyState(
       connectionState: .disconnected,
@@ -14335,20 +14141,12 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(restore.id.hasPrefix("restore:"))
   }
 
-  func testLaneGitConfirmationCoversRebaseLaneAndDescendantsCopy() {
+  func testLaneGitConfirmationCoversRebaseLaneCopy() {
     let lane = LaneGitConfirmation.rebaseLane
     XCTAssertEqual(lane.title, "Rebase this lane?")
     XCTAssertEqual(lane.confirmTitle, "Rebase lane")
     XCTAssertEqual(lane.actionLabel, "rebase lane")
     XCTAssertEqual(lane.id, "rebase-lane")
-    XCTAssertTrue(lane.message.contains("parent"))
-
-    let descendants = LaneGitConfirmation.rebaseDescendants
-    XCTAssertEqual(descendants.title, "Rebase lane and descendants?")
-    XCTAssertEqual(descendants.confirmTitle, "Rebase all")
-    XCTAssertEqual(descendants.actionLabel, "rebase descendants")
-    XCTAssertEqual(descendants.id, "rebase-descendants")
-    XCTAssertTrue(descendants.message.contains("child lanes"))
   }
 
   func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrConnecting() {
@@ -17401,10 +17199,6 @@ final class ADETests: XCTestCase {
       branchRef: "main",
       worktreePath: "/tmp/project",
       attachedRootPath: nil,
-      parentLaneId: nil,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: nil,
       isEditProtected: true,
       status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false),
       color: nil,
@@ -23415,7 +23209,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(stack.members[0].prNumber, 1)
     XCTAssertFalse(stack.members[0].dirty)
     XCTAssertEqual(stack.members[1].role, "leaf")
-    XCTAssertEqual(stack.members[1].parentLaneId, "lane-root")
     XCTAssertTrue(stack.members[1].dirty)
     XCTAssertEqual(stack.members[1].checksStatus, "failing")
 
@@ -23560,7 +23353,6 @@ final class ADETests: XCTestCase {
     let eligible = PrCreateLaneEligibility(
       laneId: "lane-new",
       laneName: "feat/new",
-      parentLaneId: nil,
       repoOwner: nil,
       repoName: nil,
       defaultBaseBranch: "main",
@@ -23574,7 +23366,6 @@ final class ADETests: XCTestCase {
     let blocked = PrCreateLaneEligibility(
       laneId: "lane-blocked",
       laneName: "feat/blocked",
-      parentLaneId: nil,
       repoOwner: nil,
       repoName: nil,
       defaultBaseBranch: "main",
@@ -23628,17 +23419,17 @@ final class ADETests: XCTestCase {
       stackId: "stack:lane-root",
       rootLaneId: "lane-root",
       members: [
-        PrStackMember(laneId: "lane-root", laneName: "root", parentLaneId: nil,
+        PrStackMember(laneId: "lane-root", laneName: "root",
                       depth: 0, role: "root", dirty: false,
                       prId: "pr-root", prNumber: 1, prState: "open",
                       prTitle: "Root PR", baseBranch: "main", headBranch: "feat/root",
                       checksStatus: "passing", reviewStatus: "approved"),
-        PrStackMember(laneId: "lane-mid", laneName: "middle", parentLaneId: "lane-root",
+        PrStackMember(laneId: "lane-mid", laneName: "middle",
                       depth: 1, role: "middle", dirty: true,
                       prId: "pr-mid", prNumber: 2, prState: "draft",
                       prTitle: "Middle PR", baseBranch: "feat/root", headBranch: "feat/mid",
                       checksStatus: "none", reviewStatus: "none"),
-        PrStackMember(laneId: "lane-leaf", laneName: "leaf", parentLaneId: "lane-mid",
+        PrStackMember(laneId: "lane-leaf", laneName: "leaf",
                       depth: 2, role: "leaf", dirty: false,
                       prId: "pr-leaf", prNumber: 3, prState: "open",
                       prTitle: "Leaf PR", baseBranch: "feat/mid", headBranch: "feat/leaf",
@@ -24171,10 +23962,6 @@ final class ADETests: XCTestCase {
         branchRef: branchRef,
         worktreePath: worktreePath,
         attachedRootPath: laneType == "attached" ? worktreePath : nil,
-        parentLaneId: nil,
-        childCount: 0,
-        stackDepth: 0,
-        parentStatus: nil,
         isEditProtected: false,
         status: status,
         color: nil,
@@ -24185,8 +23972,6 @@ final class ADETests: XCTestCase {
         archivedAt: archivedAt
       ),
       runtime: runtime,
-      rebaseSuggestion: nil,
-      autoRebaseStatus: nil,
       conflictStatus: nil,
       stateSnapshot: stateSnapshot
     )
@@ -24359,10 +24144,6 @@ final class ADETests: XCTestCase {
       branchRef: branchRef,
       worktreePath: "/tmp/\(id)",
       attachedRootPath: nil,
-      parentLaneId: nil,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: nil,
       isEditProtected: false,
       status: LaneStatus(
         dirty: false,

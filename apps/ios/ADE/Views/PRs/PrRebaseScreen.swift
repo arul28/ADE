@@ -1,9 +1,10 @@
 import SwiftUI
 
 /// Rebase attention screen — mirrors the desktop RebaseTab detail pane:
-/// drift analysis stat grid, collapsible commits list, and the full set of
-/// rebase actions (AI resolver, local-only, push, defer, dismiss) so the
-/// mobile and desktop paths stay in sync.
+/// drift analysis stat grid, collapsible commits list, and the rebase
+/// actions (AI resolver, local-only, push) so the mobile and desktop paths
+/// stay in sync. A lane needs a rebase when it is behind its base or when it
+/// is built on a PR's work that has since merged into the base.
 struct PrRebaseScreen: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
@@ -17,8 +18,8 @@ struct PrRebaseScreen: View {
   let branchRef: String?
   let baseBranch: String?
   let targetCommits: [RebaseTargetCommit]?
-  let rebaseMode: String?
-  let creationStrategy: String?
+  let builtOnMerged: Bool
+  let mergedPr: PrRebaseMergedPr?
 
   init(
     laneId: String,
@@ -30,8 +31,8 @@ struct PrRebaseScreen: View {
     branchRef: String?,
     baseBranch: String?,
     targetCommits: [RebaseTargetCommit]? = nil,
-    rebaseMode: String? = nil,
-    creationStrategy: String? = nil
+    builtOnMerged: Bool = false,
+    mergedPr: PrRebaseMergedPr? = nil
   ) {
     self.laneId = laneId
     self.laneName = laneName
@@ -42,12 +43,13 @@ struct PrRebaseScreen: View {
     self.branchRef = branchRef
     self.baseBranch = baseBranch
     self.targetCommits = targetCommits
-    self.rebaseMode = rebaseMode
-    self.creationStrategy = creationStrategy
+    self.builtOnMerged = builtOnMerged
+    self.mergedPr = mergedPr
   }
 
-  private var isManualRebaseMode: Bool { rebaseMode == "manual" }
-  private var effectiveBaseBranch: String { baseBranch ?? "origin/main" }
+  private var effectiveBaseBranch: String { baseBranch ?? "main" }
+  /// Rebasing helps when the base moved on or merged work the lane still carries.
+  private var hasRebaseNeed: Bool { behindCount > 0 || builtOnMerged }
 
   @State private var isDispatching = false
   @State private var pendingAction: PendingAction?
@@ -58,8 +60,6 @@ struct PrRebaseScreen: View {
     case rebaseAi
     case rebaseLocal
     case rebasePush
-    case defer4h
-    case dismissLane
   }
 
   var body: some View {
@@ -67,8 +67,8 @@ struct PrRebaseScreen: View {
       VStack(alignment: .leading, spacing: 14) {
         header
 
-        if isManualRebaseMode {
-          ADESettingsNotice(message: "Opened with the lane_base strategy: auto-rebase is off.", tone: .accent)
+        if builtOnMerged {
+          ADESettingsNotice(message: builtOnMergedMessage, tone: .warn)
         }
 
         driftAnalysisCard
@@ -111,9 +111,6 @@ struct PrRebaseScreen: View {
         if prNumber != nil {
           ADEKitTag(text: "PR linked")
         }
-        if isManualRebaseMode {
-          ADEKitTag(text: "manual")
-        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -131,23 +128,30 @@ struct PrRebaseScreen: View {
         }
         GridRow {
           driftStat(label: "Risk", valueText: riskLabel, suffix: nil, tone: riskTone)
-          driftStat(label: "Rebase mode", valueText: isManualRebaseMode ? "Manual" : "Auto", suffix: nil, tone: .neutral)
+          driftStat(label: "Merged work", valueText: builtOnMerged ? "Included" : "None", suffix: nil, tone: builtOnMerged ? .warn : .ok)
         }
       }
     }
   }
 
+  private var builtOnMergedMessage: String {
+    if let mergedPr, mergedPr.number > 0 {
+      return "Built on work that's now in \(effectiveBaseBranch) (#\(mergedPr.number)). Rebase onto \(effectiveBaseBranch) so this lane's PR shows only its own changes."
+    }
+    return "Built on work that's now in \(effectiveBaseBranch). Rebase onto \(effectiveBaseBranch) so this lane's PR shows only its own changes."
+  }
+
   private var riskLabel: String {
     if conflictPredicted { return "High" }
     if behindCount > 5 { return "Medium" }
-    if behindCount == 0 { return "None" }
+    if !hasRebaseNeed { return "None" }
     return "Low"
   }
 
   private var riskTone: ADEKitTone {
     if conflictPredicted { return .crit }
     if behindCount > 5 { return .warn }
-    if behindCount == 0 { return .ok }
+    if !hasRebaseNeed { return .ok }
     return .neutral
   }
 
@@ -241,19 +245,14 @@ struct PrRebaseScreen: View {
       VStack(alignment: .leading, spacing: 10) {
         // Rebase with AI is off with nothing to rebase (desktop parity: AI
         // only runs against the lane base).
-        actionButton(action: .rebaseAi, label: "Rebase with AI", icon: "sparkles", prominent: true, disabled: behindCount == 0)
+        actionButton(action: .rebaseAi, label: "Rebase with AI", icon: "sparkles", prominent: true, disabled: !hasRebaseNeed)
 
         HStack(spacing: 8) {
-          actionButton(action: .rebaseLocal, label: "Rebase now", icon: nil, prominent: false, disabled: behindCount == 0)
-          actionButton(action: .rebasePush, label: "Rebase + push", icon: "arrow.up.circle", prominent: false, disabled: behindCount == 0)
+          actionButton(action: .rebaseLocal, label: "Rebase now", icon: nil, prominent: false, disabled: !hasRebaseNeed)
+          actionButton(action: .rebasePush, label: "Rebase + push", icon: "arrow.up.circle", prominent: false, disabled: !hasRebaseNeed)
         }
 
-        HStack(spacing: 8) {
-          actionButton(action: .defer4h, label: "Defer 4h", icon: "clock", prominent: false, disabled: false)
-          actionButton(action: .dismissLane, label: "Dismiss", icon: "xmark.circle", prominent: false, disabled: false)
-        }
-
-        if behindCount == 0 {
+        if !hasRebaseNeed {
           HStack(spacing: 8) {
             Image(systemName: "checkmark.circle.fill")
               .foregroundStyle(ADEColor.success)
@@ -326,12 +325,6 @@ struct PrRebaseScreen: View {
             laneId: laneId, scope: "lane_only", pushMode: "review_then_push", aiAssisted: false
           )
           dismiss()
-        case .defer4h:
-          try await syncService.deferRebaseSuggestion(laneId: laneId, minutes: 240)
-          dismiss()
-        case .dismissLane:
-          try await syncService.dismissRebaseSuggestion(laneId: laneId)
-          dismiss()
         }
       } catch {
         errorMessage = error.localizedDescription
@@ -350,7 +343,7 @@ struct PrRebaseScreen: View {
       behindCount: 83,
       conflictPredicted: true,
       branchRef: "lane/auth-fix",
-      baseBranch: "origin/main",
+      baseBranch: "main",
       targetCommits: [
         RebaseTargetCommit(sha: "70fd4e51aaaa", shortSha: "70fd4e5", subject: "Review engine: multi-pass pipeline", author: "Arul", committedAt: ""),
         RebaseTargetCommit(sha: "56ec29c5bbbb", shortSha: "56ec29c", subject: "chat-ux: collapse thoughts + scroll", author: "Arul", committedAt: ""),
@@ -369,7 +362,7 @@ struct PrRebaseScreen: View {
       behindCount: 0,
       conflictPredicted: false,
       branchRef: "lane/payments",
-      baseBranch: "origin/main"
+      baseBranch: "main"
     )
   }
 }

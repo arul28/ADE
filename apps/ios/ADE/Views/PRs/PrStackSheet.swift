@@ -213,9 +213,9 @@ struct PrStackSheet: View {
     }
   }
 
-  /// Lane to rebase when the user taps "Rebase stack". We prefer the head of
-  /// the stack (the most-child PR) because rebasing the head cascades through
-  /// ancestors via auto-rebase. Falls back to the first non-base row.
+  /// Lane to rebase when the user taps "Rebase stack": the head of the stack
+  /// (the top PR), which rebases onto its PR's base. Falls back to the first
+  /// non-base row.
   private var rebaseTargetLaneId: String? {
     let rows = stackRows
     if let head = rows.last(where: { $0.role != .base }) {

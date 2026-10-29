@@ -623,10 +623,6 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var branchRef: String
   var worktreePath: String
   var attachedRootPath: String?
-  var parentLaneId: String?
-  var childCount: Int
-  var stackDepth: Int
-  var parentStatus: LaneStatus?
   var isEditProtected: Bool
   var status: LaneStatus
   var color: String?
@@ -639,6 +635,71 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var createdAt: String
   var archivedAt: String?
   var devicesOpen: [DeviceMarker]?
+}
+
+/// Where a new lane's branch starts and how much work it brings along
+/// (`LaneStart` in `apps/desktop/src/shared/laneStart.ts`).
+/// - `from`: the project's default branch, the primary lane's branch, or a named `branch`.
+/// - `bring`: `pushed` fetches and starts from `origin/<branch>`; `local` starts from the
+///   local tip; `uncommitted` also copies the uncommitted changes of the lane that has the
+///   branch checked out (that lane keeps them).
+struct LaneStart: Codable, Equatable {
+  enum From: String, Codable, CaseIterable {
+    case `default`
+    case primary
+    case branch
+  }
+
+  enum Bring: String, Codable, CaseIterable, Identifiable {
+    case pushed
+    case local
+    case uncommitted
+
+    var id: String { rawValue }
+
+    var title: String {
+      switch self {
+      case .pushed: return "Pushed work"
+      case .local: return "Local commits"
+      case .uncommitted: return "Local + uncommitted"
+      }
+    }
+  }
+
+  var from: From
+  var branch: String? = nil
+  var bring: Bring
+
+  static let builtInDefault = LaneStart(from: .default, bring: .pushed)
+
+  /// The JSON object `lanes.create` takes as `start`.
+  var commandPayload: [String: Any] {
+    var payload: [String: Any] = ["from": from.rawValue, "bring": bring.rawValue]
+    if from == .branch, let branch, !branch.isEmpty {
+      payload["branch"] = branch
+    }
+    return payload
+  }
+}
+
+/// How every new lane in a project starts unless the user picks otherwise.
+struct NewLaneDefaults: Codable, Equatable {
+  var start: LaneStart
+  var templateId: String?
+}
+
+struct NewLaneSettingsScope: Codable, Equatable {
+  /// "account-repo" or "this-computer".
+  var kind: String
+  var repo: String?
+}
+
+/// `lanes.getNewLaneDefaults`: the saved defaults plus the branches they point at.
+struct NewLaneDefaultsSnapshot: Codable, Equatable {
+  var defaults: NewLaneDefaults
+  var scope: NewLaneSettingsScope?
+  var defaultBranch: String
+  var primaryBranch: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
@@ -744,30 +805,6 @@ public struct RebaseTargetCommit: Codable, Equatable, Identifiable {
   }
 }
 
-struct RebaseSuggestion: Codable, Equatable {
-  var laneId: String
-  var parentLaneId: String
-  var parentHeadSha: String
-  var behindCount: Int
-  var lastSuggestedAt: String
-  var deferredUntil: String?
-  var dismissedAt: String?
-  var hasPr: Bool
-  /// Commits the rebase would pull in. Optional so older hosts and legacy
-  /// snapshots continue to decode cleanly.
-  var targetCommits: [RebaseTargetCommit]? = nil
-}
-
-struct AutoRebaseLaneStatus: Codable, Equatable {
-  var laneId: String
-  var parentLaneId: String?
-  var parentHeadSha: String?
-  var state: String
-  var updatedAt: String
-  var conflictCount: Int
-  var message: String?
-}
-
 struct ConflictStatus: Codable, Equatable {
   var laneId: String
   var status: String
@@ -862,7 +899,6 @@ struct LaneBranchProfile: Codable, Identifiable, Equatable {
   var laneId: String
   var branchRef: String
   var baseRef: String
-  var parentLaneId: String?
   var sourceBranchRef: String?
   var createdAt: String
   var updatedAt: String
@@ -920,16 +956,6 @@ struct FileDiff: Codable, Equatable {
   var modified: DiffSide
   var isBinary: Bool?
   var language: String?
-}
-
-struct StackChainItem: Codable, Identifiable, Equatable {
-  var id: String { laneId }
-  var laneId: String
-  var laneName: String
-  var branchRef: String
-  var depth: Int
-  var parentLaneId: String?
-  var status: LaneStatus
 }
 
 struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
@@ -5389,8 +5415,6 @@ struct LaneListSnapshot: Codable, Identifiable, Equatable {
   var id: String { lane.id }
   var lane: LaneSummary
   var runtime: LaneRuntimeSummary
-  var rebaseSuggestion: RebaseSuggestion?
-  var autoRebaseStatus: AutoRebaseLaneStatus?
   var conflictStatus: ConflictStatus?
   var stateSnapshot: LaneStateSnapshotSummary?
 }
@@ -5398,11 +5422,7 @@ struct LaneListSnapshot: Codable, Identifiable, Equatable {
 struct LaneDetailPayload: Codable, Equatable {
   var lane: LaneSummary
   var runtime: LaneRuntimeSummary
-  var stackChain: [StackChainItem]
-  var children: [LaneSummary]
   var stateSnapshot: LaneStateSnapshotSummary?
-  var rebaseSuggestion: RebaseSuggestion?
-  var autoRebaseStatus: AutoRebaseLaneStatus?
   var conflictStatus: ConflictStatus?
   var overlaps: [ConflictOverlap]
   var syncStatus: GitUpstreamSyncStatus?
@@ -7381,7 +7401,6 @@ struct PrStackMember: Codable, Identifiable, Equatable {
   var id: String { laneId }
   var laneId: String
   var laneName: String
-  var parentLaneId: String?
   var depth: Int
   var role: String
   var dirty: Bool
@@ -7429,7 +7448,6 @@ struct PrCreateLaneEligibility: Codable, Identifiable, Equatable {
   var id: String { laneId }
   var laneId: String
   var laneName: String
-  var parentLaneId: String?
   var repoOwner: String?
   var repoName: String?
   var defaultBaseBranch: String
@@ -7488,15 +7506,14 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var dismissedAt: String?
   var deferredUntil: String?
   var targetCommits: [RebaseTargetCommit]?
-  /// Host-resolved rebase mode for the rebase card's lane: "auto" when the
-  /// linked PR (or no PR) permits auto-rebase on base advance, "manual" when
-  /// the PR carries an immutable base (lane_base strategy). Absent on older
-  /// hosts — clients should default to "auto" when missing.
-  var rebaseMode: String?
-  /// Raw creation strategy of the lane's most-recent open/draft PR
-  /// ("pr_target" | "lane_base"), or null when no PR is linked. Lets the
-  /// client render strategy-specific copy without re-deriving the mode.
-  var creationStrategy: String?
+  /// Why the lane needs a rebase: "behind" (its base has commits it lacks) or
+  /// "built_on_merged" (it contains a PR's work that has since merged into
+  /// the base). Absent on older hosts; read as "behind".
+  var needKind: String?
+  /// The merged PR a "built_on_merged" lane was built on.
+  var mergedPr: PrRebaseMergedPr?
+
+  var isBuiltOnMerged: Bool { needKind == "built_on_merged" }
 
   private enum CodingKeys: String, CodingKey {
     case id
@@ -7504,8 +7521,14 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
     case proposalId, title, baseBranch, overallOutcome
     case integrationStatus = "status"
     case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
-    case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, rebaseMode, creationStrategy
+    case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, needKind, mergedPr
   }
+}
+
+struct PrRebaseMergedPr: Codable, Equatable {
+  var number: Int
+  var title: String?
+  var headBranch: String
 }
 
 struct CreateIntegrationLaneForProposalResult: Codable, Equatable {

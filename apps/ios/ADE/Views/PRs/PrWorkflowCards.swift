@@ -13,8 +13,6 @@ struct PrMobileWorkflowCardView: View {
   let onResolveIntegrationLane: (String, String) -> Void
   let onRecheckIntegrationLane: (String, String) -> Void
   let onRebaseLane: (String) -> Void
-  let onDeferRebase: (String) -> Void
-  let onDismissRebase: (String) -> Void
 
   var body: some View {
     // Flat: the row sits on the page; the section header names the kind.
@@ -196,13 +194,6 @@ struct PrMobileWorkflowCardView: View {
 
   @ViewBuilder
   private var rebaseSection: some View {
-    // Default to "auto" when older hosts omit the field. `manual` → PR was
-    // opened with lane_base strategy so auto-rebase is suppressed and the
-    // user has to trigger it by hand.
-    let isManual = (card.rebaseMode == "manual")
-    let pillLabel = isManual ? "manual rebase" : "rebase needed"
-    let rebaseButtonLabel = isManual ? "Rebase now" : "Rebase"
-
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         ADEEyebrow("Rebase")
@@ -211,27 +202,20 @@ struct PrMobileWorkflowCardView: View {
             .font(.adeMono(11, weight: .medium))
             .foregroundStyle(ADEColor.textMuted)
         }
-        ADEKitTag(text: pillLabel, tone: isManual ? .neutral : .warn)
+        ADEKitTag(text: card.isBuiltOnMerged ? "built on merged work" : "behind", tone: .warn)
         Spacer(minLength: 0)
         if card.conflictPredicted == true {
           PrConflictBadge()
         }
       }
-      Text(card.laneName.nonEmpty ?? "Rebase suggestion")
+      Text(card.laneName.nonEmpty ?? "Rebase lane")
         .font(.title3.weight(.bold))
         .foregroundStyle(ADEColor.textPrimary)
         .lineLimit(2)
-      if let behindBy = card.behindBy {
-        Text("\(behindBy) commit\(behindBy == 1 ? "" : "s") behind target")
-          .font(.system(size: 11, weight: .medium, design: .monospaced))
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-    }
-
-    if let deferredUntil = card.deferredUntil {
-      Text("Deferred until \(prAbsoluteTime(deferredUntil))")
-        .font(.caption)
-        .foregroundStyle(ADEColor.textMuted)
+      Text(prRebaseNeedLine(card))
+        .font(.system(size: 12))
+        .foregroundStyle(ADEColor.textSecondary)
+        .lineLimit(2)
     }
 
     // Opens the rebase screen.
@@ -245,10 +229,10 @@ struct PrMobileWorkflowCardView: View {
           behindCount: card.behindBy ?? 0,
           conflictPredicted: card.conflictPredicted ?? false,
           branchRef: nil,
-          baseBranch: nil,
+          baseBranch: card.baseBranch.nonEmpty,
           targetCommits: card.targetCommits,
-          rebaseMode: card.rebaseMode,
-          creationStrategy: card.creationStrategy
+          builtOnMerged: card.isBuiltOnMerged,
+          mergedPr: card.mergedPr
         )
         .modifier(PrLeadingColumnPush())
       } label: {
@@ -267,15 +251,7 @@ struct PrMobileWorkflowCardView: View {
 
     HStack(spacing: 10) {
       if let laneId = card.laneId {
-        Button(rebaseButtonLabel) { onRebaseLane(laneId) }
-          .buttonStyle(ADEKitButtonStyle())
-          .disabled(!isLive)
-
-        Button("Defer") { onDeferRebase(laneId) }
-          .buttonStyle(ADEKitButtonStyle())
-          .disabled(!isLive)
-
-        Button("Dismiss") { onDismissRebase(laneId) }
+        Button("Rebase") { onRebaseLane(laneId) }
           .buttonStyle(ADEKitButtonStyle())
           .disabled(!isLive)
       }
@@ -295,6 +271,21 @@ struct PrMobileWorkflowCardView: View {
       .font(.caption)
       .foregroundStyle(ADEColor.textMuted)
   }
+}
+
+/// A rebase need as one quiet line: "3 behind main" or
+/// "Built on work that's now in main (#412)".
+func prRebaseNeedLine(_ card: PrWorkflowCard) -> String {
+  let base = card.baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  let baseLabel = base.isEmpty ? "its base" : base
+  if card.isBuiltOnMerged {
+    if let number = card.mergedPr?.number, number > 0 {
+      return "Built on work that's now in \(baseLabel) (#\(number))"
+    }
+    return "Built on work that's now in \(baseLabel)"
+  }
+  let behind = card.behindBy ?? 0
+  return "\(behind) behind \(baseLabel)"
 }
 
 private extension Optional where Wrapped == String {

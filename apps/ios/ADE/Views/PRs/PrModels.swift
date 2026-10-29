@@ -362,18 +362,6 @@ struct PrStackPresentation: Identifiable {
   let groupName: String?
 }
 
-struct PrRebaseWorkflowItem: Identifiable {
-  let laneId: String
-  let laneName: String
-  let branchRef: String
-  let behindCount: Int
-  let severity: String
-  let statusMessage: String
-  let deferredUntil: String?
-
-  var id: String { laneId }
-}
-
 enum PrCleanupChoice {
   case archive
   case deleteBranch

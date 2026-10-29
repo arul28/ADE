@@ -22,7 +22,6 @@ struct PRsTabView: View, Equatable {
   @State var duoSelectedPrId: String?
   @State private var prs: [PullRequestListItem] = []
   @State private var lanes: [LaneSummary] = []
-  @State private var laneSnapshots: [LaneListSnapshot] = []
   @State private var integrationProposals: [IntegrationProposal] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
@@ -211,9 +210,9 @@ struct PRsTabView: View, Equatable {
     return githubDerived.categoryCounts
   }
 
-  /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
-  /// legacy per-kind fetches (integrationProposals / laneSnapshots-derived rebase)
-  /// so offline cached state still renders if the mobile snapshot fetch failed.
+  /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to
+  /// the cached integration proposals so offline state still renders if the mobile snapshot
+  /// fetch failed. Rebase cards come only from the snapshot (the host's rebase needs).
   private var workflowCards: [PrWorkflowCard] {
     if let mobileSnapshot {
       return mobileSnapshot.workflowCards.filter {
@@ -224,49 +223,7 @@ struct PRsTabView: View, Equatable {
   }
 
   private var legacyWorkflowCards: [PrWorkflowCard] {
-    var cards: [PrWorkflowCard] = []
-
-    for proposal in integrationProposals {
-      cards.append(legacyIntegrationCard(from: proposal))
-    }
-    for item in rebaseWorkflowItems {
-      cards.append(legacyRebaseCard(from: item))
-    }
-
-    return cards
-  }
-
-  private var rebaseWorkflowItems: [PrRebaseWorkflowItem] {
-    laneSnapshots.compactMap { snapshot in
-      guard let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil else { return nil }
-      let severity: String
-      if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-        severity = "critical"
-      } else if suggestion.behindCount >= 10 {
-        severity = "warning"
-      } else {
-        severity = "info"
-      }
-
-      let message = snapshot.autoRebaseStatus?.message
-        ?? "\(snapshot.lane.name) is \(suggestion.behindCount) commit\(suggestion.behindCount == 1 ? "" : "s") behind its parent lane."
-
-      return PrRebaseWorkflowItem(
-        laneId: snapshot.lane.id,
-        laneName: snapshot.lane.name,
-        branchRef: snapshot.lane.branchRef,
-        behindCount: suggestion.behindCount,
-        severity: severity,
-        statusMessage: message,
-        deferredUntil: suggestion.deferredUntil
-      )
-    }
-    .sorted { lhs, rhs in
-      if lhs.severity == rhs.severity {
-        return lhs.behindCount > rhs.behindCount
-      }
-      return severityRank(lhs.severity) < severityRank(rhs.severity)
-    }
+    integrationProposals.map { legacyIntegrationCard(from: $0) }
   }
 
   private var canCreatePr: Bool {
@@ -420,7 +377,6 @@ struct PRsTabView: View, Equatable {
       remotePrs.reset()
       prs = []
       lanes = []
-      laneSnapshots = []
       integrationProposals = []
       mobileSnapshot = nil
       githubSnapshot = nil
@@ -702,7 +658,7 @@ struct PRsTabView: View, Equatable {
         symbol: workflows ? "point.3.filled.connected.trianglepath.dotted" : "arrow.triangle.pull",
         title: workflows ? "Workflows" : "Select a pull request",
         message: workflows
-          ? "Rebase, defer or dismiss from the list. Inspect drift shows what changed on the base."
+          ? "Rebase from the list. Inspect drift shows what changed on the base."
           : "Choose a pull request to read its description, review threads, files and checks.",
         includesUtilities: !duoLayout.hasEdgeBar
       )
@@ -1040,16 +996,6 @@ struct PRsTabView: View, Equatable {
         runPrRootAction("Rebasing lane") {
           try await syncService.startLaneRebase(laneId: laneId)
         }
-      },
-      onDeferRebase: { laneId in
-        runPrRootAction("Deferring rebase") {
-          try await syncService.deferRebaseSuggestion(laneId: laneId)
-        }
-      },
-      onDismissRebase: { laneId in
-        runPrRootAction("Dismissing rebase") {
-          try await syncService.dismissRebaseSuggestion(laneId: laneId)
-        }
       }
     )
   }
@@ -1171,21 +1117,11 @@ struct PRsTabView: View, Equatable {
         if mobileSnapshot != nextMobileSnapshot {
           mobileSnapshot = nextMobileSnapshot
         }
-        if !laneSnapshots.isEmpty {
-          laneSnapshots = []
-        }
         if !integrationProposals.isEmpty {
           integrationProposals = []
         }
       } else if mobileSnapshot == nil {
-        async let laneSnapshotsTask = syncService.fetchLaneListSnapshots()
-        async let integrationTask = syncService.fetchIntegrationProposals()
-
-        let loadedLaneSnapshots = try await laneSnapshotsTask
-        let loadedIntegrationProposals = try await integrationTask
-        if laneSnapshots != loadedLaneSnapshots {
-          laneSnapshots = loadedLaneSnapshots
-        }
+        let loadedIntegrationProposals = try await syncService.fetchIntegrationProposals()
         if integrationProposals != loadedIntegrationProposals {
           integrationProposals = loadedIntegrationProposals
         }
@@ -1554,7 +1490,7 @@ struct PRsTabView: View, Equatable {
 
   // MARK: - Legacy → unified workflow card adapters
   //
-  // These let the root screen keep rendering integration/rebase state when the mobile
+  // These let the root screen keep rendering integration state when the mobile
   // snapshot fetch isn't available (older desktop build, or cold cache). Once every host the
   // user pairs with supports `prs.getMobileSnapshot` these can be dropped.
 
@@ -1588,37 +1524,6 @@ struct PRsTabView: View, Equatable {
       prNumber: nil,
       dismissedAt: nil,
       deferredUntil: nil
-    )
-  }
-
-  private func legacyRebaseCard(from item: PrRebaseWorkflowItem) -> PrWorkflowCard {
-    PrWorkflowCard(
-      id: "rebase:\(item.laneId)",
-      kind: "rebase",
-      proposalId: nil,
-      title: nil,
-      baseBranch: nil,
-      overallOutcome: nil,
-      integrationStatus: nil,
-      laneCount: nil,
-      conflictLaneCount: nil,
-      lanes: nil,
-      workflowDisplayState: nil,
-      cleanupState: nil,
-      linkedPrId: nil,
-      integrationLaneId: nil,
-      preferredIntegrationLaneId: nil,
-      mergeIntoHeadSha: nil,
-      integrationLaneOrigin: nil,
-      createdAt: nil,
-      laneId: item.laneId,
-      laneName: item.laneName,
-      behindBy: item.behindCount,
-      conflictPredicted: item.severity == "critical",
-      prId: nil,
-      prNumber: nil,
-      dismissedAt: nil,
-      deferredUntil: item.deferredUntil
     )
   }
 }

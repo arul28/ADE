@@ -3727,27 +3727,6 @@ func syncCommandEnvelopePayload(
   return payload
 }
 
-/// Builds the args dictionary for the `lanes.reparent` sync command.
-///
-/// Behavior mirrors the host contract in `apps/desktop/src/main/services/lanes/laneService.ts`:
-/// - `newParentLaneId` is always emitted. Use the primary lane id when moving a lane to
-///   the root of the stack.
-/// - `stackBaseBranchRef` is only emitted when non-empty after trimming, so the host falls
-///   back to the new parent lane's current branch when the caller leaves it blank.
-func makeLanesReparentArgs(
-  laneId: String,
-  newParentLaneId: String,
-  stackBaseBranchRef: String?
-) -> [String: Any] {
-  var args: [String: Any] = ["laneId": laneId]
-  args["newParentLaneId"] = newParentLaneId.trimmingCharacters(in: .whitespacesAndNewlines)
-  if let trimmed = stackBaseBranchRef?.trimmingCharacters(in: .whitespacesAndNewlines),
-     !trimmed.isEmpty {
-    args["stackBaseBranchRef"] = trimmed
-  }
-  return args
-}
-
 func makePrGithubSnapshotArgs(
   force: Bool = false,
   includeExternalClosed: Bool = false,
@@ -10494,7 +10473,6 @@ final class SyncService: ObservableObject {
       guard let existing = existingByLaneId[lane.id] else { return lane }
       var merged = lane
       merged.status = existing.status
-      merged.parentStatus = existing.parentStatus
       return merged
     }
   }
@@ -10509,7 +10487,6 @@ final class SyncService: ObservableObject {
       guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
       var merged = snapshot
       merged.lane.status = existing.status
-      merged.lane.parentStatus = existing.parentStatus
       return merged
     }
   }
@@ -10522,8 +10499,6 @@ final class SyncService: ObservableObject {
       "includeArchived": true,
       "includeStatus": includeStatus,
       "includeConflictStatus": includeDecorations,
-      "includeRebaseSuggestions": includeDecorations,
-      "includeAutoRebaseStatus": includeDecorations,
     ]
     // Newer brains may answer from each lane's last computed status and
     // re-check in the background (`revalidating`), and send only what changed
@@ -10655,8 +10630,6 @@ final class SyncService: ObservableObject {
     return snapshots.map { snapshot in
       guard let existing = existingByLaneId[snapshot.lane.id] else { return snapshot }
       var merged = snapshot
-      merged.rebaseSuggestion = existing.rebaseSuggestion
-      merged.autoRebaseStatus = existing.autoRebaseStatus
       merged.conflictStatus = existing.conflictStatus
       return merged
     }
@@ -14293,11 +14266,12 @@ final class SyncService: ObservableObject {
     )
   }
 
+  /// `lanes.create`. Leave `start` out to start from the project's saved
+  /// new-lane defaults (the host applies them).
   func createLane(
     name: String,
     description: String,
-    parentLaneId: String? = nil,
-    baseBranch: String? = nil,
+    start: LaneStart? = nil,
     branchName: String? = nil,
     startPoint: String? = nil,
     linearIssue: LaneLinearIssue? = nil,
@@ -14315,11 +14289,8 @@ final class SyncService: ObservableObject {
     if setUpLane {
       args["setup"] = "default"
     }
-    if let parentLaneId, !parentLaneId.isEmpty {
-      args["parentLaneId"] = parentLaneId
-    }
-    if let baseBranch, !baseBranch.isEmpty {
-      args["baseBranch"] = baseBranch
+    if let start {
+      args["start"] = start.commandPayload
     }
     if let branchName, !branchName.isEmpty {
       args["branchName"] = branchName
@@ -14399,23 +14370,11 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func createFromUnstaged(sourceLaneId: String, name: String, description: String = "") async throws -> LaneSummary {
-    var args: [String: Any] = [
-      "sourceLaneId": sourceLaneId,
-      "name": name,
-    ]
-    if !description.isEmpty {
-      args["description"] = description
-    }
-    return try await sendDecodableCommand(action: "lanes.createFromUnstaged", args: args, as: LaneSummary.self)
-  }
-
+  /// `lanes.importBranch`: a lane that works directly on an existing branch.
   func importBranch(
     branchRef: String,
     name: String? = nil,
     description: String? = nil,
-    parentLaneId: String? = nil,
-    baseBranch: String? = nil,
     targetProjectId: String? = nil,
     targetProjectRootPath: String? = nil
   ) async throws -> LaneSummary {
@@ -14426,12 +14385,6 @@ final class SyncService: ObservableObject {
     if let description, !description.isEmpty {
       args["description"] = description
     }
-    if let parentLaneId, !parentLaneId.isEmpty {
-      args["parentLaneId"] = parentLaneId
-    }
-    if let baseBranch, !baseBranch.isEmpty {
-      args["baseBranch"] = baseBranch
-    }
     return try await sendDecodableCommand(
       action: "lanes.importBranch",
       args: args,
@@ -14439,38 +14392,6 @@ final class SyncService: ObservableObject {
       targetProjectRootPath: targetProjectRootPath,
       as: LaneSummary.self
     )
-  }
-
-  func createChildLane(
-    name: String,
-    parentLaneId: String,
-    description: String = "",
-    folder: String? = nil,
-    baseBranchRef: String? = nil,
-    branchName: String? = nil,
-    linearIssue: LaneLinearIssue? = nil
-  ) async throws -> LaneSummary {
-    var args: [String: Any] = [
-      "name": name,
-      "parentLaneId": parentLaneId,
-      "description": description,
-    ]
-    if let folder, !folder.isEmpty {
-      args["folder"] = folder
-    }
-    if let baseBranchRef, !baseBranchRef.isEmpty {
-      args["baseBranchRef"] = baseBranchRef
-    }
-    if let branchName, !branchName.isEmpty {
-      args["branchName"] = branchName
-    }
-    if let linearIssue {
-      args["linearIssue"] = try jsonObject(from: linearIssue)
-      if args["branchName"] == nil, let branchName = linearIssue.branchName, !branchName.isEmpty {
-        args["branchName"] = branchName
-      }
-    }
-    return try await sendDecodableCommand(action: "lanes.createChild", args: args, as: LaneSummary.self)
   }
 
   func renameLane(
@@ -14485,19 +14406,6 @@ final class SyncService: ObservableObject {
       targetProjectId: targetProjectId,
       targetProjectRootPath: targetProjectRootPath
     )
-  }
-
-  func reparentLane(
-    _ laneId: String,
-    newParentLaneId: String,
-    stackBaseBranchRef: String? = nil
-  ) async throws {
-    let args = makeLanesReparentArgs(
-      laneId: laneId,
-      newParentLaneId: newParentLaneId,
-      stackBaseBranchRef: stackBaseBranchRef
-    )
-    _ = try await sendCommand(action: "lanes.reparent", args: args)
   }
 
   func updateLaneAppearance(_ laneId: String, color: String? = nil, icon: String? = nil, tags: [String]? = nil) async throws {
@@ -14618,6 +14526,22 @@ final class SyncService: ObservableObject {
     return raw as? String
   }
 
+  /// The project's saved new-lane defaults (`lanes.getNewLaneDefaults`) on the
+  /// machine a new lane goes to. Nil when that brain predates them: callers
+  /// then start from `LaneStart.builtInDefault`.
+  func fetchNewLaneDefaults(
+    targetProjectId: String? = nil,
+    targetProjectRootPath: String? = nil
+  ) async -> NewLaneDefaultsSnapshot? {
+    try? await sendDecodableCommand(
+      action: "lanes.getNewLaneDefaults",
+      args: [:],
+      targetProjectId: targetProjectId,
+      targetProjectRootPath: targetProjectRootPath,
+      as: NewLaneDefaultsSnapshot.self
+    )
+  }
+
   func fetchLaneEnvStatus(laneId: String) async throws -> LaneEnvInitProgress? {
     let raw = try await sendCommand(action: "lanes.getEnvStatus", args: ["laneId": laneId])
     if raw is NSNull { return nil }
@@ -14638,13 +14562,11 @@ final class SyncService: ObservableObject {
 
   func startLaneRebase(
     laneId: String,
-    scope: String = "lane_only",
     pushMode: String = "none",
     aiAssisted: Bool = false
   ) async throws {
     _ = try await sendCommand(action: "lanes.rebaseStart", args: [
       "laneId": laneId,
-      "scope": scope,
       "pushMode": pushMode,
       "aiAssisted": aiAssisted,
     ])
@@ -14660,14 +14582,6 @@ final class SyncService: ObservableObject {
 
   func abortLaneRebase(runId: String) async throws {
     _ = try await sendCommand(action: "lanes.rebaseAbort", args: ["runId": runId])
-  }
-
-  func dismissRebaseSuggestion(laneId: String) async throws {
-    _ = try await sendCommand(action: "lanes.dismissRebaseSuggestion", args: ["laneId": laneId])
-  }
-
-  func deferRebaseSuggestion(laneId: String, minutes: Int = 60) async throws {
-    _ = try await sendCommand(action: "lanes.deferRebaseSuggestion", args: ["laneId": laneId, "minutes": minutes])
   }
 
   func listBranches(laneId: String) async throws -> [GitBranchSummary] {
@@ -14811,18 +14725,6 @@ final class SyncService: ObservableObject {
   func stashDrop(laneId: String, stashRef: String) async throws { _ = try await sendCommand(action: "git.stashDrop", args: ["laneId": laneId, "stashRef": stashRef]) }
   func fetchGit(laneId: String) async throws { _ = try await sendCommand(action: "git.fetch", args: ["laneId": laneId]) }
 
-  /// Advisory remote fetch used to freshen remote-tracking refs before offering
-  /// them as new-lane bases. Bounded by its own short timeout and NEVER queued
-  /// or connection-disrupting — a stale branch list is an acceptable outcome,
-  /// a background-queued fetch the user never asked for is not.
-  func fetchGitAdvisory(laneId: String, timeoutNanoseconds: UInt64 = 4_000_000_000) async throws {
-    _ = try await performCommandRequest(
-      action: "git.fetch",
-      args: ["laneId": laneId],
-      disconnectOnTimeout: false,
-      timeoutNanoseconds: timeoutNanoseconds
-    )
-  }
   func pullGit(laneId: String) async throws { _ = try await sendCommand(action: "git.pull", args: ["laneId": laneId]) }
   func fetchSyncStatus(laneId: String) async throws -> GitUpstreamSyncStatus { try await sendDecodableCommand(action: "git.getSyncStatus", args: ["laneId": laneId], as: GitUpstreamSyncStatus.self) }
   func syncGit(laneId: String, mode: String = "merge", baseRef: String? = nil) async throws {

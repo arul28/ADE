@@ -55,7 +55,6 @@ final class DatabaseService {
     let branchRef: String
     let worktreePath: String
     let attachedRootPath: String?
-    let parentLaneId: String?
     let isEditProtected: Bool
     let color: String?
     let icon: LaneIcon?
@@ -64,7 +63,6 @@ final class DatabaseService {
     let folder: String?
     let createdAt: String
     let archivedAt: String?
-    let parentStatus: LaneStatus?
     let dirty: Bool
     let ahead: Int
     let behind: Int
@@ -533,22 +531,16 @@ final class DatabaseService {
     let projectPredicate = projectId == nil ? "" : "l.project_id = ? and"
     let sql = """
       select l.id, l.name, l.description, l.lane_type, l.base_ref, l.branch_ref, l.worktree_path,
-             l.attached_root_path, l.parent_lane_id, l.is_edit_protected, l.color, l.icon, l.tags_json, l.folder,
+             l.attached_root_path, l.is_edit_protected, l.color, l.icon, l.tags_json, l.folder,
              l.created_at, l.archived_at,
              coalesce(s.dirty, 0) as dirty,
              coalesce(s.ahead, 0) as ahead,
              coalesce(s.behind, 0) as behind,
              coalesce(s.remote_behind, -1) as remote_behind,
              coalesce(s.rebase_in_progress, 0) as rebase_in_progress,
-             ps.dirty,
-             ps.ahead,
-             ps.behind,
-             ps.remote_behind,
-             ps.rebase_in_progress,
              l.project_id
         from lanes l
         left join lane_state_snapshots s on s.lane_id = l.id
-        left join lane_state_snapshots ps on ps.lane_id = l.parent_lane_id
        where \(projectPredicate) (? = 1 or l.archived_at is null)
        order by l.created_at asc
     """
@@ -562,7 +554,7 @@ final class DatabaseService {
     }) { statement in
       LaneRow(
         id: stringValue(statement, index: 0) ?? "",
-        projectId: stringValue(statement, index: 26),
+        projectId: stringValue(statement, index: 20),
         name: stringValue(statement, index: 1) ?? "",
         description: stringValue(statement, index: 2),
         laneType: stringValue(statement, index: 3) ?? "worktree",
@@ -570,27 +562,19 @@ final class DatabaseService {
         branchRef: stringValue(statement, index: 5) ?? "",
         worktreePath: stringValue(statement, index: 6) ?? "",
         attachedRootPath: stringValue(statement, index: 7),
-        parentLaneId: stringValue(statement, index: 8),
-        isEditProtected: sqlite3_column_int(statement, 9) == 1,
-        color: stringValue(statement, index: 10),
-        icon: stringValue(statement, index: 11).flatMap(LaneIcon.init(rawValue:)),
-        emoji: laneEmoji(fromStoredIcon: stringValue(statement, index: 11)),
-        tags: decodeJson(stringValue(statement, index: 12), as: [String].self) ?? [],
-        folder: stringValue(statement, index: 13),
-        createdAt: stringValue(statement, index: 14) ?? "",
-        archivedAt: stringValue(statement, index: 15),
-        parentStatus: columnIsNull(statement, index: 21) ? nil : LaneStatus(
-          dirty: sqlite3_column_int(statement, 21) == 1,
-          ahead: Int(sqlite3_column_int64(statement, 22)),
-          behind: Int(sqlite3_column_int64(statement, 23)),
-          remoteBehind: Int(sqlite3_column_int64(statement, 24)),
-          rebaseInProgress: sqlite3_column_int(statement, 25) == 1
-        ),
-        dirty: sqlite3_column_int(statement, 16) == 1,
-        ahead: Int(sqlite3_column_int64(statement, 17)),
-        behind: Int(sqlite3_column_int64(statement, 18)),
-        remoteBehind: Int(sqlite3_column_int64(statement, 19)),
-        rebaseInProgress: sqlite3_column_int(statement, 20) == 1
+        isEditProtected: sqlite3_column_int(statement, 8) == 1,
+        color: stringValue(statement, index: 9),
+        icon: stringValue(statement, index: 10).flatMap(LaneIcon.init(rawValue:)),
+        emoji: laneEmoji(fromStoredIcon: stringValue(statement, index: 10)),
+        tags: decodeJson(stringValue(statement, index: 11), as: [String].self) ?? [],
+        folder: stringValue(statement, index: 12),
+        createdAt: stringValue(statement, index: 13) ?? "",
+        archivedAt: stringValue(statement, index: 14),
+        dirty: sqlite3_column_int(statement, 15) == 1,
+        ahead: Int(sqlite3_column_int64(statement, 16)),
+        behind: Int(sqlite3_column_int64(statement, 17)),
+        remoteBehind: Int(sqlite3_column_int64(statement, 18)),
+        rebaseInProgress: sqlite3_column_int(statement, 19) == 1
       )
     }
 
@@ -605,23 +589,10 @@ final class DatabaseService {
     }
     let dedupedRows = rowOrder.compactMap { rowsById[$0] }
 
-    let childCounts = dedupedRows.reduce(into: [String: Int]()) { partial, row in
-      guard let parent = row.parentLaneId, row.archivedAt == nil else { return }
-      partial[parent, default: 0] += 1
-    }
-
-    func stackDepth(for laneId: String, visited: inout Set<String>) -> Int {
-      guard !visited.contains(laneId), let row = rowsById[laneId], let parent = row.parentLaneId else { return 0 }
-      visited.insert(laneId)
-      defer { visited.remove(laneId) }
-      return 1 + stackDepth(for: parent, visited: &visited)
-    }
-
     return dedupedRows
       .filter { includeArchived || $0.archivedAt == nil }
       .map { row in
-        var visited = Set<String>()
-        return LaneSummary(
+        LaneSummary(
           id: row.id,
           projectId: row.projectId,
           name: row.name,
@@ -631,10 +602,6 @@ final class DatabaseService {
           branchRef: row.branchRef,
           worktreePath: row.worktreePath,
           attachedRootPath: row.attachedRootPath,
-          parentLaneId: row.parentLaneId,
-          childCount: childCounts[row.id, default: 0],
-          stackDepth: stackDepth(for: row.id, visited: &visited),
-          parentStatus: row.parentStatus,
           isEditProtected: row.isEditProtected,
           status: LaneStatus(
             dirty: row.dirty,
@@ -684,20 +651,13 @@ final class DatabaseService {
     shouldCaptureLocalChanges = false
     defer { shouldCaptureLocalChanges = true }
 
-    let orderedLanes = lanes.sorted {
-      if $0.stackDepth != $1.stackDepth {
-        return $0.stackDepth < $1.stackDepth
-      }
-      return $0.createdAt < $1.createdAt
-    }
+    let orderedLanes = lanes.sorted { $0.createdAt < $1.createdAt }
     let orderedLaneIds = Set(orderedLanes.map(\.id))
     let snapshotUpdatedAt = ISO8601DateFormatter().string(from: Date())
     let hydratedSnapshots = (snapshots ?? orderedLanes.map { lane in
       LaneListSnapshot(
         lane: lane,
         runtime: LaneRuntimeSummary(bucket: "none", runningCount: 0, awaitingInputCount: 0, endedCount: 0, sessionCount: 0),
-        rebaseSuggestion: nil,
-        autoRebaseStatus: nil,
         conflictStatus: nil,
         stateSnapshot: nil
       )
@@ -754,9 +714,9 @@ final class DatabaseService {
         _ = try execute("""
           insert into lanes (
             id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder,
+            attached_root_path, is_edit_protected, color, icon, tags_json, folder,
             status, created_at, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             project_id = excluded.project_id,
             name = excluded.name,
@@ -767,7 +727,6 @@ final class DatabaseService {
             worktree_path = excluded.worktree_path,
             attached_root_path = excluded.attached_root_path,
             is_edit_protected = excluded.is_edit_protected,
-            parent_lane_id = excluded.parent_lane_id,
             color = excluded.color,
             icon = excluded.icon,
             tags_json = excluded.tags_json,
@@ -794,37 +753,32 @@ final class DatabaseService {
             sqlite3_bind_null(statement, 9)
           }
           sqlite3_bind_int(statement, 10, lane.isEditProtected ? 1 : 0)
-          if let parentLaneId = lane.parentLaneId {
-            try bindText(parentLaneId, to: statement, index: 11)
+          if let color = lane.color {
+            try bindText(color, to: statement, index: 11)
           } else {
             sqlite3_bind_null(statement, 11)
           }
-          if let color = lane.color {
-            try bindText(color, to: statement, index: 12)
+          if let icon = lane.icon?.rawValue ?? lane.emoji {
+            try bindText(icon, to: statement, index: 12)
           } else {
             sqlite3_bind_null(statement, 12)
           }
-          if let icon = lane.icon?.rawValue ?? lane.emoji {
-            try bindText(icon, to: statement, index: 13)
-          } else {
-            sqlite3_bind_null(statement, 13)
-          }
           if lane.tags.isEmpty {
-            sqlite3_bind_null(statement, 14)
+            sqlite3_bind_null(statement, 13)
           } else {
-            try bindOptionalJson(lane.tags, to: statement, index: 14)
+            try bindOptionalJson(lane.tags, to: statement, index: 13)
           }
           if let folder = lane.folder {
-            try bindText(folder, to: statement, index: 15)
+            try bindText(folder, to: statement, index: 14)
           } else {
-            sqlite3_bind_null(statement, 15)
+            sqlite3_bind_null(statement, 14)
           }
-          try bindText(lane.archivedAt == nil ? "active" : "archived", to: statement, index: 16)
-          try bindText(lane.createdAt, to: statement, index: 17)
+          try bindText(lane.archivedAt == nil ? "active" : "archived", to: statement, index: 15)
+          try bindText(lane.createdAt, to: statement, index: 16)
           if let archivedAt = lane.archivedAt {
-            try bindText(archivedAt, to: statement, index: 18)
+            try bindText(archivedAt, to: statement, index: 17)
           } else {
-            sqlite3_bind_null(statement, 18)
+            sqlite3_bind_null(statement, 17)
           }
         }
 
