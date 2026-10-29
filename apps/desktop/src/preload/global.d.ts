@@ -1181,6 +1181,8 @@ declare global {
          * carries the same value for callers that already await it.
          */
         packageChannel: AppPackageChannel;
+        /** The running build's update track (Stable or Beta). Synchronous, like `packageChannel`. */
+        updateTrack: UpdateTrack;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         /** Swallow this window's menu accelerators while a takeover drives. */

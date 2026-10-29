@@ -5,6 +5,7 @@ import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { OtherMachinesUpdateSection } from "./OtherMachinesUpdateSection";
+import { UpdateTrackControls } from "./UpdateTrackControls";
 import { ModernSection } from "./primitives";
 
 type RuntimeServiceInstallState = NonNullable<AppInfo["localRuntime"]>["serviceInstall"]["state"];
@@ -305,6 +306,7 @@ export function AboutSection() {
             <span className="kit-eyebrow">ADE</span>
             <span className="ade-modern-stat-value">
               <span className="kit-stat kit-num">{runningVersion}</span>
+              {updateSnapshot.track?.running === "beta" ? <span className="kit-tag" data-tone="warn">Beta</span> : null}
               {pill}
             </span>
             <span className="ade-modern-stat-sub">
@@ -410,7 +412,9 @@ export function AboutSection() {
         ) : null}
       </ModernSection>
 
-      <ModernSection group="Updates" title="Updates" hint="Choose whether ADE installs downloaded updates automatically.">
+      <ModernSection group="Updates" title="Updates" hint="Choose which builds this computer gets, and whether ADE installs them automatically.">
+        {/* Alpha and dev builds have no feed, so they have no track. */}
+        {!isDev && info.packageChannel !== "alpha" ? <UpdateTrackControls snapshot={updateSnapshot} /> : null}
         <AutoUpdatesControls />
       </ModernSection>
 

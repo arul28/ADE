@@ -1,7 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
-import type { UpdateTrack } from "../shared/updateTrack";
+import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -4610,6 +4610,8 @@ const adeBridge = {
       argv: process.argv,
       env: process.env,
     }),
+    // The running build's update track, synchronous for the header label.
+    updateTrack: resolveUpdateTrackFromArgv(process.argv),
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),

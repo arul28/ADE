@@ -5507,6 +5507,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
     app: {
       // Mirrors the preload's synchronous channel bridge.
       packageChannel: browserMockPackageChannel(),
+      // Preview the Beta label with localStorage "ade.mock.updateTrack" = "beta".
+      updateTrack: (typeof localStorage !== "undefined" && localStorage.getItem("ade.mock.updateTrack") === "beta")
+        ? "beta" as const
+        : "stable" as const,
       // Mirrors the preload's synchronous platform bridge, so platform-gated UI
       // can be previewed with ?adePlatform=win32.
       runtimeTarget: { platform: browserMockPlatform(), arch: "x64" },

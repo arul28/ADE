@@ -51,6 +51,19 @@ export function updateTrackOfVersion(version: string | null | undefined): Update
   return firstIdentifier === "beta" ? "beta" : "stable";
 }
 
+/** Hands the running build's track to the preload, like the package channel. */
+export const UPDATE_TRACK_ARGV_PREFIX = "--ade-update-track=";
+
+/** The running build's track in the renderer/preload. Missing means Stable. */
+export function resolveUpdateTrackFromArgv(argv: readonly string[] | undefined): UpdateTrack {
+  for (const arg of argv ?? []) {
+    if (typeof arg === "string" && arg.startsWith(UPDATE_TRACK_ARGV_PREFIX)) {
+      return normalizeUpdateTrack(arg.slice(UPDATE_TRACK_ARGV_PREFIX.length)) ?? "stable";
+    }
+  }
+  return "stable";
+}
+
 export function normalizeUpdateTrack(value: unknown): UpdateTrack | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
   return normalized === "stable" || normalized === "beta" ? normalized : null;

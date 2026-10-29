@@ -347,7 +347,7 @@ import {
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
-import { updateTrackOfVersion, type UpdateTrack } from "../shared/updateTrack";
+import { UPDATE_TRACK_ARGV_PREFIX, updateTrackOfVersion, type UpdateTrack } from "../shared/updateTrack";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
@@ -1072,6 +1072,8 @@ async function createWindow(args: {
       // does not depend on when Chromium snapshotted process.env.
       additionalArguments: [
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+        // Same reason: the "Beta" label next to the logo is drawn at first paint.
+        `${UPDATE_TRACK_ARGV_PREFIX}${app.isPackaged ? updateTrackOfVersion(app.getVersion()) : "stable"}`,
         ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },

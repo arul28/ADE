@@ -1,13 +1,16 @@
 import React from "react";
 
 import type { AppPackageChannel } from "../../../shared/packageChannel";
-import { packageChannelLabel, rendererPackageChannel } from "../../lib/packageChannel";
+import type { UpdateTrack } from "../../../shared/updateTrack";
+import { packageChannelLabel, rendererPackageChannel, rendererUpdateTrack } from "../../lib/packageChannel";
 
 export type ChannelBadgeProps = {
   /** Defaults to the synchronous preload channel. Injected in tests. */
   channel?: AppPackageChannel;
   /** Defaults to an async `app.getInfo()`; injected in tests. */
   version?: string | null;
+  /** Defaults to the synchronous preload track. Injected in tests. */
+  track?: UpdateTrack;
 };
 
 /**
@@ -24,6 +27,7 @@ export type ChannelBadgeProps = {
 export function ChannelBadge({
   channel = rendererPackageChannel(),
   version,
+  track = rendererUpdateTrack(),
 }: ChannelBadgeProps): React.ReactElement | null {
   const isPrerelease = channel !== "stable";
   const [fetchedVersion, setFetchedVersion] = React.useState<string | null>(null);
@@ -42,6 +46,21 @@ export function ChannelBadge({
     };
   }, [isPrerelease, version]);
 
+  // Beta is a track of the normal install, not dev chrome: a tiny "BETA" next
+  // to the logo, no version (Settings › About has it), no IPC.
+  if (!isPrerelease && track === "beta") {
+    return (
+      <span
+        className="ade-shell-channel-badge ade-shell-track-badge shrink-0"
+        data-static="true"
+        style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        title="ADE Beta. Settings › About shows the version and the update track."
+        aria-label="ADE Beta"
+      >
+        BETA
+      </span>
+    );
+  }
   if (!isPrerelease) return null;
   const shownVersion = version !== undefined ? version : fetchedVersion;
   const label = packageChannelLabel(channel);
