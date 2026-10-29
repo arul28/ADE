@@ -55,8 +55,6 @@ describe("background provider homes", () => {
     job.close();
     expect(fs.existsSync(path.join(home, "mcp_config.json"))).toBe(true);
   });
-
-
 });
 
 describe("Grok background configuration", () => {
