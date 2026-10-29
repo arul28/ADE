@@ -134,9 +134,9 @@ function resolveBundledAgentSkillsRoot(args: CreateAdeCliServiceArgs): string | 
   return null;
 }
 
-function normalizePackageChannel(value: unknown): "alpha" | "beta" | null {
+function normalizePackageChannel(value: unknown): "alpha" | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+  return normalized === "alpha" ? normalized : null;
 }
 
 function sanitizeCommandName(value: unknown): string | null {

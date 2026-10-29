@@ -154,7 +154,7 @@ export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env):
   if (explicit) return explicit;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel === "alpha") return "com.ade.runtime.alpha";
-  if (channel === "beta") return "com.ade.runtime.beta";
+  // Beta is an update track of the normal install: same service as Stable.
   return "com.ade.runtime";
 }
 
@@ -170,7 +170,6 @@ export const ADE_RUNTIME_SERVICE_NAME = resolveRuntimeServiceName();
 export function resolveAssociatedAppBundleId(env: NodeJS.ProcessEnv = process.env): string {
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel === "alpha") return "com.ade.desktop.alpha";
-  if (channel === "beta") return "com.ade.desktop.beta";
   return "com.ade.desktop";
 }
 

@@ -19,7 +19,6 @@
     "build:sdk": "npm --prefix packages/sdk run build",
     "install:apps": "node scripts/install-apps.mjs",
     "package:alpha": "node scripts/package-channel.mjs alpha",
-    "package:beta": "node scripts/package-channel.mjs beta",
     "runtime:build": "npm --prefix apps/ade-cli run build",
     "setup": "npm run install:apps",
     "stop": "node scripts/dev-runtime-stop.mjs",

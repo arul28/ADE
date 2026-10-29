@@ -54,13 +54,16 @@ export function isMachineAdeHome(adeDir: string, machineHome = resolveMachineAde
 export function isSyncCapableAdeHome(adeDir: string, env: NodeJS.ProcessEnv = process.env): boolean {
   if (isMachineAdeHome(adeDir)) return true;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  if (channel !== "alpha" && channel !== "beta") return false;
+  if (channel !== "alpha") return false;
   return isMachineAdeHome(adeDir, adeHomeForChannel(channel));
 }
 
-/** The default ADE home of a package channel: `~/.ade`, `~/.ade-alpha`, `~/.ade-beta`. */
+/**
+ * The default ADE home of a package channel: `~/.ade` or `~/.ade-alpha`. Beta
+ * is an update track of the normal install and uses `~/.ade`.
+ */
 export function adeHomeForChannel(channel: string | null): string {
-  if (channel === "alpha" || channel === "beta") return path.join(os.homedir(), `.ade-${channel}`);
+  if (channel === "alpha") return path.join(os.homedir(), ".ade-alpha");
   return path.join(os.homedir(), ".ade");
 }
 
@@ -168,22 +171,18 @@ function windowsChannelIdentity(adeDir: string, env: NodeJS.ProcessEnv): {
   const homeName = path.win32.basename(adeDir).toLowerCase();
   const inferred = homeName === ".ade-alpha"
     ? "alpha"
-    : homeName === ".ade-beta"
-      ? "beta"
-      : homeName === ".ade"
-        ? "stable"
-        : "custom";
-  const label = explicitChannel === "alpha" || explicitChannel === "beta"
+    : homeName === ".ade"
+      ? "stable"
+      : "custom";
+  const label = explicitChannel === "alpha"
     ? explicitChannel
     : explicitChannel === "stable"
       ? "stable"
       : serviceName?.endsWith(".alpha")
         ? "alpha"
-        : serviceName?.endsWith(".beta")
-          ? "beta"
-          : serviceName === "com.ade.runtime"
-            ? "stable"
-            : inferred;
+        : serviceName === "com.ade.runtime"
+          ? "stable"
+          : inferred;
   return {
     identity: serviceName || explicitChannel || inferred,
     label,

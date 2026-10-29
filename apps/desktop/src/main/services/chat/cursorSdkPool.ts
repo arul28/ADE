@@ -320,9 +320,7 @@ function adeCommandNameCandidates(env: NodeJS.ProcessEnv): string[] {
   const names = [
     env.ADE_CLI_PATH ? path.basename(env.ADE_CLI_PATH, process.platform === "win32" ? ".cmd" : "") : "",
     env.ADE_CLI_INSTALL_NAME,
-    env.ADE_PACKAGE_CHANNEL === "alpha" || env.ADE_PACKAGE_CHANNEL === "beta"
-      ? `ade-${env.ADE_PACKAGE_CHANNEL}`
-      : "",
+    env.ADE_PACKAGE_CHANNEL === "alpha" ? "ade-alpha" : "",
     "ade",
     "ade-dev",
   ];

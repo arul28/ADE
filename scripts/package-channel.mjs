@@ -26,19 +26,11 @@ const CHANNELS = {
     adeHome: path.join(os.homedir(), ".ade-alpha"),
     outputDir: "release-alpha",
   },
-  beta: {
-    source: "origin-main",
-    productName: "ADE Beta",
-    appId: "com.ade.desktop.beta",
-    cliName: "ade-beta",
-    adeHome: path.join(os.homedir(), ".ade-beta"),
-    outputDir: "release-beta",
-  },
 };
 
 function usage() {
   process.stdout.write([
-    "Usage: node scripts/package-channel.mjs <alpha|beta> [options]",
+    "Usage: node scripts/package-channel.mjs alpha [options]",
     "",
     "Builds a local packaged ADE channel without using the GitHub release workflow.",
     "macOS produces a .app; Windows produces an NSIS installer, signed when the",
@@ -46,11 +38,12 @@ function usage() {
     "",
     "Channels:",
     "  alpha    Builds the current checkout as ADE Alpha.",
-    "  beta     Fetches origin/main, fast-forwards local main, and builds it as ADE Beta.",
+    "",
+    "Beta is not a local channel: it is an update track of the normal install,",
+    "built from main by .github/workflows/beta.yml.",
     "",
     "Options:",
     "  --skip-install       Do not run app-local npm install before building.",
-    "  --skip-fetch         For beta, do not fetch origin/main before the fast-forward check.",
     "  --dry-run            Print the commands without running them.",
     "  --repo <path>        Internal/debug: build the selected channel from an existing repo path.",
     "  --sign <identity>    macOS code-signing identity (exact common name or SHA-1 hash).",
@@ -70,7 +63,6 @@ function parseArgs(argv) {
   const options = {
     channel: null,
     skipInstall: false,
-    skipFetch: false,
     dryRun: false,
     repo: null,
     sign: null,
@@ -85,10 +77,6 @@ function parseArgs(argv) {
     }
     if (arg === "--skip-install") {
       options.skipInstall = true;
-      continue;
-    }
-    if (arg === "--skip-fetch") {
-      options.skipFetch = true;
       continue;
     }
     if (arg === "--dry-run") {
@@ -121,7 +109,7 @@ function parseArgs(argv) {
     if (options.channel) fail(`Unexpected extra argument: ${arg}`);
     options.channel = arg;
   }
-  if (!options.channel) fail("Missing channel. Use alpha or beta.");
+  if (!options.channel) fail("Missing channel. Use alpha.");
   if (!CHANNELS[options.channel]) fail(`Unknown channel: ${options.channel}`);
   return options;
 }
@@ -203,7 +191,7 @@ function readDesktopVersion(repoRoot) {
 
 /**
  * Every channel build gets a version that changes with the build, so a fresh
- * Alpha/Beta app never treats a brain left by an earlier build as compatible
+ * Alpha app never treats a brain left by an earlier build as compatible
  * just because both came from the same `apps/desktop/package.json` version.
  * The base is the newest `v*` tag reachable from HEAD (a released version),
  * falling back to package.json when the checkout has no tags. See
@@ -282,38 +270,7 @@ function packageScriptExists(repoRoot, packagePath, scriptName) {
 function assertPackageChannelPrereqs(repoRoot, channel, options) {
   if (options.dryRun && !fs.existsSync(repoRoot)) return;
   if (packageScriptExists(repoRoot, path.join("apps", "ade-cli", "package.json"), "build:static")) return;
-  if (channel === "beta") {
-    throw new Error(
-      "origin/main does not include ADE's static runtime packaging script yet. " +
-        "Run npm run package:beta after this branch lands on main, or build Alpha from the current checkout.",
-    );
-  }
   throw new Error("apps/ade-cli/package.json is missing the build:static script required for local channel packages.");
-}
-
-function prepareBetaCheckout(options) {
-  if (!options.skipFetch) {
-    run("git", ["fetch", "origin", "main"], { cwd: currentRepoRoot, dryRun: options.dryRun });
-  }
-  if (options.dryRun) {
-    run("git", ["merge", "--ff-only", "origin/main"], { cwd: currentRepoRoot, dryRun: true });
-    return currentRepoRoot;
-  }
-  const branch = gitOutput(["branch", "--show-current"]);
-  if (branch !== "main") {
-    fail("package:beta builds the local main checkout after fetching origin/main. Check out main first, or use --repo <path> for an explicit source.");
-  }
-  run("git", ["merge", "--ff-only", "origin/main"], { cwd: currentRepoRoot });
-  const status = gitOutput(["status", "--porcelain"]);
-  if (status) {
-    process.stdout.write("[ade] Warning: building beta with local working tree changes. Commit or stash first for a byte-for-byte clean origin/main beta.\n");
-  }
-  const aheadBehind = gitOutput(["rev-list", "--left-right", "--count", "HEAD...origin/main"]);
-  const [ahead = "0"] = aheadBehind.split(/\s+/);
-  if (Number(ahead) > 0) {
-    process.stdout.write("[ade] Warning: local main has commits not on origin/main. Push first for a remote-main-only beta.\n");
-  }
-  return currentRepoRoot;
 }
 
 function installApps(repoRoot, options) {
@@ -496,8 +453,7 @@ function buildChannel(repoRoot, channel, options) {
   const config = CHANNELS[channel];
   ensureRepoRoot(repoRoot, options);
   const desktopRoot = path.join(repoRoot, "apps", "desktop");
-  const outputRepoRoot = channel === "beta" && !options.repo ? currentRepoRoot : repoRoot;
-  const outputRoot = path.join(outputRepoRoot, "apps", "desktop", config.outputDir);
+  const outputRoot = path.join(repoRoot, "apps", "desktop", config.outputDir);
   const appVersion = resolveChannelVersion(repoRoot, channel);
   process.stdout.write(`[ade] Channel version: ${appVersion}\n`);
   const signingDecision = process.platform === "darwin" ? resolveSigningDecision(options) : null;
@@ -576,11 +532,7 @@ let selectedRepoRoot = null;
 
 try {
   parsedOptions = parseArgs(process.argv.slice(2));
-  selectedRepoRoot = parsedOptions.repo
-    ? parsedOptions.repo
-    : parsedOptions.channel === "beta"
-      ? prepareBetaCheckout(parsedOptions)
-      : currentRepoRoot;
+  selectedRepoRoot = parsedOptions.repo ?? currentRepoRoot;
   buildChannel(selectedRepoRoot, parsedOptions.channel, parsedOptions);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));

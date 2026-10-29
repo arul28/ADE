@@ -377,7 +377,7 @@ export function describeThisComputerCard(
   };
 }
 
-/** Channel word in front of a build: "ADE", "ADE Beta", "ADE Alpha". */
+/** Channel word in front of a build: "ADE" or "ADE Alpha". */
 export function channelProductName(channel: AppPackageChannel | string | null | undefined): string {
   const normalized = normalizeAppPackageChannel(channel);
   return normalized === "stable"

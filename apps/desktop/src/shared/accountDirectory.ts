@@ -243,7 +243,9 @@ function parseMachineInstall(value: Record<string, unknown>): {
   channel?: AdeInstallChannel;
   adeHome?: string;
 } {
-  const channel = value.channel === "stable" || value.channel === "beta" || value.channel === "alpha"
+  // "beta" was a local package channel before Beta became an update track;
+  // such a row reads as no channel.
+  const channel = value.channel === "stable" || value.channel === "alpha"
     ? value.channel
     : null;
   const adeHome = optionalBoundedString(value.adeHome, MAX_ADE_HOME_DISPLAY_CHARS);

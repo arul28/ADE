@@ -347,7 +347,7 @@ import {
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
-import type { UpdateTrack } from "../shared/updateTrack";
+import { updateTrackOfVersion, type UpdateTrack } from "../shared/updateTrack";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
@@ -534,7 +534,11 @@ const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 /** Appended to the user agent of the app window when it loads from the Vite dev server. */
 const DEV_APP_WINDOW_USER_AGENT_MARK = "ADEDevShell";
 
-type AdePackageChannel = "alpha" | "beta";
+// Alpha is the only package channel: a branch build with its own app id and
+// its own ADE home. Beta is not a channel; it is an update track of the
+// normal install (docs/plans/beta-track.md), so nothing here may read "beta"
+// out of a name or a version.
+type AdePackageChannel = "alpha";
 
 function normalizeAdeReleaseRepository(value: unknown): string | null {
   const normalized = typeof value === "string"
@@ -563,7 +567,7 @@ function readBundledAdeReleaseRepository(): string {
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+  return normalized === "alpha" ? normalized : null;
 }
 
 function readBundledAdePackageChannel(): AdePackageChannel | null {
@@ -580,14 +584,12 @@ function readBundledAdePackageChannel(): AdePackageChannel | null {
     if (packageChannel) return packageChannel;
     const productName = typeof packageJson.productName === "string" ? packageJson.productName : "";
     if (/\balpha\b/i.test(productName)) return "alpha";
-    if (/\bbeta\b/i.test(productName)) return "beta";
   } catch {
     // Dev builds and older packaged apps do not need channel metadata.
   }
 
   const appName = app.getName();
   if (/\balpha\b/i.test(appName)) return "alpha";
-  if (/\bbeta\b/i.test(appName)) return "beta";
   return null;
 }
 
@@ -596,7 +598,7 @@ function applyPackagedChannelDefaults(): void {
   if (!channel) return;
 
   process.env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL || channel;
-  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || (channel === "alpha" ? "ADE Alpha" : "ADE Beta");
+  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || "ADE Alpha";
   process.env.ADE_HOME = process.env.ADE_HOME || path.join(os.homedir(), `.ade-${channel}`);
 }
 
@@ -2412,7 +2414,8 @@ app.whenReady().then(async () => {
     properties: {
       entry_point: pendingStartupProjectRoot ? "project_file" : envRoot ? "environment" : "app_icon",
       is_packaged: app.isPackaged,
-      release_channel: packagedChannel,
+      // Beta is a track of the normal install; its builds say so by version.
+      release_channel: !app.isPackaged ? "development" : packagedChannel ?? updateTrackOfVersion(app.getVersion()),
     },
   });
   const shouldRepairRuntimeServiceOnFallback =

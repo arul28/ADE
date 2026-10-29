@@ -43,7 +43,7 @@ export function initMainSentry(options: {
   Sentry.init({
     dsn: resolveSentryDsn("desktop", process.env),
     release: sentryReleaseName(app.getVersion()),
-    environment: resolveSentryEnvironment({ env: process.env, packaged }),
+    environment: resolveSentryEnvironment({ env: process.env, packaged, version: app.getVersion() }),
     dist: sentryDist(process.platform, process.arch),
     // Classic IPC: no custom protocol scheme, and only ADE's own preload
     // carries the bridge (see `src/preload/preload.ts`).

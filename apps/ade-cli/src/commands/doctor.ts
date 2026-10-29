@@ -442,7 +442,7 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
   }
 }
 
-/** The app name this ADE home's channel installs as: `ADE`, `ADE Beta`, `ADE Alpha`. */
+/** The app name this ADE home's channel installs as: `ADE` or `ADE Alpha`. */
 export function resolveDefaultDesktopAppName(env: NodeJS.ProcessEnv = process.env): string {
   return installedDesktopAppNames(env)[0] ?? "ADE";
 }

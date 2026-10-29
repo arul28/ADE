@@ -402,7 +402,6 @@ function normalizedChannel(value: string | null | undefined): string | null {
 }
 
 function defaultAppName(channel: string | null): string {
-  if (channel === "beta") return "ADE Beta";
   if (channel === "alpha") return "ADE Alpha";
   return "ADE";
 }
@@ -428,7 +427,6 @@ export function buildQuitCommand(args: {
   }
   const commandLine = args.commandLine ?? "";
   const channel = normalizedChannel(args.packageChannel)
-    ?? (/ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine) ? "beta" : null)
     ?? (/ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine) ? "alpha" : null);
   // The sync-host brain runs as a launchd LaunchAgent (com.ade.runtime[.channel])
   // in the persistent/headless runtime-service mode, with KeepAlive — so a plain
@@ -557,16 +555,10 @@ function legacyOwner(
   // whenever the scanned platform is injected rather than the host's.
   platform: NodeJS.Platform = process.platform,
 ): SyncHostSingletonOwner {
-  const channel = commandLine && /ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine)
-    ? "beta"
-    : commandLine && /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine)
-      ? "alpha"
-      : null;
-  const appName = commandLine && /\bADE Beta\b|ADE Beta\.app/i.test(commandLine)
-    ? "ADE Beta"
-    : commandLine && /\bADE Alpha\b|ADE Alpha\.app/i.test(commandLine)
-      ? "ADE Alpha"
-      : "ADE";
+  const channel = commandLine && /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine)
+    ? "alpha"
+    : null;
+  const appName = channel === "alpha" ? "ADE Alpha" : "ADE";
   const adeHome = adeHomeForChannel(channel);
   const now = new Date().toISOString();
   return {

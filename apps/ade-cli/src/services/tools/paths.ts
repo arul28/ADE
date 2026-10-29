@@ -64,7 +64,7 @@ function homeDir(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string {
  * The machine-level, cross-channel tools cache.
  *
  * Deliberately NOT derived from `ADE_HOME`. `ADE_HOME` is channel-scoped
- * (`~/.ade`, `~/.ade-beta`, `~/.ade-alpha` — see `machineLayout.ts`), and the
+ * (`~/.ade`, `~/.ade-alpha` — see `machineLayout.ts`), and the
  * whole point of this cache is that stable, beta, and the brain runtime share
  * one copy of a ~300 MB pinned binary. Contents are addressed by exact package
  * name + exact version, so sharing across channels can never mix builds: two
