@@ -4,6 +4,7 @@ import { getErrorMessage, isEnoentError, writeTextAtomic } from "../../../../des
 import { securePrivatePath } from "../../lib/trustedWindowsTools";
 import type { AccountVaultStore } from "../account/accountVaultStore";
 import {
+  isRemoteMcpKnownApp,
   isRemoteMcpScope,
   type RemoteMcpConnectionKind,
   type RemoteMcpConnectionSummary,
@@ -11,7 +12,7 @@ import {
   type RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { isRemoteMcpMachineKey } from "./remoteMcpAccount";
-import { inferRemoteMcpAppFromRecord, isRemoteMcpKnownApp } from "./remoteMcpKnownApps";
+import { inferRemoteMcpAppFromRecord } from "./remoteMcpKnownApps";
 
 /**
  * The account's ADE MCP connections, kept in the account vault so a token
@@ -52,23 +53,8 @@ const CONNECTION_KEY_PREFIX = "connection:";
 /** A write the account stores refused because the signed-in account changed under it. */
 export const REMOTE_MCP_SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
 
-/** The account vault's sync health, as the vault store reports it. */
-export type RemoteMcpVaultSyncHealth = {
-  state: "ok" | "failing" | "unavailable";
-  lastSyncedAt: string | null;
-  pendingChanges: number;
-  parked: number;
-  lastError: string | null;
-};
-
-/**
- * The slice of the account vault ADE MCP uses. `health` is optional so a
- * vault store that does not report it yet still works; the service then
- * judges health from its own syncs.
- */
-export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync" | "pendingKeys"> & {
-  health?: () => RemoteMcpVaultSyncHealth;
-};
+/** The slice of the account vault ADE MCP uses. */
+export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync" | "pendingKeys" | "health">;
 
 function hashRemoteMcpToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");

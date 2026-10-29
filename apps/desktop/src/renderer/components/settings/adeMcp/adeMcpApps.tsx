@@ -6,7 +6,7 @@
  * Logos are the makers' own marks, drawn inline (lobehub icons) or from the
  * bundled editor logos, so nothing loads over the network.
  */
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   Amp,
   Claude,
@@ -22,11 +22,36 @@ import {
   Perplexity,
   Windsurf,
 } from "@lobehub/icons";
-import { Command, Key, PlugsConnected, Robot } from "@phosphor-icons/react";
+import { Command, Key, PlugsConnected, Robot, ShareNetwork } from "@phosphor-icons/react";
 import type { RemoteMcpKnownApp } from "../../../../shared/types/remoteMcp";
+import type { IntegrationHeroBrand } from "../integrations/integrationBrand";
 import { DroidLogo } from "../../shared/ProviderLogos";
 import vscodeLogoSrc from "../../../assets/editor-logos/vscode.svg";
 import zedLogoSrc from "../../../assets/editor-logos/zed.svg";
+
+/** ADE MCP wears ADE's violet, the way an integration page wears its maker's colour. */
+export const ADE_MCP_ACCENT = "#8B7CF6";
+
+/** Dialogs portal outside the page, so they set the page's accent on their own panel. */
+export const ADE_MCP_DIALOG_VARS: CSSProperties = { ["--ig-accent" as string]: ADE_MCP_ACCENT };
+
+/** The ADE MCP banner, drawn by the integration pages' hero. */
+export const ADE_MCP_BRAND: IntegrationHeroBrand = {
+  label: "ADE MCP",
+  tagline: "One address for your ADE account. An AI app that signs in with it can use ADE on every computer you include.",
+  accent: ADE_MCP_ACCENT,
+  banner: {
+    background: [
+      "radial-gradient(55% 130% at 72% 10%, rgba(167, 139, 250, 0.42), transparent 62%)",
+      "radial-gradient(45% 120% at 0% 110%, rgba(56, 189, 248, 0.20), transparent 60%)",
+      "linear-gradient(120deg, #17123F 0%, #251A61 50%, #33227E 100%)",
+    ].join(", "),
+  },
+  logo: { kind: "solid", mark: (size) => <ShareNetwork size={size} weight="fill" />, face: "#FFFFFF", side: "#3A2A8C", size: 72 },
+};
+
+/** Grok Bot's badge: Grok, working in your team's chat. */
+const GROK_BOT_BADGE = { background: "#2563EB", color: "#FFFFFF" } as const;
 
 /** A logo for a known app, a token, or an app ADE did not recognise. */
 export type McpLogoId = RemoteMcpKnownApp | "token" | "other";
@@ -89,35 +114,13 @@ export function McpAppLogo({ app, size = 32 }: { app: McpLogoId | null; size?: n
       {Lobe ? <Lobe size={size} shape="square" /> : custom?.mark}
       {/* Grok Bot is Grok, working in your team's chat. */}
       {id === "grok-bot" ? (
-        <span className="ade-amcp-logo-badge" style={{ width: Math.round(size * 0.48), height: Math.round(size * 0.48) }}>
+        <span className="ade-amcp-logo-badge" style={{ ...GROK_BOT_BADGE, width: Math.round(size * 0.48), height: Math.round(size * 0.48) }}>
           <Robot size={Math.round(size * 0.32)} weight="fill" />
         </span>
       ) : null}
     </span>
   );
 }
-
-/** Names for every app ADE recognises at sign-in. */
-export const KNOWN_APP_LABEL: Record<RemoteMcpKnownApp, string> = {
-  claude: "Claude",
-  "claude-code": "Claude Code",
-  chatgpt: "ChatGPT",
-  codex: "Codex",
-  grok: "Grok",
-  "grok-bot": "Grok Bot",
-  cursor: "Cursor",
-  vscode: "VS Code",
-  "gemini-cli": "Gemini CLI",
-  perplexity: "Perplexity",
-  "le-chat": "Le Chat",
-  windsurf: "Windsurf",
-  zed: "Zed",
-  goose: "Goose",
-  opencode: "OpenCode",
-  amp: "Amp",
-  factory: "Factory",
-  raycast: "Raycast",
-};
 
 // ── Setup steps ─────────────────────────────────────────────────────────
 
@@ -155,8 +158,12 @@ export type GalleryApp = {
   signIn: boolean;
   /** It can send a token instead. */
   token: boolean;
+  /** The title of its setup sheet, when it is not "Connect <label>". */
+  title?: string;
   /** The token snippet the token dialog opens on, for an app that takes one. */
   tokenSnippet?: TokenSnippetId;
+  /** The name a token made from its sheet starts with, when it is not the app's label. */
+  tokenLabel?: string;
   /** The footer button that opens the token dialog, when it is not "Use a token instead". */
   tokenAction?: string;
   steps: (url: string) => SetupStep[];
@@ -166,8 +173,9 @@ export type GalleryApp = {
 
 const json = (value: unknown) => JSON.stringify(value, null, 2);
 
-export const GALLERY_APPS: readonly GalleryApp[] = [
-  {
+/** Every gallery app by id; the key order is the gallery's order. */
+const GALLERY: Record<GalleryAppId, GalleryApp> = {
+  claude: {
     id: "claude",
     label: "claude.ai",
     subtitle: "Anthropic · web, desktop and mobile",
@@ -189,7 +197,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       <>On a Team or Enterprise plan, an owner adds it once in <Path parts={["Organization settings", "Connectors", "Add", "Custom", "Web"]} />. Then each person connects it.</>,
     ],
   },
-  {
+  chatgpt: {
     id: "chatgpt",
     label: "ChatGPT",
     subtitle: "OpenAI · web and desktop",
@@ -211,7 +219,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       "ChatGPT can't use tokens. Sign-in is the only way it connects.",
     ],
   },
-  {
+  "claude-code": {
     id: "claude-code",
     label: "Claude Code",
     subtitle: "Anthropic · terminal",
@@ -230,7 +238,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       },
     ],
   },
-  {
+  codex: {
     id: "codex",
     label: "Codex",
     subtitle: "OpenAI · terminal and IDE",
@@ -249,13 +257,14 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       },
     ],
   },
-  {
+  grok: {
     id: "grok",
     label: "Grok",
     subtitle: "xAI · grok.com",
     signIn: true,
     token: false,
     tokenSnippet: "xai",
+    tokenLabel: "xAI API",
     tokenAction: "Token for the xAI API",
     steps: (url) => [
       {
@@ -272,7 +281,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       "Calling Grok through the xAI API instead? The API sends a token, not a sign-in. Make one with Use a token.",
     ],
   },
-  {
+  "grok-bot": {
     id: "grok-bot",
     label: "Grok Bot",
     subtitle: "xAI · Grok in your team's chat",
@@ -290,7 +299,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       "Grok Bot reaches ADE over the internet, so give it this exact address. A localhost or home-network address won't work.",
     ],
   },
-  {
+  cursor: {
     id: "cursor",
     label: "Cursor",
     subtitle: "Anysphere · editor and cloud agents",
@@ -310,7 +319,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       },
     ],
   },
-  {
+  vscode: {
     id: "vscode",
     label: "VS Code",
     subtitle: "Microsoft · GitHub Copilot chat",
@@ -326,7 +335,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       { title: "Allow VS Code to sign in", signIn: {} },
     ],
   },
-  {
+  "gemini-cli": {
     id: "gemini-cli",
     label: "Gemini CLI",
     subtitle: "Google · terminal",
@@ -346,7 +355,7 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       },
     ],
   },
-  {
+  perplexity: {
     id: "perplexity",
     label: "Perplexity",
     subtitle: "Perplexity · web and Mac",
@@ -364,13 +373,16 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       { title: "Save it, then sign in", signIn: {} },
     ],
   },
-  {
+  other: {
     id: "other",
     label: "Any other app",
+    title: "Connect another app",
     subtitle: "Any app that adds a remote MCP server",
     signIn: true,
     token: true,
     tokenSnippet: "curl",
+    // A token for an unknown app has no name to start from.
+    tokenLabel: "",
     steps: (url) => [
       {
         title: "Find where the app adds an MCP server",
@@ -386,16 +398,21 @@ export const GALLERY_APPS: readonly GalleryApp[] = [
       "If the app asks for a header or an API key instead of signing in, use a token.",
     ],
   },
-];
+};
+
+export const GALLERY_APPS: readonly GalleryApp[] = Object.values(GALLERY);
 
 export function galleryApp(id: GalleryAppId): GalleryApp {
-  return GALLERY_APPS.find((app) => app.id === id) ?? GALLERY_APPS[GALLERY_APPS.length - 1]!;
+  return GALLERY[id];
+}
+
+function isGalleryAppId(value: string): value is GalleryAppId {
+  return Object.prototype.hasOwnProperty.call(GALLERY, value);
 }
 
 /** The gallery tile an existing connection belongs to, so the tile can say "Connected". */
 export function galleryIdForKnownApp(app: RemoteMcpKnownApp | null): GalleryAppId | null {
-  if (!app) return null;
-  return GALLERY_APPS.some((entry) => entry.id === app) ? (app as GalleryAppId) : null;
+  return app && isGalleryAppId(app) ? app : null;
 }
 
 /** One line each for the other apps ADE recognises, for the "Any other app" view. */

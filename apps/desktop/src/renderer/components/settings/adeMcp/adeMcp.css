@@ -1,8 +1,8 @@
 /*
  * Settings → You → ADE MCP. Built on the integration pages' frame
  * (integrationPage.css: `.ade-ig-hero`, `.ade-ig-card`, steps and rows) in
- * ADE's own violet, plus the app gallery, the setup sheet and the token
- * dialog. Theme tokens only, apart from the hero's own banner colours.
+ * ADE's own violet (ADE_MCP_BRAND in adeMcpApps.tsx), plus the app gallery,
+ * the setup sheet and the token dialog. Theme tokens only.
  */
 
 .ade-amcp-page { --ade-mcp-generic-tile: color-mix(in srgb, var(--color-fg) 9%, transparent); }
@@ -28,20 +28,13 @@
   display: inline-grid;
   place-items: center;
   border-radius: 999px;
-  color: #fff;
-  background: #2563EB;
   box-shadow: 0 0 0 2px var(--color-card, var(--color-bg));
 }
-/* Dialogs portal outside the page, so they need the generic tile colour too. */
-.ade-amcp-dialog { --ade-mcp-generic-tile: color-mix(in srgb, var(--color-fg) 9%, transparent); --ig-accent: #8B7CF6; }
+/* Dialogs portal outside the page, so they need the generic tile colour too
+   (and take the accent from their panel style). */
+.ade-amcp-dialog { --ade-mcp-generic-tile: color-mix(in srgb, var(--color-fg) 9%, transparent); }
 
 /* ── Hero ── */
-.ade-amcp-hero {
-  background:
-    radial-gradient(55% 130% at 72% 10%, rgba(167, 139, 250, 0.42), transparent 62%),
-    radial-gradient(45% 120% at 0% 110%, rgba(56, 189, 248, 0.20), transparent 60%),
-    linear-gradient(120deg, #17123F 0%, #251A61 50%, #33227E 100%);
-}
 .ade-amcp-hero .ade-ig-hero-row { grid-template-columns: auto minmax(0, 1fr) minmax(260px, 360px); }
 .ade-amcp-hero .ade-ig-hero-tagline { max-width: 46ch; }
 
@@ -62,10 +55,7 @@
 .ade-amcp-hero-orbit[data-app="cursor"] { right: calc(min(360px, 38%) + 60px); top: 126px; opacity: 0.55; }
 .ade-amcp-hero-orbit[data-app="claude-code"] { right: calc(min(360px, 38%) + 214px); top: 64px; opacity: 0.45; }
 
-.ade-amcp-page .ade-ig-chip[data-tone="crit"] > i { background: #EF4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25); }
-.ade-amcp-page .ade-ig-chip[data-tone="off"] > i { background: rgba(255, 255, 255, 0.45); }
-
-.ade-amcp-hero-panel { gap: 8px; }
+.ade-amcp-hero .ade-ig-hero-panel { gap: 8px; }
 .ade-amcp-hero-url { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
 .ade-amcp-hero-url > code {
   flex: 1 1 auto;
@@ -75,13 +65,8 @@
   user-select: all;
   opacity: 0.95;
 }
-.ade-amcp-hero-panel > .ade-ig-hero-toggle {
-  margin: 4px -14px -14px;
-  padding: 10px 14px;
-  border-left: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.12);
-  justify-content: space-between;
-}
+/* The frame draws the switch in the panel; the server URL wants a little more room above it. */
+.ade-amcp-hero .ade-ig-hero-panel > .ade-ig-hero-toggle { margin-top: 4px; }
 
 /* ── Gallery ── */
 .ade-amcp-gallery {
@@ -151,7 +136,6 @@
 .ade-amcp-state[data-tone="warn"] { color: var(--kit-warn, #B45309); }
 .ade-amcp-state[data-tone="crit"] { color: var(--kit-crit, #DC2626); }
 .ade-amcp-state[data-tone="neutral"] { color: var(--kit-text-2, var(--color-secondary-fg)); }
-.ade-amcp-page .ade-ig-dot[data-tone="crit"] { background: #EF4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18); }
 
 /* Disconnect and Revoke take the same width, so the access switches line up. */
 .ade-amcp-remove { min-width: 88px; justify-content: center; }
@@ -313,28 +297,9 @@
 .ade-amcp-access-choice b { font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
 .ade-amcp-access-choice small { font-size: 11.5px; line-height: 1.4; }
 
-.ade-amcp-snippet-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
-.ade-amcp-snippet-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 26px;
-  padding: 0 9px 0 5px;
-  border-radius: 999px;
-  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 10%, transparent));
-  background: transparent;
-  color: var(--kit-text-2, var(--color-secondary-fg));
-  font: inherit;
-  font-size: 11.5px;
-  cursor: pointer;
-}
-.ade-amcp-snippet-tab:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
-.ade-amcp-snippet-tab:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 1px; }
-.ade-amcp-snippet-tab[aria-selected="true"] {
-  color: var(--color-fg);
-  border-color: color-mix(in srgb, var(--ig-accent) 55%, transparent);
-  background: color-mix(in srgb, var(--ig-accent) 12%, transparent);
-}
+/* A `.kit-seg` of snippet tabs: eight, each with its logo, so it wraps. */
+.ade-amcp-snippet-tabs { flex-wrap: wrap; align-self: flex-start; max-width: 100%; }
+.ade-amcp-snippet-tabs > button { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 8px 0 4px; }
 .ade-amcp-snippet-panel { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
 .ade-amcp-snippet-where { margin: 0; font-size: 12px; color: var(--kit-text-2, var(--color-secondary-fg)); }
 

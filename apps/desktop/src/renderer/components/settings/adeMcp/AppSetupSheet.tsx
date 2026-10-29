@@ -5,7 +5,8 @@
  */
 import { CheckCircle, Info, Key, UserCircle } from "@phosphor-icons/react";
 import { Dialog } from "../../ui/dialog";
-import { McpAppLogo, OTHER_APP_HINTS, KNOWN_APP_LABEL, type GalleryApp } from "./adeMcpApps";
+import { REMOTE_MCP_KNOWN_APP_LABELS } from "../../../../shared/types/remoteMcp";
+import { ADE_MCP_DIALOG_VARS, McpAppLogo, OTHER_APP_HINTS, type GalleryApp } from "./adeMcpApps";
 import { CopyButton, SignInPreview, Snippet } from "./adeMcpParts";
 
 export function AppSetupSheet({
@@ -24,23 +25,25 @@ export function AppSetupSheet({
 }) {
   const steps = app.steps(serverUrl);
   const tokenButton = app.token || app.tokenSnippet;
+  const title = app.title ?? `Connect ${app.label}`;
   return (
     <Dialog
       open
       onOpenChange={(open) => { if (!open) onClose(); }}
       placement="right"
       width={540}
-      title={app.id === "other" ? "Connect another app" : `Connect ${app.label}`}
+      title={title}
       titleContent={(
         <div className="ade-amcp-sheet-head">
           <McpAppLogo app={app.id} size={40} />
           <div>
-            <h2>{app.id === "other" ? "Connect another app" : `Connect ${app.label}`}</h2>
+            <h2>{title}</h2>
             <p>{app.subtitle}</p>
           </div>
         </div>
       )}
       panelClassName="ade-amcp-dialog ade-amcp-sheet"
+      panelStyle={ADE_MCP_DIALOG_VARS}
       footerStart={tokenButton ? (
         <button type="button" className="ade-modern-btn" data-size="sm" data-variant="ghost" onClick={onUseToken}>
           <Key size={12} />
@@ -92,7 +95,7 @@ export function AppSetupSheet({
                   <div key={hint.app} className="ade-ig-mini-row ade-amcp-hint-row">
                     <McpAppLogo app={hint.app} size={20} />
                     <span className="ade-amcp-hint-text">{how.text}</span>
-                    {how.copy ? <CopyButton value={how.copy} label={`Copy ${KNOWN_APP_LABEL[hint.app]} setup`} /> : null}
+                    {how.copy ? <CopyButton value={how.copy} label={`Copy ${REMOTE_MCP_KNOWN_APP_LABELS[hint.app]} setup`} /> : null}
                   </div>
                 );
               })}

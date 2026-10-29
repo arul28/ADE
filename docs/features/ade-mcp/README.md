@@ -23,8 +23,8 @@ calling. See [Typed tools](#typed-tools). Tools with a view come back as an
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpService.ts` | The server: HTTP router (stateless Streamable HTTP, JSON responses), token checks, OAuth endpoints, Settings actions. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpProtocol.ts` | MCP JSON-RPC for a signed-in connection: tools (`ade` and the typed tools), the `ade://commands` resource, prompts, project resolution, run limits. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpOAuth.ts` | Stateless client registration, redirect URI rules, authorize request parsing, PKCE, pending sign-ins and authorization codes, the sign-in and allow pages. |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and its registered name). |
-| `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: one retry with a call id, plain network-error sentences, and the replay guard that answers a retried call once. |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpKnownApps.ts` | Which app a sign-in is, from the redirect URI it used (and, for local and app-scheme addresses only, its registered name). |
+| `apps/ade-cli/src/services/remoteMcp/remoteMcpHttp.ts` | The HTTP shapes, plus brain→relay requests: when a request may be tried again, the call id, plain network-error sentences, and the replay guard that answers a repeated call once. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpTools.ts` | The typed tools: inputs, the argv each builds, how its JSON is trimmed, its `next` hint, and its result shape. |
 | `apps/ade-cli/src/services/remoteMcp/remoteMcpContextBudget.test.ts`, `.json` | The context-size ratchet. |
 | `apps/ade-cli/src/cliChatInbox.ts` | `ade chat inbox`, the command behind the `inbox` tool. |
@@ -87,9 +87,13 @@ reported state; rules that hold now win over it (account off, left out,
 `older_ade` for an entry with no endpoint key, and `offline` from the
 directory). An entry from an ADE that never reported is shown as "serving
 unknown" and calls are still tried. This computer's own state is live.
+One rule decides serving (`servingBlocker`); the reported reason adds only
+the relay connection being down for 45 s, which the request gate leaves out
+(a request that arrived came over the relay). The service notes when the
+connection went down on its 30 s refresh, so reading the state never changes
+it.
 `getStatus` also carries `vault` (`RemoteMcpVaultHealth`): this computer's
-account vault sync, from the vault store's `health()` when it has one,
-otherwise from the service's own recent syncs.
+account vault sync, from the vault store's `health()`.
 
 ### The account secret
 
@@ -159,15 +163,27 @@ first text line `[machine: <name>]` and `structuredContent.machine = {key, name}
   waiting for the key. A target that answers 401 (an older ADE whose own
   store does not know account tokens, or a token it has not pulled yet) gets
   "update ADE there; if it was just set up, try again in a minute". The
-  relay's 404 `ade_mcp_off`, 429 and 503 have their own sentences.
-- **Retries.** Brain→relay requests (a forwarded call, a forwarded token
-  exchange) are retried once when the connection fails before any HTTP
-  response: Cloudflare closes idle keep-alive connections and the first write
-  on one fails at once ("fetch failed"); the client drops it, so the retry
-  gets a fresh one. Both tries carry the same `x-ade-mcp-call-id`, and the
-  receiving brain answers a `tools/call` with the same (connection, call id)
-  once for two minutes after it finishes (a duplicate in flight waits for the
-  first); a forwarded token exchange the same way, keyed with its body. A
+  relay's 404 `ade_mcp_off` (with the reason the target last reported, when
+  there is one), 429 and 503 have their own sentences.
+- **Retries.** A brain→relay request (a forwarded call, a forwarded token
+  exchange) that fails before any HTTP response is tried once more, inside
+  the same deadline, only when that cannot run it twice:
+  - always, when the failure proves nothing was sent (`ECONNREFUSED`,
+    `ENOTFOUND`, `EAI_AGAIN`, `ENETUNREACH`, `EHOSTUNREACH`,
+    `UND_ERR_CONNECT_TIMEOUT`);
+  - after any other failure (a reset or "other side closed": Cloudflare
+    closes idle keep-alive connections, and the request may already have
+    been written) only for a read-only typed tool. A write, the `ade` tool
+    and a token exchange (the code is single use) fail with the sentence
+    instead, and the app can try again;
+  - never after a timeout.
+
+  Every try carries an `x-ade-mcp-call-id`, and the receiving brain answers a
+  `tools/call` with the same (connection, call id) once for two minutes after
+  it finishes (a duplicate in flight waits for the first); a forwarded token
+  exchange the same way, keyed with its body. That guard is why a repeat is
+  harmless when both sides know it, but a target on an older ADE or a relay
+  that drops the header would run it again, so it is not a reason to retry. A
   failure says what happened in a sentence with the cause code (`ECONNRESET`,
   `UND_ERR_SOCKET`, `ENOTFOUND`), never a bare "fetch failed".
 - Budget: the tool's own timeout + 30 s, at most 10 minutes.
@@ -182,7 +198,11 @@ first text line `[machine: <name>]` and `structuredContent.machine = {key, name}
 
 `machines_list` returns the account's computers: name, key, online, included,
 serving (null when unknown), `notServingReason`, `reportedAt`, supported (runs
-this code) and which one is answering.
+this code) and which one is answering. Another computer's `serving` is a guess
+(unknown) when its ADE never reported, or its last report no longer holds; its
+`reportedAt` is null then, which is how Settings and `ade mcp status` tell
+(`servingStateKnown`). Lists word each reason from one table
+(`NOT_SERVING_WORDS`).
 
 ## Typed tools
 
@@ -298,7 +318,11 @@ AI app ◄───────────────────────�
 - The relay holds no key and runs no ADE logic. It answers early only when the
   machine is offline (503), has the feature off (404 `ade_mcp_off`, from
   the control socket's `mcp` flag, so a disabled machine is never woken), or is
-  over its limits (16 requests in flight, 300 a minute: 429). It forwards a
+  over its limits (16 requests in flight, 300 a minute: 429). On the account
+  address the 404 also carries a `reason`: `off` (ADE MCP is off for the
+  account) or `unknown_address` (nothing serves this address: often an old
+  one left behind by a new account secret). The code stays `ade_mcp_off`
+  for clients that read only that. It forwards a
   short list of request headers (including `x-ade-mcp-via`) and returns a
   short list of response headers.
 - The account route reads the account object (`mcp-account:<accountKey>`:
@@ -307,7 +331,9 @@ AI app ◄───────────────────────�
   before the request reached its brain. It marks the message with
   `mount: {kind: "account", key}`.
 - The brain answers an account mount only when the key is its own derived
-  account key and it is serving; otherwise 404 `ade_mcp_off`. A malformed
+  account key and it is serving; otherwise 404 `ade_mcp_off`, which the relay
+  reads as that computer being off and moves on (its own 404, with `reason`
+  `off` or `unknown_address`, comes only when no computer answers). A malformed
   `mount` gets 400. No `mount` is the per-machine URL.
 - The control socket is the one the brain already keeps for phones, so an idle
   machine costs nothing extra. There is no session object and no second socket.
@@ -355,12 +381,17 @@ the others (see **Account server**).
    normally on the account URL.
    - **Which app.** `recogniseRemoteMcpApp` names the app from the redirect URI
      used at authorize, then from its registered name for loopback and app
-     schemes: Cursor's one published client (client name "Cursor") serves
+     schemes only: Cursor's one published client (client name "Cursor") serves
      Cursor, its cloud agents (`www.cursor.com/agents/…`), Grok Bot
      (`www.cursor.com/bot/…`) and grok.com (`grok.com/connectors-oauth-exchange-code/`).
      The pages say "Connect Grok Bot", the connection is labelled so, and its
-     record keeps `app` (`RemoteMcpKnownApp`; older records infer it from the
-     host and label, and `www.cursor.com` stays unknown).
+     record keeps `app` (`RemoteMcpKnownApp`, named from
+     `REMOTE_MCP_KNOWN_APP_LABELS`; older records infer it from the host and
+     label the same way, and `www.cursor.com` stays unknown). Any website can
+     register any name, so an HTTPS address ADE does not list is never a known
+     app: a page on `evil.example` that registers as "Claude helper" is shown
+     as "Claude helper (evil.example)", with no logo, on the pages and in
+     Settings.
    - **What it gets.** On the account URL the start and allow pages say the
      app wants to use your ADE account, on every computer you include, and
      name them (from the account entries). On a per-machine URL they name
@@ -475,7 +506,13 @@ and is replaced by a sign-in from the same host.
   binary), never a shell or a `.cmd` wrapper, with `--socket` first and
   `ADE_DEFAULT_ROLE` set from the access level. The entry is the first that
   exists of: the standalone runtime's executable, the agent environment's
-  entry, its shim, the brain's own script, `<ade home>/bin/ade`. The cached
+  entry, its shim, the brain's own script, `<ade home>/bin/ade`; a script
+  wrapper (`.cmd`, `.bat`, `.ps1`: Windows' shim) is skipped, so the search
+  goes on to the next. The child does not inherit the brain's own lane,
+  project or caller (`ADE_LANE_ID`, `ADE_PROJECT_ROOT`, `ADE_WORKSPACE_ROOT`,
+  `ADE_CHAT_SESSION_ID`…, the lists in `brainInheritedIdentity.ts`): a brain
+  started from a lane's terminal would otherwise put `shell start` without
+  `--lane` in that lane. The cached
   launch is dropped when its file disappears (an update replaced it). When
   none exists the call fails with the paths it looked at.
 - A run past 20 s (other than tools that wait on purpose) or past its limit
@@ -486,6 +523,9 @@ and is replaced by a sign-in from the same host.
   Projects whose folder is gone never win a name or the default (a deleted
   temp project used to become the default and fail every call with
   "spawn … ENOENT"); naming one gets a sentence saying its folder is gone.
+  The folders are checked with async stats under a 250 ms budget, shared with
+  `projects list` (`projectFolderPresence.ts`): a folder on a hung network
+  mount or an unplugged drive is unknown, and unknown counts as there.
   Two projects with one name are refused with each one's id and path. That default changes when the
   person opens another project, so **every result starts with the project it
   ran in** (`[project: <name> · <id> · <path>]`; typed tools also put it in
@@ -592,8 +632,9 @@ machine's server has.
   does); a computer on a custom `ADE_TUNNEL_RELAY_URL` can answer its own
   calls but not be forwarded to from the others.
 - The relay must pass `x-ade-mcp-call-id` through (its forwarded header
-  list). Without it a retried forward still works, but a call whose first try
-  reached the target runs twice.
+  list). Without it the target can't tell a repeated read from a new one; the
+  sender sends a write or a token exchange again only when the first try
+  never left, so nothing runs twice either way.
 - Deploy order: push relay (`ade_mcp` vault kind) first, then the tunnel relay,
   then ADE. An older push relay refuses a whole batch for a kind it does not
   know, so the vault uploads `ade_mcp` rows in their own batch

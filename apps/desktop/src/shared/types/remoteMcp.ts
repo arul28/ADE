@@ -40,48 +40,84 @@ export type RemoteMcpConnectionSummary = {
 };
 
 /** Apps ADE MCP has setup steps and a logo for. */
-export type RemoteMcpKnownApp =
-  | "claude"
-  | "claude-code"
-  | "chatgpt"
-  | "codex"
-  | "grok"
-  | "grok-bot"
-  | "cursor"
-  | "vscode"
-  | "gemini-cli"
-  | "perplexity"
-  | "le-chat"
-  | "windsurf"
-  | "zed"
-  | "goose"
-  | "opencode"
-  | "amp"
-  | "factory"
-  | "raycast";
+export const REMOTE_MCP_KNOWN_APPS = [
+  "claude",
+  "claude-code",
+  "chatgpt",
+  "codex",
+  "grok",
+  "grok-bot",
+  "cursor",
+  "vscode",
+  "gemini-cli",
+  "perplexity",
+  "le-chat",
+  "windsurf",
+  "zed",
+  "goose",
+  "opencode",
+  "amp",
+  "factory",
+  "raycast",
+] as const;
+
+export type RemoteMcpKnownApp = (typeof REMOTE_MCP_KNOWN_APPS)[number];
+
+export function isRemoteMcpKnownApp(value: unknown): value is RemoteMcpKnownApp {
+  return typeof value === "string" && (REMOTE_MCP_KNOWN_APPS as readonly string[]).includes(value);
+}
+
+/** The name ADE shows for each known app, on the sign-in pages and in Settings. */
+export const REMOTE_MCP_KNOWN_APP_LABELS: Readonly<Record<RemoteMcpKnownApp, string>> = {
+  claude: "Claude",
+  "claude-code": "Claude Code",
+  chatgpt: "ChatGPT",
+  codex: "Codex",
+  grok: "Grok",
+  "grok-bot": "Grok Bot",
+  cursor: "Cursor",
+  vscode: "VS Code",
+  "gemini-cli": "Gemini CLI",
+  perplexity: "Perplexity",
+  "le-chat": "Le Chat",
+  windsurf: "Windsurf",
+  zed: "Zed",
+  goose: "Goose",
+  opencode: "OpenCode",
+  amp: "Amp",
+  factory: "Factory",
+  raycast: "Raycast",
+};
 
 /**
  * Why a computer does not answer ADE MCP. Each computer reports its own in its
  * account entry, so every computer's Settings (and `machines_list`) can say
  * the true reason instead of "Online".
  */
-export type RemoteMcpNotServingReason =
+export const REMOTE_MCP_NOT_SERVING_REASONS = [
   /** ADE MCP is off for the account. */
-  | "off_for_account"
+  "off_for_account",
   /** The person left this computer out. */
-  | "left_out"
+  "left_out",
   /** The computer is signed out of its ADE account. */
-  | "signed_out"
+  "signed_out",
   /** It has no ADE Relay identity yet, or its relay connection is down. */
-  | "relay_disconnected"
+  "relay_disconnected",
   /** Its account vault can't sync, so it never received the account secret. */
-  | "account_vault_unreachable"
+  "account_vault_unreachable",
   /** On, but the account secret has not reached it yet. */
-  | "waiting_for_account_secret"
+  "waiting_for_account_secret",
   /** Runs an ADE that can't take account calls. */
-  | "older_ade"
+  "older_ade",
   /** The account directory shows it offline. */
-  | "offline";
+  "offline",
+] as const;
+
+export type RemoteMcpNotServingReason = (typeof REMOTE_MCP_NOT_SERVING_REASONS)[number];
+
+export function isRemoteMcpNotServingReason(value: unknown): value is RemoteMcpNotServingReason {
+  return typeof value === "string" && (REMOTE_MCP_NOT_SERVING_REASONS as readonly string[]).includes(value);
+}
 
 /** This computer's account vault sync, which ADE MCP (and every synced secret) depends on. */
 export type RemoteMcpVaultHealth = {

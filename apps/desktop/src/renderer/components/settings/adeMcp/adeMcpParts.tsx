@@ -1,6 +1,6 @@
 /** Small pieces the ADE MCP page, its setup sheet and its token dialog share. */
-import { useEffect, useRef, useState } from "react";
 import { ArrowRight, Check, Copy } from "@phosphor-icons/react";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 
 /** Copy a value; says "Copied" for a moment. `onCopied` runs after the copy lands. */
 export function CopyButton({
@@ -17,9 +17,7 @@ export function CopyButton({
   onCopied?: () => void;
   tone?: "primary";
 }) {
-  const [copied, setCopied] = useState(false);
-  const timer = useRef<number | null>(null);
-  useEffect(() => () => { if (timer.current) window.clearTimeout(timer.current); }, []);
+  const { copy, copied } = useCopyToClipboard({ onCopy: () => onCopied?.() });
   return (
     <button
       type="button"
@@ -27,14 +25,7 @@ export function CopyButton({
       data-size="sm"
       data-tone={tone}
       aria-label={label}
-      onClick={() => {
-        void navigator.clipboard.writeText(value).then(() => {
-          setCopied(true);
-          onCopied?.();
-          if (timer.current) window.clearTimeout(timer.current);
-          timer.current = window.setTimeout(() => setCopied(false), 1_500);
-        }).catch(() => undefined);
-      }}
+      onClick={() => void copy(value)}
     >
       {copied ? <Check size={12} weight="bold" /> : <Copy size={12} />}
       {copied ? "Copied" : children}

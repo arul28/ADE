@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
-import type { RemoteMcpNotServingReason } from "../../../../desktop/src/shared/types/remoteMcp";
+import { isRemoteMcpNotServingReason, type RemoteMcpNotServingReason } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 
 /**
@@ -52,15 +52,6 @@ export function isRemoteMcpAccountSecret(value: unknown): value is string {
  */
 export function deriveRemoteMcpAccountKey(secret: string): string {
   return createHmac("sha256", Buffer.from(secret, "utf8")).update("ade-mcp-account", "utf8").digest("hex").slice(0, 40);
-}
-
-const NOT_SERVING_REASONS: ReadonlySet<string> = new Set<RemoteMcpNotServingReason>([
-  "off_for_account", "left_out", "signed_out", "relay_disconnected", "account_vault_unreachable",
-  "waiting_for_account_secret", "older_ade", "offline",
-]);
-
-export function isRemoteMcpNotServingReason(value: unknown): value is RemoteMcpNotServingReason {
-  return typeof value === "string" && NOT_SERVING_REASONS.has(value);
 }
 
 /**

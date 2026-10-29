@@ -3,19 +3,19 @@
  * whole, read from the true serving state each computer reports (never just
  * "online", which a computer that refuses every call also is).
  */
-import type {
-  RemoteMcpConnectionSummary,
-  RemoteMcpKnownApp,
-  RemoteMcpMachine,
-  RemoteMcpNotServingReason,
-  RemoteMcpStatus,
+import {
+  REMOTE_MCP_KNOWN_APP_LABELS,
+  type RemoteMcpConnectionSummary,
+  type RemoteMcpKnownApp,
+  type RemoteMcpMachine,
+  type RemoteMcpNotServingReason,
+  type RemoteMcpStatus,
+  type RemoteMcpVaultHealth,
 } from "../../../../shared/types/remoteMcp";
-import { KNOWN_APP_LABEL } from "./adeMcpApps";
-
-export type McpTone = "ok" | "warn" | "crit" | "neutral";
+import type { IntegrationFact, IntegrationTone } from "../integrations/IntegrationChrome";
 
 export type MachineState = {
-  tone: McpTone;
+  tone: IntegrationTone;
   /** A short state: "Answering", "Left out". */
   label: string;
   /** One plain sentence: why, and what to do when there is something to do. */
@@ -72,11 +72,11 @@ export function machineState(machine: RemoteMcpMachine): MachineState {
   return { tone: "warn", label: "Not answering", detail: "It's on your account but isn't answering calls yet." };
 }
 
-export type OverallState = { tone: McpTone | "off"; label: string };
+export type OverallState = { tone: IntegrationTone; label: string };
 
 /** One honest line for the whole account: how many included computers answer. */
 export function overallState(status: RemoteMcpStatus | null, loading: boolean): OverallState {
-  if (!status) return { tone: "neutral", label: loading ? "Checking…" : "Couldn't check" };
+  if (!status) return loading ? { tone: "checking", label: "Checking…" } : { tone: "neutral", label: "Couldn't check" };
   if (!status.signedIn) return { tone: "off", label: "Needs your ADE account" };
   if (!status.enabled) return { tone: "off", label: "Off" };
   if (!status.serverUrl) return { tone: "warn", label: "Setting up your address…" };
@@ -88,6 +88,30 @@ export function overallState(status: RemoteMcpStatus | null, loading: boolean): 
     return { tone: "ok", label: included.length === 1 ? "1 computer answering" : `All ${included.length} computers answering` };
   }
   return { tone: "warn", label: `${answering} of ${included.length} computers answering` };
+}
+
+/** What the hero panel says while there is no server URL to show. */
+export function heroPanelNote(status: RemoteMcpStatus | null): string {
+  if (!status) return "Checking…";
+  if (!status.signedIn) return "ADE MCP needs your ADE account. Apps sign in through it.";
+  if (status.enabled) return "ADE is setting up your account's address.";
+  return "Turn it on to get your account's address.";
+}
+
+const VAULT_STATE_LABEL: Record<Exclude<RemoteMcpVaultHealth["state"], "ok">, string> = {
+  failing: "Failing",
+  unavailable: "Unavailable",
+};
+
+/** The hero's account-sync fact: up to date and when, or what is wrong. */
+export function vaultFact(vault: RemoteMcpVaultHealth): IntegrationFact {
+  const ago = agoText(vault.lastSyncedAt);
+  return {
+    label: "Account sync",
+    value: vault.state === "ok" ? (ago ? `Up to date · ${ago}` : "Up to date") : VAULT_STATE_LABEL[vault.state],
+    title: vault.lastSyncedAt ? `Last synced ${new Date(vault.lastSyncedAt).toLocaleString()}` : undefined,
+    tone: vault.state === "ok" ? undefined : "warn",
+  };
 }
 
 /** "4 min ago", "3 h ago", or a date. */
@@ -108,11 +132,13 @@ const SIGN_IN_PLACE: Partial<Record<RemoteMcpKnownApp, string>> = { claude: "cla
 
 /**
  * How a connection connected: the app it signed in from, or which token it
- * is. A recognised app is named by ADE's own label, since some sign in
- * through another app's client (Grok Bot uses Cursor's redirect host).
+ * is. Only an app ADE recognised (`app`, from the redirect address it used)
+ * is named by ADE's own label, since some sign in through another app's
+ * client (Grok Bot uses Cursor's redirect host). Any other app shows its real
+ * redirect host, never a name taken from the label it registered.
  */
 export function connectionHow(connection: RemoteMcpConnectionSummary): string {
   if (connection.kind === "token") return `Token …${connection.tokenHint}`;
-  if (connection.app) return `Signed in from ${SIGN_IN_PLACE[connection.app] ?? KNOWN_APP_LABEL[connection.app]}`;
+  if (connection.app) return `Signed in from ${SIGN_IN_PLACE[connection.app] ?? REMOTE_MCP_KNOWN_APP_LABELS[connection.app]}`;
   return connection.redirectHost ? `Signed in from ${connection.redirectHost}` : "Signed in";
 }

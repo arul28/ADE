@@ -31,20 +31,28 @@ function mark(path: string) {
   );
 }
 
-export type IntegrationBrand = {
-  id: IntegrationId;
+/**
+ * What an integration hero draws: the name, the line under it, the logo, the
+ * banner and the accent. A page of ADE's own (ADE MCP) passes one of these
+ * directly; GitHub, Linear and Jira take theirs from `integrationBrand`.
+ */
+export type IntegrationHeroBrand = {
   label: string;
   /** One line under the name: what the integration is for in ADE. */
   tagline: string;
-  /** The maker's main color; links, focus rings and chips on the page take it. */
+  /** The page's main color; links, focus rings and chips on the page take it. */
   accent: string;
-  /** The banner behind the art, matched to the art's left edge. */
+  /** The banner behind the art. */
   banner: CSSProperties;
-  /** The maker's banner, standing at the right of the hero. */
-  art: string;
   /** Dark text on a light banner. */
   lightBanner?: boolean;
   logo: Extract<ProviderBrandLogo, { kind: "solid" }>;
+};
+
+export type IntegrationBrand = IntegrationHeroBrand & {
+  id: IntegrationId;
+  /** The maker's banner, standing at the right of the hero. */
+  art: string;
 };
 
 const BRANDS: Record<IntegrationId, IntegrationBrand> = {
@@ -98,13 +106,13 @@ export function integrationBrand(id: IntegrationId): IntegrationBrand {
   return BRANDS[id];
 }
 
-/** The page's accent, set on its root so every control below takes it. */
-export function integrationThemeVars(brand: IntegrationBrand): CSSProperties {
+/** The page's accent colour, set on its root so every control below takes it. */
+export function integrationThemeVars(accent: string): CSSProperties {
   return {
-    ["--color-accent" as string]: brand.accent,
-    ["--color-accent-muted" as string]: `color-mix(in srgb, ${brand.accent} 16%, transparent)`,
-    ["--provider-accent" as string]: brand.accent,
-    ["--provider-brand" as string]: brand.accent,
-    ["--ig-accent" as string]: brand.accent,
+    ["--color-accent" as string]: accent,
+    ["--color-accent-muted" as string]: `color-mix(in srgb, ${accent} 16%, transparent)`,
+    ["--provider-accent" as string]: accent,
+    ["--provider-brand" as string]: accent,
+    ["--ig-accent" as string]: accent,
   };
 }

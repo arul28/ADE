@@ -18,7 +18,6 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
-import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/git/gitTransportAuth";
@@ -55,6 +54,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readProjectFolderPresence } from "./services/projects/projectFolderPresence";
 import {
   decodeProjectIconUpload,
   importProjectIconBytes,
@@ -999,61 +999,6 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
   }));
 }
 
-/** Stats past this are left unknown, so a hung network mount can't stall the list. */
-const LIST_FOLDER_CHECK_BUDGET_MS = 250;
-/** How long one folder answer is reused; the list is read often and folders rarely move. */
-const FOLDER_PRESENCE_TTL_MS = 10_000;
-
-/**
- * One stat per folder at a time, its answer reused for a few seconds. A stat
- * on an unreachable drive holds a libuv thread until the OS gives up, so a
- * fresh stat on every list would pile up behind it and starve the brain's
- * other file, crypto and zlib work.
- */
-const folderPresence = new Map<string, { settledAt: number | null; check: Promise<boolean | undefined> }>();
-
-function checkFolderPresence(rootPath: string): Promise<boolean | undefined> {
-  const cached = folderPresence.get(rootPath);
-  // A pending stat is reused however long it takes.
-  if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < FOLDER_PRESENCE_TTL_MS)) {
-    return cached.check;
-  }
-  const entry: { settledAt: number | null; check: Promise<boolean | undefined> } = {
-    settledAt: null,
-    check: fs.promises.stat(rootPath).then(
-      (stat) => stat.isDirectory(),
-      (error: NodeJS.ErrnoException) => (error?.code === "ENOENT" || error?.code === "ENOTDIR" ? false : undefined),
-    ),
-  };
-  folderPresence.set(rootPath, entry);
-  void entry.check.then(() => { entry.settledAt = Date.now(); });
-  return entry.check;
-}
-
-/**
- * Whether each project's folder is on this machine, by index: `false` when it
- * is gone, `undefined` when the check failed for another reason (no permission)
- * or ran out of time. Another machine choosing between several checkouts of a
- * repository uses it to skip a deleted copy. Async stats on the thread pool,
- * all at once, under one deadline: nothing blocks the event loop.
- */
-async function readProjectFolderPresence(
-  records: readonly { rootPath: string }[],
-  budgetMs = LIST_FOLDER_CHECK_BUDGET_MS,
-): Promise<Array<boolean | undefined>> {
-  const presence = new Array<boolean | undefined>(records.length).fill(undefined);
-  // Drop answers past their time, so a removed project's folder isn't kept forever.
-  for (const [rootPath, entry] of folderPresence) {
-    if (entry.settledAt !== null && Date.now() - entry.settledAt >= FOLDER_PRESENCE_TTL_MS) folderPresence.delete(rootPath);
-  }
-  const checks = Promise.all(records.map((record, index) =>
-    checkFolderPresence(record.rootPath).then((value) => { presence[index] = value; })));
-  await withTimeout(checks, budgetMs);
-  // A copy, so a stat that lands after the deadline can't change an answer
-  // that was already sent.
-  return [...presence];
-}
-
 /**
  * Where a new project goes by default: beside the most recently opened
  * project whose folder still exists, outside the temp folder (a registry
@@ -1365,6 +1310,12 @@ export function createMultiProjectRpcRequestHandler(
     "function"
       ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
       : null;
+  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
+  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+    await scopeRegistry.dispose(projectId);
+    handlers.delete(projectId);
+    return projectRegistry.remove(projectId);
+  };
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
@@ -3173,25 +3124,19 @@ export function createMultiProjectRpcRequestHandler(
           "projects.remove requires projectId.",
         );
       }
-      await scopeRegistry.dispose(projectId);
-      handlers.delete(projectId);
-      return { removed: projectRegistry.remove(projectId) };
+      return { removed: await removeProject(projectId) };
     }
 
     if (method === "projects.pruneMissing") {
       // Removes registry entries whose folder is confirmed gone. Never a
       // folder: a folder that could not be checked (no permission, a slow
-      // drive) is kept.
+      // drive, a drive that is not plugged in) is kept.
       const dryRun = params.dryRun === true;
       const records = projectRegistry.list();
       const presence = await readProjectFolderPresence(records);
       const missing = records.filter((_record, index) => presence[index] === false);
       if (!dryRun) {
-        for (const record of missing) {
-          await scopeRegistry.dispose(record.projectId);
-          handlers.delete(record.projectId);
-          projectRegistry.remove(record.projectId);
-        }
+        for (const record of missing) await removeProject(record.projectId);
       }
       return {
         dryRun,

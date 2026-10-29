@@ -2043,7 +2043,8 @@ describe("ADE CLI", () => {
   });
 
   it("builds machine project registry commands", () => {
-    expect(buildCliPlan(["projects", "list"])).toEqual({
+    const list = expectExecutePlan(buildCliPlan(["projects", "list"]));
+    expect(list).toEqual({
       kind: "execute",
       label: "projects list",
       machineOnly: true,
@@ -2052,7 +2053,20 @@ describe("ADE CLI", () => {
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
+      shapeResult: expect.any(Function),
+      formatText: expect.any(Function),
     });
+    // A project whose folder is gone is hidden from the list (JSON too), and the text says how many.
+    const listed = [
+      { projectId: "here", displayName: "Here", rootPath: "/p/here", exists: true },
+      { projectId: "gone", displayName: "Gone", rootPath: "/p/gone", exists: false },
+      { projectId: "unknown", displayName: "Unknown", rootPath: "/p/unknown" },
+    ];
+    const shown = list.shapeResult!({ result: listed });
+    expect(JSON.parse(JSON.stringify(shown))).toEqual([listed[0], listed[2]]);
+    expect(list.formatText!(shown)).toContain("1 project whose folder is gone is hidden");
+    const all = expectExecutePlan(buildCliPlan(["projects", "list", "--include-missing"]));
+    expect(all.shapeResult!({ result: listed })).toEqual(listed);
     expect(buildCliPlan(["project", "add", "/tmp/project"])).toEqual({
       kind: "execute",
       label: "projects add",

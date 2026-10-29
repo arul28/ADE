@@ -10,7 +10,7 @@ import { Dialog } from "../../ui/dialog";
 import { confirmDialog } from "../../ui/dialog";
 import { Banner } from "../../ui/notice";
 import { ipcErrorMessage } from "../../../lib/format";
-import { McpAppLogo, TOKEN_SNIPPETS, tokenSnippet, type TokenSnippetId } from "./adeMcpApps";
+import { ADE_MCP_DIALOG_VARS, McpAppLogo, TOKEN_SNIPPETS, tokenSnippet, type TokenSnippetId } from "./adeMcpApps";
 import { Snippet } from "./adeMcpParts";
 
 const ACCESS: readonly { value: RemoteMcpScope; label: string; detail: string; icon: typeof PencilSimple }[] = [
@@ -92,6 +92,7 @@ export function TokenDialog({
         tone="accent"
         size="md"
         panelClassName="ade-amcp-dialog"
+        panelStyle={ADE_MCP_DIALOG_VARS}
         initialFocusRef={nameRef}
         dismissible={!busy}
         footerStart={scope ? null : <span className="ade-amcp-dialog-hint">Choose its access to continue.</span>}
@@ -162,6 +163,7 @@ export function TokenDialog({
       tone="success"
       width={600}
       panelClassName="ade-amcp-dialog"
+      panelStyle={ADE_MCP_DIALOG_VARS}
       actions={[{ label: "I've copied it", variant: "solid", onClick: onClose, autoFocus: true }]}
       footerStart={copied ? <span className="ade-amcp-dialog-hint">Copied.</span> : <span className="ade-amcp-dialog-hint">Copy it before you close.</span>}
     >
@@ -169,14 +171,13 @@ export function TokenDialog({
         <Snippet code={created.token} copyLabel="Copy token" caption="Token" secret onCopied={() => setCopied(true)} />
         <div className="ade-amcp-field">
           <span id="ade-mcp-token-use">Use it in</span>
-          <div className="ade-amcp-snippet-tabs" role="tablist" aria-labelledby="ade-mcp-token-use">
+          <div className="kit-seg ade-amcp-snippet-tabs" data-case="sentence" role="tablist" aria-labelledby="ade-mcp-token-use">
             {TOKEN_SNIPPETS.map((option) => (
               <button
                 key={option.id}
                 type="button"
                 role="tab"
                 aria-selected={option.id === snippetId}
-                className="ade-amcp-snippet-tab"
                 onClick={() => setSnippetId(option.id)}
               >
                 <McpAppLogo app={option.logo} size={16} />

@@ -229,12 +229,6 @@ export function preferenceNumber(
 export const ACCOUNT_SCOPE_KEY_MAX_LENGTH = 512;
 
 /**
- * `scope_key` is opaque to this Worker, but not arbitrary: it is either
- * "everything" or a normalized repository identity. Validating the shape stops
- * a client inventing a third axis the rest of ADE cannot read, and keeps the
- * column joinable later.
- */
-/**
  * Stale-write protection for account settings and vault writes.
  *
  * A machine that was offline (or stuck) for days still holds the writes it
@@ -291,6 +285,68 @@ export function decodePathSegment(value: string | undefined): string | null {
   }
 }
 
+/** One item's verdict in an account write: what to write, or a plain reason it cannot be. */
+export type AccountItemVerdict<TWrite> = { ok: true; write: TWrite } | { ok: false; reason: string };
+
+/**
+ * One item's outcome in an `itemResults` write, in request order. `stale`
+ * carries the stored row so the client can adopt it: the client skipped that
+ * key while its own write was queued, so its pull cursor is already past it.
+ */
+export type AccountWriteResult<TRow> =
+  | { status: "written" }
+  | { status: "rejected"; reason: string }
+  | { status: "stale"; current: TRow | null };
+
+/** The answer for an item that never reached the database: refused, or (when ok) written. */
+export function accountRefusalResult<TWrite>(
+  verdict: AccountItemVerdict<TWrite>,
+): { status: "written" } | { status: "rejected"; reason: string } {
+  return verdict.ok ? { status: "written" } : { status: "rejected", reason: verdict.reason };
+}
+
+function changesOf(outcome: unknown): number {
+  const changes = isRecord(outcome) && isRecord(outcome.meta) ? outcome.meta.changes : undefined;
+  return typeof changes === "number" ? changes : 0;
+}
+
+/**
+ * Per-item answers for an `itemResults` write. `outcomes` are the batch's
+ * results for the accepted writes, in order; an upsert that changed nothing
+ * lost its `where` to a newer stored row, so that item is `stale` and carries
+ * the row `readCurrent` returns.
+ */
+export async function accountWriteResults<TWrite, TRow>(
+  verdicts: ReadonlyArray<AccountItemVerdict<TWrite>>,
+  outcomes: readonly unknown[],
+  readCurrent: (write: TWrite) => Promise<TRow | null>,
+): Promise<{ results: AccountWriteResult<TRow>[]; written: number }> {
+  const results: AccountWriteResult<TRow>[] = [];
+  let written = 0;
+  let parsedIndex = 0;
+  for (const verdict of verdicts) {
+    if (!verdict.ok) {
+      results.push(accountRefusalResult(verdict));
+      continue;
+    }
+    const index = parsedIndex;
+    parsedIndex += 1;
+    if (changesOf(outcomes[index]) > 0) {
+      written += 1;
+      results.push({ status: "written" });
+      continue;
+    }
+    results.push({ status: "stale", current: await readCurrent(verdict.write) });
+  }
+  return { results, written };
+}
+
+/**
+ * `scope_key` is opaque to this Worker, but not arbitrary: it is either
+ * "everything" or a normalized repository identity. Validating the shape stops
+ * a client inventing a third axis the rest of ADE cannot read, and keeps the
+ * column joinable later.
+ */
 export function parseAccountScopeKey(value: unknown): string | null {
   const scope = requiredString(value, ACCOUNT_SCOPE_KEY_MAX_LENGTH);
   if (!scope) return null;

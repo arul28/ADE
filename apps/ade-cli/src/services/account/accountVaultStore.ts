@@ -1,17 +1,15 @@
 import fs from "node:fs";
 import path from "node:path";
 import {
-  accountItemRejectionReason,
   createAccountCacheStore,
   createStoreRegistry,
-  isAccountItemRejection,
-  machineAccountStoreLogger,
-  putIsolated,
   type AccountCacheHealth,
   type AccountCacheLogger,
   type AccountCacheSyncListener,
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
+import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
+import { uploadAccountItems } from "./accountCacheUpload";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import {
   NEWER_VAULT_KINDS,
@@ -162,6 +160,12 @@ function splitCacheKey(
 }
 
 export type AccountVaultRelay = {
+  /**
+   * Where the relay lives (the push relay client's `baseUrl`). What the cache
+   * learned about the relay is kept against it, so a different relay is asked
+   * again.
+   */
+  baseUrl?: string;
   getAccountVault(options?: { since?: string | null; scope?: string | null }): Promise<{
     items: AccountVaultItem[];
     cursor: string | null;
@@ -275,6 +279,7 @@ export function createAccountVaultStore(args: {
     readFile: readCacheFile,
     writeFile: writeCacheFile,
     hasRelay: () => args.relay !== null,
+    relayId: () => args.relay?.baseUrl ?? null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope
       && existing.kind === write.kind
@@ -287,93 +292,32 @@ export function createAccountVaultStore(args: {
       const relay = args.relay!;
       const deviceId = args.getDeviceId?.() ?? null;
       const allWrites = pending.filter((entry) => !entry.deleted && entry.value != null);
-      const completedSeqs: number[] = [];
-      const rejected: Array<{ seq: number; reason: string }> = [];
-      const superseded: Array<{ seq: number; current: AccountVaultItem | null }> = [];
-      let uploadedAt: string | null = null;
-      let checkedConflicts = false;
-      let couldNotAsk = false;
-      let error: unknown = undefined;
-      const put = (batch: PendingWrite[]) => relay.putAccountVault(
-        batch.map((entry) => ({
-          scope: entry.scope,
-          kind: entry.kind,
-          key: entry.key,
-          value: entry.value!,
-          refreshOwner: entry.refreshOwner,
-          ...(entry.queuedAt ? { writtenAt: entry.queuedAt } : {}),
-        })),
-        deviceId,
-      );
       // Kinds newer than some deployed Workers go in their own batch, so an
       // older Worker refuses only those rows, never every other credential.
-      // Within a group, one item a Worker will not take is set aside on its own
-      // (`putIsolated`), never held against the rest.
-      const groups = [
-        allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind)),
-        allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind)),
-      ];
-      for (const group of groups) {
-        if (!group.length) continue;
-        const outcome = await putIsolated(group, MAX_ITEMS_PER_PUT, put);
-        for (const { batch, result } of outcome.landed) {
-          if (result.results) checkedConflicts = true;
-          let wrote = false;
-          batch.forEach((entry, index) => {
-            const answer = result.results ? result.results[index] : { status: "written" as const };
-            if (answer?.status === "written") {
-              completedSeqs.push(entry.seq);
-              wrote = true;
-            } else if (answer?.status === "rejected") {
-              rejected.push({ seq: entry.seq, reason: answer.reason });
-            } else if (answer?.status === "stale") {
-              superseded.push({ seq: entry.seq, current: answer.current });
-            }
-          });
-          // Keep the first batch's stamp: a later one would make this machine
-          // win over a remote edit that landed between the two PUTs.
-          if (wrote) uploadedAt ??= result.updatedAt;
-        }
-        rejected.push(...outcome.rejected.map(({ item, reason }) => ({ seq: item.seq, reason })));
-        if (outcome.couldNotAsk) couldNotAsk = true;
-        if (outcome.error !== undefined) error = outcome.error;
-        if (couldNotAsk || error !== undefined) break;
-      }
-      if (!couldNotAsk && error === undefined) {
-        for (const entry of pending.filter((item) => item.deleted)) {
-          let answer: boolean | AccountStaleDelete<AccountVaultItem> | null;
-          try {
-            answer = await relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key, {
-              writtenAt: entry.queuedAt ?? null,
-            });
-          } catch (deleteError) {
-            // A delete the Worker refuses for the item itself (an older Worker
-            // and a kind or key it does not know) is parked like a write; the
-            // deletes queued behind it still go.
-            if (isAccountItemRejection(deleteError)) {
-              rejected.push({ seq: entry.seq, reason: accountItemRejectionReason(deleteError) });
-              continue;
-            }
-            error = deleteError;
-            break;
-          }
-          if (answer === null) {
-            couldNotAsk = true;
-            break;
-          }
-          if (typeof answer === "object") superseded.push({ seq: entry.seq, current: answer.current });
-          else completedSeqs.push(entry.seq);
-        }
-      }
-      if (couldNotAsk && !completedSeqs.length && !rejected.length && !superseded.length) return null;
-      return {
-        updatedAt: uploadedAt,
-        completedSeqs,
-        rejected,
-        superseded,
-        checkedConflicts,
-        ...(error !== undefined ? { error } : {}),
-      };
+      // Within a group, one item a Worker will not take is set aside on its
+      // own, never held against the rest.
+      return await uploadAccountItems<PendingWrite, AccountVaultItem>({
+        groups: [
+          allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind)),
+          allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind)),
+        ],
+        deletes: pending.filter((entry) => entry.deleted),
+        maxBatch: MAX_ITEMS_PER_PUT,
+        put: (batch) => relay.putAccountVault(
+          batch.map((entry) => ({
+            scope: entry.scope,
+            kind: entry.kind,
+            key: entry.key,
+            value: entry.value!,
+            refreshOwner: entry.refreshOwner,
+            ...(entry.queuedAt ? { writtenAt: entry.queuedAt } : {}),
+          })),
+          deviceId,
+        ),
+        del: (entry) => relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key, {
+          writtenAt: entry.queuedAt ?? null,
+        }),
+      });
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountVault({ since: cursor });

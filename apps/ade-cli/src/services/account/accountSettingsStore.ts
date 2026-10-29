@@ -1,14 +1,12 @@
 import {
-  accountItemRejectionReason,
   createAccountCacheStore,
   createStoreRegistry,
-  isAccountItemRejection,
-  machineAccountStoreLogger,
-  putIsolated,
   type AccountCacheHealth,
   type AccountCacheLogger,
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
+import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
+import { uploadAccountItems } from "./accountCacheUpload";
 import type {
   AccountSettingRecord,
   AccountSettingWrite,
@@ -137,6 +135,12 @@ function splitCacheKey(composite: string): { scope: string; key: string } | null
 }
 
 export type AccountSettingsRelay = {
+  /**
+   * Where the relay lives (the push relay client's `baseUrl`). What the cache
+   * learned about the relay is kept against it, so a different relay is asked
+   * again.
+   */
+  baseUrl?: string;
   getAccountSettings(options?: { since?: string | null; scope?: string | null }): Promise<{
     settings: AccountSettingRecord[];
     cursor: string | null;
@@ -188,6 +192,7 @@ export function createAccountSettingsStore(args: {
       writesSuperseded: "account.settings_writes_superseded",
     },
     hasRelay: () => args.relay !== null,
+    relayId: () => args.relay?.baseUrl ?? null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope && existing.key === write.key,
     pendingKey: (entry) => cacheKey(entry.scope, entry.key),
@@ -207,75 +212,27 @@ export function createAccountSettingsStore(args: {
         completedSeqs.push(entry.seq);
         return false;
       });
-      const rejected: Array<{ seq: number; reason: string }> = [];
-      const superseded: Array<{ seq: number; current: AccountSettingRecord | null }> = [];
-      let uploadedAt: string | null = null;
-      let checkedConflicts = false;
-      let couldNotAsk = false;
-      let error: unknown = undefined;
-      // One setting the Worker will not take is set aside on its own
-      // (`putIsolated`), never held against the rest of the batch.
-      const outcome = await putIsolated(writes, MAX_SETTINGS_PER_PUT, (batch) => relay.putAccountSettings(
-        batch.map((entry) => ({
-          scope: entry.scope,
-          key: entry.key,
-          value: entry.value,
-          changedAt: entry.changedAt,
-          writtenAt: entry.queuedAt ?? entry.changedAt,
-        })),
-        args.getDeviceId?.() ?? null,
-      ));
-      for (const { batch, result } of outcome.landed) {
-        if (result.results) checkedConflicts = true;
-        let wrote = false;
-        batch.forEach((entry, index) => {
-          const answer = result.results ? result.results[index] : { status: "written" as const };
-          if (answer?.status === "written") {
-            completedSeqs.push(entry.seq);
-            wrote = true;
-          } else if (answer?.status === "rejected") {
-            rejected.push({ seq: entry.seq, reason: answer.reason });
-          } else if (answer?.status === "stale") {
-            superseded.push({ seq: entry.seq, current: answer.current });
-          }
-        });
-        if (wrote) uploadedAt ??= result.updatedAt;
-      }
-      rejected.push(...outcome.rejected.map(({ item, reason }) => ({ seq: item.seq, reason })));
-      couldNotAsk = outcome.couldNotAsk;
-      error = outcome.error;
-      if (!couldNotAsk && error === undefined) {
-        for (const entry of pending.filter((item) => item.deleted)) {
-          let answer: boolean | AccountStaleDelete<AccountSettingRecord> | null;
-          try {
-            answer = await relay.deleteAccountSetting(entry.scope, entry.key, {
-              writtenAt: entry.queuedAt ?? entry.changedAt,
-            });
-          } catch (deleteError) {
-            if (isAccountItemRejection(deleteError)) {
-              rejected.push({ seq: entry.seq, reason: accountItemRejectionReason(deleteError) });
-              continue;
-            }
-            error = deleteError;
-            break;
-          }
-          if (answer === null) {
-            couldNotAsk = true;
-            break;
-          }
-          if (typeof answer === "object") superseded.push({ seq: entry.seq, current: answer.current });
-          else completedSeqs.push(entry.seq);
-        }
-      }
-      if (couldNotAsk && !completedSeqs.length && !rejected.length && !superseded.length) return null;
-      return {
-        updatedAt: uploadedAt,
+      // One setting the Worker will not take is set aside on its own, never
+      // held against the rest of the batch.
+      return await uploadAccountItems<PendingWrite, AccountSettingRecord>({
+        groups: [writes],
+        deletes: pending.filter((entry) => entry.deleted),
+        maxBatch: MAX_SETTINGS_PER_PUT,
         completedSeqs,
-        rejected,
-        superseded,
-        checkedConflicts,
-        ...(error !== undefined ? { error } : {}),
-      };
+        put: (batch) => relay.putAccountSettings(
+          batch.map((entry) => ({
+            scope: entry.scope,
+            key: entry.key,
+            value: entry.value,
+            changedAt: entry.changedAt,
+            writtenAt: entry.queuedAt ?? entry.changedAt,
+          })),
+          args.getDeviceId?.() ?? null,
+        ),
+        del: (entry) => relay.deleteAccountSetting(entry.scope, entry.key, {
+          writtenAt: entry.queuedAt ?? entry.changedAt,
+        }),
+      });
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountSettings({ since: cursor });

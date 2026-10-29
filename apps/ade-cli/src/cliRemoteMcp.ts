@@ -8,8 +8,13 @@
  * ADE MCP is the same service.
  */
 
-import type { RemoteMcpAction, RemoteMcpScope } from "../../desktop/src/shared/types/remoteMcp";
+import {
+  isRemoteMcpNotServingReason,
+  type RemoteMcpAction,
+  type RemoteMcpScope,
+} from "../../desktop/src/shared/types/remoteMcp";
 import { CliUsageError, isRecord, readFlag, readValue, type CliPlan } from "./cli";
+import { rosterStateWords } from "./services/remoteMcp/remoteMcpForward";
 
 export const REMOTE_MCP_HELP = `
   ADE MCP
@@ -133,33 +138,20 @@ function scopeLabel(value: unknown): string {
   return value === "read" ? "read only" : "read & write";
 }
 
-/** Why a computer does not serve, in words (RemoteMcpNotServingReason). */
-const NOT_SERVING_WORDS: Record<string, string> = {
-  off_for_account: "off for the account",
-  left_out: "left out",
-  signed_out: "not serving: signed out of ADE",
-  relay_disconnected: "not serving: not connected to ADE Relay",
-  account_vault_unreachable: "not serving: its account vault can't sync, so it has no ADE MCP key",
-  waiting_for_account_secret: "not serving yet: waiting for the account's ADE MCP key",
-  older_ade: "not joined yet: update ADE on it",
-  offline: "offline",
-};
-
 function machineLine(machine: Record<string, unknown>): string {
-  const name = `${String(machine.name)}${machine.isThisMachine === true ? " (this computer)" : ""}`;
+  const isThisMachine = machine.isThisMachine === true;
+  const name = `${String(machine.name)}${isThisMachine ? " (this computer)" : ""}`;
   const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
-  const reason = typeof machine.notServingReason === "string" ? machine.notServingReason : null;
-  // Another computer that never reported runs an ADE from before reports: its state is a guess.
-  const unreported = machine.isThisMachine !== true && machine.reportedAt == null;
-  const state = machine.supported !== true
-    ? NOT_SERVING_WORDS.older_ade
-    : machine.serving === true
-      ? unreported ? "serving unknown (its ADE doesn't report it; update ADE there)" : "serving"
-      : (reason && NOT_SERVING_WORDS[reason]) || "not serving";
-  const reported = !unreported && machine.isThisMachine !== true && typeof machine.reportedAt === "string"
-    ? `  (as of ${machine.reportedAt})`
-    : "";
-  return `  ${name}  ${online}  ${state}${reported}`;
+  const row = {
+    isThisMachine,
+    serving: machine.serving === true,
+    reportedAt: typeof machine.reportedAt === "string" ? machine.reportedAt : null,
+    notServingReason: machine.supported !== true
+      ? "older_ade" as const
+      : isRemoteMcpNotServingReason(machine.notServingReason) ? machine.notServingReason : null,
+  };
+  const reported = !isThisMachine && row.reportedAt ? `  (as of ${row.reportedAt})` : "";
+  return `  ${name}  ${online}  ${rosterStateWords(row)}${reported}`;
 }
 
 function vaultLine(vault: Record<string, unknown>): string {

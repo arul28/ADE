@@ -1,4 +1,3 @@
-import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
@@ -9,6 +8,7 @@ import type {
   RemoteMcpConnectionSummary,
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
+import { readProjectFolderPresence } from "../projects/projectFolderPresence";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
@@ -33,6 +33,7 @@ import {
 import {
   REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
   rosterStateWords,
+  servingStateKnown,
   toolError,
   withMachineLabel,
   type RemoteMcpCallContext,
@@ -86,8 +87,6 @@ const CHAT_LOCATE_TIMEOUT_MS = 20_000;
 const MAX_CHAT_HOMES = 500;
 /** A run longer than this is logged with where its time went (unless the tool waits on purpose). */
 const SLOW_RUN_MS = 20_000;
-/** How long a project folder's presence is trusted before it is checked again. */
-const FOLDER_PRESENCE_TTL_MS = 30_000;
 
 /** A chat tool's answer that says this computer has no such chat. */
 function isChatMiss(tool: string, result: RemoteMcpToolResult): boolean {
@@ -150,32 +149,22 @@ export function createRemoteMcpProtocol(deps: {
 
   // ── Projects ──────────────────────────────────────────────────────────────
 
-  // Whether each registered project's folder still exists, checked at most
-  // every 30 s per folder. A registry keeps projects whose folder was deleted
-  // (test projects in a temp folder); they must not win a name or a default.
-  const folderPresence = new Map<string, { at: number; present: boolean }>();
-  const folderExists = (rootPath: string): boolean => {
-    const cached = folderPresence.get(rootPath);
-    if (cached && Date.now() - cached.at < FOLDER_PRESENCE_TTL_MS) return cached.present;
-    let present = true;
-    try {
-      present = fs.statSync(rootPath).isDirectory();
-    } catch (error) {
-      // Only "not there" counts as gone; a folder that can't be checked stays.
-      const code = (error as NodeJS.ErrnoException)?.code;
-      present = code !== "ENOENT" && code !== "ENOTDIR";
-    }
-    if (folderPresence.size > 2_000) folderPresence.clear();
-    folderPresence.set(rootPath, { at: Date.now(), present });
-    return present;
+  /**
+   * The registered projects whose folder may be there. A registry keeps
+   * projects whose folder was deleted (test projects in a temp folder); they
+   * must not win a name or a default. Only "gone" counts: a folder that can't
+   * be checked in time (a hung network mount, an unplugged drive) stays.
+   */
+  const presentProjects = async (projects: readonly RemoteMcpProject[]): Promise<RemoteMcpProject[]> => {
+    const presence = await readProjectFolderPresence(projects);
+    return projects.filter((_project, index) => presence[index] !== false);
   };
-  /** The registered projects whose folder exists, last opened first. */
-  const liveProjects = (): RemoteMcpProject[] =>
-    [...deps.listProjects()].filter((project) => folderExists(project.rootPath)).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  const byLastOpened = (projects: RemoteMcpProject[]): RemoteMcpProject[] =>
+    projects.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
 
   /** The projects an every-project sweep reads: opened in the last 30 days, at most six. */
-  const recentProjects = (): RemoteMcpProject[] => {
-    const projects = liveProjects();
+  const recentProjects = async (): Promise<RemoteMcpProject[]> => {
+    const projects = byLastOpened(await presentProjects(deps.listProjects()));
     const cutoff = Date.now() - EVERY_PROJECT_WINDOW_MS;
     const recent = projects.filter((project) => project.lastOpenedAt >= cutoff);
     return (recent.length ? recent : projects.slice(0, 1)).slice(0, EVERY_PROJECT_MAX);
@@ -190,15 +179,17 @@ export function createRemoteMcpProtocol(deps: {
    * unnoticed. An id or path picks exactly; a name picks among the projects
    * whose folder exists, and two with the same name are refused with both.
    */
-  const resolveProject = (requested: unknown): ResolvedProject | { error: string } => {
+  const resolveProject = async (requested: unknown): Promise<ResolvedProject | { error: string }> => {
     const all = deps.listProjects();
+    const live = byLastOpened(await presentProjects(all));
+    const present = new Set(live);
     const found = (project: RemoteMcpProject): ResolvedProject => ({ cwd: project.rootPath, project });
     const gone = (project: RemoteMcpProject) => ({
       error: `${project.displayName}'s folder is gone (${project.rootPath}). Clone it again with projects_clone, `
         + "or remove the stale entry with [\"projects\",\"prune\"].",
     });
     if (typeof requested !== "string" || !requested.trim()) {
-      const recent = liveProjects()[0];
+      const recent = live[0];
       // No project at all: machine-wide commands (`projects list`, `doctor`) still work.
       return recent ? found(recent) : { cwd: os.homedir(), project: null };
     }
@@ -207,18 +198,18 @@ export function createRemoteMcpProtocol(deps: {
     const exact = all.filter((project) =>
       project.projectId === wanted
       || (path.isAbsolute(wanted) && samePathOnPlatform(project.rootPath, wanted)));
-    if (exact.length === 1) return folderExists(exact[0]!.rootPath) ? found(exact[0]!) : gone(exact[0]!);
+    if (exact.length === 1) return present.has(exact[0]!) ? found(exact[0]!) : gone(exact[0]!);
     const named = all.filter((project) =>
       project.displayName.toLowerCase() === lower || path.basename(project.rootPath).toLowerCase() === lower);
-    const live = named.filter((project) => folderExists(project.rootPath));
-    if (live.length === 1) return found(live[0]!);
-    if (live.length > 1) {
+    const liveNamed = named.filter((project) => present.has(project));
+    if (liveNamed.length === 1) return found(liveNamed[0]!);
+    if (liveNamed.length > 1) {
       return {
-        error: `More than one project is called "${wanted}": ${live.map(describeCandidate).join("; ")}. Pass its id or path as \`project\`.`,
+        error: `More than one project is called "${wanted}": ${liveNamed.map(describeCandidate).join("; ")}. Pass its id or path as \`project\`.`,
       };
     }
     if (named.length > 0) return gone(named[0]!);
-    const known = liveProjects().map((project) => project.displayName).join(", ") || "none";
+    const known = live.map((project) => project.displayName).join(", ") || "none";
     return { error: `No project "${wanted}" on this computer. Projects: ${known}. A new repository can be added with projects_clone.` };
   };
 
@@ -350,7 +341,7 @@ export function createRemoteMcpProtocol(deps: {
     }
     const input = asRecord(params.arguments);
     const logBase = logBaseFor(connection, typed?.name ?? TOOL_NAME);
-    const resolved = resolveProject(input.project);
+    const resolved = await resolveProject(input.project);
     if ("error" in resolved) return refuse(logBase, resolved.error);
     const projectName = resolved.project?.displayName;
     // A refusal still names the project, like every other result.
@@ -405,7 +396,7 @@ export function createRemoteMcpProtocol(deps: {
       stdin,
       ...(typed?.maxOutputBytes ? { maxOutputBytes: typed.maxOutputBytes } : {}),
     });
-    const everyProject = typed?.everyProject && !nonEmptyString(input.project) ? recentProjects() : null;
+    const everyProject = typed?.everyProject && !nonEmptyString(input.project) ? await recentProjects() : null;
     activeRuns += 1;
     runsByConnection.set(connection.id, connectionRuns + 1);
     let result: RemoteRunResult;
@@ -509,7 +500,7 @@ export function createRemoteMcpProtocol(deps: {
   };
 
   const readCommandCatalog = async (scope: RemoteMcpScope): Promise<string> => {
-    const resolved = resolveProject(undefined);
+    const resolved = await resolveProject(undefined);
     const result = await runAdeForRemote({
       argv: ["help", "--json"],
       cwd: "error" in resolved ? os.homedir() : resolved.cwd,
@@ -762,7 +753,7 @@ export function createRemoteMcpProtocol(deps: {
       online: machine.online,
       included: machine.included,
       // null: its ADE never reported, so whether it serves is unknown.
-      serving: machine.servingKnown ? machine.serving : null,
+      serving: servingStateKnown(machine) ? machine.serving : null,
       notServingReason: machine.notServingReason,
       reportedAt: machine.reportedAt,
       supported: machine.supported,
@@ -885,7 +876,7 @@ export function createRemoteMcpProtocol(deps: {
       case "prompts/list": {
         // Prompt names must be unique, so the list is the default project's;
         // prompts/get takes `project` for another one.
-        const resolved = resolveProject(undefined);
+        const resolved = await resolveProject(undefined);
         const skills = "error" in resolved || !resolved.project ? [] : listAgentSkills({ cwd: resolved.cwd, includeUser: false, onError: skillUnreadable });
         return reply({
           prompts: skills.slice(0, MAX_PROMPTS).map((skill) => ({
@@ -900,7 +891,7 @@ export function createRemoteMcpProtocol(deps: {
       case "prompts/get": {
         const name = typeof params.name === "string" ? params.name : "";
         const promptArgs = asRecord(params.arguments);
-        const resolved = resolveProject(promptArgs.project);
+        const resolved = await resolveProject(promptArgs.project);
         if ("error" in resolved) return fail(-32602, resolved.error);
         if (!resolved.project) return fail(-32602, "No project is open on this computer, so it has no skills to show.");
         // Personal skills in the home folder never leave this computer.

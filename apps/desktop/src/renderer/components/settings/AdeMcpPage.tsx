@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import {
   CaretRight,
@@ -7,7 +7,6 @@ import {
   Key,
   Plus,
   PlugsConnected,
-  ShareNetwork,
   UserCircle,
 } from "@phosphor-icons/react";
 import type {
@@ -23,10 +22,10 @@ import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice";
 import { ipcErrorMessage } from "../../lib/format";
 import { SettingsSegmented, SettingsToggle } from "./primitives";
-import { IntegrationCard } from "./integrations/IntegrationChrome";
-import { SolidLogo } from "./providers/ProviderHero";
-import type { ProviderBrandLogo } from "./providers/providerBrand";
+import { IntegrationCard, IntegrationHero, type IntegrationFact } from "./integrations/IntegrationChrome";
+import { integrationThemeVars } from "./integrations/integrationBrand";
 import {
+  ADE_MCP_BRAND,
   GALLERY_APPS,
   galleryApp,
   galleryIdForKnownApp,
@@ -34,7 +33,7 @@ import {
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, machineState, overallState } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -59,24 +58,18 @@ const ACCESS_OPTIONS = [
 
 const ACTIVITY_PREVIEW = 8;
 
-/** ADE MCP wears ADE's violet, the way an integration page wears its maker's colour. */
-const ACCENT = "#8B7CF6";
+const PAGE_VARS = integrationThemeVars(ADE_MCP_BRAND.accent);
 
-const PAGE_VARS: CSSProperties = {
-  ["--color-accent" as string]: ACCENT,
-  ["--color-accent-muted" as string]: `color-mix(in srgb, ${ACCENT} 16%, transparent)`,
-  ["--provider-accent" as string]: ACCENT,
-  ["--provider-brand" as string]: ACCENT,
-  ["--ig-accent" as string]: ACCENT,
-};
-
-const HERO_LOGO: Extract<ProviderBrandLogo, { kind: "solid" }> = {
-  kind: "solid",
-  mark: (size) => <ShareNetwork size={size} weight="fill" />,
-  face: "#FFFFFF",
-  side: "#3A2A8C",
-  size: 72,
-};
+/** App marks floating on the banner, between the name and the panel. */
+const HERO_ART = (
+  <div className="ade-amcp-hero-art" aria-hidden>
+    {(["claude", "chatgpt", "grok", "cursor", "claude-code"] as const).map((app) => (
+      <span key={app} className="ade-amcp-hero-orbit" data-app={app}>
+        <McpAppLogo app={app} size={30} />
+      </span>
+    ))}
+  </div>
+);
 
 const OUTCOME_TONE: Record<RemoteMcpActivityEntry["outcome"], string | undefined> = {
   ok: "ok",
@@ -214,7 +207,6 @@ export function AdeMcpPage() {
   const serverUrl = enabled ? status?.serverUrl ?? null : null;
   const connections = useMemo(() => status?.connections ?? [], [status]);
   const machines = status?.machines ?? [];
-  const vault = status?.vault ?? null;
   const overall = overallState(status, loading);
   const shownActivity = useMemo(
     () => (showAllActivity ? activity : activity.slice(0, ACTIVITY_PREVIEW)),
@@ -251,34 +243,33 @@ export function AdeMcpPage() {
   const included = machines.filter((machine) => machine.included);
   const answering = included.filter((machine) => machine.serving).length;
   const sheetApp = setupApp ? galleryApp(setupApp) : null;
+  const heroFacts: IntegrationFact[] | undefined = enabled && status ? [
+    {
+      label: "Computers",
+      value: included.length ? `${answering} of ${included.length} answering` : "None included",
+      tone: included.length && answering < included.length ? "warn" : undefined,
+    },
+    {
+      label: "Connections",
+      value: connections.length ? `${connections.length} ${connections.length === 1 ? "app or token" : "apps and tokens"}` : "None yet",
+    },
+    vaultFact(status.vault),
+  ] : undefined;
+  // This computer's account sync, when it is signed in and the sync isn't working.
+  const unsyncedVault = status?.signedIn && status.vault.state !== "ok" ? status.vault : null;
 
   return (
     <div className="ade-pv-provider ade-ig-page ade-amcp-page" style={PAGE_VARS}>
       {/* ── The account's server: what it is, the switch, the address ── */}
-      <section className="ade-ig-hero ade-amcp-hero" id="ade-mcp" data-settings-anchor="ade-mcp" data-settings-group="ADE MCP">
-        <div className="ade-amcp-hero-art" aria-hidden>
-          {(["claude", "chatgpt", "grok", "cursor", "claude-code"] as const).map((app) => (
-            <span key={app} className="ade-amcp-hero-orbit" data-app={app}>
-              <McpAppLogo app={app} size={30} />
-            </span>
-          ))}
-        </div>
-        <div className="ade-ig-hero-shade" />
-        <div className="ade-ig-hero-row">
-          <SolidLogo spec={HERO_LOGO} straight />
-          <div className="ade-ig-hero-id">
-            <h1 className="ade-ig-hero-name">ADE MCP</h1>
-            <p className="ade-ig-hero-tagline">
-              One address for your ADE account. An AI app that signs in with it can use ADE on every computer you include.
-            </p>
-            <div className="ade-ig-hero-chips">
-              <span className="ade-ig-chip" data-tone={overall.tone === "neutral" && loading ? "checking" : overall.tone} role="status">
-                <i />
-                {overall.label}
-              </span>
-            </div>
-          </div>
-          <div className="ade-ig-hero-panel ade-amcp-hero-panel">
+      <IntegrationHero
+        brand={ADE_MCP_BRAND}
+        className="ade-amcp-hero"
+        anchor="ade-mcp"
+        group="ADE MCP"
+        status={overall}
+        art={HERO_ART}
+        panel={(
+          <>
             <span className="ade-ig-hero-panel-label">Server URL</span>
             {serverUrl ? (
               <div className="ade-amcp-hero-url">
@@ -286,15 +277,7 @@ export function AdeMcpPage() {
                 <CopyButton value={serverUrl} label="Copy server URL" />
               </div>
             ) : (
-              <p className="ade-ig-hero-panel-empty">
-                {!status
-                  ? "Checking…"
-                  : !signedIn
-                    ? "ADE MCP needs your ADE account. Apps sign in through it."
-                    : enabled
-                      ? "ADE is setting up your account's address."
-                      : "Turn it on to get your account's address."}
-              </p>
+              <p className="ade-ig-hero-panel-empty">{heroPanelNote(status)}</p>
             )}
             {status && !signedIn ? (
               <div className="ade-ig-hero-panel-actions">
@@ -316,43 +299,24 @@ export function AdeMcpPage() {
                 label="Let AI apps use ADE"
               />
             </div>
-          </div>
-        </div>
-        {enabled ? (
-          <div className="ade-ig-hero-strip">
-            <div className="ade-ig-hero-fact">
-              <span>Computers</span>
-              <b data-tone={included.length && answering < included.length ? "warn" : undefined}>
-                {included.length ? `${answering} of ${included.length} answering` : "None included"}
-              </b>
-            </div>
-            <div className="ade-ig-hero-fact">
-              <span>Connections</span>
-              <b>{connections.length ? `${connections.length} ${connections.length === 1 ? "app or token" : "apps and tokens"}` : "None yet"}</b>
-            </div>
-            <div className="ade-ig-hero-fact" title={vault?.lastSyncedAt ? `Last synced ${new Date(vault.lastSyncedAt).toLocaleString()}` : undefined}>
-              <span>Account sync</span>
-              <b data-tone={vault && vault.state !== "ok" ? "warn" : undefined}>
-                {!vault ? "Unknown" : vault.state === "ok" ? `Up to date${agoText(vault.lastSyncedAt) ? ` · ${agoText(vault.lastSyncedAt)}` : ""}` : vault.state === "failing" ? "Failing" : "Unavailable"}
-              </b>
-            </div>
-          </div>
-        ) : null}
-      </section>
+          </>
+        )}
+        facts={heroFacts}
+      />
 
-      {signedIn && vault && vault.state !== "ok" ? (
+      {unsyncedVault ? (
         <Banner
           layout="inline"
           model={{
             id: "ade-mcp-vault",
-            tone: vault.state === "failing" ? "error" : "warning",
+            tone: unsyncedVault.state === "failing" ? "error" : "warning",
             title: "Account sync isn't working on this computer",
             detail: [
-              vault.message ?? "ADE MCP's settings and connections can't reach this computer until it syncs.",
-              vault.pendingChanges > 0 ? `${vault.pendingChanges} change${vault.pendingChanges === 1 ? "" : "s"} waiting to upload.` : null,
-              agoText(vault.lastSyncedAt) ? `Last synced ${agoText(vault.lastSyncedAt)}.` : null,
+              unsyncedVault.message ?? "ADE MCP's settings and connections can't reach this computer until it syncs.",
+              unsyncedVault.pendingChanges > 0 ? `${unsyncedVault.pendingChanges} change${unsyncedVault.pendingChanges === 1 ? "" : "s"} waiting to upload.` : null,
+              agoText(unsyncedVault.lastSyncedAt) ? `Last synced ${agoText(unsyncedVault.lastSyncedAt)}.` : null,
             ].filter(Boolean).join(" "),
-            report: { surface: "ade_mcp_vault", code: `vault_${vault.state}` },
+            report: { surface: "ade_mcp_vault", code: `vault_${unsyncedVault.state}` },
             actions: [{ label: "Check again", onClick: () => { void load(); } }],
           }}
         />
@@ -403,7 +367,7 @@ export function AdeMcpPage() {
                     <small>
                       {connected ? (
                         <><i className="ade-ig-dot" data-tone="ok" /> Connected</>
-                      ) : app.id === "other" ? "Sign in or token" : app.token ? "Sign in or token" : "Sign in"}
+                      ) : app.token ? "Sign in or token" : "Sign in"}
                     </small>
                   </span>
                   <CaretRight size={12} weight="bold" className="ade-amcp-app-caret" />
@@ -615,7 +579,7 @@ export function AdeMcpPage() {
           onUseToken={() => {
             setSetupApp(null);
             setTokenRequest({
-              label: sheetApp.id === "other" ? "" : sheetApp.id === "grok" ? "xAI API" : sheetApp.label,
+              label: sheetApp.tokenLabel ?? sheetApp.label,
               snippet: sheetApp.tokenSnippet,
             });
           }}

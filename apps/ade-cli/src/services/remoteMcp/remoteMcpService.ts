@@ -32,6 +32,7 @@ import {
   writeRemoteMcpMachineEntry,
   type RemoteMcpSettings,
 } from "./remoteMcpAccount";
+import type { AccountCacheHealth } from "../account/accountCacheStore";
 import { createRemoteMcpActivityLog } from "./remoteMcpActivityLog";
 import {
   createRemoteMcpMachineRouter,
@@ -111,8 +112,6 @@ const RELAY_DOWN_REPORT_AFTER_MS = 45_000;
 const CALL_REPLAY_TTL_MS = 2 * 60_000;
 /** While ADE MCP is on here but the account secret has not arrived, the vault is pulled this often. */
 const WAITING_FOR_SECRET_PULL_MS = 60_000;
-/** Without a vault health report, a sync that failed in this window counts as failing. */
-const VAULT_FAILURE_WINDOW_MS = 10 * 60_000;
 /**
  * A request that reaches a computer which stopped serving means the relay
  * still routes to it; it is told again at most this often.
@@ -197,19 +196,12 @@ export function createRemoteMcpService(args: {
 
   // ── Account vault health ──────────────────────────────────────────────────
 
-  // What this service saw of its own vault syncs, for a vault store that does
-  // not report its health.
-  let ownSync: { at: number; status: "ready" | "unavailable" | "failed" | "threw"; error: string | null } | null = null;
-  let lastGoodSyncAt: number | null = null;
-  /** `vault.sync`, remembering how it went. Never throws. */
+  /** `vault.sync` for the service's own pulls. Never throws: a failure shows in `vault.health()`. */
   const syncVault = async (options?: { maxAgeMs?: number }): Promise<"ready" | "unavailable" | "failed"> => {
     try {
-      const status = await args.vault.sync(options);
-      ownSync = { at: now(), status, error: status === "failed" ? "The account vault didn't answer." : null };
-      if (status === "ready") lastGoodSyncAt = now();
-      return status;
+      return await args.vault.sync(options);
     } catch (error) {
-      ownSync = { at: now(), status: "threw", error: getErrorMessage(error) };
+      warn("remote_mcp.vault_sync_failed", error);
       return "failed";
     }
   };
@@ -219,68 +211,69 @@ export function createRemoteMcpService(args: {
     if (!signedIn()) {
       return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "Sign in to ADE on this computer: the account vault belongs to your ADE account." };
     }
-    let reported: ReturnType<NonNullable<RemoteMcpVault["health"]>> | null = null;
+    let reported: AccountCacheHealth;
     try {
-      reported = args.vault.health?.() ?? null;
+      reported = args.vault.health();
     } catch (error) {
       warn("remote_mcp.vault_health_failed", error);
+      return { state: "unavailable", lastSyncedAt: null, pendingChanges: 0, message: "This computer can't read its ADE account vault's state right now." };
     }
-    if (reported) {
-      const waiting = reported.pendingChanges + reported.parked;
-      const message = reported.state === "ok"
-        ? null
-        : reported.state === "unavailable"
-          ? "This computer can't use its ADE account vault right now (it may be signed out)."
-          : `This computer can't sync its ADE account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
-            + `ADE MCP's key, its connections and other synced secrets wait until it can${waiting ? `; ${waiting} change${waiting === 1 ? "" : "s"} wait to upload` : ""}.`;
-      return { state: reported.state, lastSyncedAt: reported.lastSyncedAt, pendingChanges: waiting, message };
-    }
-    let pending = 0;
-    try {
-      pending = args.vault.pendingKeys(REMOTE_MCP_VAULT_SCOPE, REMOTE_MCP_VAULT_KIND).length;
-    } catch {
-      pending = 0;
-    }
-    const failing = ownSync !== null && ownSync.status !== "ready" && now() - ownSync.at < VAULT_FAILURE_WINDOW_MS;
-    return {
-      state: failing ? "failing" : "ok",
-      lastSyncedAt: lastGoodSyncAt === null ? null : new Date(lastGoodSyncAt).toISOString(),
-      pendingChanges: pending,
-      message: failing
-        ? `This computer can't sync its ADE account vault.${ownSync?.error ? ` ${ownSync.error.trim().replace(/([^.!?])$/, "$1.")}` : ""} ADE MCP's key and connections wait until it can.`
-        : null,
-    };
+    const waiting = reported.pendingChanges + reported.parked;
+    const message = reported.state === "ok"
+      ? null
+      : reported.state === "unavailable"
+        ? "This computer can't use its ADE account vault right now (it may be signed out)."
+        : `This computer can't sync its ADE account vault.${reported.lastError ? ` ${reported.lastError.trim().replace(/([^.!?])$/, "$1.")}` : ""} `
+          + `ADE MCP's key, its connections and other synced secrets wait until it can${waiting ? `; ${waiting} change${waiting === 1 ? "" : "s"} wait to upload` : ""}.`;
+    return { state: reported.state, lastSyncedAt: reported.lastSyncedAt, pendingChanges: waiting, message };
   };
+
   const includedHere = (): boolean => {
     const endpoint = relayEndpoint();
     if (!endpoint) return true;
     return readRemoteMcpMachineEntry(args.settings, endpoint.machineKey)?.included !== false;
   };
 
-  /** This computer answers ADE MCP: signed in, on for the account, not left out, secret and relay present. */
-  const serving = (): boolean =>
-    accountOn() && includedHere() && accountSecret() !== null && relayEndpoint() !== null;
-
-  // Since when the relay connection has been down (null while it is up).
-  let relayDownSince: number | null = null;
   /**
-   * Why this computer does not answer ADE MCP, or null when it does. What it
-   * reports in its account entry, so every computer can say the true reason.
+   * Why this computer can't answer ADE MCP, or null when it can: signed in,
+   * on for the account, not left out, holding the account secret, with a
+   * relay identity. The one rule for serving; `notServingReasonHere` adds the
+   * relay connection for what this computer reports.
    */
-  const notServingReasonHere = (): RemoteMcpNotServingReason | null => {
+  const servingBlocker = (): RemoteMcpNotServingReason | null => {
     if (!signedIn()) return "signed_out";
     if (!isRemoteMcpEnabledForAccount(args.settings)) return "off_for_account";
     if (!includedHere()) return "left_out";
     if (!accountSecret()) return vaultHealth().state === "failing" ? "account_vault_unreachable" : "waiting_for_account_secret";
-    const endpoint = relayEndpoint();
-    if (!endpoint) return "relay_disconnected";
-    if (endpoint.connected) {
-      relayDownSince = null;
-    } else {
-      relayDownSince ??= now();
-      if (now() - relayDownSince >= RELAY_DOWN_REPORT_AFTER_MS) return "relay_disconnected";
-    }
+    if (!relayEndpoint()) return "relay_disconnected";
     return null;
+  };
+
+  /** This computer answers ADE MCP: the request gate, and what the relay is told (`mcp_state`). */
+  const serving = (): boolean => servingBlocker() === null;
+
+  // Since when the relay connection has been down (null while it is up).
+  // Updated only by `observeRelayConnection`, so reading the state never changes it.
+  let relayDownSince: number | null = null;
+  const observeRelayConnection = (): void => {
+    const endpoint = relayEndpoint();
+    if (!endpoint || endpoint.connected) relayDownSince = null;
+    else relayDownSince ??= now();
+  };
+
+  /**
+   * Why this computer does not answer ADE MCP, or null when it does: what it
+   * reports in its account entry, its status and the roster, so every
+   * computer can say the true reason. The same rule as `serving` plus one: a
+   * relay connection down for RELAY_DOWN_REPORT_AFTER_MS reports
+   * `relay_disconnected`. The request gate leaves the connection out on
+   * purpose: a request that arrived came over it, and the relay hears this
+   * computer's state again when it reconnects.
+   */
+  const notServingReasonHere = (): RemoteMcpNotServingReason | null => {
+    const blocker = servingBlocker();
+    if (blocker) return blocker;
+    return relayDownSince !== null && now() - relayDownSince >= RELAY_DOWN_REPORT_AFTER_MS ? "relay_disconnected" : null;
   };
 
   /** `https://<relay>/m/<endpointKey>`: this computer only. */
@@ -526,6 +519,7 @@ export function createRemoteMcpService(args: {
 
   /** Re-reads the account state; tells the relay when serving or the secret changed. */
   const refresh = (): void => {
+    observeRelayConnection();
     announceIfChanged();
     void maintain();
   };
@@ -592,7 +586,6 @@ export function createRemoteMcpService(args: {
   const machines = createRemoteMcpMachineRouter({
     settings: args.settings,
     thisMachine: () => ({ key: relayEndpoint()?.machineKey ?? null, name: args.machineName() }),
-    servingHere: () => notServingReasonHere() === null,
     notServingReasonHere,
     relayUrl: () => relayEndpoint()?.relayUrl ?? null,
     listAccountMachines: args.listAccountMachines ?? (async () => null),
@@ -771,7 +764,7 @@ export function createRemoteMcpService(args: {
       relayConnected: endpoint?.connected === true,
       machineName: args.machineName(),
       thisMachineServing: notServingReasonHere() === null,
-      machines: roster.map(({ endpointKey: _endpointKey, version: _version, servingKnown: _known, ...machine }) => machine),
+      machines: roster.map(({ endpointKey: _endpointKey, version: _version, ...machine }) => machine),
       connections,
       vault: vaultHealth(),
     };

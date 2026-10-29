@@ -3,6 +3,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/shared/processExecution";
 import { signalChildProcessTree, terminateChildProcessTree } from "../../../../desktop/src/main/services/shared/utils";
+import {
+  BRAIN_INHERITED_AGENT_LOCATION_ENV_KEYS,
+  BRAIN_INHERITED_CALLER_ENV_KEYS,
+} from "../runtime/brainInheritedIdentity";
 
 /**
  * Runs one `ade` command for a remote AI app, as a child of this brain.
@@ -45,6 +49,9 @@ function isFile(candidate: string): boolean {
   }
 }
 
+/** A launcher that needs a shell (`ade.cmd`, `.bat`, `.ps1`): never run. */
+const SCRIPT_WRAPPER = /\.(?:cmd|bat|ps1)$/i;
+
 /**
  * The CLI this brain runs, as an absolute path to a file that exists now.
  * Tried in order: the standalone runtime's own executable, the entry the
@@ -52,7 +59,8 @@ function isFile(candidate: string): boolean {
  * standalone `ade` in the ADE home. The agent environment alone came back
  * empty on a brain an update had moved (the activity log's "could not find
  * its own ade command"); the brain's own script and the standalone binary
- * still answer then.
+ * still answer then. A script wrapper (Windows' `ade.cmd` shim) is never a
+ * candidate: it would need a shell, so the search goes on past it.
  */
 function resolveCliEntry(env: NodeJS.ProcessEnv, isEmbedded: boolean, adeDir: string | null): { entry: string | null; tried: string[] } {
   const script = typeof process.argv[1] === "string" && process.argv[1].trim() ? path.resolve(process.argv[1].trim()) : "";
@@ -62,7 +70,7 @@ function resolveCliEntry(env: NodeJS.ProcessEnv, isEmbedded: boolean, adeDir: st
     env.ADE_CLI_PATH?.trim() ?? "",
     /\.(?:cjs|mjs|js)$/i.test(script) ? script : "",
     adeDir ? path.join(adeDir, "bin", process.platform === "win32" ? "ade.exe" : "ade") : "",
-  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+  ].filter((candidate, index, all) => candidate && !SCRIPT_WRAPPER.test(candidate) && all.indexOf(candidate) === index);
   const entry = candidates.find((candidate) => path.isAbsolute(candidate) && isFile(candidate)) ?? null;
   return { entry, tried: candidates };
 }
@@ -79,6 +87,10 @@ async function resolveLaunch(): Promise<Launch> {
     import("../projects/machineLayout"),
   ]);
   const env = createHeadlessAdeCliAgentEnv(process.env);
+  // The brain's own location and caller (a brain started from a lane's
+  // terminal inherits its ADE_LANE_ID) are not the app's: without --lane, a
+  // command must not land in that lane.
+  for (const key of [...BRAIN_INHERITED_AGENT_LOCATION_ENV_KEYS, ...BRAIN_INHERITED_CALLER_ENV_KEYS]) delete env[key];
   let adeDir: string | null = null;
   try {
     adeDir = resolveMachineAdeLayout().adeDir;
@@ -109,8 +121,6 @@ async function resolveLaunch(): Promise<Launch> {
       env.NODE_PATH = [...modulePaths, env.NODE_PATH].filter(Boolean).join(path.delimiter);
     }
     launch = { command: process.execPath, prefixArgs: [entry], env };
-  } else if (/\.(?:cmd|bat|ps1)$/i.test(entry)) {
-    throw new Error("This computer's ade command is a script wrapper, which ADE MCP will not run through a shell.");
   } else {
     launch = { command: entry, prefixArgs: [], env };
   }

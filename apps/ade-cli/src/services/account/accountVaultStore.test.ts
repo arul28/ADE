@@ -199,7 +199,7 @@ describe("account vault store", () => {
     await store.sync();
 
     expect(relay.putAccountVault).not.toHaveBeenCalled();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai");
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai", { writtenAt: expect.any(String) });
   });
 
   it("queues a revocation and clears it locally at once", async () => {
@@ -211,7 +211,7 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "anthropic")).toBeNull();
 
     await store.sync();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic");
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic", { writtenAt: expect.any(String) });
   });
 
   // Settings survive a sign-out; the vault does not. Leaving synced keys
@@ -745,10 +745,23 @@ describe("account vault store", () => {
 
     // An older relay cannot refuse it, so the store reads what changed since
     // the queued write first. A write newer than the account's row still goes.
-    it("checks an old queued write against the account before sending it to an older relay", async () => {
+    // A relay that refuses stale writes itself (learned before a restart) is
+    // trusted with it: the local check judges by this machine's clock.
+    it.each([
+      { relayKind: "an older relay", perItem: false, sent: ["openai"], anthropic: "replaced-yesterday" },
+      { relayKind: "a relay known to check it itself", perItem: true, sent: ["anthropic", "openai"], anthropic: "eight-days-old" },
+    ])("checks an old queued write against the account before sending it to $relayKind", async ({ perItem, sent, anthropic }) => {
       const day = 24 * 60 * 60_000;
       let clock = Date.parse("2026-09-08T00:00:00.000Z");
+      if (perItem) {
+        relay.putAccountVault.mockImplementation(async (items: unknown[]) => ({
+          updatedAt: LANDED,
+          results: items.map(() => ({ status: "written" })),
+        }));
+      }
       const store = makeStore({ now: () => clock });
+      store.set("all", "provider_key", "github", "synced-earlier");
+      await store.sync();
       store.set("all", "provider_key", "anthropic", "eight-days-old");
       store.set("all", "provider_key", "openai", "still-newest");
       clock += 8 * day;
@@ -762,12 +775,14 @@ describe("account vault store", () => {
         cursor: null,
         truncated: false,
       }));
-      await store.sync();
+      relay.putAccountVault.mockClear();
+      const restarted = makeStore({ now: () => clock });
+      await restarted.sync();
 
-      const sent = relay.putAccountVault.mock.calls.flatMap(([items]) => (items as Array<{ key: string }>).map((entry) => entry.key));
-      expect(sent).toEqual(["openai"]);
-      expect(store.get("all", "provider_key", "anthropic")).toBe("replaced-yesterday");
-      expect(store.get("all", "provider_key", "openai")).toBe("still-newest");
+      const keys = relay.putAccountVault.mock.calls.flatMap(([items]) => (items as Array<{ key: string }>).map((entry) => entry.key));
+      expect(keys).toEqual(sent);
+      expect(restarted.get("all", "provider_key", "anthropic")).toBe(anthropic);
+      expect(restarted.get("all", "provider_key", "openai")).toBe("still-newest");
     });
   });
 });

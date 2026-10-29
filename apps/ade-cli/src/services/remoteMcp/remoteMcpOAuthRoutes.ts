@@ -323,8 +323,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
 
   /**
    * Sends a token request for a code another computer issued to that
-   * computer. One hop; retried once when the connection drops before an
-   * answer, with a call id so the holder redeems the code once.
+   * computer. One hop. The code is single use, so the request is tried again
+   * only when the first try never left this computer; its call id lets a
+   * holder that does see it twice redeem the code once.
    */
   const forwardToken = async (request: RemoteMcpHttpRequest, endpointKey: string): Promise<RemoteMcpHttpResponse> => {
     const endpoint = deps.relayEndpoint();
@@ -342,7 +343,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
           [REMOTE_MCP_CALL_ID_HEADER]: randomUUID(),
         },
         body: request.body ?? "",
-      }, TOKEN_FORWARD_TIMEOUT_MS);
+      }, TOKEN_FORWARD_TIMEOUT_MS, { retryAfterSend: false });
       return json(response.status, await response.json().catch(() => ({ error: "server_error" })));
     } catch (error) {
       deps.logger?.warn?.("remote_mcp.token_forward_failed", { error: getErrorMessage(error) });

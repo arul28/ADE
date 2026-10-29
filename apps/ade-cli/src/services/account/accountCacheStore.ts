@@ -1,12 +1,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { writeFileAtomic } from "../../../../desktop/src/main/services/state/durableFile";
-import { createFileLogger } from "../../../../desktop/src/main/services/logging/logger";
 import {
   readAccountChangeMarks,
   subscribeAccountChangeMarks,
   type AccountChangeMarkKind,
 } from "./accountChangeMarks";
+import { describeSyncFailure, relayUnhealthy } from "./accountCacheDiagnostics";
 
 /** Marks older than this mean the heartbeat stopped carrying them: poll. */
 const CHANGE_MARK_FRESH_MS = 90_000;
@@ -115,7 +115,11 @@ export type AccountCacheUploadResult<TRemote> = {
   rejected?: ReadonlyArray<{ seq: number; reason: string }>;
   /** Writes a newer row on the account replaced: dropped, and `current` adopted. */
   superseded?: ReadonlyArray<{ seq: number; current: TRemote | null }>;
-  /** The relay checked each write against newer rows itself. */
+  /**
+   * Whether the relay checked each write against newer rows itself: true when
+   * it answered per item, false when a batch landed without per-item answers
+   * (an older relay), absent when no batch landed to tell.
+   */
   checkedConflicts?: boolean;
   /** A request failed partway, for a reason not one item's. The rest stays queued. */
   error?: unknown;
@@ -171,133 +175,6 @@ function withQueueMetadata<TPending extends AccountCachePending>(decoded: TPendi
   return next;
 }
 
-function errorStatus(error: unknown): number | null {
-  return isRecord(error) && typeof error.status === "number" ? error.status : null;
-}
-
-/**
- * The relay refused something about the items in a request, not the request:
- * 400 (an item it will not store) or 413 (too many, or too large). Splitting
- * the batch finds which item. An older relay answers this way for a whole
- * batch; a newer one answers per item instead (`itemResults`).
- */
-export function isAccountItemRejection(error: unknown): boolean {
-  const status = errorStatus(error);
-  return status === 400 || status === 413;
-}
-
-/** The relay's reason for refusing one item: its short error text, never a value. */
-export function accountItemRejectionReason(error: unknown): string {
-  const reason = isRecord(error) && typeof error.reason === "string" ? error.reason.trim() : "";
-  return (reason || `HTTP ${errorStatus(error) ?? "error"}`).slice(0, 120);
-}
-
-export type IsolatedPutResult<T, R> = {
-  /** Each request that landed, with the items it carried, in order. */
-  landed: Array<{ batch: T[]; result: R }>;
-  /** Items the relay refused one by one, with its reason. */
-  rejected: Array<{ item: T; reason: string }>;
-  /** A request failed for a reason that is not one item's; later items were not sent. */
-  error?: unknown;
-  /** There was no token to ask with; later items were not sent. */
-  couldNotAsk: boolean;
-};
-
-/**
- * Sends `items` in batches of at most `maxBatch`, so one item the relay will
- * not take can never hold back the rest. A batch the relay refuses as a whole
- * for an item's sake (an older relay's all-or-nothing 400) is split in halves
- * until the refused items stand alone; the others are sent. A batch-level
- * failure (network, 5xx, 429) stops and leaves the rest for the next pass.
- */
-export async function putIsolated<T, R>(
-  items: readonly T[],
-  maxBatch: number,
-  put: (batch: T[]) => Promise<R | null>,
-): Promise<IsolatedPutResult<T, R>> {
-  const outcome: IsolatedPutResult<T, R> = { landed: [], rejected: [], couldNotAsk: false };
-  const attempt = async (batch: T[]): Promise<boolean> => {
-    let result: R | null;
-    try {
-      result = await put(batch);
-    } catch (error) {
-      if (!isAccountItemRejection(error)) {
-        outcome.error = error;
-        return false;
-      }
-      if (batch.length === 1) {
-        outcome.rejected.push({ item: batch[0]!, reason: accountItemRejectionReason(error) });
-        return true;
-      }
-      const middle = Math.ceil(batch.length / 2);
-      return (await attempt(batch.slice(0, middle))) && (await attempt(batch.slice(middle)));
-    }
-    if (result === null) {
-      outcome.couldNotAsk = true;
-      return false;
-    }
-    outcome.landed.push({ batch, result });
-    return true;
-  };
-  const size = Math.max(1, Math.trunc(maxBatch));
-  for (let index = 0; index < items.length; index += size) {
-    if (!(await attempt(items.slice(index, index + size)))) break;
-  }
-  return outcome;
-}
-
-/**
- * A failed sync as one sentence a person can act on. Built from the status and
- * the relay's short error text only: never a value, a key, or a token.
- */
-function describeSyncFailure(error: unknown, phase: "upload" | "pull"): string {
-  const what = phase === "upload" ? "send this computer's changes to" : "get changes from";
-  if (isRecord(error) && error.name === "PushRelayUnreachableError" && typeof error.message === "string") {
-    return `ADE couldn't ${what} your account: ${error.message}`;
-  }
-  const status = errorStatus(error);
-  if (status === 429) return `Your account service asked ADE to slow down, so it couldn't ${what} your account yet. It retries on its own.`;
-  if (status !== null && status >= 500) {
-    return `ADE couldn't ${what} your account: the account service is unavailable (HTTP ${status}). It retries on its own.`;
-  }
-  if (status !== null) {
-    const reason = isRecord(error) && typeof error.reason === "string" ? `: ${error.reason.slice(0, 120)}` : "";
-    return `Your account service refused to let ADE ${what} your account (HTTP ${status}${reason}).`;
-  }
-  return `ADE couldn't ${what} your account. It retries on its own.`;
-}
-
-/**
- * The relay itself is down or rate-limiting: a pull right after would fail the
- * same way. 507 (the account's vault or settings are full) is not: it refuses
- * writes only, and reads must keep flowing.
- */
-function relayUnhealthy(error: unknown): boolean {
-  const status = errorStatus(error);
-  return status === null || status === 429 || (status >= 500 && status !== 507);
-}
-
-const machineLoggers = new Map<string, AccountCacheLogger | null>();
-
-/**
- * `brain.jsonl` under a machine ADE directory, for the machine-shared account
- * stores. They are built by whichever caller reaches them first, often a
- * project runtime whose logger writes that project's log (or none at all), so
- * a vault stuck for days left no trace in the machine's own log. One logger per
- * path; file only, never stderr, since a CLI process can own a store too.
- */
-export function machineAccountStoreLogger(adeDir: string): AccountCacheLogger | null {
-  const logPath = path.join(path.resolve(adeDir), "runtime", "brain.jsonl");
-  if (!machineLoggers.has(logPath)) {
-    try {
-      machineLoggers.set(logPath, createFileLogger(logPath));
-    } catch {
-      machineLoggers.set(logPath, null);
-    }
-  }
-  return machineLoggers.get(logPath) ?? null;
-}
-
 export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends AccountCachePending> = {
   version: number;
   /** Source of `seq`. Persisted so it survives a restart. */
@@ -312,6 +189,13 @@ export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends Acco
   cursor: string | null;
   rows: Record<string, TRow>;
   pending: TPending[];
+  /**
+   * The relay (`relayId`) known to answer per item and to refuse a write a
+   * newer row replaced. Kept on disk so a restart does not run the stale-write
+   * pre-check against it again (that check judges by this machine's clock).
+   * A different relay, or none recorded, is checked as before.
+   */
+  conflictCheckingRelay: string | null;
 };
 
 export type AccountCacheStoreConfig<
@@ -362,6 +246,8 @@ export type AccountCacheStoreConfig<
   now?: () => number;
   /** True when there is a relay to sync against at all. */
   hasRelay(): boolean;
+  /** Which relay this is (its address), so what was learned about one is not applied to another. */
+  relayId?: () => string | null;
   /** One queue entry per key: which existing entries a new write supersedes. */
   pendingMatches(existing: TPending, write: Omit<TPending, "seq">): boolean;
   /** Cache key for a queued intent, so a pull can skip keys we still owe. */
@@ -467,7 +353,7 @@ export function createAccountCacheStore<
   const failureLogs = new Map<string, { atMs: number; repeated: number }>();
   const warnLimited = (event: string, meta: Record<string, unknown>, reason: string): void => {
     const id = `${event}\u0000${reason}`;
-    const nowMs = Date.now();
+    const nowMs = now();
     const previous = failureLogs.get(id);
     if (previous && nowMs - previous.atMs < FAILURE_LOG_REPEAT_MS) {
       previous.repeated += 1;
@@ -479,11 +365,13 @@ export function createAccountCacheStore<
   };
   /** The last failure, as a sentence for `health()`; cleared by a clean pass. */
   let lastError: string | null = null;
+  const relayKey = (): string => config.relayId?.() ?? "";
   /**
    * The relay answered per item and checked writes against newer rows itself
    * (`itemResults`). Until it has, an old queued write is checked here first.
    */
-  let relayChecksConflicts = false;
+  const relayChecksConflicts = (current: AccountCacheFile<TRow, TPending>): boolean =>
+    current.conflictCheckingRelay === relayKey();
   let cache: AccountCacheFile<TRow, TPending> | null = null;
   let corruptEntryLogged = false;
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
@@ -571,6 +459,7 @@ export function createAccountCacheStore<
       cursor: null,
       rows: {},
       pending: [],
+      conflictCheckingRelay: null,
     };
   }
 
@@ -652,6 +541,7 @@ export function createAccountCacheStore<
       cursor: typeof loaded.cursor === "string" ? loaded.cursor : null,
       rows,
       pending,
+      conflictCheckingRelay: typeof loaded.conflictCheckingRelay === "string" ? loaded.conflictCheckingRelay : null,
     };
     return cache;
   }
@@ -666,6 +556,7 @@ export function createAccountCacheStore<
       cursor: current.cursor,
       rows: { ...current.rows },
       pending: current.pending.map((entry) => ({ ...entry })),
+      conflictCheckingRelay: current.conflictCheckingRelay,
     };
   }
 
@@ -909,7 +800,7 @@ export function createAccountCacheStore<
     // A write that waited (offline, a backoff, a stuck queue) may be older
     // than rows other machines wrote meanwhile. Until the relay is known to
     // refuse those itself, read what changed since and drop what is replaced.
-    if (!relayChecksConflicts && due.some((entry) => isOldWrite(entry, nowMs))) {
+    if (!relayChecksConflicts(current) && due.some((entry) => isOldWrite(entry, nowMs))) {
       let checked: { superseded: Array<{ seq: number; current: TRemote }> } | "unavailable" | "abandoned";
       try {
         checked = await findSupersededWrites(due, abandoned);
@@ -945,7 +836,6 @@ export function createAccountCacheStore<
       }
       if (abandoned()) return "unavailable";
       if (result) {
-        if (result.checkedConflicts) relayChecksConflicts = true;
         appliedRemoteRows = applyUploadResult(due, result) || appliedRemoteRows;
         // Persist immediately so a later pull failure cannot resurrect a PUT
         // the Worker already accepted.
@@ -1097,10 +987,15 @@ export function createAccountCacheStore<
     const seqs = new Set(superseded.map((entry) => entry.seq));
     const dropped = after.pending.filter((entry) => seqs.has(entry.seq));
     after.pending = after.pending.filter((entry) => !seqs.has(entry.seq));
+    // A write to the same key queued after the stale one is still owed to the
+    // account and is newer than the row it lost to; adopting that row here
+    // would leave this machine showing a value the account is about to replace.
+    const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
     let applied = false;
     for (const { current } of superseded) {
       if (!current) continue;
       const key = config.remoteKey(current);
+      if (stillPending.has(key)) continue;
       const next = config.toRow(current, after.rows[key]);
       if (next === null) continue;
       after.rows[key] = next;
@@ -1123,6 +1018,9 @@ export function createAccountCacheStore<
         .filter((seq) => !rejected.has(seq) && !supersededSeqs.has(seq)),
     );
     const after = readCache();
+    if (result.checkedConflicts !== undefined) {
+      after.conflictCheckingRelay = result.checkedConflicts ? relayKey() : null;
+    }
     // Matched by sequence rather than by key: an edit made while the upload
     // was in flight carries a newer seq for the same key, and dropping it
     // would lose a change the user believes is saved.

@@ -56,7 +56,8 @@ export function header(request: RemoteMcpHttpRequest, name: string): string {
 /**
  * Sent with every request one brain makes to another through the relay (a
  * forwarded tool call, a token exchange), so the receiving brain can answer a
- * retried request with the first one's answer instead of running it twice.
+ * repeated request with the first one's answer instead of running it twice.
+ * A guard, not a licence to retry: see fetchThroughRelayWithRetry.
  */
 export const REMOTE_MCP_CALL_ID_HEADER = "x-ade-mcp-call-id";
 const CALL_ID_PATTERN = /^[A-Za-z0-9-]{8,64}$/;
@@ -95,18 +96,40 @@ export function describeNetworkError(error: unknown, target: string): string {
 }
 
 /**
+ * Failures that happen before a connection exists (no address, refused,
+ * connect timeout), so the request never left this computer. A reset or a
+ * closed socket is not one of them: on a reused keep-alive connection the
+ * request may already have been written, and the other end may have run it.
+ */
+const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
+  "ECONNREFUSED",
+  "ENOTFOUND",
+  "EAI_AGAIN",
+  "ENETUNREACH",
+  "EHOSTUNREACH",
+  "UND_ERR_CONNECT_TIMEOUT",
+]);
+
+/**
  * One brain-to-relay request, tried a second time when the first fails before
- * any HTTP response. Cloudflare closes idle keep-alive connections, and a
- * request written to one that was already closed fails at once with "fetch
- * failed"; the HTTP client drops that connection, so the retry gets a fresh
- * one. Both tries share one deadline. Safe for writes because both carry the
- * same call id, which the receiving brain answers once.
+ * any HTTP response. Both tries share one deadline; a timeout is never
+ * retried.
+ *
+ * A failure that proves nothing was sent (`NOTHING_SENT_CODES`) is always
+ * retried. Any other one (Cloudflare closing an idle keep-alive connection
+ * shows up as a reset or "other side closed") may have reached the other
+ * computer, so it is retried only with `retryAfterSend`: a read that is safe
+ * to run twice. A write or a token exchange is never sent twice, because the
+ * call id that lets the receiving brain answer a repeat once only helps when
+ * that brain and the relay in between know it (an older ADE, or a relay that
+ * drops the header, would run it again). The call id is still sent.
  */
 export async function fetchThroughRelayWithRetry(
   fetchImpl: typeof fetch,
   url: string,
   init: Omit<RequestInit, "signal">,
   timeoutMs: number,
+  options: { retryAfterSend: boolean },
 ): Promise<Response> {
   const deadline = Date.now() + timeoutMs;
   try {
@@ -114,6 +137,9 @@ export async function fetchThroughRelayWithRetry(
   } catch (error) {
     const left = deadline - Date.now();
     if (isTimeoutError(error) || left < 1_000) throw error;
+    const code = networkErrorCode(error);
+    const nothingSent = code !== null && NOTHING_SENT_CODES.has(code);
+    if (!nothingSent && !options.retryAfterSend) throw error;
     return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(left) });
   }
 }

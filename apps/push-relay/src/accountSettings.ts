@@ -16,6 +16,8 @@
  */
 import {
   accountPageResult,
+  accountRefusalResult,
+  accountWriteResults,
   buildAccountPageQuery,
   countAndGuard,
   decodePathSegment,
@@ -26,6 +28,7 @@ import {
   requiredString,
   staleWriteThreshold,
   writeClock,
+  type AccountItemVerdict,
   type AttentionRelayEnv,
 } from "./attentionShared";
 
@@ -82,8 +85,7 @@ function parseSettingKey(value: unknown): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) ? key : null;
 }
 
-/** One item's verdict: what to write, or a plain reason it cannot be. */
-type SettingVerdict = { ok: true; write: ParsedWrite } | { ok: false; reason: string };
+type SettingVerdict = AccountItemVerdict<ParsedWrite>;
 
 function checkWriteItem(value: unknown): SettingVerdict {
   if (!isRecord(value)) return { ok: false, reason: "invalid setting" };
@@ -130,21 +132,6 @@ async function readSettingRow(
     from account_settings
     where user_id = ? and scope_key = ? and setting_key = ?
   `).bind(userId, scope, key).first<SettingRowRecord>();
-}
-
-/** One item's outcome in an `itemResults` write; `stale` carries the stored row. */
-type SettingWriteResult =
-  | { status: "written" }
-  | { status: "rejected"; reason: string }
-  | { status: "stale"; current: AccountSettingRow | null };
-
-function refusalResult(verdict: SettingVerdict): SettingWriteResult {
-  return verdict.ok ? { status: "written" } : { status: "rejected", reason: verdict.reason };
-}
-
-function changesOf(outcome: unknown): number {
-  const changes = isRecord(outcome) && isRecord(outcome.meta) ? outcome.meta.changes : undefined;
-  return typeof changes === "number" ? changes : 0;
 }
 
 function rowToSetting(row: SettingRowRecord): AccountSettingRow {
@@ -262,7 +249,7 @@ async function handleWrite(
       ok: true,
       written: 0,
       updatedAt: null,
-      ...(itemResults ? { results: verdicts.map(refusalResult) } : {}),
+      ...(itemResults ? { results: verdicts.map(accountRefusalResult) } : {}),
     });
   }
 
@@ -312,24 +299,10 @@ async function handleWrite(
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
 
-  const results: SettingWriteResult[] = [];
-  let written = 0;
-  let parsedIndex = 0;
-  for (const verdict of verdicts) {
-    if (!verdict.ok) {
-      results.push(refusalResult(verdict));
-      continue;
-    }
-    const index = parsedIndex;
-    parsedIndex += 1;
-    if (changesOf(outcomes[index]) > 0) {
-      written += 1;
-      results.push({ status: "written" });
-      continue;
-    }
-    const row = await readSettingRow(env, userId, verdict.write.scope, verdict.write.key);
-    results.push({ status: "stale", current: row ? rowToSetting(row) : null });
-  }
+  const { results, written } = await accountWriteResults(verdicts, outcomes, async (write): Promise<AccountSettingRow | null> => {
+    const row = await readSettingRow(env, userId, write.scope, write.key);
+    return row ? rowToSetting(row) : null;
+  });
   return json({ ok: true, written, updatedAt: written > 0 ? updatedAt : null, results });
 }
 

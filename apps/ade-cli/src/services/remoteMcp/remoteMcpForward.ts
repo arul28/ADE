@@ -14,6 +14,7 @@ import {
   isTimeoutError,
   REMOTE_MCP_CALL_ID_HEADER,
 } from "./remoteMcpHttp";
+import { findTypedTool } from "./remoteMcpTools";
 
 /**
  * The account's computers as ADE MCP sees them, and sending a tool call on to
@@ -56,8 +57,6 @@ type RemoteMcpMachineRef = { key: string; name: string };
 export type RemoteMcpRosterMachine = RemoteMcpMachine & {
   endpointKey: string | null;
   version: string | null;
-  /** False when `serving` is a guess: the computer runs an ADE that never reported it. */
-  servingKnown: boolean;
 };
 
 type RemoteMcpResolvedMachine =
@@ -115,8 +114,8 @@ export function decodeViaHeader(value: string): string | null {
 
 /**
  * Why another computer can't take a call, as a sentence the model (and the
- * person) can act on. One table, used by the forwarder, machines_list and
- * `ade mcp status`.
+ * person) can act on: the answer when a call for it is refused before it is
+ * sent, or the relay turns it away. Lists use the short NOT_SERVING_WORDS.
  */
 export function notServingSentence(name: string, reason: RemoteMcpNotServingReason): string {
   switch (reason) {
@@ -139,20 +138,37 @@ export function notServingSentence(name: string, reason: RemoteMcpNotServingReas
   }
 }
 
+/**
+ * Short words for why a computer does not serve: the one table for lists
+ * (machines_list, `ade mcp status`).
+ */
+export const NOT_SERVING_WORDS: Readonly<Record<RemoteMcpNotServingReason, string>> = {
+  off_for_account: "off for the account",
+  left_out: "left out",
+  signed_out: "not serving: signed out of ADE",
+  relay_disconnected: "not serving: not connected to ADE Relay",
+  account_vault_unreachable: "not serving: its account vault can't sync, so it has no ADE MCP key",
+  waiting_for_account_secret: "not serving yet: waiting for the account's ADE MCP key",
+  older_ade: "not joined yet: update ADE on it",
+  offline: "offline",
+};
+
+type RosterState = Pick<RemoteMcpMachine, "isThisMachine" | "serving" | "notServingReason" | "reportedAt">;
+
+/**
+ * False when `serving` is a guess: another computer counted as serving because
+ * its ADE never reported (or its last report no longer holds). The roster
+ * leaves `reportedAt` null exactly then, so every reader of a roster row,
+ * including Settings and `ade mcp status` through getStatus, can tell.
+ */
+export function servingStateKnown(machine: Pick<RosterState, "isThisMachine" | "serving" | "reportedAt">): boolean {
+  return machine.isThisMachine || !machine.serving || machine.reportedAt !== null;
+}
+
 /** Short words for a computer's state, for lists. */
-export function rosterStateWords(machine: Pick<RemoteMcpRosterMachine, "serving" | "servingKnown" | "notServingReason">): string {
-  if (machine.serving) return machine.servingKnown ? "serving" : "serving unknown (its ADE doesn't report it; update ADE there)";
-  switch (machine.notServingReason) {
-    case "off_for_account": return "off for the account";
-    case "left_out": return "left out";
-    case "signed_out": return "not serving: signed out of ADE";
-    case "relay_disconnected": return "not serving: not connected to ADE Relay";
-    case "account_vault_unreachable": return "not serving: its account vault can't sync";
-    case "waiting_for_account_secret": return "not serving yet: waiting for the account's ADE MCP key";
-    case "older_ade": return "not joined yet: update ADE on it";
-    case "offline": return "offline";
-    default: return "not serving";
-  }
+export function rosterStateWords(machine: RosterState): string {
+  if (machine.serving) return servingStateKnown(machine) ? "serving" : "serving unknown (its ADE doesn't report it; update ADE there)";
+  return machine.notServingReason ? NOT_SERVING_WORDS[machine.notServingReason] : "not serving";
 }
 
 /**
@@ -182,9 +198,7 @@ export function createRemoteMcpMachineRouter(deps: {
   settings: RemoteMcpSettings;
   /** This computer: its relay machine key (null before it has a relay identity) and name. */
   thisMachine: () => { key: string | null; name: string };
-  /** Whether this computer answers ADE MCP right now. */
-  servingHere: () => boolean;
-  /** Why this computer does not answer right now; null when it does. */
+  /** Why this computer does not answer right now; null when it serves. */
   notServingReasonHere: () => RemoteMcpNotServingReason | null;
   relayUrl: () => string | null;
   /** The account directory; null when it cannot be read. */
@@ -241,8 +255,9 @@ export function createRemoteMcpMachineRouter(deps: {
       const supported = isThisMachine || Boolean(entry?.endpointKey);
       const included = entry?.included ?? true;
       const online = isThisMachine ? true : directoryRow ? directoryRow.online : listed ? false : null;
+      const hereReason = isThisMachine ? deps.notServingReasonHere() : null;
       const state = isThisMachine
-        ? { serving: deps.servingHere(), reason: deps.notServingReasonHere(), known: true }
+        ? { serving: hereReason === null, reason: hereReason, known: true }
         : otherMachineState({ accountOn, supported, included, online, entry });
       byKey.set(machineKey, {
         machineKey,
@@ -255,9 +270,9 @@ export function createRemoteMcpMachineRouter(deps: {
         version: entry?.version || null,
         serving: state.serving,
         notServingReason: state.serving ? null : state.reason,
-        // This computer's state is live; another's is as of its last report.
-        reportedAt: isThisMachine ? new Date(now()).toISOString() : entry?.reported?.at ?? null,
-        servingKnown: state.known,
+        // This computer's state is live; another's is as of its last report,
+        // and null when its state is a guess (servingStateKnown).
+        reportedAt: isThisMachine ? new Date(now()).toISOString() : state.known ? entry?.reported?.at ?? null : null,
       });
     };
     for (const row of listed ?? []) add(row.machineKey, row);
@@ -297,6 +312,10 @@ export function createRemoteMcpMachineRouter(deps: {
     if (!relay) return toolError(`This computer has no relay address yet, so it can't reach ${machine.name}.`);
     if (!context.bearer) return toolError(`This call has no token to send on to ${machine.name}.`);
     if (!machine.endpointKey) return toolError(unavailableReason(machine) ?? `${machine.name} can't take calls.`);
+    // A read-only typed tool may be sent twice; anything else is tried again
+    // only when the first try never left this computer.
+    const typed = findTypedTool(call.name);
+    const retryAfterSend = typed !== null && !typed.write;
     let response: Response;
     let body: string;
     try {
@@ -310,11 +329,11 @@ export function createRemoteMcpMachineRouter(deps: {
           // Cloudflare's bot check refuses some default library agents (error 1010).
           "user-agent": `ADE/${remoteMcpAdeVersion()} (ADE MCP forward)`,
           [REMOTE_MCP_VIA_HEADER]: encodeViaHeader(thisMachine().name),
-          // The same id on a retry, so the target runs the call once.
+          // The same id on a retry, so a target that knows it runs the call once.
           [REMOTE_MCP_CALL_ID_HEADER]: randomUUID(),
         },
         body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/call", params: call }),
-      }, timeoutMs);
+      }, timeoutMs, { retryAfterSend });
       body = await response.text();
     } catch (error) {
       if (isTimeoutError(error)) {

@@ -9484,18 +9484,12 @@ function buildShellPlan(args: string[]): CliPlan {
     // (an agent's), else the project's primary lane: its main checkout. So an
     // app or script can run a command in a project without making a lane.
     const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
+    const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create" } as const;
     if (ownLane) {
-      return {
-        kind: "execute",
-        label: "shell start",
-        formatter: "pty-create",
-        steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })],
-      };
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
     }
     return {
-      kind: "execute",
-      label: "shell start",
-      formatter: "pty-create",
+      ...shellStart,
       steps: [
         actionCallStep("lanes", "list_lanes", {}),
         {
@@ -24572,6 +24566,21 @@ Usage:
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }
 
+/** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
+const HIDDEN_MISSING_PROJECTS = Symbol("hiddenMissingProjects");
+
+/** The listed projects whose folder is not known to be gone, carrying how many were hidden. */
+function withoutMissingProjects(result: unknown): unknown {
+  if (!Array.isArray(result)) return result;
+  const kept = result.filter((project) => !isRecord(project) || project.exists !== false);
+  return Object.defineProperty(kept, HIDDEN_MISSING_PROJECTS, { value: result.length - kept.length, enumerable: false });
+}
+
+function hiddenMissingProjects(result: unknown): number {
+  const hidden = Array.isArray(result) ? (result as { [HIDDEN_MISSING_PROJECTS]?: unknown })[HIDDEN_MISSING_PROJECTS] : 0;
+  return typeof hidden === "number" ? hidden : 0;
+}
+
 function buildProjectsPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   // The registry lives only in the machine brain, so these never fall back to
@@ -24585,21 +24594,16 @@ function buildProjectsPlan(args: string[]): CliPlan {
     // Projects whose folder is gone (a deleted temp project, a drive that is
     // not plugged in) are hidden unless asked for; the text says how many.
     const includeMissing = readFlag(args, ["--include-missing", "--all"]);
-    let hidden = 0;
     return {
       ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
-      shapeResult: (values) => {
-        if (includeMissing || !Array.isArray(values.result)) return values.result;
-        const kept = values.result.filter((project) => !isRecord(project) || project.exists !== false);
-        hidden = values.result.length - kept.length;
-        return kept;
-      },
+      shapeResult: (values) => (includeMissing ? values.result : withoutMissingProjects(values.result)),
       formatText: (result) => {
         const table = formatProjectsList(result);
+        const hidden = hiddenMissingProjects(result);
         if (hidden === 0) return table;
         return `${table}\n${hidden} project${hidden === 1 ? " whose folder is" : "s whose folders are"} gone ${hidden === 1 ? "is" : "are"} hidden: `
           + "`ade projects list --include-missing` lists them, `ade projects prune` removes them from ADE (it never deletes folders).";

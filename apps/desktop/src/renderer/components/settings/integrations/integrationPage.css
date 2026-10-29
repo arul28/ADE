@@ -106,6 +106,9 @@
 .ade-ig-chip > i { width: 7px; height: 7px; border-radius: 999px; display: inline-block; background: #9CA3AF; }
 .ade-ig-chip[data-tone="ok"] > i { background: #22C55E; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22); }
 .ade-ig-chip[data-tone="warn"] > i { background: #F59E0B; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22); }
+.ade-ig-chip[data-tone="crit"] > i { background: var(--kit-crit); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kit-crit) 25%, transparent); }
+/* Switched off: the banner's own text colour, faded. */
+.ade-ig-chip[data-tone="off"] > i { background: color-mix(in srgb, currentColor 45%, transparent); }
 .ade-ig-chip[data-tone="checking"] > i { animation: ade-ig-pulse 1.2s ease-in-out infinite; }
 @keyframes ade-ig-pulse { 50% { opacity: 0.35; } }
 @media (prefers-reduced-motion: reduce) { .ade-ig-chip[data-tone="checking"] > i { animation: none; } }
@@ -567,6 +570,7 @@
 .ade-ig-dot { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: color-mix(in srgb, var(--color-fg) 25%, transparent); }
 .ade-ig-dot[data-tone="ok"] { background: #22C55E; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
 .ade-ig-dot[data-tone="warn"] { background: #F59E0B; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18); }
+.ade-ig-dot[data-tone="crit"] { background: var(--kit-crit); box-shadow: 0 0 0 3px color-mix(in srgb, var(--kit-crit) 18%, transparent); }
 .ade-ig-dot[data-tone="checking"] { background: var(--ig-accent, #9CA3AF); animation: ade-ig-pulse 1.2s ease-in-out infinite; }
 
 /* The switch inside the account panel (nothing connected yet). */

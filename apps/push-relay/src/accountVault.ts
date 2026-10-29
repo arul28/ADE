@@ -28,6 +28,8 @@
  */
 import {
   accountPageResult,
+  accountRefusalResult,
+  accountWriteResults,
   buildAccountPageQuery,
   countAndGuard,
   decodePathSegment,
@@ -38,6 +40,7 @@ import {
   requiredString,
   staleWriteThreshold,
   writeClock,
+  type AccountItemVerdict,
   type AttentionRelayEnv,
 } from "./attentionShared";
 
@@ -198,8 +201,7 @@ function parseItemKey(value: unknown): string | null {
   return ITEM_KEY_PATTERN.test(key) ? key : null;
 }
 
-/** One item's verdict: what to write, or a plain reason it cannot be. */
-type ItemVerdict = { ok: true; write: ParsedVaultWrite } | { ok: false; reason: string };
+type ItemVerdict = AccountItemVerdict<ParsedVaultWrite>;
 
 function checkWriteItem(value: unknown): ItemVerdict {
   if (!isRecord(value)) return { ok: false, reason: "invalid item" };
@@ -269,16 +271,6 @@ async function readVaultRow(
     where user_id = ? and scope_key = ? and item_kind = ? and item_key = ?
   `).bind(userId, item.scope, item.kind, item.key).first<VaultRowRecord>();
 }
-
-/**
- * One item's outcome in an `itemResults` write, in request order. `stale`
- * carries the stored row so the client can adopt it: the client skipped that
- * key while its own write was queued, so its pull cursor is already past it.
- */
-type VaultWriteResult =
-  | { status: "written" }
-  | { status: "rejected"; reason: string }
-  | { status: "stale"; current: AccountVaultRow | null };
 
 async function handleRead(
   env: VaultEnv,
@@ -369,7 +361,7 @@ async function handleWrite(
       ok: true,
       written: 0,
       updatedAt: null,
-      ...(itemResults ? { results: verdicts.map(refusalResult) } : {}),
+      ...(itemResults ? { results: verdicts.map(accountRefusalResult) } : {}),
     });
   }
 
@@ -417,34 +409,11 @@ async function handleWrite(
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
 
-  const results: VaultWriteResult[] = [];
-  let written = 0;
-  let parsedIndex = 0;
-  for (const verdict of verdicts) {
-    if (!verdict.ok) {
-      results.push(refusalResult(verdict));
-      continue;
-    }
-    const index = parsedIndex;
-    parsedIndex += 1;
-    if (changesOf(outcomes[index]) > 0) {
-      written += 1;
-      results.push({ status: "written" });
-      continue;
-    }
-    const row = await readVaultRow(env, userId, verdict.write);
-    results.push({ status: "stale", current: row ? await rowToVaultItem(key, row) : null });
-  }
+  const { results, written } = await accountWriteResults(verdicts, outcomes, async (write): Promise<AccountVaultRow | null> => {
+    const row = await readVaultRow(env, userId, write);
+    return row ? await rowToVaultItem(key, row) : null;
+  });
   return json({ ok: true, written, updatedAt: written > 0 ? updatedAt : null, results });
-}
-
-function refusalResult(verdict: ItemVerdict): VaultWriteResult {
-  return verdict.ok ? { status: "written" } : { status: "rejected", reason: verdict.reason };
-}
-
-function changesOf(outcome: unknown): number {
-  const changes = isRecord(outcome) && isRecord(outcome.meta) ? outcome.meta.changes : undefined;
-  return typeof changes === "number" ? changes : 0;
 }
 
 /**

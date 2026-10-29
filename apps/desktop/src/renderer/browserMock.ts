@@ -1489,6 +1489,9 @@ const browserMockRemoteMcp = (() => {
     connection("c4", "Cursor", "cursor", "localhost", "write", null),
     connection("c5", "Claude Code", "claude-code", "localhost", "write", 2_900),
     connection("c6", "Mystery MCP client", null, "agents.example.com", "read", 30_000),
+    // Registered as "Claude" but signed in from elsewhere: ADE doesn't recognise
+    // it, so the page shows the real host and a generic logo, never Claude's.
+    connection("c9", "Claude", null, "evil.example", "read", null),
     connection("c7", "xAI API", null, null, "read", 45),
     connection("c8", "Nightly script", null, null, "read", 5_000, { onlyMachine: { machineKey: "m-mini", name: "Mac mini" } }),
   ];
