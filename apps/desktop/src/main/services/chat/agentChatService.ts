@@ -21918,14 +21918,27 @@ export function createAgentChatService(args: {
   /**
    * How long after a restart cut a turn short ADE still continues it. A chat
    * first opened later than this (it crashed long ago, maybe under an older
-   * build) keeps the closed turn instead of resuming stale work.
+   * build) keeps the closed turn instead of resuming stale work. A chat at
+   * rest that waited on background work wakes only if it went idle within
+   * this time.
    */
   const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
-  const cutOffRecently = (row: { endedAt?: string | null } | null | undefined): boolean => {
-    // No end time: the row read "running" until the dead owner was detected now.
-    const endedMs = row?.endedAt ? Date.parse(row.endedAt) : Number.NaN;
-    return !Number.isFinite(endedMs) || Date.now() - endedMs <= RESTART_RESUME_MAX_AGE_MS;
+  const withinRestartResumeAge = (iso: string | null | undefined): boolean => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return !Number.isFinite(ms) || Date.now() - ms <= RESTART_RESUME_MAX_AGE_MS;
   };
+  /**
+   * `restedSince` is when a chat at rest went idle (null for a cut-off turn).
+   * A chat at rest has no end time when a late project open or the stale-run
+   * sweep reaches it first, so without its idle time a chat that sat for days
+   * would read as just cut off and wake by itself.
+   */
+  const cutOffRecently = (
+    row: { endedAt?: string | null } | null | undefined,
+    restedSince: string | null,
+  ): boolean =>
+    // No end time: the row read "running" until the dead owner was detected now.
+    withinRestartResumeAge(row?.endedAt) && withinRestartResumeAge(restedSince);
 
   /**
    * The streak this chat's next automatic resume would have (see
@@ -22045,7 +22058,10 @@ export function createAgentChatService(args: {
       || readPersistedState(managed.session.id)?.awaitingInput === true;
     let resumeHold: RestartResumeHold | null = null;
     // Read before `reopen` clears the row's end time.
-    const recent = cutOffRecently(sessionService.get(managed.session.id));
+    const recent = cutOffRecently(
+      sessionService.get(managed.session.id),
+      unsettled ? null : managed.idleSinceBeforeRestartRecovery,
+    );
     // One rule for the resume, the lost-work wake and the notice.
     const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
       continueEnabled: continueAfterRestartEnabled(),
