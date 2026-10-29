@@ -3516,10 +3516,11 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     // explicitly local-only contract. Never retroactively upload them.
     db.run("update usage_events set analytics_exported_at = 'pre_analytics' where analytics_exported_at is null");
   }
-  // `tui` was the command-line surface's name before ADE Code was removed.
-  db.run("update usage_events set client_surface = 'cli' where client_surface = 'tui'");
   db.run("create index if not exists idx_usage_events_occurred on usage_events(occurred_at)");
   db.run("create index if not exists idx_usage_events_client_occurred on usage_events(client_surface, occurred_at)");
+  // `tui` was the command-line surface's name before ADE Code was removed.
+  // Runs after the index, so a table with nothing left to rename is not scanned.
+  db.run("update usage_events set client_surface = 'cli' where client_surface = 'tui'");
   db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
   db.run("create index if not exists idx_usage_events_analytics_pending on usage_events(analytics_exported_at, occurred_at)");
 

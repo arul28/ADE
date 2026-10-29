@@ -57,7 +57,6 @@ import path from "node:path";
 import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
 import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
-import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {

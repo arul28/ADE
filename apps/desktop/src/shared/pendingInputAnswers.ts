@@ -5,10 +5,10 @@ import { isUserOnlyConsentCard } from "./types/macDesktop";
  * The answer semantics for a pending-input question, shared by every surface
  * that renders one.
  *
- * One data model (`PendingInputRequest`) used to have four renderers that
- * disagreed about what an answer *is*: desktop sent the selection and the typed
- * text as an array, a terminal client let the typed text *replace* the selection, and iOS
- * dropped the typed text entirely once more than one question was in play. No
+ * One data model (`PendingInputRequest`) used to have renderers that disagreed
+ * about what an answer *is*: desktop sent the selection and the typed text as
+ * an array, and iOS dropped the typed text entirely once more than one
+ * question was in play. No
  * provider forces any of that — Claude's `question.reply` takes
  * `answers: string[][]`, ADE's own `askUser` tool returns free-form JSON, and
  * Droid takes a single string ADE joins itself. The divergence was ours.

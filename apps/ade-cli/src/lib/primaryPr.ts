@@ -5,8 +5,8 @@
 // PR identity is `(repo, number)`, not the lane's head branch, so one lane
 // legitimately owns SEVERAL rows: a follow-up PR cut from the same chat, or a
 // colleague's PR referenced from this lane. Anything that has room for exactly
-// one PR — the `/pr` pane, the deeplink envelope the
-// CLI stamps onto `ade://` links — therefore has to CHOOSE, and taking the
+// one PR — such as the deeplink envelope the CLI stamps onto `ade://` links —
+// therefore has to CHOOSE, and taking the
 // first row the runtime happened to return let a long-merged PR out-rank the
 // open work the user is looking at.
 //

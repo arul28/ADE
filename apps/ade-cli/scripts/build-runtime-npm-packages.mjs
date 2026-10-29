@@ -604,7 +604,7 @@ function defaultPackRunner(cwd) {
  * disk is trivially packed. So PRESENCE is asserted against the packed listing
  * too — the launcher and at least one native module — which is what catches a
  * truncated or empty `ade-<target>.native.tar.gz`. The SDK package uses the
- * embedded profile, which does not ship the TUI or cr-sqlite; the verifier
+ * embedded profile, which does not ship cr-sqlite; the verifier
  * checks that profile, the duplicate OpenCode executable stays out, and the
  * Droid SDK license notice remains explicitly.
  *

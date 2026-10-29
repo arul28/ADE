@@ -30,20 +30,20 @@ import {
   type RemoteLaunchBudget,
 } from "../../lib/remoteLaunchBudget";
 
-export type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
+type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
 
 export type AccountRelayProof = {
   userId: string;
   token: string;
 };
 
-export type AccountRelayProofResolver = () => Promise<AccountRelayProof | null>;
+type AccountRelayProofResolver = () => Promise<AccountRelayProof | null>;
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export async function pairedRouteAccountProof(args: {
+async function pairedRouteAccountProof(args: {
   kind: "lan" | "tailnet" | "relay";
   credentials: Pick<DesktopPairedMachineCredentials, "accountOwnerUserId">;
   getAccountRelayProof: AccountRelayProofResolver;
@@ -72,7 +72,7 @@ export async function pairedRouteAccountProof(args: {
   return { userId: proof.userId.trim(), token: proof.token.trim() };
 }
 
-export async function assertRelayAccountUnchanged(
+async function assertRelayAccountUnchanged(
   initialProof: AccountRelayProof | null,
   getAccountRelayProof: AccountRelayProofResolver,
 ): Promise<void> {
@@ -84,7 +84,7 @@ export async function assertRelayAccountUnchanged(
   );
 }
 
-export function pairedEndpointCandidatesForPreference(
+function pairedEndpointCandidatesForPreference(
   candidates: PairedRuntimeEndpointCandidate[],
   preference: RemoteRoutePreference,
 ): PairedRuntimeEndpointCandidate[] {
@@ -92,7 +92,7 @@ export function pairedEndpointCandidatesForPreference(
   return candidates.filter((candidate) => candidate.kind === preference);
 }
 
-export function pairedConnectionLabel(
+function pairedConnectionLabel(
   candidate: Pick<PairedRuntimeEndpointCandidate, "endpoint" | "kind">,
 ): string {
   const url = new URL(candidate.endpoint);
@@ -128,7 +128,7 @@ export class PairedRemoteConnectionUnavailableError extends Error {
   }
 }
 
-export function relayAuthErrorWithDiagnostic(
+function relayAuthErrorWithDiagnostic(
   error: PairedRuntimeRelayAuthRequiredError,
   diagnostic: PairedRuntimeRouteDiagnostic,
 ): PairedRuntimeRelayAuthRequiredError {
@@ -139,7 +139,7 @@ export function relayAuthErrorWithDiagnostic(
   );
 }
 
-export type OpenedPairedCandidate<T> = {
+type OpenedPairedCandidate<T> = {
   value: T;
   candidate: PairedRuntimeEndpointCandidate;
   connectedAt: number;

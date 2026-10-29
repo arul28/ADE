@@ -1537,7 +1537,7 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn("\\\\.\\pipe\\ade-runtime-stable-test", {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(true);
-    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
+    expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-cli-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
   });

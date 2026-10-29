@@ -60,7 +60,7 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
  * Commands whose own `--machine` flag means something else (a draft's sending
  * machine, the machine `ade machines` acts on). They keep the flag.
  */
-const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help", "code"]);
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
