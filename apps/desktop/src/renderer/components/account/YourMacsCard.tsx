@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowRight,
   CaretRight,
   DeviceMobile,
+  Desktop,
   DotsThreeVertical,
 } from "@phosphor-icons/react";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
@@ -59,9 +60,13 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { providerColor } from "../usage/providerColors";
+import { providerGroupLabel, type ProviderGroupKey } from "../../../shared/modelCatalog";
 import { Banner } from "../ui/notice/Banner";
 import { ModernRows, ModernSection } from "../settings/primitives";
+import { RoutePills } from "./MachineRoutes";
+import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
+import type { AccountThisComputer } from "./AccountHero";
+import { machineRouteItems } from "./machineRouteModel";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -71,6 +76,70 @@ function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
 
 function InventoryEmpty({ children }: { children: React.ReactNode }) {
   return <div className="ade-acct-inventory-empty">{children}</div>;
+}
+
+/** "Droid", "GitHub Copilot"; a provider this build has no group for keeps its id, capitalised. */
+function providerLabel(provider: string): string {
+  const label = providerGroupLabel(provider as ProviderGroupKey) as string | undefined;
+  if (label) return label;
+  return provider.length > 0 ? provider[0].toUpperCase() + provider.slice(1) : provider;
+}
+
+function modelCountLabel(count: number): string | null {
+  return count > 0 ? `${count} ${count === 1 ? "model" : "models"}` : null;
+}
+
+/**
+ * Everything signed in on one computer, as one list: each provider with the
+ * accounts it holds, then the Custom presets saved on the account. A provider
+ * signed in through its own CLI or OpenCode is listed too, not only the ones
+ * with an account saved in ADE.
+ */
+function SignedInList({ detail }: { detail: MachineInventoryDetail }) {
+  if (detail.providers.length === 0 && detail.presets.length === 0) {
+    return <InventoryEmpty>Nothing signed in on this computer yet.</InventoryEmpty>;
+  }
+  return (
+    <ul className="ade-acct-signed">
+      {detail.providers.map((provider) => {
+        const accounts = provider.accounts.map((account) => ({
+          key: account.instanceId,
+          who: account.email || account.label,
+          meta: [account.plan, account.isDefault && provider.accounts.length > 1 ? "Default" : null].filter(Boolean).join(" · "),
+        }));
+        return (
+          <li key={provider.provider} className="ade-acct-signed-row" data-machine-inventory-provider={provider.provider}>
+            <span className="ade-acct-signed-mark"><ProviderLogo family={provider.provider} size={15} /></span>
+            <span className="ade-acct-signed-name">{providerLabel(provider.provider)}</span>
+            <span className="ade-acct-signed-who">
+              {accounts.length === 0 ? <span className="ade-acct-signed-dim">Signed in</span> : accounts.map((account) => (
+                <span key={account.key} className="ade-acct-signed-account">
+                  {account.who}
+                  {account.meta ? <span className="ade-acct-signed-dim"> · {account.meta}</span> : null}
+                </span>
+              ))}
+            </span>
+            <span className="ade-acct-signed-count kit-num">{modelCountLabel(provider.modelCount)}</span>
+          </li>
+        );
+      })}
+      {detail.presets.map((preset) => (
+        <li key={preset.id} className="ade-acct-signed-row" data-custom>
+          <span className="ade-acct-signed-mark"><CustomToolMark size={15} /></span>
+          <span className="ade-acct-signed-name">{preset.name}</span>
+          <span className="ade-acct-signed-who">
+            <span className="ade-acct-signed-account">
+              <ProviderLogo family={preset.harness} size={11} />
+              {providerLabel(preset.harness)} · {preset.model}
+            </span>
+          </span>
+          <span className="ade-acct-signed-count">
+            {preset.bound ? <span className="kit-tag">Custom</span> : <span className="kit-tag" data-tone="warn">Not set up here</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
@@ -252,10 +321,6 @@ type MachineInventoryViewState =
   | { status: "ready"; detail: MachineInventoryDetail }
   | { status: "error"; message: string };
 
-function providerInventoryLabel(provider: string): string {
-  return provider.length > 0 ? provider[0].toUpperCase() + provider.slice(1) : provider;
-}
-
 /**
  * The row's second line, and the ONE place this list decides it.
  *
@@ -362,7 +427,15 @@ function SignInLinkFallback({ url }: { url: string }) {
   );
 }
 
-export function YourMacsCard() {
+export function YourMacsCard({
+  onThisComputer,
+  between,
+}: {
+  /** The banner's card: this computer's name, version and routes. */
+  onThisComputer?: (computer: AccountThisComputer | null) => void;
+  /** Placed between Your computers and Connections (the update section). */
+  between?: ReactNode;
+} = {}) {
   const webMode = isWebClientMode();
   const workspace = useOptionalWebWorkspace();
   const webMachines = useWebMachines();
@@ -376,6 +449,9 @@ export function YourMacsCard() {
   const [connectedIds, setConnectedIds] = useState<ConnectedMachineIds>(
     () => NO_CONNECTED_MACHINE_IDS,
   );
+  // Machine keys this window reaches through ADE Relay, so turning the relay
+  // off there can warn that this very connection will drop.
+  const [relayRoutedKeys, setRelayRoutedKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [openMenuKey, setOpenMenuKey] = useState<string | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<{ x: number; y: number } | null>(null);
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
@@ -528,15 +604,19 @@ export function YourMacsCard() {
     const api = (window.ade as typeof window.ade | undefined)?.remoteRuntime;
     if (!api?.getConnectionSnapshot) return;
     let cancelled = false;
+    const apply = (connections: Parameters<typeof connectedMachineIds>[0]) => {
+      if (cancelled) return;
+      setConnectedIds(connectedMachineIds(connections));
+      setRelayRoutedKeys(new Set((connections ?? []).flatMap((entry) => {
+        const machineKey = entry.target.pairedMachine?.machineKey?.trim();
+        return entry.state === "connected" && entry.route?.kind === "relay" && machineKey ? [machineKey] : [];
+      })));
+    };
     void api
       .getConnectionSnapshot()
-      .then((snapshot) => {
-        if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
-      })
+      .then((snapshot) => apply(snapshot.connections))
       .catch(() => {});
-    const unsubscribe = api.onConnectionSnapshotChanged?.((snapshot) => {
-      if (!cancelled) setConnectedIds(connectedMachineIds(snapshot.connections));
-    });
+    const unsubscribe = api.onConnectionSnapshotChanged?.((snapshot) => apply(snapshot.connections));
     return () => {
       cancelled = true;
       unsubscribe?.();
@@ -560,6 +640,20 @@ export function YourMacsCard() {
     );
   }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
+  const reloadMachines = useCallback(() => {
+    invalidateAccountMachines();
+    void load();
+  }, [load]);
+  const routes = useMachineRoutesControl({
+    enabled: !webMode && routesAvailable(),
+    rows,
+    machines,
+    relayRoutedKeys,
+    reloadMachines,
+  });
+
+  const onExpandRoutes = routes.onExpand;
+
   // Counted off the rows' own resolved presence, never the raw directory flag:
   // a machine that announced a suspend is still inside the 90-second online
   // window, so counting it here would put "2 online" above a row saying Asleep.
@@ -573,6 +667,7 @@ export function YourMacsCard() {
       return;
     }
     setExpandedMachineKey(machine.machineKey);
+    onExpandRoutes(row);
     const existing = inventoryByMachine[machine.machineKey];
     if (existing?.status === "ready" || existing?.status === "loading") return;
     // Two different reasons, two different sentences. A machine that is awake
@@ -622,7 +717,7 @@ export function YourMacsCard() {
         },
       }));
     }
-  }, [expandedMachineKey, inventoryByMachine]);
+  }, [expandedMachineKey, inventoryByMachine, onExpandRoutes]);
 
   /**
    * Is THIS computer missing from its own account directory?
@@ -749,7 +844,7 @@ export function YourMacsCard() {
     summary =
       machines.length === 0
         ? "No computers connected yet"
-        : `${onlineCount} online · ${machines.length} connected`;
+        : `${onlineCount} of ${machines.length} online.`;
   } else if (result?.state === "not_configured") {
     summary = "The account directory isn't set up yet";
   } else if (result?.state === "signed_out") {
@@ -808,21 +903,52 @@ export function YourMacsCard() {
     }
   }, [pendingForget, workspace]);
 
+  /** "Reachable over your local network and Tailscale", for this computer's row. */
+  const reachLine = (row: ComputerDisplayRow): string | null => {
+    if (!row.thisMac || !row.accountMachine) return null;
+    const names = routes.routeItemsFor(row)
+      .filter((item) => item.tone === "on")
+      .map((item) => (item.kind === "lan" ? "your local network" : item.label));
+    if (names.length === 0) return null;
+    const list = names.length === 1 ? names[0] : `${names.slice(0, -1).join(", ")} and ${names.at(-1)}`;
+    return `Reachable over ${list}`;
+  };
+
+  const { localRoutes } = routes;
+  const thisRow = rows.find((row) => row.thisMac) ?? null;
+  const thisRowMachine = thisRow?.accountMachine ?? null;
+  const thisComputerName = thisRow?.name ?? THIS_MACHINE_NAME;
+  // Unknown until both the directory and this computer's identity answer, so
+  // the banner never calls an unverified computer Online.
+  const thisComputerListed: boolean | null = result?.state === "ok" && localIdentity?.machineKey
+    ? !thisMachineMissing
+    : null;
+  const versionText = thisComputerVersion?.text ?? null;
+  useEffect(() => {
+    if (!onThisComputer || webMode) return;
+    onThisComputer({
+      name: thisComputerName,
+      version: versionText,
+      listed: thisComputerListed,
+      routes: machineRouteItems(thisRowMachine, localRoutes),
+    });
+  }, [localRoutes, onThisComputer, thisComputerListed, thisComputerName, thisRowMachine, versionText, webMode]);
+
   const directoryOffline =
     (!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
     || (usingWorkspaceRoster && (workspace.account.state === "directory_unavailable" || workspace.account.state === "unconfigured"));
 
   return (
+    <>
     <ModernSection
       group="Computers"
       anchor={YOUR_COMPUTERS_SETTINGS_ANCHOR}
       title="Your computers"
+      icon={<Desktop size={15} weight="bold" />}
+      tone="blue"
       hint={(
         <>
-          {summary}
-          {thisComputerVersion ? (
-            <span className="ade-acct-version">This machine: {thisComputerVersion.text}</span>
-          ) : null}
+          Every computer signed in to this account. Open one to see how it connects and what's signed in on it. {summary}
         </>
       )}
       actions={!webMode ? (
@@ -952,6 +1078,7 @@ export function YourMacsCard() {
             const renaming = Boolean(machine && renamingKey === machine.machineKey);
             const inventoryState = machine ? inventoryByMachine[machine.machineKey] : undefined;
             const expanded = Boolean(machine && expandedMachineKey === machine.machineKey);
+            const routesPanel = expanded ? routes.routesPanelFor(row) : null;
             return (
               <div key={row.key} className="ade-acct-machine">
                 <div className="ade-acct-machine-row">
@@ -959,7 +1086,7 @@ export function YourMacsCard() {
                     <button
                       type="button"
                       className="ade-acct-caret"
-                      aria-label={`${expanded ? "Hide" : "Show"} provider inventory for ${row.name}`}
+                      aria-label={`${expanded ? "Hide" : "Show"} details for ${row.name}`}
                       aria-expanded={expanded}
                       onClick={() => void toggleMachineInventory(row)}
                     >
@@ -1036,9 +1163,9 @@ export function YourMacsCard() {
                           {row.rememberedOnly ? <span className="kit-tag">This browser</span> : null}
                           {row.connected ? <span className="kit-tag" data-tone="ok">Connected</span> : null}
                         </div>
-                        {row.statusLine ? (
+                        {row.statusLine ?? reachLine(row) ? (
                           <div className="ade-acct-machine-status" data-awake={row.awake ? "true" : undefined}>
-                            {row.statusLine}
+                            {row.statusLine ?? reachLine(row)}
                           </div>
                         ) : null}
                         {/* No inventory chips here. A collapsed machine row is
@@ -1050,6 +1177,9 @@ export function YourMacsCard() {
                       </>
                     )}
                   </div>
+                  {!renaming && machine ? (
+                    <RoutePills items={routes.routeItemsFor(row)} dimmed={!row.awake} />
+                  ) : null}
                   {renaming ? (
                     <span style={{ width: 28, flexShrink: 0 }} />
                   ) : (
@@ -1070,6 +1200,12 @@ export function YourMacsCard() {
                 </div>
                 {expanded && machine ? (
                   <div data-machine-inventory-detail className="ade-acct-inventory">
+                    {routesPanel ? (
+                      <>
+                        <InventoryGroupLabel>Connection</InventoryGroupLabel>
+                        {routesPanel}
+                      </>
+                    ) : null}
                     {inventoryState?.status === "loading" ? (
                       <div role="status" className="ade-acct-inventory-empty">
                         Loading provider inventory…
@@ -1079,85 +1215,10 @@ export function YourMacsCard() {
                         {inventoryState.message}
                       </div>
                     ) : inventoryState?.status === "ready" ? (
-                      <div className="ade-acct-inventory-grid">
-                        {/* One tile per provider, with its mark and its model
-                            count on the header, so two providers never read as
-                            one undifferentiated list. Colour stays on the mark. */}
-                        <div className="ade-acct-inventory-col">
-                          <InventoryGroupLabel>Accounts</InventoryGroupLabel>
-                          {inventoryState.detail.providers.length === 0 ? (
-                            <InventoryEmpty>No provider accounts here.</InventoryEmpty>
-                          ) : inventoryState.detail.providers.map((provider) => {
-                            const tone = providerColor(provider.provider);
-                            return (
-                              <div
-                                key={provider.provider}
-                                data-machine-inventory-provider={provider.provider}
-                                className="ade-acct-provider"
-                                style={{ borderColor: `color-mix(in srgb, ${tone} 22%, color-mix(in srgb, var(--color-fg) 8%, transparent))` }}
-                              >
-                                <div className="ade-acct-provider-head">
-                                  <span className="ade-acct-provider-name">
-                                    <ProviderLogo family={provider.provider} size={13} />
-                                    {providerInventoryLabel(provider.provider)}
-                                  </span>
-                                  <span className="kit-num" style={{ fontSize: 10.5, color: "var(--kit-text-3)", whiteSpace: "nowrap" }}>
-                                    {provider.modelCount} {provider.modelCount === 1 ? "model" : "models"}
-                                  </span>
-                                </div>
-                                <div className="ade-acct-provider-body">
-                                  {provider.accounts.map((account) => {
-                                    // An account is its login: the email (an older machine
-                                    // may still send a typed name), then its id.
-                                    const accountMeta = [account.plan, account.isDefault ? "default" : null].filter(Boolean).join(" · ");
-                                    return (
-                                      <div key={account.instanceId} className="ade-acct-line">
-                                        <div className="ade-acct-line-main">
-                                          {account.email || account.label}
-                                          <span style={{ color: "var(--kit-text-3)" }}> · {account.instanceId}</span>
-                                        </div>
-                                        {accountMeta ? (
-                                          <div style={{ color: "var(--kit-text-3)" }}>{accountMeta}</div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="ade-acct-inventory-col">
-                          <InventoryGroupLabel>
-                            <CustomToolMark size={13} />
-                            Custom
-                          </InventoryGroupLabel>
-                          {inventoryState.detail.presets.length === 0 ? (
-                            <InventoryEmpty>Nothing custom here.</InventoryEmpty>
-                          ) : (
-                            <div className="ade-acct-provider">
-                              <div className="ade-acct-provider-body">
-                                {inventoryState.detail.presets.map((preset) => (
-                                  <div key={preset.id} className="ade-acct-line">
-                                    <div className="ade-acct-line-main">{preset.name}</div>
-                                    <div className="ade-acct-line-sub">
-                                      <ProviderLogo family={preset.harness} size={11} />
-                                      <span>
-                                        {providerInventoryLabel(preset.harness)} · {preset.model}
-                                      </span>
-                                      {!preset.bound ? (
-                                        <span className="kit-tag" data-tone="warn" style={{ height: 16, flexShrink: 0 }}>
-                                          Not here
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      <>
+                        <InventoryGroupLabel>Signed in here</InventoryGroupLabel>
+                        <SignedInList detail={inventoryState.detail} />
+                      </>
                     ) : null}
                   </div>
                 ) : null}
@@ -1319,6 +1380,7 @@ export function YourMacsCard() {
           }}
         />
       ) : null}
+      {routes.relayDialog}
       {pendingForget ? (
         <ConfirmSheet
           title={`Forget ${pendingForget.name} on this browser?`}
@@ -1334,5 +1396,8 @@ export function YourMacsCard() {
         />
       ) : null}
     </ModernSection>
+    {between}
+    {routes.privateNetwork}
+    </>
   );
 }

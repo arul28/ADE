@@ -410,7 +410,7 @@ export function AdeMcpPage() {
         >
           <div className="ade-ig-rows">
             {machines.length ? machines.map((machine) => {
-              const state = machineState(machine);
+              const state = machineState(machine, status.relayTurnedOff === true);
               const reported = machine.isThisMachine ? null : agoText(machine.reportedAt);
               return (
                 <div key={machine.machineKey} className="ade-amcp-row ade-amcp-machine" data-tone={state.tone}>

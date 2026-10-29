@@ -1,5 +1,6 @@
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { RelayTunnelAuthorityGate } from "./relayTunnelAuthorityGate";
+import { onMachineRelayPreferenceChanged, registerMachineRelayRoute } from "./machineConnectionRoutes";
 import type { SyncTunnelClientService, TunnelHostListener } from "./syncTunnelClientService";
 
 /**
@@ -166,6 +167,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
         machineKey: status.machineKey,
         endpointKey: status.mcpEndpointKey,
         connected: status.connected,
+        turnedOff: status.relayTurnedOff === true,
       }
       : null;
   });
@@ -174,12 +176,34 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // Only the runtime holding the machine-wide sync host lease may register the
   // tunnel. See relayTunnelAuthorityGate for why the old "has a listener" gate
   // let secondary brains evict the real host.
-  const gate = createRelayTunnelAuthorityGate({
+  const leaseGate = createRelayTunnelAuthorityGate({
     hostListener: args.hostListener,
     tunnel,
     holdsLease: holdsSyncHostSingleton,
     subscribe: onSyncHostSingletonAuthorityChanged,
     logger: args.logger,
   });
+  // The Account page reads this machine's relay state from here, and a
+  // setting change re-publishes at once rather than on the next heartbeat.
+  const unregisterRoute = registerMachineRelayRoute({
+    store: args.configStore,
+    tunnel,
+    isRunning: () => leaseGate.isRunning(),
+  });
+  const stopPreferenceListener = onMachineRelayPreferenceChanged(() => {
+    void Promise.resolve().then(() => args.onPublicationStateChanged("route-state-changed")).catch((error) => {
+      args.logger?.warn?.("sync_tunnel.relay_preference_republish_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
+  const gate: RelayTunnelAuthorityGate = {
+    isRunning: () => leaseGate.isRunning(),
+    dispose: () => {
+      stopPreferenceListener();
+      unregisterRoute();
+      leaseGate.dispose();
+    },
+  };
   return { tunnel, gate };
 }

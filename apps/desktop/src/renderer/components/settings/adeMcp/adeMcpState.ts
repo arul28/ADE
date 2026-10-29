@@ -69,8 +69,19 @@ export function isAnswering(machine: RemoteMcpMachine): boolean {
   return machine.serving && !servingIsAGuess(machine);
 }
 
-/** The true state of one computer, from what it last reported. */
-export function machineState(machine: RemoteMcpMachine): MachineState {
+/**
+ * The true state of one computer, from what it last reported. `relayTurnedOff`
+ * is this computer's own switch (Settings › Account), the reason it may not
+ * be connected.
+ */
+export function machineState(machine: RemoteMcpMachine, relayTurnedOff = false): MachineState {
+  if (machine.isThisMachine && !machine.serving && relayTurnedOff) {
+    return {
+      tone: "warn",
+      label: "Relay turned off",
+      detail: "ADE Relay is turned off on this computer (Settings › Account), so apps can't reach it.",
+    };
+  }
   if (servingIsAGuess(machine)) {
     return {
       tone: "neutral",

@@ -683,7 +683,8 @@ export function createSyncService(args: SyncServiceArgs) {
   // banner must still report relay as enabled-but-suppressed rather than
   // silently "disabled", which is how this whole failure stayed invisible.
   const isCloudRelayUsable = (): boolean =>
-    isRelayAccountSignedIn()
+    cloudRelayStore.isRelayEnabled()
+    && isRelayAccountSignedIn()
     && (args.syncTunnelClientService?.getStatus().accountLeaseValid ?? true)
     && args.syncTunnelClientService?.getStatus().controlSuppressed !== true;
 
@@ -1891,6 +1892,7 @@ export function createSyncService(args: SyncServiceArgs) {
       }
       const relayRouteHealth = buildRelayRouteHealth({
         relayConfigured: canHostPhonePairing,
+        relayTurnedOff: !cloudRelayStore.isRelayEnabled(),
         relayAccountSignedIn: isRelayAccountSignedIn()
           && (tunnelStatus?.accountLeaseValid ?? true),
         loopbackAdeValidated,
@@ -1912,6 +1914,9 @@ export function createSyncService(args: SyncServiceArgs) {
             : null,
           reason: tailscaleReason,
           lastSuccessAt: tailscaleReachable ? tailnetDiscovery.updatedAt : null,
+          httpsUrl: tailscaleReachable && tailnetDiscovery.https?.state === "published"
+            ? tailnetDiscovery.https.url
+            : null,
         },
         relay: relayRouteHealth,
         accountDirectory,

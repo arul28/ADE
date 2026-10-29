@@ -160,9 +160,31 @@ function getAccountRow(name: string): HTMLElement {
   return row;
 }
 
-function openAddMode(label: "Find nearby computers" | "Add over SSH"): void {
+function openAddMode(label: "Find nearby" | "SSH"): void {
   fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
+}
+
+/** Opens a machine row's ⋯ menu (the first row's, unless named). */
+function openRowMenu(machine?: string): void {
+  const triggers = screen.getAllByRole("button", {
+    name: machine ? `Actions for ${machine}` : /^Actions for /,
+  });
+  fireEvent.click(triggers[0]!);
+}
+
+/** A row's action, from its ⋯ menu. The menu stays open until an item is chosen. */
+function menuAction(name: string, machine?: string): HTMLElement {
+  openRowMenu(machine);
+  return screen.getByRole("menuitem", { name });
+}
+
+/** Whether a row's ⋯ menu offers an action; closes the menu again. */
+function rowOffers(name: string, machine?: string): boolean {
+  openRowMenu(machine);
+  const found = screen.queryByRole("menuitem", { name }) != null;
+  openRowMenu(machine);
+  return found;
 }
 
 // The reconnect flow is one per window, so it outlives each test's render.
@@ -222,7 +244,7 @@ describe("RemoteTargetList", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add machine" }));
     // A publish refusal is not "signed out": the sign-in path must not appear.
     expect(screen.queryByRole("button", { name: /Sign in to ADE/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Find nearby computers/ })).toBeTruthy();
+    expect(screen.getByRole("button", { name: /^Find nearby/ })).toBeTruthy();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {
@@ -289,11 +311,10 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    openAddMode("Find nearby computers");
+    openAddMode("Find nearby");
 
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
-    expect(screen.getByText("Found nearby")).toBeTruthy();
-    expect(screen.getByText("Ready to connect")).toBeTruthy();
+    expect(screen.getByText(/ready to pair/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Pair" }));
     await screen.findByText(/Studio ready to pair/);
 
@@ -340,7 +361,7 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    openAddMode("Find nearby computers");
+    openAddMode("Find nearby");
 
     await screen.findByText(/No computers found/);
     expect(screen.queryByText("Linux box")).toBeNull();
@@ -453,7 +474,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"),
     );
-    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    expect(rowOffers("Disconnect")).toBe(true);
     expect(screen.queryByText(/Never connected/)).toBeNull();
     // A connected row names where it is now; the version chip carries the
     // build instead of a separate version-skew sentence.
@@ -463,7 +484,7 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText("/remote/ADE")).toBeNull();
     expect(screen.queryByRole("button", { name: "Open" })).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(menuAction("Disconnect"));
     await waitFor(() =>
       expect(remoteRuntimeMock.disconnect).toHaveBeenCalledWith("target-1", {
         manual: true,
@@ -522,12 +543,10 @@ describe("RemoteTargetList", () => {
       name: "Cancel connecting to Alpha",
     });
     expect(enabledConnects()).toHaveLength(1);
-    expect(
-      screen.getByRole("button", { name: "Remove Beta" }).hasAttribute("disabled"),
-    ).toBe(false);
-    expect(
-      screen.getByRole("button", { name: "Remove Alpha" }).hasAttribute("disabled"),
-    ).toBe(false);
+    expect(menuAction("Remove Beta", "Beta").hasAttribute("disabled")).toBe(false);
+    openRowMenu("Beta");
+    expect(menuAction("Remove Alpha", "Alpha").hasAttribute("disabled")).toBe(false);
+    openRowMenu("Alpha");
 
     fireEvent.click(cancel);
     await waitFor(() =>
@@ -651,7 +670,7 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     await screen.findByText("Mac Studio");
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(menuAction("Edit"));
     const checkbox = screen.getByRole("checkbox", {
       name: /Reconnect automatically/,
     }) as HTMLInputElement;
@@ -713,11 +732,11 @@ describe("RemoteTargetList", () => {
       .getAllByRole("button", { name: "Connect" })
       .find((button) => !button.hasAttribute("disabled"));
     fireEvent.click(connectButton!);
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
-    );
+    // A connected row reads "Online"; wait on that, then check its menu.
+    await screen.findByText("Online");
+    expect(rowOffers("Disconnect")).toBe(true);
 
-    fireEvent.click(screen.getByRole("button", { name: "Disconnect" }));
+    fireEvent.click(menuAction("Disconnect"));
 
     await waitFor(() =>
       expect(onDisconnectRequested).toHaveBeenCalledWith(
@@ -725,10 +744,10 @@ describe("RemoteTargetList", () => {
       ),
     );
     expect(remoteRuntimeMock.disconnect).not.toHaveBeenCalled();
-    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    expect(rowOffers("Disconnect")).toBe(true);
   });
 
-  it("toggles the saved machine edit details from the Edit button", async () => {
+  it("toggles the saved machine edit details from the row's Edit action", async () => {
     const target = {
       id: "target-1",
       name: "Mac Studio",
@@ -752,21 +771,17 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(screen.getAllByText("Mac Studio").length).toBeGreaterThan(0),
     );
-    const editButton = screen.getByRole("button", { name: "Edit" });
-    expect(editButton.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Edit Mac Studio")).toBeNull();
 
-    fireEvent.click(editButton);
+    fireEvent.click(menuAction("Edit"));
 
-    expect(editButton.getAttribute("aria-expanded")).toBe("true");
     expect(screen.getByText("Edit Mac Studio")).toBeTruthy();
     expect((screen.getByLabelText("Host") as HTMLInputElement).value).toBe(
       "100.75.20.63",
     );
 
-    fireEvent.click(editButton);
+    fireEvent.click(menuAction("Edit"));
 
-    expect(editButton.getAttribute("aria-expanded")).toBe("false");
     expect(screen.queryByText("Edit Mac Studio")).toBeNull();
   });
 
@@ -817,7 +832,7 @@ describe("RemoteTargetList", () => {
     render(<RemoteTargetList />);
 
     await screen.findByText("Paired Studio");
-    fireEvent.click(screen.getByRole("button", { name: "Edit" }));
+    fireEvent.click(menuAction("Edit"));
     fireEvent.change(screen.getByLabelText("Name"), {
       target: { value: "Renamed Studio" },
     });
@@ -1207,10 +1222,11 @@ describe("RemoteTargetList", () => {
       expect(screen.getAllByText("Connected Mac").length).toBeGreaterThan(0),
     );
     expect(screen.getByText("Connected")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
+    expect(rowOffers("Disconnect")).toBe(true);
 
-    openAddMode("Find nearby computers");
-    expect(screen.getByText(/No computers found/)).toBeTruthy();
+    openAddMode("Find nearby");
+    // Opening Find nearby scans again; the answer lands when the scan does.
+    expect(await screen.findByText(/No computers found/)).toBeTruthy();
     expect(screen.queryByText("Windows PC")).toBeNull();
     expect(screen.queryByText("Windows — not supported yet")).toBeNull();
   });
@@ -1364,13 +1380,13 @@ describe("RemoteTargetList", () => {
     // A brand-new user's first read is the call to action, not an explanation
     // of optional software they never asked about.
     expect(
-      await screen.findByText("No computers yet. Add a machine to connect one."),
+      await screen.findByText("Connect your other computers"),
     ).toBeTruthy();
     expect(screen.queryByText("Tailscale not installed — LAN discovery only.")).toBeNull();
 
     // The information is still there, where someone is actually hunting for
     // machines this list could be missing.
-    openAddMode("Find nearby computers");
+    openAddMode("Find nearby");
     const note = await screen.findByText("Tailscale not installed — LAN discovery only.");
     // Not having optional software installed must not wear the warning glyph.
     expect(note.querySelector("svg")).toBeNull();
@@ -1398,7 +1414,7 @@ describe("RemoteTargetList", () => {
       screen.getByText("Tailscale discovery failed; LAN discovery still ran."),
     );
     expect(warning.querySelector("svg")).not.toBeNull();
-    expect(screen.getByText("No computers yet. Add a machine to connect one.")).toBeTruthy();
+    expect(screen.getByText("Connect your other computers")).toBeTruthy();
   });
 
   it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
@@ -1616,7 +1632,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() =>
       expect(screen.getByText(/Couldn't load machines from your account/i)).toBeTruthy(),
     );
-    expect(screen.queryByText(/No computers yet/i)).toBeNull();
+    expect(screen.queryByText("Connect your other computers")).toBeNull();
   });
 
   it("does not repeat the account-load failure while signed out", async () => {
@@ -2020,7 +2036,7 @@ describe("RemoteTargetList", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Rename Studio" }));
+    fireEvent.click(menuAction("Rename Studio"));
     fireEvent.change(screen.getByRole("textbox", { name: "Machine name" }), {
       target: { value: "Build Mac" },
     });
@@ -2079,9 +2095,9 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    await waitFor(() =>
-      expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy(),
-    );
+    // A connected row reads "Online"; wait on that, then check its menu.
+    await screen.findByText("Online");
+    expect(rowOffers("Disconnect")).toBe(true);
     expect(
       screen.queryByRole("button", { name: "Update" }),
     ).toBeNull();

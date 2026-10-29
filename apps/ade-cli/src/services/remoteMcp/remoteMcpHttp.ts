@@ -31,6 +31,8 @@ export type RemoteMcpRelayEndpoint = {
   /** The key in the per-machine URL; not the relay key (see mcpEndpointKeyFor). */
   endpointKey: string;
   connected: boolean;
+  /** The owner turned ADE Relay off on this computer. */
+  turnedOff?: boolean;
 };
 
 export function withoutTrailingSlash(url: string): string {

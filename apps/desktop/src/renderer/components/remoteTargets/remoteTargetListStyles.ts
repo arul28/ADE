@@ -1,18 +1,19 @@
 import type { CSSProperties } from "react";
-import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
+import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
 export const panelStyle: CSSProperties = {
   display: "grid",
   gap: 12,
 };
 
+/**
+ * One machine in a section's list. Flat: the section draws the card and the
+ * rules between rows (`.ade-cx-list` in connections.css).
+ */
 export const machineRowStyle: CSSProperties = {
   display: "grid",
   gap: 10,
-  padding: "12px 12px 12px 12px",
-  borderRadius: 12,
-  border: `1px solid ${COLORS.border}`,
-  background: fgTint(2),
+  padding: "11px 10px 11px 12px",
 };
 
 export const inlineDetailStyle: CSSProperties = {

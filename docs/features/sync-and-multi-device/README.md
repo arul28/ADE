@@ -5,8 +5,9 @@ controllers (other computers, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
 desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
-tunnel relay is an always-eligible byte transport whenever the machine is
-signed in to an ADE account; there is no separate relay toggle. Two
+tunnel relay is eligible whenever the machine is signed in to an ADE account,
+unless its owner turned **ADE Relay** off for that computer in Settings ›
+Account (see *Per-computer relay switch* below). Two
 machines on the same LAN (or Tailscale tailnet) converge their application
 state directly.
 
@@ -4280,9 +4281,9 @@ feature is merged or because a deliberately isolated-port host is running.
   upgrades are HMAC-signed with a per-machine secret. Relay availability now
   follows the host's account session: sign-in starts and advertises it, and
   sign-out stops it. The old Settings/CLI kill-switch and its `enabled` /
-  `enabledSetByUser` fields are removed; existing files are rewritten without
-  those fields, so machines whose operators had disabled Relay are re-enabled
-  when signed in after this release. The live relay URL is also advertised to
+  `enabledSetByUser` fields are removed from the identity file; existing files
+  are rewritten without those fields. The per-computer switch that replaced it
+  lives in its own file (below). The live relay URL is also advertised to
   already-paired phones in `hello_ok` / `brain_status`
   (`cloudRelayWssUrl`), so devices paired before the relay existed learn
   the route without re-scanning a QR. Relay publication is **honest**: the host
@@ -4312,6 +4313,28 @@ feature is merged or because a deliberately isolated-port host is running.
   workspaces out of mobile `listWorkspaces` responses and rejects mobile file
   requests that target them, so pairing a phone does not expose arbitrary
   local folders.
+
+## Per-computer relay switch
+
+Each computer's owner can turn ADE Relay off for that computer from Settings ›
+Account (the row's details, behind a warning that names what stops working).
+The setting is `sync-relay-preference.json` beside the relay identity file;
+absent or unreadable means on, so a damaged file never cuts a computer off.
+Off means the tunnel client treats the computer as ineligible
+(`isRelayEnabled` → `RELAY_TURNED_OFF_MESSAGE`, control socket and tunnels
+closed within one lease poll), the relay URL is never advertised (pairing
+info, `hello_ok`, the account directory), and route health reports
+`relay.enabled: false, turnedOff: true` so no relay-offline banner fires.
+Turning it on dials at once. ADE MCP rides the same control socket, so it is
+off for that computer too.
+
+The switch is read and changed on the computer it belongs to:
+`account.getConnectionRoutes` / `account.setRelayEnabled` through
+`account.call` on this computer's brain, and as runtime remote commands for
+any other computer, reached by account machine key over its live paired
+connection (`accountConnectionRoutes.ts` in desktop main). A computer that is
+not connected from here shows what the account directory last published and
+cannot be changed until it is.
 
 ## Current implementation status
 
@@ -4354,7 +4377,8 @@ feature is merged or because a deliberately isolated-port host is running.
 | iOS Lanes / Files / Work / PRs / Settings tabs | Implemented |
 | QR pairing UX | Implemented (payload v3 smart URL + iOS camera scanner; PIN entered separately) |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (host + brain ingress; `requireDpop` / `ADE_SYNC_REQUIRE_DPOP`) |
-| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in, with no separate toggle and with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Cloud tunnel relay (off-LAN transport, `relay` candidate) | Implemented whenever the host is signed in and its owner has not turned it off, with same-account per-connection proof (`syncTunnelClientService` + `apps/tunnel-relay`) |
+| Per-computer relay switch (Settings › Account) | Implemented (`sync-relay-preference.json`, `account.setRelayEnabled` locally and as a remote command) |
 | Relay end-to-end self-probe + zombie-control detection (honest relay publication) | Implemented (`syncRelaySelfProbe`, JSON control keepalive, `sync.runSelfProbe`, `ade doctor` relay check) |
 | Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
 | Account publication + relay for a machine with no registered project | Implemented (`projectlessSyncSnapshot`, `machineRelayTunnel`, `runServe` publisher snapshot fallback) |

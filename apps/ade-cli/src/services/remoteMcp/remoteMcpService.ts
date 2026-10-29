@@ -291,6 +291,8 @@ export function createRemoteMcpService(args: {
   const notServingReasonHere = (): RemoteMcpNotServingReason | null => {
     const blocker = servingBlocker();
     if (blocker) return blocker;
+    // The owner switched ADE Relay off here: no grace, it is not coming back on its own.
+    if (relayEndpoint()?.turnedOff) return "relay_disconnected";
     if (relayDownSince !== null && relayEndpoint()?.connected) relayDownSince = null;
     return relayDownSince !== null && now() - relayDownSince >= RELAY_DOWN_REPORT_AFTER_MS ? "relay_disconnected" : null;
   };
@@ -785,6 +787,7 @@ export function createRemoteMcpService(args: {
       signedIn: isSignedIn,
       serverUrl: isSignedIn ? serverUrl() : null,
       relayConnected: endpoint?.connected === true,
+      relayTurnedOff: endpoint?.turnedOff === true,
       machineName: args.machineName(),
       thisMachineServing: notServingReasonHere() === null,
       machines: roster.map(({ endpointKey: _endpointKey, version: _version, ...machine }) => machine),

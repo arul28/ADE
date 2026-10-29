@@ -1,20 +1,29 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowClockwise,
+  ArrowSquareOut,
   CaretLeft,
   CaretRight,
+  CircleNotch,
+  Desktop,
+  Key,
+  Laptop,
   Plus,
+  PlugsConnected,
   TerminalWindow,
   UserCircle,
   Warning,
   WifiHigh,
+  X,
 } from "@phosphor-icons/react";
+import { openExternalUrl } from "../../lib/openExternal";
+import { ADE_SITE_URL } from "../../onboarding/docsLinks";
+import "./connections.css";
 import { extractError } from "../../lib/format";
 import {
   COLORS,
   MONO_FONT,
   SANS_FONT,
-  outlineButton,
 } from "../lanes/laneDesignTokens";
 import type {
   AdeAccountMachine,
@@ -64,10 +73,7 @@ import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
 import {
   helperTextStyle,
-  iconActionButtonStyle,
-  inlineDetailStyle,
   panelStyle,
-  sectionHeaderStyle,
 } from "./remoteTargetListStyles";
 
 type RemoteTargetListProps = {
@@ -84,6 +90,13 @@ type RemoteTargetListProps = {
   accountSignedIn?: boolean;
   onAccountRequested?: () => void;
   onAccountMachinesChanged?: () => void;
+  /** The signed-in account's email, named in the "sign in on the other computer" steps. */
+  accountEmail?: string | null;
+  /**
+   * This computer's pairing code controls, for a phone or a computer that is
+   * not on the account. The add sheet shows them under "Use a pairing code".
+   */
+  thisComputerCode?: ReactNode;
 };
 
 type ConnectTargetOptions = {
@@ -97,7 +110,7 @@ type ConnectTargetOptions = {
   onTrustRequired?: (state: "needs_trust" | "changed") => void;
 };
 
-type AddMode = "choose" | "nearby" | "pair" | "ssh";
+type AddMode = "choose" | "nearby" | "pair" | "ssh" | "code";
 
 type AccountConnectionToast = {
   targetId: string;
@@ -165,8 +178,8 @@ function joinDiagnosticMessages(
 
 const SECTION_LABELS: Record<MachineSection, string> = {
   connected: "Connected",
-  available: "Available",
-  unavailable: "Unavailable",
+  available: "Ready to connect",
+  unavailable: "Not reachable right now",
 };
 
 /** The advice table's sentences are lowercase; a card opens with a capital. */
@@ -183,6 +196,8 @@ export function RemoteTargetList({
   accountSignedIn = false,
   onAccountRequested,
   onAccountMachinesChanged,
+  accountEmail = null,
+  thisComputerCode = null,
 }: RemoteTargetListProps) {
   const [targets, setTargets] = useState<RemoteRuntimeTarget[]>([]);
   const [connectionSnapshot, setConnectionSnapshot] =
@@ -478,18 +493,24 @@ export function RemoteTargetList({
     });
   }, [selectedId, statusById]);
 
+  // Only the latest scan's answer lands: an older scan finishing late must not
+  // replace a newer scan's result.
+  const discoveryScanRef = useRef(0);
   const loadDiscoveredMachines = useCallback(async () => {
+    const scan = ++discoveryScanRef.current;
     setLoadingDiscovered(true);
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
+      if (scan !== discoveryScanRef.current) return;
       setDiscoveredMachines(next.machines);
       setDiscoveryDiagnostics(next.diagnostics);
       setDiscoveryFetchError(null);
     } catch (err) {
+      if (scan !== discoveryScanRef.current) return;
       setDiscoveryDiagnostics([]);
       setDiscoveryFetchError(extractError(err));
     } finally {
-      setLoadingDiscovered(false);
+      if (scan === discoveryScanRef.current) setLoadingDiscovered(false);
     }
   }, []);
 
@@ -542,14 +563,6 @@ export function RemoteTargetList({
     };
   }, []);
 
-  const openAddMachine = useCallback(() => {
-    setSelectedId(null);
-    setFormPrefill(null);
-    setError(null);
-    setHostKeyTrust(null);
-    setPairingPrefill(null);
-    setAddMode((current) => (current ? null : "choose"));
-  }, []);
 
   const toggleTest = useCallback((rowId: string) => {
     setTestingId((current) => (current === rowId ? null : rowId));
@@ -1151,7 +1164,7 @@ export function RemoteTargetList({
     const updateAllBusy = behindMachines.some((machine) =>
       isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
     return (
-      <div style={{ display: "grid", gap: 8 }}>
+      <div className="ade-cx-section">
         {behindMachines.length > 1 ? (
           <MachinesBehindBanner
             count={behindMachines.length}
@@ -1160,7 +1173,11 @@ export function RemoteTargetList({
             onUpdateAll={() => void requestMachineUpdates(behindMachines, newestKnownVersion)}
           />
         ) : null}
-        <div style={sectionHeaderStyle}>{SECTION_LABELS[section]}</div>
+        <div className="ade-cx-section-head">
+          {SECTION_LABELS[section]}
+          <span className="ade-cx-count">{rows.length}</span>
+        </div>
+        <div className="ade-cx-list">
         {rows.map((row) => {
           if (row.kind === "saved") {
             const pairAgainMachine = accountMachineForTarget(row.target);
@@ -1331,6 +1348,7 @@ export function RemoteTargetList({
             />
           );
         })}
+        </div>
       </div>
     );
   }
@@ -1346,155 +1364,184 @@ export function RemoteTargetList({
 
   const chooseAddMode = useCallback((next: Exclude<AddMode, "choose">) => {
     if (next !== "pair") setPairingPrefill(null);
+    if (next === "nearby") void loadDiscoveredMachines();
     setAddMode(next);
-  }, []);
+  }, [loadDiscoveredMachines]);
 
-  // Signed in, account computers appear in the list automatically, so the add sheet
-  // only offers Nearby + SSH. Signed out, we lead with the account sign-in.
-  const addChoices = useMemo(
-    () => {
-      const choices: Array<{
-        key: string;
-        icon: typeof WifiHigh;
-        label: string;
-        detail: string;
-        onSelect: () => void;
-      }> = [];
-      if (!accountSignedIn) {
-        choices.push({
-          key: "signin",
-          icon: UserCircle,
-          label: "Sign in to ADE",
-          detail: "The easiest way to find and connect to your other computers.",
-          onSelect: () => onAccountRequested?.(),
-        });
-      }
-      choices.push({
-        key: "nearby",
-        icon: WifiHigh,
-        label: "Find nearby computers",
-        detail: "Search this Wi-Fi for computers with ADE open.",
-        onSelect: () => chooseAddMode("nearby"),
-      });
-      choices.push({
-        key: "ssh",
-        icon: TerminalWindow,
-        label: "Add over SSH (Advanced)",
-        detail: "Connect with the computer's SSH address and private key.",
-        onSelect: () => chooseAddMode("ssh"),
-      });
-      return choices;
+  const startAdd = useCallback((mode: AddMode) => {
+    setSelectedId(null);
+    setFormPrefill(null);
+    setError(null);
+    setHostKeyTrust(null);
+    setPairingPrefill(null);
+    if (mode === "nearby") void loadDiscoveredMachines();
+    setAddMode(mode);
+  }, [loadDiscoveredMachines]);
+  const openAddMachine = useCallback(() => {
+    if (addMode) setAddMode(null);
+    else startAdd("choose");
+  }, [addMode, startAdd]);
+
+  // The other ways in, after the account (which the sheet leads with).
+  const otherWays: Array<{
+    key: Exclude<AddMode, "choose" | "pair">;
+    icon: ReactNode;
+    label: string;
+    detail: string;
+  }> = [
+    {
+      key: "nearby",
+      icon: <WifiHigh size={18} weight="bold" />,
+      label: "Find nearby",
+      detail: "Computers on this Wi-Fi or your Tailscale network with ADE open",
     },
-    [accountSignedIn, chooseAddMode, onAccountRequested],
-  );
+    ...(thisComputerCode
+      ? [{
+          key: "code" as const,
+          icon: <Key size={18} weight="bold" />,
+          label: "Pairing code",
+          detail: "Let a phone or another computer connect here",
+        }]
+      : []),
+    {
+      key: "ssh",
+      icon: <TerminalWindow size={18} weight="bold" />,
+      label: "SSH",
+      detail: "Advanced: an address and a private key",
+    },
+  ];
+
+  const addTitle: Record<AddMode, string> = {
+    choose: "Add a computer",
+    nearby: "Find nearby computers",
+    pair: "Pair with a nearby computer",
+    ssh: "Add over SSH",
+    code: "This computer's pairing code",
+  };
+
+  const showEmptyState = !loading
+    && !loadingDiscovered
+    && totalRows === 0
+    && !accountMachinesLoadFailed
+    && !addMode;
 
   return (
     <div style={panelStyle}>
       <div style={{ display: "grid", gap: 12 }}>
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "space-between",
-            gap: 12,
-          }}
-        >
-          <div style={{ minWidth: 0, flex: 1 }}>
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 8,
-                color: COLORS.textSecondary,
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                fontWeight: 600,
-                minHeight: 28,
-              }}
-            >
-              Your machines
-            </div>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 2, flexShrink: 0 }}>
+        <div className="ade-cx-list-head">
+          <span className="ade-cx-list-title">Your computers</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
             <button
               type="button"
               aria-label="Refresh"
-              title="Refresh"
+              title="Look for computers again"
               disabled={loadingDiscovered}
               onClick={() => void loadDiscoveredMachines()}
-              style={{
-                ...iconActionButtonStyle,
-                opacity: loadingDiscovered ? 0.6 : 1,
-                cursor: loadingDiscovered ? "not-allowed" : "pointer",
-              }}
+              className="ade-cx-icon-btn"
             >
-              <ArrowClockwise size={15} />
+              <ArrowClockwise size={14} weight="bold" className={loadingDiscovered ? "animate-spin" : undefined} />
             </button>
             <button
               type="button"
               aria-label="Add machine"
-              title="Add machine"
               onClick={openAddMachine}
               aria-expanded={addMode != null}
-              style={iconActionButtonStyle}
+              className="ade-cx-add-btn"
             >
-              <Plus size={16} weight="bold" />
+              <Plus size={13} weight="bold" />
+              Add computer
             </button>
           </div>
         </div>
 
         {addMode ? (
-          <div style={inlineDetailStyle}>
-            {addMode !== "choose" ? (
+          <div className="ade-cx-add">
+            <div className="ade-cx-add-head">
+              {addMode !== "choose" ? (
+                <button
+                  type="button"
+                  aria-label="Back to Add a computer"
+                  onClick={() => setAddMode("choose")}
+                  className="ade-cx-icon-btn"
+                >
+                  <CaretLeft size={14} weight="bold" />
+                </button>
+              ) : null}
+              <span className="ade-cx-add-title">{addTitle[addMode]}</span>
               <button
                 type="button"
-                onClick={() => setAddMode("choose")}
-                style={{
-                  ...outlineButton({ height: 28, padding: "0 9px", fontSize: 11 }),
-                  justifySelf: "start",
-                }}
+                aria-label="Close Add a computer"
+                onClick={() => setAddMode(null)}
+                className="ade-cx-icon-btn"
               >
-                <CaretLeft size={13} weight="bold" />
-                Add machine
+                <X size={14} weight="bold" />
               </button>
-            ) : null}
+            </div>
 
             {addMode === "choose" ? (
-              <div style={{ display: "grid" }}>
-                {addChoices.map(({ key, icon: Icon, label, detail, onSelect }, index) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={onSelect}
-                    style={{
-                      display: "grid",
-                      gridTemplateColumns: "22px minmax(0, 1fr) 16px",
-                      gap: 10,
-                      alignItems: "center",
-                      padding: "11px 4px",
-                      border: "none",
-                      borderTop: index === 0 ? "none" : `1px solid ${COLORS.borderMuted}`,
-                      background: "transparent",
-                      color: COLORS.textPrimary,
-                      textAlign: "left",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <Icon size={18} weight="regular" color={COLORS.textMuted} />
-                    <span style={{ minWidth: 0 }}>
-                      <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 12.5, fontWeight: 600 }}>
-                        {label}
-                      </span>
-                      <span style={{ display: "block", ...helperTextStyle, marginTop: 2 }}>
-                        {detail}
-                      </span>
+              <>
+                {accountSignedIn ? (
+                  <div className="ade-cx-steps-card">
+                    <div className="ade-cx-steps-title">
+                      <span className="ade-cx-recommended">Recommended</span>
+                      Sign in on your other computer
+                    </div>
+                    <ol className="ade-cx-steps">
+                      <li>
+                        <span className="ade-cx-step-num">1</span>
+                        <span className="ade-cx-step-copy">
+                          <b>Install ADE</b> on the other computer.
+                        </span>
+                        <button type="button" className="ade-cx-chip-btn" onClick={() => openExternalUrl(ADE_SITE_URL)}>
+                          Get ADE
+                          <ArrowSquareOut size={11} weight="bold" />
+                        </button>
+                      </li>
+                      <li>
+                        <span className="ade-cx-step-num">2</span>
+                        <span className="ade-cx-step-copy">
+                          <b>Sign in</b> there{accountEmail ? <> as <span className="ade-cx-email">{accountEmail}</span></> : " with this same ADE account"}.
+                        </span>
+                      </li>
+                      <li>
+                        <span className="ade-cx-step-num">3</span>
+                        <span className="ade-cx-step-copy">
+                          It shows up in this list. Press <b>Connect</b>.
+                        </span>
+                      </li>
+                    </ol>
+                  </div>
+                ) : (
+                  <button type="button" className="ade-cx-steps-card ade-cx-signin" onClick={() => onAccountRequested?.()}>
+                    <span className="ade-cx-way-icon" data-tone="accent"><UserCircle size={20} weight="bold" /></span>
+                    <span className="ade-cx-way-copy">
+                      <span className="ade-cx-way-label">Sign in to ADE</span>
+                      <span className="ade-cx-way-detail">The easiest way: your computers find each other on your account.</span>
                     </span>
-                    <CaretRight size={14} weight="bold" color={COLORS.textDim} />
+                    <CaretRight size={14} weight="bold" />
                   </button>
-                ))}
-              </div>
+                )}
+                <div className="ade-cx-or">Or connect another way</div>
+                <div className="ade-cx-ways">
+                  {otherWays.map((way) => (
+                    <button key={way.key} type="button" className="ade-cx-way" onClick={() => chooseAddMode(way.key)}>
+                      <span className="ade-cx-way-icon">{way.icon}</span>
+                      <span className="ade-cx-way-label">{way.label}</span>
+                      <span className="ade-cx-way-detail">{way.detail}</span>
+                    </button>
+                  ))}
+                </div>
+              </>
             ) : null}
 
+            {addMode === "code" ? (
+              <div style={{ display: "grid", gap: 10 }}>
+                <div style={helperTextStyle}>
+                  In ADE on the phone or the other computer, choose to pair with a code and enter this one. Computers signed in to your account don't need it.
+                </div>
+                {thisComputerCode}
+              </div>
+            ) : null}
             {addMode === "pair" ? (
               <PairMachineForm
                 defaultDeviceName={localMachineName}
@@ -1512,7 +1559,12 @@ export function RemoteTargetList({
             ) : null}
             {addMode === "nearby" ? (
               <div style={{ display: "grid", gap: 8 }}>
-                {loadingDiscovered ? <div style={helperTextStyle}>Scanning nearby machines…</div> : null}
+                {loadingDiscovered ? (
+                  <div className="ade-cx-scanning">
+                    <CircleNotch size={14} weight="bold" className="animate-spin" />
+                    Looking for computers on this network…
+                  </div>
+                ) : null}
                 {!loadingDiscovered && nearbyMachines.length === 0 ? (
                   <div style={helperTextStyle}>
                     No computers found. Open ADE on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
@@ -1520,21 +1572,23 @@ export function RemoteTargetList({
                 ) : null}
                 {/* Info diagnostics ("Tailscale isn't installed") explain what is
                     missing from *this* list, so they belong here rather than on
-                    the resting pane, where they used to push the "No computers
-                    yet" call to action below two lines about a tool the reader
-                    never asked for. */}
+                    the resting pane. */}
                 {discoveryNote ? <div style={helperTextStyle}>{discoveryNote}</div> : null}
-                {nearbyMachines.map((machine) => (
-                  <DiscoveredMachineRow
-                    key={machine.id}
-                    machine={machine}
-                    section={machine.connectable === false ? "unavailable" : "available"}
-                    busy={busyById[machine.id] != null}
-                    testOpen={testingId === machine.id}
-                    onConnect={(next) => void connectDiscoveredMachine(next)}
-                    onToggleTest={toggleTest}
-                  />
-                ))}
+                {nearbyMachines.length > 0 ? (
+                  <div className="ade-cx-list">
+                    {nearbyMachines.map((machine) => (
+                      <DiscoveredMachineRow
+                        key={machine.id}
+                        machine={machine}
+                        section={machine.connectable === false ? "unavailable" : "available"}
+                        busy={busyById[machine.id] != null}
+                        testOpen={testingId === machine.id}
+                        onConnect={(next) => void connectDiscoveredMachine(next)}
+                        onToggleTest={toggleTest}
+                      />
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ) : null}
           </div>
@@ -1581,26 +1635,28 @@ export function RemoteTargetList({
         ) : null}
 
         {/* Only claim the account is empty when we actually know it is: a failed
-            account fetch leaves `totalRows` at 0 too, and "No computers yet" then
-            states something false about the user's account. */}
-        {!loading
-          && totalRows === 0
-          && !accountMachinesLoadFailed
-          && !addMode
-          && !loadingDiscovered ? (
-          <div style={helperTextStyle}>
-            No computers yet. Add a machine to connect one.
-          </div>
-        ) : null}
-        {loadingDiscovered ? (
-          <div
-            style={{
-              color: COLORS.textMuted,
-              fontFamily: MONO_FONT,
-              fontSize: 12,
-            }}
-          >
-            Scanning nearby machines…
+            account fetch leaves `totalRows` at 0 too. */}
+        {showEmptyState ? (
+          <div className="ade-cx-empty">
+            <div className="ade-cx-empty-art" aria-hidden>
+              <span className="ade-cx-empty-device"><Desktop size={22} weight="duotone" /></span>
+              <span className="ade-cx-empty-link"><PlugsConnected size={14} weight="bold" /></span>
+              <span className="ade-cx-empty-device" data-dashed><Laptop size={22} weight="duotone" /></span>
+            </div>
+            <div className="ade-cx-empty-title">Connect your other computers</div>
+            <div className="ade-cx-empty-detail">
+              Run chats and terminals on another machine from this window. Lanes stay on the computer that has them.
+            </div>
+            <div className="ade-cx-empty-actions">
+              <button type="button" className="ade-cx-add-btn" data-size="lg" onClick={() => startAdd("choose")}>
+                <Plus size={13} weight="bold" />
+                Add a computer
+              </button>
+              <button type="button" className="ade-cx-ghost-btn" onClick={() => startAdd("nearby")}>
+                <WifiHigh size={13} weight="bold" />
+                Find nearby
+              </button>
+            </div>
           </div>
         ) : null}
       </div>

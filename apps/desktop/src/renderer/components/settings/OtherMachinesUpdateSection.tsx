@@ -54,12 +54,23 @@ function useConnectedMachines(): { machines: ConnectedMachine[] | null; failed: 
  *
  * Renders nothing in the browser client, which cannot ask a machine to update.
  */
-export function OtherMachinesUpdateSection({ group, anchor }: { group: string; anchor?: string }) {
+type UpdatesProps = {
+  group: string;
+  anchor?: string;
+  /**
+   * For a page where updates are one part among many (Account): the section
+   * says nothing until there is a connected machine to show, and carries an
+   * icon like its neighbours.
+   */
+  compact?: boolean;
+};
+
+export function OtherMachinesUpdateSection(props: UpdatesProps) {
   if (!canUpdateOtherMachines()) return null;
-  return <OtherMachinesUpdates group={group} anchor={anchor} />;
+  return <OtherMachinesUpdates {...props} />;
 }
 
-function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: string }) {
+function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) {
   const { machines: readMachines, failed } = useConnectedMachines();
   const machines = readMachines ?? [];
   const updateSnapshot = useAutoUpdateSnapshot();
@@ -76,10 +87,14 @@ function OtherMachinesUpdates({ group, anchor }: { group: string; anchor?: strin
   const behindIds = new Set(behind.map((machine) => machine.id));
   const anyBusy = behind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
 
+  if (compact && machines.length === 0) return null;
+
   return (
     <ModernSection
       group={group}
       anchor={anchor}
+      icon={compact ? <ArrowsClockwise size={15} weight="bold" /> : undefined}
+      tone="green"
       title="Update other machines"
       hint="With the ADE app open there, the app and its background service update together; otherwise only the service does."
       actions={behind.length > 1 ? (

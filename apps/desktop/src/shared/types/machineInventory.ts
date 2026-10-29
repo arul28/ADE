@@ -85,6 +85,58 @@ export type MachineInventoryPresetInput = {
 
 export type MachineInventoryModelCounts = Readonly<Record<string, number>>;
 
+/**
+ * A provider signed in outside ADE's saved accounts: its own CLI login
+ * (Droid, Qwen, Copilot…) or one OpenCode holds a login or key for.
+ */
+export type MachineInventorySignedInInput = {
+  provider: string;
+  /** The row's name when one provider has several (OpenCode's Anthropic, OpenAI…). */
+  label?: string;
+  email?: string;
+  plan?: string;
+};
+
+function plainRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+/**
+ * Model counts and signed-in providers from one `ai.getStatus` answer, so the
+ * brain and the desktop read a machine's providers the same way. A provider
+ * counts as signed in when its CLI is runnable and holds a login.
+ */
+export function machineInventoryFromAiStatus(status: unknown): {
+  modelCounts: MachineInventoryModelCounts;
+  signedIn: MachineInventorySignedInInput[];
+} {
+  const record = plainRecord(status) ?? {};
+  const modelCounts: Record<string, number> = {};
+  for (const [provider, models] of Object.entries(plainRecord(record.models) ?? {})) {
+    modelCounts[provider] = Array.isArray(models) ? models.length : 0;
+  }
+  const signedIn: MachineInventorySignedInInput[] = [];
+  for (const [provider, raw] of Object.entries(plainRecord(record.providerConnections) ?? {})) {
+    const connection = plainRecord(raw);
+    if (!connection || connection.authAvailable !== true || connection.runtimeAvailable !== true) continue;
+    signedIn.push({
+      provider,
+      ...(safeOptionalText(connection.accountEmail) ? { email: safeOptionalText(connection.accountEmail) } : {}),
+      ...(safeOptionalText(connection.accountPlan) ? { plan: safeOptionalText(connection.accountPlan) } : {}),
+    });
+  }
+  let openCodeModels = 0;
+  for (const raw of Array.isArray(record.opencodeProviders) ? record.opencodeProviders : []) {
+    const entry = plainRecord(raw);
+    const name = safeOptionalText(entry?.name) ?? safeOptionalText(entry?.id);
+    if (!entry || entry.signedIn !== true || !name) continue;
+    signedIn.push({ provider: "opencode", label: name });
+    openCodeModels += safeCount(entry.availableModelCount ?? entry.modelCount);
+  }
+  if (openCodeModels > 0 && !modelCounts.opencode) modelCounts.opencode = openCodeModels;
+  return { modelCounts, signedIn };
+}
+
 function safeText(value: unknown, maxLength = 256): string {
   return typeof value === "string" ? value.trim().slice(0, maxLength) : "";
 }
@@ -179,25 +231,16 @@ export function buildMachineInventorySummary(args: {
   providerInstances: readonly MachineInventoryProviderInput[];
   modelCounts?: MachineInventoryModelCounts;
   presets: readonly MachineInventoryPresetInput[];
+  signedIn?: readonly MachineInventorySignedInInput[];
 }): MachineInventorySummary {
-  const groups = new Map<string, MachineInventoryProviderSummary>();
-  for (const raw of args.providerInstances) {
-    const instance = normalizeProviderInput(raw);
-    if (!instance) continue;
-    const current = groups.get(instance.provider);
-    if (current) {
-      current.accounts += 1;
-      continue;
-    }
-    groups.set(instance.provider, {
-      provider: instance.provider,
-      accounts: 1,
-      models: safeCount(args.modelCounts?.[instance.provider]),
-    });
-  }
+  const detail = buildMachineInventoryDetail({ ...args, machineKey: "" });
   return {
-    providers: [...groups.values()],
-    presets: normalizedPresets(args.presets).length,
+    providers: detail.providers.map((group) => ({
+      provider: group.provider,
+      accounts: group.accounts.length,
+      models: group.modelCount,
+    })),
+    presets: detail.presets.length,
   };
 }
 
@@ -208,6 +251,7 @@ export function buildMachineInventoryDetail(args: {
   modelCounts?: MachineInventoryModelCounts;
   presets: readonly MachineInventoryPresetInput[];
   boundPresetIds?: ReadonlySet<string>;
+  signedIn?: readonly MachineInventorySignedInInput[];
 }): MachineInventoryDetail {
   const providers = new Map<string, MachineInventoryProviderDetail>();
   for (const raw of args.providerInstances) {
@@ -228,6 +272,29 @@ export function buildMachineInventoryDetail(args: {
       ...(instance.email ? { email: instance.email } : {}),
       ...(instance.plan ? { plan: instance.plan } : {}),
       isDefault: instance.isDefault,
+    });
+  }
+  // A provider with saved accounts already lists them; a CLI login only adds
+  // a provider ADE has no account for (OpenCode's logins are one row each).
+  const savedProviders = new Set(providers.keys());
+  for (const entry of args.signedIn ?? []) {
+    const provider = safeText(entry.provider);
+    if (!provider || savedProviders.has(provider)) continue;
+    let group = providers.get(provider);
+    if (!group) {
+      group = { provider, accounts: [], modelCount: safeCount(args.modelCounts?.[provider]) };
+      providers.set(provider, group);
+    }
+    const label = safeText(entry.label) || "Signed in";
+    if (group.accounts.some((account) => account.label === label)) continue;
+    const email = safeOptionalText(entry.email);
+    const plan = safeOptionalText(entry.plan);
+    group.accounts.push({
+      instanceId: `${provider}:${label.toLowerCase()}`,
+      label,
+      ...(email ? { email } : {}),
+      ...(plan ? { plan } : {}),
+      isDefault: false,
     });
   }
 

@@ -297,6 +297,8 @@ import {
   parsePairingRequestPayload,
 } from "./syncHelloProtocol";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
+import { createTailnetHttpsServe } from "./tailnetHttpsServe";
+import { registerMachineTailnetRoute } from "./machineConnectionRoutes";
 import {
   commandErrorResult,
   createSyncRemoteCommandService,
@@ -4682,6 +4684,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // must never delay or endanger advertising the live port.
         if (tailnetServeActivePublishToken === publishToken) {
           void reclaimStaleTailnetServes(port).catch(() => {});
+          if (discoveryEnabled) void tailnetHttps.publish(port);
         }
       })
       .catch((error: unknown) => {
@@ -4756,6 +4759,8 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         { timeout: 10_000, windowsHide: true },
       );
       stale = staleAdeTailnetServePorts(stdout, currentPort);
+      // The same read answers for ADE's stale HTTPS entries.
+      void tailnetHttps.reclaimStale(stdout);
     } catch {
       // No Tailscale, no permission, unparseable output: publishing the current
       // port matters more than tidying old ones.
@@ -4799,7 +4804,33 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     });
   };
 
+  // The secure route beside the TCP one, for browsers on the tailnet.
+  const tailnetHttps = createTailnetHttpsServe({
+    logger: args.logger,
+    currentSyncPort: () => tailnetServePort,
+    isDisposed: () => disposed,
+    isLocalPortServing,
+    onChanged: () => {
+      setTimeout(() => {
+        if (!disposed) args.onStateChanged?.();
+      }, 0);
+    },
+  });
+
+  const unregisterTailnetRoute = registerMachineTailnetRoute({
+    tcp: () => ({
+      published: tailnetDiscoveryStatus.state === "published",
+      error: tailnetDiscoveryStatus.state === "published" ? null : tailnetDiscoveryStatus.error,
+    }),
+    https: () => tailnetHttps.route(),
+    recheckHttps: async () => {
+      if (tailnetServePort == null || tailnetDiscoveryStatus.state !== "published") return;
+      await tailnetHttps.publish(tailnetServePort, { force: true });
+    },
+  });
+
   const unpublishTailnetDiscovery = async (): Promise<void> => {
+    if (shouldAttemptTailnetServiceAdvertise()) await tailnetHttps.unpublish();
     if (!tailnetServeSignature) return;
     tailnetServeActivePublishToken = ++tailnetServePublishSequence;
     tailnetServeSignature = null;
@@ -9900,7 +9931,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     },
 
     getTailnetDiscoveryStatus(): SyncTailnetDiscoveryStatus {
-      return { ...tailnetDiscoveryStatus };
+      return { ...tailnetDiscoveryStatus, https: tailnetHttps.route() };
     },
 
     getLoopbackValidationStatus(): SyncLoopbackValidationStatus {
@@ -10030,6 +10061,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       clearInterval(accountLeaseTimer);
       rosterFanout.dispose();
       unpublishLanDiscovery();
+      unregisterTailnetRoute();
       try {
         await unpublishTailnetDiscovery();
       } catch {

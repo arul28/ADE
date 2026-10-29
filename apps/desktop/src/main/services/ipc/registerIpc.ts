@@ -168,6 +168,7 @@ import {
   createAccountMachineInventoryFetcher,
   readLocalMachineInventoryDetail,
 } from "../account/accountMachineInventoryLiveRefresh";
+import { createAccountConnectionRoutesBridge } from "../account/accountConnectionRoutes";
 import { isUsageSnapshot, type AccountRollupFetcher } from "../usage/usageTrackingService";
 import { getMachineProviderLoginRunner } from "../providerAccounts/machineProviderLoginRunner";
 import { refreshProviderAccounts } from "../providerAccounts/refreshProviderAccounts";
@@ -383,6 +384,7 @@ import type {
   AdeAccountLocalMachineIdentity,
   AdeAccountMachine,
   AdeAccountMachineRemovalResult,
+  MachineConnectionRoutes,
   AdeAccountMachinesResult,
   AdeAccountMachinePairResult,
   AdeAccountMachinePairingRepairResult,
@@ -12064,6 +12066,18 @@ export function registerIpc({
       warn: (message, meta) => getCtx().logger.warn(message, meta),
     },
   });
+  // Each computer's routes are read and changed on that computer: this one
+  // through its own brain, any other over the live paired connection to it.
+  const accountConnectionRoutes = createAccountConnectionRoutesBridge({
+    callBrainAccountAction: createBrainAccountActionCaller(
+      localRuntimeConnectionPool,
+      LOCAL_RUNTIME_SYNC_TIMEOUT_MS,
+    ),
+    localMachineKey: () => runtimeBridge.getLocalMachineIdentity().machineKey,
+    resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
+    isTargetConnected: runtimeBridge.isTargetConnected,
+    callMachineMethod: runtimeBridge.callMachineMethod,
+  });
   const accountMachineInventoryFetcher = createAccountMachineInventoryFetcher({
     listMachines: () => accountBridge.listMachines(),
     resolveTargetIdForMachineKey: runtimeBridge.resolveTargetIdForMachineKey,
@@ -12084,23 +12098,13 @@ export function registerIpc({
           });
           return response.result;
         },
-        readModelCounts: async () => {
+        readAiStatus: async () => {
           const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
             domain: "ai",
             action: "getStatus",
             args: {},
           });
-          const result = response.result;
-          const models = result && typeof result === "object" && !Array.isArray(result)
-            ? (result as { models?: unknown }).models
-            : null;
-          if (!models || typeof models !== "object" || Array.isArray(models)) return {};
-          return Object.fromEntries(
-            Object.entries(models).map(([provider, entries]) => [
-              provider,
-              Array.isArray(entries) ? entries.length : 0,
-            ]),
-          );
+          return response.result;
         },
       });
     },
@@ -12309,6 +12313,40 @@ export function registerIpc({
   // the same best-effort path immediately after the account/settings services.
   accountMigrationStartRetry.tryStart();
 
+  // The signed-in account's own profile picture as a data URL, so the Account
+  // banner can read its colours: the image hosts don't send CORS headers.
+  // Only that one URL, https only, an image, at most 2 MB.
+  ipcMain.handle(IPC.accountGetAvatarDataUrl, async (): Promise<string | null> => {
+    const imageUrl = accountBridge.status().imageUrl?.trim();
+    if (!imageUrl || !/^https:\/\//i.test(imageUrl)) return null;
+    try {
+      const response = await fetch(imageUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
+      const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
+      if (!response.ok || !/^image\/(png|jpe?g|webp|gif)$/i.test(contentType)) return null;
+      // Read as a stream and stop at the limit, so an oversized response is
+      // never buffered whole in the main process.
+      const limit = 2 * 1024 * 1024;
+      const reader = response.body?.getReader();
+      if (!reader) return null;
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > limit) {
+          await reader.cancel().catch(() => {});
+          return null;
+        }
+        chunks.push(value);
+      }
+      return `data:${contentType};base64,${Buffer.concat(chunks).toString("base64")}`;
+    } catch (error) {
+      getCtx().logger.debug("account.avatar_fetch_failed", { error: getErrorMessage(error) });
+      return null;
+    }
+  });
+
   ipcMain.handle(IPC.accountStatus, async (): Promise<AdeAccountStatus> => {
     const status = accountBridge.status();
     if (status.signedIn) productAnalyticsService?.identifyAccount(status.userId);
@@ -12392,6 +12430,33 @@ export function registerIpc({
     IPC.accountGetMachineInventory,
     async (_event, arg: { machineKey?: string }): Promise<MachineInventoryDetail> => {
       return await accountMachineInventoryFetcher(arg?.machineKey ?? "");
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountGetConnectionRoutes,
+    async (_event, arg: { machineKey?: string | null; refresh?: boolean }): Promise<MachineConnectionRoutes> => {
+      return await accountConnectionRoutes.getRoutes({
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        refresh: arg?.refresh === true,
+      });
+    },
+  );
+
+  ipcMain.handle(
+    IPC.accountSetRelayEnabled,
+    async (_event, arg: { machineKey?: string | null; enabled?: unknown }): Promise<MachineConnectionRoutes> => {
+      if (typeof arg?.enabled !== "boolean") throw new Error("Choose on or off for ADE Relay.");
+      const routes = await accountConnectionRoutes.setRelayEnabled({
+        machineKey: typeof arg?.machineKey === "string" ? arg.machineKey : null,
+        enabled: arg.enabled,
+      });
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: arg.enabled ? "relay_turned_on" : "relay_turned_off" },
+      });
+      return routes;
     },
   );
 
