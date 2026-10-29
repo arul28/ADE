@@ -1210,11 +1210,6 @@ export function buildTrackedCliLaunchCommand(args: {
   preset?: TrackedCliPresetLaunch | null;
   /** False when this runtime has no RPC endpoint that can accept agent reports. */
   sessionActivityReportingEnabled?: boolean;
-  /**
-   * The Project notes block, read once by the caller (the process that owns
-   * the lane) when the session starts. Absent: no block.
-   */
-  projectNotes?: string | null;
 }): TrackedCliLaunchCommand {
   const permissionMode = args.permissionMode ?? "default";
   validateLaunchProfilePermissionMode(args.provider, permissionMode);
@@ -1222,7 +1217,7 @@ export function buildTrackedCliLaunchCommand(args: {
   const skillRoots = args.laneWorktreePath
     ? getAgentSkillRootCandidates({ cwd: args.laneWorktreePath })
     : getAdeAgentSkillRootsForPrompt();
-  const sessionGuidance = buildAdeCliSessionGuidance(skillRoots, args.projectNotes);
+  const sessionGuidance = buildAdeCliSessionGuidance(skillRoots);
   // The preset lands LAST so it outranks the account env: a preset that names
   // its own config home must win over the instance patch, or a key-sourced
   // preset would run inside the user's own signed-in directory.

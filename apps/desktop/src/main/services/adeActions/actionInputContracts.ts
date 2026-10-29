@@ -1155,33 +1155,6 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
       example: "ade actions run provider_instances.refresh --input-json '{\"provider\":\"claude\"}' --text",
     },
   },
-  project_notes: {
-    list: {
-      description: "Project notes an agent on this machine sees: project notes plus this machine's, with the block size and caps.",
-      input: "object { section?: string, scope?: \"project\" | \"machine\" }",
-      example: "ade notes list --text",
-    },
-    add: {
-      description: "Save one short fact about working on this project in ADE. Refused, with what to merge, when a cap would break.",
-      input: "object { section: string, body: string, scope?: \"project\" | \"machine\", sessionId?: string }",
-      example: "ade notes add --section iOS --scope machine \"Build with the ADE scheme on the iPhone 17 simulator\"",
-    },
-    edit: {
-      description: "Change a note's text, section or scope. The id may be a unique prefix.",
-      input: "object { id: string, body?: string, section?: string, scope?: \"project\" | \"machine\", sessionId?: string }",
-      example: "ade notes edit 3f9a2c \"Dev server runs on port 5173\"",
-    },
-    remove: {
-      description: "Delete a note. The id may be a unique prefix.",
-      input: "object { id: string }",
-      example: "ade notes rm 3f9a2c",
-    },
-    renderPromptBlock: {
-      description: "The Project notes block a new agent session on this machine receives.",
-      input: "none",
-      example: "ade actions run project_notes.renderPromptBlock --text",
-    },
-  },
 };
 
 export function getAdeActionInputContract(

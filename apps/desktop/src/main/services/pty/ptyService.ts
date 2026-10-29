@@ -11,7 +11,6 @@ import type { IBufferCell } from "@xterm/headless";
 import * as XtermSerialize from "@xterm/addon-serialize";
 import type { Logger } from "../logging/logger";
 import type { JevService } from "../jev/jevService";
-import type { ProjectNotesService } from "../projectNotes/projectNotesService";
 import type { createLaneService } from "../lanes/laneService";
 import { resolveLaneLaunchContext } from "../lanes/laneLaunchContext";
 import type { createSessionService } from "../sessions/sessionService";
@@ -233,7 +232,6 @@ export function materializeRuntimeCliLaunch(
   options: {
     sessionActivityReportingEnabled?: boolean;
     userMcp?: TrackedCliUserMcp | null;
-    projectNotes?: string | null;
   } = {},
 ): TrackedCliLaunchCommand {
   const provider = String(runtimeCliLaunch.provider);
@@ -266,7 +264,6 @@ export function materializeRuntimeCliLaunch(
       : {}),
     sessionActivityReportingEnabled: options.sessionActivityReportingEnabled,
     ...(options.userMcp ? { userMcp: options.userMcp } : {}),
-    ...(options.projectNotes ? { projectNotes: options.projectNotes } : {}),
   });
 }
 
@@ -2513,7 +2510,6 @@ export function piForkParentIdFromCommand(command: string | null | undefined): s
 
 export function createPtyService({
   projectRoot,
-  projectNotesService,
   transcriptsDir,
   laneService,
   sessionService,
@@ -2541,8 +2537,6 @@ export function createPtyService({
   disposePtyBackend
 }: {
   projectRoot: string;
-  /** The Project notes block a new tracked CLI is started with (read once, at launch). */
-  projectNotesService?: Pick<ProjectNotesService, "renderPromptBlock"> | null;
   transcriptsDir: string;
   laneService: ReturnType<typeof createLaneService>;
   sessionService: ReturnType<typeof createSessionService>;
@@ -6400,20 +6394,11 @@ export function createPtyService({
             })?.preset?.env ?? null,
           })
         : null;
-      // At most one read of the Project notes per launch, shared by the launch
-      // command and (for OpenCode) the session instructions attached below.
-      // Lazy, so a plain shell never reads them.
-      let projectNotesSnapshot: string | null | undefined;
-      const launchProjectNotes = (): string | null => {
-        if (projectNotesSnapshot === undefined) projectNotesSnapshot = projectNotesService?.renderPromptBlock() ?? null;
-        return projectNotesSnapshot;
-      };
       const materializedRuntimeLaunch = runtimeCliLaunch
         ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath, {
             sessionActivityReportingEnabled:
               sessionActivityReportingEnabled !== false && Boolean(runtimeSocketPath?.trim()),
             userMcp: runtimeUserMcp,
-            projectNotes: launchProjectNotes(),
           })
         : null;
       let effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
@@ -7163,7 +7148,6 @@ export function createPtyService({
               || initialResumeMetadata?.launch?.reasoningEffort?.trim()
               || null,
             sessionActivityGuidance,
-            projectNotes: launchProjectNotes(),
             projectConfig: projectConfigService?.get().effective ?? {},
             ownerId: ptyId,
             logger,

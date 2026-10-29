@@ -309,8 +309,6 @@ Use these directly; you do not need `--help` for them.
 
 ### 1. Start the screen and put an app on it
 
-Before you launch, check the **Project notes** block in your prompt for this project's app (how it starts, what it needs); when you had to work something out to get it running, save it with `ade notes add` (see `ade help notes`).
-
 ```bash
 ade mac-desktop status --text
 ade mac-desktop start --text

@@ -214,8 +214,6 @@ import type {
   ProviderInstanceCreateResult,
   ProviderInstanceGetSettingsArgs,
   ProviderInstanceListArgs,
-  ProjectNotesListArgs,
-  ProjectNotesListResult,
   ProviderInstanceLoginCommand,
   ProviderInstanceLoginCommandArgs,
   ProviderInstanceRefreshArgs,
@@ -11279,19 +11277,6 @@ const adeBridge = {
     setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null): Promise<SubscriptionProxyMutationResult> =>
       callPinnedOrBoundRuntimeActionOr(pin, "proxy", "setDisabled", { args }, () =>
         ipcRenderer.invoke(IPC.proxySetDisabled, args),
-      ),
-  },
-  projectNotes: {
-    list: async (
-      args: ProjectNotesListArgs = {},
-      pin?: OpenProjectBinding | null,
-    ): Promise<ProjectNotesListResult> =>
-      callPinnedOrBoundRuntimeActionOr<ProjectNotesListResult>(
-        pin,
-        "project_notes",
-        "list",
-        { args: { ...args } },
-        () => ipcRenderer.invoke(IPC.projectNotesList, args),
       ),
   },
   providerInstances: {

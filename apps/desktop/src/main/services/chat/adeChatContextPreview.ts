@@ -55,8 +55,8 @@ export type AdeChatMainText = {
 
 /**
  * Splits what one new chat gets from ADE into parts. The CLI guidance, status
- * reporting, skill listing and project notes are listed on their own when the
- * main text holds them, and the main part's `includes` names them, so its own
+ * reporting and skill listing are listed on their own when the main text
+ * holds them, and the main part's `includes` names them, so its own
  * size can leave them out. The directives that ride the first message follow.
  */
 export function assembleAdeChatContextParts(input: {
@@ -64,7 +64,6 @@ export function assembleAdeChatContextParts(input: {
   cliGuidance: string | null;
   activity: string | null;
   listing: { text: string; entries: NonNullable<AdeChatContextPart["entries"]> } | null;
-  projectNotes: string | null;
   perTurn: string | null;
   launchDirective: string | null;
   computerUse: string | null;
@@ -103,16 +102,6 @@ export function assembleAdeChatContextParts(input: {
       text: input.listing.text,
       detail: "Skills and commands the provider cannot find by itself, with their files.",
       entries: input.listing.entries,
-    });
-  }
-  if (inMain(input.projectNotes)) {
-    inner.push({
-      id: "ade-project-notes",
-      label: "Project notes",
-      kind: "notes",
-      timing: main.timing,
-      text: input.projectNotes.trim(),
-      detail: "The notes saved for this project in ADE.",
     });
   }
   const parts: AdeChatContextPart[] = [];

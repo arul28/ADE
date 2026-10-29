@@ -788,7 +788,6 @@ export const IPC = {
   externalSessionsWatchDetail: "ade.externalSessions.watchDetail",
   externalSessionsUnwatchDetail: "ade.externalSessions.unwatchDetail",
   externalSessionsDetailUpdated: "ade.externalSessions.detailUpdated",
-  projectNotesList: "ade.projectNotes.list",
   providerInstancesList: "ade.providerInstances.list",
   providerInstancesCreate: "ade.providerInstances.create",
   providerInstancesRemove: "ade.providerInstances.remove",

@@ -59,7 +59,6 @@ export function buildOpenCodeAdeInstructions(args: {
   laneWorktreePath: string;
   permissionMode: AgentChatPermissionMode | null | undefined;
   sessionActivityGuidance?: string | null;
-  projectNotes?: string | null;
 }): string {
   // `config-toml` means "use my own OpenCode configuration": ADE sets no agent
   // for it, so claiming edit mode would assert a policy ADE did not set. The
@@ -77,7 +76,6 @@ export function buildOpenCodeAdeInstructions(args: {
       interactive: true,
       runtime: "opencode",
       adeSkillRoots: adePromptAgentSkillRoots({ cwd: args.laneWorktreePath }),
-      projectNotes: args.projectNotes,
     }),
     ...(providerConfig
       ? [
@@ -225,8 +223,6 @@ export async function attachOpenCodeTerminal(args: {
   model: string | null;
   reasoningEffort: string | null;
   sessionActivityGuidance: string | null;
-  /** The Project notes block, read once when this terminal launched. */
-  projectNotes?: string | null;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   ownerId: string;
   logger: Logger;
@@ -300,7 +296,6 @@ export async function attachOpenCodeTerminal(args: {
           laneWorktreePath: args.laneWorktreePath,
           permissionMode,
           sessionActivityGuidance: args.sessionActivityGuidance,
-          projectNotes: args.projectNotes,
         }),
         // The agent's shell commands run in the server process, not in the TUI,
         // so the terminal's own environment (ADE identity, lane context, PATH)

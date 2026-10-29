@@ -169,8 +169,6 @@ import type {
   ProjectSecretSetArgs,
   ProjectSecretSummary,
   ProjectSecretValueResult,
-  ProjectNotesListArgs,
-  ProjectNotesListResult,
   ProviderInstance,
   ProviderInstanceCreateArgs,
   ProviderInstanceCreateResult,
@@ -4110,10 +4108,6 @@ declare global {
         signIn: (args: SubscriptionProxySignInArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxySignInResult>;
         signOut: (args: SubscriptionProxySignOutArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
         setDisabled: (args: SubscriptionProxySetDisabledArgs, pin?: OpenProjectBinding | null) => Promise<SubscriptionProxyMutationResult>;
-      };
-      /** Project notes agents saved, read-only here; `pin` picks the machine. */
-      projectNotes: {
-        list: (args?: ProjectNotesListArgs, pin?: OpenProjectBinding | null) => Promise<ProjectNotesListResult>;
       };
       providerInstances: {
         list: (

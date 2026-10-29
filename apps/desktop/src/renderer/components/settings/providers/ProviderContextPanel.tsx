@@ -18,7 +18,6 @@ import {
   GearSix,
   Hexagon,
   ListChecks,
-  NotePencil,
   Plugs,
   PuzzlePiece,
   Robot,
@@ -98,7 +97,6 @@ const KIND_ICON: Record<ProviderContextItemKind, React.ReactNode> = {
   plugin: <PuzzlePiece size={14} />,
   rule: <ListChecks size={14} />,
   agent: <Robot size={14} />,
-  notes: <NotePencil size={14} />,
   other: <Circle size={14} />,
 };
 

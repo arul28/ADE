@@ -106,7 +106,6 @@ enum WorkSettingsCatalog {
     "lanes-git.rebase-suggestions": Setting(path: "Project › Lanes › Rebase suggestions", locked: false),
     "lanes-git.rebase-min-behind": Setting(path: "Project › Lanes › Only suggest after", locked: false),
     "lanes-git.lane-templates": Setting(path: "Project › Lanes › Lane templates", locked: false),
-    "project-agents.agent-notes": Setting(path: "Project › Agents › Agent notes", locked: false),
     "lanes-git.pr-chat-transcripts": Setting(path: "Project › Agents › PR chat transcripts", locked: true),
     "integrations.github": Setting(path: "Project › Integrations › GitHub", locked: true),
     "integrations.linear": Setting(path: "Project › Integrations › Linear", locked: true),

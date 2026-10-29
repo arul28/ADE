@@ -64,8 +64,6 @@ Use these directly; you do not need `--help` for them.
 
 ### 1. Launch or attach
 
-Before you launch, check the **Project notes** block in your prompt for this project's app (which command and entry to launch, ports); when you had to work something out to get it running, save it with `ade notes add` (see `ade help notes`).
-
 ```bash
 ade app-control status --text
 ade app-control launch --command "npm run dev" --text

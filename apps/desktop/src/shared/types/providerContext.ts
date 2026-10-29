@@ -28,7 +28,6 @@ export type ProviderContextItemKind =
   | "plugin"
   | "rule"
   | "agent"
-  | "notes"
   | "other";
 
 /** When the item reaches the model. */

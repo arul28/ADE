@@ -236,19 +236,14 @@ export const ADE_CLI_SESSION_SCREEN_RULES = [
   "- An ok result only means the input was sent. Observe before you report, and file proof with the surface's own `proof` or `record` command.",
 ].join("\n");
 
-/**
- * What a tracked provider CLI session is told: the bootstrap, the screen rules,
- * then the Project notes block when the launching process read one.
- */
+/** What a tracked provider CLI session is told: the bootstrap, then the screen rules. */
 export function buildAdeCliSessionGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
-  projectNotes?: string | null,
 ): string {
   return [
     buildAdeCliAgentGuidance(skillRoots),
     "",
     ADE_CLI_SESSION_SCREEN_RULES,
-    ...(projectNotes?.trim() ? ["", projectNotes.trim()] : []),
   ].join("\n");
 }
 

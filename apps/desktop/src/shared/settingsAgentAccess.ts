@@ -52,7 +52,6 @@ const AGENT_CAN_CHANGE: readonly string[] = [
   "lanes-git.rebase-suggestions",
   "lanes-git.rebase-min-behind",
   "lanes-git.lane-templates",
-  "project-agents.agent-notes",
   // `ade secrets set` is how an agent stores a key it was handed for the work.
   "secrets.secrets",
 ];

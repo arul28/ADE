@@ -906,7 +906,6 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           runtime.ptyService,
           "Terminal service not available.",
         ),
-        projectNotesService: runtime.projectNotesService ?? null,
       }),
     // Object form `{ laneId?, ...options }`, or the desktop's positional
     // `argsList [laneId?, options?]`.
@@ -4447,7 +4446,6 @@ export function getAdeActionDomainServices(
     search: toService(buildSearchDomainService(runtime)),
     "external-sessions": toService(buildExternalSessionsDomainService(runtime)),
     provider_instances: toService(buildProviderInstancesDomainService(runtime)),
-    project_notes: toService(runtime.projectNotesService),
   };
 }
 

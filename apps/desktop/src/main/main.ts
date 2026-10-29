@@ -426,7 +426,6 @@ import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestion
 import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
-import { createProjectNotesService } from "./services/projectNotes/projectNotesService";
 import { createLinearCredentialService } from "./services/cto/linearCredentialService";
 import { createAccountVaultBridge } from "./services/account/accountVaultBridge";
 import { createMcpRegistryAuthTokenResolver } from "./services/mcp/mcpRegistryService";
@@ -4711,10 +4710,8 @@ app.whenReady().then(async () => {
         // eslint-disable-next-line @typescript-eslint/no-var-requires
         return require("node-pty") as NodePtyType;
       });
-    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
-      projectNotesService,
       runtimeSocketPath: machineAdeLayout.socketPath,
       transcriptsDir: adePaths.transcriptsDir,
       laneService,
@@ -4921,7 +4918,6 @@ app.whenReady().then(async () => {
 
     const agentChatService = createAgentChatService({
       museQuota,
-      projectNotesService,
       // A lane a batch move imported here gets the same setup a new lane
       // does: the default lane template, else the project's lane env config.
       runCrossMachineLaneSetup: async (laneId) => {
@@ -6369,7 +6365,6 @@ app.whenReady().then(async () => {
       externalSessionsService,
       ctoStateService,
       ctoMemoryService,
-      projectNotesService,
       linearCredentialService,
       linearIssueTracker,
       githubService,
@@ -6698,7 +6693,6 @@ app.whenReady().then(async () => {
       testService,
       ctoStateService,
       ctoMemoryService,
-      projectNotesService,
       adeProjectService,
       linearCredentialService,
       linearIssueTracker,

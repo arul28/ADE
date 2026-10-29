@@ -13,7 +13,6 @@ export function adeItems(ctx: Ctx, preview: AdeChatContextPreview): ProviderCont
     kind: part.kind,
     label,
     source: part.source ?? null,
-    ...(part.id === "ade-project-notes" ? { setIn: "ADE Settings › Agent notes", settingsEntry: "project-agents.agent-notes" } : {}),
     tokens,
     sizeKind: "exact",
     timing: part.timing,

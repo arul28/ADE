@@ -180,11 +180,6 @@ export function buildCodingAgentSystemPrompt(args: {
   adeSkillRoots?: readonly string[];
   /** Provider-gated status advice; omitted unless this session can run ADE CLI. */
   sessionActivityGuidance?: string | null;
-  /**
-   * The Project notes block, snapshotted when the session started. Last in
-   * the prompt, so a changed note leaves every section above it cached.
-   */
-  projectNotes?: string | null;
 }): string {
   const mode = args.mode ?? "coding";
   const permissionMode = args.permissionMode ?? "edit";
@@ -301,7 +296,6 @@ export function buildCodingAgentSystemPrompt(args: {
           "If a required PR tool is missing, report the misconfiguration immediately instead of spelunking through local bootstrap code.",
         ]
       : []),
-    ...(args.projectNotes?.trim() ? ["", args.projectNotes.trim()] : []),
   ].join("\n");
 }
 

@@ -35,7 +35,6 @@ const ADE_ITEMS: ProviderContextItem[] = [
     } satisfies ProviderContextItem)),
   },
   { id: "ade-computer-use", owner: "ade", kind: "instructions", label: "ADE computer-use rules", detail: "Screen, browser and proof rules, on the first message.", tokens: 980, sizeKind: "exact", timing: "chat-start" },
-  { id: "ade-project-notes", owner: "ade", kind: "notes", label: "Project notes", setIn: "ADE Settings › Agent notes", settingsEntry: "project-agents.agent-notes", tokens: 640, sizeKind: "exact", timing: "chat-start" },
 ];
 
 const CLAUDE_USER: ProviderContextItem[] = [

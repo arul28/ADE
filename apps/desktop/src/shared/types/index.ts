@@ -59,4 +59,3 @@ export * from "../appleDeviceSettings";
 export * from "./subscriptionProxy";
 export * from "./quitPrompt";
 export * from "./jev";
-export * from "./projectNotes";
