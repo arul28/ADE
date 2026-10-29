@@ -1804,8 +1804,6 @@ describe("runtime session actions", () => {
       headBranchRef: "hotfix-auth",
     }));
     const resolveBranchDrift = vi.fn(async () => ({ resolution: "switch-back" }));
-    const getChildren = vi.fn(async () => [{ id: "lane-child" }]);
-    const getStackChain = vi.fn(async () => [{ laneId: "lane-1" }]);
     const getDeleteRisk = vi.fn(async () => ({ laneId: "lane-1", dirty: false }));
     const cancelDelete = vi.fn(() => ({ cancelled: false }));
     const runtime = {
@@ -1813,8 +1811,6 @@ describe("runtime session actions", () => {
         getSummary,
         getBranchDrift,
         resolveBranchDrift,
-        getChildren,
-        getStackChain,
         getDeleteRisk,
         cancelDelete,
       },
@@ -1858,14 +1854,12 @@ describe("runtime session actions", () => {
       .rejects.toThrow(/'switch-back' or 'keep-head'/);
     expect(resolveBranchDrift).toHaveBeenCalledTimes(1);
 
-    // These four take a bare lane id and hand it straight to a `select * from
+    // These take a bare lane id and hand it straight to a `select * from
     // lanes` lookup. An automation step and `run_ade_action`'s `args` send the
-    // object the action editor renders, `{ laneId }`; `ade lanes children` /
-    // `ade lanes stack` send it positionally. Both must reach the service as
-    // the scalar, or `node:sqlite` refuses the object as a bound parameter.
+    // object the action editor renders, `{ laneId }`; a CLI command sends it
+    // positionally. Both must reach the service as the scalar, or
+    // `node:sqlite` refuses the object as a bound parameter.
     for (const [action, forward] of [
-      ["getChildren", getChildren],
-      ["getStackChain", getStackChain],
       ["getDeleteRisk", getDeleteRisk],
       ["cancelDelete", cancelDelete],
     ] as const) {
@@ -2200,10 +2194,6 @@ function makeLane(overrides: Partial<LaneSummary> & Pick<LaneSummary, "id" | "na
     branchRef: `feature/${overrides.id}`,
     worktreePath: `/tmp/${overrides.id}`,
     attachedRootPath: null,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: {
       dirty: false,
@@ -2315,27 +2305,6 @@ describe("runtime lane snapshot actions", () => {
       attachedRootPath: "/external/attached",
     });
     const device = { deviceId: "ios-1", displayName: "iPhone", platform: "ios" };
-    const rebaseSuggestion = {
-      laneId: lane.id,
-      parentLaneId: "parent-1",
-      parentHeadSha: "abc1234",
-      behindCount: 3,
-      baseLabel: "main",
-      groupContext: null,
-      lastSuggestedAt: TEST_NOW,
-      deferredUntil: null,
-      dismissedAt: null,
-      hasPr: true,
-    };
-    const autoRebaseStatus = {
-      laneId: lane.id,
-      parentLaneId: "parent-1",
-      parentHeadSha: "def5678",
-      state: "rebaseConflict" as const,
-      updatedAt: TEST_NOW,
-      conflictCount: 2,
-      message: "Rebase needs attention.",
-    };
     const conflictStatus = {
       laneId: lane.id,
       status: "conflict-predicted" as const,
@@ -2398,12 +2367,6 @@ describe("runtime lane snapshot actions", () => {
           },
         ]),
       },
-      rebaseSuggestionService: {
-        listSuggestions: vi.fn(() => [rebaseSuggestion]),
-      },
-      autoRebaseService: {
-        listStatuses: vi.fn(() => [autoRebaseStatus]),
-      },
       conflictService: {
         getBatchAssessment: vi.fn(() => ({ lanes: [conflictStatus] })),
       },
@@ -2426,8 +2389,6 @@ describe("runtime lane snapshot actions", () => {
 
     const snapshots = await laneService.listSnapshots?.({
       includeConflictStatus: true,
-      includeRebaseSuggestions: true,
-      includeAutoRebaseStatus: true,
     });
 
     expect(list).toHaveBeenCalledWith({
@@ -2448,8 +2409,6 @@ describe("runtime lane snapshot actions", () => {
           endedCount: 1,
           sessionCount: 3,
         },
-        rebaseSuggestion,
-        autoRebaseStatus,
         conflictStatus,
         stateSnapshot,
         // Deprecated wire-compat field: always false, but still emitted so
@@ -2469,8 +2428,6 @@ describe("runtime lane snapshot actions", () => {
           endedCount: 0,
           sessionCount: 1,
         },
-        rebaseSuggestion: null,
-        autoRebaseStatus: null,
         conflictStatus: null,
         stateSnapshot: null,
         adoptableAttached: false,

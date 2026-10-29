@@ -279,13 +279,6 @@ export const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
 
 export type NewLaneBaseSource = "local" | "remote";
 
-/** How ADE surfaces a lane that has fallen behind its parent branch. */
-export type RebaseSuggestionDisplay = "off" | "badge" | "banner";
-
-export const DEFAULT_REBASE_SUGGESTIONS: RebaseSuggestionDisplay = "banner";
-/** One commit behind is enough to suggest, matching the pre-setting behavior. */
-export const DEFAULT_REBASE_SUGGESTION_MIN_BEHIND = 1;
-
 /**
  * The fully-defaulted `git` block of an effective config. Use this when
  * building an `EffectiveProjectConfig` (including in tests) so adding a git
@@ -294,13 +287,7 @@ export const DEFAULT_REBASE_SUGGESTION_MIN_BEHIND = 1;
 export function defaultEffectiveGitConfig(
   overrides: Partial<EffectiveProjectConfig["git"]> = {},
 ): EffectiveProjectConfig["git"] {
-  return {
-    autoRebaseOnHeadChange: false,
-    newLaneBaseSource: "remote",
-    rebaseSuggestions: DEFAULT_REBASE_SUGGESTIONS,
-    rebaseSuggestionMinBehind: DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
-    ...overrides,
-  };
+  return { ...overrides };
 }
 
 /** IPC args for listing templates */
@@ -789,7 +776,6 @@ export type AutomationAction = AutomationAgentLimits & {
   laneNameTemplate?: string;
   /** Template for create-lane action descriptions. Supports {{trigger.*}} placeholders. */
   laneDescriptionTemplate?: string;
-  parentLaneId?: string | null;
   suiteId?: string;
   command?: string;
   cwd?: string;
@@ -2296,17 +2282,11 @@ export type ProjectConfigFile = {
     };
   };
   git?: {
-    autoRebaseOnHeadChange?: boolean;
-    newLaneBaseSource?: NewLaneBaseSource;
     /**
-     * How a lane that has fallen behind its parent is surfaced.
-     * `banner` (default) is the full-width strip above the lane list,
-     * `badge` is a count chip on the lane row itself, `off` stops the
-     * suggestion scan entirely.
+     * Where new lanes used to start on this computer. Read only as the
+     * fallback for a project's new-lane defaults until the account holds them.
      */
-    rebaseSuggestions?: RebaseSuggestionDisplay;
-    /** Don't suggest a rebase until the lane is at least this far behind. */
-    rebaseSuggestionMinBehind?: number;
+    newLaneBaseSource?: NewLaneBaseSource;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */
@@ -2359,10 +2339,8 @@ export type EffectiveProjectConfig = {
     };
   };
   git: {
-    autoRebaseOnHeadChange: boolean;
-    newLaneBaseSource: NewLaneBaseSource;
-    rebaseSuggestions: RebaseSuggestionDisplay;
-    rebaseSuggestionMinBehind: number;
+    /** Set only when an older `.ade` config has it; see `ProjectConfigFile.git`. */
+    newLaneBaseSource?: NewLaneBaseSource;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */

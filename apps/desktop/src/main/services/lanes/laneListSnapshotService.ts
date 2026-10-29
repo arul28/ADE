@@ -44,16 +44,6 @@ type LaneListSnapshotServices = {
       options?: { includeIdentity?: boolean; includeAutomation?: boolean },
     ) => Promise<AgentChatSessionSummary[]> | AgentChatSessionSummary[];
   } | null;
-  rebaseSuggestionService?: {
-    listSuggestions: (args?: { lanes?: LaneSummary[] }) =>
-      | Promise<Array<NonNullable<LaneListSnapshot["rebaseSuggestion"]>>>
-      | Array<NonNullable<LaneListSnapshot["rebaseSuggestion"]>>;
-  } | null;
-  autoRebaseService?: {
-    listStatuses: (args?: { lanes?: LaneSummary[] }) =>
-      | Promise<Array<NonNullable<LaneListSnapshot["autoRebaseStatus"]>>>
-      | Array<NonNullable<LaneListSnapshot["autoRebaseStatus"]>>;
-  } | null;
   conflictService?: {
     getBatchAssessment: (args: { lanes: LaneSummary[] }) =>
       | Promise<{ lanes?: Array<NonNullable<LaneListSnapshot["conflictStatus"]>> } | null>
@@ -63,11 +53,7 @@ type LaneListSnapshotServices = {
   logger: Pick<Logger, "info">;
 };
 
-type OptionalLaneListEnrichment = [
-  Array<NonNullable<LaneListSnapshot["rebaseSuggestion"]>>,
-  Array<NonNullable<LaneListSnapshot["autoRebaseStatus"]>>,
-  { lanes?: Array<NonNullable<LaneListSnapshot["conflictStatus"]>> } | null,
-];
+type OptionalLaneListEnrichment = { lanes?: Array<NonNullable<LaneListSnapshot["conflictStatus"]>> } | null;
 
 type OptionalLaneListEnrichmentCacheEntry = {
   last: OptionalLaneListEnrichment;
@@ -91,15 +77,11 @@ function optionalLaneEnrichmentKey(
       .map(serializeLaneCacheKeyFields)
       .sort((left, right) => left.id.localeCompare(right.id)),
     conflict: options.includeConflictStatus !== false,
-    rebase: options.includeRebaseSuggestions !== false,
-    autoRebase: options.includeAutoRebaseStatus !== false,
   });
 }
 
 export type LaneListSnapshotOptions = {
   includeConflictStatus?: boolean;
-  includeRebaseSuggestions?: boolean;
-  includeAutoRebaseStatus?: boolean;
   /** Test/diagnostic override; optional decorations must never gate core rows. */
   optionalEnrichmentBudgetMs?: number;
 };
@@ -233,8 +215,6 @@ export async function buildLaneListSnapshots(
           durationMs,
           laneCount: lanes.length,
           includeConflictStatus: options.includeConflictStatus !== false,
-          includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
-          includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
         });
       }
     }
@@ -248,7 +228,7 @@ export async function buildLaneListSnapshots(
   const optionalCacheKey = optionalLaneEnrichmentKey(lanes, options);
   let optionalEntry = optionalCache.get(optionalCacheKey);
   if (!optionalEntry) {
-    optionalEntry = { last: [[], [], null], inFlight: null, generation: 0 };
+    optionalEntry = { last: null, inFlight: null, generation: 0 };
     optionalCache.set(optionalCacheKey, optionalEntry);
     while (optionalCache.size > OPTIONAL_LANE_ENRICHMENT_CACHE_MAX_ENTRIES) {
       const oldestKey = optionalCache.keys().next().value as string | undefined;
@@ -260,47 +240,19 @@ export async function buildLaneListSnapshots(
   if (!cacheEntry.inFlight) {
     const generation = cacheEntry.generation + 1;
     cacheEntry.generation = generation;
-    const rebaseWork = (options.includeRebaseSuggestions === false
-        ? Promise.resolve([])
-        : timePhase("rebase_suggestions", () =>
-            Promise.resolve()
-              .then(() => args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? [])
-              .catch(() => cacheEntry.last[0])))
-      .then((value) => {
-        if (cacheEntry.generation === generation) {
-          cacheEntry.last = [value, cacheEntry.last[1], cacheEntry.last[2]];
-        }
-        return value;
-      });
-    const autoRebaseWork = (options.includeAutoRebaseStatus === false
-        ? Promise.resolve([])
-        : timePhase("auto_rebase_statuses", () =>
-            Promise.resolve()
-              .then(() => args.autoRebaseService?.listStatuses({ lanes }) ?? [])
-              .catch(() => cacheEntry.last[1])))
-      .then((value) => {
-        if (cacheEntry.generation === generation) {
-          cacheEntry.last = [cacheEntry.last[0], value, cacheEntry.last[2]];
-        }
-        return value;
-      });
     const conflictWork = (options.includeConflictStatus === false
         ? Promise.resolve(null)
         : timePhase("conflict_assessment", () =>
             Promise.resolve()
               .then(() => args.conflictService?.getBatchAssessment({ lanes }) ?? null)
-              .catch(() => cacheEntry.last[2])))
+              .catch(() => cacheEntry.last)))
       .then((value) => {
         if (cacheEntry.generation === generation) {
-          cacheEntry.last = [cacheEntry.last[0], cacheEntry.last[1], value];
+          cacheEntry.last = value;
         }
         return value;
       });
-    const work: Promise<OptionalLaneListEnrichment> = Promise.all([
-      rebaseWork,
-      autoRebaseWork,
-      conflictWork,
-    ]);
+    const work: Promise<OptionalLaneListEnrichment> = conflictWork;
     cacheEntry.inFlight = work;
     const retryTimer = setTimeout(() => {
       if (cacheEntry.inFlight === work) cacheEntry.inFlight = null;
@@ -322,8 +274,8 @@ export async function buildLaneListSnapshots(
     Math.floor(options.optionalEnrichmentBudgetMs ?? OPTIONAL_LANE_ENRICHMENT_BUDGET_MS),
   );
   let optionalBudgetTimer: ReturnType<typeof setTimeout> | null = null;
-  const optionalWithinBudget: Promise<OptionalLaneListEnrichment | null> = Promise.race([
-    optionalEnrichment,
+  const optionalWithinBudget: Promise<{ value: OptionalLaneListEnrichment } | null> = Promise.race([
+    optionalEnrichment.then((value) => ({ value })),
     new Promise<null>((resolve) => {
       optionalBudgetTimer = setTimeout(() => resolve(null), optionalBudgetMs);
       optionalBudgetTimer.unref?.();
@@ -339,15 +291,12 @@ export async function buildLaneListSnapshots(
     optionalWithinBudget,
   ]);
   if (optionalBudgetTimer) clearTimeout(optionalBudgetTimer);
-  const [rebaseSuggestions, autoRebaseStatuses, batchAssessment] = optionalResult
-    ?? cacheEntry.last;
+  const batchAssessment = optionalResult ? optionalResult.value : cacheEntry.last;
   if (optionalResult === null) {
     args.logger.info("lanes.listSnapshots.optional_enrichment_deferred", {
       laneCount: lanes.length,
       budgetMs: optionalBudgetMs,
       includeConflictStatus: options.includeConflictStatus !== false,
-      includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
-      includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
     });
   }
   const durationMs = Date.now() - startedAt;
@@ -356,16 +305,12 @@ export async function buildLaneListSnapshots(
       durationMs,
       laneCount: lanes.length,
       includeConflictStatus: options.includeConflictStatus !== false,
-      includeRebaseSuggestions: options.includeRebaseSuggestions !== false,
-      includeAutoRebaseStatus: options.includeAutoRebaseStatus !== false,
       phases: phases
         .filter((phase) => phase.durationMs >= 10)
         .sort((left, right) => right.durationMs - left.durationMs),
     });
   }
 
-  const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
-  const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
   const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
   const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
   const devicesOpenByLaneId = buildLanePresenceByLaneId(args.syncService);
@@ -373,8 +318,6 @@ export async function buildLaneListSnapshots(
   return lanes.map((lane) => ({
     lane: decorateLaneSummaryWithPresence(lane, devicesOpenByLaneId),
     runtime: summarizeLaneRuntime(lane.id, sessions),
-    rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
-    autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
     conflictStatus: conflictByLaneId.get(lane.id) ?? null,
     stateSnapshot: stateByLaneId.get(lane.id) ?? null,
     // Deprecated, always false. Shipped iOS builds decode this as a

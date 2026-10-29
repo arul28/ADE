@@ -285,6 +285,7 @@ function makeLaneService(lanes?: unknown[]) {
   return {
     list: vi.fn(async () => lanes ?? [makeFakeLane()]),
     getLaneBaseAndBranch: vi.fn(),
+    getCompareBase: vi.fn(() => null),
     updateBranchRef: vi.fn(),
     delete: vi.fn(async () => undefined),
   } as any;
@@ -315,8 +316,6 @@ interface BuildServiceOpts {
   laneWorktreeLockService?: any;
   db?: any;
   conflictService?: any;
-  rebaseSuggestionService?: any;
-  autoRebaseService?: any;
   refreshDefaultBranchAfterMerge?: (baseBranch: string) => Promise<void>;
   projectConfigService?: any;
   onHotRefreshChanged?: () => void;
@@ -391,8 +390,6 @@ function buildService(opts: BuildServiceOpts = {}) {
     conflictService: opts.conflictService,
     projectConfigService: opts.projectConfigService ?? makeProjectConfigService(),
     laneWorktreeLockService: opts.laneWorktreeLockService,
-    rebaseSuggestionService: opts.rebaseSuggestionService,
-    autoRebaseService: opts.autoRebaseService,
     refreshDefaultBranchAfterMerge: opts.refreshDefaultBranchAfterMerge,
     onHotRefreshChanged: opts.onHotRefreshChanged,
     openExternal: vi.fn(async () => {}),
@@ -6307,22 +6304,19 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
-  it("refreshes rebase suggestions through the post-merge cleanup service", async () => {
+  it("refreshes rebase needs through the post-merge cleanup service", async () => {
     vi.mocked(fetchRemoteTrackingBranch).mockResolvedValue(false);
     const row = makePrRow({ id: "pr-refresh-suggestions" });
     const db = makeMockDb();
     installPullRequestRowStore(db, [row]);
     const scanRebaseNeeds = vi.fn(async () => []);
-    const refresh = vi.fn(async () => {});
     const conflictService = { scanRebaseNeeds } as any;
-    const rebaseSuggestionService = { refresh } as any;
     const laneService = makeLaneService([]);
-    const { service } = buildService({ db, conflictService, rebaseSuggestionService, laneService });
+    const { service } = buildService({ db, conflictService, laneService });
 
     await service.runPostMergeCleanup({ prId: row.id });
 
     expect(scanRebaseNeeds).toHaveBeenCalledTimes(1);
-    expect(refresh).toHaveBeenCalledTimes(1);
   });
 
   it("continues post-merge cleanup when the default-branch refresh rejects", async () => {
@@ -7508,123 +7502,6 @@ describe("prService.createFromLane", () => {
     expect(patchedBodies.some((body) => body.includes("https://gist.github.com/octocat/gist-1"))).toBe(false);
   });
 
-  it("uses the lane baseRef when legacy primary parent metadata disagrees with the current primary branch", async () => {
-    const ghService = makeGithubService({
-      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
-    });
-    const laneService = makeLaneService([
-      makeFakeLane({
-        parentLaneId: "lane-primary",
-        baseRef: "refs/heads/main",
-      }),
-      makeFakeLane({
-        id: "lane-primary",
-        name: "Primary",
-        laneType: "primary",
-        baseRef: "refs/heads/release/2026",
-        branchRef: "refs/heads/release/2026",
-        parentLaneId: null,
-      }),
-    ]);
-
-    const { service } = buildService({ githubService: ghService, laneService });
-
-    await expect(
-      service.createFromLane({
-        laneId: LANE_ID,
-        title: "My PR",
-        body: "description",
-        draft: false,
-        allowDirtyWorktree: true,
-      }),
-    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
-
-    expect(ghService.apiRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: "POST",
-        body: expect.objectContaining({
-          head: "my-feature",
-          base: "main",
-        }),
-      }),
-    );
-  });
-
-  it("uses the merged parent PR base when creating a child PR", async () => {
-    const ghService = makeGithubService({
-      apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
-    });
-    const db = makeMockDb();
-    db.all.mockImplementation((sql: string, params: unknown[]) => {
-      if (String(sql).includes("from pull_requests") && params[0] === "lane-parent") {
-        return [
-          makePrRow({
-            id: "pr-parent",
-            lane_id: "lane-parent",
-            state: "merged",
-            base_branch: "main",
-            head_branch: "parent-feature",
-          }),
-        ];
-      }
-      return [];
-    });
-    db.get.mockImplementation((sql: string, params: unknown[]) => {
-      if (String(sql).includes("from lanes") && params[0] === "lane-parent") {
-        return {
-          lane_type: "worktree",
-          branch_ref: "refs/heads/parent-feature",
-          base_ref: "refs/heads/main",
-          archived_at: null,
-        };
-      }
-      return null;
-    });
-    const laneService = makeLaneService([
-      makeFakeLane({
-        parentLaneId: "lane-parent",
-        baseRef: "refs/heads/parent-feature",
-      }),
-      makeFakeLane({
-        id: "lane-parent",
-        name: "Parent",
-        branchRef: "refs/heads/parent-feature",
-        baseRef: "refs/heads/main",
-        parentLaneId: null,
-      }),
-      makeFakeLane({
-        id: "lane-primary",
-        name: "Primary",
-        laneType: "primary",
-        baseRef: "refs/heads/main",
-        branchRef: "refs/heads/main",
-        parentLaneId: null,
-      }),
-    ]);
-
-    const { service } = buildService({ githubService: ghService, laneService, db });
-
-    await expect(
-      service.createFromLane({
-        laneId: LANE_ID,
-        title: "My PR",
-        body: "description",
-        draft: false,
-        allowDirtyWorktree: true,
-      }),
-    ).rejects.toThrow('Failed to create pull request for "my-feature" → "main": stop after payload capture');
-
-    expect(ghService.apiRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        method: "POST",
-        body: expect.objectContaining({
-          head: "my-feature",
-          base: "main",
-        }),
-      }),
-    );
-  });
-
   it("adds a closing Linear reference (Fixes) by default when creating a PR from a linked lane", async () => {
     const ghService = makeGithubService({
       apiRequest: vi.fn().mockRejectedValue(new Error("stop after payload capture")),
@@ -7908,7 +7785,7 @@ describe("prService.createIntegrationLane", () => {
     return {
       list: vi.fn(async () => lanes ?? [baseLane, sourceLaneA, sourceLaneB]),
       getLaneBaseAndBranch: vi.fn(),
-      createChild: vi.fn(async () => integrationLane),
+      create: vi.fn(async () => integrationLane),
       archive: vi.fn(async () => {}),
     } as any;
   }
@@ -8060,9 +7937,8 @@ describe("prService.createIntegrationLane", () => {
     });
 
     // Lane was created as child of base lane
-    expect(laneService.createChild).toHaveBeenCalledWith(
+    expect(laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        parentLaneId: BASE_LANE_ID,
         name: "integration/test",
       }),
     );
@@ -8221,7 +8097,7 @@ describe("prService.createIntegrationLane", () => {
       allowDirtyWorktree: true,
     });
 
-    expect(laneService.createChild).toHaveBeenCalledWith(
+    expect(laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({
         description: "Custom description for testing",
       }),
@@ -8247,7 +8123,7 @@ describe("prService.createIntegrationLane", () => {
       allowDirtyWorktree: true,
     });
 
-    expect(laneService.createChild).toHaveBeenCalledWith(
+    expect(laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({
         description: "Integration lane for merging: feature-a, feature-b",
       }),
@@ -8265,7 +8141,7 @@ describe("prService.createIntegrationLane", () => {
     const laneService = makeIntegrationLaneService();
     const { service } = buildIntegrationService({ laneService });
 
-    // Set mock AFTER buildIntegrationService — createChild succeeds, but merge throws
+    // Set mock AFTER buildIntegrationService — create succeeds, but merge throws
     mockGit.runGit.mockRejectedValue(new Error("unexpected git failure"));
 
     await expect(

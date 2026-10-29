@@ -418,8 +418,6 @@ import {
   markMachineTrustResetComplete,
   runMachineTrustResetMigration,
 } from "./services/runtime/machineTrustResetMigration";
-import { createRebaseSuggestionService } from "./services/lanes/rebaseSuggestionService";
-import { createAutoRebaseService } from "./services/lanes/autoRebaseService";
 import { createCtoStateService } from "./services/cto/ctoStateService";
 import { createCtoMemoryService } from "./services/cto/ctoMemoryService";
 import { createProjectNotesService } from "./services/projectNotes/projectNotesService";
@@ -3859,11 +3857,6 @@ app.whenReady().then(async () => {
     let jobEngine: ReturnType<typeof createJobEngine> | null = null;
     let automationService: ReturnType<typeof createAutomationService> | null =
       null;
-    let rebaseSuggestionService: ReturnType<
-      typeof createRebaseSuggestionService
-    > | null = null;
-    let autoRebaseService: ReturnType<typeof createAutoRebaseService> | null =
-      null;
     let conflictServiceRef: ReturnType<typeof createConflictService> | null =
       null;
     let prServiceRef: ReturnType<typeof createPrService> | null = null;
@@ -3954,22 +3947,6 @@ app.whenReady().then(async () => {
         preHeadSha: prev,
         postHeadSha,
       });
-      void rebaseSuggestionService
-        ?.onParentHeadChanged({
-          laneId,
-          reason: args.reason,
-          preHeadSha: prev,
-          postHeadSha,
-        })
-        .catch(() => {});
-      void autoRebaseService
-        ?.onHeadChanged({
-          laneId,
-          reason: args.reason,
-          preHeadSha: prev,
-          postHeadSha,
-        })
-        .catch(() => {});
 
       const pr = prServiceRef?.getForLane(laneId);
       if (pr) {
@@ -3978,7 +3955,6 @@ app.whenReady().then(async () => {
     };
 
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
-    let autoRebaseActivityReady = false;
     const laneService = createLaneService({
       db,
       projectRoot,
@@ -4289,20 +4265,6 @@ app.whenReady().then(async () => {
       }
     }
 
-    rebaseSuggestionService = createRebaseSuggestionService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      onEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
-      getSuggestionPolicy: () => {
-        const git = projectConfigService.getEffective().git;
-        return { display: git.rebaseSuggestions, minBehind: git.rebaseSuggestionMinBehind };
-      },
-    });
-
     let githubRelaySecretService: ReturnType<typeof createAutomationSecretService> | null = null;
     const githubService = createGithubService({
       logger,
@@ -4351,29 +4313,6 @@ app.whenReady().then(async () => {
     });
     conflictServiceRef = conflictService;
 
-    autoRebaseService = createAutoRebaseService({
-      db,
-      logger,
-      laneService,
-      conflictService,
-      projectConfigService,
-      getLaneActivity: (laneId) => {
-        if (!autoRebaseActivityReady) {
-          throw new Error("Session activity services are not ready.");
-        }
-        return {
-          activeChatCount:
-            laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
-          activePtyCount:
-            laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
-        };
-      },
-      onEvent: (event) =>
-        emitProjectEvent(projectRoot, IPC.lanesAutoRebaseEvent, event),
-    });
-    // Prime status stream so renderer can render immediately on load.
-    void autoRebaseService.emit().catch(() => {});
-
     jobEngine = createJobEngine({
       logger,
       conflictService,
@@ -4390,8 +4329,6 @@ app.whenReady().then(async () => {
       projectConfigService,
       conflictService,
       laneWorktreeLockService,
-      autoRebaseService,
-      rebaseSuggestionService,
       getLinearIssueTracker: () => linearIssueTrackerRef,
       getLinearLiveStatusService: () => linearLiveStatusServiceRef,
       onHotRefreshChanged: () => {
@@ -4677,12 +4614,6 @@ app.whenReady().then(async () => {
     laneTeardownDeps.fileWatcherService = {
       countActiveForWorkspace: (id) => fileService.countActiveWatchersForWorkspace(id),
       stopAllForWorkspace: (id) => fileService.stopAllWatchersForWorkspace(id),
-    };
-    laneTeardownDeps.autoRebaseService = {
-      cancelForLane: (laneId) => autoRebaseService?.cancelForLane(laneId),
-    };
-    laneTeardownDeps.rebaseSuggestionService = {
-      dismiss: (args) => rebaseSuggestionService?.dismiss(args) ?? Promise.resolve(),
     };
     laneTeardownDeps.sessionService = sessionService;
     // Lanes archived before archive took their chats along keep those chats
@@ -5095,14 +5026,6 @@ app.whenReady().then(async () => {
       settleTeardownRef.residue = wiring.onSettleResidue;
       settleTeardownRef.subagentLinks = wiring.listSubagentLinks;
     }
-    autoRebaseActivityReady = true;
-    void autoRebaseService
-      .refreshActiveRebaseNeeds("activity_services_ready")
-      .catch((error) => {
-        logger.warn("autoRebase.activity_ready_refresh_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
     setImmediate(() => {
       void Promise.resolve()
         .then(() => agentChatService.cleanupStaleAttachments())
@@ -5822,8 +5745,6 @@ app.whenReady().then(async () => {
       portAllocationService,
       laneEnvironmentService,
       laneTemplateService,
-      rebaseSuggestionService,
-      autoRebaseService,
       computerUseArtifactBrokerService,
       appleDeviceService: iosSimulatorService,
       getWebhookAutomations: () => createWebhookRemoteSource({
@@ -6267,8 +6188,6 @@ app.whenReady().then(async () => {
       },
       oauthRedirectService,
       runtimeDiagnosticsService,
-      rebaseSuggestionService,
-      autoRebaseService,
       sessionService,
       operationService,
       projectConfigService,
@@ -6570,8 +6489,6 @@ app.whenReady().then(async () => {
       },
       oauthRedirectService,
       runtimeDiagnosticsService,
-      rebaseSuggestionService,
-      autoRebaseService,
       sessionService,
       processRegistry,
       diskPressureMonitor,
@@ -6800,8 +6717,6 @@ app.whenReady().then(async () => {
       getProxyService: getSubscriptionProxyService,
       oauthRedirectService: null,
       runtimeDiagnosticsService: null,
-      rebaseSuggestionService: null,
-      autoRebaseService: null,
       sessionService: null,
       diskPressureMonitor: null,
       ptyService: null,
@@ -7188,11 +7103,6 @@ app.whenReady().then(async () => {
       ctx.prWatchService?.dispose();
       ctx.terminalWatchService?.dispose();
       ctx.prShellLinkWatcher?.dispose();
-    } catch {
-      // ignore
-    }
-    try {
-      ctx.autoRebaseService?.dispose();
     } catch {
       // ignore
     }

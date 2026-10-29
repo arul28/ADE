@@ -887,7 +887,7 @@ export type CreateIntegrationPrArgs = {
   body?: string;
   draft?: boolean;
   allowDirtyWorktree?: boolean;
-  /** When set, merges sources into this existing lane instead of creating a new child lane. */
+  /** When set, merges sources into this existing lane instead of creating a new lane. */
   existingIntegrationLaneId?: string | null;
 };
 
@@ -2090,7 +2090,6 @@ export type PrStackMemberRole = "root" | "middle" | "leaf";
 export type PrStackMember = {
   laneId: string;
   laneName: string;
-  parentLaneId: string | null;
   depth: number;
   role: PrStackMemberRole;
   dirty: boolean;
@@ -2158,7 +2157,6 @@ export type CleanupPrBranchResult = {
 export type PrCreateLaneEligibility = {
   laneId: string;
   laneName: string;
-  parentLaneId: string | null;
   repoOwner: string | null;
   repoName: string | null;
   defaultBaseBranch: string;
@@ -2218,6 +2216,10 @@ export type PrRebaseWorkflowCard = {
   laneName: string;
   baseBranch: string;
   behindBy: number;
+  /** Why the lane needs a rebase (`RebaseNeed.kind`). Older hosts omit it: read as "behind". */
+  needKind?: RebaseNeed["kind"];
+  /** The merged PR the lane was built on, when `needKind` is `built_on_merged`. */
+  mergedPr?: RebaseNeed["mergedPr"];
   conflictPredicted: boolean;
   prId: string | null;
   prNumber: number | null;

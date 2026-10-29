@@ -168,16 +168,15 @@ describe("createAdeRuntime dispose", () => {
           new Date().toISOString(),
         ],
       );
-      if (!runtime.rebaseSuggestionService || !runtime.prService) {
+      if (!runtime.conflictService || !runtime.prService) {
         throw new Error("Headless PR cleanup services were not created.");
       }
-      const rebaseSuggestions = runtime.rebaseSuggestionService as { refresh: () => Promise<void> };
-      const refresh = vi.spyOn(rebaseSuggestions, "refresh").mockResolvedValue(undefined);
+      const scan = vi.spyOn(runtime.conflictService, "scanRebaseNeeds").mockResolvedValue([]);
 
       const cleanup = await runtime.prService.runPostMergeCleanup({ prId: "pr-brain-cleanup" });
 
-      expect(cleanup).toEqual({ branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false });
-      expect(refresh).toHaveBeenCalledTimes(1);
+      expect(cleanup).toEqual({ branchDeleted: false, laneArchived: false });
+      expect(scan).toHaveBeenCalledTimes(1);
     } finally {
       await runtime.dispose();
       await new Promise<void>((resolve) => setImmediate(resolve));

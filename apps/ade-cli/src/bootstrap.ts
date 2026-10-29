@@ -86,8 +86,6 @@ import {
 } from "../../desktop/src/main/services/lanes/laneRuntimeLifecycle";
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
-import { createRebaseSuggestionService } from "../../desktop/src/main/services/lanes/rebaseSuggestionService";
-import { createAutoRebaseService } from "../../desktop/src/main/services/lanes/autoRebaseService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
@@ -466,8 +464,6 @@ export type AdeRuntime = {
   getProxyService?: () => ProxyService;
   oauthRedirectService?: ReturnType<typeof createOAuthRedirectService> | null;
   runtimeDiagnosticsService?: ReturnType<typeof createRuntimeDiagnosticsService> | null;
-  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
-  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   operationService: ReturnType<typeof createOperationService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
@@ -1146,8 +1142,6 @@ export async function createAdeRuntime(args: {
     }
 
     let conflictServiceRef: ReturnType<typeof createConflictService> | null = null;
-    let rebaseSuggestionServiceRef: ReturnType<typeof createRebaseSuggestionService> | null = null;
-    let autoRebaseServiceRef: ReturnType<typeof createAutoRebaseService> | null = null;
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     let linearIssueTrackerRef: ReturnType<typeof createLinearIssueTracker> | null = null;
     let githubServiceRef: ReturnType<typeof createGithubService> | null = null;
@@ -1173,7 +1167,6 @@ export async function createAdeRuntime(args: {
       log: (event, fields) => logger.warn(event, fields),
     });
     const laneTeardownDeps: LaneDeleteTeardownDeps = {};
-    let autoRebaseActivityReady = false;
 
     const laneService = createLaneService({
       db,
@@ -1185,8 +1178,6 @@ export async function createAdeRuntime(args: {
       operationService,
       onHeadChanged: (event) => {
         pushEvent("runtime", { type: "lane_head_changed", ...event });
-        void rebaseSuggestionServiceRef?.onParentHeadChanged(event).catch(() => {});
-        void autoRebaseServiceRef?.onHeadChanged(event).catch(() => {});
       },
       onRebaseEvent: (event) => {
         pushEvent("runtime", { type: "lane_rebase_event", event });
@@ -1545,38 +1536,6 @@ export async function createAdeRuntime(args: {
     });
     conflictServiceRef = conflictService;
 
-    const rebaseSuggestionService = createRebaseSuggestionService({
-      db,
-      logger,
-      projectId,
-      projectRoot,
-      laneService,
-      onEvent: (event) => pushEvent("runtime", { type: "lane_rebase_suggestions_event", event }),
-    });
-    rebaseSuggestionServiceRef = rebaseSuggestionService;
-
-    const autoRebaseService = createAutoRebaseService({
-      db,
-      logger,
-      laneService,
-      conflictService,
-      projectConfigService,
-      getLaneActivity: (laneId) => {
-        if (!autoRebaseActivityReady) {
-          throw new Error("Session activity services are not ready.");
-        }
-        return {
-          activeChatCount:
-            laneTeardownDeps.agentChatService?.countActiveForLane(laneId) ?? 0,
-          activePtyCount:
-            laneTeardownDeps.ptyService?.countActiveForLane(laneId) ?? 0,
-        };
-      },
-      onEvent: (event) => pushEvent("runtime", { type: "lane_auto_rebase_event", event }),
-    });
-    autoRebaseServiceRef = autoRebaseService;
-    void autoRebaseService.emit().catch(() => {});
-
     const gitService = createGitOperationsService({
       laneService,
       operationService,
@@ -1749,12 +1708,6 @@ export async function createAdeRuntime(args: {
     laneTeardownDeps.ptyService = {
       countActiveForLane: (laneId) => ptyService.countActiveForLane(laneId),
       disposeForLane: (laneId) => ptyService.disposeForLane(laneId),
-    };
-    laneTeardownDeps.autoRebaseService = {
-      cancelForLane: (laneId) => autoRebaseService.cancelForLane(laneId),
-    };
-    laneTeardownDeps.rebaseSuggestionService = {
-      dismiss: (args) => rebaseSuggestionService.dismiss(args),
     };
     laneTeardownDeps.sessionService = sessionService;
     // Lanes archived before archive took their chats along keep those chats
@@ -2371,8 +2324,6 @@ export async function createAdeRuntime(args: {
       operationService,
       conflictService,
       laneWorktreeLockService,
-      autoRebaseService,
-      rebaseSuggestionService,
       openExternal: async () => {},
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),
@@ -2787,14 +2738,6 @@ export async function createAdeRuntime(args: {
       settleTeardownRef.residue = settleWiring.onSettleResidue;
       settleTeardownRef.subagentLinks = settleWiring.listSubagentLinks;
     }
-    autoRebaseActivityReady = true;
-    void autoRebaseService
-      .refreshActiveRebaseNeeds("activity_services_ready")
-      .catch((error) => {
-        logger.warn("autoRebase.activity_ready_refresh_failed", {
-          error: error instanceof Error ? error.message : String(error),
-        });
-      });
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");
     }
@@ -3800,8 +3743,6 @@ export async function createAdeRuntime(args: {
       getProxyService,
       oauthRedirectService,
       runtimeDiagnosticsService,
-      rebaseSuggestionService,
-      autoRebaseService,
       sessionService,
       sessionDeltaService,
       onboardingService,

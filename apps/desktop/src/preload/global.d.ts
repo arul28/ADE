@@ -243,8 +243,6 @@ import type {
   CancelLaneGitWriteArgs,
   CancelLaneGitWriteResult,
   CreateLaneArgs,
-  CreateChildLaneArgs,
-  CreateLaneFromUnstagedArgs,
   LaneBranchDrift,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
@@ -815,12 +813,6 @@ import type {
   PtyExitEvent,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
-  ReparentLaneArgs,
-  ReparentLaneResult,
-  RebaseSuggestion,
-  RebaseSuggestionsEventPayload,
-  AutoRebaseLaneStatus,
-  AutoRebaseEventPayload,
   RiskMatrixEntry,
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
@@ -847,7 +839,6 @@ import type {
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionChangedEvent,
-  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -2228,14 +2219,6 @@ declare global {
         ) => Promise<LaneSummary[]>;
         listSnapshots: (args?: ListLanesArgs) => Promise<LaneListSnapshot[]>;
         create: (args: CreateLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
-        createChild: (
-          args: CreateChildLaneArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<LaneSummary>;
-        createFromUnstaged: (
-          args: CreateLaneFromUnstagedArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<LaneSummary>;
         importBranch: (args: ImportBranchLaneArgs, pin?: OpenProjectBinding | null) => Promise<LaneSummary>;
         previewBranchSwitch: (
           args: LaneBranchSwitchArgs,
@@ -2249,10 +2232,6 @@ declare global {
           args: ResolveLaneBranchDriftArgs,
         ) => Promise<ResolveLaneBranchDriftResult>;
         rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        reparent: (
-          args: ReparentLaneArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<ReparentLaneResult>;
         updateAppearance: (
           args: UpdateLaneAppearanceArgs,
           pin?: OpenProjectBinding | null,
@@ -2293,8 +2272,6 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => () => void;
         onLifecycleEvent: (cb: (ev: LaneLifecycleEvent) => void) => () => void;
-        getStackChain: (laneId: string) => Promise<StackChainItem[]>;
-        getChildren: (laneId: string) => Promise<LaneSummary[]>;
         attachLinearIssueToSession: (args: {
           chatSessionId: string;
           issues: LaneLinearIssue[];
@@ -2335,21 +2312,6 @@ declare global {
         rebaseAbort: (args: RebaseAbortArgs, pin?: OpenProjectBinding | null) => Promise<RebaseRun>;
         rebaseSubscribe: (
           cb: (ev: RebaseRunEventPayload) => void,
-          pin?: OpenProjectBinding | null,
-        ) => () => void;
-        listRebaseSuggestions: () => Promise<RebaseSuggestion[]>;
-        dismissRebaseSuggestion: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
-        deferRebaseSuggestion: (args: {
-          laneId: string;
-          minutes: number;
-        }, pin?: OpenProjectBinding | null) => Promise<void>;
-        onRebaseSuggestionsEvent: (
-          cb: (ev: RebaseSuggestionsEventPayload) => void,
-        ) => () => void;
-        listAutoRebaseStatuses: (pin?: OpenProjectBinding | null) => Promise<AutoRebaseLaneStatus[]>;
-        dismissAutoRebaseStatus: (args: { laneId: string }, pin?: OpenProjectBinding | null) => Promise<void>;
-        onAutoRebaseEvent: (
-          cb: (ev: AutoRebaseEventPayload) => void,
           pin?: OpenProjectBinding | null,
         ) => () => void;
         openFolder: (args: { laneId: string }) => Promise<void>;

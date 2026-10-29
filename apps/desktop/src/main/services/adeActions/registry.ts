@@ -2084,15 +2084,15 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
   };
   /**
    * The lane id a positional lane action runs against. Two callers hand it over
-   * two ways: `ade lanes children` / `ade lanes stack` send it positionally (an
-   * `argsList` holding one string), while an automation step — whose editor
-   * renders the schema's `laneId` param — and `run_ade_action`'s `args` send the
-   * object `{ laneId }`. `getChildren`, `getStackChain`, `getDeleteRisk` and
-   * `cancelDelete` take a bare lane id and pass it straight to a
-   * `select * from lanes` lookup, and `node:sqlite` refuses an object as a bound
-   * parameter ("Unsupported database value at parameter 1: object"), so reading
-   * both shapes here is what keeps the object out of the query. `lane.getSummary`
-   * needs only the object shape; these four also have positional callers.
+   * two ways: a CLI command sends it positionally (an `argsList` holding one
+   * string), while an automation step — whose editor renders the schema's
+   * `laneId` param — and `run_ade_action`'s `args` send the object `{ laneId }`.
+   * `getDeleteRisk` and `cancelDelete` take a bare lane id and pass it straight
+   * to a `select * from lanes` lookup, and `node:sqlite` refuses an object as a
+   * bound parameter ("Unsupported database value at parameter 1: object"), so
+   * reading both shapes here is what keeps the object out of the query.
+   * `lane.getSummary` needs only the object shape; these two also have
+   * positional callers.
    */
   const readLaneIdActionArg = (args: unknown, actionName: string): string =>
     typeof args === "string"
@@ -2107,10 +2107,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         includeStatus: record.includeStatus !== false,
       });
     },
-    getChildren: async (args?: unknown) =>
-      runtime.laneService.getChildren(readLaneIdActionArg(args, "lane.getChildren")),
-    getStackChain: async (args?: unknown) =>
-      runtime.laneService.getStackChain(readLaneIdActionArg(args, "lane.getStackChain")),
     getDeleteRisk: async (args?: unknown) =>
       runtime.laneService.getDeleteRisk(readLaneIdActionArg(args, "lane.getDeleteRisk")),
     cancelDelete: async (args?: unknown) =>
@@ -2126,8 +2122,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
           sessionService: runtime.sessionService,
           ptyService: runtime.ptyService,
           agentChatService: runtime.agentChatService ?? null,
-          rebaseSuggestionService: runtime.rebaseSuggestionService ?? null,
-          autoRebaseService: runtime.autoRebaseService ?? null,
           conflictService: runtime.conflictService ?? null,
           syncService: runtime.syncService ?? null,
           logger: runtime.logger,
@@ -2135,12 +2129,9 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
         lanes,
         {
           includeConflictStatus: args?.includeConflictStatus !== false,
-          includeRebaseSuggestions: args?.includeRebaseSuggestions !== false,
-          includeAutoRebaseStatus: args?.includeAutoRebaseStatus !== false,
         },
       );
     },
-    listRebaseSuggestions: () => runtime.rebaseSuggestionService?.listSuggestions() ?? [],
     /**
      * Branch-drift status read. Returns `null` when the worktree HEAD still
      * matches the lane's recorded branch — the common case — so agents can poll
@@ -2235,21 +2226,6 @@ function buildLaneDomainService(runtime: AdeRuntime): OpaqueService {
       } catch (error) {
         return { ...result, setupWarning: getErrorMessage(error) };
       }
-    },
-    dismissRebaseSuggestion: async (args?: { laneId?: string }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      await runtime.rebaseSuggestionService?.dismiss({ laneId });
-    },
-    deferRebaseSuggestion: async (args?: { laneId?: string; minutes?: number }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(args?.minutes ?? 60)));
-      await runtime.rebaseSuggestionService?.defer({ laneId, minutes });
-    },
-    listAutoRebaseStatuses: () =>
-      runtime.autoRebaseService?.listStatuses() ?? [],
-    dismissAutoRebaseStatus: async (args?: { laneId?: string }) => {
-      const laneId = requireNonEmptyString(args?.laneId, "laneId");
-      await runtime.autoRebaseService?.dismissStatus({ laneId });
     },
     initEnv: async (args?: { laneId?: string }): Promise<LaneEnvInitProgress> => {
       const laneEnvironmentService = requireService(runtime.laneEnvironmentService, "Lane environment service not available.");

@@ -65,11 +65,8 @@ import type {
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE, isPullRequestTriggerType } from "../../../shared/types";
 import {
-  DEFAULT_REBASE_SUGGESTIONS,
-  DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
   laneSetupScriptHasWork,
   PROJECT_CONFIG_CHANGED_ON_DISK,
-  type RebaseSuggestionDisplay,
 } from "../../../shared/types/config";
 import { mergeLaneEnvInitConfig } from "../lanes/laneEnvInitMerge";
 import type { Logger } from "../logging/logger";
@@ -169,17 +166,6 @@ function asBool(value: unknown): boolean | undefined {
 
 function asNewLaneBaseSource(value: unknown): "local" | "remote" | undefined {
   return value === "local" || value === "remote" ? value : undefined;
-}
-
-function asRebaseSuggestionDisplay(value: unknown): RebaseSuggestionDisplay | undefined {
-  return value === "off" || value === "badge" || value === "banner" ? value : undefined;
-}
-
-/** Whole counts only; a negative or fractional threshold is meaningless here. */
-function asNonNegativeInt(value: unknown): number | undefined {
-  const numeric = typeof value === "number" ? value : Number(value);
-  if (!Number.isFinite(numeric)) return undefined;
-  return Math.max(0, Math.floor(numeric));
 }
 
 function asStringMap(value: unknown): Record<string, string> | undefined {
@@ -586,7 +572,6 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   const afterMinutes = asNumber(value.afterMinutes);
   const laneNameTemplate = asString(value.laneNameTemplate);
   const laneDescriptionTemplate = asString(value.laneDescriptionTemplate);
-  const parentLaneId = asString(value.parentLaneId)?.trim();
   const laneDeleteOptions = isRecord(value.laneDeleteOptions)
     ? {
         ...(asBool(value.laneDeleteOptions.deleteBranch) != null
@@ -628,7 +613,6 @@ function coerceAutomationAction(value: unknown): AutomationAction | null {
   if (afterMinutes != null) out.afterMinutes = afterMinutes;
   if (laneNameTemplate != null) out.laneNameTemplate = laneNameTemplate;
   if (laneDescriptionTemplate != null) out.laneDescriptionTemplate = laneDescriptionTemplate;
-  if (parentLaneId) out.parentLaneId = parentLaneId;
   if (laneDeleteOptions && Object.keys(laneDeleteOptions).length > 0) out.laneDeleteOptions = laneDeleteOptions;
   if (adeAction != null) out.adeAction = adeAction;
   if (prompt != null) out.prompt = prompt;
@@ -2132,15 +2116,11 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
 
   const git = (() => {
     if (!isRecord(value.git)) return undefined;
-    const autoRebaseOnHeadChange = asBool(value.git.autoRebaseOnHeadChange);
+    // Older configs may still carry retired git settings; only the new-lane
+    // base source is kept, as the fallback for the new-lane defaults.
     const newLaneBaseSource = asNewLaneBaseSource(value.git.newLaneBaseSource);
-    const rebaseSuggestions = asRebaseSuggestionDisplay(value.git.rebaseSuggestions);
-    const rebaseSuggestionMinBehind = asNonNegativeInt(value.git.rebaseSuggestionMinBehind);
     const out: NonNullable<ProjectConfigFile["git"]> = {};
-    if (autoRebaseOnHeadChange != null) out.autoRebaseOnHeadChange = autoRebaseOnHeadChange;
     if (newLaneBaseSource) out.newLaneBaseSource = newLaneBaseSource;
-    if (rebaseSuggestions) out.rebaseSuggestions = rebaseSuggestions;
-    if (rebaseSuggestionMinBehind != null) out.rebaseSuggestionMinBehind = rebaseSuggestionMinBehind;
     return Object.keys(out).length ? out : undefined;
   })();
 
@@ -2455,7 +2435,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
         ...(action.laneDeleteOptions ? { laneDeleteOptions: action.laneDeleteOptions } : {}),
         ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
         ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
-        ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
         ...(action.adeAction ? { adeAction: action.adeAction } : {}),
         ...(action.prompt ? { prompt: action.prompt } : {}),
         ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
@@ -2483,7 +2462,6 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
             ...(action.laneDeleteOptions ? { laneDeleteOptions: action.laneDeleteOptions } : {}),
             ...(action.laneNameTemplate ? { laneNameTemplate: action.laneNameTemplate } : {}),
             ...(action.laneDescriptionTemplate ? { laneDescriptionTemplate: action.laneDescriptionTemplate } : {}),
-            ...(action.parentLaneId ? { parentLaneId: action.parentLaneId.trim() } : {}),
             ...(action.adeAction ? { adeAction: action.adeAction } : {}),
             ...(action.prompt ? { prompt: action.prompt } : {}),
             ...(action.sessionTitle ? { sessionTitle: action.sessionTitle } : {}),
@@ -2580,10 +2558,7 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     ...(mergedGithub ? { github: mergedGithub } : {}),
     ...(mergedIssueTrackers ? { issueTrackers: mergedIssueTrackers } : {}),
     git: {
-      autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false,
-      newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",
-      rebaseSuggestions: mergedGit?.rebaseSuggestions ?? DEFAULT_REBASE_SUGGESTIONS,
-      rebaseSuggestionMinBehind: mergedGit?.rebaseSuggestionMinBehind ?? DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+      ...(mergedGit?.newLaneBaseSource ? { newLaneBaseSource: mergedGit.newLaneBaseSource } : {}),
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),

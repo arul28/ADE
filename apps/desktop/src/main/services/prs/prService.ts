@@ -83,9 +83,6 @@ import type {
   PrCreateLaneEligibility,
   PrMobileSnapshot,
   PrMobileGithubDetailSnapshot,
-  PrStackInfo,
-  PrStackMember,
-  PrStackMemberRole,
   PrWorkflowCard,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
@@ -156,8 +153,6 @@ import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
 import { createPrGithubReadCache } from "./prGithubReadCache";
 import type { createLaneService } from "../lanes/laneService";
-import type { createAutoRebaseService } from "../lanes/autoRebaseService";
-import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
 import type { createOperationService } from "../history/operationService";
 import type { createGithubService } from "../github/githubService";
 import { createGithubMediaResolver } from "../github/githubMediaResolver";
@@ -179,7 +174,7 @@ import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } fro
 import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { branchNameFromHeadRef, formatGitExecutionError, GIT_REMOTE_FETCH_TIMEOUT_MS, runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
-import { classifyGitPushFailure, runGitPushOrThrow } from "../git/gitPushFailure";
+import { classifyGitPushFailure } from "../git/gitPushFailure";
 import { runGitWithGithubAuthFallback } from "../git/gitTransportAuth";
 import {
   createGithubReadBackoff,
@@ -220,7 +215,7 @@ import { claimingSessionIds, selectStackSiblings } from "../../../shared/prChatS
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
-import { branchNameFromLaneRef, laneIsOnBaseBranch, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef, laneIsOnBaseBranch } from "../../../shared/laneBaseResolution";
 import {
   buildLaneBranchHistoryIndex,
   pickLaneBranchHistoryPr,
@@ -1579,8 +1574,6 @@ export function createPrService({
   projectConfigService,
   conflictService,
   laneWorktreeLockService,
-  autoRebaseService,
-  rebaseSuggestionService,
   getLinearIssueTracker,
   getLinearLiveStatusService,
   openExternal,
@@ -1597,8 +1590,6 @@ export function createPrService({
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   conflictService?: ReturnType<typeof createConflictService>;
   laneWorktreeLockService?: LaneWorktreeLockService | null;
-  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
-  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
   getLinearIssueTracker?: () => IssueTracker | null;
   getLinearLiveStatusService?: () => LinearLiveStatusService | null;
   openExternal: (url: string) => Promise<void>;
@@ -2230,8 +2221,8 @@ export function createPrService({
    * GitHub tab keys every row it renders that way, mapped or not. So the
    * coordinates still get looked up locally. Returning `row: null` for every
    * `gh:` id made a land or cleanup issued from that tab skip the bookkeeping
-   * the same PR gets when it is addressed by row id — merge outcome, child-lane
-   * auto-rebase, lane archive, row refresh. The parsed coordinates stay
+   * the same PR gets when it is addressed by row id — merge outcome, rebase
+   * needs refresh, lane archive, row refresh. The parsed coordinates stay
    * authoritative; the row only supplies the local half.
    */
   const resolvePrTarget = (
@@ -2695,219 +2686,6 @@ export function createPrService({
       nextDelay = nextDelay == null ? delay : Math.min(nextDelay, delay);
     }
     return nextDelay;
-  };
-
-  const isAutoRebaseEnabled = (): boolean => {
-    try {
-      return Boolean(projectConfigService.getEffective()?.git?.autoRebaseOnHeadChange);
-    } catch {
-      return false;
-    }
-  };
-
-  const pushRebasedLane = async (lane: LaneSummary): Promise<void> => {
-    const headBranch = branchNameFromRef(lane.branchRef);
-    const upstreamCheck = await runGit(
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-      { cwd: lane.worktreePath, timeoutMs: 10_000 }
-    );
-    const pushArgs = upstreamCheck.exitCode === 0
-      ? ["push", "--force-with-lease"]
-      : ["push", "-u", "origin", headBranch];
-    await runGitPushOrThrow(pushArgs, { cwd: lane.worktreePath, timeoutMs: 60_000, branch: headBranch });
-  };
-
-  const restoreAutoRebaseChildLane = async (args: {
-    lane: LaneSummary;
-    previousParentLaneId: string | null;
-    previousBaseRef: string;
-    preHeadSha: string;
-  }): Promise<void> => {
-    await runGitOrThrow(["reset", "--hard", args.preHeadSha], { cwd: args.lane.worktreePath, timeoutMs: 90_000 });
-    db.run(
-      "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
-      [args.previousParentLaneId, args.previousBaseRef, args.lane.id, projectId]
-    );
-    laneService.invalidateCache?.();
-  };
-
-  const advanceChildLanesAfterLand = async (args: {
-    landedLaneId: string;
-    landedLaneName: string;
-  }): Promise<{
-    updatedLaneIds: string[];
-    failedLaneIds: string[];
-    blockCleanup: boolean;
-  }> => {
-    if (!isAutoRebaseEnabled()) {
-      return { updatedLaneIds: [], failedLaneIds: [], blockCleanup: false };
-    }
-
-    const allLanes = await laneService.list({ includeArchived: true });
-    const allLanesById = new Map(allLanes.map((lane) => [lane.id, lane] as const));
-    const landedLane = allLanes.find((lane) => lane.id === args.landedLaneId) ?? null;
-    const directChildren = await laneService.getChildren(args.landedLaneId);
-    if (directChildren.length === 0) {
-      return { updatedLaneIds: [], failedLaneIds: [], blockCleanup: false };
-    }
-
-    let successorParent = landedLane?.parentLaneId
-      ? allLanesById.get(landedLane.parentLaneId) ?? null
-      : null;
-    if (!successorParent || successorParent.archivedAt) {
-      successorParent = allLanes.find((lane) => lane.laneType === "primary" && !lane.archivedAt) ?? null;
-    }
-
-    type AttentionStatus = {
-      laneId: string;
-      parentLaneId: string | null;
-      parentHeadSha: string | null;
-      state: "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
-      conflictCount: number;
-      message?: string | null;
-    };
-    const recordAttentionStatusSafely = async (status: AttentionStatus, laneId: string): Promise<boolean> => {
-      try {
-        await autoRebaseService?.recordAttentionStatus(status);
-        return true;
-      } catch (error) {
-        logger.warn("prs.child_auto_rebase_attention_status_failed", {
-          landedLaneId: args.landedLaneId,
-          childLaneId: laneId,
-          error: getErrorMessage(error),
-        });
-        return false;
-      }
-    };
-
-    if (!successorParent) {
-      for (const child of directChildren) {
-        await recordAttentionStatusSafely({
-          laneId: child.id,
-          parentLaneId: child.parentLaneId,
-          parentHeadSha: null,
-          state: "rebaseFailed",
-          conflictCount: 0,
-          message: `Auto-rebase failed after '${args.landedLaneName}' merged because ADE could not find a new parent lane. Open the Rebase/Merge tab to recover this lane.`,
-        }, child.id);
-      }
-      return {
-        updatedLaneIds: [],
-        failedLaneIds: directChildren.map((lane) => lane.id),
-        blockCleanup: true,
-      };
-    }
-
-    const successorBaseBranch = branchNameFromRef(successorParent.branchRef);
-    const successorParentLaneId = successorParent.laneType === "primary" ? null : successorParent.id;
-    const updatedLaneIds: string[] = [];
-    const failedLaneIds: string[] = [];
-
-    for (const child of directChildren) {
-      const previousParentLaneId = child.parentLaneId;
-      const previousBaseRef = child.baseRef;
-      const childPr = getActiveRowForCurrentLaneBranch(child.id);
-
-      let reparentResult:
-        | {
-            preHeadSha: string | null;
-            newParentLaneId: string;
-          }
-        | null = null;
-
-      try {
-        reparentResult = await laneService.reparent({
-          laneId: child.id,
-          newParentLaneId: successorParent.id,
-        });
-        const refreshedChild = {
-          ...(allLanesById.get(child.id) ?? child),
-          parentLaneId: successorParentLaneId,
-          baseRef: successorParent.branchRef,
-        };
-        allLanesById.set(child.id, refreshedChild);
-        await pushRebasedLane(refreshedChild);
-        if (childPr && childPr.base_branch !== successorBaseBranch) {
-          const retargetError = await retargetBase(childPr.id, successorBaseBranch).catch((error) => {
-            logger.warn("prs.child_auto_rebase_retarget_failed", {
-              landedLaneId: args.landedLaneId,
-              childLaneId: child.id,
-              prId: childPr.id,
-              error: getErrorMessage(error),
-            });
-            return getErrorMessage(error);
-          });
-          markHotRefresh([childPr.id]);
-          if (retargetError) {
-            failedLaneIds.push(child.id);
-            await recordAttentionStatusSafely({
-              laneId: child.id,
-              parentLaneId: successorParentLaneId,
-              parentHeadSha: null,
-              state: "rebaseFailed",
-              conflictCount: 0,
-              message: `Auto-rebase pushed this lane after '${args.landedLaneName}' merged, but ADE could not retarget the PR base to '${successorBaseBranch}': ${retargetError}. The merged parent lane was left in place so you can finish cleanup manually.`,
-            }, child.id);
-            continue;
-          }
-        }
-        const recorded = await recordAttentionStatusSafely({
-          laneId: child.id,
-          parentLaneId: successorParentLaneId,
-          parentHeadSha: null,
-          state: "autoRebased",
-          conflictCount: 0,
-          message: `Rebased and pushed automatically after '${args.landedLaneName}' merged.`,
-        }, child.id);
-        if (!recorded) {
-          failedLaneIds.push(child.id);
-          continue;
-        }
-        updatedLaneIds.push(child.id);
-      } catch (error) {
-        const childError = getErrorMessage(error);
-        let rollbackError: string | null = null;
-        if (reparentResult?.preHeadSha) {
-          try {
-            await restoreAutoRebaseChildLane({
-              lane: child,
-              previousParentLaneId,
-              previousBaseRef,
-              preHeadSha: reparentResult.preHeadSha,
-            });
-            allLanesById.set(child.id, {
-              ...(allLanesById.get(child.id) ?? child),
-              parentLaneId: previousParentLaneId,
-              baseRef: previousBaseRef,
-            });
-          } catch (restoreError) {
-            rollbackError = getErrorMessage(restoreError);
-            logger.warn("prs.child_auto_rebase_restore_failed", {
-              landedLaneId: args.landedLaneId,
-              childLaneId: child.id,
-              error: rollbackError,
-            });
-          }
-        }
-        await recordAttentionStatusSafely({
-          laneId: child.id,
-          parentLaneId: previousParentLaneId,
-          parentHeadSha: null,
-          state: "rebaseFailed",
-          conflictCount: 0,
-          message: rollbackError
-            ? `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. Automatic rollback also failed: ${rollbackError}. Open the Rebase/Merge tab to recover this lane.`
-            : `Auto-rebase failed after '${args.landedLaneName}' merged: ${childError}. The lane was restored to its pre-rebase state. Open the Rebase/Merge tab to recover this lane.`,
-        }, child.id);
-        failedLaneIds.push(child.id);
-      }
-    }
-
-    return {
-      updatedLaneIds,
-      failedLaneIds,
-      blockCleanup: failedLaneIds.length > 0,
-    };
   };
 
   const upsertSnapshotRow = (args: {
@@ -6558,6 +6336,7 @@ export function createPrService({
       recordMergeOutcome(summary.id, {
         mergedByLogin: asString(pr?.merged_by?.login) || null,
         mergedByAvatarUrl: asString(pr?.merged_by?.avatar_url) || null,
+        mergedHeadSha: asString(pr?.head?.sha) || null,
         commitCount: normalizeCount(pr?.commits),
         changedFiles: normalizeCount(pr?.changed_files),
       });
@@ -7716,6 +7495,26 @@ export function createPrService({
     return { ...lane, branchRef: checkedOut };
   };
 
+  /**
+   * A new integration lane starts from the base lane's current commit, so it
+   * merges onto exactly what the base lane has now, unpushed work included.
+   */
+  const createIntegrationLaneFrom = async (
+    baseLane: LaneSummary,
+    name: string,
+    description: string,
+  ): Promise<LaneSummary> => {
+    const head = await runGit(["rev-parse", "HEAD"], { cwd: baseLane.worktreePath, timeoutMs: 10_000 }).catch(() => null);
+    const headSha = head?.exitCode === 0 ? head.stdout.trim() : "";
+    return await laneService.create({
+      name,
+      description,
+      ...(headSha
+        ? { startPoint: headSha }
+        : { start: { from: "branch" as const, branch: branchNameFromRef(baseLane.branchRef), bring: "local" as const } }),
+    });
+  };
+
   const createFromLane = async (args: CreatePrFromLaneInternalArgs): Promise<PrSummary> => {
     const allLanes = await laneService.list({ includeArchived: true });
     const recorded = allLanes.find((entry) => entry.id === args.laneId);
@@ -7726,16 +7525,8 @@ export function createPrService({
       allowDirtyWorktree: args.allowDirtyWorktree
     });
 
-    const parentLane = recorded.parentLaneId ? allLanes.find((entry) => entry.id === recorded.parentLaneId) ?? null : null;
-    const primaryLane = allLanes.find((entry) => entry.laneType === "primary") ?? null;
-    const parentPr = parentLane ? getRowForLane(parentLane.id) : null;
-    const defaultBaseBranch = parentPr?.state === "merged" && parentPr.base_branch
-      ? parentPr.base_branch
-      : resolveStableLaneBaseBranch({
-          lane: recorded,
-          parent: parentLane,
-          primaryBranchRef: primaryLane?.branchRef ?? null,
-        });
+    // The lane's compare base: its open PR's base, else the default branch.
+    const defaultBaseBranch = laneService.getCompareBase(recorded.id) ?? branchNameFromLaneRef(recorded.baseRef);
     const baseBranch = (args.baseBranch ?? defaultBaseBranch).trim();
     if (!baseBranch) {
       throw new Error("Choose a target branch before creating the PR.");
@@ -8257,19 +8048,17 @@ export function createPrService({
   }): Promise<{
     branchDeleted: boolean;
     laneArchived: boolean;
-    childAutoRebaseBlockedCleanup: boolean;
   }> => {
     const row = getRow(args.prId);
     if (!row) {
       logger.warn("prs.post_merge_cleanup_pr_missing", { prId: args.prId });
-      return { branchDeleted: false, laneArchived: false, childAutoRebaseBlockedCleanup: false };
+      return { branchDeleted: false, laneArchived: false };
     }
     const repo: GitHubRepoRef = { owner: row.repo_owner, name: row.repo_name };
     const baseBranch = args.baseBranch ?? row.base_branch;
     const headBranch = row.head_branch;
     let branchDeleted = false;
     let laneArchived = false;
-    let childAutoRebaseBlockedCleanup = false;
 
     try {
       try {
@@ -8306,57 +8095,32 @@ export function createPrService({
         });
       }
 
-      const childAdvanceResult = await advanceChildLanesAfterLand({
-        landedLaneId: row.lane_id,
-        landedLaneName: row.title?.trim() || row.head_branch,
-      }).catch((error) => {
-        logger.warn("prs.child_auto_rebase_failed", {
-          prId: row.id,
-          laneId: row.lane_id,
-          error: getErrorMessage(error),
-        });
-        return {
-          updatedLaneIds: [],
-          failedLaneIds: [],
-          blockCleanup: true,
-        };
-      });
-      childAutoRebaseBlockedCleanup = childAdvanceResult.blockCleanup;
-
-      if (!childAutoRebaseBlockedCleanup) {
-        if (args.deleteRemoteBranch) {
-          try {
-            await githubService.apiRequest({
-              method: "DELETE",
-              path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
-            });
+      if (args.deleteRemoteBranch) {
+        try {
+          await githubService.apiRequest({
+            method: "DELETE",
+            path: `/repos/${repo.owner}/${repo.name}/git/refs/heads/${headBranch}`
+          });
+          branchDeleted = true;
+        } catch (error) {
+          // 404-tolerant: if the branch was already deleted (e.g. by gh pr
+          // merge --delete-branch on a previous attempt), treat as success.
+          const msg = getErrorMessage(error);
+          if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
             branchDeleted = true;
-          } catch (error) {
-            // 404-tolerant: if the branch was already deleted (e.g. by gh pr
-            // merge --delete-branch on a previous attempt), treat as success.
-            const msg = getErrorMessage(error);
-            if (msg.includes("404") || msg.toLowerCase().includes("not found")) {
-              branchDeleted = true;
-            } else {
-              logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: msg });
-            }
+          } else {
+            logger.warn("prs.delete_branch_failed", { prId: row.id, headBranch, error: msg });
           }
         }
+      }
 
-        if (args.archiveLane) {
-          try {
-            await laneService.archive({ laneId: row.lane_id });
-            laneArchived = true;
-          } catch (archiveErr) {
-            logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
-          }
+      if (args.archiveLane) {
+        try {
+          await laneService.archive({ laneId: row.lane_id });
+          laneArchived = true;
+        } catch (archiveErr) {
+          logger.warn("prs.lane_archive_failed", { prId: row.id, laneId: row.lane_id, error: getErrorMessage(archiveErr) });
         }
-      } else {
-        logger.warn("prs.post_merge_cleanup_blocked", {
-          prId: row.id,
-          laneId: row.lane_id,
-          failedLaneIds: childAdvanceResult.failedLaneIds,
-        });
       }
 
       if (args.operationId) {
@@ -8368,9 +8132,6 @@ export function createPrService({
               mergeCommitSha: args.mergeCommitSha,
               branchDeleted,
               laneArchived,
-              childAutoRebaseBlockedCleanup,
-              autoRebasedChildLaneIds: childAdvanceResult.updatedLaneIds,
-              failedAutoRebaseChildLaneIds: childAdvanceResult.failedLaneIds,
             }
           });
         } catch { /* already finished -- ignore */ }
@@ -8380,18 +8141,6 @@ export function createPrService({
       await refreshOne(row.id).catch(() => {});
       await conflictService?.scanRebaseNeeds().catch((error) => {
         logger.warn("prs.refresh_rebase_needs_failed", {
-          prId: row.id,
-          error: getErrorMessage(error),
-        });
-      });
-      await rebaseSuggestionService?.refresh().catch((error) => {
-        logger.warn("prs.refresh_rebase_suggestions_failed", {
-          prId: row.id,
-          error: getErrorMessage(error),
-        });
-      });
-      await autoRebaseService?.refreshActiveRebaseNeeds("merge_completed").catch((error) => {
-        logger.warn("prs.refresh_auto_rebase_failed", {
           prId: row.id,
           error: getErrorMessage(error),
         });
@@ -8416,7 +8165,6 @@ export function createPrService({
               mergeCommitSha: args.mergeCommitSha,
               branchDeleted,
               laneArchived,
-              childAutoRebaseBlockedCleanup,
               cleanupError: cleanupMsg,
             }
           });
@@ -8424,7 +8172,7 @@ export function createPrService({
       }
     }
 
-    return { branchDeleted, laneArchived, childAutoRebaseBlockedCleanup };
+    return { branchDeleted, laneArchived };
   };
 
   type GhRunResult = { exitCode: number; stdout: string; stderr: string };
@@ -8606,6 +8354,7 @@ export function createPrService({
     recordMergeOutcome(target.row.id, {
       method: args.method,
       mergedByLogin: await resolveViewerLoginForMerge(),
+      mergedHeadSha: asString(args.expectedHeadSha).trim() || target.row.head_sha || null,
     });
 
     const cleanup = await runPostMergeCleanup({
@@ -8910,7 +8659,6 @@ export function createPrService({
     try {
       runResult = await laneService.rebaseStart({
         laneId,
-        scope: "lane_only",
         pushMode: "none",
         actor: "user",
         reason: "pr_update_branch",
@@ -9018,11 +8766,11 @@ export function createPrService({
         // Already validated in the guard above; safe to assert non-null.
         integrationLane = laneMap.get(existingIntegrationLaneId)!;
       } else {
-        integrationLane = await laneService.createChild({
-          parentLaneId: preflight.baseLane.id,
-          name: integrationLaneName,
-          description: `Integration lane for merging: ${sourceLaneNames.join(", ")}`
-        });
+        integrationLane = await createIntegrationLaneFrom(
+          preflight.baseLane,
+          integrationLaneName,
+          `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
+        );
         createdNewIntegrationLane = true;
       }
 
@@ -9163,11 +8911,11 @@ export function createPrService({
     let integrationLane: LaneSummary | null = null;
     let integrationLockToken: string | null = null;
     try {
-      integrationLane = await laneService.createChild({
-        parentLaneId: preflight.baseLane.id,
-        name: integrationLaneName,
-        description: args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
-      });
+      integrationLane = await createIntegrationLaneFrom(
+        preflight.baseLane,
+        integrationLaneName,
+        args.description?.trim() || `Integration lane for merging: ${sourceLaneNames.join(", ")}`,
+      );
       integrationLockToken = acquireLaneMutationLock({
         lane: integrationLane,
         ownerKind: "integration_resolution",
@@ -10514,6 +10262,8 @@ export function createPrService({
       mergedByAvatarUrl?: string | null;
       commitCount?: number | null;
       changedFiles?: number | null;
+      /** The PR's head commit when it merged; finds lanes built on this work. */
+      mergedHeadSha?: string | null;
     },
   ): void => {
     try {
@@ -10523,6 +10273,7 @@ export function createPrService({
           set merge_method = coalesce(merge_method, ?),
               merged_by_login = coalesce(merged_by_login, ?),
               merged_by_avatar_url = coalesce(merged_by_avatar_url, ?),
+              merged_head_sha = coalesce(merged_head_sha, ?),
               commit_count = coalesce(?, commit_count),
               changed_files = coalesce(?, changed_files)
           where id = ? and project_id = ?
@@ -10531,6 +10282,7 @@ export function createPrService({
           normalizeMergeMethod(outcome.method),
           outcome.mergedByLogin?.trim() || null,
           outcome.mergedByAvatarUrl?.trim() || null,
+          outcome.mergedHeadSha?.trim() || null,
           normalizeCount(outcome.commitCount),
           normalizeCount(outcome.changedFiles),
           prId,
@@ -12032,11 +11784,11 @@ export function createPrService({
       }
       integrationLane = adopt;
     } else {
-      integrationLane = await laneService.createChild({
-        parentLaneId: preflight.baseLane.id,
-        name: integrationLaneName,
-        description: `Integration lane for proposal ${args.proposalId}`
-      });
+      integrationLane = await createIntegrationLaneFrom(
+        preflight.baseLane,
+        integrationLaneName,
+        `Integration lane for proposal ${args.proposalId}`,
+      );
     }
 
     const integrationLockToken = acquireLaneMutationLock({
@@ -12715,8 +12467,8 @@ export function createPrService({
     },
 
     /**
-     * Run only the post-merge bookkeeping (branch deletion, child-lane rebase
-     * advance, group cleanup, cache refresh). Used when a `gh pr merge --admin`
+     * Run only the post-merge bookkeeping (branch deletion, group cleanup,
+     * rebase needs and cache refresh). Used when a `gh pr merge --admin`
      * call lands the PR outside of `land`.
      */
     async runPostMergeCleanup(args: {
@@ -12733,7 +12485,6 @@ export function createPrService({
     }): Promise<{
       branchDeleted: boolean;
       laneArchived: boolean;
-      childAutoRebaseBlockedCleanup: boolean;
     }> {
       return await runPostMergeCleanup({
         prId: args.prId,
@@ -13990,97 +13741,21 @@ export function createPrService({
     const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
     const primaryBranch = primaryLane ? branchNameFromRef(primaryLane.branchRef) : null;
 
-    const stacks = buildStackInfos(lanes, prByLaneId);
     const capabilities = buildCapabilities(prSummaries);
-    const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, laneById, primaryLane, primaryBranch);
+    const createCapabilities = buildCreateCapabilities(lanes, prByLaneId, primaryBranch);
     const workflowCards = await buildWorkflowCards();
 
     return {
       generatedAt: nowIso(),
       prs: prSummaries,
-      stacks,
+      // Lanes no longer stack; GitHub-native stacks reach the phone through
+      // the PR list itself. Kept empty for phones that decode the field.
+      stacks: [],
       capabilities,
       createCapabilities,
       workflowCards,
       live: true,
     };
-  }
-
-  function buildStackInfos(
-    lanes: LaneSummary[],
-    prByLaneId: Map<string, PrSummary>,
-  ): PrStackInfo[] {
-    if (lanes.length === 0) return [];
-
-    const childrenByParent = new Map<string, LaneSummary[]>();
-    for (const lane of lanes) {
-      if (!lane.parentLaneId) continue;
-      const arr = childrenByParent.get(lane.parentLaneId) ?? [];
-      arr.push(lane);
-      childrenByParent.set(lane.parentLaneId, arr);
-    }
-
-    const stacks: PrStackInfo[] = [];
-    const emitted = new Set<string>();
-
-    for (const lane of lanes) {
-      if (lane.parentLaneId) continue;
-      const member = collectStackMembers(lane, childrenByParent, prByLaneId, 0);
-      const prCount = member.filter((m) => m.prId !== null).length;
-      if (prCount === 0) continue;
-      const stackKey = `stack:${lane.id}`;
-      if (emitted.has(stackKey)) continue;
-      emitted.add(stackKey);
-      stacks.push({
-        stackId: stackKey,
-        rootLaneId: lane.id,
-        members: member,
-        size: member.length,
-        prCount,
-      });
-    }
-
-    return stacks;
-  }
-
-  function collectStackMembers(
-    lane: LaneSummary,
-    childrenByParent: Map<string, LaneSummary[]>,
-    prByLaneId: Map<string, PrSummary>,
-    depth: number,
-  ): PrStackMember[] {
-    const children = childrenByParent.get(lane.id) ?? [];
-    let laneRole: PrStackMemberRole;
-    if (depth === 0) {
-      laneRole = "root";
-    } else if (children.length === 0) {
-      laneRole = "leaf";
-    } else {
-      laneRole = "middle";
-    }
-    const pr = prByLaneId.get(lane.id) ?? null;
-    const self: PrStackMember = {
-      laneId: lane.id,
-      laneName: lane.name,
-      parentLaneId: lane.parentLaneId,
-      depth,
-      role: laneRole,
-      dirty: lane.status?.dirty === true,
-      prId: pr?.id ?? null,
-      prNumber: pr ? Number(pr.githubPrNumber) : null,
-      prState: pr?.state ?? null,
-      prTitle: pr?.title ?? null,
-      baseBranch: pr?.baseBranch ?? null,
-      headBranch: pr?.headBranch ?? null,
-      checksStatus: pr?.checksStatus ?? null,
-      reviewStatus: pr?.reviewStatus ?? null,
-    };
-    const result: PrStackMember[] = [self];
-    for (const child of children) {
-      result.push(...collectStackMembers(child, childrenByParent, prByLaneId, depth + 1));
-    }
-    return result;
   }
 
   function buildCapabilities(prs: PrSummary[]): Record<string, PrActionCapabilities> {
@@ -14137,8 +13812,6 @@ export function createPrService({
   function buildCreateCapabilities(
     lanes: LaneSummary[],
     prByLaneId: Map<string, PrSummary>,
-    laneById: Map<string, LaneSummary>,
-    primaryLane: LaneSummary | null,
     primaryBranch: string | null,
   ): PrCreateCapabilities {
     const eligibleLanes: PrCreateLaneEligibility[] = [];
@@ -14146,15 +13819,11 @@ export function createPrService({
       if (lane.laneType === "primary") continue;
       if (lane.archivedAt) continue;
       const existingPr = prByLaneId.get(lane.id) ?? null;
-      const parent = lane.parentLaneId ? laneById.get(lane.parentLaneId) ?? null : null;
-      const defaultBaseBranch = resolveStableLaneBaseBranch({
-        lane,
-        parent,
-        primaryBranchRef: primaryLane?.branchRef ?? null,
-      });
+      // The lane's compare base: its open PR's base, else the default branch.
+      const defaultBaseBranch = laneService.getCompareBase(lane.id) ?? branchNameFromLaneRef(lane.baseRef);
       const dirty = lane.status?.dirty === true;
-      // Same `ahead` count the lane list already shows vs the lane's configured base
-      // (`resolveStableLaneBaseBranch`); keep wording aligned with that UI signal.
+      // Same `ahead` count the lane list already shows against that compare
+      // base; keep wording aligned with that UI signal.
       const commitsAheadOfBase = Math.max(0, Number(lane.status?.ahead ?? 0) || 0);
       const hasExistingPr = existingPr !== null && (existingPr.state === "open" || existingPr.state === "draft");
       const canCreate = !hasExistingPr;
@@ -14164,7 +13833,6 @@ export function createPrService({
       eligibleLanes.push({
         laneId: lane.id,
         laneName: lane.name,
-        parentLaneId: lane.parentLaneId,
         repoOwner: null,
         repoName: null,
         defaultBaseBranch,
@@ -14224,13 +13892,10 @@ export function createPrService({
     if (conflictService) {
       try {
         // Use the same source as the desktop Rebase tab (`window.ade.rebase.scanNeeds`)
-        // so iOS sees the exact same lanes, including drift against local `main`
-        // that hasn't been pushed yet. `rebaseSuggestionService.listSuggestions`
-        // only reads `origin/<base>`, so it misses that case.
+        // so iOS sees the exact same lanes.
         const needs = await conflictService.scanRebaseNeeds();
         const nowMs = Date.now();
         for (const need of needs) {
-          if (need.kind !== "lane_base") continue;
           if (need.behindBy <= 0) continue;
           if (need.dismissedAt) continue;
           if (need.deferredUntil) {
@@ -14266,6 +13931,8 @@ export function createPrService({
             laneName: need.laneName,
             baseBranch: need.baseBranch,
             behindBy: need.behindBy,
+            needKind: need.kind,
+            mergedPr: need.mergedPr,
             conflictPredicted: need.conflictPredicted,
             prId: need.prId ?? linkedPr?.id ?? null,
             prNumber: linkedPr ? Number(linkedPr.githubPrNumber) : null,

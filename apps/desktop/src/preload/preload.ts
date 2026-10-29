@@ -433,8 +433,6 @@ import type {
   CancelLaneGitWriteArgs,
   CancelLaneGitWriteResult,
   CreateLaneArgs,
-  CreateChildLaneArgs,
-  CreateLaneFromUnstagedArgs,
   LaneBranchSwitchArgs,
   LaneBranchDrift,
   LaneBranchSwitchPreview,
@@ -890,12 +888,6 @@ import type {
   RebaseRunEventPayload,
   ReadTranscriptTailArgs,
   RenameLaneArgs,
-  ReparentLaneArgs,
-  ReparentLaneResult,
-  RebaseSuggestion,
-  RebaseSuggestionsEventPayload,
-  AutoRebaseLaneStatus,
-  AutoRebaseEventPayload,
   UpdateLaneAppearanceArgs,
   InitLaneEnvArgs,
   GetLaneEnvStatusArgs,
@@ -963,7 +955,6 @@ import type {
   SessionSettleOverride,
   SessionWakeReason,
   TerminalSessionChangedEvent,
-  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -2945,17 +2936,6 @@ const remoteLaneRebaseEventFanout = createRemoteRuntimeFanout<RebaseRunEventPayl
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
   invalidate: () => clearGitReadCaches(),
 });
-const remoteLaneRebaseSuggestionsEventFanout =
-  createRemoteRuntimeFanout<RebaseSuggestionsEventPayload>({
-    eventType: "lane_rebase_suggestions_event",
-    label: "rebase suggestions",
-    onSubscribe: () => ensureRemoteRuntimeEventPump(),
-  });
-const remoteLaneAutoRebaseEventFanout = createRemoteRuntimeFanout<AutoRebaseEventPayload>({
-  eventType: "lane_auto_rebase_event",
-  label: "auto rebase",
-  onSubscribe: () => ensureRemoteRuntimeEventPump(),
-});
 const remoteLaneEnvEventFanout = createRemoteRuntimeFanout<LaneEnvInitEvent>({
   eventType: "lane_env_event",
   label: "lane env",
@@ -3156,8 +3136,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteLaneDeleteEventFanout,
   remoteLaneLifecycleEventFanout,
   remoteLaneRebaseEventFanout,
-  remoteLaneRebaseSuggestionsEventFanout,
-  remoteLaneAutoRebaseEventFanout,
   remoteLaneEnvEventFanout,
   remoteChatLaunchEventFanout,
   remoteLanePortEventFanout,
@@ -3763,18 +3741,6 @@ function subscribeRemoteLaneRebaseEvents(
   cb: (payload: RebaseRunEventPayload) => void,
 ): () => void {
   return remoteLaneRebaseEventFanout.subscribe(cb);
-}
-
-function subscribeRemoteLaneRebaseSuggestionsEvents(
-  cb: (payload: RebaseSuggestionsEventPayload) => void,
-): () => void {
-  return remoteLaneRebaseSuggestionsEventFanout.subscribe(cb);
-}
-
-function subscribeRemoteLaneAutoRebaseEvents(
-  cb: (payload: AutoRebaseEventPayload) => void,
-): () => void {
-  return remoteLaneAutoRebaseEventFanout.subscribe(cb);
 }
 
 function subscribeRemoteLaneEnvEvents(
@@ -6840,37 +6806,6 @@ const adeBridge = {
       clearGitReadCaches();
       return lane as LaneSummary;
     },
-    createChild: async (
-      args: CreateChildLaneArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<LaneSummary> => {
-      clearGitReadCaches();
-      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
-        pin,
-        "lane",
-        "createChild",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesCreateChild, args),
-      );
-      clearGitReadCaches();
-      return lane as LaneSummary;
-    },
-    // The source worktree lives on the lane's machine; a pin names it.
-    createFromUnstaged: async (
-      args: CreateLaneFromUnstagedArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<LaneSummary> => {
-      clearGitReadCaches();
-      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
-        pin,
-        "lane",
-        "createFromUnstaged",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesCreateFromUnstaged, args),
-      );
-      clearGitReadCaches();
-      return lane as LaneSummary;
-    },
     importBranch: async (
       args: ImportBranchLaneArgs,
       pin?: OpenProjectBinding | null,
@@ -6933,21 +6868,6 @@ const adeBridge = {
         );
       }
       clearGitReadCaches();
-    },
-    reparent: async (
-      args: ReparentLaneArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<ReparentLaneResult> => {
-      clearGitReadCaches();
-      const result = await callPinnedOrBoundRuntimeActionOr<ReparentLaneResult>(
-        pin,
-        "lane",
-        "reparent",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesReparent, args),
-      );
-      clearGitReadCaches();
-      return result as ReparentLaneResult;
     },
     updateAppearance: async (
       args: UpdateLaneAppearanceArgs,
@@ -7100,14 +7020,6 @@ const adeBridge = {
         ipcRenderer.removeListener(IPC.lanesLifecycleEvent, listener);
       };
     },
-    getStackChain: async (laneId: string): Promise<StackChainItem[]> =>
-      callProjectRuntimeActionOr("lane", "getStackChain", { arg: laneId }, () =>
-        ipcRenderer.invoke(IPC.lanesGetStackChain, { laneId }),
-      ),
-    getChildren: async (laneId: string): Promise<LaneSummary[]> =>
-      callProjectRuntimeActionOr("lane", "getChildren", { arg: laneId }, () =>
-        ipcRenderer.invoke(IPC.lanesGetChildren, { laneId }),
-      ),
     attachLinearIssueToSession: async (args: {
       chatSessionId: string;
       issues: LaneLinearIssue[];
@@ -7234,85 +7146,6 @@ const adeBridge = {
       return () => {
         removeRemote();
         ipcRenderer.removeListener(IPC.lanesRebaseEvent, listener);
-      };
-    },
-    listRebaseSuggestions: async (): Promise<RebaseSuggestion[]> =>
-      callProjectRuntimeActionOr("lane", "listRebaseSuggestions", {}, () =>
-        ipcRenderer.invoke(IPC.lanesListRebaseSuggestions),
-      ),
-    dismissRebaseSuggestion: async (args: {
-      laneId: string;
-    }, pin?: OpenProjectBinding | null): Promise<void> => {
-      await callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "lane",
-        "dismissRebaseSuggestion",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesDismissRebaseSuggestion, args),
-      );
-    },
-    deferRebaseSuggestion: async (args: {
-      laneId: string;
-      minutes: number;
-    },
-      pin?: OpenProjectBinding | null,
-    ): Promise<void> => {
-      await callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "lane",
-        "deferRebaseSuggestion",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesDeferRebaseSuggestion, args),
-      );
-    },
-    onRebaseSuggestionsEvent: (
-      cb: (ev: RebaseSuggestionsEventPayload) => void,
-    ) => {
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: RebaseSuggestionsEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.lanesRebaseSuggestionsEvent, listener);
-      const removeRemote = subscribeRemoteLaneRebaseSuggestionsEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.lanesRebaseSuggestionsEvent, listener);
-      };
-    },
-    listAutoRebaseStatuses: async (pin?: OpenProjectBinding | null): Promise<AutoRebaseLaneStatus[]> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "lane", "listAutoRebaseStatuses", { args: {} }, () =>
-        ipcRenderer.invoke(IPC.lanesListAutoRebaseStatuses),
-      ),
-    dismissAutoRebaseStatus: async (args: {
-      laneId: string;
-    }, pin?: OpenProjectBinding | null): Promise<void> => {
-      await callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "lane",
-        "dismissAutoRebaseStatus",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesDismissAutoRebaseStatus, args),
-      );
-    },
-    onAutoRebaseEvent: (cb: (ev: AutoRebaseEventPayload) => void, pin?: OpenProjectBinding | null) => {
-      // A pinned Git pane shows a lane on another machine, so it listens to
-      // that machine's auto-rebase feed instead of this one's.
-      const removePinned = subscribePinnedProjectRuntimeEvents(
-        pin,
-        (payload) => toWrappedEvent<AutoRebaseEventPayload>(payload, "lane_auto_rebase_event"),
-        cb,
-        "auto rebase",
-      );
-      if (removePinned) return removePinned;
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: AutoRebaseEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.lanesAutoRebaseEvent, listener);
-      const removeRemote = subscribeRemoteLaneAutoRebaseEvents(cb);
-      return () => {
-        removeRemote();
-        ipcRenderer.removeListener(IPC.lanesAutoRebaseEvent, listener);
       };
     },
     openFolder: async (args: { laneId: string }): Promise<void> => {

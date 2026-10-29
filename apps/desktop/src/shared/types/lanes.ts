@@ -137,10 +137,6 @@ export type LaneSummary = {
   attachedRootPath?: string | null;
   /** Set only on the summary `create` returns: how the lane started. */
   createdFrom?: LaneCreatedFrom | null;
-  parentLaneId: string | null;
-  childCount: number;
-  stackDepth: number;
-  parentStatus: LaneStatus | null;
   isEditProtected: boolean;
   status: LaneStatus;
   /** Non-null when the worktree HEAD has drifted off `branchRef`. */
@@ -353,7 +349,6 @@ export type LaneBranchProfile = {
   laneId: string;
   branchRef: string;
   baseRef: string;
-  parentLaneId: string | null;
   sourceBranchRef: string | null;
   createdAt: string;
   updatedAt: string;
@@ -381,8 +376,6 @@ export type LaneStateSnapshotSummary = {
 export type LaneListSnapshot = {
   lane: LaneSummary;
   runtime: LaneRuntimeSummary;
-  rebaseSuggestion: RebaseSuggestion | null;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictStatus: ConflictStatus | null;
   stateSnapshot: LaneStateSnapshotSummary | null;
   /**
@@ -405,11 +398,7 @@ export type LaneListSnapshot = {
 export type LaneDetailPayload = {
   lane: LaneSummary;
   runtime: LaneRuntimeSummary;
-  stackChain: StackChainItem[];
-  children: LaneSummary[];
   stateSnapshot: LaneStateSnapshotSummary | null;
-  rebaseSuggestion: RebaseSuggestion | null;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictStatus: ConflictStatus | null;
   overlaps: ConflictOverlap[];
   syncStatus: GitUpstreamSyncStatus | null;
@@ -430,8 +419,6 @@ export type ListLanesArgs = {
   includeArchived?: boolean;
   includeStatus?: boolean;
   includeConflictStatus?: boolean;
-  includeRebaseSuggestions?: boolean;
-  includeAutoRebaseStatus?: boolean;
 };
 
 export type CreateLaneArgs = {
@@ -458,26 +445,6 @@ export type CreateLaneArgs = {
    * stops the git checkout while it runs.
    */
   operationId?: string;
-};
-
-export type CreateChildLaneArgs = {
-  parentLaneId: string;
-  name: string;
-  description?: string;
-  folder?: string;
-  baseBranchRef?: string;
-  branchName?: string;
-  linearIssue?: LaneLinearIssue | null;
-  /**
-   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
-   * stops the git checkout while it runs.
-   */
-  operationId?: string;
-};
-
-export type CreateLaneFromUnstagedArgs = {
-  sourceLaneId: string;
-  name: string;
 };
 
 export type ImportBranchLaneArgs = {
@@ -543,27 +510,6 @@ export type LaneBranchSwitchResult = {
 export type RenameLaneArgs = {
   laneId: string;
   name: string;
-};
-
-export type ReparentLaneArgs = {
-  laneId: string;
-  newParentLaneId: string;
-  /**
-   * Git branch name to stack onto (resolved in the project repo, prefers `origin/<branch>`).
-   * When omitted, uses the new parent lane's current branch, or for the primary lane the same
-   * upstream / origin resolution as graph reparent.
-   */
-  stackBaseBranchRef?: string | null;
-};
-
-export type ReparentLaneResult = {
-  laneId: string;
-  previousParentLaneId: string | null;
-  newParentLaneId: string;
-  previousBaseRef: string;
-  newBaseRef: string;
-  preHeadSha: string | null;
-  postHeadSha: string | null;
 };
 
 export type UpdateLaneAppearanceArgs = {
@@ -666,7 +612,6 @@ export type LaneDeleteStepName =
   // Destroys the lane's Mac Desktop virtual display. Present on every platform
   // because the step runs unconditionally; off macOS it reports "no display".
   | "destroy_mac_desktop"
-  | "cancel_auto_rebase"
   | "cleanup_env"
   | "git_status"
   | "git_worktree_remove"
@@ -774,17 +719,6 @@ export type LaneDeleteRisk = {
   envInitialized: boolean;
 };
 
-export type StackChainItem = {
-  laneId: string;
-  laneName: string;
-  branchRef: string;
-  depth: number;
-  parentLaneId: string | null;
-  status: LaneStatus;
-};
-
-export type RebaseScope = "lane_only" | "lane_and_descendants";
-
 export type PushMode = "none" | "review_then_push";
 
 export type RebaseLaneStatus = "pending" | "running" | "succeeded" | "conflict" | "blocked" | "skipped";
@@ -792,7 +726,6 @@ export type RebaseLaneStatus = "pending" | "running" | "succeeded" | "conflict" 
 export type RebaseRunLane = {
   laneId: string;
   laneName: string;
-  parentLaneId: string | null;
   status: RebaseLaneStatus;
   preHeadSha: string | null;
   postHeadSha: string | null;
@@ -806,7 +739,6 @@ export type RebaseRunState = "running" | "completed" | "failed" | "aborted";
 export type RebaseRun = {
   runId: string;
   rootLaneId: string;
-  scope: RebaseScope;
   pushMode: PushMode;
   state: RebaseRunState;
   startedAt: string;
@@ -825,7 +757,6 @@ export type RebaseRun = {
 
 export type RebaseStartArgs = {
   laneId: string;
-  scope?: RebaseScope;
   pushMode?: PushMode;
   actor?: string;
   reason?: string;
@@ -864,45 +795,6 @@ export type RebaseTargetCommit = {
   subject: string;
   author: string;
   committedAt: string;
-};
-
-export type RebaseSuggestion = {
-  laneId: string;
-  parentLaneId: string;
-  parentHeadSha: string;
-  behindCount: number;
-  baseLabel?: string | null;
-  groupContext?: string | null;
-  lastSuggestedAt: string;
-  deferredUntil: string | null;
-  dismissedAt: string | null;
-  hasPr: boolean;
-  /** Commits that would be pulled in by a rebase against this target head. Capped at 20 entries; may be undefined for legacy suggestions. */
-  targetCommits?: RebaseTargetCommit[];
-};
-
-export type RebaseSuggestionsEventPayload = {
-  type: "rebase-suggestions-updated";
-  computedAt: string;
-  suggestions: RebaseSuggestion[];
-};
-
-export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
-
-export type AutoRebaseLaneStatus = {
-  laneId: string;
-  parentLaneId: string | null;
-  parentHeadSha: string | null;
-  state: AutoRebaseLaneState;
-  updatedAt: string;
-  conflictCount: number;
-  message: string | null;
-};
-
-export type AutoRebaseEventPayload = {
-  type: "auto-rebase-updated";
-  computedAt: string;
-  statuses: AutoRebaseLaneStatus[];
 };
 
 // --- Lane Environment Init args (Phase 5 W1) ---

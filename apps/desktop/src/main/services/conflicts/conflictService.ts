@@ -64,8 +64,7 @@ import type {
 } from "../../../shared/types";
 import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
-import { normalizePrCreationStrategy } from "../../../shared/prStrategy";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
@@ -90,7 +89,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { safeSegment } from "../shared/packLegacyUtils";
-import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { signalProcessGroup, asString, isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -273,11 +272,10 @@ function extractOverlapFiles(row: ConflictPredictionRow | undefined): string[] {
  * Resolve `ref` to a SHA, shared across every caller asking the same question.
  *
  * The batch assessment fans out over lanes with an uncapped `Promise.all`, and
- * every lane in a project typically shares one `baseRef` — measured, that was
- * `git rev-parse main` running 14 times at the project root inside a single
+ * every lane in a project typically shares one compare base — measured, that
+ * was `git rev-parse main` running 14 times at the project root inside a single
  * refresh. The cache key carries the cwd, so a repo-wide ref collapses to one
- * subprocess while `HEAD` stays correctly distinct per worktree, and the lane's
- * own `HEAD` read collides with the one `rebaseSuggestionService` makes.
+ * subprocess while `HEAD` stays correctly distinct per worktree.
  */
 async function readHeadSha(cwd: string, ref = "HEAD"): Promise<string> {
   const res = await runGitRepoCached(
@@ -320,39 +318,6 @@ async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string)
   const res = await runGit(["diff", "--name-only", "-z", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
   if (res.exitCode !== 0) return new Set<string>();
   return new Set(parseDiffNameOnly(res.stdout));
-}
-
-function resolveLaneRebaseTarget(args: {
-  lane: LaneSummary;
-  lanesById: Map<string, LaneSummary>;
-}): {
-  comparisonRef: string;
-  fallbackRef?: string;
-  displayBaseBranch: string;
-} {
-  const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
-  const parentBranchRef = branchNameFromLaneRef(parent?.branchRef);
-  if (parentBranchRef && shouldLaneTrackParent({ lane: args.lane, parent })) {
-    return {
-      comparisonRef: parentBranchRef,
-      fallbackRef: `origin/${parentBranchRef}`,
-      displayBaseBranch: parentBranchRef,
-    };
-  }
-
-  const baseBranchRef = args.lane.baseRef?.trim() ?? "";
-  if (baseBranchRef) {
-    return {
-      comparisonRef: `origin/${baseBranchRef}`,
-      fallbackRef: baseBranchRef,
-      displayBaseBranch: baseBranchRef,
-    };
-  }
-
-  return {
-    comparisonRef: args.lane.baseRef,
-    displayBaseBranch: args.lane.baseRef,
-  };
 }
 
 async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string): Promise<{
@@ -702,6 +667,10 @@ export function createConflictService({
     return lanes.filter((lane) => !lane.archivedAt);
   };
 
+  /** The branch a lane compares against: its open PR's base, else the default branch. */
+  const compareBaseForLane = (lane: Pick<LaneSummary, "id" | "baseRef">): string =>
+    laneService.getCompareBase(lane.id) ?? lane.baseRef;
+
   const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
 
   const preparedContexts = new Map<
@@ -868,7 +837,6 @@ export function createConflictService({
     lines.push(`- Dirty: ${lane.status.dirty ? "yes" : "no"}`);
     lines.push(`- Ahead: ${lane.status.ahead}`);
     lines.push(`- Behind: ${lane.status.behind}`);
-    lines.push(`- Parent lane: ${lane.parentLaneId ?? "(none)"}`);
     if (lane.tags.length) lines.push(`- Tags: ${lane.tags.join(", ")}`);
     if (lane.description?.trim()) lines.push(`- Description: ${lane.description.trim()}`);
     lines.push("");
@@ -1433,7 +1401,7 @@ export function createConflictService({
 
   const predictLaneVsBase = async (lane: LaneSummary): Promise<void> => {
     const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-    const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+    const baseHead = await readHeadSha(projectRoot, compareBaseForLane(lane));
     if (reuseCurrentPrediction(lane.id, null, laneHead, baseHead)) return;
     const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
     const merge = await runGitMergeTree({
@@ -1575,7 +1543,7 @@ export function createConflictService({
     await Promise.all(lanes.map(async (lane) => {
       const [headSha, baseSha] = await Promise.all([
         readHeadSha(lane.worktreePath, "HEAD").catch(() => null),
-        readHeadSha(projectRoot, lane.baseRef).catch(() => null),
+        readHeadSha(projectRoot, compareBaseForLane(lane)).catch(() => null),
       ]);
       currentHeadShaByLaneId.set(lane.id, headSha);
       currentBaseShaByLaneId.set(lane.id, baseSha);
@@ -1800,7 +1768,7 @@ export function createConflictService({
       }));
       overlaps.push({
         peerId: null,
-        peerName: `base (${lane.baseRef})`,
+        peerName: `base (${compareBaseForLane(lane)})`,
         files,
         riskLevel: riskFromPrediction(baseRow.status, overlapFiles.length, conflicting.length)
       });
@@ -1868,7 +1836,7 @@ export function createConflictService({
           }
           laneBHead = await readHeadSha(laneB.worktreePath, "HEAD");
         } else {
-          laneBHead = await readHeadSha(projectRoot, laneA.baseRef);
+          laneBHead = await readHeadSha(projectRoot, compareBaseForLane(laneA));
         }
 
         const mergeBase = await readMergeBase(projectRoot, laneAHead, laneBHead);
@@ -1932,7 +1900,7 @@ export function createConflictService({
   const readTouchedFilesSinceBase = async (lane: LaneSummary): Promise<Set<string>> => {
     try {
       const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const baseHead = await readHeadSha(projectRoot, compareBaseForLane(lane));
       const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
       const touched = await readTouchedFiles(projectRoot, mergeBase, laneHead);
       return pruneTouchedFilesForHeuristic(touched);
@@ -2401,14 +2369,6 @@ export function createConflictService({
     const lane = lanes.find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
-    // CONF-022: stack-aware conflict resolution. If a lane is stacked, resolve parent conflicts first.
-    if (lane.parentLaneId) {
-      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
-      if (parentStatus && parentStatus.status !== "merge-ready") {
-        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
-      }
-    }
-
     const warnings: string[] = [];
     if (!subscriptionAvailable) {
       warnings.push("Subscription AI is unavailable; proposal preview is prepared for manual/external resolution.");
@@ -2497,8 +2457,7 @@ export function createConflictService({
         }
       }
 
-      const parentLane = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
-      const baseRef = parentLane?.branchRef ?? lane.baseRef;
+      const baseRef = compareBaseForLane(lane);
       return { kind: "base-ref", baseRef, laneHeadSha };
     })();
 
@@ -2685,7 +2644,7 @@ export function createConflictService({
     });
     const targetIntent = await buildBranchIntent({
       cwd: laneGit.worktreePath,
-      laneId: peerLane?.id ?? lane.parentLaneId ?? lane.baseRef,
+      laneId: peerLane?.id ?? lane.baseRef,
       laneName: peerLane?.name ?? lane.baseRef,
       branchRef: peerLane?.branchRef ?? lane.baseRef,
       role: "target",
@@ -2818,14 +2777,6 @@ export function createConflictService({
     const lanes = await listActiveLanes();
     const lane = lanes.find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-    // Stack-aware check again: lane stacks can change between preview and request.
-    if (lane.parentLaneId) {
-      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
-      if (parentStatus && parentStatus.status !== "merge-ready") {
-        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
-      }
-    }
 
     const existingId = findExistingProposalIdForDigest({ laneId, peerLaneId, contextDigest });
     if (existingId) {
@@ -3069,10 +3020,16 @@ export function createConflictService({
     const lanes = await laneService.list({ includeArchived: false });
     const existing = lanes.find((lane) => !lane.archivedAt && lane.name === name);
     if (existing) return existing;
+    // Start from the target lane's current commit, so the integration sees
+    // exactly what the target has now, unpushed work included.
+    const target = laneService.getLaneBaseAndBranch(args.targetLaneId);
+    const targetHead = await readHeadSha(target.worktreePath, "HEAD").catch(() => "");
     return await laneService.create({
       name,
       description: `Auto-created integration lane for conflict resolution into ${args.targetLaneId}.`,
-      parentLaneId: args.targetLaneId
+      ...(targetHead
+        ? { startPoint: targetHead }
+        : { start: { from: "branch" as const, branch: branchNameFromLaneRef(target.branchRef), bring: "local" as const } }),
     });
   };
 
@@ -4416,206 +4373,182 @@ export function createConflictService({
     return steps;
   };
 
+  /**
+   * Where a lane rebases onto: its compare base, read from `origin/<base>`
+   * when that exists (what the PR merges into), else the local branch.
+   */
+  const resolveLaneRebaseTarget = (lane: LaneSummary): {
+    comparisonRef: string;
+    fallbackRef: string;
+    displayBaseBranch: string;
+  } => {
+    const base = branchNameFromLaneRef(compareBaseForLane(lane)) || lane.baseRef;
+    return { comparisonRef: `origin/${base}`, fallbackRef: base, displayBaseBranch: base };
+  };
+
+  /** How far back "built on merged work" looks for merged PRs. */
+  const MERGED_WORK_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+
+  type MergedPrHead = {
+    number: number;
+    title: string | null;
+    headBranch: string;
+    baseBranch: string;
+    laneId: string | null;
+    mergedHeadSha: string;
+  };
+
+  /** PRs merged in the last 30 days whose head commit is known. */
+  const listRecentMergedPrHeads = (): MergedPrHead[] => {
+    const since = new Date(Date.now() - MERGED_WORK_LOOKBACK_MS).toISOString();
+    try {
+      return db.all<{
+        github_pr_number: number | null;
+        title: string | null;
+        head_branch: string | null;
+        base_branch: string | null;
+        lane_id: string | null;
+        merged_head_sha: string | null;
+      }>(
+        `
+          select github_pr_number, title, head_branch, base_branch, lane_id, merged_head_sha
+            from pull_requests
+           where project_id = ?
+             and state = 'merged'
+             and merged_head_sha is not null
+             and coalesce(merged_at, updated_at) >= ?
+           order by coalesce(merged_at, updated_at) desc
+        `,
+        [projectId, since],
+      ).flatMap((row) => {
+        const sha = String(row.merged_head_sha ?? "").trim();
+        const number = Number(row.github_pr_number);
+        if (!sha || !Number.isFinite(number)) return [];
+        return [{
+          number,
+          title: row.title ?? null,
+          headBranch: branchNameFromLaneRef(row.head_branch),
+          baseBranch: branchNameFromLaneRef(row.base_branch),
+          laneId: row.lane_id ?? null,
+          mergedHeadSha: sha,
+        }];
+      });
+    } catch (err) {
+      logger.warn("conflicts.rebase_needs.merged_prs_read_failed", { error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  };
+
+  /**
+   * The rebase need for one lane, or null when it needs none. A lane needs a
+   * rebase when its compare base has commits it lacks (`behind`). It is
+   * `built_on_merged` when, on top of that, one of its own commits is the
+   * head of a PR that has since merged into that base (usually by squash), so
+   * its own PR would repeat that work until it is rebased.
+   */
+  const computeRebaseNeed = async (lane: LaneSummary, mergedPrs: MergedPrHead[]): Promise<RebaseNeed | null> => {
+    const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget(lane);
+    const baseHead = await readHeadSha(projectRoot, comparisonRef)
+      .catch(() => readHeadSha(projectRoot, fallbackRef))
+      .catch(() => "");
+    if (!baseHead) return null;
+    const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
+
+    const countsRes = await runGit(
+      ["rev-list", "--left-right", "--count", `${baseHead}...${laneHead}`],
+      { cwd: projectRoot, timeoutMs: 15_000 },
+    );
+    if (countsRes.exitCode !== 0) return null;
+    const [behindRaw, aheadRaw] = countsRes.stdout.trim().split(/\s+/);
+    const behindBy = Number(behindRaw) || 0;
+    const aheadBy = Number(aheadRaw) || 0;
+    if (behindBy === 0) return null;
+
+    // Built on merged work: one of the lane's own commits (on the lane, not
+    // in the base) is the head of a PR that merged into this base. Listing
+    // the lane's own commits once is the same answer as asking
+    // `merge-base --is-ancestor` per merged PR, for one git call per lane.
+    let mergedPr: RebaseNeed["mergedPr"] = null;
+    const laneBranch = branchNameFromLaneRef(lane.branchRef);
+    const candidates = aheadBy > 0
+      ? mergedPrs.filter((pr) =>
+        pr.baseBranch === displayBaseBranch
+        && pr.laneId !== lane.id
+        && pr.headBranch !== laneBranch)
+      : [];
+    if (candidates.length > 0) {
+      const ownRes = await runGit(
+        ["rev-list", `${baseHead}..${laneHead}`],
+        { cwd: projectRoot, timeoutMs: 15_000 },
+      );
+      if (ownRes.exitCode === 0) {
+        const ownCommits = new Set(ownRes.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+        const hit = candidates.find((pr) => ownCommits.has(pr.mergedHeadSha));
+        if (hit) mergedPr = { number: hit.number, title: hit.title, headBranch: hit.headBranch };
+      }
+    }
+
+    // Dry merge-tree to predict conflicts
+    const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+    const merge = await runGitMergeTree({
+      cwd: projectRoot,
+      mergeBase,
+      branchA: baseHead,
+      branchB: laneHead,
+      timeoutMs: 60_000
+    });
+    const conflictingFiles = merge.conflicts.map((c) => c.path);
+    const prId = db.get<{ id: string }>(
+      `select id from pull_requests
+        where project_id = ? and lane_id = ? and state in ('open', 'draft') and detached_at is null
+        order by updated_at desc limit 1`,
+      [projectId, lane.id],
+    )?.id ?? null;
+
+    return {
+      laneId: lane.id,
+      laneName: lane.name,
+      kind: mergedPr ? "built_on_merged" : "behind",
+      baseBranch: displayBaseBranch,
+      behindBy,
+      mergedPr,
+      conflictPredicted: conflictingFiles.length > 0,
+      conflictingFiles,
+      prId,
+      groupContext: null,
+      dismissedAt: rebaseDismissed.get(lane.id) ?? null,
+      deferredUntil: rebaseDeferred.get(lane.id) ?? null
+    };
+  };
+
   const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
     const lanes = await listActiveLanes();
-    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const mergedPrs = listRecentMergedPrHeads();
     const needs: RebaseNeed[] = [];
 
     // Skip primary lane — it IS the base, rebasing it is nonsensical
-    const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
-    for (const lane of nonPrimaryLanes) {
+    for (const lane of lanes.filter((l) => l.laneType !== "primary")) {
       try {
-        const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
-          lane,
-          lanesById,
-        });
-        const baseHead = await readHeadSha(projectRoot, comparisonRef)
-          .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
-          .catch(() => "");
-        if (!baseHead) continue;
-        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-
-        // Count how many commits the lane is behind base
-        const behindRes = await runGit(
-          ["rev-list", "--count", `${laneHead}..${baseHead}`],
-          { cwd: projectRoot, timeoutMs: 15_000 }
-        );
-        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-
-        if (behindBy === 0) continue;
-
-        // Dry merge-tree to predict conflicts
-        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-        const merge = await runGitMergeTree({
-          cwd: projectRoot,
-          mergeBase,
-          branchA: baseHead,
-          branchB: laneHead,
-          timeoutMs: 60_000
-        });
-
-        const conflictingFiles = merge.conflicts.map((c) => c.path);
-
-        needs.push({
-          laneId: lane.id,
-          laneName: lane.name,
-          kind: "lane_base",
-          baseBranch: displayBaseBranch,
-          behindBy,
-          conflictPredicted: conflictingFiles.length > 0,
-          conflictingFiles,
-          prId: null,
-          groupContext: null,
-          dismissedAt: rebaseDismissed.get(lane.id) ?? null,
-          deferredUntil: rebaseDeferred.get(lane.id) ?? null
-        });
+        const need = await computeRebaseNeed(lane, mergedPrs);
+        if (need) needs.push(need);
       } catch (err) {
         logger.warn(`scanRebaseNeeds: failed for lane ${lane.id}`, { error: err });
       }
     }
 
-    const openPrRows = db.all<{
-      id: string;
-      lane_id: string;
-      base_branch: string | null;
-      creation_strategy: string | null;
-    }>(
-      `
-        select id, lane_id, base_branch, creation_strategy
-        from pull_requests
-        where project_id = ?
-          and state in ('open', 'draft')
-          -- A detached row belongs to a lane that was deleted or has moved to another
-          -- branch; it must not raise rebase needs against the live lane.
-          and detached_at is null
-        order by updated_at desc, created_at desc
-      `,
-      [projectId],
-    );
-
-    const seenPrTargetNeeds = new Set<string>();
-    for (const row of openPrRows) {
-      const lane = lanesById.get(String(row.lane_id ?? "").trim());
-      if (!lane || lane.laneType === "primary") continue;
-      // Gate pr_target drift to PRs whose creation_strategy is "pr_target".
-      // PRs marked "lane_base" carry an immutable base — drift should stay a
-      // lane_base need (surfaced as warning, never auto-rebased). Null rows
-      // predate the column and keep the legacy pr_target behavior.
-      if ((normalizePrCreationStrategy(row.creation_strategy) ?? "pr_target") !== "pr_target") continue;
-      const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
-      const parent = lane.parentLaneId ? lanesById.get(lane.parentLaneId) ?? null : null;
-      const laneBaseBranch = normalizeBranchName(branchNameFromLaneRef(
-        shouldLaneTrackParent({ lane, parent }) ? parent?.branchRef : lane.baseRef,
-      ));
-      if (!prBaseBranch || prBaseBranch === laneBaseBranch) continue;
-      const dedupeKey = `${lane.id}:${prBaseBranch}`;
-      if (seenPrTargetNeeds.has(dedupeKey)) continue;
-      seenPrTargetNeeds.add(dedupeKey);
-
-      try {
-        const remoteRef = `origin/${prBaseBranch}`;
-        const baseHead = await readHeadSha(projectRoot, remoteRef)
-          .catch(() => readHeadSha(projectRoot, prBaseBranch))
-          .catch(() => "");
-        if (!baseHead) continue;
-        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-        const behindRes = await runGit(
-          ["rev-list", "--count", `${laneHead}..${baseHead}`],
-          { cwd: projectRoot, timeoutMs: 15_000 }
-        );
-        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-        if (behindBy === 0) continue;
-
-        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-        const merge = await runGitMergeTree({
-          cwd: projectRoot,
-          mergeBase,
-          branchA: baseHead,
-          branchB: laneHead,
-          timeoutMs: 60_000
-        });
-
-        const existingNeed = needs.find((need) => need.laneId === lane.id) ?? null;
-
-        needs.push({
-          laneId: lane.id,
-          laneName: lane.name,
-          kind: "pr_target",
-          baseBranch: prBaseBranch,
-          behindBy,
-          conflictPredicted: merge.conflicts.length > 0,
-          conflictingFiles: merge.conflicts.map((conflict) => conflict.path),
-          prId: String(row.id),
-          groupContext: existingNeed?.groupContext ?? null,
-          dismissedAt: existingNeed?.dismissedAt ?? rebaseDismissed.get(lane.id) ?? null,
-          deferredUntil: existingNeed?.deferredUntil ?? rebaseDeferred.get(lane.id) ?? null,
-        });
-      } catch (err) {
-        logger.warn(`scanRebaseNeeds: failed PR target scan for lane ${lane.id}`, { error: err });
-      }
-    }
-
-    // Deduplicate: when a lane has both a lane-base need and a PR-target need,
-    // keep only the PR-target need (PR target is the source of truth).
-    const laneIdsWithPrNeeds = new Set(needs.filter(n => n.prId != null).map(n => n.laneId));
-    const deduplicated = needs.filter(n => !(n.prId == null && laneIdsWithPrNeeds.has(n.laneId)));
-
     if (onEvent) {
-      onEvent({ type: "rebase-needs-updated", needs: deduplicated, timestamp: new Date().toISOString() });
+      onEvent({ type: "rebase-needs-updated", needs, timestamp: new Date().toISOString() });
     }
 
-    return deduplicated;
+    return needs;
   };
 
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
     const lanes = await listActiveLanes();
-    const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane || lane.laneType === "primary") return null;
-
     try {
-      const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
-        lane,
-        lanesById,
-      });
-      const baseHead = await readHeadSha(projectRoot, comparisonRef)
-        .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
-        .catch(() => "");
-      if (!baseHead) return null;
-      const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-
-      const behindRes = await runGit(
-        ["rev-list", "--count", `${laneHead}..${baseHead}`],
-        { cwd: projectRoot, timeoutMs: 15_000 }
-      );
-      const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-
-      if (behindBy === 0) return null;
-
-      const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-      const merge = await runGitMergeTree({
-        cwd: projectRoot,
-        mergeBase,
-        branchA: baseHead,
-        branchB: laneHead,
-        timeoutMs: 60_000
-      });
-
-      const conflictingFiles = merge.conflicts.map((c) => c.path);
-
-      return {
-        laneId: lane.id,
-        laneName: lane.name,
-        kind: "lane_base",
-        baseBranch: displayBaseBranch,
-        behindBy,
-        conflictPredicted: conflictingFiles.length > 0,
-        conflictingFiles,
-        prId: null,
-        groupContext: null,
-        dismissedAt: rebaseDismissed.get(lane.id) ?? null,
-        deferredUntil: rebaseDeferred.get(lane.id) ?? null
-      };
+      return await computeRebaseNeed(lane, listRecentMergedPrHeads());
     } catch (err) {
       logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
       return null;
@@ -4666,7 +4599,6 @@ export function createConflictService({
 
     try {
       const lanes = await listActiveLanes();
-      const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
       const lane = lanes.find((l) => l.id === args.laneId);
       if (!lane) {
         return {
@@ -4705,16 +4637,11 @@ export function createConflictService({
         onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
       }
 
-      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget({
-        lane,
-        lanesById,
-      });
+      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget(lane);
       let rebaseTarget = comparisonRef;
-      if (fallbackRef) {
-        const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
-        if (!comparisonRefExists) {
-          rebaseTarget = fallbackRef;
-        }
+      const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
+      if (!comparisonRefExists) {
+        rebaseTarget = fallbackRef;
       }
       const rebaseRes = await runGit(
         ["rebase", rebaseTarget],

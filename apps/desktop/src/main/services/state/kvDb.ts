@@ -210,8 +210,6 @@ export type AdeDbSyncApi = {
  *   "agent-chat-parallel-launch:<projectRoot>:<laneId>" -> AgentChatParallelLaunchState
  *   "agent-chat:scheduled-work:v1" -> durable Claude wakeup/cron/loop scheduler state
  *   "macDesktop.resolution"       -> MacDesktopResolutionPreset
- *   "auto-rebase:<laneId>"        -> StoredStatus
- *   "rebase-suggestion:<laneId>"  -> StoredSuggestionState
  */
 
 export type AdeDb = {
@@ -1569,6 +1567,52 @@ function deleteAllRowsWithoutCrrReplication(
   }
 
   runStatement(db, `delete from ${quoteIdentifier(tableName)}`);
+}
+
+/**
+ * Lanes no longer stack on other lanes. `parent_lane_id` stays on `lanes` and
+ * `lane_branch_profiles` (`lanes` is a phone-critical CRR, which cr-sqlite
+ * cannot rebuild), but nothing reads or writes it. This clears it once: a lane
+ * that tracked another lane's branch goes back to the project's default branch
+ * (the primary lane's base), and the old auto-rebase and rebase-suggestion KV
+ * rows are dropped. Runs on every open; a cleared database matches nothing.
+ */
+function retireLaneStacking(db: DatabaseSyncType): void {
+  if (rawHasTable(db, "lanes") && rawHasColumn(db, "lanes", "parent_lane_id")) {
+    runStatement(
+      db,
+      `
+        update lanes
+           set base_ref = (
+             select p.base_ref from lanes p
+              where p.project_id = lanes.project_id
+                and p.lane_type = 'primary'
+                and p.status != 'archived'
+              limit 1
+           )
+         where parent_lane_id is not null
+           and lane_type != 'primary'
+           and exists (
+             select 1 from lanes parent
+              where parent.id = lanes.parent_lane_id
+                and parent.lane_type != 'primary'
+           )
+           and exists (
+             select 1 from lanes p
+              where p.project_id = lanes.project_id
+                and p.lane_type = 'primary'
+                and p.status != 'archived'
+           )
+      `,
+    );
+    runStatement(db, "update lanes set parent_lane_id = null where parent_lane_id is not null");
+  }
+  if (rawHasTable(db, "lane_branch_profiles") && rawHasColumn(db, "lane_branch_profiles", "parent_lane_id")) {
+    runStatement(db, "update lane_branch_profiles set parent_lane_id = null where parent_lane_id is not null");
+  }
+  if (rawHasTable(db, "kv")) {
+    runStatement(db, "delete from kv where key like 'auto_rebase:%' or key like 'rebase:suggestion:%'");
+  }
 }
 
 function removeLegacyQueueStorage(db: DatabaseSyncType, logger?: Logger): void {
@@ -3624,6 +3668,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // could not describe how it shipped. Captured at land() and on the poller's
   // transition to merged; null for PRs merged before this shipped.
   safeAddColumn(db, "alter table pull_requests add column merged_by_login text");
+  // The head commit a PR had when it merged. A lane whose history holds it is
+  // "built on merged work" and needs a rebase (see conflictService rebase needs).
+  safeAddColumn(db, "alter table pull_requests add column merged_head_sha text");
   safeAddColumn(db, "alter table pull_requests add column merged_by_avatar_url text");
   safeAddColumn(db, "alter table pull_requests add column merge_method text");
   // Denormalized so the merged view survives the snapshot purge on detach.
@@ -5114,6 +5161,7 @@ export async function openKvDb(
     }
 
     removeLegacyQueueStorage(db, logger);
+    retireLaneStacking(db);
 
     if (crsqliteLoaded) {
       loadCrsqliteIfAvailable();

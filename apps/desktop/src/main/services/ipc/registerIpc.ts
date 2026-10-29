@@ -301,8 +301,6 @@ import type {
   ConflictStatus,
   CancelLaneGitWriteArgs,
   CreateLaneArgs,
-  CreateChildLaneArgs,
-  CreateLaneFromUnstagedArgs,
   LaneBranchDrift,
   LaneBranchSwitchArgs,
   LaneBranchSwitchPreview,
@@ -668,8 +666,6 @@ import type {
   ChatTerminalReattachArgs,
   ChatTerminalSignalArgs,
   ChatTerminalWriteArgs,
-  ReparentLaneArgs,
-  ReparentLaneResult,
   RenameLaneArgs,
   RebaseAbortArgs,
   RebasePushArgs,
@@ -677,8 +673,6 @@ import type {
   RebaseRun,
   RebaseStartArgs,
   RebaseStartResult,
-  RebaseSuggestion,
-  AutoRebaseLaneStatus,
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
@@ -696,7 +690,6 @@ import type {
   SessionGitHubIssueLink,
   SessionJiraIssueLink,
   SessionLinearIssueLink,
-  StackChainItem,
   StopTestRunArgs,
   TerminalSessionDetail,
   TerminalSessionSummary,
@@ -882,8 +875,6 @@ import { runLaneEnvironmentSetup, type LaneEnvironmentSetupDeps } from "../lanes
 import { resolveLaneOverlayContext } from "../lanes/laneOverlayContext";
 import type { createOAuthRedirectService } from "../lanes/oauthRedirectService";
 import type { createRuntimeDiagnosticsService } from "../lanes/runtimeDiagnosticsService";
-import type { createRebaseSuggestionService } from "../lanes/rebaseSuggestionService";
-import type { createAutoRebaseService } from "../lanes/autoRebaseService";
 import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import type { createSessionService } from "../sessions/sessionService";
 import type { SessionDeltaService } from "../sessions/sessionDeltaService";
@@ -1363,8 +1354,6 @@ export type AppContext = {
   getProxyService?: () => ProxyService;
   oauthRedirectService: ReturnType<typeof createOAuthRedirectService> | null;
   runtimeDiagnosticsService: ReturnType<typeof createRuntimeDiagnosticsService> | null;
-  rebaseSuggestionService: ReturnType<typeof createRebaseSuggestionService> | null;
-  autoRebaseService: ReturnType<typeof createAutoRebaseService> | null;
   sessionService: ReturnType<typeof createSessionService> | null;
   processRegistry?: ProcessRegistryService | null;
   ptyService: ReturnType<typeof createPtyService> | null;
@@ -7637,16 +7626,12 @@ export function registerIpc({
         });
         return await buildLaneListSnapshots(ctx, lanes, {
           includeConflictStatus: arg?.includeConflictStatus !== false,
-          includeRebaseSuggestions: arg?.includeRebaseSuggestions !== false,
-          includeAutoRebaseStatus: arg?.includeAutoRebaseStatus !== false,
         });
       },
       {
         includeArchived: Boolean(arg?.includeArchived),
         includeStatus: arg?.includeStatus !== false,
         includeConflictStatus: arg?.includeConflictStatus !== false,
-        includeRebaseSuggestions: arg?.includeRebaseSuggestions !== false,
-        includeAutoRebaseStatus: arg?.includeAutoRebaseStatus !== false,
       }
     );
   });
@@ -7664,22 +7649,6 @@ export function registerIpc({
       jiraIssue: arg.jiraIssue ?? null,
       ...(arg.operationId ? { operationId: arg.operationId } : {}),
     });
-    await ensureActiveLanePortLease(ctx, lane.id);
-    notifyLaneCreated(ctx, lane);
-    return lane;
-  });
-
-  ipcMain.handle(IPC.lanesCreateChild, async (_event, arg: CreateChildLaneArgs): Promise<LaneSummary> => {
-    const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.createChild(arg);
-    await ensureActiveLanePortLease(ctx, lane.id);
-    notifyLaneCreated(ctx, lane);
-    return lane;
-  });
-
-  ipcMain.handle(IPC.lanesCreateFromUnstaged, async (_event, arg: CreateLaneFromUnstagedArgs): Promise<LaneSummary> => {
-    const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.createFromUnstaged(arg);
     await ensureActiveLanePortLease(ctx, lane.id);
     notifyLaneCreated(ctx, lane);
     return lane;
@@ -7716,11 +7685,6 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {
     const ctx = ensureLaneContext();
     ctx.laneService.rename(arg);
-  });
-
-  ipcMain.handle(IPC.lanesReparent, async (_event, arg: ReparentLaneArgs): Promise<ReparentLaneResult> => {
-    const ctx = ensureLaneContext();
-    return await ctx.laneService.reparent(arg);
   });
 
   ipcMain.handle(IPC.lanesUpdateAppearance, async (_event, arg: UpdateLaneAppearanceArgs): Promise<void> => {
@@ -7820,16 +7784,6 @@ export function registerIpc({
     arg: { laneId: string },
   ): Promise<LaneReclaimRisk> => {
     return ensureLaneContext().laneService.getReclaimRisk({ laneId: arg.laneId });
-  });
-
-  ipcMain.handle(IPC.lanesGetStackChain, async (_event, arg: { laneId: string }): Promise<StackChainItem[]> => {
-    const ctx = ensureLaneContext();
-    return await ctx.laneService.getStackChain(arg.laneId);
-  });
-
-  ipcMain.handle(IPC.lanesGetChildren, async (_event, arg: { laneId: string }): Promise<LaneSummary[]> => {
-    const ctx = ensureLaneContext();
-    return await ctx.laneService.getChildren(arg.laneId);
   });
 
   ipcMain.handle(IPC.lanesAttachLinearIssueToSession, async (
@@ -7954,36 +7908,6 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesRebaseAbort, async (_event, arg: RebaseAbortArgs): Promise<RebaseRun> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.rebaseAbort(arg);
-  });
-
-  ipcMain.handle(IPC.lanesListRebaseSuggestions, async (): Promise<RebaseSuggestion[]> => {
-    const ctx = getCtx();
-    if (!ctx.rebaseSuggestionService) return [];
-    return await ctx.rebaseSuggestionService.listSuggestions();
-  });
-
-  ipcMain.handle(IPC.lanesDismissRebaseSuggestion, async (_event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.rebaseSuggestionService) return;
-    await ctx.rebaseSuggestionService.dismiss({ laneId: arg.laneId });
-  });
-
-  ipcMain.handle(IPC.lanesDeferRebaseSuggestion, async (_event, arg: { laneId: string; minutes: number }): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.rebaseSuggestionService) return;
-    await ctx.rebaseSuggestionService.defer({ laneId: arg.laneId, minutes: arg.minutes });
-  });
-
-  ipcMain.handle(IPC.lanesListAutoRebaseStatuses, async (): Promise<AutoRebaseLaneStatus[]> => {
-    const ctx = getCtx();
-    if (!ctx.autoRebaseService) return [];
-    return await ctx.autoRebaseService.listStatuses();
-  });
-
-  ipcMain.handle(IPC.lanesDismissAutoRebaseStatus, async (_event, arg: { laneId: string }): Promise<void> => {
-    const ctx = getCtx();
-    if (!ctx.autoRebaseService) return;
-    await ctx.autoRebaseService.dismissStatus({ laneId: arg.laneId });
   });
 
   const readLaneWorktreePath = async (
