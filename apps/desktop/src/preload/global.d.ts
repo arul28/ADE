@@ -4142,8 +4142,8 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<DiffChanges>;
         /**
-         * Every file the lane changed since its base (commits, uncommitted and
-         * untracked). Rejects when the base cannot be resolved; null, or a
+         * Every file the lane's commits changed since its base (uncommitted
+         * edits are `getChanges`). Rejects when the base cannot be resolved; null, or a
          * rejection naming an unknown action, from a host that predates it.
          */
         getBranchChanges?: (

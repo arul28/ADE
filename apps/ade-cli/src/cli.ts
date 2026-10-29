@@ -8521,8 +8521,8 @@ function buildDiffPlan(args: string[]): CliPlan {
       laneId ?? readValue(args, ["--lane", "--lane-id"]),
       "laneId",
     );
-    // `--mode branch`: everything the lane changed since its base, not only
-    // what is uncommitted.
+    // `--mode branch`: what the lane committed since its base. Without it,
+    // the uncommitted (staged and unstaged) files.
     const branch = readValue(args, ["--mode"]) === "branch" || readFlag(args, ["--branch"]);
     return {
       kind: "execute",

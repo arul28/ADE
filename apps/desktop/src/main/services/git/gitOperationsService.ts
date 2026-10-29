@@ -1682,7 +1682,13 @@ export function createGitOperationsService({
           if (mergeHead.exitCode === 0) {
             const abort = await runGit(["merge", "--abort"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
             if (abort.exitCode !== 0) {
-              await runGit(["reset", "--merge"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+              const reset = await runGit(["reset", "--merge"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+              if (reset.exitCode !== 0) {
+                // Saying "nothing changed" here would hide a half-done merge.
+                throw new Error(
+                  `Merging ${outcome.mergedRef} stopped part-way and could not be undone. Abort the merge from the Git panel.`,
+                );
+              }
             }
           }
           if (conflicted.length > 0) {

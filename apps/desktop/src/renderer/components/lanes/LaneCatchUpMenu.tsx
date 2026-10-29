@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, CircleNotch, GitMerge, Sparkle, Stack, Warning } from "@phosphor-icons/react";
 import type { AgentChatSessionSummary, LaneSummary, OpenProjectBinding } from "../../../shared/types";
-import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
 import { useLaneChatHandoff } from "../../lib/laneChatHandoff";
@@ -56,7 +56,11 @@ export function useLaneCatchUpAskAgent(pin: OpenProjectBinding | null) {
   return useCallback(async (laneId: string, prompt: string, knownChats?: AgentChatSessionSummary[] | null) => {
     const chats = knownChats ?? await window.ade.agentChat
       .list({ laneId, includeArchived: false }, pin)
-      .catch(() => [] as AgentChatSessionSummary[]);
+      .catch((error) => {
+        // A new chat in the lane still works; the newest one just isn't reused.
+        console.warn("lane_catch_up.chat_list_failed", error);
+        return [] as AgentChatSessionSummary[];
+      });
     const chat = newestLaneWorkChat(chats);
     handOff({ laneId, sessionId: chat?.sessionId ?? null, prompt });
   }, [handOff, pin]);
@@ -77,6 +81,17 @@ export type LaneCatchUpOutcome =
  * lane's overview, toasts a success unless `quiet`, and refreshes the lane
  * list it came from. Resolves to null when this lane is already running one.
  */
+/** Machines (by pin key; "" for the tab's own) whose ADE predates `git.mergeBaseIn`. */
+const mergeUnsupportedHosts = new Set<string>();
+
+/**
+ * Whether the lane's machine can run "Merge <base> in". There is no cheap
+ * probe, so a machine counts as able until it refuses the action once.
+ */
+export function laneCatchUpMergeAvailable(pin: OpenProjectBinding | null): boolean {
+  return typeof window.ade?.git?.mergeBaseIn === "function" && !mergeUnsupportedHosts.has(pin?.key ?? "");
+}
+
 export async function runLaneCatchUpDirect(args: {
   action: "rebase" | "merge";
   laneId: string;
@@ -127,7 +142,11 @@ export async function runLaneCatchUpDirect(args: {
     patchLaneCatchUp(key, { busy: null });
     return { ok: true, upToDate };
   } catch (error) {
-    const message = stripElectronErrorWrapper(extractError(error));
+    const unsupported = action === "merge" && isUnsupportedAdeActionError(error);
+    if (unsupported) mergeUnsupportedHosts.add(pin?.key ?? "");
+    const message = unsupported
+      ? "The ADE on this lane's machine is too old to merge here. Update it, or ask an agent."
+      : stripElectronErrorWrapper(extractError(error));
     const failure: LaneCatchUpFailure = { action, message, laneId, pin, prompt: args.prompt({ action, error: message }) };
     patchLaneCatchUp(key, { busy: null, failure });
     return { ok: false, failure };
@@ -138,8 +157,9 @@ export async function runLaneCatchUpDirect(args: {
         await args.refreshLanes();
         requestLaneRebaseNeedsRescan();
       }
-    } catch {
+    } catch (error) {
       // The next lane refresh picks it up.
+      console.warn("lane_catch_up.refresh_failed", error);
     }
   }
 }
@@ -216,10 +236,13 @@ export function LaneCatchUpMenu({
       });
     void window.ade.git.getSyncStatus({ laneId }, pin)
       .then((status) => { if (!cancelled) setSyncPushed(status ? status.hasUpstream : null); })
-      .catch(() => {});
+      .catch((error) => console.warn("lane_catch_up.sync_status_failed", error));
     void window.ade.agentChat.list({ laneId, includeArchived: false }, pin)
       .then((rows) => { if (!cancelled) setChats(rows); })
-      .catch(() => { if (!cancelled) setChats([]); });
+      .catch((error) => {
+        console.warn("lane_catch_up.chat_list_failed", error);
+        if (!cancelled) setChats([]);
+      });
     return () => { cancelled = true; };
     // Keyed on the machine's key: a rebuilt pin for the same machine is the same target.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -237,7 +260,7 @@ export function LaneCatchUpMenu({
     dirty: Boolean(lane.status?.dirty),
     inProgress: inProgress || Boolean(lane.status?.rebaseInProgress),
     pushed,
-    mergeAvailable: typeof window.ade?.git?.mergeBaseIn === "function",
+    mergeAvailable: laneCatchUpMergeAvailable(pin),
   });
 
   const promptInput = useCallback((failure: LaneCatchUpPromptInput["failure"] = null): LaneCatchUpPromptInput => ({

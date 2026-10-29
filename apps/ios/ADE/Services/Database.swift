@@ -2335,9 +2335,8 @@ final class DatabaseService {
       && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "session_id")
       && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "project_id")
 
-    // A correlated scalar subquery rather than a join: `pr_group_members` above
-    // already fans a PR out into one row per group member, and joining a second
-    // one-to-many table would multiply those rows again. Order is unspecified
+    // A correlated scalar subquery rather than a join: joining a one-to-many
+    // table would fan a PR out into one row per linked chat. Order is unspecified
     // and does not matter — every reader tests membership, never position.
     let chatSessionSelect = hasChatSessionLinks
       ? """
@@ -3218,6 +3217,12 @@ final class DatabaseService {
       "queue_landing_state",
       "unified_memories",
       "unified_memories_fts",
+      // The PR workflows (rebase tab, integration), children before parents.
+      "pr_group_members",
+      "pr_groups",
+      "integration_proposals",
+      "rebase_dismissed",
+      "rebase_deferred",
     ]
 
   private static let excludedCrrTables = localOnlyCacheTables.union(hydrationOwnedCrrExcludedTables)

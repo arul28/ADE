@@ -1748,6 +1748,11 @@ export type PrMobileSnapshot = {
   generatedAt: string;
   prs: PrSummary[];
   stacks: PrStackInfo[];
+  /**
+   * Always empty. Phone builds from before the PR workflows were removed
+   * decode it as required; drop it once the mobile version gate refuses them.
+   */
+  workflowCards: never[];
   capabilities: Record<string, PrActionCapabilities>;
   createCapabilities: PrCreateCapabilities;
   /** Mobile clients should surface a "host offline" banner when this is false. */

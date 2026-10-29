@@ -11377,6 +11377,8 @@ export function createPrService({
       // Lanes no longer stack; GitHub-native stacks reach the phone through
       // the PR list itself. Kept empty for phones that decode the field.
       stacks: [],
+      // Older phones decode this as required (see PrMobileSnapshot).
+      workflowCards: [],
       capabilities,
       createCapabilities,
       live: true,

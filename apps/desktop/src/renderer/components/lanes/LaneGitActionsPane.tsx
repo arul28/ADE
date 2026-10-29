@@ -2328,7 +2328,9 @@ export function LaneGitActionsPane({
             hasPr={laneHasPr}
             inProgress={Boolean(conflictState?.inProgress)}
             placement="bottom-end"
-            onFinished={() => { refreshAll({ fetchRemote: false }).catch(() => {}); }}
+            onFinished={() => {
+              refreshAll({ fetchRemote: false }).catch((error) => console.warn("git_pane.refresh_after_catch_up_failed", error));
+            }}
             trigger={(state) => (
               <WorkToolChromeButton
                 label={state.busy ? (state.busy === "rebase" ? "Rebasing…" : "Merging…") : `Catch up with ${catchUpLine.baseBranch}`}

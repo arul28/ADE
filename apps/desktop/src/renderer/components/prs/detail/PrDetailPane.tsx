@@ -1282,7 +1282,10 @@ export function PrDetailPane({
           if (pr.laneId) {
             const laneId = pr.laneId;
             const session = newestWorkChat(
-              await window.ade.agentChat.list({ laneId, includeArchived: false }, ...onPin).catch(() => []),
+              await window.ade.agentChat.list({ laneId, includeArchived: false }, ...onPin).catch((error) => {
+                console.warn("pr_detail.update_branch_chat_list_failed", error);
+                return [];
+              }),
             );
             chatHandoff({ laneId, sessionId: session?.sessionId ?? null, prompt: buildPrChatPrompt("resolve_conflicts", pr) });
           }

@@ -6,7 +6,7 @@ import { useAppStore } from "../../../state/appStore";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { LaneDialogShell } from "../LaneDialogShell";
 import { laneCatchUpOptions } from "../laneCatchUp";
-import { runLaneCatchUpDirect, useLaneCatchUpAskAgent, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
+import { laneCatchUpMergeAvailable, runLaneCatchUpDirect, useLaneCatchUpAskAgent, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import { getLaneAccent } from "../laneColorPalette";
 import { COLORS } from "../laneDesignTokens";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
@@ -131,7 +131,11 @@ export function LaneSidebarBulkCatchUpDialog({
     void Promise.all([...byMachine.values()].map(async ({ pin, items }) => {
       const statuses = await window.ade.git
         .getSyncStatuses({ laneIds: items.map((item) => (item.target.ok ? item.target.laneId : "")) }, pin.pin)
-        .catch(() => ({}) as Record<string, { hasUpstream: boolean } | null>);
+        .catch((error) => {
+          // Unknown means not pushed is unproven: those lanes get no rebase.
+          console.warn("lane_catch_up.sync_statuses_failed", error);
+          return {} as Record<string, { hasUpstream: boolean } | null>;
+        });
       return items.flatMap((item) => {
         const status = item.target.ok ? statuses[item.target.laneId] : null;
         return status ? [[item.key, status.hasUpstream] as const] : [];
@@ -142,7 +146,6 @@ export function LaneSidebarBulkCatchUpDialog({
     return () => { cancelled = true; };
   }, [open, targetsKey]);
 
-  const mergeAvailable = typeof window.ade?.git?.mergeBaseIn === "function";
   const rows = useMemo(() => targets.map((item) => {
     const statusPushed = item.hasPr || (item.lane.status?.remoteBehind ?? -1) >= 0;
     const pushed = statusPushed ? true : syncPushed?.get(item.key) ?? null;
@@ -156,7 +159,7 @@ export function LaneSidebarBulkCatchUpDialog({
       dirty: Boolean(item.lane.status?.dirty),
       inProgress: Boolean(item.lane.status?.rebaseInProgress),
       pushed,
-      mergeAvailable,
+      mergeAvailable: item.target.ok ? laneCatchUpMergeAvailable(item.target.pin) : false,
     });
     const plan: Plan = options.rebase
       ? { kind: "rebase" }
@@ -164,7 +167,7 @@ export function LaneSidebarBulkCatchUpDialog({
         ? { kind: "merge" }
         : { kind: "agent", reason: options.blocker ?? "Needs a closer look" };
     return { item, pushed, plan };
-  }), [conflicts, mergeAvailable, syncPushed, targets]);
+  }), [conflicts, syncPushed, targets]);
 
   const direct = rows.filter((row) => row.plan.kind !== "agent");
   const checking = open && (syncPushed == null || conflicts == null);

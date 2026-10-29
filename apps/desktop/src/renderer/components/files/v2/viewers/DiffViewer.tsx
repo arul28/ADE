@@ -36,19 +36,32 @@ export function DiffViewer({
   const [mode, setMode] = useState<DiffMode>("unstaged");
   const [branchSupported, setBranchSupported] = useState(false);
 
-  // Branch is the default where the host has it: a committed lane's file
-  // otherwise opens on "no changes".
+  // Open on the file's newest change: its uncommitted edits when it has
+  // some, else what the lane committed (Branch, where the host has it), so a
+  // committed lane's file does not open on "no changes".
   useEffect(() => {
     let cancelled = false;
-    void hostSupportsBranchDiff(laneId).then((supported) => {
+    void Promise.all([
+      hostSupportsBranchDiff(laneId),
+      window.ade.diff.getChanges({ laneId }).catch((error) => {
+        console.warn("files.diff_viewer.changes_read_failed", error);
+        return null;
+      }),
+    ]).then(([supported, changes]) => {
       if (cancelled) return;
       setBranchSupported(supported);
-      if (supported) setMode((current) => (current === "unstaged" ? "branch" : current));
+      const matches = (file: { path: string }) => file.path === path;
+      const opening: DiffMode | null = changes?.unstaged.some(matches)
+        ? "unstaged"
+        : changes?.staged.some(matches)
+          ? "staged"
+          : supported ? "branch" : null;
+      if (opening) setMode((current) => (current === "unstaged" ? opening : current));
     });
     return () => {
       cancelled = true;
     };
-  }, [laneId]);
+  }, [laneId, path]);
   const [diff, setDiff] = useState<FileDiff | null>(null);
   const [patch, setPatch] = useState<FilePatch | null>(null);
   const [commits, setCommits] = useState<GitCommitSummary[]>([]);

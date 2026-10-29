@@ -4011,14 +4011,16 @@ export function createConflictService({
     const baseHead = await readHeadSha(projectRoot, comparisonRef)
       .catch(() => readHeadSha(projectRoot, fallbackRef))
       .catch(() => "");
-    if (!baseHead) return null;
+    // A base that can't be read is an unknown answer, not "up to date": the
+    // Catch up menu must not read it as "no conflicts".
+    if (!baseHead) throw new Error(`The base branch ${displayBaseBranch} could not be read.`);
     const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
     const countsRes = await runGit(
       ["rev-list", "--left-right", "--count", `${baseHead}...${laneHead}`],
       { cwd: projectRoot, timeoutMs: 15_000 },
     );
-    if (countsRes.exitCode !== 0) return null;
+    if (countsRes.exitCode !== 0) throw new Error(countsRes.stderr.trim() || "git rev-list failed");
     const [behindRaw, aheadRaw] = countsRes.stdout.trim().split(/\s+/);
     const behindBy = Number(behindRaw) || 0;
     const aheadBy = Number(aheadRaw) || 0;
@@ -4103,12 +4105,14 @@ export function createConflictService({
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
     const lanes = await listActiveLanes();
     const lane = lanes.find((l) => l.id === laneId);
-    if (!lane || lane.laneType === "primary") return null;
+    if (!lane) throw new Error(`Lane ${laneId} was not found.`);
+    if (lane.laneType === "primary") return null;
     try {
       return await computeRebaseNeed(lane, listRecentMergedPrHeads());
     } catch (err) {
+      // The caller (Catch up) reads a rejection as "couldn't check".
       logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
-      return null;
+      throw err;
     }
   };
 
