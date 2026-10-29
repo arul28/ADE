@@ -1,8 +1,7 @@
 import React, { startTransition } from "react";
 import type { GitCommitSummary, OpenProjectBinding } from "../../../shared/types";
 import { CloudArrowUp, CloudCheck, CloudSlash, CloudX } from "@phosphor-icons/react";
-import { SmartTooltip } from "../ui/SmartTooltip";
-import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
+import { COLORS, MONO_FONT } from "./laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
 import { AnchoredTooltip } from "../ui/AnchoredTooltip";
@@ -69,7 +68,6 @@ export function CommitTimeline({
   runtimePin = null,
   cacheScope = null,
   cacheBranchRef = null,
-  hideHeader = false
 }: {
   laneId: string | null;
   active?: boolean;
@@ -86,14 +84,6 @@ export function CommitTimeline({
    */
   cacheScope?: string | null;
   cacheBranchRef?: string | null;
-  /**
-   * Drop the timeline's own "COMMITS n · blue = merge · REFRESH" bar.
-   *
-   * The Work tools pane already labels this section and already has a refresh
-   * on its chrome row, so the bar is a second title and a second refresh in a
-   * column narrow enough that both wrap.
-   */
-  hideHeader?: boolean;
 }) {
   const pin = runtimePin ?? null;
   const [commits, setCommits] = React.useState<GitCommitSummary[]>([]);
@@ -198,46 +188,6 @@ export function CommitTimeline({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
-      {/* Header */}
-      <div
-        className="flex items-center justify-between shrink-0"
-        style={{
-          display: hideHeader ? "none" : "flex",
-          padding: "6px 12px",
-          background: COLORS.cardBg,
-          borderBottom: `1px solid ${COLORS.border}`,
-        }}
-      >
-        <div className="flex items-center gap-2">
-          <span style={LABEL_STYLE}>COMMITS</span>
-          <span style={{ ...inlineBadge(COLORS.accent), fontSize: 9 }}>
-            {loading ? "..." : commits.length}
-          </span>
-          <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }} title="Blue node = merge commit">
-            blue = merge
-          </span>
-        </div>
-        <SmartTooltip content={{
-          label: "Refresh",
-          description: "Reload the commit history to show the latest commits on this lane.",
-        }}>
-          <button
-            type="button"
-            style={{
-              fontFamily: MONO_FONT, fontSize: 10, fontWeight: 700,
-              color: COLORS.textMuted, background: "transparent", border: "none", cursor: "pointer",
-              textTransform: "uppercase", letterSpacing: "1px",
-            }}
-            onClick={() => void load()}
-            disabled={!laneId || loading}
-            onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textPrimary; }}
-            onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textMuted; }}
-          >
-            REFRESH
-          </button>
-        </SmartTooltip>
-      </div>
-
       {error ? (
         <Banner
           layout="inline"

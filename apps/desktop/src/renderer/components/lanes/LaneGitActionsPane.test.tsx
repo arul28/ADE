@@ -311,23 +311,12 @@ describe("LaneGitActionsPane rescue action", () => {
     ));
   });
 
-  it("lets History follow a clean file list instead of a stretched empty half", async () => {
+  it("shows an empty state instead of a blank list when nothing is uncommitted", async () => {
     mockChangesByLaneId["lane-1"] = { staged: [], unstaged: [] };
     renderPane();
 
     expect(await screen.findByTestId("git-pane-clean")).toBeTruthy();
-    const sections = screen.getByTestId("git-sections");
-    // The regression: stacked, the two sections split the pane evenly whatever
-    // they held, so "Clean · nothing to commit" sat above ~320px of nothing.
-    expect(sections.dataset.filesCollapsed).toBe("true");
-  });
-
-  it("keeps the even split while the file list has rows to scroll", async () => {
-    renderPane();
-
-    await screen.findByTestId("git-pane-chrome");
-    const sections = screen.getByTestId("git-sections");
-    expect(sections.dataset.filesCollapsed).toBeUndefined();
+    expect(screen.queryByTestId("git-pane-uncommitted")).toBeNull();
   });
 
   it("does not start Git Actions effects while inactive", async () => {
@@ -530,7 +519,8 @@ describe("LaneGitActionsPane rescue action", () => {
     const user = userEvent.setup();
     renderPane({ runtimePin: runtimePin as any });
 
-    const rescueButton = await screen.findByRole("button", { name: "New lane with these changes" });
+    await user.click(await screen.findByTestId("git-pane-uncommitted-more"));
+    const rescueButton = await screen.findByRole("menuitem", { name: "New lane with these changes" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(rescueButton);
@@ -540,7 +530,7 @@ describe("LaneGitActionsPane rescue action", () => {
     await waitFor(() => {
       expect(window.ade.lanes.create).toHaveBeenCalledWith({
         name: "Rescue lane",
-        start: { from: "branch", branch: "feature/parent", bring: "uncommitted" },
+        start: { from: "branch", branch: "feature/parent", on: "uncommitted" },
       }, runtimePin);
     });
     if (runtimePin) {
@@ -704,9 +694,11 @@ describe("LaneGitActionsPane rescue action", () => {
       canAbort: true,
     };
 
+    const user = userEvent.setup();
     renderPane();
 
-    const rescueButton = await screen.findByRole("button", { name: "New lane with these changes" });
+    await user.click(await screen.findByTestId("git-pane-uncommitted-more"));
+    const rescueButton = await screen.findByRole("menuitem", { name: "New lane with these changes" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
   });
@@ -752,12 +744,12 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
+    await screen.findByText("2 saved");
     expect(screen.getByText("drop me")).toBeTruthy();
 
-    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
@@ -792,12 +784,12 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
+    await screen.findByText("2 saved");
     expect(screen.getByText("restore me")).toBeTruthy();
 
-    await user.click(screen.getAllByRole("button", { name: "RESTORE" })[0]);
+    await user.click(screen.getAllByRole("button", { name: "Restore" })[0]);
 
     await waitFor(() => {
       expect(window.ade.git.stashPop).toHaveBeenCalledWith({
@@ -821,10 +813,10 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("1 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
-    await user.click(screen.getByRole("button", { name: "COPY TO WORKTREE" }));
+    await screen.findByText("1 saved");
+    await user.click(screen.getByRole("button", { name: "Copy to worktree" }));
 
     await waitFor(() => {
       expect(window.ade.git.stashApply).toHaveBeenCalledWith({
@@ -848,7 +840,7 @@ describe("LaneGitActionsPane rescue action", () => {
       expect(screen.queryByRole("menuitem", { name: /fetch only/i })).toBeNull();
     });
 
-    await user.click(screen.getByRole("button", { name: /more/i }));
+    await user.click(screen.getByRole("button", { name: "More git actions" }));
     expect(screen.getByRole("menuitem", { name: /fetch only/i })).toBeTruthy();
 
     await user.click(screen.getByTestId("git-pane-refresh"));
@@ -871,10 +863,10 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
-    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await screen.findByText("2 saved");
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
 
@@ -900,9 +892,9 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
+    await screen.findByText("2 saved");
     await user.click(screen.getByRole("button", { name: "Clear stashes" }));
     await user.type(await screen.findByPlaceholderText("Type 2 to confirm"), "2");
     await user.click(screen.getByRole("button", { name: "Delete all" }));
@@ -925,10 +917,10 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    await screen.findByText("2 saved");
     await user.click(screen.getByTestId("git-pane-more"));
     await user.click(await screen.findByRole("menuitem", { name: /branch stashes/i }));
-    await user.click(screen.getAllByRole("button", { name: "DELETE" })[0]);
+    await screen.findByText("2 saved");
+    await user.click(screen.getAllByRole("button", { name: "Delete" })[0]);
     await user.type(await screen.findByPlaceholderText("Type delete to confirm"), "delete");
     await user.click(screen.getByRole("button", { name: "Delete stash" }));
 

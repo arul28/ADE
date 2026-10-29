@@ -1,7 +1,7 @@
-import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash, X } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -33,8 +33,9 @@ import {
   WORK_TOOL_SECTION_LABEL_TEXT,
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, dangerButton } from "./laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT } from "./laneDesignTokens";
 import { CommitTimeline } from "./CommitTimeline";
+import "./laneGitPane.css";
 import {
   __resetLaneGitListCacheForTests,
   invalidateLaneGitListCache,
@@ -103,27 +104,6 @@ type LaneGitActionsCachedState = {
   conflictState: GitConflictState | null;
   stuckRebase: GitConflictState | null;
   updatedAtMs: number;
-};
-
-/**
- * The pane chrome, read once. Every value here is the Work tools pane look
- * (also used by the Lanes tab Git column); handlers stay in the component.
- */
-const SKIN = {
-  toolbarPadding: "8px" as string,
-  toolbarBackground: "transparent" as string,
-  toolbarBorderBottom: "none",
-  bodyPadding: "0 8px 8px" as string | number,
-  bodyGap: 12,
-  cardFill: {} as CSSProperties,
-  plain: true,
-  hideTimelineHeader: true,
-  sectionLabelClass: WORK_TOOL_SECTION_LABEL_TEXT as string | undefined,
-  sectionLabelStyle: { padding: "0 8px 4px" } as CSSProperties,
-  sectionLabel: (label: string, count: number) => `${label} (${count})`,
-  actionLabel: (label: string) => label,
-  actionButton: { height: 26, padding: "0 9px", fontSize: 12, gap: 5 } as CSSProperties,
-  stashLabelStyle: { fontSize: 12, fontWeight: 500, color: COLORS.textMuted } as CSSProperties,
 };
 
 const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
@@ -377,145 +357,6 @@ function nextChangeListRowWithControls(rows: ChangeListRow[], from: number, step
   return -1;
 }
 
-function SectionCard({
-  title,
-  titleAccessory,
-  description,
-  aside,
-  children,
-  dataTestId,
-  showDescription = false,
-  plain = false,
-  sectionStyle,
-  headerStyle,
-  bodyStyle,
-}: {
-  title: string;
-  /** Sits next to the title, e.g. a changed-file count. */
-  titleAccessory?: React.ReactNode;
-  description?: string;
-  aside?: React.ReactNode;
-  children: React.ReactNode;
-  dataTestId?: string;
-  showDescription?: boolean;
-  /**
-   * Drop the card entirely: no border, no fill, no rule under the title — just
-   * a 12px muted label over the rows. Two nested cards inside a 440px pane is
-   * three frames deep before any content, and the pane already has a header.
-   */
-  plain?: boolean;
-  sectionStyle?: React.CSSProperties;
-  headerStyle?: React.CSSProperties;
-  bodyStyle?: React.CSSProperties;
-}) {
-  if (plain) {
-    return (
-      <section
-        data-testid={dataTestId}
-        style={{ display: "flex", flexDirection: "column", minWidth: 0, ...sectionStyle }}
-      >
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-2 gap-y-1 px-1 pb-1">
-          <span className="flex min-w-0 items-center gap-2">
-            <span className={WORK_TOOL_SECTION_LABEL_TEXT}>{title}</span>
-            {titleAccessory}
-          </span>
-          {aside}
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", minWidth: 0, ...bodyStyle }}>
-          {children}
-        </div>
-      </section>
-    );
-  }
-  return (
-    <section
-      data-testid={dataTestId}
-      title={!showDescription ? description : undefined}
-      style={{
-        border: `1px solid ${COLORS.border}`,
-        background: COLORS.cardBg,
-        display: "flex",
-        flexDirection: "column",
-        minWidth: 0,
-        ...sectionStyle,
-      }}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexWrap: "wrap",
-          alignItems: "center",
-          justifyContent: "space-between",
-          gap: 8,
-          padding: "8px 10px",
-          borderBottom: `1px solid ${COLORS.border}`,
-          background: COLORS.recessedBg,
-          ...headerStyle,
-        }}
-      >
-        <div style={{ minWidth: 0 }}>
-          <div style={{ ...LABEL_STYLE, color: COLORS.textPrimary }}>{title}</div>
-          {description && showDescription ? (
-            <div style={{ marginTop: 4, fontSize: 11, lineHeight: 1.45, color: COLORS.textMuted }}>
-              {description}
-            </div>
-          ) : null}
-        </div>
-        {aside ? <div style={{ display: "flex", alignItems: "center", gap: 8 }}>{aside}</div> : null}
-      </div>
-      <div
-        style={{
-          padding: 10,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          minWidth: 0,
-          ...bodyStyle,
-        }}
-      >
-        {children}
-      </div>
-    </section>
-  );
-}
-
-function HoverTitleButton({
-  tooltip,
-  smartTooltip,
-  disabled,
-  style,
-  children,
-  ...buttonProps
-}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
-  tooltip: string;
-  smartTooltip?: SmartTooltipContent;
-}) {
-  const button = (
-    <button
-      {...buttonProps}
-      disabled={disabled}
-      title={tooltip}
-      style={{
-        ...style,
-        ...(disabled ? { pointerEvents: "none" as const } : {}),
-      }}
-    >
-      {children}
-    </button>
-  );
-
-  const wrapped = !disabled ? button : (
-    <span title={tooltip} style={{ display: "inline-flex" }}>
-      {button}
-    </span>
-  );
-
-  if (smartTooltip) {
-    return <SmartTooltip content={smartTooltip}>{wrapped}</SmartTooltip>;
-  }
-  return wrapped;
-}
-
 /** One row of the "More git actions" menu: icon, sentence-case label, optional badge. */
 function ActionButton({
   title,
@@ -533,11 +374,11 @@ function ActionButton({
   disabled: boolean;
   badge?: string | null;
   icon?: React.ReactNode;
-  /** `caution` for actions that rewrite shared history (force push). */
-  tone?: "default" | "caution";
+  /** `caution` for actions that rewrite shared history (force push); `danger` for ones that throw work away (discard). */
+  tone?: "default" | "caution" | "danger";
   smartTooltip?: SmartTooltipContent;
 }) {
-  const color = tone === "caution" ? "var(--color-warning)" : COLORS.textPrimary;
+  const color = tone === "caution" ? "var(--color-warning)" : tone === "danger" ? COLORS.danger : COLORS.textPrimary;
   const button = (
     <button
       type="button"
@@ -565,9 +406,9 @@ function ActionButton({
         ...(disabled ? { pointerEvents: "none" as const } : {}),
       }}
     >
-      <span style={{ display: "inline-flex", width: 14, flexShrink: 0, opacity: tone === "caution" ? 0.9 : 0.55 }}>{icon}</span>
+      <span style={{ display: "inline-flex", width: 14, flexShrink: 0, opacity: tone === "default" ? 0.55 : 0.9 }}>{icon}</span>
       <span style={{ flex: 1, minWidth: 0 }}>{title}</span>
-      {badge ? <span style={inlineBadge(COLORS.warning, { fontSize: 9 })}>{badge}</span> : null}
+      {badge ? <span className="kit-tag" data-tone="warn">{badge}</span> : null}
     </button>
   );
   const wrapped = disabled ? <span title={`${title}. ${detail}`} style={{ display: "block" }}>{button}</span> : button;
@@ -579,15 +420,94 @@ type ChangeSection = "staged" | "unstaged" | "branch";
 /** "Showing first N of M files. Show all" under a capped change list. */
 function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; noun: string; onShowAll: () => void }) {
   return (
-    <div style={{ padding: "6px 8px", fontSize: 11, fontFamily: MONO_FONT, color: COLORS.textDim, display: "flex", alignItems: "center", gap: 8 }}>
+    <div className="ade-git-truncated">
       <span>Showing first {MAX_RENDERED_CHANGE_ROWS_PER_SECTION} of {total} {noun} files.</span>
-      <button
-        type="button"
-        onClick={onShowAll}
-        style={{ color: COLORS.accent, fontSize: 11, fontFamily: MONO_FONT, cursor: "pointer" }}
-      >
+      <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={onShowAll}>
         Show all
       </button>
+    </div>
+  );
+}
+
+/**
+ * One section's file list. It is as tall as its rows up to the section's cap,
+ * then scrolls on its own, so Uncommitted and Committed never push each other
+ * or History off the pane. Rows are virtualized: a lane far from its base can
+ * list thousands of files.
+ */
+function ChangeList({
+  rows,
+  renderRow,
+  testId,
+}: {
+  rows: ChangeListRow[];
+  renderRow: (row: ChangeListRow) => React.ReactNode;
+  testId: string;
+}) {
+  const scrollRef = useRef<HTMLDivElement>(null);
+  // The row that holds keyboard focus, as state: moving focus re-renders the window so the rows Tab can reach next are mounted.
+  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
+  const focusedIndex = focusedRowKey == null ? -1 : rows.findIndex((row) => row.key === focusedRowKey);
+  const virtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => scrollRef.current,
+    getItemKey: (index) => rows[index]?.key ?? index,
+    estimateSize: () => CHANGE_LIST_ROW_ESTIMATE_PX,
+    overscan: 4,
+    gap: CHANGE_LIST_ROW_GAP_PX,
+    // Tab moves focus in the browser's own order and does not wait for a scroll to mount the next row, so the rows
+    // it can land on are mounted here: the focused row (it keeps focus when it scrolls out of view) and the nearest
+    // row with controls on each side. Rows in between hold no controls, so Tab never needs them.
+    rangeExtractor: (range) => {
+      const indexes = defaultRangeExtractor(range);
+      if (focusedIndex < 0) return indexes;
+      const reachable = [
+        focusedIndex,
+        nextChangeListRowWithControls(rows, focusedIndex, 1),
+        nextChangeListRowWithControls(rows, focusedIndex, -1),
+      ].filter((index) => index >= 0 && !indexes.includes(index));
+      return reachable.length === 0 ? indexes : [...indexes, ...reachable].sort((a, b) => a - b);
+    },
+  });
+
+  return (
+    <div
+      ref={scrollRef}
+      className="ade-git-list"
+      data-testid={testId}
+      // Focus landing in a row mounts its neighbours before the next Tab. Focus leaving the list releases them.
+      onFocus={(event) => {
+        const index = Number((event.target as HTMLElement).closest<HTMLElement>("[data-index]")?.dataset.index);
+        setFocusedRowKey(rows[index]?.key ?? null);
+      }}
+      onBlur={(event) => {
+        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
+        setFocusedRowKey(null);
+      }}
+    >
+      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+        {virtualizer.getVirtualItems().map((virtualRow) => {
+          const row = rows[virtualRow.index];
+          if (!row) return null;
+          return (
+            <div
+              key={row.key}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+              style={{
+                position: "absolute",
+                top: 0,
+                left: 0,
+                width: "100%",
+                transform: `translateY(${virtualRow.start}px)`,
+                paddingTop: row.kind === "section" && row.gapAbove ? CHANGE_LIST_SECTION_GAP_PX - CHANGE_LIST_ROW_GAP_PX : undefined,
+              }}
+            >
+              {renderRow(row)}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -711,12 +631,8 @@ export function LaneGitActionsPane({
   const [syncStatus, setSyncStatus] = useState<GitUpstreamSyncStatus | null>(initialCachedGitState?.syncStatus ?? null);
   const [forcePushSuggested, setForcePushSuggested] = useState(initialCachedGitState?.forcePushSuggested ?? false);
   const [commitTimelineKey, setCommitTimelineKey] = useState(0);
-  // Branch scope: everything the lane changed since its base, commits and
-  // uncommitted together. `null` means the user has not picked: the panel opens
-  // on Uncommitted while there is something to commit and on Branch when the
-  // tree is clean, which is exactly when Uncommitted would read "+0 -0" for a
-  // lane full of committed work.
-  const [scopeChoice, setScopeChoice] = useState<"branch" | "uncommitted" | null>(null);
+  // Committed on this branch: the files the lane's commits changed since it
+  // left its base. Shown under the uncommitted changes, never instead of them.
   const [branchChanges, setBranchChanges] = useState<BranchDiffChanges | null>(null);
   // The branch read effect writes its result under the lane and branch the read
   // was started for. Kept in a ref, not deps: a branch change already re-runs
@@ -731,6 +647,9 @@ export function LaneGitActionsPane({
   const [branchSupported, setBranchSupported] = useState(() => typeof window.ade?.diff?.getBranchChanges === "function");
   const [amendCommit, setAmendCommit] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  /** The Uncommitted section's own menu: unstage, discard, new lane. */
+  const [showUncommittedMenu, setShowUncommittedMenu] = useState(false);
+  const uncommittedMenuTriggerRef = useRef<HTMLSpanElement>(null);
   /** The branch stashes strip, opened from the "More git actions" menu. */
   const [showStashes, setShowStashes] = useState(false);
   const advancedTriggerRef = useRef<HTMLSpanElement>(null);
@@ -772,7 +691,7 @@ export function LaneGitActionsPane({
   const stagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.staged), [changes.staged]);
   const unstagedChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(changes.unstaged), [changes.unstaged]);
   const branchChangeTreeStatsByPath = useMemo(() => buildChangeTreeStatsByPath(branchChanges?.files ?? []), [branchChanges]);
-  // The branch scope lists every file since the merge base, which on a lane far
+  // The committed list holds every file since the merge base, which on a lane far
   // from its base is thousands: all of them mounted at once was a ~1 s freeze
   // opening Lanes. Same cap as the uncommitted sections.
   const showAllBranchChanges = isShowingAll("branch");
@@ -845,8 +764,8 @@ export function LaneGitActionsPane({
         setChanges((prev) => (isSameListResult(prev, next) ? prev : next));
       }
     } finally {
-      // A failed read still ends the wait: the Branch scope reads on its own
-      // instead of showing "Reading branch changes…" for good.
+      // A failed read still ends the wait: the committed list reads on its own
+      // instead of showing "Reading commits…" for good.
       if (isViewingLane(targetLaneId)) setChangesReadyForLane(targetLaneId);
       if (isViewingLane(targetLaneId) && !hasCachedState) {
         setLoading(false);
@@ -907,27 +826,16 @@ export function LaneGitActionsPane({
 
   useEffect(() => {
     setShowAdvanced(false);
+    setShowUncommittedMenu(false);
     setShowStashes(false);
   }, [laneId]);
 
-  const hasUncommittedChanges = changes.staged.length + changes.unstaged.length > 0;
-  const gitScope: "branch" | "uncommitted" = !branchSupported
-    ? "uncommitted"
-    : scopeChoice ?? (hasUncommittedChanges ? "uncommitted" : "branch");
-  // One virtualized list holds the section labels, folders, files and notices of
-  // the scope on screen, so the gap between Staged and Unstaged is padding on
-  // the Unstaged label rather than a second scroller.
-  const changeListRows = useMemo(() => {
+  const hasUncommittedChanges = hasStaged || hasUnstaged;
+  // Each section is one virtualized list of its section labels, folders, files
+  // and notices, so the gap between Staged and Unstaged is padding on the
+  // Unstaged label rather than a second scroller.
+  const uncommittedRows = useMemo(() => {
     const rows: ChangeListRow[] = [];
-    if (gitScope === "branch") {
-      if (branchChanges && branchChanges.files.length > 0) {
-        flattenChangeTreeRows(buildChangeTree(visibleBranchChanges), "branch", 0, collapsedChangeFolders, branchChangeTreeStatsByPath, rows);
-        if (hiddenBranchChangeCount > 0) {
-          rows.push({ key: "branch:notice", kind: "notice", section: "branch", total: branchChanges.files.length, noun: "changed" });
-        }
-      }
-      return rows;
-    }
     if (changes.staged.length > 0) {
       rows.push({ key: "staged:label", kind: "section", label: "Staged", count: changes.staged.length, gapAbove: false });
       flattenChangeTreeRows(buildChangeTree(visibleStagedChanges), "staged", 0, collapsedChangeFolders, stagedChangeTreeStatsByPath, rows);
@@ -944,11 +852,6 @@ export function LaneGitActionsPane({
     }
     return rows;
   }, [
-    gitScope,
-    branchChanges,
-    visibleBranchChanges,
-    branchChangeTreeStatsByPath,
-    hiddenBranchChangeCount,
     changes.staged,
     changes.unstaged,
     visibleStagedChanges,
@@ -959,64 +862,37 @@ export function LaneGitActionsPane({
     hiddenUnstagedChangeCount,
     collapsedChangeFolders,
   ]);
-  const changesScrollRef = useRef<HTMLDivElement>(null);
-  // The row that holds keyboard focus, as state: moving focus re-renders the window so the rows Tab can reach next are mounted.
-  const [focusedChangeRowKey, setFocusedChangeRowKey] = useState<string | null>(null);
-  const focusedChangeIndex = focusedChangeRowKey == null ? -1 : changeListRows.findIndex((row) => row.key === focusedChangeRowKey);
-  const changeListVirtualizer = useVirtualizer({
-    count: changeListRows.length,
-    getScrollElement: () => changesScrollRef.current,
-    getItemKey: (index) => changeListRows[index]?.key ?? index,
-    estimateSize: () => CHANGE_LIST_ROW_ESTIMATE_PX,
-    overscan: 4,
-    gap: CHANGE_LIST_ROW_GAP_PX,
-    // Tab moves focus in the browser's own order and does not wait for a scroll to mount the next row, so the rows
-    // it can land on are mounted here: the focused row (it keeps focus when it scrolls out of view) and the nearest
-    // row with controls on each side. Rows in between hold no controls, so Tab never needs them.
-    rangeExtractor: (range) => {
-      const indexes = defaultRangeExtractor(range);
-      if (focusedChangeIndex < 0) return indexes;
-      const reachable = [
-        focusedChangeIndex,
-        nextChangeListRowWithControls(changeListRows, focusedChangeIndex, 1),
-        nextChangeListRowWithControls(changeListRows, focusedChangeIndex, -1),
-      ].filter((index) => index >= 0 && !indexes.includes(index));
-      return reachable.length === 0 ? indexes : [...indexes, ...reachable].sort((a, b) => a - b);
-    },
-  });
-
-  // Focus landing in a row mounts its neighbours before the next Tab. Focus leaving the list releases them.
-  const onChangeListFocus = (event: React.FocusEvent<HTMLDivElement>) => {
-    const index = Number((event.target as HTMLElement).closest<HTMLElement>("[data-index]")?.dataset.index);
-    setFocusedChangeRowKey(changeListRows[index]?.key ?? null);
-  };
-  const onChangeListBlur = (event: React.FocusEvent<HTMLDivElement>) => {
-    if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-    setFocusedChangeRowKey(null);
-  };
+  const committedRows = useMemo(() => {
+    const rows: ChangeListRow[] = [];
+    if (branchChanges && branchChanges.files.length > 0) {
+      flattenChangeTreeRows(buildChangeTree(visibleBranchChanges), "branch", 0, collapsedChangeFolders, branchChangeTreeStatsByPath, rows);
+      if (hiddenBranchChangeCount > 0) {
+        rows.push({ key: "branch:notice", kind: "notice", section: "branch", total: branchChanges.files.length, noun: "committed" });
+      }
+    }
+    return rows;
+  }, [branchChanges, visibleBranchChanges, branchChangeTreeStatsByPath, hiddenBranchChangeCount, collapsedChangeFolders]);
 
   useEffect(() => {
-    setScopeChoice(null);
     setBranchChanges(null);
     setBranchError(null);
   }, [laneId]);
 
-  // Re-read when the working tree's contents change and on every refresh of
-  // history (`commitTimelineKey`): a commit moves files between the two scopes.
-  // Keyed on contents, not the `changes` object: every status refresh hands a
-  // new object, and on a lane far from its base each read costs seconds. Wait
-  // for the first real read, so opening a lane reads the branch diff once. Also
-  // wait for the load below to bump `branchReadNonce`: with cached changes this
-  // effect would otherwise read on mount and again a moment later.
-  const changesSignature = useMemo(
-    () => [changes.staged, changes.unstaged]
-      .map((files) => files.map((file) => `${file.path}\u0000${file.kind}\u0000${file.additions ?? ""}\u0000${file.deletions ?? ""}`).join("\u0001"))
-      .join("\u0002"),
+  // Re-read on every refresh of history (`commitTimelineKey`) and when a path
+  // leaves or joins the staged or unstaged lists: a commit made outside ADE (an
+  // agent's terminal) shows up first as files leaving those lists. Keyed on the
+  // paths alone, so an edit to a file that is already dirty, the common case
+  // while an agent works, does not re-read the branch. Wait for the first real
+  // read, so opening a lane reads the branch diff once. Also wait for the load
+  // below to bump `branchReadNonce`: with cached changes this effect would
+  // otherwise read on mount and again a moment later.
+  const changedPathsSignature = useMemo(
+    () => [changes.staged, changes.unstaged].map((files) => files.map((file) => file.path).join("\u0000")).join("\u0001"),
     [changes],
   );
   const changesReady = changesReadyForLane != null && changesReadyForLane === laneId;
   useEffect(() => {
-    if (gitScope !== "branch" || !laneId || !changesReady || branchReadNonce === 0) return;
+    if (!branchSupported || !laneId || !changesReady || branchReadNonce === 0) return;
     const getBranchChanges = window.ade?.diff?.getBranchChanges;
     if (!getBranchChanges) return;
     let cancelled = false;
@@ -1025,7 +901,7 @@ export function LaneGitActionsPane({
     getBranchChanges({ laneId }, pin)
       .then((result) => {
         if (cancelled) return;
-        // Null is a host that predates branch diffs: Uncommitted only.
+        // Null is a host that predates branch diffs: the committed section hides.
         if (result == null) {
           setBranchSupported(false);
           return;
@@ -1047,7 +923,7 @@ export function LaneGitActionsPane({
     return () => {
       cancelled = true;
     };
-  }, [branchReadNonce, changesReady, changesSignature, commitTimelineKey, gitScope, laneId, pin]);
+  }, [branchReadNonce, branchSupported, changedPathsSignature, changesReady, commitTimelineKey, laneId, pin]);
 
 
   // Only git's own `[rejected] … (non-fast-forward)` / `(fetch first)` refusal
@@ -1277,7 +1153,6 @@ export function LaneGitActionsPane({
     return "Create a new lane from this lane's branch with a copy of its uncommitted changes. This lane keeps them.";
   }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId]);
 
-  const showRescueButton = Boolean(laneId) && (hasUnstaged || hasStaged);
   const rescueButtonDisabled = !laneId || busyAction != null || (!hasStaged && !hasUnstaged) || Boolean(conflictState?.inProgress);
 
   const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
@@ -1335,7 +1210,7 @@ export function LaneGitActionsPane({
     if (!laneId) return;
     if (busyAction) return;
     const ok = await confirmDialog({
-      title: `Discard ALL unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})?`,
+      title: `Discard all unstaged changes (${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"})?`,
       message: "This cannot be undone.",
       confirmLabel: "Discard",
       destructive: true,
@@ -1353,7 +1228,7 @@ export function LaneGitActionsPane({
     if (!laneId) return;
     if (busyAction) return;
     const ok = await confirmDialog({
-      title: `Discard ALL staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})?`,
+      title: `Discard all staged changes (${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"})?`,
       message: "This also discards any unstaged edits to the same files and cannot be undone.",
       confirmLabel: "Discard",
       destructive: true,
@@ -1436,7 +1311,7 @@ export function LaneGitActionsPane({
     try {
       // Made on this lane's machine: the copy reads this lane's folder.
       const created = await window.ade.lanes.create(
-        { name: name.trim(), start: { from: "branch", branch, bring: "uncommitted" } },
+        { name: name.trim(), start: { from: "branch", branch, on: "uncommitted" } },
         pin,
       );
       // The lane is made even when the copy did not apply (or a fallback was
@@ -1767,7 +1642,7 @@ export function LaneGitActionsPane({
   const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
     if (mode === "branch") {
-      // Read-only: staging and discarding belong to Uncommitted.
+      // Read-only: staging and discarding belong to the uncommitted changes.
       return (
         <div
           key={`branch:${file.path}`}
@@ -1797,7 +1672,7 @@ export function LaneGitActionsPane({
           </span>
           {file.additions != null && file.additions > 0 ? <span style={{ fontSize: 10, color: COLORS.success }}>+{file.additions}</span> : null}
           {file.deletions != null && file.deletions > 0 ? <span style={{ fontSize: 10, color: COLORS.danger }}>-{file.deletions}</span> : null}
-          {file.isBinary ? <span style={inlineBadge(COLORS.textDim, { fontSize: 9 })}>binary</span> : null}
+          {file.isBinary ? <span className="kit-tag">Binary</span> : null}
         </div>
       );
     }
@@ -1872,14 +1747,11 @@ export function LaneGitActionsPane({
           <span style={{ fontSize: 10, color: COLORS.danger }}>-{file.deletions}</span>
         ) : null}
         {file.isBinary ? (
-          <span style={inlineBadge(COLORS.textDim, { fontSize: 9 })}>binary</span>
+          <span className="kit-tag">Binary</span>
         ) : null}
         {(alsoStaged || alsoUnstaged) ? (
-          <span
-            title="This file has both staged and unstaged changes."
-            style={inlineBadge(COLORS.warning, { fontSize: 9 })}
-          >
-            PARTIAL
+          <span className="kit-tag" data-tone="warn" title="This file has both staged and unstaged changes.">
+            Partial
           </span>
         ) : null}
         {mode === "unstaged" ? (
@@ -1955,14 +1827,7 @@ export function LaneGitActionsPane({
 
   const renderChangeListRow = (row: ChangeListRow): React.ReactNode => {
     if (row.kind === "section") {
-      return (
-        <div
-          className={SKIN.sectionLabelClass}
-          style={SKIN.sectionLabelStyle}
-        >
-          {SKIN.sectionLabel(row.label, row.count)}
-        </div>
-      );
+      return <div className="ade-git-subgroup">{`${row.label} (${row.count})`}</div>;
     }
     if (row.kind === "notice") {
       return <TruncatedChangesNotice total={row.total} noun={row.noun} onShowAll={() => showAllSection(row.section)} />;
@@ -2010,50 +1875,479 @@ export function LaneGitActionsPane({
     );
   };
 
-  const renderChangeList = () => (
-    <div style={{ height: changeListVirtualizer.getTotalSize(), position: "relative", flexShrink: 0 }}>
-      {changeListVirtualizer.getVirtualItems().map((virtualRow) => {
-        const row = changeListRows[virtualRow.index];
-        if (!row) return null;
-        return (
-          <div
-            key={row.key}
-            data-index={virtualRow.index}
-            ref={changeListVirtualizer.measureElement}
-            style={{
-              position: "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              transform: `translateY(${virtualRow.start}px)`,
-              paddingTop: row.kind === "section" && row.gapAbove ? CHANGE_LIST_SECTION_GAP_PX - CHANGE_LIST_ROW_GAP_PX : undefined,
-            }}
-          >
-            {renderChangeListRow(row)}
-          </div>
-        );
-      })}
-    </div>
-  );
-
   const diffViewActive = Boolean(
     (selectedPath && selectedMode) || selectedCommit,
   );
 
-  /**
-   * The Files section has nothing to list.
-   *
-   * Stacked, the two sections were an even `1fr 1fr` split whatever they held,
-   * so a clean worktree spent half the pane — 320px at a normal window — on
-   * the words "Clean · nothing to commit" and then a void. When there is
-   * nothing to scroll, the section is worth its own height and History follows
-   * it directly, 12px below. Stashes count as content: they live in the same
-   * section, behind the row's "more".
-   */
-  const filesSectionIsEmpty = !diffViewActive
-    && changes.staged.length === 0
-    && changes.unstaged.length === 0
-    && !showStashes;
+  const isNarrow = responsiveMode === "narrow";
+  // The base the committed list is measured against, named as the lane names it.
+  const committedBase = rebaseBase || branchChanges?.baseRef || "base";
+  const committedFileCount = branchChanges?.files.length ?? 0;
+  const commitDisabled = (!hasStaged && !amendCommit) || busyAction != null;
+  const diffDetail = selectedCommit
+    ? `${selectedCommit.shortSha ?? (selectedCommit.sha ?? "").slice(0, 7)} · ${selectedCommit.subject.trim().slice(0, 120)}`
+    : `${selectedMode === "staged" ? "Staged" : selectedMode === "branch" ? "Committed" : "Unstaged"} · ${selectedPath ?? ""}`;
+
+  /* Saved stashes, opened from the chrome row's "More git actions". */
+  const stashSection = showStashes ? (
+    <section className="ade-git-section" data-section="stashes" aria-label="Branch stashes">
+      <header className="ade-git-section-head">
+        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Branch stashes</span>
+        <span className="ade-git-count">{stashes.length === 0 ? "None saved" : `${stashes.length} saved`}</span>
+        <div className="ade-git-section-aside">
+          {stashes.length > 0 ? (
+            <SmartTooltip content={{
+              label: "Clear Branch Stashes",
+              description: "Permanently delete this branch's visible stash entries. You'll be asked to confirm by typing the count.",
+              gitCommand: "git stash drop <branch stash refs>",
+              effect: `Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}`,
+              warning: "This cannot be undone",
+            }}>
+              <button
+                type="button"
+                className="kit-btn kit-btn-ghost"
+                data-size="sm"
+                data-tone="crit"
+                disabled={!laneId || busyAction != null}
+                onClick={() => {
+                  if (!laneId) return;
+                  void runAction("stash clear", async () => {
+                    const confirmation = await requestTextInput({
+                      title: "Clear branch stashes?",
+                      message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"} saved for this branch. Type "${stashes.length}" to confirm.`,
+                      placeholder: `Type ${stashes.length} to confirm`,
+                      confirmLabel: "Delete all",
+                      validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
+                    });
+                    if (confirmation == null) throw new Error("__ade_cancelled__");
+                    invalidateLaneGitCaches(projectStateKey, laneId);
+                    await window.ade.git.stashClear({ laneId }, pin);
+                    await refreshGitMeta(laneId);
+                  });
+                }}
+              >
+                Clear stashes
+              </button>
+            </SmartTooltip>
+          ) : null}
+          <SmartTooltip content={{
+            label: "Save Changes",
+            description: "Save this branch's current staged and unstaged changes to a stash without committing. You can restore them later.",
+            gitCommand: hasUntrackedChanges ? "git stash push -u" : "git stash push",
+            effect: hasUncommittedChanges
+              ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}${hasUntrackedChanges ? ", including untracked files" : ""}`
+              : "No changes to save",
+          }}>
+            <button
+              type="button"
+              className="kit-btn kit-btn-ghost"
+              data-size="sm"
+              disabled={!laneId || busyAction != null || !hasUncommittedChanges}
+              onClick={() => {
+                if (!laneId) return;
+                void runAction("stash push", async () => {
+                  const msg = await requestTextInput({
+                    title: "Stash message",
+                    placeholder: "Optional note",
+                    confirmLabel: "Save stash",
+                  });
+                  if (msg == null) throw new Error("__ade_cancelled__");
+                  invalidateLaneGitCaches(projectStateKey, laneId);
+                  await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges }, pin);
+                });
+              }}
+            >
+              Save changes
+            </button>
+          </SmartTooltip>
+          <WorkToolChromeButton label="Hide stashes" onClick={() => setShowStashes(false)} testId="git-pane-stashes-close">
+            <X size={14} />
+          </WorkToolChromeButton>
+        </div>
+      </header>
+      {stashes.length > 0 ? (
+        <div className="ade-git-stash-list">
+          {stashes.slice(0, maxVisibleStashes).map((stash) => (
+            <div key={stash.ref} className="ade-git-stash-row">
+              <div className="ade-git-stash-text">
+                <div className="ade-git-stash-subject truncate">{stash.subject || stash.ref}</div>
+                <div className="ade-git-stash-meta kit-num truncate">
+                  {stash.ref} · {formatRelativeTime(stash.createdAt)}
+                </div>
+              </div>
+              <SmartTooltip content={{
+                label: "Restore",
+                description: "Apply this stash's changes to your working directory and remove the stash entry. One-time use.",
+                gitCommand: `git stash pop ${stash.ref}`,
+                effect: `Restore "${stash.subject || stash.ref}" and remove it from stashes`,
+              }}>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  data-size="sm"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("stash pop", async () => {
+                      invalidateLaneGitCaches(projectStateKey, laneId);
+                      await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
+                      await refreshGitMeta(laneId);
+                    });
+                  }}
+                >
+                  Restore
+                </button>
+              </SmartTooltip>
+              <SmartTooltip content={{
+                label: "Copy to Worktree",
+                description: "Apply this stash's changes to your working directory but keep the stash entry. Can be reused multiple times.",
+                gitCommand: `git stash apply ${stash.ref}`,
+                effect: `Apply "${stash.subject || stash.ref}" (stash stays saved)`,
+              }}>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  data-size="sm"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("stash apply", async () => {
+                      invalidateLaneGitCaches(projectStateKey, laneId);
+                      await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
+                    });
+                  }}
+                >
+                  Copy to worktree
+                </button>
+              </SmartTooltip>
+              <SmartTooltip content={{
+                label: "Delete Stash",
+                description: "Permanently delete this stash entry without restoring any changes.",
+                gitCommand: `git stash drop ${stash.ref}`,
+                effect: `Delete "${stash.subject || stash.ref}"`,
+                warning: "Changes in this stash will be lost permanently",
+              }}>
+                <button
+                  type="button"
+                  className="kit-btn kit-btn-ghost"
+                  data-size="sm"
+                  data-tone="crit"
+                  disabled={!laneId || busyAction != null}
+                  onClick={() => {
+                    if (!laneId) return;
+                    void runAction("stash drop", async () => {
+                      const confirmation = await requestTextInput({
+                        title: "Delete stash?",
+                        message: `This will permanently delete "${stash.subject || stash.ref}". Type "delete" to confirm.`,
+                        placeholder: "Type delete to confirm",
+                        confirmLabel: "Delete stash",
+                        validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
+                      });
+                      if (confirmation == null) throw new Error("__ade_cancelled__");
+                      invalidateLaneGitCaches(projectStateKey, laneId);
+                      await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
+                      await refreshGitMeta(laneId);
+                    });
+                  }}
+                >
+                  Delete
+                </button>
+              </SmartTooltip>
+            </div>
+          ))}
+          {stashes.length > maxVisibleStashes ? (
+            <div className="ade-git-stash-more">
+              +{stashes.length - maxVisibleStashes} more stash entr{stashes.length - maxVisibleStashes === 1 ? "y" : "ies"}.
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  ) : null;
+
+  /* Work not committed yet: staged and unstaged files, then the commit box. */
+  const uncommittedSection = (
+    <section className="ade-git-section" data-section="uncommitted" aria-label="Uncommitted changes">
+      <header className="ade-git-section-head">
+        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Uncommitted changes</span>
+        {changedFileCount > 0 ? <span className="ade-git-count kit-num">{changedFileCount}</span> : null}
+        {hasUncommittedChanges ? (
+          <div className="ade-git-section-aside">
+            {hasUnstaged ? (
+              <SmartTooltip content={{
+                label: "Stage All",
+                description: "Move all unstaged changes to the staging area so they will be included in the next commit.",
+                gitCommand: "git add .",
+                effect: `Stage ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
+              }}>
+                <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={stageAll} disabled={busyAction != null}>
+                  Stage all
+                </button>
+              </SmartTooltip>
+            ) : (
+              <SmartTooltip content={{
+                label: "Unstage All",
+                description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
+                gitCommand: "git reset HEAD",
+                effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+              }}>
+                <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" onClick={unstageAll} disabled={busyAction != null}>
+                  Unstage all
+                </button>
+              </SmartTooltip>
+            )}
+            <span ref={uncommittedMenuTriggerRef} className="inline-flex">
+              <WorkToolChromeButton
+                label="More for uncommitted changes"
+                onClick={() => setShowUncommittedMenu((prev) => !prev)}
+                active={showUncommittedMenu}
+                testId="git-pane-uncommitted-more"
+              >
+                <DotsThree size={16} weight="bold" />
+              </WorkToolChromeButton>
+            </span>
+          </div>
+        ) : null}
+      </header>
+      <AnchoredMenu
+        open={showUncommittedMenu && hasUncommittedChanges}
+        anchorRef={uncommittedMenuTriggerRef}
+        onClose={() => setShowUncommittedMenu(false)}
+        placement="bottom-end"
+        offset={2}
+        zIndex={Z_LAYERS.popover}
+        role="menu"
+        aria-label="More for uncommitted changes"
+        className="ade-liquid-glass-menu"
+        data-testid="git-pane-uncommitted-menu"
+        style={{
+          minWidth: 220,
+          padding: 4,
+          border: `1px solid ${COLORS.outlineBorder}`,
+          borderRadius: 10,
+        }}
+        // A picked row runs its action; the menu closes behind it.
+        onClick={(event) => {
+          if ((event.target as HTMLElement).closest("[role=\"menuitem\"]")) setShowUncommittedMenu(false);
+        }}
+      >
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          {hasUnstaged && hasStaged ? (
+            <ActionButton
+              title="Unstage all"
+              icon={<Minus size={14} />}
+              detail="Keep the changes but leave them out of the next commit."
+              disabled={busyAction != null}
+              onClick={unstageAll}
+              smartTooltip={{
+                label: "Unstage All",
+                description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
+                gitCommand: "git reset HEAD",
+                effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+              }}
+            />
+          ) : null}
+          {hasUnstaged ? (
+            <ActionButton
+              title="Discard unstaged changes"
+              icon={<Trash size={14} />}
+              tone="danger"
+              detail="Revert every unstaged file to its last committed state."
+              disabled={busyAction != null}
+              onClick={() => { void discardAll(); }}
+              smartTooltip={{
+                label: "Discard All Unstaged",
+                description: "Permanently discard all unstaged changes. Files revert to their last committed state.",
+                gitCommand: "git checkout -- .",
+                effect: `Discard changes in ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
+                warning: "This cannot be undone",
+              }}
+            />
+          ) : null}
+          {hasStaged ? (
+            <ActionButton
+              title="Discard staged changes"
+              icon={<Trash size={14} />}
+              tone="danger"
+              detail="Revert every staged file, and any unstaged edits to it, to its last committed state."
+              disabled={busyAction != null}
+              onClick={() => { void discardAllStaged(); }}
+              smartTooltip={{
+                label: "Discard All Staged",
+                description: "Permanently discard all staged changes. If any staged file also has unstaged edits, those edits are discarded too.",
+                gitCommand: "git restore --staged --worktree --source=HEAD -- <paths>",
+                effect: `Discard staged changes in ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
+                warning: "This cannot be undone",
+              }}
+            />
+          ) : null}
+          <div style={{ height: 1, background: COLORS.border, margin: "4px 6px" }} />
+          <ActionButton
+            title="New lane with these changes"
+            icon={<GitBranch size={14} />}
+            detail={rescueButtonTitle}
+            disabled={rescueButtonDisabled}
+            onClick={() => { void newLaneWithChanges(); }}
+            smartTooltip={{
+              label: "New lane with these changes",
+              description: rescueButtonTitle,
+              effect: rescueButtonDisabled
+                ? "Unavailable"
+                : `Copies ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"} to a new lane`,
+            }}
+          />
+        </div>
+      </AnchoredMenu>
+      {hasUncommittedChanges ? (
+        <ChangeList rows={uncommittedRows} renderRow={renderChangeListRow} testId="git-pane-uncommitted" />
+      ) : (
+        <div className="ade-git-empty" data-tone="ok" data-testid="git-pane-clean">
+          <CheckCircle size={14} aria-hidden />
+          No uncommitted changes
+        </div>
+      )}
+      <div className="ade-git-composer">
+        <input
+          disabled={busyAction != null}
+          data-testid="git-pane-commit-message"
+          className="kit-input"
+          aria-label="Commit message"
+          placeholder={amendCommit ? "New message for the last commit" : "Commit message"}
+          value={commitMessage}
+          onChange={(event) => setCommitMessage(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+              event.preventDefault();
+              void submitCommit();
+            }
+          }}
+        />
+        <WorkToolChromeButton
+          label={amendCommit ? "Amend is on" : "Amend last commit"}
+          onClick={() => setAmendCommit((prev) => !prev)}
+          active={amendCommit}
+          disabled={busyAction != null}
+          testId="git-pane-amend"
+        >
+          <ArrowUUpLeft size={16} />
+        </WorkToolChromeButton>
+        <button
+          type="button"
+          className="kit-btn kit-btn-primary"
+          data-testid="git-pane-commit-inline"
+          title={(!hasStaged && !amendCommit) ? "Stage a file to commit" : `${amendCommit ? "Amend" : "Commit"} (${modifierKeyLabel}+Enter)`}
+          onClick={() => { void submitCommit(); }}
+          disabled={commitDisabled}
+        >
+          {amendCommit ? "Amend" : "Commit"}
+        </button>
+      </div>
+    </section>
+  );
+
+  /*
+    Read-only: the files this lane's commits changed since it left its base.
+    Hidden on a host that predates branch diffs.
+  */
+  const committedSection = branchSupported ? (
+    <section className="ade-git-section" data-section="committed" aria-label="Committed on this branch">
+      <header className="ade-git-section-head">
+        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Committed on this branch</span>
+        {committedFileCount > 0 ? <span className="ade-git-count kit-num">{committedFileCount}</span> : null}
+        <span
+          className="ade-git-base kit-num"
+          title={branchChanges ? `Since ${branchChanges.mergeBase.slice(0, 9)}, where this lane left ${branchChanges.baseRef}` : undefined}
+        >
+          vs {committedBase}
+          {!isNarrow && branchChanges && committedFileCount > 0 ? (
+            <>
+              {" · "}
+              <span style={{ color: COLORS.success }}>+{branchChanges.additions}</span>{" "}
+              <span style={{ color: COLORS.danger }}>-{branchChanges.deletions}</span>
+            </>
+          ) : null}
+        </span>
+      </header>
+      {branchError ? (
+        <Banner
+          layout="inline"
+          style={{ margin: "4px 0" }}
+          model={{
+            id: "git-pane-branch-changes-error",
+            tone: "error",
+            title: branchError,
+            report: { surface: "git_pane_branch_changes" },
+          }}
+        />
+      ) : !branchChanges ? (
+        <div className="ade-git-empty">Reading commits…</div>
+      ) : committedFileCount === 0 ? (
+        <div className="ade-git-empty" data-testid="git-pane-committed-empty">
+          <GitCommit size={14} aria-hidden />
+          Nothing committed yet beyond {committedBase}
+        </div>
+      ) : (
+        <ChangeList rows={committedRows} renderRow={renderChangeListRow} testId="git-pane-branch" />
+      )}
+    </section>
+  ) : null;
+
+  /* A picked file or commit: its diff takes the place of the two lists. */
+  const diffSection = (
+    <section className="ade-git-section" data-section="diff" aria-label="Diff">
+      <header className="ade-git-section-head">
+        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Diff</span>
+        <span className="ade-git-section-detail" title={diffDetail}>{diffDetail}</span>
+        <button
+          type="button"
+          className="kit-btn kit-btn-ghost"
+          data-size="sm"
+          title="Back to the changed files"
+          disabled={!onClearDiffSelection}
+          onClick={() => onClearDiffSelection?.()}
+        >
+          <ArrowLeft size={12} weight="bold" />
+          Changes
+        </button>
+      </header>
+      <div className="ade-git-diff-frame">
+        <LaneDiffPane
+          laneId={laneId}
+          runtimePin={pin}
+          selectedPath={selectedPath}
+          selectedFileMode={selectedMode}
+          selectedCommit={selectedCommit}
+          liveSync
+        />
+      </div>
+    </section>
+  );
+
+  const historySection = (
+    <section className="ade-git-section" data-section="history" data-testid="history-section" aria-label="History">
+      <header className="ade-git-section-head">
+        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>History</span>
+      </header>
+      <div className="ade-git-history">
+        {/* Keyed by lane, pin and branch: a switch remounts it, so it opens on that lane's cached rows, never the previous lane's. */}
+        <CommitTimeline
+          key={`${listScope ?? ""}\u0000${listBranchRef ?? ""}`}
+          laneId={laneId ?? null}
+          runtimePin={pin}
+          cacheScope={listScope}
+          cacheBranchRef={listBranchRef}
+          active={active}
+          selectedSha={selectedCommitSha}
+          refreshTrigger={commitTimelineKey}
+          hasUpstream={syncStatus?.hasUpstream ?? null}
+          remoteMissing={upstreamMissing}
+          onSelectCommit={(commit) => {
+            onSelectCommit(commit);
+          }}
+        />
+      </div>
+    </section>
+  );
 
   /*
     The pane's one chrome row: which branch, how far from the remote, and
@@ -2423,568 +2717,19 @@ export function LaneGitActionsPane({
         />
       ) : null}
 
-      <div className="flex-1 min-h-0 overflow-hidden" style={{ display: "flex", flexDirection: "column" }}>
-        {/* ─── Compact Action Toolbar ─── */}
-        <div
-          className="shrink-0"
-          data-testid="action-toolbar"
-          style={{
-            padding: SKIN.toolbarPadding,
-            display: "flex",
-            flexDirection: "column",
-            gap: 4,
-            background: SKIN.toolbarBackground,
-            borderBottom: SKIN.toolbarBorderBottom,
-          }}
-        >
-          <div className="flex items-center gap-1.5">
-            <input
-              disabled={busyAction != null}
-              data-testid="git-pane-commit-message"
-              className={cn(
-                "h-7 min-w-0 flex-1 rounded-[7px] bg-fg/[0.03] px-2 font-sans text-[12px] text-fg/85",
-                "placeholder:text-muted-fg outline-none transition-colors duration-[120ms] ease-out",
-                "shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--color-border)_70%,transparent)]",
-                "focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                "disabled:opacity-50",
-              )}
-              placeholder="Commit message"
-              value={commitMessage}
-              onChange={(event) => setCommitMessage(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
-                  event.preventDefault();
-                  void submitCommit();
-                }
-              }}
-            />
-            <WorkToolChromeButton
-              label={amendCommit ? "Amend is on" : "Amend last commit"}
-              onClick={() => setAmendCommit((prev) => !prev)}
-              active={amendCommit}
-              disabled={busyAction != null}
-              testId="git-pane-amend"
-            >
-              <ArrowUUpLeft size={16} />
-            </WorkToolChromeButton>
-            {/* The commit action sits by its message, not only as an icon up in
-                the header, so how to commit is never a guess. */}
-            <button
-              type="button"
-              data-testid="git-pane-commit-inline"
-              title={(!hasStaged && !amendCommit) ? "Stage a file to commit" : `${amendCommit ? "Amend" : "Commit"} (${modifierKeyLabel}+Enter)`}
-              onClick={() => { void submitCommit(); }}
-              disabled={(!hasStaged && !amendCommit) || busyAction != null}
-              className="shrink-0 disabled:cursor-not-allowed disabled:opacity-40"
-              style={primaryButton({ height: 28, padding: "0 12px", fontSize: 12, borderRadius: 7 })}
-            >
-              {amendCommit ? "Amend" : "Commit"}
-            </button>
-          </div>
-
-        </div>
-
-        {/* ─── Files + History (maximized) ─── */}
-        <div
-          data-testid="git-sections"
-          data-files-collapsed={filesSectionIsEmpty ? "true" : undefined}
-          style={{
-            display: "grid",
-            gridTemplateColumns: responsiveMode === "narrow" ? "1fr" : "minmax(0, 1.15fr) minmax(320px, 0.85fr)",
-            // Side by side the two sections share the height. Stacked they are
-            // an even split ONLY while the top one has rows to show; with
-            // nothing to list it takes its own height and History gets the
-            // rest, so the gap between them is the 12px below and not 320px of
-            // stretched empty section.
-            // A diff is what you came to read, so it gets two thirds and
-            // History keeps a third to pick the next commit from.
-            gridTemplateRows: responsiveMode !== "narrow"
-              ? "minmax(0, 1fr)"
-              : filesSectionIsEmpty
-                ? "auto minmax(0, 1fr)"
-                : diffViewActive
-                  ? "minmax(0, 2fr) minmax(0, 1fr)"
-                  // A short change list takes its own height, so History
-                  // starts right under it; a long one stops at half.
-                  : "fit-content(50%) minmax(0, 1fr)",
-            padding: SKIN.bodyPadding,
-            gap: SKIN.bodyGap,
-            flex: "1 1 0",
-            minWidth: 0,
-            minHeight: 0,
-            alignItems: "stretch",
-          }}
-        >
-          <SectionCard
-            title={diffViewActive ? "Diff" : "Files"}
-            titleAccessory={
-              !diffViewActive && changedFileCount > 0 ? (
-                <span className={WORK_TOOL_CHROME_META}>{changedFileCount}</span>
-              ) : null
-            }
-            description={
-              diffViewActive
-                ? (selectedCommit
-                    ? `${selectedCommit.shortSha ?? (selectedCommit.sha ?? "").slice(0, 7)} · ${selectedCommit.subject.trim().slice(0, 120)}`
-                    : `${selectedMode === "staged" ? "Staged" : "Unstaged"} · ${selectedPath ?? ""}`)
-                : "Changed files. Stashes are saved snapshots below."
-            }
-            dataTestId="files-section"
-            plain={SKIN.plain}
-            sectionStyle={{
-              minHeight: 0,
-              // `height: 100%` is what makes the section fill its row; in the
-              // collapsed case the row IS the content, so filling it would put
-              // the void back.
-              ...(filesSectionIsEmpty && responsiveMode === "narrow" ? {} : { height: "100%" }),
-              ...SKIN.cardFill,
-            }}
-            headerStyle={{ background: COLORS.cardBg }}
-            bodyStyle={
-              diffViewActive
-                ? {
-                    flex: 1,
-                    minHeight: 0,
-                    padding: 0,
-                    gap: 0,
-                    display: "flex",
-                    flexDirection: "column",
-                    overflow: "hidden",
-                    ...SKIN.cardFill,
-                  }
-                : { flex: 1, minHeight: 0, gap: 8, ...SKIN.cardFill }
-            }
-            aside={
-              diffViewActive ? (
-                <SmartTooltip content={{ label: "Back to files", description: "Leave the diff viewer and return to the file list and stashes." }}>
-                  <button
-                    type="button"
-                    style={outlineButton({ gap: 6, ...SKIN.actionButton, padding: "0 10px" })}
-                    disabled={!onClearDiffSelection}
-                    onClick={() => onClearDiffSelection?.()}
-                  >
-                    <ArrowLeft size={12} weight="bold" />
-                    Files
-                  </button>
-                </SmartTooltip>
-              ) : (
-              <div className="flex flex-wrap items-center gap-2">
-                {/* A count is a fact you read, not a control you press. It sits
-                    beside the "Files" label in the header; the buttons wrap to
-                    their own line when the pane is too narrow for them. */}
-                {changes.unstaged.length > 0 ? (
-                  <>
-                    <SmartTooltip content={{
-                      label: "Stage All",
-                      description: "Move all unstaged changes to the staging area so they will be included in the next commit.",
-                      gitCommand: "git add .",
-                      effect: `Stage ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
-                    }}>
-                      <button
-                        type="button"
-                        style={outlineButton(SKIN.actionButton)}
-                        onClick={stageAll}
-                        disabled={busyAction != null}
-                      >
-                        {SKIN.actionLabel("Stage all")}
-                      </button>
-                    </SmartTooltip>
-                    <SmartTooltip content={{
-                      label: "Discard All Unstaged",
-                      description: "Permanently discard all unstaged changes. Files revert to their last committed state.",
-                      gitCommand: "git checkout -- .",
-                      effect: `Discard changes in ${changes.unstaged.length} file${changes.unstaged.length === 1 ? "" : "s"}`,
-                      warning: "This cannot be undone",
-                    }}>
-                      <button
-                        type="button"
-                        style={dangerButton(SKIN.actionButton)}
-                        onClick={discardAll}
-                        disabled={busyAction != null}
-                      >
-                        {SKIN.actionLabel("Discard unstaged")}
-                      </button>
-                    </SmartTooltip>
-                  </>
-                ) : null}
-                {changes.staged.length > 0 ? (
-                  <>
-                    <SmartTooltip content={{
-                      label: "Unstage All",
-                      description: "Remove all files from the staging area. Changes are kept but won't be included in the next commit.",
-                      gitCommand: "git reset HEAD",
-                      effect: `Unstage ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
-                    }}>
-                      <button
-                        type="button"
-                        style={outlineButton(SKIN.actionButton)}
-                        onClick={unstageAll}
-                      >
-                        {SKIN.actionLabel("Unstage staged")}
-                      </button>
-                    </SmartTooltip>
-                    <SmartTooltip content={{
-                      label: "Discard All Staged",
-                      description: "Permanently discard all staged changes. If any staged file also has unstaged edits, those edits are discarded too.",
-                      gitCommand: "git restore --staged --worktree --source=HEAD -- <paths>",
-                      effect: `Discard staged changes in ${changes.staged.length} file${changes.staged.length === 1 ? "" : "s"}`,
-                      warning: "This cannot be undone",
-                    }}>
-                      <button
-                        type="button"
-                        style={dangerButton(SKIN.actionButton)}
-                        onClick={discardAllStaged}
-                        disabled={busyAction != null}
-                      >
-                        {SKIN.actionLabel("Discard staged")}
-                      </button>
-                    </SmartTooltip>
-                  </>
-                ) : null}
-                {showRescueButton ? (
-                  <SmartTooltip content={{
-                    label: "New lane with these changes",
-                    description: rescueButtonTitle,
-                    effect: rescueButtonDisabled
-                      ? "Unavailable"
-                      : `Copies ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"} to a new lane`,
-                  }}>
-                    <button
-                      type="button"
-                      style={outlineButton(SKIN.actionButton)}
-                      disabled={rescueButtonDisabled}
-                      title={rescueButtonTitle}
-                      onClick={() => {
-                        void newLaneWithChanges();
-                      }}
-                    >
-                      {SKIN.actionLabel("New lane with these changes")}
-                    </button>
-                  </SmartTooltip>
-                ) : null}
-              </div>
-              )
-            }
-          >
-            {diffViewActive ? (
-              // In the pane the diff is its own surface: framed with a 10px
-              // radius and a hairline, per the Work tool chrome rules.
-              <div
-                className={cn("flex min-h-0 min-w-0 flex-1 flex-col", "overflow-hidden rounded-[10px]")}
-                style={{ border: `1px solid ${COLORS.borderMuted}` }}
-              >
-                <LaneDiffPane
-                  laneId={laneId}
-                  runtimePin={pin}
-                  selectedPath={selectedPath}
-                  selectedFileMode={selectedMode}
-                  selectedCommit={selectedCommit}
-                  liveSync
-                />
-              </div>
-            ) : (
-            <>
-            {/* Stashes are a real feature with a real cost in a 440px column:
-                a label, a count, a button and a two-line explanation above the
-                changes you actually came to look at. In the pane they live
-                behind the row's "more", where the rest of the advanced git
-                actions already are. */}
-            <div
-              style={{
-                display: !showStashes ? "none" : "flex",
-                flexDirection: "column",
-                gap: 8,
-                paddingBottom: 8,
-                borderBottom: `1px solid ${COLORS.border}`,
-              }}
-            >
-              <div className="flex flex-wrap items-center gap-2" style={{ justifyContent: "space-between", rowGap: 6 }}>
-                <div className="flex flex-wrap items-center gap-2">
-                  <span style={SKIN.stashLabelStyle}>{SKIN.actionLabel("Branch stashes")}</span>
-                  <span style={{ fontSize: 10, color: COLORS.textDim }}>
-                    {stashes.length === 0 ? "None saved" : `${stashes.length} saved`}
-                  </span>
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {stashes.length > 0 && (
-                    <SmartTooltip content={{
-                      label: "Clear Branch Stashes",
-                      description: "Permanently delete this branch's visible stash entries. You'll be asked to confirm by typing the count.",
-                      gitCommand: "git stash drop <branch stash refs>",
-                      effect: `Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}`,
-                      warning: "This cannot be undone",
-                    }}>
-                      <button
-                        type="button"
-                        style={dangerButton(SKIN.actionButton)}
-                        disabled={!laneId || busyAction != null}
-                        onClick={() => {
-                          if (!laneId) return;
-                          void runAction("stash clear", async () => {
-                            const confirmation = await requestTextInput({
-                              title: "Clear branch stashes?",
-                              message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"} saved for this branch. Type "${stashes.length}" to confirm.`,
-                              placeholder: `Type ${stashes.length} to confirm`,
-                              confirmLabel: "Delete all",
-                              validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
-                            });
-                            if (confirmation == null) throw new Error("__ade_cancelled__");
-                            invalidateLaneGitCaches(projectStateKey, laneId);
-                            await window.ade.git.stashClear({ laneId }, pin);
-                            await refreshGitMeta(laneId);
-                          });
-                        }}
-                      >
-                        {SKIN.actionLabel("Clear stashes")}
-                      </button>
-                    </SmartTooltip>
-                  )}
-                  <SmartTooltip content={{
-                    label: "Save Changes",
-                    description: "Save this branch's current staged and unstaged changes to a stash without committing. You can restore them later.",
-                    gitCommand: hasUntrackedChanges ? "git stash push -u" : "git stash push",
-                    effect: hasStaged || hasUnstaged
-                      ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}${hasUntrackedChanges ? ", including untracked files" : ""}`
-                      : "No changes to save",
-                  }}>
-                    <button
-                      type="button"
-                      style={outlineButton(SKIN.actionButton)}
-                      disabled={!laneId || busyAction != null || (!hasStaged && !hasUnstaged)}
-                      onClick={() => {
-                        if (!laneId) return;
-                        void runAction("stash push", async () => {
-                          const msg = await requestTextInput({
-                            title: "Stash message",
-                            placeholder: "Optional note",
-                            confirmLabel: "Save stash",
-                          });
-                          if (msg == null) throw new Error("__ade_cancelled__");
-                          invalidateLaneGitCaches(projectStateKey, laneId);
-                          await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges }, pin);
-                        });
-                      }}
-                    >
-                      {SKIN.actionLabel("Save changes")}
-                    </button>
-                  </SmartTooltip>
-                </div>
-              </div>
-              {stashes.length === 0 ? (
-                <div style={{ fontSize: 10, color: COLORS.textMuted, lineHeight: 1.5 }}>
-                  Save changes without committing.
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                  {stashes.slice(0, maxVisibleStashes).map((stash) => (
-                    <div
-                      key={stash.ref}
-                      style={{
-                        padding: "6px 8px",
-                        border: `1px solid ${COLORS.border}`,
-                        background: COLORS.pageBg,
-                        minWidth: 0,
-                        display: "flex",
-                        flexDirection: "column",
-                        gap: 4,
-                      }}
-                    >
-                      <div className="flex flex-wrap items-center gap-2" style={{ minWidth: 0 }}>
-                        <div style={{ minWidth: 0, flex: 1 }}>
-                          <div className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textPrimary }}>
-                            {stash.subject || stash.ref}
-                          </div>
-                          <div className="truncate" style={{ fontSize: 9, fontFamily: MONO_FONT, color: COLORS.textMuted }}>
-                            {stash.ref} · {formatRelativeTime(stash.createdAt)}
-                          </div>
-                        </div>
-                        <SmartTooltip content={{
-                          label: "Restore",
-                          description: "Apply this stash's changes to your working directory and remove the stash entry. One-time use.",
-                          gitCommand: `git stash pop ${stash.ref}`,
-                          effect: `Restore "${stash.subject || stash.ref}" and remove it from stashes`,
-                        }}>
-                          <button
-                            type="button"
-                            style={{ ...outlineButton({ height: 24, padding: "0 8px", fontSize: 10 }), border: "1px solid color-mix(in srgb, var(--color-accent) 50%, transparent)" }}
-                            disabled={!laneId || busyAction != null}
-                            onClick={() => {
-                              if (!laneId) return;
-                              void runAction("stash pop", async () => {
-                                invalidateLaneGitCaches(projectStateKey, laneId);
-                                await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                                await refreshGitMeta(laneId);
-                              });
-                            }}
-                          >
-                            RESTORE
-                          </button>
-                        </SmartTooltip>
-                        <SmartTooltip content={{
-                          label: "Copy to Worktree",
-                          description: "Apply this stash's changes to your working directory but keep the stash entry. Can be reused multiple times.",
-                          gitCommand: `git stash apply ${stash.ref}`,
-                          effect: `Apply "${stash.subject || stash.ref}" (stash stays saved)`,
-                        }}>
-                          <button
-                            type="button"
-                            style={outlineButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                            disabled={!laneId || busyAction != null}
-                            onClick={() => {
-                              if (!laneId) return;
-                              void runAction("stash apply", async () => {
-                                invalidateLaneGitCaches(projectStateKey, laneId);
-                                await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                              });
-                            }}
-                          >
-                            COPY TO WORKTREE
-                          </button>
-                        </SmartTooltip>
-                        <SmartTooltip content={{
-                          label: "Delete Stash",
-                          description: "Permanently delete this stash entry without restoring any changes.",
-                          gitCommand: `git stash drop ${stash.ref}`,
-                          effect: `Delete "${stash.subject || stash.ref}"`,
-                          warning: "Changes in this stash will be lost permanently",
-                        }}>
-                          <button
-                            type="button"
-                            style={dangerButton({ height: 24, padding: "0 8px", fontSize: 10 })}
-                            disabled={!laneId || busyAction != null}
-                            onClick={() => {
-                              if (!laneId) return;
-                              void runAction("stash drop", async () => {
-                                const confirmation = await requestTextInput({
-                                  title: "Delete stash?",
-                                  message: `This will permanently delete "${stash.subject || stash.ref}". Type "delete" to confirm.`,
-                                  placeholder: "Type delete to confirm",
-                                  confirmLabel: "Delete stash",
-                                  validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
-                                });
-                                if (confirmation == null) throw new Error("__ade_cancelled__");
-                                invalidateLaneGitCaches(projectStateKey, laneId);
-                                await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                                await refreshGitMeta(laneId);
-                              });
-                            }}
-                          >
-                            DELETE
-                          </button>
-                        </SmartTooltip>
-                      </div>
-                      <div style={{ fontSize: 9, color: COLORS.textDim, lineHeight: 1.4 }}>
-                        Restore removes entry. Copy to Worktree keeps it. Delete discards permanently.
-                      </div>
-                    </div>
-                  ))}
-                  {stashes.length > maxVisibleStashes ? (
-                    <div style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }}>
-                      +{stashes.length - maxVisibleStashes} more stash entr{stashes.length - maxVisibleStashes === 1 ? "y" : "ies"}.
-                    </div>
-                  ) : null}
-                </div>
-              )}
-            </div>
-
-            {branchSupported ? (
-              <div className="flex items-center gap-2" style={{ padding: "2px 0 4px" }} data-testid="git-pane-scope">
-                <div role="radiogroup" aria-label="Changes scope" className="inline-flex overflow-hidden rounded-md" style={{ border: `1px solid ${COLORS.border}` }}>
-                  {(["branch", "uncommitted"] as const).map((scope) => (
-                    <button
-                      key={scope}
-                      type="button"
-                      role="radio"
-                      aria-checked={gitScope === scope}
-                      onClick={() => setScopeChoice(scope)}
-                      style={{
-                        padding: "3px 10px",
-                        fontSize: 11,
-                        fontFamily: MONO_FONT,
-                        background: gitScope === scope ? COLORS.accentSubtle : "transparent",
-                        color: gitScope === scope ? COLORS.textPrimary : COLORS.textMuted,
-                        border: "none",
-                        cursor: "pointer",
-                      }}
-                    >
-                      {scope === "branch" ? "Branch" : "Uncommitted"}
-                    </button>
-                  ))}
-                </div>
-                {gitScope === "branch" && branchChanges ? (
-                  <span className="truncate" style={{ fontSize: 10, fontFamily: MONO_FONT, color: COLORS.textDim }} title={`Since ${branchChanges.mergeBase.slice(0, 9)}, where this lane left ${branchChanges.baseRef}`}>
-                    vs {branchChanges.baseRef} · <span style={{ color: COLORS.success }}>+{branchChanges.additions}</span>{" "}
-                    <span style={{ color: COLORS.danger }}>-{branchChanges.deletions}</span> · {branchChanges.files.length} file{branchChanges.files.length === 1 ? "" : "s"}
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-
-            {gitScope === "branch" ? (
-              <div ref={changesScrollRef} onFocus={onChangeListFocus} onBlur={onChangeListBlur} style={{ display: "flex", flexDirection: "column", gap: 2, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-branch">
-                {branchError ? (
-                  <Banner
-                    layout="inline"
-                    style={{ margin: "8px 4px" }}
-                    model={{
-                      id: "git-pane-branch-changes-error",
-                      tone: "error",
-                      title: branchError,
-                      report: { surface: "git_pane_branch_changes" },
-                    }}
-                  />
-                ) : !branchChanges ? (
-                  <div className="px-1 py-3 text-[12px] text-muted-fg">Reading branch changes…</div>
-                ) : branchChanges.files.length === 0 ? (
-                  <div className="px-1 py-3 text-[12px] text-muted-fg">No changes since {branchChanges.baseRef}.</div>
-                ) : (
-                  renderChangeList()
-                )}
-              </div>
-            ) : (
-            <div ref={changesScrollRef} onFocus={onChangeListFocus} onBlur={onChangeListBlur} style={{ display: "flex", flexDirection: "column", gap: 8, flex: 1, minHeight: 0, overflow: "auto" }} data-testid="git-pane-uncommitted">
-              {changes.staged.length === 0 && changes.unstaged.length === 0 ? (
-                  <div className="px-1 py-3 text-[12px] text-muted-fg" data-testid="git-pane-clean">
-                    Clean · nothing to commit
-                  </div>
-              ) : (
-                renderChangeList()
-              )}
-            </div>
-            )}
-            </>
-            )}
-          </SectionCard>
-
-          <SectionCard
-            title="History"
-            description="Recent commits on this branch."
-            dataTestId="history-section"
-            plain={SKIN.plain}
-            sectionStyle={{ minHeight: 0, height: "100%" }}
-            bodyStyle={{ flex: 1, minHeight: 0 }}
-          >
-            <div style={{ flex: 1, minHeight: 0 }}>
-              {/* Keyed by lane, pin and branch: a switch remounts it, so it opens on that lane's cached rows, never the previous lane's. */}
-              <CommitTimeline
-                key={`${listScope ?? ""}\u0000${listBranchRef ?? ""}`}
-                hideHeader={SKIN.hideTimelineHeader}
-                laneId={laneId ?? null}
-                runtimePin={pin}
-                cacheScope={listScope}
-                cacheBranchRef={listBranchRef}
-                active={active}
-                selectedSha={selectedCommitSha}
-                refreshTrigger={commitTimelineKey}
-                hasUpstream={syncStatus?.hasUpstream ?? null}
-                remoteMissing={upstreamMissing}
-                onSelectCommit={(commit) => {
-                  onSelectCommit(commit);
-                }}
-              />
-            </div>
-          </SectionCard>
-        </div>
+      <div
+        className="ade-git-body"
+        data-testid="git-sections"
+        data-committed={branchSupported ? undefined : "hidden"}
+      >
+        {diffViewActive ? diffSection : (
+          <>
+            {stashSection}
+            {uncommittedSection}
+            {committedSection}
+          </>
+        )}
+        {historySection}
       </div>
 
       {(notice || error || busyAction) ? (
