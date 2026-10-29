@@ -1,15 +1,13 @@
 /**
- * The top of a provider page: the maker's banner, the logo standing on it as a
- * 3D tile, the provider's name and state, and what this machine ran on it in
+ * The top of a provider page: the maker's banner, the logo standing on it in
+ * 3D, the provider's name and state, and what this machine ran on it in
  * the last 30 days.
  */
 import React, { useEffect, useMemo, useState } from "react";
-import { Antigravity, Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, Qwen } from "@lobehub/icons";
 import type { AdeUsageStats } from "../../../../shared/types/usage";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { formatCost, formatTokens } from "../../../lib/format";
-import { DevinMark, MuseLogo } from "../../shared/ProviderLogos";
-import { providerBrand } from "./providerBrand";
+import { providerBrand, type ProviderBrandLogo } from "./providerBrand";
 import { providerStatusColor } from "./providerUi";
 import type { ProviderDescriptor, ProviderStatusState } from "./types";
 
@@ -41,8 +39,13 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
   useEffect(() => {
     let cancelled = false;
     setStats(undefined);
-    window.ade.usage
-      .getAdeStats({ preset: "30d", scope: "machine" }, pin)
+    // A host without usage stats (an older preload) shows the banner without its panel.
+    const read = window.ade.usage?.getAdeStats;
+    if (typeof read !== "function") {
+      setStats(null);
+      return;
+    }
+    read({ preset: "30d", scope: "machine" }, pin)
       .then((next) => { if (!cancelled) setStats(next ?? null); })
       .catch(() => { if (!cancelled) setStats(null); });
     return () => { cancelled = true; };
@@ -55,36 +58,9 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
   );
 }
 
-/**
- * A logo with a shape of its own stands on the banner as a solid object: the
- * mark is stacked in depth, its side in a dark shade of the maker's color.
- * A one-color mark takes `face` and `side` as its ink. A full-color mark keeps
- * its colors and darkens them for the side (`side` is then unused).
- */
-type SolidMark = {
-  mark: (size: number) => React.ReactNode;
-  face?: string;
-  side: string;
-  fullColor?: boolean;
-  size?: number;
-};
-
-const SOLID_MARKS: Record<string, SolidMark> = {
-  claude: { mark: (size) => <Claude size={size} />, face: "#FFF4EA", side: "#9C3E1C" },
-  codex: { mark: (size) => <Codex size={size} />, face: "#FFFFFF", side: "#1F2A9C" },
-  cursor: { mark: (size) => <Cursor size={size} />, face: "#F4F4F5", side: "#3A3A42" },
-  copilot: { mark: (size) => <GithubCopilot size={size} />, face: "#FFFFFF", side: "#2A0C8F" },
-  muse: { mark: (size) => <MuseLogo size={size} />, side: "", fullColor: true, size: 104 },
-  qwen: { mark: (size) => <Qwen size={size} />, face: "#FFFFFF", side: "#231C8C" },
-  kimi: { mark: (size) => <Kimi size={size} />, face: "#FFFFFF", side: "#0E4C9E" },
-  grok: { mark: (size) => <Grok size={size} />, face: "#FFFFFF", side: "#45454A" },
-  devin: { mark: (size) => <DevinMark size={size} />, face: "#F2F2F2", side: "#3C3C40", size: 108 },
-  antigravity: { mark: (size) => <Antigravity.Color size={size} />, side: "", fullColor: true },
-};
-
 const SOLID_DEPTH = 10;
 
-function SolidLogo({ spec }: { spec: SolidMark }) {
+function SolidLogo({ spec }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }> }) {
   const size = spec.size ?? 84;
   const layers = Array.from({ length: SOLID_DEPTH }, (_, index) => SOLID_DEPTH - index);
   return (
@@ -117,14 +93,12 @@ function SolidLogo({ spec }: { spec: SolidMark }) {
   );
 }
 
-/** A square mark (Droid, Pi, OpenCode) keeps its tile: the tile is the logo's own shape. */
-export function ProviderLogoTile({ descriptor }: { descriptor: ProviderDescriptor }) {
-  const solid = SOLID_MARKS[descriptor.id];
-  if (solid) return <SolidLogo spec={solid} />;
-  const brand = providerBrand(descriptor.id);
+function ProviderLogo3d({ descriptor }: { descriptor: ProviderDescriptor }) {
+  const logo = providerBrand(descriptor.id).logo;
+  if (logo.kind === "solid") return <SolidLogo spec={logo} />;
   return (
     <div className="ade-pv-logo3d" aria-hidden>
-      <div className="ade-pv-logo3d-face" style={{ background: brand.tile.background, color: brand.tile.color }}>
+      <div className="ade-pv-logo3d-face" style={{ background: logo.background, color: logo.color }}>
         {descriptor.logo(58)}
       </div>
     </div>
@@ -168,7 +142,7 @@ export function ProviderHero({
         />
       ) : null}
       <div className="ade-pv-hero-row">
-        <ProviderLogoTile descriptor={descriptor} />
+        <ProviderLogo3d descriptor={descriptor} />
         <div className="ade-pv-hero-id">
           <div className="ade-pv-hero-name">{descriptor.label}</div>
           {descriptor.tagline ? <div className="ade-pv-hero-tagline">{descriptor.tagline}</div> : null}

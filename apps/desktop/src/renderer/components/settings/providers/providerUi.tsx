@@ -29,45 +29,6 @@ export function providerStatusColor(state: ProviderStatusState): string {
 }
 
 /**
- * Dot + sentence-case word. The only status vocabulary on this page.
- *
- * Deliberately NOT an uppercase letterspaced chip: at "Sign in required" that
- * treatment was the widest thing in a tile header and it pushed provider names
- * ("GitHub Copilot") into an ellipsis. A dot and a normal sentence carry the
- * same state in roughly half the width, and read as English rather than as a
- * console banner.
- */
-export function ProviderStatusChip({
-  state,
-  label,
-}: {
-  state: ProviderStatusState;
-  label: string;
-}) {
-  const color = providerStatusColor(state);
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
-      <span
-        aria-hidden
-        style={{ width: 6, height: 6, borderRadius: 999, background: color, flexShrink: 0 }}
-      />
-      <span
-        style={{
-          fontSize: 11,
-          fontFamily: SANS_FONT,
-          color,
-          whiteSpace: "nowrap",
-          overflow: "hidden",
-          textOverflow: "ellipsis",
-        }}
-      >
-        {label}
-      </span>
-    </div>
-  );
-}
-
-/**
  * The version core a provider page and tile should print.
  *
  * Vendors do not agree on what `--version` means: Pi answers `0.84.0`, Grok

@@ -927,6 +927,7 @@ export const IPC = {
   aiPinnedToolStatus: "ade.ai.pinnedToolStatus",
   aiPinnedToolDownload: "ade.ai.pinnedToolDownload",
   aiGetProviderContextInventory: "ade.ai.getProviderContextInventory",
+  aiRevealProviderContextPath: "ade.ai.revealProviderContextPath",
   aiAntigravitySignInStatus: "ade.ai.antigravitySignInStatus",
   aiAntigravitySignInStart: "ade.ai.antigravitySignInStart",
   aiAntigravitySignInComplete: "ade.ai.antigravitySignInComplete",

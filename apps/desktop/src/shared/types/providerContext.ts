@@ -8,10 +8,11 @@
 export type ProviderContextOwner = "harness" | "ade" | "user" | "project";
 
 /**
- * How the size was found.
- * - `exact`: ADE counted the exact text it sends.
- * - `estimated`: ADE counted the text of a file or config entry; the provider
- *   may wrap, cut or render it differently.
+ * How the size was found. Every count but `measured` is an estimate of tokens
+ * (about 4 characters each); the kinds say which text it was counted from.
+ * - `exact`: the exact text ADE sends.
+ * - `estimated`: the text of a file or config entry; the provider may wrap,
+ *   cut or render it differently.
  * - `measured`: from real chats (the turn ledger).
  * - `unknown`: no size is available before a chat starts.
  */
@@ -24,7 +25,6 @@ export type ProviderContextItemKind =
   | "skills"
   | "skill"
   | "mcp-server"
-  | "tools"
   | "plugin"
   | "rule"
   | "agent"
@@ -63,13 +63,12 @@ export type ProviderContextItem = {
 
 /**
  * How complete the list is for this provider.
- * - `full`: every item is listed, with sizes from the provider itself.
  * - `good`: ADE's items are exact; the user's items come from the provider's
  *   documented discovery rules, with estimated sizes.
  * - `basic`: ADE's items only; the provider's own discovery is not documented
  *   well enough to list.
  */
-export type ProviderContextCoverage = "full" | "good" | "basic";
+export type ProviderContextCoverage = "good" | "basic";
 
 export type ProviderContextMeasurement = {
   /** Median size of the first request of recent chats (first turns with one request). */
@@ -86,15 +85,25 @@ export type ProviderContextInventory = {
   provider: string;
   generatedAt: string;
   /** The project folder the list was built for (home shortened to `~`). */
-  cwd: string | null;
+  cwd: string;
   laneId: string | null;
   coverage: ProviderContextCoverage;
   /** One plain sentence on what the list can and cannot show. */
   coverageNote: string;
   items: ProviderContextItem[];
+  /** The listed items' known tokens, on-demand items left out (the harness row's measured rest is not in it). */
+  listedTokens: number;
   /** From real chats on this machine; null when there are none yet. */
   measured: ProviderContextMeasurement | null;
 };
+
+/** The providers the list knows, in the order Settings shows them. */
+export const PROVIDER_CONTEXT_PROVIDER_IDS = [
+  "claude", "codex", "cursor", "droid", "opencode", "pi", "muse",
+  "qwen", "kimi", "grok", "copilot", "devin", "antigravity",
+] as const;
+
+export type ProviderContextProvider = (typeof PROVIDER_CONTEXT_PROVIDER_IDS)[number];
 
 export type GetProviderContextInventoryArgs = {
   provider: string;

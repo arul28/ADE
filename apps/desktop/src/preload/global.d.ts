@@ -1713,6 +1713,12 @@ declare global {
           args: import("../shared/types/providerContext").GetProviderContextInventoryArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<import("../shared/types/providerContext").ProviderContextInventory | null>;
+        /**
+         * Show one of the Initial context window card's files in Finder, on
+         * This computer only. Refuses paths outside the providers' config
+         * homes, the project and ADE's folders.
+         */
+        revealProviderContextPath?: (path: string) => Promise<void>;
         /** Start (or join) that copy's download there and return at once; poll `pinnedToolStatus`. */
         pinnedToolDownload?: (args: { provider: string }, pin?: OpenProjectBinding | null) => Promise<PinnedProviderToolStatus>;
         /**

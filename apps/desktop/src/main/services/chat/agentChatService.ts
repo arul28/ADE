@@ -169,6 +169,8 @@ import {
   formatClaudeSlashCommandEntry,
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
+  skillListingEntry,
+  type SkillListingEntry,
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
@@ -456,7 +458,7 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
-import type { AdeChatContextPart, AdeChatContextPreview } from "./adeChatContextPreview";
+import { assembleAdeChatContextParts, type AdeChatContextPart, type AdeChatContextPreview, type AdeChatMainText } from "./adeChatContextPreview";
 import { providerOwnMcpServerNames } from "../mcp/mcpProviderConfigScan";
 import {
   mcpOAuthTokenState,
@@ -45841,6 +45843,8 @@ export function createAgentChatService(args: {
     injectionPlan: ReturnType<typeof planClaudeSlashCommandInjection>;
     renderedSkills: ReturnType<typeof renderClaudeSlashCommandEntries>;
     slashCommandsSection: string[];
+    /** The commands and skills the section lists, each with its line. */
+    listedEntries: SkillListingEntry[];
   } => {
     const projectSlashCommands = (() => {
       try {
@@ -45875,6 +45879,7 @@ export function createAgentChatService(args: {
     const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
     const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
     const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
+    const commandLines = visibleProjectCommandFiles.map(formatClaudeSlashCommandEntry);
     const slashCommandsSection = (visibleProjectCommandFiles.length || renderedSkills.lines.length)
       ? [
         "",
@@ -45886,7 +45891,7 @@ export function createAgentChatService(args: {
         ...(visibleProjectCommandFiles.length ? [
           "",
           "Commands (file-backed prompts):",
-          ...visibleProjectCommandFiles.map(formatClaudeSlashCommandEntry),
+          ...commandLines,
           ...(hiddenProjectCommandCount > 0 ? [`- ${hiddenProjectCommandCount} more command(s) hidden to keep startup context lean. Use slash command search or inspect project command folders if needed.`] : []),
         ] : []),
         ...(renderedSkills.lines.length ? [
@@ -45897,7 +45902,13 @@ export function createAgentChatService(args: {
         ] : []),
       ]
       : [];
-    return { injectionPlan, renderedSkills, slashCommandsSection };
+    const listedEntries = slashCommandsSection.length
+      ? [
+        ...visibleProjectCommandFiles.map((entry, index) => skillListingEntry(entry, commandLines[index]!)),
+        ...renderedSkills.kept.map((entry, index) => skillListingEntry(entry, renderedSkills.lines[index]!)),
+      ]
+      : [];
+    return { injectionPlan, renderedSkills, slashCommandsSection, listedEntries };
   };
 
   const buildClaudeQueryOptions = (
@@ -60177,7 +60188,7 @@ export function createAgentChatService(args: {
     // are for Claude. A personal chat has no project to list.
     const droidSkillListing = isPersonalSession(managed.session)
       ? []
-      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
+      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath })).lines;
     return [
       droidHarnessPrompt,
       ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
@@ -75499,8 +75510,8 @@ export function createAgentChatService(args: {
 
   /**
    * What ADE itself would send a new lane chat of `provider` on this machine,
-   * built by the same builders the launch and the first send use, for the
-   * Settings "Context" list. A dry render: no session is created, nothing is
+   * built by the same builders the launch and the first send use, for a
+   * provider page's Initial context window. A dry render: no session is created, nothing is
    * logged as delivered, no provider or MCP server is started.
    */
   const previewNewChatAdeContext = async (input: {
@@ -75528,6 +75539,9 @@ export function createAgentChatService(args: {
         }));
       } catch (error) {
         logger.warn("agent_chat.context_preview_lane_unavailable", { laneId, error: getErrorMessage(error) });
+        // The lane's folder is unknown: preview a project-root chat, not a
+        // directive that names the lane with the wrong folder.
+        laneId = null;
       }
     }
     const createdAt = nowIso();
@@ -75555,253 +75569,138 @@ export function createAgentChatService(args: {
       interactive: true,
       adeSkillRoots: skillRoots,
     };
-    const listingEntries = (lines: readonly string[]): NonNullable<AdeChatContextPart["entries"]> => lines
-      .filter((line) => line.startsWith("- ") && !/^- \d+ more /.test(line))
-      .map((line) => {
-        const body = line.slice(2);
-        const name = body.split(/ — |\n| \(/)[0]!.trim().replace(/^\//, "");
-        const file = body.match(/\n\s+file: (.+)$/)?.[1] ?? body.match(/ \(([^()]+)\)$/)?.[1] ?? null;
-        return { name, text: line, source: file };
-      });
-
-    let main: { label: string; timing: AdeChatContextPart["timing"]; detail: string; text: string } | null = null;
+    // Set while the main text is built: they are parts of it.
     let activity: string | null = null;
-    let listing: { text: string; lines: string[] } | null = null;
+    let listing: { text: string; entries: NonNullable<AdeChatContextPart["entries"]> } | null = null;
     let perTurn: string | null = null;
-    switch (provider) {
-      case "claude": {
-        const sessionIdFromEnvironment = process.platform !== "win32";
-        activity = buildSessionActivityGuidance(session, true, { sessionIdFromEnvironment });
-        const harness = buildCodingAgentSystemPrompt({
-          ...harnessArgs,
-          runtime: "claude-agent-sdk-query",
-          sessionActivityGuidance: activity,
-        });
-        const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
-        const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
-        const { slashCommandsSection } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
-        main = {
-          label: "ADE system prompt",
-          timing: "every-request",
-          detail: "Added after Claude Code's own prompt for every request.",
-          text: [
-            harness,
-            "",
-            ...slashCommandsSection,
-            "",
-            buildAdeSessionLineageGuidance(session, spawnSelfReportOpts(session), { sessionIdFromEnvironment }) ?? "",
-          ].join("\n"),
-        };
-        if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), lines: slashCommandsSection };
-        break;
-      }
-      case "codex":
-        activity = buildSessionActivityGuidance(session, true);
-        main = {
-          label: "ADE developer instructions",
-          timing: "every-request",
-          detail: "Sent as the thread's developer instructions.",
-          text: buildCodexDeveloperInstructions({
-            laneWorktreePath: cwd,
-            session,
-            collaborationMode: "default",
-            spawnGuidance: spawnSelfReportOpts(session),
+    const main = await (async (): Promise<AdeChatMainText> => {
+      switch (provider) {
+        case "claude": {
+          const sessionIdFromEnvironment = process.platform !== "win32";
+          activity = buildSessionActivityGuidance(session, true, { sessionIdFromEnvironment });
+          const harness = buildCodingAgentSystemPrompt({
+            ...harnessArgs,
+            runtime: "claude-agent-sdk-query",
             sessionActivityGuidance: activity,
-            projectNotes,
-          }),
-        };
-        break;
-      case "opencode":
-        activity = buildOpenCodeSessionActivityGuidance(session, true);
-        main = {
-          label: "ADE session instructions",
-          timing: "every-request",
-          detail: "Sent as the session's instruction entry.",
-          text: buildOpenCodeSystemPrompt({
-            laneWorktreePath: cwd,
+          });
+          const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
+          const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
+          const { slashCommandsSection, listedEntries } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
+          if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), entries: listedEntries };
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Added after Claude Code's own prompt for every request.",
+            text: [
+              harness,
+              "",
+              ...slashCommandsSection,
+              "",
+              buildAdeSessionLineageGuidance(session, spawnSelfReportOpts(session), { sessionIdFromEnvironment }) ?? "",
+            ].join("\n"),
+          };
+        }
+        case "codex":
+          activity = buildSessionActivityGuidance(session, true);
+          return {
+            label: "ADE developer instructions",
+            timing: "every-request",
+            detail: "Sent as the thread's developer instructions.",
+            text: buildCodexDeveloperInstructions({
+              laneWorktreePath: cwd,
+              session,
+              collaborationMode: "default",
+              spawnGuidance: spawnSelfReportOpts(session),
+              sessionActivityGuidance: activity,
+              projectNotes,
+            }),
+          };
+        case "opencode":
+          activity = buildOpenCodeSessionActivityGuidance(session, true);
+          return {
+            label: "ADE session instructions",
+            timing: "every-request",
+            detail: "Sent as the session's instruction entry.",
+            text: buildOpenCodeSystemPrompt({
+              laneWorktreePath: cwd,
+              session,
+              projectNotes,
+              spawnGuidance: spawnSelfReportOpts(session),
+              sessionActivityGuidance: activity,
+            }),
+          };
+        case "copilot":
+          return {
+            label: "ADE system message",
+            timing: "every-request",
+            detail: "Added after Copilot's own instructions for every request.",
+            text: [buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "copilot-sdk" }), lineage].filter(Boolean).join("\n\n"),
+          };
+        case "pi": {
+          const piTools = piSdkToolPolicyForPermissionMode(session.permissionMode, process.platform).tools;
+          activity = sessionActivityGuidanceForRuntime(session, resolveSessionActivityRuntime(
             session,
-            projectNotes,
-            spawnGuidance: spawnSelfReportOpts(session),
-            sessionActivityGuidance: activity,
-          }),
-        };
-        break;
-      case "copilot":
-        main = {
-          label: "ADE system message",
-          timing: "every-request",
-          detail: "Added after Copilot's own instructions for every request.",
-          text: [buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "copilot-sdk" }), lineage].filter(Boolean).join("\n\n"),
-        };
-        break;
-      case "pi": {
-        const piTools = piSdkToolPolicyForPermissionMode(session.permissionMode, process.platform).tools;
-        activity = sessionActivityGuidanceForRuntime(session, resolveSessionActivityRuntime(
-          session,
-          process.platform !== "win32" && piTools.includes("bash"),
-        ));
-        main = {
-          label: "ADE system prompt",
-          timing: "every-request",
-          detail: "Replaces Pi's own base prompt.",
-          text: [
-            buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "pi-sdk", sessionActivityGuidance: activity }),
-            lineage,
-          ].filter(Boolean).join("\n\n"),
-        };
-        break;
+            process.platform !== "win32" && piTools.includes("bash"),
+          ));
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Replaces Pi's own base prompt.",
+            text: [
+              buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "pi-sdk", sessionActivityGuidance: activity }),
+              lineage,
+            ].filter(Boolean).join("\n\n"),
+          };
+        }
+        case "droid": {
+          activity = buildSessionActivityGuidance(session, true);
+          const droidListing = buildDroidSkillListing(cwd, skillRoots);
+          if (droidListing.lines.length) listing = { text: droidListing.lines.join("\n"), entries: droidListing.entries };
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Added after Droid's own prompt when the session is created.",
+            text: buildDroidFraming(preview),
+          };
+        }
+        case "cursor":
+          perTurn = buildCursorSdkModeDirective(preview, resolveCursorSdkPolicy(session));
+          return {
+            label: "ADE lane guidance",
+            timing: "chat-start",
+            detail: "Put before the first message of each Cursor agent.",
+            text: [
+              await buildCursorSdkInjectedSystemPrompt({ runtime: "local", laneWorktreePath: cwd }),
+              buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
+            ].filter((part) => part.trim().length > 0).join("\n\n"),
+          };
+        default:
+          // Muse and the ACP agents have only the user turn: the guidance rides
+          // the first message of each provider session.
+          return {
+            label: "ADE lane guidance",
+            timing: "chat-start",
+            detail: "Put before the first message of the chat.",
+            text: buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
+          };
       }
-      case "droid": {
-        activity = buildSessionActivityGuidance(session, true);
-        main = {
-          label: "ADE system prompt",
-          timing: "every-request",
-          detail: "Added after Droid's own prompt when the session is created.",
-          text: buildDroidFraming(preview),
-        };
-        const lines = buildDroidSkillListing(cwd, skillRoots);
-        if (lines.length) listing = { text: lines.join("\n"), lines };
-        break;
-      }
-      case "cursor":
-        main = {
-          label: "ADE lane guidance",
-          timing: "chat-start",
-          detail: "Put before the first message of each Cursor agent.",
-          text: [
-            await buildCursorSdkInjectedSystemPrompt({ runtime: "local", laneWorktreePath: cwd }),
-            buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
-          ].filter((part) => part.trim().length > 0).join("\n\n"),
-        };
-        perTurn = buildCursorSdkModeDirective(preview, resolveCursorSdkPolicy(session));
-        break;
-      default:
-        // Muse and the ACP agents have only the user turn: the guidance rides
-        // the first message of each provider session.
-        main = {
-          label: "ADE lane guidance",
-          timing: "chat-start",
-          detail: "Put before the first message of the chat.",
-          text: buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
-        };
-        break;
-    }
-
-    const parts: AdeChatContextPart[] = [];
-    const inMain = (text: string | null | undefined): text is string => Boolean(text?.trim() && main?.text.includes(text.trim()));
-    const includes: string[] = [];
-    if (inMain(cliGuidance)) {
-      includes.push("ade-cli-guidance");
-      parts.push({
-        id: "ade-cli-guidance",
-        label: "ADE CLI guidance",
-        kind: "instructions",
-        timing: main!.timing,
-        text: cliGuidance.trim(),
-        detail: "How to use the `ade` command and where ADE's skills are.",
-      });
-    }
-    if (inMain(activity)) {
-      includes.push("ade-activity");
-      parts.push({
-        id: "ade-activity",
-        label: "ADE status reporting",
-        kind: "instructions",
-        timing: main!.timing,
-        text: activity.trim(),
-        detail: "How the agent reports its status to the Work board.",
-      });
-    }
-    if (listing && inMain(listing.text)) {
-      includes.push("ade-skill-listing");
-      parts.push({
-        id: "ade-skill-listing",
-        label: "ADE skill listing",
-        kind: "skills",
-        timing: main!.timing,
-        text: listing.text,
-        detail: "Skills and commands the provider cannot find by itself, with their files.",
-        entries: listingEntries(listing.lines),
-      });
-    }
-    if (inMain(projectNotes)) {
-      includes.push("ade-project-notes");
-      parts.push({
-        id: "ade-project-notes",
-        label: "Project notes",
-        kind: "notes",
-        timing: main!.timing,
-        text: projectNotes.trim(),
-        detail: "The notes saved for this project in ADE.",
-      });
-    }
-    if (main?.text.trim()) {
-      parts.unshift({
-        id: "ade-prompt",
-        label: main.label,
-        kind: "system-prompt",
-        timing: main.timing,
-        text: main.text.trim(),
-        detail: main.detail,
-        includes,
-      });
-    }
-    if (perTurn?.trim()) {
-      parts.push({
-        id: "ade-turn-directive",
-        label: "ADE turn directive",
-        kind: "instructions",
-        timing: "every-request",
-        text: perTurn.trim(),
-        detail: "Put before every message: ADE's plan and question controls.",
-      });
-    }
-    const launchDirective = laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null;
-    if (launchDirective) {
-      parts.push({
-        id: "ade-launch-directive",
-        label: "ADE launch directive",
-        kind: "instructions",
-        timing: "chat-start",
-        text: launchDirective,
-        detail: "Names the lane and its folder, on the first message.",
-      });
-    }
-    const computerUse = currentComputerUseDirective();
-    if (computerUse) {
-      parts.push({
-        id: "ade-computer-use",
-        label: "ADE computer-use rules",
-        kind: "instructions",
-        timing: "chat-start",
-        text: computerUse,
-        detail: "Screen, browser and proof rules, on the first message.",
-      });
-    }
-    const laneScreen = currentLaneScreenDirective(laneId);
-    if (laneScreen) {
-      parts.push({
-        id: "ade-lane-screen",
-        label: "ADE lane screen",
-        kind: "instructions",
-        timing: "chat-start",
-        text: laneScreen,
-      });
-    }
-    const appleDevice = resolveLaneAppleDeviceDirective({
-      laneId,
-      lookup: laneAppleDeviceLookup,
-      onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
+    })();
+    const parts = assembleAdeChatContextParts({
+      main,
+      cliGuidance,
+      activity,
+      listing,
+      projectNotes,
+      perTurn,
+      launchDirective: laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
+      computerUse: currentComputerUseDirective(),
+      laneScreen: currentLaneScreenDirective(laneId),
+      appleDevice: resolveLaneAppleDeviceDirective({
+        laneId,
+        lookup: laneAppleDeviceLookup,
+        onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
+      })?.directive ?? null,
     });
-    if (appleDevice) {
-      parts.push({
-        id: "ade-apple-device",
-        label: "ADE Apple device",
-        kind: "instructions",
-        timing: "chat-start",
-        text: appleDevice.directive,
-      });
-    }
 
     // The registry servers ADE hands this provider (names and transport; no
     // secret is read), minus the names the provider loads from its own config.
@@ -75820,9 +75719,8 @@ export function createAgentChatService(args: {
     }
 
     const providerHomeEnv: Record<string, string> = {};
-    const machineAdeHome = args.machineAdeHome?.trim();
-    if (args.embeddedProviderLoginsIsolated === true && machineAdeHome) {
-      for (const [key, value] of Object.entries(embeddedProviderLoginEnv(provider, machineAdeHome) ?? {})) {
+    if (args.embeddedProviderLoginsIsolated === true && adeHome) {
+      for (const [key, value] of Object.entries(embeddedProviderLoginEnv(provider, adeHome) ?? {})) {
         if (typeof value === "string") providerHomeEnv[key] = value;
       }
     }

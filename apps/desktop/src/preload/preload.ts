@@ -5621,7 +5621,7 @@ const adeBridge = {
         ipcRenderer.invoke(IPC.aiPinnedToolStatus, args),
       ),
     // What a provider's agent receives when a lane chat starts on the machine
-    // `pin` names (Settings > Providers > Context). The service reads that
+    // `pin` names (a provider page's Initial context window). The service reads that
     // machine's files, so a pin always goes to its brain.
     getProviderContextInventory: async (
       args: GetProviderContextInventoryArgs,
@@ -5630,6 +5630,11 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr<ProviderContextInventory | null>(pin, "ai", "getProviderContextInventory", { args }, () =>
         ipcRenderer.invoke(IPC.aiGetProviderContextInventory, args),
       ),
+    // Shows one of the card's files in Finder. Only on This computer: the
+    // path names a file on the machine that built the list, so the renderer
+    // offers the button only when the Settings page shows this computer.
+    revealProviderContextPath: async (filePath: string): Promise<void> =>
+      ipcRenderer.invoke(IPC.aiRevealProviderContextPath, { path: filePath }),
     pinnedToolDownload: async (args: { provider: string }, pin?: OpenProjectBinding | null): Promise<PinnedProviderToolStatus> =>
       callPinnedOrBoundRuntimeActionOr(pin, "ai", "pinnedToolDownload", { args }, () =>
         ipcRenderer.invoke(IPC.aiPinnedToolDownload, args),

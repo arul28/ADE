@@ -8,8 +8,10 @@ import {
 } from "../../../shared/types/turnUsage";
 import type { AdeActionDomain } from "./domains";
 import { ADE_ACCOUNT_DELETE_MACHINE_CONFIRMATION } from "../../../shared/types/account";
+import { PROVIDER_CONTEXT_PROVIDER_IDS } from "../../../shared/types/providerContext";
 
 const sessionActivityValueInput = SESSION_ACTIVITY_VALUES.map((value) => `"${value}"`).join(" | ");
+const providerContextProviderInput = PROVIDER_CONTEXT_PROVIDER_IDS.map((value) => `"${value}"`).join(" | ");
 
 /**
  * The documented input shape for every action the CTO's curated tools reach.
@@ -241,7 +243,7 @@ const ADE_ACTION_INPUT_CONTRACTS: AdeActionInputContractTable = {
         "List what a provider's agent receives when a lane chat starts on this machine: ADE's own prompt pieces (exact), "
         + "the user's and the project's instruction files, memory, skills, agents, plugins and MCP servers (estimated; no config values), "
         + "and the median first-turn context of the last 30 days' chats. Read-only.",
-      input: "object { provider: \"claude\" | \"codex\" | \"cursor\" | \"droid\" | \"opencode\" | \"pi\" | \"muse\" | \"qwen\" | \"kimi\" | \"grok\" | \"copilot\" | \"devin\" | \"antigravity\", laneId?: string (defaults to the primary lane) }",
+      input: `object { provider: ${providerContextProviderInput}, laneId?: string (defaults to the primary lane) }`,
       example: "ade actions run ai.getProviderContextInventory --input-json '{\"provider\":\"claude\"}' --json",
     },
   },

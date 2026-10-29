@@ -2,10 +2,10 @@
  * One provider's page, in the provider's own colors.
  *
  * A banner on top carries the logo, the name, the state and this machine's
- * 30-day usage. Below it, the left column holds the state details, the models
- * and troubleshooting; the right column holds what the agent gets at chat
- * start, then whatever else that provider has (accounts, a bespoke body,
- * compaction, API keys). The page scrolls as one column; the model list
+ * 30-day usage, then the accounts when the provider has several. Below them,
+ * the left column holds the state details, the models and troubleshooting;
+ * the right column holds the initial context window, then whatever else that
+ * provider has (a bespoke body, compaction, API keys). The page scrolls as one column; the model list
  * scrolls inside its card, so a provider with 83 models stays short.
  */
 import React, { useCallback, useMemo, useState } from "react";
@@ -63,12 +63,14 @@ function pinnedRuntimeReady(id: string, ctx: ProvidersViewContext): boolean {
 function ModelsListBody({
   descriptor,
   ctx,
+  models,
 }: {
   descriptor: ProviderDescriptor;
   ctx: ProvidersViewContext;
+  /** `descriptor.models(ctx)`, computed once by the page. */
+  models: ReturnType<ProviderDescriptor["models"]>;
 }) {
   const [query, setQuery] = useState("");
-  const models = descriptor.models(ctx);
   const status = providerStatusFor(descriptor, ctx);
   const modelsNote = descriptor.modelsNote?.(ctx) ?? null;
   const filtered = useMemo(() => {
@@ -173,18 +175,20 @@ export function ProviderDetailPage({
   });
 
   const brand = providerBrand(descriptor.id);
+  const models = useMemo(() => descriptor.models(ctx), [descriptor, ctx]);
   const modelLabels = useMemo(() => {
     const labels = new Map<string, string>();
-    for (const model of descriptor.models(ctx)) {
+    for (const model of models) {
       labels.set(model.id, model.label);
       const bare = model.id.includes("/") ? model.id.slice(model.id.indexOf("/") + 1) : model.id;
       if (!labels.has(bare)) labels.set(bare, model.label);
     }
     return labels;
-  }, [descriptor, ctx]);
+  }, [models]);
   const modelLabel = useCallback((id: string) => modelLabels.get(id) ?? id, [modelLabels]);
-  const hasStatusDetails = showStatusMessage || Boolean(pinnedTool.status) || facts.length > 0
-    || Boolean(AuthActions && (!connected || descriptor.id === "cursor"));
+  // Cursor also owns its OAuth sign-out action after connection.
+  const showAuthActions = Boolean(AuthActions) && (!connected || descriptor.id === "cursor");
+  const hasStatusDetails = showStatusMessage || Boolean(pinnedTool.status) || facts.length > 0 || showAuthActions;
 
   return (
     <div className="ade-pv-provider" style={providerThemeVars(brand)}>
@@ -232,8 +236,7 @@ export function ProviderDetailPage({
                   </div>
                 ))}
 
-                {/* Cursor also owns its OAuth sign-out action after connection. */}
-                {AuthActions && (!connected || descriptor.id === "cursor") ? (
+                {AuthActions && showAuthActions ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, borderTop: `1px solid ${COLORS.borderMuted}`, paddingTop: 10 }}>
                     <SubsectionTitle>{connected ? "Cursor account" : "Sign in"}</SubsectionTitle>
                     <AuthActions ctx={ctx} />
@@ -247,10 +250,10 @@ export function ProviderDetailPage({
             <header className="kit-card-head">
               <Cube size={14} />
               Models
-              <span className="kit-card-head-count">{descriptor.models(ctx).length}</span>
+              <span className="kit-card-head-count">{models.length}</span>
             </header>
             <div className="kit-card-body">
-              <ModelsListBody descriptor={descriptor} ctx={ctx} />
+              <ModelsListBody descriptor={descriptor} ctx={ctx} models={models} />
             </div>
           </section>
 

@@ -2659,16 +2659,16 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     // What a provider's agent receives when a lane chat starts on THIS
     // machine: ADE's own text, the user's and project's files, and the
-    // measured first turn. Settings > Providers > <provider> > Context.
+    // measured first turn: a provider page's Initial context window.
     getProviderContextInventory: async (args?: unknown) => {
-      const { getProviderContextInventory, parseGetProviderContextInventoryArgs } = await import("../ai/providerContextInventory");
+      const { getProviderContextInventory } = await import("../ai/providerContextInventory");
       return getProviderContextInventory(
         {
           projectRoot: runtime.projectRoot,
           agentChatService: runtime.agentChatService ?? null,
           logger: runtime.logger,
         },
-        parseGetProviderContextInventoryArgs(args),
+        args,
       );
     },
     pinnedToolDownload: async (args?: { provider?: string }) => {

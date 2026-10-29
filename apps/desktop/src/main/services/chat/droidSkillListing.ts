@@ -7,7 +7,9 @@ import {
   discoverClaudeSlashCommands,
   planSlashCommandInjection,
   renderWithinBudget,
+  skillListingEntry,
   type DiscoveredClaudeSlashCommand,
+  type SkillListingEntry,
   type NativeSlashCommandRoots,
   type SlashCommandInjectionPlan,
 } from "./claudeSlashCommandDiscovery";
@@ -47,6 +49,11 @@ function droidNativeSlashCommandRoots(
   };
 }
 
+/** A Droid listing: its prompt lines, and the entries it lists. Cached and shared: read-only. */
+export type DroidSkillListing = { readonly lines: readonly string[]; readonly entries: readonly SkillListingEntry[] };
+
+const EMPTY_LISTING: DroidSkillListing = { lines: [], entries: [] };
+
 /**
  * The prompt section that tells a harness which project and user skills exist
  * that it would not find on its own. Empty when there is nothing to add.
@@ -56,14 +63,14 @@ function buildSkillListingSection(
   budgetBytes: number,
   /** The project directory: its own files are listed before the user's. */
   cwd: string,
-): string[] {
+): DroidSkillListing {
   // The project's own files first. They are the ones written for this
   // codebase, and an alphabetical list spent the whole budget before reaching
   // a project's `/quality` or `/test`.
   const inProject = (entry: DiscoveredClaudeSlashCommand) => isPathInside(entry.filePath, cwd);
   const entries = [...plan.commands, ...plan.skills]
     .sort((a, b) => Number(inProject(b)) - Number(inProject(a)));
-  const { lines, omitted } = renderWithinBudget(entries, (entry) => {
+  const { lines, kept, omitted } = renderWithinBudget(entries, (entry) => {
     // One short line each: this list is paid for on every turn.
     const description = entry.description.trim().replace(/\s+/g, " ");
     const clipped = description.length > PER_TURN_SKILL_DESC_CHARS
@@ -71,8 +78,8 @@ function buildSkillListingSection(
       : description;
     return `- ${entry.name}${clipped ? ` — ${clipped}` : ""} (${entry.filePath})`;
   }, budgetBytes);
-  if (!lines.length) return [];
-  return [
+  if (!lines.length) return EMPTY_LISTING;
+  const section = [
     "## Project commands and skills",
     "Files this project and this user keep that your harness does not load on its own. When the user sends `/<name>`, ADE expands the file for you. When one fits the task, read its file and follow it.",
     ...lines,
@@ -80,6 +87,7 @@ function buildSkillListingSection(
       ? [`- ${omitted} more omitted to keep this list short. Run \`ade skill list --text\` if none of these fits.`]
       : []),
   ];
+  return { lines: section, entries: kept.map((entry, index) => skillListingEntry(entry, lines[index]!)) };
 }
 
 /*
@@ -87,7 +95,7 @@ function buildSkillListingSection(
  * every turn, and planning lists each native root and resolves each skill's
  * real path; on discovery's own TTL a turn costs one map lookup instead.
  */
-const cachedListing = createSlashCommandListingCache<string[]>();
+const cachedListing = createSlashCommandListingCache<DroidSkillListing>();
 
 /**
  * The lines that tell a Droid chat in `cwd` which of the project's and the
@@ -97,7 +105,7 @@ const cachedListing = createSlashCommandListingCache<string[]>();
  * everything under `alreadyNamedRoots`. Empty when there is nothing to add, or
  * when the files could not be read.
  */
-export function buildDroidSkillListing(cwd: string, alreadyNamedRoots: readonly string[]): string[] {
+export function buildDroidSkillListing(cwd: string, alreadyNamedRoots: readonly string[]): DroidSkillListing {
   try {
     const key = [pathKey(cwd), ...alreadyNamedRoots.map((root) => pathKey(path.resolve(root)))].join("\n");
     return cachedListing(key, () => {
@@ -107,8 +115,8 @@ export function buildDroidSkillListing(cwd: string, alreadyNamedRoots: readonly 
         PER_TURN_SKILL_LISTING_BUDGET_BYTES,
         cwd,
       );
-    }).slice();
+    });
   } catch {
-    return [];
+    return EMPTY_LISTING;
   }
 }

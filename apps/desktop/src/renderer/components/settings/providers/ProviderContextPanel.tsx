@@ -3,7 +3,7 @@
  * the provider's own prompt, ADE's text, the user's setup and the project's
  * files, each with its size. Read-only; a person changes their own setup.
  */
-import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   ArrowsClockwise,
@@ -25,7 +25,7 @@ import {
   Sparkle,
   Stack,
   UserCircle,
-  Wrench,
+  WarningCircle,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import type {
@@ -35,12 +35,11 @@ import type {
   ProviderContextOwner,
   ProviderContextTiming,
 } from "../../../../shared/types/providerContext";
-import { formatTokens } from "../../../lib/format";
+import { isUnsupportedAdeActionError } from "../../../../shared/codedError";
+import { formatTokens, ipcErrorMessage } from "../../../lib/format";
 import { isMacPlatform, isWindowsPlatform } from "../../../lib/platform";
 import { settingsRouteFor, settingsEntryById } from "../settingsManifest";
-
-/** Whether this window can open the inventory's files: only on the computer that built it. */
-const RevealContext = createContext(false);
+import { showToast } from "../../app/toast/toastStore";
 
 function revealLabel(): string {
   if (isMacPlatform()) return "Show in Finder";
@@ -49,11 +48,11 @@ function revealLabel(): string {
 }
 
 /** Small buttons at the end of a row: open its file, or the ADE page that manages it. */
-function RowActions({ item }: { item: ProviderContextItem }) {
-  const canReveal = useContext(RevealContext);
+function RowActions({ item, canReveal }: { item: ProviderContextItem; canReveal: boolean }) {
   const navigate = useNavigate();
   const entry = item.settingsEntry ? settingsEntryById(item.settingsEntry) : null;
-  const path = canReveal ? item.path ?? null : null;
+  const reveal = window.ade.ai?.revealProviderContextPath;
+  const path = canReveal && typeof reveal === "function" ? item.path ?? null : null;
   if (!path && !entry) return <span />;
   return (
     <span className="ade-pv-ctx-actions">
@@ -74,7 +73,11 @@ function RowActions({ item }: { item: ProviderContextItem }) {
           className="ade-pv-ctx-action"
           title={`${revealLabel()}: ${item.setIn ?? item.source ?? path}`}
           aria-label={`${revealLabel()}: ${item.label}`}
-          onClick={() => void window.ade.app.revealPath(path).catch(() => {})}
+          onClick={() => {
+            void reveal?.(path).catch((error: unknown) => {
+              showToast({ tone: "error", title: `Could not show ${item.label}`, message: ipcErrorMessage(error) });
+            });
+          }}
         >
           <FolderOpen size={12} />
         </button>
@@ -85,18 +88,6 @@ function RowActions({ item }: { item: ProviderContextItem }) {
 
 const OWNER_ORDER: ProviderContextOwner[] = ["harness", "ade", "user", "project"];
 
-/**
- * One color per owner. The provider's own part wears its brand; ADE, the
- * user's setup and the project each keep a fixed color on every page, so the
- * same part reads the same on Claude and on Codex.
- */
-const OWNER_COLOR: Record<ProviderContextOwner, string> = {
-  harness: "var(--provider-accent)",
-  ade: "#2DD4BF",
-  user: "#F472B6",
-  project: "#FBBF24",
-};
-
 const KIND_ICON: Record<ProviderContextItemKind, React.ReactNode> = {
   "system-prompt": <Cpu size={14} />,
   instructions: <FileText size={14} />,
@@ -104,7 +95,6 @@ const KIND_ICON: Record<ProviderContextItemKind, React.ReactNode> = {
   skills: <Sparkle size={14} />,
   skill: <Sparkle size={13} />,
   "mcp-server": <Plugs size={14} />,
-  tools: <Wrench size={14} />,
   plugin: <PuzzlePiece size={14} />,
   rule: <ListChecks size={14} />,
   agent: <Robot size={14} />,
@@ -118,7 +108,7 @@ const TIMING_LABEL: Record<ProviderContextTiming, string> = {
   "on-demand": "When used",
 };
 
-const COVERAGE_LABEL = { full: "Full list", good: "Most items", basic: "ADE's items" } as const;
+const COVERAGE_LABEL = { good: "Most items", basic: "ADE's items" } as const;
 
 function OwnerIcon({ owner, logo }: { owner: ProviderContextOwner; logo: React.ReactNode }) {
   switch (owner) {
@@ -141,28 +131,30 @@ function ownerLabel(owner: ProviderContextOwner, providerLabel: string): string 
 function tokenText(item: Pick<ProviderContextItem, "tokens" | "sizeKind">): string {
   if (item.tokens == null || item.sizeKind === "unknown") return "—";
   const value = formatTokens(item.tokens);
-  return item.sizeKind === "exact" ? value : `≈${value}`;
+  // Only a measured size is a real token count; the rest are counted from text.
+  return item.sizeKind === "measured" ? value : `≈${value}`;
 }
 
 function tokenTitle(item: Pick<ProviderContextItem, "sizeKind">): string {
   switch (item.sizeKind) {
-    case "exact": return "Counted from the exact text ADE sends";
-    case "estimated": return "Estimated from the file or setting";
+    case "exact": return "Estimated from the exact text ADE sends, at about 4 characters per token";
+    case "estimated": return "Estimated from the file or setting, at about 4 characters per token";
     case "measured": return "From real chats on this machine";
     default: return "Not known before a chat starts";
   }
 }
 
+/** What an item adds to the start of a chat: an on-demand item adds nothing until it is used. */
 function itemTokens(item: ProviderContextItem): number {
-  return item.tokens ?? 0;
+  return item.timing === "on-demand" ? 0 : item.tokens ?? 0;
 }
 
-function ContextRow({ item, color, child = false }: { item: ProviderContextItem; color: string; child?: boolean }) {
+function ContextRow({ item, canReveal, child = false }: { item: ProviderContextItem; canReveal: boolean; child?: boolean }) {
   const [open, setOpen] = useState(false);
   const children = item.children ?? [];
   return (
     <>
-      <div className="ade-pv-ctx-row" data-child={child ? "true" : undefined} style={{ ["--owner" as string]: color }}>
+      <div className="ade-pv-ctx-row" data-child={child ? "true" : undefined}>
         <span className="ade-pv-ctx-row-icon">
           {children.length ? (
             <button
@@ -179,7 +171,7 @@ function ContextRow({ item, color, child = false }: { item: ProviderContextItem;
         <div className="ade-pv-ctx-row-main">
           <div className="ade-pv-ctx-row-label">
             <span title={item.label}>{item.label}</span>
-            {children.length ? <span className="kit-num" style={{ fontSize: 10.5, opacity: 0.6 }}>{children.length}</span> : null}
+            {children.length ? <span className="ade-pv-ctx-row-count kit-num">{children.length}</span> : null}
           </div>
           {item.source ? <div className="ade-pv-ctx-row-source" title={item.source}>{item.source}</div> : null}
           {item.setIn ? (
@@ -195,9 +187,9 @@ function ContextRow({ item, color, child = false }: { item: ProviderContextItem;
           <span className="ade-pv-ctx-timing" data-timing={item.timing}>{TIMING_LABEL[item.timing]}</span>
         )}
         <span className="ade-pv-ctx-tokens" data-kind={item.sizeKind} title={tokenTitle(item)}>{tokenText(item)}</span>
-        <RowActions item={item} />
+        <RowActions item={item} canReveal={canReveal} />
       </div>
-      {open ? children.map((entry) => <ContextRow key={entry.id} item={entry} color={color} child />) : null}
+      {open ? children.map((entry) => <ContextRow key={entry.id} item={entry} canReveal={canReveal} child />) : null}
     </>
   );
 }
@@ -217,23 +209,33 @@ export function ProviderContextPanel({
   /** True when the page shows this computer, so its files can be opened here. */
   canReveal: boolean;
 }) {
+  // undefined while loading; null when this machine's ADE has no such list.
   const [inventory, setInventory] = useState<ProviderContextInventory | null | undefined>(undefined);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // The page stays mounted when the user picks another provider, so a slow
+  // answer for the last one must not replace the current one.
+  const requestRef = useRef(0);
 
   const load = useCallback(async () => {
+    const request = ++requestRef.current;
     const read = window.ade.ai?.getProviderContextInventory;
     if (typeof read !== "function") {
       setInventory(null);
       return;
     }
     setLoading(true);
+    setLoadError(null);
     try {
-      setInventory((await read({ provider: providerId }, pin)) ?? null);
-    } catch {
-      // An older brain has no such action; the card stays away.
-      setInventory(null);
+      const next = (await read({ provider: providerId }, pin)) ?? null;
+      if (request === requestRef.current) setInventory(next);
+    } catch (error) {
+      if (request !== requestRef.current) return;
+      // An older ADE on that machine has no such action; the card stays away.
+      if (isUnsupportedAdeActionError(error)) setInventory(null);
+      else setLoadError(ipcErrorMessage(error));
     } finally {
-      setLoading(false);
+      if (request === requestRef.current) setLoading(false);
     }
     // A rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -254,10 +256,12 @@ export function ProviderContextPanel({
       .filter((group) => group.items.length > 0);
   }, [inventory]);
 
-  if (inventory === null) return null;
+  if (inventory === null && !loadError) return null;
 
-  const listed = groups.reduce((sum, group) => sum + group.tokens, 0);
+  const listed = inventory?.listedTokens ?? 0;
   const total = inventory?.measured?.firstTurnTokens ?? listed;
+  // The bar's whole: the measured size, or the listed sum when it is larger.
+  const whole = Math.max(total, listed);
   const itemCount = inventory?.items.length ?? 0;
 
   return (
@@ -266,7 +270,7 @@ export function ProviderContextPanel({
         <Stack size={14} />
         Initial context window
         {inventory ? <span className="kit-card-head-count">{itemCount}</span> : null}
-        {inventory ? <span className="kit-tag" style={{ marginLeft: 8 }}>{COVERAGE_LABEL[inventory.coverage]}</span> : null}
+        {inventory ? <span className="ade-pv-ctx-coverage kit-tag">{COVERAGE_LABEL[inventory.coverage]}</span> : null}
         <button
           type="button"
           className="kit-card-head-action"
@@ -279,12 +283,20 @@ export function ProviderContextPanel({
         </button>
       </header>
 
-      {inventory === undefined ? (
-        <div className="kit-card-body">
-          <div className="ade-pv-ctx-skeleton" style={{ width: "40%", height: 22 }} />
-          <div className="ade-pv-ctx-skeleton" />
-          <div className="ade-pv-ctx-skeleton" style={{ width: "70%" }} />
-        </div>
+      {!inventory ? (
+        loadError ? (
+          <div className="kit-card-body ade-pv-ctx-error" role="alert">
+            <WarningCircle size={14} weight="fill" />
+            <span>Could not read the list. {loadError}</span>
+            <button type="button" className="kit-btn" onClick={() => void load()} disabled={loading}>Try again</button>
+          </div>
+        ) : (
+          <div className="kit-card-body">
+            <div className="ade-pv-ctx-skeleton" data-size="title" />
+            <div className="ade-pv-ctx-skeleton" />
+            <div className="ade-pv-ctx-skeleton" data-size="short" />
+          </div>
+        )
       ) : (
         <>
           <div className="kit-card-body">
@@ -304,27 +316,27 @@ export function ProviderContextPanel({
                   <i
                     key={group.owner}
                     title={`${ownerLabel(group.owner, providerLabel)}: ${formatTokens(group.tokens)}`}
-                    style={{ width: `${(group.tokens / Math.max(total, listed)) * 100}%`, ["--owner" as string]: OWNER_COLOR[group.owner] }}
+                    data-owner={group.owner}
+                    style={{ width: `${(group.tokens / whole) * 100}%` }}
                   />
                 ) : null))}
               </div>
             ) : null}
             <div className="ade-pv-ctx-legend">
               {groups.map((group) => (
-                <span key={group.owner} style={{ ["--owner" as string]: OWNER_COLOR[group.owner] }}>
+                <span key={group.owner} data-owner={group.owner}>
                   <i />
                   {ownerLabel(group.owner, providerLabel)}
                   <b>{group.tokens > 0 ? formatTokens(group.tokens) : "—"}</b>
-                  {total > 0 && group.tokens > 0 ? <em>{Math.round((group.tokens / Math.max(total, listed)) * 100)}%</em> : null}
+                  {whole > 0 && group.tokens > 0 ? <em>{Math.round((group.tokens / whole) * 100)}%</em> : null}
                 </span>
               ))}
             </div>
           </div>
 
-          <RevealContext.Provider value={canReveal}>
           <div className="kit-card-body" data-flush="true">
             {groups.map((group) => (
-              <div key={group.owner} className="ade-pv-ctx-group" style={{ ["--owner" as string]: OWNER_COLOR[group.owner] }}>
+              <div key={group.owner} className="ade-pv-ctx-group" data-owner={group.owner}>
                 <div className="ade-pv-ctx-group-head">
                   <span className="ade-pv-ctx-group-icon"><OwnerIcon owner={group.owner} logo={providerLogo} /></span>
                   {ownerLabel(group.owner, providerLabel)}
@@ -333,15 +345,17 @@ export function ProviderContextPanel({
                 </div>
                 {[...group.items]
                   .sort((a, b) => itemTokens(b) - itemTokens(a))
-                  .map((item) => <ContextRow key={item.id} item={item} color={OWNER_COLOR[group.owner]} />)}
+                  .map((item) => <ContextRow key={item.id} item={item} canReveal={canReveal} />)}
               </div>
             ))}
           </div>
-          </RevealContext.Provider>
 
           <div className="ade-pv-ctx-foot">
+            {/* A failed "Check again" keeps the last list and says so. */}
+            {loadError ? <div className="ade-pv-ctx-foot-error" role="alert">Could not check again. {loadError}</div> : null}
             {inventory.coverageNote}
-            {inventory.cwd ? <> · <span className="kit-num">{inventory.cwd}</span></> : null}
+            {" · "}
+            <span className="kit-num">{inventory.cwd}</span>
           </div>
         </>
       )}

@@ -425,6 +425,14 @@ export const CLAUDE_SKILL_LISTING_MAX_DESC_CHARS = 1536;
  */
 export const CLAUDE_SKILL_LISTING_BUDGET_BYTES = 16 * 1024;
 
+/** One line of a skill listing and the file it names, for the context preview. */
+export type SkillListingEntry = { name: string; text: string; source: string };
+
+export function skillListingEntry(entry: DiscoveredClaudeSlashCommand, text: string): SkillListingEntry {
+  // A command's name carries its `/`; the list shows the bare name.
+  return { name: entry.name.replace(/^\//, ""), text, source: entry.filePath };
+}
+
 export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashCommand): string {
   const description = entry.description.trim();
   const clipped = description.length > CLAUDE_SKILL_LISTING_MAX_DESC_CHARS
@@ -437,13 +445,15 @@ export function formatClaudeSlashCommandEntry(entry: DiscoveredClaudeSlashComman
 /**
  * Renders entries in order until the budget is spent, counting what did not
  * fit. The first entry always goes in: a list of nothing helps nobody.
+ * `kept[i]` is the entry `lines[i]` was rendered from.
  */
 export function renderWithinBudget<T>(
   entries: readonly T[],
   format: (entry: T) => string,
   budgetBytes: number,
-): { lines: string[]; omitted: number } {
+): { lines: string[]; kept: T[]; omitted: number } {
   const lines: string[] = [];
+  const kept: T[] = [];
   let used = 0;
   let omitted = 0;
   for (const entry of entries) {
@@ -454,9 +464,10 @@ export function renderWithinBudget<T>(
       continue;
     }
     lines.push(rendered);
+    kept.push(entry);
     used += cost;
   }
-  return { lines, omitted };
+  return { lines, kept, omitted };
 }
 
 /**
@@ -466,7 +477,7 @@ export function renderWithinBudget<T>(
 export function renderClaudeSlashCommandEntries(
   entries: readonly DiscoveredClaudeSlashCommand[],
   budgetBytes: number = CLAUDE_SKILL_LISTING_BUDGET_BYTES,
-): { lines: string[]; omitted: number } {
+): { lines: string[]; kept: DiscoveredClaudeSlashCommand[]; omitted: number } {
   return renderWithinBudget(entries, formatClaudeSlashCommandEntry, budgetBytes);
 }
 

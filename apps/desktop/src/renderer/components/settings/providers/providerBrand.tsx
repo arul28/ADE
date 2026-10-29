@@ -1,6 +1,6 @@
 /**
- * Each provider page wears its maker's colors: an accent, a banner, and the
- * tile its logo sits on.
+ * Each provider page wears its maker's colors: an accent, a banner, and how
+ * its logo stands on the banner.
  *
  * The accent replaces the theme's own accent on that page only, so every
  * control that already reads `--color-accent` (links, focus rings, the
@@ -8,7 +8,9 @@
  * A neutral brand (black-and-white logos) mixes its color with the theme's
  * text color, so it stays readable on light and dark themes alike.
  */
-import type { CSSProperties } from "react";
+import type { CSSProperties, ReactNode } from "react";
+import { Antigravity, Claude, Codex, Cursor, GithubCopilot, Grok, Kimi, Qwen } from "@lobehub/icons";
+import { DevinMark, MuseLogo } from "../../shared/ProviderLogos";
 import claudeArt from "./banners/claude-art.webp";
 import codexBanner from "./banners/codex.webp";
 import copilotBanner from "./banners/copilot.webp";
@@ -30,9 +32,28 @@ export type ProviderBrand = {
   lightBanner?: boolean;
   /** A saturated banner that white text reads on: a lighter shade keeps its color. */
   softShade?: boolean;
-  /** The logo tile's face. */
-  tile: { background: string; color: string };
+  /** How the logo stands on the banner. */
+  logo: ProviderBrandLogo;
 };
+
+/**
+ * A logo with a shape of its own (`solid`) stands as a solid object: the mark
+ * is stacked in depth, its side in a dark shade of the maker's color. A
+ * one-color mark takes `face` and `side` as its ink; a full-color mark keeps
+ * its colors and darkens them for the side. A square logo (`tile`) keeps a
+ * tile, because the tile is the logo's own shape.
+ */
+export type ProviderBrandLogo =
+  | { kind: "solid"; mark: (size: number) => ReactNode; face?: string; side?: string; fullColor?: boolean; size?: number }
+  | { kind: "tile"; background: string; color: string };
+
+const solid = (mark: (size: number) => ReactNode, face: string, side: string, size?: number): ProviderBrandLogo => ({
+  kind: "solid", mark, face, side, ...(size ? { size } : {}),
+});
+const fullColor = (mark: (size: number) => ReactNode, size?: number): ProviderBrandLogo => ({
+  kind: "solid", mark, fullColor: true, ...(size ? { size } : {}),
+});
+const tile = (background: string, color: string): ProviderBrandLogo => ({ kind: "tile", background, color });
 
 const image = (src: string, fallback: string): CSSProperties => ({
   backgroundColor: fallback,
@@ -52,12 +73,12 @@ const BRANDS: Record<string, ProviderBrand> = {
     },
     bannerArt: { src: claudeArt, width: 104 },
     softShade: true,
-    tile: { background: "linear-gradient(145deg, #FBF6EF, #EFE4D6)", color: "#D97757" },
+    logo: solid((size) => <Claude size={size} />, "#FFF4EA", "#9C3E1C"),
   },
   codex: {
     accent: "#5866F5",
     banner: image(codexBanner, "#4A57E8"),
-    tile: { background: "linear-gradient(145deg, #FFFFFF, #E9ECFB)", color: "#3D4BE0" },
+    logo: solid((size) => <Codex size={size} />, "#FFFFFF", "#1F2A9C"),
   },
   cursor: {
     accent: "#9A9AA4",
@@ -70,24 +91,24 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(135deg, #1B1B1F, #0B0B0D 60%, #26262B)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #2A2A2F, #111114)", color: "#F2F2F3" },
+    logo: solid((size) => <Cursor size={size} />, "#F4F4F5", "#3A3A42"),
   },
   droid: {
     accent: "#F98A07",
     banner: image(droidBanner, "#FFB300"),
     lightBanner: true,
-    tile: { background: "linear-gradient(145deg, #1C1C1C, #000000)", color: "#FFFFFF" },
+    logo: tile("linear-gradient(145deg, #1C1C1C, #000000)", "#FFFFFF"),
   },
   copilot: {
     accent: "#7448FF",
     banner: image(copilotBanner, "#2A00B8"),
-    tile: { background: "linear-gradient(145deg, #2B1B6E, #0E0726)", color: "#FFFFFF" },
+    logo: solid((size) => <GithubCopilot size={size} />, "#FFFFFF", "#2A0C8F"),
   },
   muse: {
     accent: "#0866FF",
     banner: image(museBanner, "#E9EEF5"),
     lightBanner: true,
-    tile: { background: "linear-gradient(145deg, #FFFFFF, #E4ECF8)", color: "#0866FF" },
+    logo: fullColor((size) => <MuseLogo size={size} />, 104),
   },
   pi: {
     accent: "#8E8E8E",
@@ -100,7 +121,7 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(135deg, #2B2B2B, #0E0E0E)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #2C2C2C, #050505)", color: "#FFFFFF" },
+    logo: tile("linear-gradient(145deg, #2C2C2C, #050505)", "#FFFFFF"),
   },
   opencode: {
     accent: "#A39E9E",
@@ -112,7 +133,7 @@ const BRANDS: Record<string, ProviderBrand> = {
       ].join(", "),
     },
     bannerArt: { src: openCodeWordmark, width: 200, opacity: 0.22 },
-    tile: { background: "linear-gradient(145deg, #2A2626, #131010)", color: "#F1ECEC" },
+    logo: tile("linear-gradient(145deg, #2A2626, #131010)", "#F1ECEC"),
   },
   qwen: {
     accent: "#615CED",
@@ -124,7 +145,7 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(120deg, #3F38D6, #615CED 45%, #7A4FE8)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #2B2573, #110D38)", color: "#FFFFFF" },
+    logo: solid((size) => <Qwen size={size} />, "#FFFFFF", "#231C8C"),
   },
   kimi: {
     accent: "#1783FF",
@@ -135,7 +156,7 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(135deg, #111214, #050506)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #1D1E21, #050506)", color: "#FFFFFF" },
+    logo: solid((size) => <Kimi size={size} />, "#FFFFFF", "#0E4C9E"),
   },
   grok: {
     accent: "#A8A8A8",
@@ -147,13 +168,13 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(135deg, #0A0A0A, #000000)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #222222, #000000)", color: "#FFFFFF" },
+    logo: solid((size) => <Grok size={size} />, "#FFFFFF", "#45454A"),
   },
   devin: {
     accent: "#B4B4B4",
     neutral: true,
     banner: image(devinBanner, "#050505"),
-    tile: { background: "linear-gradient(145deg, #1E1E1E, #050505)", color: "#EDEDED" },
+    logo: solid((size) => <DevinMark size={size} />, "#F2F2F2", "#3C3C40", 108),
   },
   antigravity: {
     accent: "#4B8DF8",
@@ -165,14 +186,14 @@ const BRANDS: Record<string, ProviderBrand> = {
         "linear-gradient(135deg, #1B1C20, #0E0F12)",
       ].join(", "),
     },
-    tile: { background: "linear-gradient(145deg, #23252A, #121316)", color: "#FFFFFF" },
+    logo: fullColor((size) => <Antigravity.Color size={size} />),
   },
 };
 
 const FALLBACK: ProviderBrand = {
   accent: "var(--color-accent)",
   banner: { background: "linear-gradient(135deg, color-mix(in srgb, var(--color-accent) 40%, #111), #0B0B0D)" },
-  tile: { background: "linear-gradient(145deg, #2A2A2F, #111114)", color: "#F2F2F3" },
+  logo: tile("linear-gradient(145deg, #2A2A2F, #111114)", "#F2F2F3"),
 };
 
 export function providerBrand(providerId: string): ProviderBrand {

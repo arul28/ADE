@@ -112,7 +112,7 @@ import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
-import { pathsEqual } from "../shared/pathCompare";
+import { isPathInside, pathsEqual } from "../shared/pathCompare";
 import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -5705,20 +5705,49 @@ export function registerIpc({
     return getPinnedProviderToolStatus(arg.provider);
   });
 
-  // The unpinned route for Settings > Providers > Context when this window has
+  // The unpinned route for a provider page's Initial context window when this window has
   // no runtime; a pinned call goes to the owning machine's
   // `ai.getProviderContextInventory`.
   ipcMain.handle(IPC.aiGetProviderContextInventory, async (_event, arg: unknown) => {
     const ctx = getCtx();
-    const { getProviderContextInventory, parseGetProviderContextInventoryArgs } = await import("../ai/providerContextInventory");
+    const { getProviderContextInventory } = await import("../ai/providerContextInventory");
     return getProviderContextInventory(
       {
         projectRoot: ctx.project.rootPath,
         agentChatService: ctx.agentChatService ?? null,
         logger: ctx.logger,
       },
-      parseGetProviderContextInventoryArgs(arg),
+      arg,
     );
+  });
+
+  /**
+   * "Show in Finder" for a row of a provider page's Initial context window.
+   * Deliberately NOT `appRevealPath`: the card's files live in provider config
+   * homes (`~/.claude`, `~/.codex`, …), which that handler's allowlist leaves
+   * out on purpose. This one accepts only those homes, the project and ADE's
+   * own folders (see providerContextReveal.ts).
+   */
+  ipcMain.handle(IPC.aiRevealProviderContextPath, async (_event, arg: { path?: string } | undefined): Promise<void> => {
+    const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
+    if (!raw) return;
+    const { providerContextRevealRoots } = await import("../ai/providerContextReveal");
+    const roots = providerContextRevealRoots({
+      projectRoot: getCtx().project?.rootPath ?? null,
+      adeDir: resolveMachineAdeLayout().adeDir,
+      appDirs: [app.getAppPath(), process.resourcesPath].filter((dir): dir is string => typeof dir === "string" && dir.length > 0),
+    });
+    let target: string;
+    try {
+      target = resolveWithinAllowedDirs(roots, raw);
+    } catch (error) {
+      // A skill folder is often a symlink into a dotfiles repo, so its real
+      // path is outside every root. Show the link where the provider sees it.
+      const named = path.resolve(raw);
+      if (!path.isAbsolute(raw) || !roots.some((root) => pathsEqual(named, root) || isPathInside(named, root))) throw error;
+      target = named;
+    }
+    shell.showItemInFolder(target);
   });
 
   ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {

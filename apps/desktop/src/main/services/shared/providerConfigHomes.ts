@@ -79,6 +79,39 @@ export function qwenConfigHome(args: HomeArg = {}): string {
   return configured ? path.resolve(configured) : path.join(baseHome(args), ".qwen");
 }
 
+/** `PI_CODING_AGENT_DIR` names Pi's agent directory itself; it defaults to `~/.pi/agent`. */
+export function piAgentDir(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).PI_CODING_AGENT_DIR);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".pi", "agent");
+}
+
+/** `XDG_CONFIG_HOME`, else `~/.config`. */
+export function xdgConfigHome(args: HomeArg = {}): string {
+  const configured = trimmed((args.env ?? process.env).XDG_CONFIG_HOME);
+  return configured ? path.resolve(configured) : path.join(baseHome(args), ".config");
+}
+
+/** OpenCode follows the XDG layout on every platform, Windows included. */
+export function openCodeConfigDir(args: HomeArg = {}): string {
+  return path.join(xdgConfigHome(args), "opencode");
+}
+
+/** Devin's user config folder: `%APPDATA%\devin` on Windows, `<XDG config>/devin` elsewhere. */
+export function devinConfigDir(args: HomeArg & { platform?: NodeJS.Platform } = {}): string {
+  const env = args.env ?? process.env;
+  return (args.platform ?? process.platform) === "win32"
+    ? path.join(trimmed(env.APPDATA) ?? path.join(baseHome(args), "AppData", "Roaming"), "devin")
+    : path.join(xdgConfigHome(args), "devin");
+}
+
+/** The machine-wide CLAUDE.md an administrator can set, which Claude Code reads first. */
+export function claudeManagedInstructionsFile(args: { env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}): string {
+  const platform = args.platform ?? process.platform;
+  if (platform === "darwin") return "/Library/Application Support/ClaudeCode/CLAUDE.md";
+  if (platform === "win32") return path.join(trimmed((args.env ?? process.env).ProgramFiles) ?? "C:\\Program Files", "ClaudeCode", "CLAUDE.md");
+  return "/etc/claude-code/CLAUDE.md";
+}
+
 /** The Copilot CLI's token variables, in the order it reads them; each beats `copilot login`. */
 export const COPILOT_TOKEN_ENV_KEYS = ["COPILOT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"] as const;
 

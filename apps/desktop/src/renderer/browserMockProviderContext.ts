@@ -15,27 +15,27 @@ const skill = (name: string, tokens: number): ProviderContextItem => ({
   label: name,
   tokens,
   sizeKind: "estimated",
-  timing: "chat-start",
+  timing: "every-request",
 });
 
 const ADE_ITEMS: ProviderContextItem[] = [
-  { id: "ade:prompt", owner: "ade", kind: "system-prompt", label: "ADE harness prompt", source: "systemPrompt.append", tokens: 1110, sizeKind: "exact", timing: "every-request" },
-  { id: "ade:cli", owner: "ade", kind: "instructions", label: "ADE command line guide", tokens: 1190, sizeKind: "exact", timing: "every-request" },
+  { id: "ade-prompt", owner: "ade", kind: "system-prompt", label: "ADE system prompt (the rest)", detail: "Added after Claude Code's own prompt for every request.", tokens: 1110, sizeKind: "exact", timing: "every-request" },
+  { id: "ade-cli-guidance", owner: "ade", kind: "instructions", label: "ADE CLI guidance", tokens: 1190, sizeKind: "exact", timing: "every-request" },
   {
-    id: "ade:skills",
+    id: "ade-skill-listing",
     owner: "ade",
     kind: "skills",
-    label: "ADE skills",
-    detail: "Names and descriptions; a skill's body loads when it is used.",
+    label: "ADE skill listing",
+    detail: "Skills and commands the provider cannot find by itself, with their files.",
     tokens: 1400,
     sizeKind: "exact",
     timing: "every-request",
     children: ["ade-browser", "ade-app-control", "ade-apple", "ade-cli-control-plane", "ade-proof-artifacts"].map((name) => ({
-      id: `ade-skill:${name}`, owner: "ade", kind: "skill", label: name, tokens: 280, sizeKind: "exact", timing: "chat-start",
+      id: `ade-skill-listing-${name}`, owner: "ade", kind: "skill", label: name, tokens: 280, sizeKind: "exact", timing: "every-request",
     } satisfies ProviderContextItem)),
   },
-  { id: "ade:cu", owner: "ade", kind: "tools", label: "Screen control rules", tokens: 980, sizeKind: "exact", timing: "chat-start" },
-  { id: "ade:notes", owner: "ade", kind: "notes", label: "Project notes", setIn: "ADE Settings › Agent notes", settingsEntry: "project-agents.agent-notes", tokens: 640, sizeKind: "exact", timing: "chat-start" },
+  { id: "ade-computer-use", owner: "ade", kind: "instructions", label: "ADE computer-use rules", detail: "Screen, browser and proof rules, on the first message.", tokens: 980, sizeKind: "exact", timing: "chat-start" },
+  { id: "ade-project-notes", owner: "ade", kind: "notes", label: "Project notes", setIn: "ADE Settings › Agent notes", settingsEntry: "project-agents.agent-notes", tokens: 640, sizeKind: "exact", timing: "chat-start" },
 ];
 
 const CLAUDE_USER: ProviderContextItem[] = [
@@ -82,8 +82,10 @@ export function browserMockProviderContextInventory(args: GetProviderContextInve
       { id: "agents-md", owner: "project", kind: "instructions", label: "Project AGENTS.md", source: "AGENTS.md", tokens: 5200, sizeKind: "estimated", timing: "every-request" } satisfies ProviderContextItem,
     ] : []),
   ];
+  const listedTokens = items.reduce((sum, item) => sum + (item.timing === "on-demand" ? 0 : item.tokens ?? 0), 0);
   return {
     provider: args.provider,
+    listedTokens,
     generatedAt: new Date().toISOString(),
     cwd: "~/Projects/ADE",
     laneId: null,
