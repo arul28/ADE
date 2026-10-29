@@ -177,9 +177,10 @@ export function useMachineRoutesControl(args: {
     try {
       await setRelayEnabled(machineKey, on);
       setPendingOff(null);
-      // The relay connection opens within a second or two, and the directory
-      // drops or regains the relay endpoint on the machine's next publish.
-      if (on) later(() => void load(machineKey), 2_500);
+      // Read again either way: a poll that started during the change may have
+      // landed the old answer, and turning on takes a second or two to connect.
+      // The directory drops or regains the relay endpoint on the next publish.
+      later(() => void load(machineKey), 2_500);
       later(reloadMachines, 4_000);
     } catch (error) {
       setRelayError({
