@@ -60,11 +60,16 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
 
 const SOLID_DEPTH = 10;
 
-function SolidLogo({ spec }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }> }) {
+/**
+ * A logo that stands as a solid object. `straight` faces it square to the
+ * viewer with its depth falling straight down (the integration pages); the
+ * provider pages turn it a little.
+ */
+export function SolidLogo({ spec, straight = false }: { spec: Extract<ProviderBrandLogo, { kind: "solid" }>; straight?: boolean }) {
   const size = spec.size ?? 84;
   const layers = Array.from({ length: SOLID_DEPTH }, (_, index) => SOLID_DEPTH - index);
   return (
-    <div className="ade-pv-mark3d" aria-hidden>
+    <div className="ade-pv-mark3d" data-straight={straight ? "true" : undefined} aria-hidden>
       <div className="ade-pv-mark3d-floor" />
       <div className="ade-pv-mark3d-body">
         {layers.map((depth) => (
@@ -72,7 +77,7 @@ function SolidLogo({ spec }: { spec: Extract<ProviderBrandLogo, { kind: "solid" 
             key={depth}
             className="ade-pv-mark3d-layer"
             style={{
-              transform: `translate(${depth * 0.8}px, ${depth * 1}px)`,
+              transform: straight ? `translateY(${depth * 0.7}px)` : `translate(${depth * 0.8}px, ${depth * 1}px)`,
               // The far layers are darker, so the side reads as lit from the front.
               ...(spec.fullColor
                 ? { filter: `brightness(${0.32 + (SOLID_DEPTH - depth) * 0.035}) saturate(1.3)` }

@@ -1,0 +1,570 @@
+/*
+ * Settings › Integrations: the grid of integrations, and one integration's
+ * page. The page root (`.ade-ig-page`, also `.ade-pv-provider`) sets
+ * `--ig-accent` from the maker's color; the 3D logo is the provider pages'.
+ *
+ * One page reads top to bottom: the banner (who you are signed in as, the
+ * top-bar switch), then two cards of the same size side by side.
+ */
+
+.ade-ig-page { gap: 18px; container: integrationpage / inline-size; }
+.ade-ig-route { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+/* ── Back to the grid ── */
+.ade-ig-back {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 10px 0 6px;
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--kit-text-2, var(--color-muted-fg));
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-ig-back:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-ig-back:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 1px; }
+
+/* ── Banner ── */
+.ade-ig-hero {
+  position: relative;
+  border-radius: var(--radius-lg, 14px);
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--ig-accent) 28%, transparent),
+    0 24px 48px -32px color-mix(in srgb, var(--ig-accent) 75%, transparent);
+}
+.ade-ig-hero[data-light="true"] { color: #10151C; }
+
+/* The maker's banner (its logo taken out) fills the whole hero. */
+.ade-ig-hero-art {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  pointer-events: none;
+  user-select: none;
+}
+.ade-ig-hero-shade {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.22), transparent 55%);
+}
+.ade-ig-hero[data-light="true"] .ade-ig-hero-shade {
+  background: linear-gradient(90deg, rgba(255, 255, 255, 0.55), rgba(255, 255, 255, 0.15) 55%, transparent);
+}
+
+.ade-ig-hero-row {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) minmax(230px, 300px);
+  align-items: center;
+  gap: 20px;
+  padding: 22px 22px 16px 24px;
+}
+.ade-ig-hero-id { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ade-ig-hero-name {
+  margin: 0;
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.05;
+  text-shadow: 0 1px 12px rgba(0, 0, 0, 0.25);
+}
+.ade-ig-hero[data-light="true"] .ade-ig-hero-name { text-shadow: none; }
+.ade-ig-hero-tagline { margin: 0; font-size: 13px; line-height: 1.45; opacity: 0.84; max-width: 44ch; }
+.ade-ig-hero-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 6px; }
+
+.ade-ig-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.15);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+}
+.ade-ig-hero[data-light="true"] .ade-ig-chip { background: rgba(255, 255, 255, 0.75); border-color: rgba(16, 21, 28, 0.10); }
+.ade-ig-chip > i { width: 7px; height: 7px; border-radius: 999px; display: inline-block; background: #9CA3AF; }
+.ade-ig-chip[data-tone="ok"] > i { background: #22C55E; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.22); }
+.ade-ig-chip[data-tone="warn"] > i { background: #F59E0B; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.22); }
+.ade-ig-chip[data-tone="checking"] > i { animation: ade-ig-pulse 1.2s ease-in-out infinite; }
+@keyframes ade-ig-pulse { 50% { opacity: 0.35; } }
+@media (prefers-reduced-motion: reduce) { .ade-ig-chip[data-tone="checking"] > i { animation: none; } }
+
+/* Who this machine is signed in as: a frosted panel at the right. */
+.ade-ig-hero-panel,
+.ade-ig-hero-strip {
+  background: rgba(10, 12, 22, 0.40);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  backdrop-filter: blur(16px) saturate(1.2);
+  -webkit-backdrop-filter: blur(16px) saturate(1.2);
+}
+.ade-ig-hero[data-light="true"] .ade-ig-hero-panel,
+.ade-ig-hero[data-light="true"] .ade-ig-hero-strip {
+  background: rgba(255, 255, 255, 0.68);
+  border-color: rgba(16, 21, 28, 0.08);
+}
+.ade-ig-hero-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 14px;
+  min-width: 0;
+}
+.ade-ig-hero-panel-label,
+.ade-ig-hero-fact > span {
+  font-size: 10px;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+.ade-ig-hero-panel-empty { margin: 0; font-size: 12.5px; line-height: 1.45; opacity: 0.85; }
+.ade-ig-hero-panel .ade-ig-account-id b { color: inherit; }
+.ade-ig-hero-panel .ade-ig-account-id span { color: inherit; opacity: 0.75; }
+.ade-ig-hero-panel .ade-ig-avatar { color: inherit; background: rgba(255, 255, 255, 0.18); }
+.ade-ig-hero[data-light="true"] .ade-ig-hero-panel .ade-ig-avatar { background: rgba(16, 21, 28, 0.07); }
+.ade-ig-hero-panel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* A few facts and the top-bar switch along the bottom. */
+.ade-ig-hero-strip {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: stretch;
+  flex-wrap: wrap;
+  margin: 0 14px 14px;
+  border-radius: 12px;
+}
+.ade-ig-hero-fact {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 3px;
+  padding: 10px 16px;
+  min-width: 0;
+  flex: 1 1 0;
+}
+.ade-ig-hero-fact + .ade-ig-hero-fact,
+.ade-ig-hero-toggle { border-left: 1px solid rgba(255, 255, 255, 0.12); }
+.ade-ig-hero[data-light="true"] .ade-ig-hero-fact + .ade-ig-hero-fact,
+.ade-ig-hero[data-light="true"] .ade-ig-hero-toggle { border-left-color: rgba(16, 21, 28, 0.08); }
+.ade-ig-hero-fact > b {
+  font-size: 13px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-ig-hero-fact > b[data-mono="true"] { font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; font-weight: 500; }
+.ade-ig-hero-fact > b[data-tone="warn"] { color: #F59E0B; }
+.ade-ig-hero[data-light="true"] .ade-ig-hero-fact > b[data-tone="warn"] { color: #B45309; }
+.ade-ig-hero-toggle {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 16px;
+  margin-left: auto;
+  flex: 0 0 auto;
+  scroll-margin-top: 16px;
+}
+.ade-ig-hero-toggle > span { display: flex; flex-direction: column; gap: 2px; }
+.ade-ig-hero-toggle b { font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); letter-spacing: 0.08em; text-transform: uppercase; font-weight: 500; opacity: 0.7; }
+.ade-ig-hero-toggle small { font-size: 12.5px; font-weight: 600; }
+
+/* Buttons on the banner are glass, not theme-colored. */
+.ade-ig-hero .ade-modern-btn {
+  color: inherit;
+  background: rgba(255, 255, 255, 0.14);
+  border-color: rgba(255, 255, 255, 0.22);
+}
+.ade-ig-hero .ade-modern-btn:hover:not(:disabled) { background: rgba(255, 255, 255, 0.24); border-color: rgba(255, 255, 255, 0.32); }
+.ade-ig-hero .ade-modern-btn[data-variant="ghost"] { background: transparent; border-color: transparent; opacity: 0.8; }
+.ade-ig-hero .ade-modern-btn[data-variant="ghost"]:hover:not(:disabled) { opacity: 1; background: rgba(255, 255, 255, 0.14); }
+.ade-ig-hero[data-light="true"] .ade-modern-btn { background: rgba(255, 255, 255, 0.85); border-color: rgba(16, 21, 28, 0.12); }
+.ade-ig-hero[data-light="true"] .ade-modern-btn:hover:not(:disabled) { background: #fff; border-color: rgba(16, 21, 28, 0.2); }
+.ade-ig-hero[data-light="true"] .ade-modern-btn[data-variant="ghost"] { background: transparent; border-color: transparent; }
+.ade-ig-hero[data-light="true"] .ade-modern-btn[data-variant="ghost"]:hover:not(:disabled) { background: rgba(16, 21, 28, 0.06); }
+
+/* ── Body: two cards of the same size ── */
+.ade-ig-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+  align-items: stretch;
+}
+.ade-ig-body > :only-child { grid-column: 1 / -1; }
+.ade-ig-alerts { display: flex; flex-direction: column; gap: 8px; }
+.ade-ig-alerts:empty { display: none; }
+
+/* ── Cards ── */
+.ade-ig-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--kit-card-edge, var(--color-border));
+  background: var(--kit-card-bg, var(--color-surface));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, var(--ig-accent) 16%, transparent);
+  overflow: hidden;
+  scroll-margin-top: 16px;
+}
+.ade-ig-card[data-tone="focus"] {
+  border-color: color-mix(in srgb, var(--ig-accent) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--ig-accent) 12%, transparent);
+}
+.ade-ig-card-head { display: flex; align-items: flex-start; gap: 12px; padding: 16px 18px 12px; }
+.ade-ig-card-icon {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+  color: color-mix(in srgb, var(--ig-accent) 85%, var(--color-fg));
+  background: color-mix(in srgb, var(--ig-accent) 15%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--ig-accent) 24%, transparent);
+}
+.ade-ig-card-title { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; padding-top: 1px; }
+.ade-ig-card-title-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.ade-ig-card-title h2 { margin: 0; font-size: 14px; font-weight: 600; color: var(--color-fg); letter-spacing: -0.005em; }
+.ade-ig-card-title p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-card-actions { flex: none; display: flex; align-items: center; gap: 6px; }
+.ade-ig-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 0 18px 18px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+/* Rows that bleed to the card's edges, split by hairlines. */
+.ade-ig-rows { display: flex; flex-direction: column; margin: 0 -18px; border-top: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 7%, transparent)); }
+.ade-ig-rows > * + * { border-top: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 7%, transparent)); }
+.ade-ig-row { display: flex; flex-direction: column; gap: 10px; padding: 12px 18px; min-width: 0; scroll-margin-top: 16px; }
+
+/* Numbered steps: what is done, what is next, what waits on it. */
+.ade-ig-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.ade-ig-step { position: relative; display: grid; grid-template-columns: 24px minmax(0, 1fr); gap: 12px; padding-bottom: 16px; }
+.ade-ig-step:last-child { padding-bottom: 0; }
+/* The line joining one step to the next. */
+.ade-ig-step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  left: 11.5px;
+  top: 28px;
+  bottom: 4px;
+  width: 1px;
+  background: var(--kit-rule, color-mix(in srgb, var(--color-fg) 10%, transparent));
+}
+.ade-ig-step[data-done="true"]:not(:last-child)::before { background: color-mix(in srgb, var(--ig-accent) 45%, transparent); }
+.ade-ig-step-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 999px;
+  display: inline-grid;
+  place-items: center;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+.ade-ig-step[data-done="true"] .ade-ig-step-num { color: #fff; background: var(--ig-accent); box-shadow: none; }
+.ade-ig-step[data-waiting="true"] .ade-ig-step-main { opacity: 0.6; }
+.ade-ig-step-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; padding-top: 2px; }
+.ade-ig-step-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 20px; }
+.ade-ig-step-head > b { font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-ig-step-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 6px; }
+
+/* Small rows inside a step (rules, recent issues). */
+.ade-ig-mini-rows {
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+  overflow: hidden;
+}
+.ade-ig-mini-rows > * + * { border-top: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 7%, transparent)); }
+.ade-ig-mini-row { display: flex; align-items: center; gap: 10px; padding: 7px 10px; min-width: 0; font-size: 12px; }
+.ade-ig-mini-title { font-weight: 500; color: var(--color-fg); flex: none; }
+.ade-ig-mini-detail { flex: 1 1 auto; min-width: 0; color: var(--kit-text-3, var(--color-muted-fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ig-mini-link { width: 100%; border: 0; background: transparent; font: inherit; font-size: 12px; text-align: left; cursor: pointer; color: var(--color-fg); }
+.ade-ig-mini-link:hover { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.ade-ig-inline-field { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin-top: 6px; font-size: 12px; color: var(--kit-text-2, var(--color-secondary-fg)); }
+
+/* Ways to sign in: one per row, the one in use marked. */
+.ade-ig-method {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 18px;
+}
+.ade-ig-method-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-ig-method[data-active="true"] .ade-ig-method-icon { color: #fff; background: var(--ig-accent); }
+.ade-ig-method-name { min-width: 0; }
+.ade-ig-method-name b { display: block; font-size: 12.5px; font-weight: 500; color: var(--color-fg); }
+.ade-ig-method-name small { display: block; font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ig-method-side { display: flex; align-items: center; gap: 6px; }
+.ade-ig-method-extra { grid-column: 2 / -1; display: flex; flex-direction: column; gap: 10px; }
+
+/* Sign-in choices: a recommended path and the alternative. */
+.ade-ig-choice {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border-radius: 12px;
+  border: 1px solid var(--kit-panel-edge, var(--color-border));
+  background: var(--kit-panel-bg, transparent);
+}
+.ade-ig-choice[data-primary="true"] {
+  border-color: color-mix(in srgb, var(--ig-accent) 40%, transparent);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--ig-accent) 9%, transparent), transparent 80%);
+}
+.ade-ig-choice-head { display: flex; align-items: center; gap: 10px; }
+.ade-ig-choice-head > b { font-size: 13px; font-weight: 600; color: var(--color-fg); flex: 1 1 auto; }
+.ade-ig-choice p { margin: 0; font-size: 12px; line-height: 1.45; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-form { display: grid; gap: 8px; }
+.ade-ig-form-row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ade-ig-form-row > :first-child { flex: 1 1 200px; min-width: 0; }
+.ade-ig-or { display: flex; align-items: center; gap: 10px; font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-or::before, .ade-ig-or::after { content: ""; flex: 1; height: 1px; background: var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent)); }
+
+.ade-ig-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ade-ig-note { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-3, var(--color-muted-fg)); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.ade-ig-note code, .ade-ig-mono { font-family: var(--font-mono); font-size: 11.5px; }
+.ade-ig-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  font: inherit;
+  font-size: inherit;
+  color: color-mix(in srgb, var(--ig-accent) 80%, var(--color-fg));
+  cursor: pointer;
+  text-decoration: none;
+}
+.ade-ig-link:hover { text-decoration: underline; text-underline-offset: 2px; }
+.ade-ig-foot { margin-top: auto; padding-top: 4px; }
+
+/* A one-time code, one character per cell (GitHub's device sign-in). */
+.ade-ig-device { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.ade-ig-code-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 10px 6px 6px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--ig-accent) 35%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 7%, transparent);
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  cursor: pointer;
+}
+.ade-ig-code { display: inline-flex; align-items: center; gap: 5px; }
+.ade-ig-code > span {
+  width: 26px;
+  height: 32px;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 7px;
+  border: 1px solid var(--kit-card-edge, var(--color-border));
+  background: var(--color-bg);
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-ig-code > i { width: 8px; height: 1.5px; background: var(--kit-text-3, var(--color-muted-fg)); }
+
+/* The workspace or account the integration is signed in as. */
+.ade-ig-account { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ade-ig-avatar {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--ig-accent) 16%, transparent);
+}
+.ade-ig-avatar > img { width: 100%; height: 100%; object-fit: cover; }
+.ade-ig-account-id { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ade-ig-account-id b { font-size: 13.5px; font-weight: 600; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ig-account-id span { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Jira: the projects this checkout works with, as a checklist. */
+.ade-ig-checklist {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.ade-ig-check {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.ade-ig-check:hover:not(:disabled) { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.ade-ig-check[aria-pressed="true"] {
+  border-color: color-mix(in srgb, var(--ig-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 10%, transparent);
+}
+.ade-ig-check-box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  display: inline-grid;
+  place-items: center;
+  color: #fff;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 25%, transparent);
+}
+.ade-ig-check[aria-pressed="true"] .ade-ig-check-box { background: var(--ig-accent); border-color: transparent; }
+.ade-ig-check-key { font-family: var(--font-mono); font-size: 11.5px; font-weight: 600; flex: none; }
+.ade-ig-check-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--kit-text-2, var(--color-secondary-fg)); }
+
+/* Linear's GitHub links: each row folds open to show its `gh` command. */
+.ade-linear-link > summary { list-style: none; cursor: pointer; }
+.ade-linear-link > summary::-webkit-details-marker { display: none; }
+.ade-linear-link > summary:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; border-radius: 6px; }
+.ade-linear-link .ade-linear-links-caret { color: var(--kit-text-3, var(--color-muted-fg)); transition: transform 120ms ease; }
+.ade-linear-link[open] .ade-linear-links-caret { transform: rotate(180deg); }
+
+@container integrationpage (max-width: 700px) {
+  .ade-ig-hero-row { grid-template-columns: auto minmax(0, 1fr); }
+  .ade-ig-hero-panel { grid-column: 1 / -1; }
+}
+@container integrationpage (max-width: 760px) {
+  .ade-ig-body { grid-template-columns: minmax(0, 1fr); }
+  .ade-ig-hero-toggle { margin-left: 0; border-left: 0; }
+}
+
+/* ── The grid of integrations ── */
+.ade-ig-home { display: flex; flex-direction: column; gap: 18px; container: integrationhome / inline-size; }
+.ade-ig-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+@container integrationhome (max-width: 720px) { .ade-ig-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@container integrationhome (max-width: 460px) { .ade-ig-grid { grid-template-columns: minmax(0, 1fr); } }
+
+.ade-ig-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 0;
+  border-radius: var(--radius-lg, 14px);
+  border: 1px solid var(--kit-card-edge, var(--color-border));
+  background: var(--kit-card-bg, var(--color-surface));
+  overflow: hidden;
+  text-align: left;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 180ms ease, border-color 180ms ease;
+}
+.ade-ig-tile:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in srgb, var(--ig-accent) 45%, transparent);
+  box-shadow: 0 18px 36px -24px color-mix(in srgb, var(--ig-accent) 80%, transparent);
+}
+.ade-ig-tile:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { .ade-ig-tile { transition: none; } .ade-ig-tile:hover { transform: none; } }
+.ade-ig-tile-banner {
+  position: relative;
+  aspect-ratio: 2.6;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+}
+.ade-ig-tile-banner > img {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform 400ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ade-ig-tile-banner > .ade-pv-mark3d { position: relative; transform: scale(0.82); }
+.ade-ig-tile:hover .ade-ig-tile-banner > img { transform: scale(1.04); }
+@media (prefers-reduced-motion: reduce) { .ade-ig-tile:hover .ade-ig-tile-banner > img { transform: none; } }
+.ade-ig-tile-body { display: flex; flex-direction: column; gap: 6px; padding: 14px 16px 16px; flex: 1 1 auto; }
+.ade-ig-tile-name { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 600; color: var(--color-fg); }
+.ade-ig-tile-name > svg:last-child { margin-left: auto; color: var(--kit-text-3, var(--color-muted-fg)); transition: transform 180ms ease; }
+.ade-ig-tile:hover .ade-ig-tile-name > svg:last-child { transform: translateX(2px); color: var(--color-fg); }
+.ade-ig-tile-desc { font-size: 12px; line-height: 1.45; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-ig-tile-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: auto;
+  padding-top: 10px;
+  font-size: 11.5px;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  min-width: 0;
+}
+.ade-ig-tile-status > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-ig-dot { flex: none; display: inline-block; width: 7px; height: 7px; border-radius: 999px; background: color-mix(in srgb, var(--color-fg) 25%, transparent); }
+.ade-ig-dot[data-tone="ok"] { background: #22C55E; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18); }
+.ade-ig-dot[data-tone="warn"] { background: #F59E0B; box-shadow: 0 0 0 3px rgba(245, 158, 11, 0.18); }
+.ade-ig-dot[data-tone="checking"] { background: var(--ig-accent, #9CA3AF); animation: ade-ig-pulse 1.2s ease-in-out infinite; }
+
+/* The switch inside the account panel (nothing connected yet). */
+.ade-ig-hero-panel > .ade-ig-hero-toggle {
+  margin: 2px -14px -14px;
+  padding: 10px 14px;
+  border-left: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  justify-content: space-between;
+}
+.ade-ig-hero[data-light="true"] .ade-ig-hero-panel > .ade-ig-hero-toggle { border-top-color: rgba(16, 21, 28, 0.08); }

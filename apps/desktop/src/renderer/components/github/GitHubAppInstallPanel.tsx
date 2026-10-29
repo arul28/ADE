@@ -8,7 +8,8 @@ import type {
 } from "../../../shared/types";
 import { ArrowClockwise, ArrowSquareOut, Check, CheckCircle, Copy, WarningCircle, WebhooksLogo } from "@phosphor-icons/react";
 import { openExternalUrl } from "../../lib/openExternal";
-import { ModernSection } from "../settings/primitives/SettingsModern";
+import { IntegrationCard } from "../settings/integrations/IntegrationChrome";
+import { Banner } from "../ui/notice";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, outlineButton, primaryButton, fgTint } from "../lanes/laneDesignTokens";
 import {
   deriveGithubAccountAuthState,
@@ -55,6 +56,8 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
   } = useGithubAppUserAuth(pin);
   const [deviceSession, setDeviceSession] = useState<GitHubAppDeviceAuthStartResult | null>(null);
   const [deviceMessage, setDeviceMessage] = useState<string | null>(null);
+  // A failed sign-in step; shown as an error, apart from progress messages.
+  const [deviceError, setDeviceError] = useState<string | null>(null);
   const [deviceCodeCopied, setDeviceCodeCopied] = useState(false);
   const [loading, setLoading] = useState(false);
   const [authLoading, setAuthLoading] = useState(false);
@@ -142,6 +145,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
     if (!window.ade?.github?.startAppUserDeviceAuth) return;
     setAuthLoading(true);
     setDeviceMessage(null);
+    setDeviceError(null);
     setDeviceCodeCopied(false);
     try {
       const session = await window.ade.github.startAppUserDeviceAuth(pin);
@@ -149,7 +153,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       // The code is approved in a browser, which is always This computer's.
       openExternalUrl(session.verificationUriComplete ?? session.verificationUri);
     } catch (error) {
-      setDeviceMessage(deviceAuthErrorCopy(error));
+      setDeviceError(deviceAuthErrorCopy(error));
     } finally {
       setAuthLoading(false);
     }
@@ -162,9 +166,10 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       const next = await window.ade.github.clearAppUserAuth(pin);
       setAppAuth(next ?? null);
       setDeviceSession(null);
+      setDeviceError(null);
       setDeviceMessage("ADE's GitHub authorization was removed on this machine.");
     } catch (error) {
-      setDeviceMessage(deviceAuthErrorCopy(error));
+      setDeviceError(deviceAuthErrorCopy(error));
     } finally {
       setDisconnecting(false);
       setDisconnectArmed(false);
@@ -225,22 +230,25 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         } catch (error) {
           if (cancelled) return;
           setDeviceSession(null);
-          setDeviceMessage(deviceAuthErrorCopy(error));
+          setDeviceError(deviceAuthErrorCopy(error));
         }
         return;
       }
       setDeviceSession(null);
-      setDeviceMessage(deviceAuthMessageCopy(result.message));
-      if (result.status === "authorized") {
-        autoRenewCountRef.current = 0;
-        setDeviceMessage("GitHub authorization is complete. Checking repository access...");
-        await loadStatus(true, { retryAfterAuthorization: true });
-        // Post-fix auto-heal: now that the App is authorized, kick a one-shot
-        // reconcile so this project's PR badges light up without a manual refresh.
-        // Swallow rejections (e.g. a project transition tearing down the runtime)
-        // so this fire-and-forget can never surface as an unhandled rejection.
-        void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
+      if (result.status !== "authorized") {
+        setDeviceMessage(null);
+        setDeviceError(deviceAuthMessageCopy(result.message));
+        return;
       }
+      autoRenewCountRef.current = 0;
+      setDeviceError(null);
+      setDeviceMessage("GitHub authorization is complete. Checking repository access...");
+      await loadStatus(true, { retryAfterAuthorization: true });
+      // Post-fix auto-heal: now that the App is authorized, kick a one-shot
+      // reconcile so this project's PR badges light up without a manual refresh.
+      // Swallow rejections (e.g. a project transition tearing down the runtime)
+      // so this fire-and-forget can never surface as an unhandled rejection.
+      void window.ade?.prs?.reconcileNow?.(pin).catch(() => {});
     }, Math.max(1, deviceSession.intervalSec) * 1000);
     return () => {
       cancelled = true;
@@ -349,7 +357,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
       <button
         type="button"
         style={compact ? quietButtonStyle : undefined}
-        {...(compact ? {} : { className: "ade-modern-btn", "data-tone": "danger" })}
+        {...(compact ? {} : { className: "ade-modern-btn", "data-variant": "link" })}
         onClick={() => setDisconnectArmed(true)}
       >
         Disconnect
@@ -409,10 +417,10 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
   const showWebhookEvents = repoState === "connected" && (status?.webhookEvents?.length ?? 0) > 0;
 
   const blocks = (
-  <div style={compact ? blocksWrapStyle(compact) : undefined} className={compact ? undefined : "ade-modern-rows"}>
+  <div style={compact ? blocksWrapStyle(compact) : undefined} className={compact ? undefined : "ade-ig-rows"}>
     <section style={axisBlockStyle}>
       <div style={axisTopRowStyle}>
-        <span style={axisHeadingStyle}>Account · ADE for GitHub</span>
+        <span style={axisHeadingStyle}>{compact ? "Account · ADE for GitHub" : "Your authorization"}</span>
         {renderPill(accountPill(account.tone, account.label), !compact)}
       </div>
       <div style={axisBodyRowStyle}>
@@ -439,9 +447,15 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
               github.com/login/device
             </button>
           </p>
-          <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()}>
-            <span style={deviceLabelStyle}>GitHub code</span>
-            <span style={deviceValueStyle}>{deviceSession.userCode}</span>
+          <button type="button" style={deviceCodeStyle} onClick={() => void copyDeviceCode()} aria-label={`Copy GitHub code ${deviceSession.userCode}`}>
+            {compact ? <span style={deviceLabelStyle}>GitHub code</span> : null}
+            {compact ? (
+              <span style={deviceValueStyle}>{deviceSession.userCode}</span>
+            ) : (
+              <span className="ade-ig-code" aria-hidden="true">
+                {[...deviceSession.userCode].map((char, index) => (char === "-" ? <i key={index} /> : <span key={index}>{char}</span>))}
+              </span>
+            )}
             <span style={deviceCopyIconStyle} aria-hidden="true">
               {deviceCodeCopied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
             </span>
@@ -450,8 +464,9 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
         </div>
       ) : null}
       {deviceMessage ? <p style={authMessageStyle}>{deviceMessage}</p> : null}
+      {deviceError ? <p style={{ ...authMessageStyle, color: COLORS.danger }}>{deviceError}</p> : null}
       {accountState === "missing" && !deviceSession && !accountChecking ? (
-        <p style={authMessageStyle}>One-time GitHub sign-off that lets ADE verify your repo access for instant PR updates.</p>
+        <p style={authMessageStyle}>Authorize once so ADE can check which repositories the app is installed on.</p>
       ) : null}
     </section>
 
@@ -459,7 +474,7 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
 
     <section style={axisBlockStyle}>
       <div style={axisTopRowStyle}>
-        <span style={axisHeadingStyle}>{repoLabel ? `This repo · ${repoLabel}` : "This repo"}</span>
+        <span style={axisHeadingStyle}>{compact ? (repoLabel ? `This repo · ${repoLabel}` : "This repo") : "This repository"}</span>
         {renderPill(repo.pill, !compact)}
       </div>
       <div style={axisBodyRowStyle}>
@@ -486,17 +501,112 @@ export function GitHubAppInstallPanel({ variant = "settings", pin = null }: GitH
   </div>
   );
 
-  // In Settings the panel is a section of the GitHub page: the heading comes
-  // from the section and the two axes are rows of one panel.
+  // In Settings the panel is two steps on the GitHub page, each with what
+  // it is waiting on and the one button that moves it forward.
   if (!compact) {
+    // Check again lives in the card's head here, so a step only shows it
+    // when it is the one thing to do (access still warming up).
+    const settingsRepoActions: ReactNode[] = repoState === "not_installed"
+      ? [installButton, manageButton]
+      : repoState === "access_pending"
+        ? [recheckButton(true)]
+        : repoState === "waiting_on_account" || repoState === "no_repo"
+          ? []
+          : [manageButton];
+    const authorizedDone = accountState === "valid";
+    const repoDone = repoState === "connected";
+    const deviceBlock = deviceSession ? (
+      <div className="ade-ig-device">
+        <p className="ade-ig-note">
+          Enter this code on{" "}
+          <button type="button" className="ade-ig-link" onClick={() => openExternalUrl(deviceSession.verificationUri)}>
+            github.com/login/device <ArrowSquareOut size={11} />
+          </button>
+        </p>
+        <button
+          type="button"
+          className="ade-ig-code-btn"
+          onClick={() => void copyDeviceCode()}
+          aria-label={`Copy GitHub code ${deviceSession.userCode}`}
+          title="Copy code"
+        >
+          <span className="ade-ig-code" aria-hidden="true">
+            {[...deviceSession.userCode].map((char, index) => (char === "-" ? <i key={index} /> : <span key={index}>{char}</span>))}
+          </span>
+          {deviceCodeCopied ? <Check size={13} weight="bold" /> : <Copy size={13} weight="bold" />}
+        </button>
+        {deviceMessage ? null : <p className="ade-ig-note"><span className="ade-ig-dot" data-tone="checking" /> Waiting for you to approve on GitHub…</p>}
+      </div>
+    ) : null;
     return (
-      <ModernSection
-        group="GitHub"
-        title="ADE for GitHub"
-        hint="Webhook-backed, real-time pull request updates — independent of your account token."
+      <IntegrationCard
+        icon={<WebhooksLogo size={16} weight="duotone" />}
+        title="ADE for GitHub app"
+        hint="A read-only GitHub app that tells ADE the moment a pull request, review or check changes."
+        badge={repoDone && authorizedDone ? renderPill({ tone: "ok", color: "", label: "Live updates on" }, true) : null}
+        tone={deviceSession ? "focus" : undefined}
+        actions={(
+          <button
+            type="button"
+            className="ade-modern-btn"
+            data-variant="ghost"
+            data-icon="true"
+            aria-label="Check again"
+            title="Check again"
+            onClick={() => void loadStatus(true, { retryAfterAuthorization: appAuthorized })}
+            disabled={loading}
+          >
+            <ArrowClockwise size={13} className={loading ? "ade-icon-spin" : undefined} />
+          </button>
+        )}
       >
-        {blocks}
-      </ModernSection>
+        <ol className="ade-ig-steps">
+          <li className="ade-ig-step" data-done={authorizedDone ? "true" : undefined}>
+            <span className="ade-ig-step-num" aria-hidden>{authorizedDone ? <Check size={11} weight="bold" /> : 1}</span>
+            <div className="ade-ig-step-main">
+              <div className="ade-ig-step-head">
+                <b>Authorize ADE</b>
+                {accountChecking ? null : renderPill(accountPill(account.tone, account.label), true)}
+              </div>
+              <p className="ade-ig-note">
+                {accountState === "missing" && !accountChecking
+                  ? "Sign in once on GitHub so ADE can see where the app is installed."
+                  : account.subtext}
+              </p>
+              {account.note ? <p className="ade-ig-note">{account.note}</p> : null}
+              {disconnectArmed ? (
+                <p className="ade-ig-note">Live updates stop on this machine until you authorize again.</p>
+              ) : null}
+              {deviceBlock}
+              {deviceMessage ? <p className="ade-ig-note">{deviceMessage}</p> : null}
+              {deviceError ? (
+                <Banner layout="inline" model={{ id: "github-app-auth-error", tone: "error", title: "GitHub authorization didn't finish", detail: deviceError }} />
+              ) : null}
+              {!accountChecking && (accountCta || disconnectControl) ? (
+                <div className="ade-ig-step-actions">
+                  {accountCta}
+                  {disconnectControl}
+                </div>
+              ) : null}
+            </div>
+          </li>
+          <li className="ade-ig-step" data-done={repoDone ? "true" : undefined} data-waiting={!authorizedDone ? "true" : undefined}>
+            <span className="ade-ig-step-num" aria-hidden>{repoDone ? <Check size={11} weight="bold" /> : 2}</span>
+            <div className="ade-ig-step-main">
+              <div className="ade-ig-step-head">
+                <b>{repoLabel ? <>Install on <span className="ade-ig-mono">{repoLabel}</span></> : "Install on this repository"}</b>
+                {renderPill(repo.pill, true)}
+              </div>
+              <p className="ade-ig-note">{repo.subtext}</p>
+              <div className="ade-ig-step-actions">
+                {settingsRepoActions.map((action, index) => (
+                  <span key={index} style={{ display: "inline-flex" }}>{action}</span>
+                ))}
+              </div>
+            </div>
+          </li>
+        </ol>
+      </IntegrationCard>
     );
   }
 

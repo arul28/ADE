@@ -1,15 +1,25 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  ArrowClockwise,
   ArrowSquareOut,
   CaretDown,
   CheckCircle,
   CircleNotch,
   Key,
+  LinkSimple,
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
+import { captureError } from "../../../shared/sentry/capture";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
-import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
+import {
+  IntegrationCard,
+  IntegrationColumns,
+  IntegrationHero,
+  IntegrationOr,
+  IntegrationPage,
+  type IntegrationFact,
+} from "./integrations/IntegrationChrome";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import { Banner } from "../ui/notice";
 import { LinearMark } from "../lanes/linearBrand";
@@ -34,11 +44,11 @@ function LinearWorkspaceAvatar({
   const monogram = organizationName?.trim().charAt(0).toUpperCase() || "L";
 
   return (
-    <div aria-hidden="true" className="ade-linear-avatar">
+    <>
       {showLogo ? (
         <img src={normalizedLogoUrl} alt="" onError={() => setFailedLogoUrl(normalizedLogoUrl)} />
       ) : monogram}
-    </div>
+    </>
   );
 }
 
@@ -53,7 +63,7 @@ type GitHubAutolinkCandidate = {
   configured: boolean;
 };
 
-export function LinearSection({ embedded = false }: { embedded?: boolean }) {
+export function LinearSection() {
   const issueTopBar = useIssueTopBarPreferences();
   // Linear connection, GitHub repo, and team keys are all scoped to the active
   // project (credentials are project-scoped). Re-run the loaders whenever the
@@ -83,6 +93,8 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   const [oauthStarting, setOauthStarting] = useState(false);
   const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The status read itself failed, so the page cannot say connected or not.
+  const [statusReadFailed, setStatusReadFailed] = useState(false);
   const validatingRef = useRef(false);
   const oauthStartingRef = useRef(false);
   const oauthSessionIdRef = useRef<string | null>(null);
@@ -136,16 +148,16 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     const baseCandidates: Array<Omit<GitHubAutolinkCandidate, "configured" | "command">> = [
       {
         id: "ade-pr",
-        title: "Open PRs in ADE",
-        desc: "Turns ADEPR-123 in GitHub text into a link that opens that PR in this ADE project.",
+        title: "ADE pull requests",
+        desc: "Opens the pull request in ADE",
         keyPrefix: "ADEPR-",
         urlTemplate: adePrTemplate,
         isAlphanumeric: false,
       },
       ...teamKeys.map((teamKey) => ({
         id: `linear-${teamKey}`,
-        title: `${teamKey} Linear issues`,
-        desc: `Turns ${teamKey}-123 in GitHub text into a Linear issue link.`,
+        title: `${teamKey} issues`,
+        desc: `Opens the ${teamKey} issue in Linear`,
         keyPrefix: `${teamKey}-`,
         urlTemplate: `https://linear.app/${encodeURIComponent(workspaceUrlKey)}/issue/${teamKey}-<num>`,
         isAlphanumeric: false,
@@ -200,7 +212,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       setGithubRepo(repo);
       if (!repo) {
         setGithubAutolinks([]);
-        setAutolinkError("No GitHub origin remote was detected for this project.");
+        setAutolinkError(null);
         return;
       }
       const autolinks = await github.listRepoAutolinks(repo, pin);
@@ -218,11 +230,15 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
   }, [pin]);
 
   const loadStatus = useCallback(async () => {
-    if (!window.ade?.cto) return;
+    if (!window.ade?.cto) {
+      setStatusReadFailed(true);
+      return;
+    }
     const requestId = invalidateLoadRequests();
     try {
       const status = await window.ade.cto.getLinearConnectionStatus(pin);
       if (!isCurrentLoadRequest(requestId)) return;
+      setStatusReadFailed(false);
       setConnection(status);
       if (status.connected) {
         if (isCurrentLoadRequest(requestId)) {
@@ -231,8 +247,14 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       } else {
         setProjects([]);
       }
-    } catch {
+    } catch (err) {
+      captureError(err, {
+        tags: { feature: "linear_settings", action: "read_status" },
+        fingerprint: ["linear_settings", "read_status"],
+        handled: true,
+      });
       if (!isCurrentLoadRequest(requestId)) return;
+      setStatusReadFailed(true);
       setConnection(null);
       setProjects([]);
     }
@@ -295,7 +317,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
       if (!active || oauthSessionIdRef.current !== activeSessionId) return;
       setOauthSessionIdState(null);
       setOauthStartingState(false);
-      setError("OAuth timed out. Please try again.");
+      setError("Linear sign-in timed out. Try again.");
     }, 5 * 60 * 1000);
     return () => {
       active = false;
@@ -364,7 +386,7 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     const openExternal = window.ade?.app?.openExternal;
     if (!cto || validatingRef.current || oauthStartingRef.current) return;
     if (isRemoteRuntime) {
-      setError("Browser sign-in isn't available over a remote connection. Use an API key instead.");
+      setError("Browser sign-in can't reach a project on another computer. Use an API key instead.");
       return;
     }
     if (!openExternal) {
@@ -436,261 +458,217 @@ export function LinearSection({ embedded = false }: { embedded?: boolean }) {
     void openExternal(LINEAR_API_SETTINGS_URL);
   };
 
-  return (
-    <div className="ade-int-page" style={{ maxWidth: embedded ? undefined : 780 }}>
-      <ModernSection
-        group="Linear"
-        anchor="linear-connection"
-        title="Connection"
-        hint={
-          embedded
-            ? "Issues in lanes and chats, PR links, and the ADE agent."
-            : "Connect Linear for issue routing, lane context, PR linkage, and CTO workflows."
-        }
-        actions={
-          isConnected ? (
-            <>
-              <button
-                type="button"
-                className="ade-modern-btn ade-linear-remove"
-                data-variant="ghost"
-                onClick={() => void handleDisconnect()}
-                disabled={oauthStarting}
-              >
-                Disconnect
-              </button>
-              {!isRemoteRuntime ? (
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  onClick={() => void handleStartOAuth()}
-                  disabled={oauthStarting || validating || connection?.oauthAvailable === false}
-                >
-                  {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
-                  {oauthStarting ? "Waiting for Linear..." : "Reconnect current workspace"}
-                </button>
-              ) : null}
-            </>
-          ) : null
-        }
-      >
-        {error ? (
-          <Banner layout="inline" model={{ id: "linear-connection-error", tone: "error", title: error }} />
-        ) : null}
+  const facts: IntegrationFact[] = isConnected
+    ? [
+        ...(authModeLabel ? [{ label: "Method", value: authModeLabel }] : []),
+        { label: "Projects", value: String(connection?.projectCount ?? projects.length) },
+        { label: "Repository", value: githubRepoSlug ?? "None found", mono: Boolean(githubRepoSlug) },
+      ]
+    : [];
+  const oauthDisabled = oauthStarting || validating || connection?.oauthAvailable === false || isRemoteRuntime;
 
-        {isConnected ? (
-          <div className="ade-modern-rows">
-            <div className="ade-int-hero">
-              <LinearWorkspaceAvatar
-                organizationName={connection?.organizationName}
-                logoUrl={connection?.organizationLogoUrl}
-              />
-              <div className="ade-int-hero-id">
-                <span className="ade-int-hero-name">{workspaceLabel ?? "Linear"}</span>
-                {connection?.organizationUrlKey ? (
-                  <span className="ade-int-hero-sub">{connection.organizationUrlKey}</span>
-                ) : null}
-              </div>
-              <span className="kit-tag" data-tone="ok">Connected</span>
-            </div>
-            <div className="ade-int-facts">
-              <div className="ade-int-fact">
-                <span className="ade-int-fact-label">Signed in as</span>
-                <span className="ade-int-fact-value">{connection?.viewerName ?? "Signed in"}</span>
-              </div>
-              {authModeLabel ? (
-                <div className="ade-int-fact">
-                  <span className="ade-int-fact-label">Method</span>
-                  <span className="ade-int-fact-value">{authModeLabel}</span>
-                </div>
-              ) : null}
-              <div className="ade-int-fact">
-                <span className="ade-int-fact-label">Projects</span>
-                <span className="ade-int-fact-value kit-num">{connection?.projectCount ?? projects.length}</span>
-              </div>
-            </div>
-          </div>
-        ) : (
-          <div className="ade-int-token-grid">
-            {/* OAuth — recommended */}
-            <div className="ade-int-token-card">
-              <div className="ade-int-token-head">
-                <span className="ade-int-logo" aria-hidden style={{ width: 32, height: 32 }}><LinearMark size={16} /></span>
-                <span style={{ flex: 1 }}>Sign in with Linear</span>
-                <span className="kit-tag">Recommended</span>
-              </div>
-              <p className="ade-int-quiet">Connects the workspace currently selected in Linear.</p>
-              <div className="ade-int-btn-row">
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-tone="primary"
-                  onClick={() => void handleStartOAuth()}
-                  disabled={oauthStarting || validating || connection?.oauthAvailable === false || isRemoteRuntime}
-                  title={isRemoteRuntime ? "Browser sign-in isn't available over a remote connection — use an API key below." : undefined}
-                >
-                  {oauthStarting ? (
-                    <CircleNotch size={13} className="animate-spin" />
-                  ) : (
-                    <ArrowSquareOut size={13} />
-                  )}
-                  {oauthStarting ? "Waiting for Linear..." : "Sign in with Linear"}
-                </button>
-              </div>
-              {isRemoteRuntime ? (
-                <p className="ade-int-quiet">
-                  Browser sign-in isn&rsquo;t available over a remote connection. Use an API key — it&rsquo;s saved on the remote machine.
-                </p>
-              ) : connection?.oauthAvailable === false ? (
-                <p className="ade-int-quiet">Browser sign-in is not available in this ADE build.</p>
-              ) : null}
-            </div>
-
-            {/* API Key — manual */}
-            <div className="ade-int-token-card">
-              <div className="ade-int-token-head">
-                <span className="ade-int-logo" aria-hidden style={{ width: 32, height: 32 }}><Key size={16} weight="duotone" /></span>
-                <span>API key</span>
-              </div>
-              <p className="ade-int-quiet">
-                Paste a personal API key from{" "}
-                <a href={LINEAR_API_SETTINGS_URL} target="_blank" rel="noopener noreferrer" onClick={openApiSettings} className="ade-int-link">
-                  linear.app/settings/api
-                </a>
-                . Good if OAuth isn&rsquo;t working.
-              </p>
-              <div className="ade-int-btn-row">
-                <input
-                  type="password"
-                  aria-label="Linear API key"
-                  placeholder="lin_api_..."
-                  className="ade-modern-field"
-                  data-mono="true"
-                  style={{ flex: 1 }}
-                  value={tokenInput}
-                  onChange={(e) => setTokenInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (isImeComposing(e)) return;
-                    if (e.key === "Enter" && !validating && !oauthStarting && !oauthSessionId && tokenInput.trim()) {
-                      e.preventDefault();
-                      void handleValidate();
-                    }
-                  }}
-                />
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  onClick={() => void handleValidate()}
-                  disabled={validating || oauthStarting || oauthSessionId !== null || !tokenInput.trim()}
-                >
-                  {validating ? <CircleNotch size={12} className="animate-spin" /> : "Connect"}
-                </button>
-              </div>
-            </div>
-          </div>
-        )}
-      </ModernSection>
-
-      <ModernSection group="Linear" anchor="linear-top-bar" title="Top bar" hint="Signing out is how you turn Linear off.">
-        <ModernRows>
-          <ModernRow
-            title="Show Linear in the top bar"
-            hint="On this computer. Linear links still open in the Issues tab and the issue sheet."
-            control={(
-              <SettingsToggle
-                label="Show Linear in the top bar"
-                checked={issueTopBar.linear}
-                onChange={(next) => setIssueTopBarVisible("linear", next)}
-              />
-            )}
+  const connectCard = (
+    <IntegrationCard
+      anchor={isConnected ? undefined : "linear-connection"}
+      icon={<LinearMark size={15} />}
+      title="Connect Linear"
+      hint="Sign in once on this machine. Lanes, chats and PRs can then use your Linear issues."
+    >
+      <div className="ade-ig-choice" data-primary="true">
+        <div className="ade-ig-choice-head">
+          <b>Sign in with Linear</b>
+          <span className="kit-tag">Recommended</span>
+        </div>
+        <p>
+          {isRemoteRuntime
+            ? "Browser sign-in can't reach a project on another computer. Use an API key; it's saved on that computer."
+            : connection?.oauthAvailable === false
+              ? "Browser sign-in isn't available in this build of ADE. Use an API key."
+              : "Opens Linear in your browser and connects the workspace you have selected there."}
+        </p>
+        <div className="ade-ig-form-row">
+          <button type="button" className="ade-modern-btn" data-tone="primary" onClick={() => void handleStartOAuth()} disabled={oauthDisabled}>
+            {oauthStarting ? <CircleNotch size={13} className="animate-spin" /> : <ArrowSquareOut size={13} />}
+            {oauthStarting ? "Waiting for Linear…" : "Sign in with Linear"}
+          </button>
+        </div>
+      </div>
+      <IntegrationOr>or</IntegrationOr>
+      <div className="ade-ig-choice">
+        <div className="ade-ig-choice-head">
+          <Key size={15} weight="duotone" />
+          <b>Use an API key</b>
+        </div>
+        <p>
+          Create a personal key in{" "}
+          <a href={LINEAR_API_SETTINGS_URL} target="_blank" rel="noopener noreferrer" onClick={openApiSettings} className="ade-ig-link">
+            Linear › Settings › API
+          </a>{" "}
+          and paste it here.
+        </p>
+        <div className="ade-ig-form-row">
+          <input
+            type="password"
+            aria-label="Linear API key"
+            placeholder="lin_api_…"
+            className="ade-modern-field"
+            data-mono="true"
+            value={tokenInput}
+            onChange={(e) => setTokenInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
+              if (e.key === "Enter" && !validating && !oauthStarting && !oauthSessionId && tokenInput.trim()) {
+                e.preventDefault();
+                void handleValidate();
+              }
+            }}
           />
-        </ModernRows>
-      </ModernSection>
-
-      {isConnected ? <LinearAgentSection connected={isConnected} pin={pin} /> : null}
-
-      <ModernSection
-        group="Linear"
-        title="GitHub reference links"
-        hint="Make Linear issue keys (like ENG-123) and ADE PR refs clickable in PRs, commits and comments on this project's repo."
-        actions={(
           <button
             type="button"
             className="ade-modern-btn"
-            data-variant="ghost"
-            onClick={() => void loadGithubAutolinks()}
-            disabled={autolinksLoading || creatingAutolinkId !== null}
+            onClick={() => void handleValidate()}
+            disabled={validating || oauthStarting || oauthSessionId !== null || !tokenInput.trim()}
           >
-            {autolinksLoading ? <CircleNotch size={12} className="animate-spin" /> : null}
-            Refresh
+            {validating ? <CircleNotch size={12} className="animate-spin" /> : null}
+            Connect
           </button>
-        )}
-      >
-        {/* Folded: set once, rarely revisited. */}
-        <details className="ade-modern-rows ade-linear-links">
-          <summary className="ade-int-row">
-            <div className="ade-int-row-copy">
-              <div className="ade-ap-rowtitle">Repository</div>
-              <div className="ade-int-hero-sub">{githubRepoSlug ?? "No GitHub origin detected"}</div>
-            </div>
-            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-              <span
-                className="kit-tag"
-                data-tone={autolinkCandidates.length > 0 && configuredAutolinkCount === autolinkCandidates.length ? "ok" : undefined}
-              >
-                {autolinkCandidates.length > 0 && configuredAutolinkCount === autolinkCandidates.length
-                  ? "All set up"
-                  : `${configuredAutolinkCount} of ${autolinkCandidates.length} set up`}
-              </span>
-              <CaretDown size={12} className="ade-linear-links-caret" style={{ color: "var(--color-muted-fg)" }} />
-            </span>
-          </summary>
-          <p className="ade-int-note">
-            Click <strong style={{ color: "var(--color-fg)", fontWeight: 500 }}>Create</strong> to add a link to this repo automatically, or copy the <code className="ade-int-mono">gh</code> command below it to run it yourself.
-          </p>
-          {/* Stacked rows, not a table: the command is long and the column
-              is narrow, and a table this wide scrolled sideways and clipped
-              its own Create button. */}
+        </div>
+      </div>
+    </IntegrationCard>
+  );
+
+  const linksCard = (
+    <IntegrationCard
+      icon={<LinkSimple size={16} weight="bold" />}
+      title="Links on GitHub"
+      hint={<>Issue keys like ENG-123 and ADE PR references become links in {githubRepoSlug ? <span className="ade-ig-mono">{githubRepoSlug}</span> : "this repository"}&rsquo;s PRs, commits and comments.</>}
+      badge={autolinkCandidates.length > 0 ? (
+        <span className="kit-tag" data-tone={configuredAutolinkCount === autolinkCandidates.length ? "ok" : undefined}>
+          {configuredAutolinkCount === autolinkCandidates.length ? "All added" : `${configuredAutolinkCount} of ${autolinkCandidates.length} added`}
+        </span>
+      ) : null}
+      actions={(
+        <button
+          type="button"
+          className="ade-modern-btn"
+          data-variant="ghost"
+          data-icon="true"
+          aria-label="Check again"
+          title="Check again"
+          onClick={() => void loadGithubAutolinks()}
+          disabled={autolinksLoading || creatingAutolinkId !== null}
+        >
+          <ArrowClockwise size={13} className={autolinksLoading ? "ade-icon-spin" : undefined} />
+        </button>
+      )}
+    >
+      {!githubRepoSlug && !autolinksLoading ? (
+        <p className="ade-ig-note">This project has no GitHub origin remote, so there is nowhere to add links.</p>
+      ) : (
+        <div className="ade-ig-mini-rows" style={{ marginTop: 0 }}>
           {autolinkCandidates.map((candidate) => {
             const busy = creatingAutolinkId === candidate.id;
             return (
-              <div key={candidate.id} className="ade-linear-link-row">
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ minWidth: 0, flex: 1 }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      {candidate.configured ? <CheckCircle size={13} weight="fill" style={{ color: "var(--kit-ok)" }} /> : null}
-                      <span className="ade-ap-rowtitle">{candidate.title}</span>
-                      <code className="kit-tag">{candidate.keyPrefix}</code>
-                    </div>
-                    <div className="ade-ap-rowhint">{candidate.desc}</div>
-                  </div>
-                  <button
-                    type="button"
-                    className="ade-modern-btn"
-                    data-variant={candidate.configured ? "ghost" : undefined}
-                    onClick={() => void handleCreateAutolink(candidate)}
-                    disabled={!githubRepo || candidate.configured || autolinksLoading || creatingAutolinkId !== null}
-                  >
-                    {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
-                    {candidate.configured ? "Configured" : "Create"}
-                  </button>
-                </div>
-                <code className="ade-int-command" style={{ marginTop: 0, color: "var(--color-muted-fg)" }}>
+              <details key={candidate.id} className="ade-linear-link">
+                <summary className="ade-ig-mini-row" style={{ padding: "9px 12px" }}>
+                  <code className="kit-tag" style={{ flex: "none" }}>{candidate.keyPrefix}123</code>
+                  <span className="ade-ig-mini-detail">{candidate.desc}</span>
+                  {candidate.configured ? (
+                    <span className="kit-tag" data-tone="ok"><CheckCircle size={11} weight="fill" /> Added</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="ade-modern-btn"
+                      data-size="sm"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        void handleCreateAutolink(candidate);
+                      }}
+                      disabled={!githubRepo || autolinksLoading || creatingAutolinkId !== null}
+                    >
+                      {busy ? <CircleNotch size={12} className="animate-spin" /> : null}
+                      Add
+                    </button>
+                  )}
+                  <CaretDown size={12} className="ade-linear-links-caret" aria-label="Show the gh command" />
+                </summary>
+                <code className="ade-int-command" style={{ margin: "0 12px 10px", color: "var(--color-muted-fg)" }}>
                   {candidate.command}
                 </code>
-              </div>
+              </details>
             );
           })}
-          {!teamKeys.length ? (
-            <p className="ade-int-note">
-              Connect Linear and load projects to add team-key references such as TEAM-123 for this workspace.
-            </p>
-          ) : null}
-        </details>
-        {autolinkError ? (
-          <Banner layout="inline" model={{ id: "linear-autolink-error", tone: "error", title: autolinkError }} />
+        </div>
+      )}
+      {!teamKeys.length && githubRepoSlug ? (
+        <p className="ade-ig-note">Links for your team keys appear once ADE has loaded the workspace&rsquo;s projects.</p>
+      ) : null}
+      {autolinkError ? (
+        <Banner layout="inline" model={{ id: "linear-autolink-error", tone: "error", title: autolinkError }} />
+      ) : null}
+    </IntegrationCard>
+  );
+
+  return (
+    <IntegrationPage id="linear">
+      <IntegrationHero
+        id="linear"
+        anchor={isConnected ? "linear-connection" : undefined}
+        status={statusReadFailed && !connection
+          ? { tone: "warn", label: "Couldn't check" }
+          : connection == null && !error
+          ? { tone: "checking", label: "Checking…" }
+          : isConnected
+            ? { tone: "ok", label: "Connected" }
+            : { tone: "neutral", label: "Not connected" }}
+        accountNote={statusReadFailed && !connection ? "ADE couldn't read this machine's Linear connection." : undefined}
+        account={isConnected ? {
+          avatar: <LinearWorkspaceAvatar organizationName={connection?.organizationName} logoUrl={connection?.organizationLogoUrl} />,
+          title: workspaceLabel ?? "Linear",
+          detail: connection?.viewerName ? `as ${connection.viewerName}` : connection?.organizationUrlKey ? `linear.app/${connection.organizationUrlKey}` : null,
+        } : null}
+        actions={isConnected ? (
+          <>
+            {!isRemoteRuntime ? (
+              <button
+                type="button"
+                className="ade-modern-btn"
+                data-size="sm"
+                onClick={() => void handleStartOAuth()}
+                disabled={oauthStarting || validating || connection?.oauthAvailable === false}
+                title="Sign in again, for the workspace selected in Linear"
+              >
+                {oauthStarting ? <CircleNotch size={12} className="animate-spin" /> : null}
+                {oauthStarting ? "Waiting for Linear…" : "Switch workspace"}
+              </button>
+            ) : null}
+            <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => void handleDisconnect()} disabled={oauthStarting}>
+              Disconnect
+            </button>
+          </>
+        ) : statusReadFailed && !connection ? (
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void loadStatus()}>
+            Check again
+          </button>
         ) : null}
-      </ModernSection>
-    </div>
+        facts={facts}
+        topBar={{
+          label: "Linear issues",
+          checked: issueTopBar.linear,
+          onChange: (next) => setIssueTopBarVisible("linear", next),
+          anchor: "linear-top-bar",
+        }}
+      />
+
+      {error ? (
+        <Banner layout="inline" model={{ id: "linear-connection-error", tone: "error", title: error }} />
+      ) : null}
+
+      <IntegrationColumns>
+        {isConnected ? null : connectCard}
+        <LinearAgentSection connected={isConnected} pin={pin} />
+        {isConnected ? linksCard : null}
+      </IntegrationColumns>
+    </IntegrationPage>
   );
 }

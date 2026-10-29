@@ -498,3 +498,7 @@
 .ade-pv-ctx-error > svg { flex: none; color: var(--color-warning, #F59E0B); }
 .ade-pv-ctx-error > span { flex: 1 1 auto; min-width: 0; }
 .ade-pv-ctx-foot-error { margin-bottom: 4px; color: var(--color-warning, #F59E0B); }
+/* Square to the viewer: the integration pages' logos. */
+.ade-pv-mark3d[data-straight="true"] .ade-pv-mark3d-body { transform: none; }
+.ade-pv-mark3d[data-straight="true"]:hover .ade-pv-mark3d-body { transform: translateY(-3px); }
+.ade-pv-mark3d[data-straight="true"] .ade-pv-mark3d-floor { left: 12%; right: 12%; }

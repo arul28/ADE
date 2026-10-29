@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { ArrowSquareOut, CircleNotch, Robot } from "@phosphor-icons/react";
+import { ArrowSquareOut, Check, CircleNotch, Robot } from "@phosphor-icons/react";
 import type { AiPermissionSettings, LinearAgentOverview, ModelConfig, OpenProjectBinding } from "../../../shared/types";
 import { getAppDefaultModelDescriptor, getDefaultModelDescriptor, getModelById } from "../../../shared/modelRegistry";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -15,6 +15,7 @@ import { LinearMark } from "../lanes/linearBrand";
 import { relativeTimeCompact } from "../../lib/format";
 import { buildLinearAgentRuleDraft } from "../automations/templates/templateData";
 import { isAdeAvailable } from "../../lib/adeAvailability";
+import { IntegrationCard } from "./integrations/IntegrationChrome";
 
 const INSTALL_POLL_MS = 1_500;
 
@@ -33,15 +34,6 @@ function laneModeLabel(mode: string | null): string {
   return "Primary lane";
 }
 
-function StatusDot({ on, label }: { on: boolean; label: string }) {
-  return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, color: on ? "var(--color-fg)" : "var(--color-muted-fg)" }}>
-      <span className="kit-dot" data-state={on ? "ok" : undefined} />
-      {label}
-    </span>
-  );
-}
-
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
@@ -52,7 +44,7 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 }
 
 /**
- * The "ADE agent" part of the Linear card in Settings → Integrations. Installs
+ * The "ADE agent" card on Settings › Integrations › Linear. Installs
  * the agent in the workspace, makes this machine's delegation rules, and says
  * where delegations from teammates go.
  *
@@ -84,7 +76,10 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
 
   const load = useCallback(async () => {
     const cto = window.ade?.cto;
-    if (!cto?.getLinearAgentOverview) return;
+    if (!cto?.getLinearAgentOverview) {
+      setError("This version of ADE can't set up the agent.");
+      return;
+    }
     setLoading(true);
     try {
       let next = await cto.getLinearAgentOverview(pin);
@@ -104,6 +99,7 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
   useEffect(() => {
     if (connected) void load();
   }, [connected, load]);
+
 
   useEffect(() => {
     if (!installing) return;
@@ -186,66 +182,49 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent(pin));
   }, [overview?.status?.orgName, pin, run]);
 
-  if (!connected) return null;
-
-  const status = overview?.status ?? null;
+  // The last overview outlives a disconnect; while disconnected it says nothing.
+  const live = connected ? overview : null;
+  const status = live?.status ?? null;
   const installed = status?.installed === true;
-  const rules = overview?.rules ?? [];
+  const rules = live?.rules ?? [];
   const otherMembers = status ? status.members.filter((member) => !member.isMe) : [];
+  const unreachable = live != null && !live.available;
+  const checking = connected && loading && !overview;
+  const rulesDone = installed && rules.length > 0;
 
-  const statusTag = loading && !overview
-    ? <CircleNotch size={12} className="animate-spin" style={{ color: "var(--color-muted-fg)" }} />
-    : installed ? <span className="kit-tag" data-tone="ok">Installed</span>
-      : status ? <span className="kit-tag">Not installed</span> : null;
+  const badge = !connected ? null
+    : checking ? <span className="kit-tag">Checking…</span>
+      : rulesDone ? <span className="kit-tag" data-tone="ok">On</span>
+        : installed ? <span className="kit-tag" data-tone="warn">Pick a model</span>
+          : status ? <span className="kit-tag">Not added</span> : null;
 
   return (
-    <section className="ade-ap-section" data-settings-group="Linear" aria-label="ADE agent">
-      <header className="ade-ap-head">
-        <div style={{ minWidth: 0 }}>
-          <h2>ADE agent</h2>
-          <p>Assign an issue to ADE in Linear, or write @ADE in a comment. The work runs on the ADE of the person who asked.</p>
-        </div>
-        <div className="ade-ap-actions" style={{ gap: 8 }}>
-          {statusTag}
-          {installed && rules.length > 0 ? (
-            <button type="button" className="ade-modern-btn" onClick={() => navigate("/automations")}>
-              Automations
-            </button>
-          ) : !installed && status ? (
-            <button
-              type="button"
-              className="ade-modern-btn"
-              data-tone="primary"
-              disabled={installing}
-              onClick={() => void handleInstall()}
-            >
-              {installing ? <CircleNotch size={12} className="animate-spin" /> : <ArrowSquareOut size={12} />}
-              {installing ? "Waiting for Linear…" : "Install"}
-            </button>
-          ) : null}
-        </div>
-      </header>
-
-      {error ? (
-        <Banner
-          layout="inline"
-          model={{ id: "linear-agent-error", tone: "error", icon: <LinearMark size={14} />, title: error }}
-        />
+    <IntegrationCard
+      icon={<Robot size={16} weight="duotone" />}
+      title="ADE agent"
+      hint="Your team assigns Linear issues to ADE, or mentions @ADE in a comment. Each one runs on the ADE of the person who asked."
+      badge={badge}
+      actions={rulesDone ? (
+        <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" onClick={() => navigate("/automations")}>
+          Automations
+        </button>
       ) : null}
-
-      {overview && !overview.available ? (
+    >
+      {error ? (
+        <Banner layout="inline" model={{ id: "linear-agent-error", tone: "error", icon: <LinearMark size={14} />, title: error }} />
+      ) : null}
+      {unreachable ? (
         <Banner
           layout="inline"
           model={{
             id: "linear-agent-unreachable",
             tone: "warning",
             icon: <LinearMark size={14} />,
-            title: "The ADE agent service is not reachable",
-            detail: `${overview.message ?? "No answer from the relay."} Sign in to ADE in Settings → Account.`,
+            title: "Can't reach the ADE agent service",
+            detail: `${overview?.message ?? "No answer from the relay."} Sign in to ADE in Settings › Account.`,
           }}
         />
       ) : null}
-
       {status?.me.routedToOtherAccount ? (
         <Banner
           layout="inline"
@@ -253,8 +232,8 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
             id: "linear-agent-other-account",
             tone: "warning",
             icon: <LinearMark size={14} />,
-            title: "Your Linear delegations go to another ADE account",
-            detail: "Linear sends the issues you delegate to ADE to a different ADE sign-in. Route them here to run them on this account's machines.",
+            title: "Issues you assign to ADE go to another ADE account",
+            detail: "Linear sends them to a different ADE sign-in. Route them here to run them on this account's machines.",
             actions: [{
               label: busy === "member" ? "Routing…" : "Route to this account",
               variant: "secondary",
@@ -264,167 +243,174 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
         />
       ) : null}
 
-      {status && !installed ? (
-        <div className="ade-ap-rowcard">
-          <span className="ade-modern-glyph" aria-hidden><Robot size={16} weight="duotone" /></span>
-          <div style={{ minWidth: 0, flex: 1 }} className="ade-ap-rowhint">
-            A Linear workspace admin approves the install once. Teammates only connect Linear in their own ADE.
-          </div>
-        </div>
-      ) : null}
-
-      {installed && rules.length === 0 ? (
-        <div className="ade-ap-rowcard" style={{ flexDirection: "column", alignItems: "stretch", gap: 14 }}>
-          <div>
-            <div className="ade-ap-rowtitle">Choose the model for your delegations</div>
-            <div className="ade-ap-rowhint">
-              ADE never picks a model on its own. If this one is unavailable when a delegation arrives, Linear shows why.
+      <ol className="ade-ig-steps">
+        <li className="ade-ig-step" data-done={installed ? "true" : undefined} data-waiting={!connected ? "true" : undefined}>
+          <span className="ade-ig-step-num" aria-hidden>{installed ? <Check size={11} weight="bold" /> : 1}</span>
+          <div className="ade-ig-step-main">
+            <div className="ade-ig-step-head">
+              <b>Add ADE to your workspace</b>
+              {checking ? <CircleNotch size={12} className="animate-spin" style={{ color: "var(--color-muted-fg)" }} /> : null}
             </div>
-          </div>
-          <div
-            style={{
-              display: "grid",
-              gridTemplateColumns: hasReasoning ? "minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1.6fr) minmax(0, 1fr)",
-              gap: 12,
-              alignItems: "end",
-            }}
-          >
-            <Field label="Model">
-              <ModelPicker value={effectiveModelId} onChange={(next) => { setModelId(next); setEffort(null); }} hidePermissionRail triggerClassName="w-full justify-between" />
-            </Field>
-            {hasReasoning ? (
-              <Field label="Reasoning">
-                <ReasoningEffortPicker modelId={effectiveModelId} reasoningEffort={effort} onChange={setEffort} triggerClassName="w-full justify-between" />
-              </Field>
-            ) : null}
-            <Field label="Permissions">
-              <RulePermissionPicker
-                modelId={effectiveModelId}
-                permissionConfig={permissionConfig}
-                onChange={setPermissionConfig}
-              />
-            </Field>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, ...TEXT, fontSize: 12 }}>
-              <input type="checkbox" checked={answerMentions} onChange={(event) => setAnswerMentions(event.target.checked)} />
-              Also answer @ADE mentions
-            </label>
-            <button
-              type="button"
-              className="ade-modern-btn"
-              data-tone="primary"
-              disabled={!effectiveModelId || !descriptor || busy === "rule"}
-              onClick={handleTurnOn}
-            >
-              {busy === "rule" ? <CircleNotch size={12} className="animate-spin" /> : null}
-              Turn on
-            </button>
-          </div>
-          <div className="ade-ap-rowhint">
-            This adds {answerMentions ? "two rules" : "one rule"} to Automations on this machine. Delegations get a new lane per issue with Linear’s branch name{answerMentions ? "; mentions answer in the primary lane" : ""}.
-          </div>
-        </div>
-      ) : null}
-
-      {installed && rules.length > 0 ? (
-        <div className="ade-modern-rows">
-          {rules.map((rule) => {
-            const kind = rule.triggerTypes.includes("linear.agent_mentioned") && !rule.triggerTypes.includes("linear.agent_delegated") ? "Mentions" : "Delegations";
-            const model = rule.modelId ? (getModelById(rule.modelId)?.displayName ?? rule.modelId) : null;
-            return (
-              <div key={rule.id} className="ade-linear-rule-row">
-                <span className="ade-ap-rowtitle">{kind}</span>
-                <span className="ade-linear-rule-model">
-                  {model ?? <span className="kit-tag" data-tone="crit">No model</span>}
-                  <span style={{ color: "var(--color-muted-fg)" }}> · {laneModeLabel(rule.laneMode)}</span>
-                </span>
-                <StatusDot on={rule.enabled} label={rule.enabled ? "On" : "Off"} />
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  data-variant="ghost"
-                  onClick={() => navigate(`/automations?rule=${encodeURIComponent(rule.id)}`)}
-                >
-                  Edit
+            <p className="ade-ig-note">
+              {!connected
+                ? "Connect Linear first."
+                : installed
+                  ? `Added to ${status?.orgName ?? "this workspace"}.`
+                  : "A workspace admin approves it once. After that, teammates only connect Linear in their own ADE."}
+            </p>
+            {connected && !installed && status ? (
+              <div className="ade-ig-step-actions">
+                <button type="button" className="ade-modern-btn" data-tone="primary" disabled={installing} onClick={() => void handleInstall()}>
+                  {installing ? <CircleNotch size={12} className="animate-spin" /> : <ArrowSquareOut size={12} />}
+                  {installing ? "Waiting for Linear…" : "Add to workspace"}
                 </button>
               </div>
-            );
-          })}
-        </div>
-      ) : null}
+            ) : null}
+          </div>
+        </li>
 
-      {installed && status ? (
-        <div className="ade-modern-rows">
-          <div className="ade-int-row">
-            <div className="ade-int-row-copy">
-              <div className="ade-ap-rowtitle">Teammates</div>
-              <div className="ade-ap-rowhint">
-                {otherMembers.length === 0
-                  ? "Only you use ADE in this workspace so far."
-                  : `${otherMembers.length} ${otherMembers.length === 1 ? "teammate uses" : "teammates use"} ADE: ${otherMembers.map((member) => member.displayName ?? "someone").join(", ")}.`}{" "}
-                Their delegations run on their own ADE, with their own rules.
+        <li className="ade-ig-step" data-done={rulesDone ? "true" : undefined} data-waiting={!installed ? "true" : undefined}>
+          <span className="ade-ig-step-num" aria-hidden>{rulesDone ? <Check size={11} weight="bold" /> : 2}</span>
+          <div className="ade-ig-step-main">
+            <div className="ade-ig-step-head"><b>Choose the model that works your issues</b></div>
+            {!installed ? (
+              <p className="ade-ig-note">ADE won&rsquo;t pick one for you. Each assigned issue gets its own lane.</p>
+            ) : rules.length === 0 ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4 }}>
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: hasReasoning ? "minmax(0, 1.6fr) minmax(0, 1fr) minmax(0, 1fr)" : "minmax(0, 1.6fr) minmax(0, 1fr)",
+                    gap: 10,
+                    alignItems: "start",
+                  }}
+                >
+                  <Field label="Model">
+                    <ModelPicker value={effectiveModelId} onChange={(next) => { setModelId(next); setEffort(null); }} hidePermissionRail triggerClassName="w-full justify-between" />
+                  </Field>
+                  {hasReasoning ? (
+                    <Field label="Reasoning">
+                      <ReasoningEffortPicker modelId={effectiveModelId} reasoningEffort={effort} onChange={setEffort} triggerClassName="w-full justify-between" />
+                    </Field>
+                  ) : null}
+                  <Field label="Permissions">
+                    <RulePermissionPicker modelId={effectiveModelId} permissionConfig={permissionConfig} onChange={setPermissionConfig} />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, ...TEXT, fontSize: 12 }}>
+                    <input type="checkbox" checked={answerMentions} onChange={(event) => setAnswerMentions(event.target.checked)} />
+                    Also answer @ADE mentions
+                  </label>
+                  <button
+                    type="button"
+                    className="ade-modern-btn"
+                    data-tone="primary"
+                    disabled={!effectiveModelId || !descriptor || busy === "rule"}
+                    onClick={handleTurnOn}
+                  >
+                    {busy === "rule" ? <CircleNotch size={12} className="animate-spin" /> : null}
+                    Turn on
+                  </button>
+                </div>
+                <p className="ade-ig-note">
+                  Adds {answerMentions ? "two rules" : "a rule"} to Automations on this machine. If the model isn&rsquo;t available when an issue arrives, Linear says why.
+                </p>
               </div>
-            </div>
+            ) : (
+              <div className="ade-ig-mini-rows">
+                {rules.map((rule) => {
+                  const kind = rule.triggerTypes.includes("linear.agent_mentioned") && !rule.triggerTypes.includes("linear.agent_delegated") ? "Mentions" : "Assigned issues";
+                  const model = rule.modelId ? (getModelById(rule.modelId)?.displayName ?? rule.modelId) : null;
+                  return (
+                    <div key={rule.id} className="ade-ig-mini-row">
+                      <span className="kit-dot" data-state={rule.enabled ? "ok" : undefined} />
+                      <span className="ade-ig-mini-title">{kind}</span>
+                      <span className="ade-ig-mini-detail">
+                        {model ?? <span className="kit-tag" data-tone="crit">No model</span>} · {laneModeLabel(rule.laneMode)}{rule.enabled ? "" : " · off"}
+                      </span>
+                      <button
+                        type="button"
+                        className="ade-modern-btn"
+                        data-variant="ghost"
+                        data-size="sm"
+                        onClick={() => navigate(`/automations?rule=${encodeURIComponent(rule.id)}`)}
+                      >
+                        Edit
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
-          <div className="ade-int-row">
-            <div className="ade-int-row-copy">
-              <div className="ade-ap-rowtitle">When someone without ADE delegates</div>
-              {status.fallbackMode === "runner" && status.runnerIsMe ? (
-                <div className="ade-ap-rowhint">Those delegations use your rules above.</div>
-              ) : null}
-            </div>
-            <select
-              className="ade-settings-input"
-              aria-label="When someone who does not use ADE delegates"
-              style={{ height: 30, width: "auto", minWidth: 220 }}
-              disabled={!status.installedByMe || busy === "settings"}
-              value={status.fallbackMode}
-              title={status.installedByMe ? undefined : "Only the person who installed the agent can change this."}
-              onChange={(event) => {
-                const mode = event.target.value === "runner" ? "runner" : "reply";
-                void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, pin));
-              }}
-            >
-              <option value="reply">Reply that they need ADE</option>
-              <option value="runner">Run it on my ADE</option>
-            </select>
-          </div>
-        </div>
-      ) : null}
+        </li>
 
-      {installed && (overview?.activeSessions.length ?? 0) > 0 ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          <span className="kit-eyebrow">Recent</span>
-          <div className="ade-modern-rows">
-            {overview!.activeSessions.slice(0, 5).map((session) => (
-              <button
-                key={session.agentSessionId}
-                type="button"
-                className="ade-linear-recent"
-                onClick={() => navigateToAppTarget({ kind: "chat", sessionId: session.chatSessionId, laneId: session.laneId })}
-              >
-                <span className="ade-int-mono" style={{ color: "var(--color-fg)" }}>{session.issueIdentifier ?? "Issue"}</span>
-                <span style={{ color: "var(--color-muted-fg)" }}>{relativeTimeCompact(session.startedAt) || "—"} · Open chat</span>
-              </button>
-            ))}
+        <li className="ade-ig-step" data-waiting={!rulesDone ? "true" : undefined}>
+          <span className="ade-ig-step-num" aria-hidden>3</span>
+          <div className="ade-ig-step-main">
+            <div className="ade-ig-step-head"><b>Assign issues to ADE in Linear</b></div>
+            <p className="ade-ig-note">
+              {installed && status
+                ? otherMembers.length === 0
+                  ? "You're the only one using ADE in this workspace so far."
+                  : `Also using ADE: ${otherMembers.map((member) => member.displayName ?? "someone").join(", ")}. Their issues run on their own ADE.`
+                : "Or write @ADE in a comment. ADE replies in Linear as it works."}
+            </p>
+            {installed && status ? (
+              <div className="ade-ig-inline-field">
+                <span>When someone without ADE assigns one</span>
+                <select
+                  className="ade-settings-input"
+                  aria-label="When someone who does not use ADE assigns an issue"
+                  style={{ height: 28, width: "auto", minWidth: 190 }}
+                  disabled={!status.installedByMe || busy === "settings"}
+                  value={status.fallbackMode}
+                  title={status.installedByMe ? undefined : "Only the person who added the agent can change this."}
+                  onChange={(event) => {
+                    const mode = event.target.value === "runner" ? "runner" : "reply";
+                    void run("settings", () => ctoApi().updateLinearAgentSettings({ fallbackMode: mode, runner: mode === "runner" ? "self" : null }, pin));
+                  }}
+                >
+                  <option value="reply">Reply that they need ADE</option>
+                  <option value="runner">Run it on my ADE</option>
+                </select>
+              </div>
+            ) : null}
+            {installed && (overview?.activeSessions.length ?? 0) > 0 ? (
+              <div className="ade-ig-mini-rows">
+                {overview!.activeSessions.slice(0, 5).map((session) => (
+                  <button
+                    key={session.agentSessionId}
+                    type="button"
+                    className="ade-ig-mini-row ade-ig-mini-link"
+                    onClick={() => navigateToAppTarget({ kind: "chat", sessionId: session.chatSessionId, laneId: session.laneId })}
+                  >
+                    <span className="ade-ig-mono">{session.issueIdentifier ?? "Issue"}</span>
+                    <span className="ade-ig-mini-detail">{relativeTimeCompact(session.startedAt) || "—"}</span>
+                    <span className="ade-ig-link">Open chat</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
           </div>
-        </div>
-      ) : null}
+        </li>
+      </ol>
 
       {installed && status?.installedByMe ? (
-        <div style={{ display: "flex", justifyContent: "flex-end" }}>
+        <div style={{ display: "flex", justifyContent: "flex-end", marginTop: "auto" }}>
           <button
             type="button"
             className="ade-modern-btn ade-linear-remove"
             data-variant="ghost"
+            data-size="sm"
             disabled={busy === "uninstall"}
             onClick={() => void handleRemove()}
           >
-            Remove ADE agent from this workspace
+            Remove from workspace
           </button>
         </div>
       ) : null}
-    </section>
+    </IntegrationCard>
   );
 }
