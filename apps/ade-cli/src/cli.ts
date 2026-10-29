@@ -6697,7 +6697,10 @@ function buildLanePlan(args: string[]): CliPlan {
     const issuesJson = readValue(args, ["--linear-issues-json"]);
     if (issuesJson) { const issues = parseJson(issuesJson, "--linear-issues-json"); if (!Array.isArray(issues)) throw new CliUsageError("--linear-issues-json must be an array."); return buildBatchCreateLanesFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.on ? ["--on", changes.on] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issues as JsonObject[]); }
     const issueJson = readValue(args, ["--linear-issue-json"]);
-    if (issueJson && args.includes("--start-chat")) { const issue = parseJson(issueJson, "--linear-issue-json"); if (!isRecord(issue)) throw new CliUsageError("--linear-issue-json must be an object."); return buildCreateLaneFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.on ? ["--on", changes.on] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issue); }
+    // A chat launch (any spelling), or lineage flags that only make sense with
+    // one, go through the Linear chat path, which launches or refuses them.
+    const wantsLinearChat = readFlag([...args], ["--start-chat", "--launch", "--start-agent"]) || Boolean(findFlagName(args, CHAT_ONLY_LINEAGE_FLAGS));
+    if (issueJson && wantsLinearChat) { const issue = parseJson(issueJson, "--linear-issue-json"); if (!isRecord(issue)) throw new CliUsageError("--linear-issue-json must be an object."); return buildCreateLaneFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.on ? ["--on", changes.on] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issue); }
     const parsedIssue = issueJson ? parseJson(issueJson, "--linear-issue-json") : null;
     if (issueJson && !isRecord(parsedIssue)) throw new CliUsageError("--linear-issue-json must be an object.");
     const input: JsonObject = { name: requireValue(readValue(args, ["--name"]) ?? firstPositional(args) ?? (isRecord(parsedIssue) ? asString(parsedIssue.title) ?? asString(parsedIssue.identifier) ?? asString(parsedIssue.id) : null), "name") };
@@ -7422,7 +7425,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
         action: "new.chat",
         mode,
         autoCreateLane: lane.autoCreateLane,
-        ...(lane.createLaneArgs ? { createLane: lane.createLaneArgs } : { laneId: lane.laneId }),
+        ...(lane.createLaneArgs ? { createLane: previewCreateLaneArgs(lane.createLaneArgs) } : { laneId: lane.laneId }),
         launch: compactPreviewObject(previewLaunchArgs),
         ...(mode === "chat" && prompt
           ? { afterCreate: [{ action: "chat.messageSession", input: { text: prompt, kind: "auto" } }] }
@@ -29908,7 +29911,20 @@ function renderLaneGraph(result: unknown): string {
     return renderTable(table.headers, table.rows, "ADE lanes\n(no lanes)", { fullColumns: ["lane"] });
   }
 
-  return ["ADE lanes", ...lanes.map(lane => `${asString(lane.name) ?? asString(lane.id) ?? "(unknown)"} (id: ${asString(lane.id) ?? ""}) [${asString(lane.branchRef) ?? ""}]`)].join("\n");
+  return ["ADE lanes", ...lanes.map((lane) => {
+    const issues = linearIssueIdentifiers(lane);
+    return `${asString(lane.name) ?? asString(lane.id) ?? "(unknown)"} (id: ${asString(lane.id) ?? ""}) [${asString(lane.branchRef) ?? ""}]${issues.length > 0 ? ` {${issues.join(", ")}}` : ""}`;
+  })].join("\n");
+}
+
+/**
+ * A dry-run view of an auto-created lane: the `--from` / `--on` flags under
+ * `start` (laid over the saved defaults when the plan runs), not the internal
+ * `_startFlags` carrier.
+ */
+function previewCreateLaneArgs(args: JsonObject): JsonObject {
+  const { _startFlags: startFlags, ...rest } = args;
+  return isRecord(startFlags) ? { ...rest, start: startFlags } : rest;
 }
 
 function linearIssueIdentifiers(lane: JsonObject): string[] {
