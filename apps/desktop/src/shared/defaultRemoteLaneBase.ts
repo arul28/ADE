@@ -45,14 +45,3 @@ export function formatLaneBaseAge(ms: number): string {
   if (hours < 48) return unit(hours, "hour");
   return unit(Math.floor(hours / 24), "day");
 }
-
-/** `main` → `origin/main`; already-remote refs pass through; SHAs yield "". */
-export function remoteLaneBaseCandidate(baseRef: string | null | undefined): string {
-  const trimmed = baseRef?.trim() ?? "";
-  if (!trimmed) return "";
-  if (trimmed.startsWith("refs/remotes/")) return trimmed.slice("refs/remotes/".length);
-  if (trimmed.startsWith("origin/")) return trimmed;
-  if (trimmed.startsWith("refs/heads/")) return `origin/${trimmed.slice("refs/heads/".length)}`;
-  if (/^[0-9a-f]{40}$/i.test(trimmed)) return "";
-  return `origin/${trimmed}`;
-}
