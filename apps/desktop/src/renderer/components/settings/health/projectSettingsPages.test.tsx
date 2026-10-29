@@ -420,7 +420,7 @@ function renderStorage(entry = "/settings?tab=storage", scope?: ScopeInput) {
   return renderPage(<StorageSettingsPage />, entry, scope);
 }
 
-/** Shows one of the page's views (Your lanes, Space, Archive, Rules) by its tab. */
+/** Shows one of the page's views (New lanes, Your lanes, Space, Archive, Rules) by its tab. */
 async function openView(name: string) {
   fireEvent.click(await screen.findByRole("tab", { name: new RegExp(`^${name}`) }));
 }
@@ -849,6 +849,7 @@ describe("Project → Lanes, Location, and Computer → ADE service", () => {
         : [],
     }) as unknown as LaneReclaimRisk);
     renderLanes();
+    await openView("Your lanes");
 
     // A lane with unsaved work can't be picked for the bulk archive.
     const dirty = await screen.findByRole("checkbox", { name: /closed-dirty: It has uncommitted changes/ });

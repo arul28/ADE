@@ -1241,8 +1241,8 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "lanes-git.lane-templates",
-    label: "New lane template",
-    keywords: ["template", "lane templates", "scaffold", "preset", "default lane", "setup", "install", "script", "auto-create"],
+    label: "Lane templates",
+    keywords: ["template", "new lane template", "scaffold", "preset", "default lane", "setup", "install", "script", "auto-create"],
     tab: "lanes-git",
     anchor: "lane-templates",
     scope: "account-repo",

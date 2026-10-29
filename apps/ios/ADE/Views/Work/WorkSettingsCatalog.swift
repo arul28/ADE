@@ -101,7 +101,7 @@ enum WorkSettingsCatalog {
     "storage.lane-build-output": Setting(path: "Project › Storage & cleanup › Clean build output from idle lanes", locked: true),
     "storage.session-lifecycle": Setting(path: "Project › Storage & cleanup › Session lifecycle", locked: true),
     "storage.project-files": Setting(path: "Project › Storage & cleanup › Project files", locked: true),
-    "lanes-git.new-lane-start": Setting(path: "Project › Lanes › Where new lanes start", locked: false),
+    "lanes-git.new-lane-start": Setting(path: "Project › Lanes › New lanes start from", locked: false),
     "lanes-git.lane-templates": Setting(path: "Project › Lanes › Lane templates", locked: false),
     "project-agents.agent-notes": Setting(path: "Project › Agents › Agent notes", locked: false),
     "lanes-git.pr-chat-transcripts": Setting(path: "Project › Agents › PR chat transcripts", locked: true),

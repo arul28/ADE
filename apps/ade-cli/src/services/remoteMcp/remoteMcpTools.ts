@@ -289,11 +289,11 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
   {
     name: "diff_changes",
     title: "List a lane's changed files",
-    description: "A lane's changed files: staged and unstaged, or with `branch`, what its commits changed since its base (uncommitted edits not included).",
+    description: "A lane's uncommitted files, or with `branch`, only what it committed since its base.",
     view: true,
     properties: {
       lane: LANE,
-      branch: { type: "boolean", description: "List what the lane's commits changed since its base." },
+      branch: { type: "boolean", description: "Only commits since the base." },
     },
     required: ["lane"],
     build: (input) => {
