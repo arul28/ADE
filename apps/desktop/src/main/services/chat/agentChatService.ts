@@ -21983,9 +21983,14 @@ export function createAgentChatService(args: {
     if (unsettled) {
       const row = sessionService.get(managed.session.id);
       const resumeCapped = restartResumeCapReached(managed);
+      // A turn that waited for the user's answer or approval is not resumed:
+      // the question died with the process that asked it, and "continue"
+      // would let the agent go on without the answer (T3 #18461).
+      const awaitingUser = readPersistedState(managed.session.id)?.awaitingInput === true;
       const willContinue = continueAfterRestartEnabled()
         && recent
         && !resumeCapped
+        && !awaitingUser
         && !row?.settledAt
         && !row?.archivedAt;
       const cancelledLine = cancelled.length
@@ -21998,6 +22003,8 @@ export function createAgentChatService(args: {
           ? `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`
           : willContinue
             ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
+            : awaitingUser && continueAfterRestartEnabled()
+              ? `ADE restarted while this chat was waiting for your answer, so it doesn't continue on its own. Send your answer as a message to continue.${cancelledLine}`
             : resumeCapped && continueAfterRestartEnabled()
               ? `ADE restarted while this response was running, again. It already continued this chat ${MAX_CONSECUTIVE_RESTART_RESUMES} times in a row, so it waits for you now. Send a message to continue.${cancelledLine}`
               : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
