@@ -7,6 +7,7 @@ import {
   MCP_ACCOUNT_PATH,
   mcpAccountKeyForSecret,
   mcpAccountObjectName,
+  type McpAccountLeaveReason,
   type McpAccountState,
   type TunnelRelayEnv,
 } from "./relayShared";
@@ -25,6 +26,10 @@ const JOINED_KEY = "mcpAccountKey";
 const LEAVING_KEY = "mcpAccountLeaving";
 // A machine moves between accounts rarely; this only bounds a pathological list.
 const MAX_LEAVING = 8;
+/** Machine object storage: the account it left because ADE MCP was turned off. */
+const LEFT_OFF_KEY = "mcpAccountLeftOff";
+/** Account object storage: machines that left because ADE MCP is off there. */
+const OFF_MEMBERS_KEY = "off";
 
 /**
  * The `mcp-account:<accountKey>` object: the machines (relay keys) serving an
@@ -37,12 +42,16 @@ export async function handleMcpAccount(
 ): Promise<Response> {
   const members = (await storage.get<string[]>("members")) ?? [];
   const front = (await storage.get<string>("front")) ?? null;
+  const off = (await storage.get<string[]>(OFF_MEMBERS_KEY)) ?? [];
   if (pathname === MCP_ACCOUNT_PATH && request.method === "GET") {
-    return jsonResponse({ members, front } satisfies McpAccountState, { headers: { "cache-control": "no-store" } });
+    return jsonResponse(
+      { members, front, ...(off.length ? { off } : {}) } satisfies McpAccountState,
+      { headers: { "cache-control": "no-store" } },
+    );
   }
   const expected = pathname === MCP_ACCOUNT_PATH ? "PUT" : "POST";
   if (request.method !== expected) return new Response("method not allowed", { status: 405 });
-  let parsed: { machineKey?: unknown; op?: unknown };
+  let parsed: { machineKey?: unknown; op?: unknown; reason?: unknown };
   try {
     parsed = (await request.json()) as typeof parsed;
   } catch {
@@ -64,6 +73,16 @@ export async function handleMcpAccount(
   }
   await storage.put("members", next);
   if (front && !next.includes(front)) await storage.put("front", null);
+  // A machine that left because ADE MCP is off there is remembered as off;
+  // joining again, or leaving for any other reason, forgets it.
+  let nextOff = off.filter((key) => key !== machineKey);
+  if (parsed.op === "remove" && parsed.reason === "off") {
+    nextOff.push(machineKey);
+    if (nextOff.length > MCP_ACCOUNT_MAX_MEMBERS) nextOff = nextOff.slice(nextOff.length - MCP_ACCOUNT_MAX_MEMBERS);
+  }
+  if (nextOff.length !== off.length || nextOff.some((key, index) => key !== off[index])) {
+    await storage.put(OFF_MEMBERS_KEY, nextOff);
+  }
   return new Response(null, { status: 204 });
 }
 
@@ -86,6 +105,7 @@ async function putMcpAccountMember(
   accountKey: string,
   machineKey: string,
   op: "add" | "remove",
+  reason: McpAccountLeaveReason = "moved",
 ): Promise<boolean> {
   const id = env.TUNNEL.idFromName(mcpAccountObjectName(accountKey));
   try {
@@ -94,7 +114,7 @@ async function putMcpAccountMember(
       () => env.TUNNEL.get(id),
       new Request(`https://relay.internal${MCP_ACCOUNT_PATH}`, {
         method: "PUT",
-        body: JSON.stringify({ machineKey, op }),
+        body: JSON.stringify(op === "remove" ? { machineKey, op, reason } : { machineKey, op }),
       }),
       { retry: "replayable" },
     );
@@ -129,25 +149,53 @@ type McpAccountReconcile = {
 export async function reconcileMcpAccount(
   storage: DurableObjectStorage,
   env: TunnelRelayEnv,
-  args: { machineKey: string; desired: string | null; joined: string | null; stale?: string },
+  args: {
+    machineKey: string;
+    desired: string | null;
+    joined: string | null;
+    stale?: string;
+    /** Why accounts are left on this pass: `off` only when ADE MCP is off here. */
+    leaveReason?: McpAccountLeaveReason;
+  },
 ): Promise<McpAccountReconcile> {
   const { machineKey, desired, joined, stale } = args;
   const stored = (await storage.get<string>(JOINED_KEY)) ?? null;
   const previouslyLeaving = (await storage.get<string[]>(LEAVING_KEY)) ?? [];
+  // The account this machine is remembered as "off" on. Joining any account
+  // other than that one tells the old one it moved on, so its address stops
+  // saying "off" and says it is no longer served.
+  let leftOff = (await storage.get<string>(LEFT_OFF_KEY)) ?? null;
+  // Only the account it is on is left as "off"; older ones it is still
+  // leaving (retries, a stale route) were left because it moved. Recorded
+  // before the remove, so a retried remove still says "off".
+  const offAccount = desired === null && args.leaveReason === "off" ? (joined ?? stored ?? leftOff) : null;
+  if (offAccount && offAccount !== leftOff) {
+    await storage.put(LEFT_OFF_KEY, offAccount);
+    leftOff = offAccount;
+  }
   const leaving = new Set(previouslyLeaving);
   for (const key of [joined, stored, stale]) if (key) leaving.add(key);
+  if (leftOff && desired && leftOff !== desired) leaving.add(leftOff);
   if (desired) leaving.delete(desired);
-  if (leaving.size === 0 && joined === desired && stored === desired) return { joined, settled: true };
+  if (leaving.size === 0 && joined === desired && stored === desired) {
+    if (leftOff && desired === leftOff) await storage.delete(LEFT_OFF_KEY);
+    return { joined, settled: true };
+  }
 
   let settled = true;
   for (const key of [...leaving]) {
-    if (await putMcpAccountMember(env, key, machineKey, "remove")) {
+    const reason: McpAccountLeaveReason = key === offAccount ? "off" : "moved";
+    if (await putMcpAccountMember(env, key, machineKey, "remove", reason)) {
       leaving.delete(key);
-      logTunnel("mcp_account_left", { machineKey: machineKey.slice(0, 8), account: key.slice(0, 8) });
+      if (reason === "moved" && key === leftOff) await storage.delete(LEFT_OFF_KEY);
+      logTunnel("mcp_account_left", { machineKey: machineKey.slice(0, 8), account: key.slice(0, 8), reason });
     } else {
       settled = false;
     }
   }
+  // Joining the account it was off on clears the mark (the add below does so
+  // on the account object).
+  if (leftOff && desired === leftOff) await storage.delete(LEFT_OFF_KEY);
   if (leaving.size > 0) await storage.put(LEAVING_KEY, [...leaving].slice(-MAX_LEAVING));
   else if (previouslyLeaving.length > 0) await storage.delete(LEAVING_KEY);
   // Still listed in LEAVING_KEY when its remove failed.

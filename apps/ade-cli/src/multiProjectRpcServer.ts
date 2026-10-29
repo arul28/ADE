@@ -1,5 +1,6 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
+import { isPathInside } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
@@ -520,6 +521,7 @@ const RUNTIME_METHODS = new Set([
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
+  "projects.pruneMissing",
   "projects.touch",
   "projects.setIcon",
   "projects.removeIcon",
@@ -661,9 +663,11 @@ function readCreateProjectInput(
 
 function readCloneProjectInput(
   params: Record<string, unknown>,
+  fallbackParentDir: () => string,
 ): CloneProjectInput {
   const url = readOptionalString(params.url);
-  const parentDir = readOptionalString(params.parentDir);
+  // No folder named (`ade projects clone`, ADE MCP's projects_clone): beside the other projects.
+  const parentDir = readOptionalString(params.parentDir) ?? fallbackParentDir();
   const name = readOptionalString(params.name);
   const githubAuthHeader = readOptionalString(params.githubAuthHeader);
   if (!url)
@@ -1050,10 +1054,29 @@ async function readProjectFolderPresence(
   return [...presence];
 }
 
+/**
+ * Where a new project goes by default: beside the most recently opened
+ * project whose folder still exists, outside the temp folder (a registry
+ * keeps deleted test projects there), else `~/Projects`.
+ */
 function defaultParentDir(projectRegistry: ProjectRegistry): string {
-  const first = projectRegistry.list()[0]?.rootPath;
-  if (first) return path.dirname(first);
-  return path.join(os.homedir(), "Projects");
+  const temps = [
+    os.tmpdir(),
+    ...(process.platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
+  ];
+  const beside = [...projectRegistry.list()]
+    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+    .map((record) => path.dirname(record.rootPath))
+    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)) && isExistingDirectory(parent));
+  return beside ?? path.join(os.homedir(), "Projects");
+}
+
+function isExistingDirectory(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 async function inspectHandoffStorage(params: Record<string, unknown>) {
@@ -3155,6 +3178,28 @@ export function createMultiProjectRpcRequestHandler(
       return { removed: projectRegistry.remove(projectId) };
     }
 
+    if (method === "projects.pruneMissing") {
+      // Removes registry entries whose folder is confirmed gone. Never a
+      // folder: a folder that could not be checked (no permission, a slow
+      // drive) is kept.
+      const dryRun = params.dryRun === true;
+      const records = projectRegistry.list();
+      const presence = await readProjectFolderPresence(records);
+      const missing = records.filter((_record, index) => presence[index] === false);
+      if (!dryRun) {
+        for (const record of missing) {
+          await scopeRegistry.dispose(record.projectId);
+          handlers.delete(record.projectId);
+          projectRegistry.remove(record.projectId);
+        }
+      }
+      return {
+        dryRun,
+        removed: missing.map((record) => ({ projectId: record.projectId, displayName: record.displayName, rootPath: record.rootPath })),
+        kept: records.length - missing.length,
+      };
+    }
+
     if (method === "projects.touch") {
       const projectId = readProjectId(params);
       if (!projectId) {
@@ -3266,7 +3311,7 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.clone") {
       const result =
         await createMachineProjectScaffoldService().cloneRepository(
-          readCloneProjectInput(params),
+          readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
         );
       return await decorateProjectWithIcon(
         projectRegistry.add(

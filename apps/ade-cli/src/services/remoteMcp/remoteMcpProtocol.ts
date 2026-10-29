@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
@@ -31,6 +32,7 @@ import {
 } from "./remoteMcpTools";
 import {
   REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
+  rosterStateWords,
   toolError,
   withMachineLabel,
   type RemoteMcpCallContext,
@@ -82,6 +84,10 @@ const CHAT_ID_TOOL_NAMES: ReadonlySet<string> = new Set(["chat_read", "chat_stat
 const CHAT_LOCATE_TIMEOUT_MS = 20_000;
 
 const MAX_CHAT_HOMES = 500;
+/** A run longer than this is logged with where its time went (unless the tool waits on purpose). */
+const SLOW_RUN_MS = 20_000;
+/** How long a project folder's presence is trusted before it is checked again. */
+const FOLDER_PRESENCE_TTL_MS = 30_000;
 
 /** A chat tool's answer that says this computer has no such chat. */
 function isChatMiss(tool: string, result: RemoteMcpToolResult): boolean {
@@ -144,40 +150,76 @@ export function createRemoteMcpProtocol(deps: {
 
   // ── Projects ──────────────────────────────────────────────────────────────
 
+  // Whether each registered project's folder still exists, checked at most
+  // every 30 s per folder. A registry keeps projects whose folder was deleted
+  // (test projects in a temp folder); they must not win a name or a default.
+  const folderPresence = new Map<string, { at: number; present: boolean }>();
+  const folderExists = (rootPath: string): boolean => {
+    const cached = folderPresence.get(rootPath);
+    if (cached && Date.now() - cached.at < FOLDER_PRESENCE_TTL_MS) return cached.present;
+    let present = true;
+    try {
+      present = fs.statSync(rootPath).isDirectory();
+    } catch (error) {
+      // Only "not there" counts as gone; a folder that can't be checked stays.
+      const code = (error as NodeJS.ErrnoException)?.code;
+      present = code !== "ENOENT" && code !== "ENOTDIR";
+    }
+    if (folderPresence.size > 2_000) folderPresence.clear();
+    folderPresence.set(rootPath, { at: Date.now(), present });
+    return present;
+  };
+  /** The registered projects whose folder exists, last opened first. */
+  const liveProjects = (): RemoteMcpProject[] =>
+    [...deps.listProjects()].filter((project) => folderExists(project.rootPath)).sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+
   /** The projects an every-project sweep reads: opened in the last 30 days, at most six. */
   const recentProjects = (): RemoteMcpProject[] => {
-    const projects = [...deps.listProjects()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+    const projects = liveProjects();
     const cutoff = Date.now() - EVERY_PROJECT_WINDOW_MS;
     const recent = projects.filter((project) => project.lastOpenedAt >= cutoff);
     return (recent.length ? recent : projects.slice(0, 1)).slice(0, EVERY_PROJECT_MAX);
   };
 
+  const describeCandidate = (project: RemoteMcpProject): string => `${project.displayName} (id ${project.projectId}, ${project.rootPath})`;
+
   /**
    * The project a call runs in. Without `project`, the most recently opened
-   * one, which changes when the person opens another: every result names it,
-   * so a call never lands in a different repo unnoticed.
+   * one whose folder exists, which changes when the person opens another:
+   * every result names it, so a call never lands in a different repo
+   * unnoticed. An id or path picks exactly; a name picks among the projects
+   * whose folder exists, and two with the same name are refused with both.
    */
   const resolveProject = (requested: unknown): ResolvedProject | { error: string } => {
-    const projects = deps.listProjects();
+    const all = deps.listProjects();
     const found = (project: RemoteMcpProject): ResolvedProject => ({ cwd: project.rootPath, project });
+    const gone = (project: RemoteMcpProject) => ({
+      error: `${project.displayName}'s folder is gone (${project.rootPath}). Clone it again with projects_clone, `
+        + "or remove the stale entry with [\"projects\",\"prune\"].",
+    });
     if (typeof requested !== "string" || !requested.trim()) {
-      const recent = [...projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
+      const recent = liveProjects()[0];
       // No project at all: machine-wide commands (`projects list`, `doctor`) still work.
       return recent ? found(recent) : { cwd: os.homedir(), project: null };
     }
     const wanted = requested.trim();
     const lower = wanted.toLowerCase();
-    const exact = projects.filter((project) =>
+    const exact = all.filter((project) =>
       project.projectId === wanted
       || (path.isAbsolute(wanted) && samePathOnPlatform(project.rootPath, wanted)));
-    if (exact.length === 1) return found(exact[0]!);
-    const named = projects.filter((project) =>
+    if (exact.length === 1) return folderExists(exact[0]!.rootPath) ? found(exact[0]!) : gone(exact[0]!);
+    const named = all.filter((project) =>
       project.displayName.toLowerCase() === lower || path.basename(project.rootPath).toLowerCase() === lower);
-    if (named.length === 1) return found(named[0]!);
-    const known = projects.map((project) => project.displayName).join(", ") || "none";
-    return named.length > 1
-      ? { error: `More than one project is called "${wanted}". Pass its id or path instead (see ["projects","list","--text"]).` }
-      : { error: `No project "${wanted}" on this computer. Projects: ${known}.` };
+    const live = named.filter((project) => folderExists(project.rootPath));
+    if (live.length === 1) return found(live[0]!);
+    if (live.length > 1) {
+      return {
+        error: `More than one project is called "${wanted}": ${live.map(describeCandidate).join("; ")}. Pass its id or path as \`project\`.`,
+      };
+    }
+    if (named.length > 0) return gone(named[0]!);
+    const known = liveProjects().map((project) => project.displayName).join(", ") || "none";
+    return { error: `No project "${wanted}" on this computer. Projects: ${known}. A new repository can be added with projects_clone.` };
   };
 
   // ── MCP ───────────────────────────────────────────────────────────────────
@@ -385,6 +427,17 @@ export function createRemoteMcpProtocol(deps: {
     }
     const answered = (typed?.okExitCodes ?? [0]).includes(result.exitCode ?? -1);
     const outcome: RemoteMcpActivityOutcome = result.timedOut ? "timeout" : answered ? "ok" : "failed";
+    // `ade help` once ran past a minute on a computer where it takes half a
+    // second; a slow run says where its time went.
+    if (result.timedOut || (result.durationMs > SLOW_RUN_MS && !typed?.timeoutMs)) {
+      deps.warn?.("remote_mcp.slow_run", {
+        command: loggedCommand,
+        durationMs: result.durationMs,
+        launchMs: result.launchMs ?? null,
+        timedOut: result.timedOut,
+        exitCode: result.exitCode,
+      });
+    }
     deps.record({ ...logged, outcome, exitCode: result.exitCode, durationMs: result.durationMs });
     const headLine = projectLine(resolved);
     if (typed) return buildTypedToolResult(typed, input, result, { headLine, project: projectSummary(resolved) });
@@ -702,23 +755,27 @@ export function createRemoteMcpProtocol(deps: {
 
   const machinesListResult = async (logBase: ActivityBase): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const machines = (await deps.machines.roster()).map((machine) => ({
+    const roster = await deps.machines.roster();
+    const machines = roster.map((machine) => ({
       name: machine.name,
       key: machine.machineKey,
       online: machine.online,
       included: machine.included,
-      serving: machine.serving,
+      // null: its ADE never reported, so whether it serves is unknown.
+      serving: machine.servingKnown ? machine.serving : null,
+      notServingReason: machine.notServingReason,
+      reportedAt: machine.reportedAt,
       supported: machine.supported,
       isThisMachine: machine.isThisMachine,
     }));
     deps.record({ ...logBase, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
-    const describe = (machine: (typeof machines)[number]) => [
+    const describe = (machine: (typeof roster)[number]) => [
       machine.isThisMachine ? `${machine.name} (answering)` : machine.name,
       machine.online === null ? "online unknown" : machine.online ? "online" : "offline",
-      !machine.supported ? "not joined yet (open the latest ADE on it)" : !machine.included ? "left out" : machine.serving ? "serving" : "not serving",
+      rosterStateWords(machine),
     ].join(" · ");
     return {
-      content: [{ type: "text", text: machines.map(describe).join("\n") || "No computers found." }],
+      content: [{ type: "text", text: roster.map(describe).join("\n") || "No computers found." }],
       structuredContent: { view: MACHINES_TOOL_NAME, machines },
       isError: false,
     };
@@ -736,7 +793,7 @@ export function createRemoteMcpProtocol(deps: {
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,
     title: "List computers",
-    description: "The computers on this ADE account: online, included, serving, and which one is answering.",
+    description: "The computers on this ADE account: online, serving or why not, and which one answers.",
     inputSchema: { type: "object", properties: {} as Record<string, unknown> },
     annotations: { readOnlyHint: true, openWorldHint: false },
   });

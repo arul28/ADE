@@ -1475,7 +1475,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-mcp.server",
     label: "ADE MCP: let AI apps use ADE",
-    keywords: ["mcp", "ade mcp", "remote", "server", "url", "claude.ai", "chatgpt", "claude code", "cursor", "vs code", "grok", "connector", "oauth", "relay", "ai apps"],
+    keywords: ["mcp", "ade mcp", "remote", "server", "url", "address", "connector", "oauth", "relay", "ai apps", "turn on"],
     tab: "ade-mcp",
     anchor: "ade-mcp",
     scope: "account",
@@ -1485,9 +1485,19 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "ADE MCP",
   },
   {
+    id: "ade-mcp.connect",
+    label: "Connect an AI app to ADE",
+    keywords: ["mcp", "connect", "setup", "custom connector", "claude.ai", "chatgpt", "claude code", "codex", "grok", "grok bot", "cursor", "vs code", "copilot", "gemini", "perplexity", "le chat", "windsurf", "zed", "goose", "opencode", "amp", "factory", "raycast", "xai api", "openai api"],
+    tab: "ade-mcp",
+    anchor: "ade-mcp-connect",
+    scope: "account",
+    web: "hidden",
+    group: "ADE MCP",
+  },
+  {
     id: "ade-mcp.computers",
     label: "Computers AI apps can reach",
-    keywords: ["mcp", "machines", "include", "leave out", "exclude", "mac mini", "online"],
+    keywords: ["mcp", "machines", "computers", "include", "leave out", "exclude", "online", "answering", "not answering", "offline"],
     tab: "ade-mcp",
     anchor: "ade-mcp-computers",
     scope: "account",
@@ -1497,7 +1507,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "ade-mcp.connections",
     label: "Connected AI apps and tokens",
-    keywords: ["mcp", "token", "bearer", "revoke", "disconnect", "read only", "access", "apps"],
+    keywords: ["mcp", "token", "api key", "header", "bearer", "revoke", "disconnect", "read only", "read & write", "access", "apps"],
     tab: "ade-mcp",
     anchor: "ade-mcp-connections",
     scope: "account",

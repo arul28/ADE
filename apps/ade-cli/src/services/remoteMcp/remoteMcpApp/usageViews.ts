@@ -51,6 +51,11 @@ function usageAccount(a: UsageLimitsAccount): HTMLElement {
   }
   return box;
 }
+/** Why a computer does not serve, in a tag's few words (RemoteMcpNotServingReason). */
+const NOT_SERVING_TAGS: Record<string, string> = {
+  off_for_account: "off", left_out: "left out", signed_out: "signed out", relay_disconnected: "relay down",
+  account_vault_unreachable: "vault can't sync", waiting_for_account_secret: "setting up", older_ade: "update ADE", offline: "offline",
+};
 /** `machines_list`: `{ machines: MachineRow[] }`, with no project. */
 export function viewMachines(sc: Json): HTMLElement {
   const machines = rows<MachineRow>(sc.machines);
@@ -64,7 +69,9 @@ export function viewMachines(sc: Json): HTMLElement {
       m.isThisMachine === true ? h("span", { cls: "tag", "data-t": "accent" }, "this computer") : null,
       m.supported === false ? h("span", { cls: "tag", "data-t": "warn" }, "update ADE")
         : m.included === false ? h("span", { cls: "tag", "data-t": "warn" }, "left out")
-        : m.serving === true ? h("span", { cls: "tag", "data-t": "ok" }, "serving") : h("span", { cls: "tag" }, "not serving"));
+        : m.serving === true ? h("span", { cls: "tag", "data-t": "ok" }, "serving")
+        : m.serving === null ? h("span", { cls: "tag" }, "serving unknown")
+        : h("span", { cls: "tag", "data-t": "warn" }, NOT_SERVING_TAGS[str(m.notServingReason) ?? ""] ?? "not serving"));
   });
   return frame(NO_SCOPE, "Computers", machines.length, listBody(items, 20, "No computers on this account."));
 }

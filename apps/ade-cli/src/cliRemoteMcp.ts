@@ -133,24 +133,51 @@ function scopeLabel(value: unknown): string {
   return value === "read" ? "read only" : "read & write";
 }
 
+/** Why a computer does not serve, in words (RemoteMcpNotServingReason). */
+const NOT_SERVING_WORDS: Record<string, string> = {
+  off_for_account: "off for the account",
+  left_out: "left out",
+  signed_out: "not serving: signed out of ADE",
+  relay_disconnected: "not serving: not connected to ADE Relay",
+  account_vault_unreachable: "not serving: its account vault can't sync, so it has no ADE MCP key",
+  waiting_for_account_secret: "not serving yet: waiting for the account's ADE MCP key",
+  older_ade: "not joined yet: update ADE on it",
+  offline: "offline",
+};
+
 function machineLine(machine: Record<string, unknown>): string {
   const name = `${String(machine.name)}${machine.isThisMachine === true ? " (this computer)" : ""}`;
   const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
+  const reason = typeof machine.notServingReason === "string" ? machine.notServingReason : null;
+  // Another computer that never reported runs an ADE from before reports: its state is a guess.
+  const unreported = machine.isThisMachine !== true && machine.reportedAt == null;
   const state = machine.supported !== true
-    ? "not joined yet: open the latest ADE on it"
-    : machine.included === false
-      ? "left out"
-      : machine.serving === true ? "serving" : "not serving";
-  return `  ${name}  ${online}  ${state}`;
+    ? NOT_SERVING_WORDS.older_ade
+    : machine.serving === true
+      ? unreported ? "serving unknown (its ADE doesn't report it; update ADE there)" : "serving"
+      : (reason && NOT_SERVING_WORDS[reason]) || "not serving";
+  const reported = !unreported && machine.isThisMachine !== true && typeof machine.reportedAt === "string"
+    ? `  (as of ${machine.reportedAt})`
+    : "";
+  return `  ${name}  ${online}  ${state}${reported}`;
+}
+
+function vaultLine(vault: Record<string, unknown>): string {
+  const synced = typeof vault.lastSyncedAt === "string" ? `last synced ${vault.lastSyncedAt}` : "never synced";
+  const pending = typeof vault.pendingChanges === "number" && vault.pendingChanges > 0 ? `, ${vault.pendingChanges} waiting to upload` : "";
+  const state = vault.state === "ok" ? "ok" : vault.state === "failing" ? "FAILING" : "unavailable";
+  const message = typeof vault.message === "string" && vault.message ? `\n  ${vault.message}` : "";
+  return `Account vault on this computer: ${state} (${synced}${pending})${message}`;
 }
 
 function connectionLine(connection: Record<string, unknown>): string {
   const kind = connection.kind === "token" ? "token" : "app";
   const host = typeof connection.redirectHost === "string" && connection.redirectHost ? ` (${connection.redirectHost})` : "";
+  const app = typeof connection.app === "string" ? ` [${connection.app}]` : "";
   const used = typeof connection.lastUsedAt === "string" ? `last used ${connection.lastUsedAt}` : "never used";
   const hint = typeof connection.tokenHint === "string" && connection.tokenHint ? ` …${connection.tokenHint}` : "";
   const only = isRecord(connection.onlyMachine) ? `  ${String(connection.onlyMachine.name)} only` : "";
-  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
+  return `  ${String(connection.id)}  ${String(connection.label)}${host}${app}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
 }
 
 /** `--text` output for every `ade mcp` result. */
@@ -191,8 +218,9 @@ export function formatRemoteMcpResult(value: unknown): string {
     const thisServing = result.thisMachineServing === true;
     const lines = [
       `ADE MCP for your ADE account: ${accountOn ? "ON" : "off"}`,
-      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not available yet (this computer has no relay address)" : "made when you turn it on"}`,
+      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not on this computer yet (no relay address, or the account's ADE MCP key hasn't arrived: see below)" : "made when you turn it on"}`,
       `This computer (${String(result.machineName)}): ${thisServing ? "serving" : "not serving"}, relay ${result.relayConnected === true ? "connected" : "not connected"}`,
+      ...(isRecord(result.vault) ? [vaultLine(result.vault)] : []),
     ];
     const machines = Array.isArray(result.machines) ? result.machines.filter(isRecord) : [];
     if (machines.length) {

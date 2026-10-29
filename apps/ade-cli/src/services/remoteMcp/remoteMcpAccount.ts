@@ -1,4 +1,5 @@
 import { createHmac, randomBytes } from "node:crypto";
+import type { RemoteMcpNotServingReason } from "../../../../desktop/src/shared/types/remoteMcp";
 import type { AccountSettingsStore } from "../account/accountSettingsStore";
 
 /**
@@ -53,11 +54,21 @@ export function deriveRemoteMcpAccountKey(secret: string): string {
   return createHmac("sha256", Buffer.from(secret, "utf8")).update("ade-mcp-account", "utf8").digest("hex").slice(0, 40);
 }
 
+const NOT_SERVING_REASONS: ReadonlySet<string> = new Set<RemoteMcpNotServingReason>([
+  "off_for_account", "left_out", "signed_out", "relay_disconnected", "account_vault_unreachable",
+  "waiting_for_account_secret", "older_ade", "offline",
+]);
+
+export function isRemoteMcpNotServingReason(value: unknown): value is RemoteMcpNotServingReason {
+  return typeof value === "string" && NOT_SERVING_REASONS.has(value);
+}
+
 /**
- * One computer's entry. The owner writes name, endpointKey and version; any
- * computer may flip `included` from Settings, and the owner keeps it.
+ * One computer's entry. The owner writes name, endpointKey, version and its
+ * serving state; any computer may flip `included` from Settings, and the
+ * owner keeps it.
  */
-type RemoteMcpMachineEntry = {
+export type RemoteMcpMachineEntry = {
   machineKey: string;
   name: string;
   /** Empty when another computer excluded this one before it ever published. */
@@ -65,6 +76,12 @@ type RemoteMcpMachineEntry = {
   included: boolean;
   version: string;
   updatedAt: string;
+  /**
+   * What the owner last saw of itself: whether it answers ADE MCP and, when
+   * not, why. Null in an entry written before computers reported it (or a
+   * stub another computer wrote), so readers fall back to a guess.
+   */
+  reported: { serving: boolean; reason: RemoteMcpNotServingReason | null; at: string } | null;
 };
 
 function parseMachineEntry(machineKey: string, value: unknown): RemoteMcpMachineEntry | null {
@@ -80,6 +97,13 @@ function parseMachineEntry(machineKey: string, value: unknown): RemoteMcpMachine
     included: record.included !== false,
     version: typeof record.version === "string" ? record.version.slice(0, 40) : "",
     updatedAt: typeof record.updatedAt === "string" ? record.updatedAt : "",
+    reported: typeof record.serving === "boolean" && typeof record.reportedAt === "string"
+      ? {
+        serving: record.serving,
+        reason: record.serving ? null : isRemoteMcpNotServingReason(record.notServingReason) ? record.notServingReason : null,
+        at: record.reportedAt,
+      }
+      : null,
   };
 }
 
@@ -99,8 +123,12 @@ export function readRemoteMcpMachineEntry(settings: RemoteMcpSettings, machineKe
 }
 
 export function writeRemoteMcpMachineEntry(settings: RemoteMcpSettings, entry: RemoteMcpMachineEntry): boolean {
-  const { machineKey, ...value } = entry;
-  return settings.set(REMOTE_MCP_SETTINGS_SCOPE, remoteMcpMachineEntryKey(machineKey), value);
+  const { machineKey, reported, ...value } = entry;
+  return settings.set(REMOTE_MCP_SETTINGS_SCOPE, remoteMcpMachineEntryKey(machineKey), {
+    ...value,
+    // Flat fields, so an older reader keeps reading the rest unchanged.
+    ...(reported ? { serving: reported.serving, notServingReason: reported.reason, reportedAt: reported.at } : {}),
+  });
 }
 
 export function isRemoteMcpEnabledForAccount(settings: RemoteMcpSettings): boolean {

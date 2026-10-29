@@ -31,6 +31,67 @@ export type RemoteMcpConnectionSummary = {
    * keeps reaching only that computer; null reaches every included one.
    */
   onlyMachine: { machineKey: string; name: string } | null;
+  /**
+   * The app ADE recognised at sign-in (from the redirect address it used, not
+   * only the name it registered: Grok signs in with Cursor's client), so
+   * Settings can show its logo. Null for tokens and apps ADE does not know.
+   */
+  app: RemoteMcpKnownApp | null;
+};
+
+/** Apps ADE MCP has setup steps and a logo for. */
+export type RemoteMcpKnownApp =
+  | "claude"
+  | "claude-code"
+  | "chatgpt"
+  | "codex"
+  | "grok"
+  | "grok-bot"
+  | "cursor"
+  | "vscode"
+  | "gemini-cli"
+  | "perplexity"
+  | "le-chat"
+  | "windsurf"
+  | "zed"
+  | "goose"
+  | "opencode"
+  | "amp"
+  | "factory"
+  | "raycast";
+
+/**
+ * Why a computer does not answer ADE MCP. Each computer reports its own in its
+ * account entry, so every computer's Settings (and `machines_list`) can say
+ * the true reason instead of "Online".
+ */
+export type RemoteMcpNotServingReason =
+  /** ADE MCP is off for the account. */
+  | "off_for_account"
+  /** The person left this computer out. */
+  | "left_out"
+  /** The computer is signed out of its ADE account. */
+  | "signed_out"
+  /** It has no ADE Relay identity yet, or its relay connection is down. */
+  | "relay_disconnected"
+  /** Its account vault can't sync, so it never received the account secret. */
+  | "account_vault_unreachable"
+  /** On, but the account secret has not reached it yet. */
+  | "waiting_for_account_secret"
+  /** Runs an ADE that can't take account calls. */
+  | "older_ade"
+  /** The account directory shows it offline. */
+  | "offline";
+
+/** This computer's account vault sync, which ADE MCP (and every synced secret) depends on. */
+export type RemoteMcpVaultHealth = {
+  state: "ok" | "failing" | "unavailable";
+  /** Last time a full sync (upload and pull) finished. */
+  lastSyncedAt: string | null;
+  /** Local changes still waiting to upload. */
+  pendingChanges: number;
+  /** One plain sentence for the person when not ok; null when ok. */
+  message: string | null;
 };
 
 /** One of the account's computers, as ADE MCP sees it. */
@@ -46,8 +107,15 @@ export type RemoteMcpMachine = {
   supported: boolean;
   /** From the account directory; null when it could not be read. */
   online: boolean | null;
-  /** On, included, joined and not known to be offline: it can answer calls. */
+  /**
+   * It answers calls. For this computer, its live state; for another one, the
+   * state it last reported in its account entry (and false when offline).
+   */
   serving: boolean;
+  /** Why it does not answer; null when it serves. */
+  notServingReason: RemoteMcpNotServingReason | null;
+  /** When that computer last reported its serving state; null if it never has. */
+  reportedAt: string | null;
   isThisMachine: boolean;
 };
 
@@ -65,6 +133,8 @@ export type RemoteMcpStatus = {
   thisMachineServing: boolean;
   machines: RemoteMcpMachine[];
   connections: RemoteMcpConnectionSummary[];
+  /** This computer's account vault sync. */
+  vault: RemoteMcpVaultHealth;
 };
 
 export type RemoteMcpCreatedToken = {

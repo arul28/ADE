@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import fs from "node:fs";
 import path from "node:path";
+import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/shared/processExecution";
 import { signalChildProcessTree, terminateChildProcessTree } from "../../../../desktop/src/main/services/shared/utils";
 
 /**
@@ -27,22 +29,68 @@ export type RemoteRunResult = {
   timedOut: boolean;
   truncated: boolean;
   durationMs: number;
+  /** Of `durationMs`, how long finding the CLI and building its environment took. */
+  launchMs?: number;
 };
 
 type Launch = { command: string; prefixArgs: string[]; env: NodeJS.ProcessEnv };
 
 let cachedLaunch: { at: number; launch: Launch } | null = null;
 
+function isFile(candidate: string): boolean {
+  try {
+    return fs.statSync(candidate).isFile();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The CLI this brain runs, as an absolute path to a file that exists now.
+ * Tried in order: the standalone runtime's own executable, the entry the
+ * agent environment resolved, its `ade` shim, this process's script, and the
+ * standalone `ade` in the ADE home. The agent environment alone came back
+ * empty on a brain an update had moved (the activity log's "could not find
+ * its own ade command"); the brain's own script and the standalone binary
+ * still answer then.
+ */
+function resolveCliEntry(env: NodeJS.ProcessEnv, isEmbedded: boolean, adeDir: string | null): { entry: string | null; tried: string[] } {
+  const script = typeof process.argv[1] === "string" && process.argv[1].trim() ? path.resolve(process.argv[1].trim()) : "";
+  const candidates = [
+    isEmbedded ? process.execPath : "",
+    env.ADE_CLI_ENTRY_PATH?.trim() ?? "",
+    env.ADE_CLI_PATH?.trim() ?? "",
+    /\.(?:cjs|mjs|js)$/i.test(script) ? script : "",
+    adeDir ? path.join(adeDir, "bin", process.platform === "win32" ? "ade.exe" : "ade") : "",
+  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+  const entry = candidates.find((candidate) => path.isAbsolute(candidate) && isFile(candidate)) ?? null;
+  return { entry, tried: candidates };
+}
+
 async function resolveLaunch(): Promise<Launch> {
-  if (cachedLaunch && Date.now() - cachedLaunch.at < ENV_CACHE_MS) return cachedLaunch.launch;
-  const [{ createHeadlessAdeCliAgentEnv }, { resolveAdeCliShimBrain, packagedCliNodeModulePaths }] = await Promise.all([
+  // An update can replace the files under a cached launch: check it still exists.
+  if (cachedLaunch && Date.now() - cachedLaunch.at < ENV_CACHE_MS && isFile(cachedLaunch.launch.prefixArgs[0] ?? cachedLaunch.launch.command)) {
+    return cachedLaunch.launch;
+  }
+  cachedLaunch = null;
+  const [{ createHeadlessAdeCliAgentEnv }, { resolveAdeCliShimBrain, packagedCliNodeModulePaths }, { resolveMachineAdeLayout }] = await Promise.all([
     import("../../bootstrap"),
     import("../runtime/adeCliShim"),
+    import("../projects/machineLayout"),
   ]);
   const env = createHeadlessAdeCliAgentEnv(process.env);
-  const entry = env.ADE_CLI_ENTRY_PATH?.trim() || env.ADE_CLI_PATH?.trim() || "";
-  if (!entry || !path.isAbsolute(entry)) {
-    throw new Error("This computer's ADE could not find its own ade command.");
+  let adeDir: string | null = null;
+  try {
+    adeDir = resolveMachineAdeLayout().adeDir;
+  } catch {
+    adeDir = null;
+  }
+  const { entry, tried } = resolveCliEntry(env, isEmbeddedAdeRuntime(), adeDir);
+  if (!entry) {
+    throw new Error(
+      `This computer's ADE could not find its own ade command (looked at ${tried.join(", ") || "nothing"}). `
+      + "Restarting ADE on it usually fixes this.",
+    );
   }
   // What the shim would set: the brain this process is, unless already named.
   const brain = resolveAdeCliShimBrain(process.env);
@@ -102,7 +150,9 @@ export async function runAdeForRemote(args: {
   /** Per-stream cap. Typed tools raise it, then trim the parsed JSON themselves. */
   maxOutputBytes?: number;
 }): Promise<RemoteRunResult> {
+  const launchStarted = Date.now();
   const launch = await resolveLaunch();
+  const launchMs = Date.now() - launchStarted;
   const started = Date.now();
   const timeoutMs = Math.max(1_000, Math.min(MAX_TIMEOUT_MS, args.timeoutMs));
   const maxOutputBytes = args.maxOutputBytes ?? MAX_OUTPUT_BYTES;
@@ -187,7 +237,8 @@ export async function runAdeForRemote(args: {
         stderr: spawnError ? `Could not start ade: ${spawnError.message}` : Buffer.concat(err).toString("utf8"),
         timedOut,
         truncated,
-        durationMs: Date.now() - started,
+        durationMs: Date.now() - started + launchMs,
+        launchMs,
       });
     };
     child.on("error", (error) => finish(null, error));

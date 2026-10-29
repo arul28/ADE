@@ -30,7 +30,11 @@ export type Envelope = { project: ProjectRef | null; result: unknown; next?: str
 /** `machine: "all"`: one row per computer; `result` is that computer's Envelope. */
 export type FanOutRow = { machine: MachineRef; ok: boolean; result?: Envelope; error?: string };
 export type MachineRow = {
-  name: string; key: string; online: boolean | null; included: boolean; serving: boolean; supported: boolean; isThisMachine: boolean;
+  name: string; key: string; online: boolean | null; included: boolean; supported: boolean; isThisMachine: boolean;
+  /** null when the computer's ADE never reported it. */
+  serving: boolean | null;
+  /** Why it does not serve (RemoteMcpNotServingReason); null when it does or nobody knows. */
+  notServingReason?: string | null;
 };
 export type ChatRow = {
   sessionId: string; laneId?: string | null; title?: string | null; provider?: string; model?: string | null;

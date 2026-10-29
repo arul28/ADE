@@ -1,11 +1,20 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { getErrorMessage } from "../../../../desktop/src/main/services/shared/utils";
-import type { RemoteMcpConnectionSummary, RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
+import type {
+  RemoteMcpConnectionSummary,
+  RemoteMcpKnownApp,
+  RemoteMcpScope,
+} from "../../../../desktop/src/shared/types/remoteMcp";
 import { AccountAttestationError, verifyClerkAccountAttestation } from "../account/accountAttestationVerifier";
 import type { AccountAttestationConfig } from "../account/sharedAccountAuthService";
 import {
+  createRemoteMcpReplayGuard,
+  describeNetworkError,
+  fetchThroughRelayWithRetry,
   header,
   json,
+  REMOTE_MCP_CALL_ID_HEADER,
+  requestCallId,
   withoutTrailingSlash,
   type RemoteMcpHttpRequest,
   type RemoteMcpHttpResponse,
@@ -13,6 +22,7 @@ import {
 } from "./remoteMcpHttp";
 import {
   AUTHORIZE_PAGE_HEADERS,
+  authorizeAppName,
   buildRedirect,
   createRemoteMcpAuthorizationState,
   decodeClientId,
@@ -26,6 +36,7 @@ import {
   verifyPkce,
   type AuthorizeRequest,
   type SignedInAccount,
+  type SignInTarget,
 } from "./remoteMcpOAuth";
 import { REMOTE_MCP_KEY_PATTERN } from "./remoteMcpAccount";
 import { REMOTE_MCP_VIA_HEADER, encodeViaHeader } from "./remoteMcpForward";
@@ -49,6 +60,8 @@ const SIGN_IN_ISSUER_TTL_MS = 15 * 60_000;
 const MAX_SIGN_IN_ISSUERS = 64;
 const ACCOUNT_CODE_EXCHANGE_TIMEOUT_MS = 10_000;
 const TOKEN_FORWARD_TIMEOUT_MS = 15_000;
+/** A forwarded token exchange that is retried within this long gets the first one's answer. */
+const TOKEN_REPLAY_TTL_MS = 2 * 60_000;
 
 function html(status: number, body: string): RemoteMcpHttpResponse {
   return { status, headers: { ...AUTHORIZE_PAGE_HEADERS }, body };
@@ -77,6 +90,8 @@ function parseForm(request: RemoteMcpHttpRequest): URLSearchParams {
 
 export function createRemoteMcpOAuthRoutes(deps: {
   machineName: () => string;
+  /** The computers an app on the account address reaches, by name, for the sign-in pages. */
+  accountMachineNames: () => string[];
   account: RemoteMcpAccountAccess;
   relayEndpoint: () => RemoteMcpRelayEndpoint | null;
   /** `https://<relay>/m/<endpointKey>`: this computer only, where its pending sign-ins live. */
@@ -86,7 +101,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
     label: string;
     scope: RemoteMcpScope;
     redirectHost: string;
+    app: RemoteMcpKnownApp | null;
     clientKey: string;
+    legacyClientKey: string;
   }) => { token: string; connection: RemoteMcpConnectionSummary };
   logger?: { warn?: (event: string, data?: Record<string, unknown>) => void };
   fetchImpl?: typeof fetch;
@@ -96,15 +113,23 @@ export function createRemoteMcpOAuthRoutes(deps: {
 
   // A web sign-in can begin on the account address but always comes back to
   // this computer (the Clerk state names its endpoint key). The `iss` an app
-  // gets back must be the issuer it started with, so remember it per sign-in.
-  const signInIssuers = new Map<string, { issuer: string; at: number }>();
-  const rememberIssuer = (nonce: string, issuer: string): void => {
+  // gets back must be the issuer it started with, and the allow page must say
+  // what it grants (the account or this computer), so remember both per sign-in.
+  const signInIssuers = new Map<string, { issuer: string; accountMount: boolean; at: number }>();
+  const rememberIssuer = (nonce: string, issuer: string, accountMount: boolean): void => {
     for (const [key, value] of signInIssuers) {
       if (deps.now() - value.at > SIGN_IN_ISSUER_TTL_MS || signInIssuers.size >= MAX_SIGN_IN_ISSUERS) signInIssuers.delete(key);
     }
-    signInIssuers.set(nonce, { issuer, at: deps.now() });
+    signInIssuers.set(nonce, { issuer, accountMount, at: deps.now() });
   };
   const issuerFor = (nonce: string, fallback: string): string => signInIssuers.get(nonce)?.issuer ?? fallback;
+
+  const signInTarget = (accountMount: boolean): SignInTarget => (accountMount
+    ? { kind: "account", machineNames: deps.accountMachineNames() }
+    : { kind: "machine", name: deps.machineName() });
+
+  // A forwarded token exchange the sender retried: answered once.
+  const tokenReplays = createRemoteMcpReplayGuard<RemoteMcpHttpResponse>({ ttlMs: TOKEN_REPLAY_TTL_MS, now: deps.now });
 
   const protectedResourceMetadata = (serverBase: string, accountMount: boolean) => ({
     resource: `${serverBase}/mcp`,
@@ -146,7 +171,12 @@ export function createRemoteMcpOAuthRoutes(deps: {
     }));
 
   // Step 1: the app sends the person here; "Continue with ADE" starts the ADE sign-in.
-  const handleAuthorize = (request: RemoteMcpHttpRequest, query: URLSearchParams, serverBase: string): RemoteMcpHttpResponse => {
+  const handleAuthorize = (
+    request: RemoteMcpHttpRequest,
+    query: URLSearchParams,
+    serverBase: string,
+    accountMount: boolean,
+  ): RemoteMcpHttpResponse => {
     const isPost = request.method === "POST";
     if (!isPost && request.method !== "GET") return json(405, { error: "Method not allowed." });
     const params = isPost ? parseForm(request) : query;
@@ -173,13 +203,14 @@ export function createRemoteMcpOAuthRoutes(deps: {
       : !ready
         ? `${machineName} can't check ADE sign-ins right now. Update ADE on it, then try again.`
         : null;
-    if (!isPost) return html(200, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
+    const target = signInTarget(accountMount);
+    if (!isPost) return html(200, renderSignInPage({ request: authRequest, target, error: unavailable }));
     if (params.get("decision") === "deny") return denyToApp(authRequest, serverBase);
     if (unavailable || !ready) {
-      return html(409, renderSignInPage({ request: authRequest, machineName, error: unavailable }));
+      return html(409, renderSignInPage({ request: authRequest, target, error: unavailable }));
     }
     const { nonce, accountChallenge } = authorization.beginSignIn(authRequest);
-    rememberIssuer(nonce, serverBase);
+    rememberIssuer(nonce, serverBase, accountMount);
     const signIn = new URL(`${withoutTrailingSlash(ready.oauth.issuer)}/oauth/authorize`);
     signIn.searchParams.set("response_type", "code");
     signIn.searchParams.set("client_id", ready.oauth.clientId);
@@ -254,7 +285,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
     if (!csrf) return expiredSignIn();
     return html(200, renderConsentPage({
       request: authRequest,
-      machineName: deps.machineName(),
+      target: signInTarget(signInIssuers.get(nonce)?.accountMount ?? false),
       account: owner,
       nonce,
       csrf,
@@ -280,7 +311,8 @@ export function createRemoteMcpOAuthRoutes(deps: {
       redirectUri: authRequest.redirectUri,
       codeChallenge: authRequest.codeChallenge,
       scope,
-      clientName: authRequest.client.clientName,
+      clientName: authorizeAppName(authRequest),
+      app: authRequest.app,
     });
     // The code names this computer, which holds it: if the relay sends the
     // app's token request to another computer, that one hands it back here.
@@ -289,33 +321,52 @@ export function createRemoteMcpOAuthRoutes(deps: {
     return redirect(buildRedirect(authRequest.redirectUri, { code, state: authRequest.state, iss: issuer }));
   };
 
-  /** Sends a token request for a code another computer issued to that computer, once. */
+  /**
+   * Sends a token request for a code another computer issued to that
+   * computer. One hop; retried once when the connection drops before an
+   * answer, with a call id so the holder redeems the code once.
+   */
   const forwardToken = async (request: RemoteMcpHttpRequest, endpointKey: string): Promise<RemoteMcpHttpResponse> => {
     const endpoint = deps.relayEndpoint();
     if (!endpoint || header(request, REMOTE_MCP_VIA_HEADER)) {
       return json(400, { error: "invalid_grant", error_description: "The authorization code is unknown, used, or expired." });
     }
     try {
-      const response = await (deps.fetchImpl ?? fetch)(`${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpointKey}/oauth/token`, {
+      const response = await fetchThroughRelayWithRetry(deps.fetchImpl ?? fetch, `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpointKey}/oauth/token`, {
         method: "POST",
         headers: {
           "content-type": header(request, "content-type") || "application/x-www-form-urlencoded",
           accept: "application/json",
           "user-agent": "ADE MCP",
           [REMOTE_MCP_VIA_HEADER]: encodeViaHeader(deps.machineName()),
+          [REMOTE_MCP_CALL_ID_HEADER]: randomUUID(),
         },
         body: request.body ?? "",
-        signal: AbortSignal.timeout(TOKEN_FORWARD_TIMEOUT_MS),
-      });
+      }, TOKEN_FORWARD_TIMEOUT_MS);
       return json(response.status, await response.json().catch(() => ({ error: "server_error" })));
     } catch (error) {
       deps.logger?.warn?.("remote_mcp.token_forward_failed", { error: getErrorMessage(error) });
-      return json(503, { error: "temporarily_unavailable", error_description: "The computer that holds this sign-in didn't answer. Connect again." });
+      return json(503, {
+        error: "temporarily_unavailable",
+        error_description: `${describeNetworkError(error, "the computer that holds this sign-in")} If it keeps failing, connect again.`,
+      });
     }
   };
 
   const handleToken = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
     if (request.method !== "POST") return json(405, { error: "invalid_request" });
+    // A token request another computer forwarded and retried: the code is
+    // single use, so the retry gets the first exchange's answer. Keyed by the
+    // body too, so a call id never answers a different request.
+    const callId = header(request, REMOTE_MCP_VIA_HEADER) ? requestCallId(request) : null;
+    if (callId) {
+      const key = `${callId}:${createHash("sha256").update(request.body ?? "", "utf8").digest("hex")}`;
+      return await tokenReplays.run(key, () => exchangeToken(request));
+    }
+    return await exchangeToken(request);
+  };
+
+  const exchangeToken = async (request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse> => {
     const params = parseForm(request);
     const fail = (error: string, description: string, status = 400) =>
       json(status, { error, error_description: description });
@@ -344,7 +395,10 @@ export function createRemoteMcpOAuthRoutes(deps: {
         label: pending.clientName,
         scope: pending.scope,
         redirectHost: redirectDisplayHost(pending.redirectUri),
-        clientKey: createHash("sha256").update(pending.clientId, "utf8").digest("hex"),
+        app: pending.app?.app ?? null,
+        // The registration and the return address: one registration can serve several apps.
+        clientKey: createHash("sha256").update(`${pending.clientId}\n${pending.redirectUri}`, "utf8").digest("hex"),
+        legacyClientKey: createHash("sha256").update(pending.clientId, "utf8").digest("hex"),
       });
     } catch (error) {
       return fail("invalid_request", getErrorMessage(error));
@@ -396,7 +450,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
         case "/oauth/register":
           return handleRegister(request);
         case "/oauth/authorize":
-          return handleAuthorize(request, query, serverBase);
+          return handleAuthorize(request, query, serverBase, accountMount);
         case "/oauth/account-callback":
           return await handleAccountCallback(query, serverBase);
         case "/oauth/consent":

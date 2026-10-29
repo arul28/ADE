@@ -1441,10 +1441,14 @@ function browserMockFlag(name: string): boolean {
 }
 
 /**
- * ADE MCP (Settings → You → ADE MCP). `?mockAdeMcp=off|signedout|error`
- * stages the other states; with no value the account has it on, three
- * computers (one offline, one on an older ADE) and a few connections. Writes
- * change this in-memory copy, so the page's toggles and token flow work.
+ * ADE MCP (Settings → You → ADE MCP). `?mockAdeMcp=` stages the page:
+ * - `on` (default): three computers, two answering and one on an older ADE,
+ *   and connections from several apps plus a token;
+ * - `all`: every computer answering; `empty`: on, with no connections;
+ * - `reasons`: one computer for each reason a computer may not answer;
+ * - `vault`: this computer's account sync failing;
+ * - `off`, `signedout`, `error`.
+ * Writes change this in-memory copy, so the page's toggles and token flow work.
  */
 const browserMockRemoteMcp = (() => {
   const mode = (() => {
@@ -1454,27 +1458,94 @@ const browserMockRemoteMcp = (() => {
       return "on";
     }
   })();
+  const on = mode !== "off" && mode !== "signedout";
   const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
   const serverUrl = "https://relay.ade.dev/a/3f9c2a71d04e8b6655c1e0a9f7d2b3c4a5e6f708/mcp";
+  const connection = (
+    id: string,
+    label: string,
+    app: RemoteMcpConnectionSummary["app"],
+    redirectHost: string | null,
+    scope: RemoteMcpConnectionSummary["scope"],
+    lastUsedMinutes: number | null,
+    extra: Partial<RemoteMcpConnectionSummary> = {},
+  ): RemoteMcpConnectionSummary => ({
+    id,
+    kind: redirectHost ? "app" : "token",
+    label,
+    scope,
+    tokenHint: id.toUpperCase().padEnd(4, "x").slice(0, 4),
+    createdAt: minutesAgo(9_000),
+    lastUsedAt: lastUsedMinutes == null ? null : minutesAgo(lastUsedMinutes),
+    redirectHost,
+    onlyMachine: null,
+    app,
+    ...extra,
+  });
   const connections: RemoteMcpConnectionSummary[] = [
-    { id: "c1", kind: "app", label: "Claude", scope: "write", tokenHint: "q8Zt", createdAt: minutesAgo(9_000), lastUsedAt: minutesAgo(4), redirectHost: "claude.ai", onlyMachine: null },
-    { id: "c2", kind: "app", label: "ChatGPT", scope: "read", tokenHint: "M2kd", createdAt: minutesAgo(6_000), lastUsedAt: minutesAgo(190), redirectHost: "chatgpt.com", onlyMachine: null },
-    { id: "c3", kind: "app", label: "Cursor", scope: "write", tokenHint: "7yPw", createdAt: minutesAgo(3_000), lastUsedAt: null, redirectHost: "cursor.com", onlyMachine: null },
-    { id: "c4", kind: "token", label: "Nightly script", scope: "read", tokenHint: "aT3f", createdAt: minutesAgo(20_000), lastUsedAt: minutesAgo(5_000), redirectHost: null, onlyMachine: { machineKey: "m-mini", name: "Mac mini" } },
+    connection("c1", "Claude", "claude", "claude.ai", "write", 4),
+    connection("c2", "ChatGPT", "chatgpt", "chatgpt.com", "read", 190),
+    connection("c3", "Grok Bot", "grok-bot", "www.cursor.com", "write", 12),
+    connection("c4", "Cursor", "cursor", "localhost", "write", null),
+    connection("c5", "Claude Code", "claude-code", "localhost", "write", 2_900),
+    connection("c6", "Mystery MCP client", null, "agents.example.com", "read", 30_000),
+    connection("c7", "xAI API", null, null, "read", 45),
+    connection("c8", "Nightly script", null, null, "read", 5_000, { onlyMachine: { machineKey: "m-mini", name: "Mac mini" } }),
   ];
+  type Machine = RemoteMcpStatus["machines"][number];
+  const machine = (
+    machineKey: string,
+    name: string,
+    notServingReason: Machine["notServingReason"],
+    extra: Partial<Machine> = {},
+  ): Machine => ({
+    machineKey,
+    name,
+    included: notServingReason !== "left_out",
+    supported: notServingReason !== "older_ade",
+    online: notServingReason === "offline" ? false : true,
+    serving: notServingReason === null,
+    notServingReason,
+    reportedAt: minutesAgo(3),
+    isThisMachine: false,
+    ...extra,
+  });
+  const thisMachine = machine("m-this", "Arul's MacBook Pro", mode === "vault" ? "account_vault_unreachable" : on ? null : "off_for_account", { isThisMachine: true });
+  const machines: Machine[] = mode === "signedout" ? [] : mode === "reasons"
+    ? [
+      thisMachine,
+      machine("m-left", "Old iMac", "left_out"),
+      machine("m-signed", "Work laptop", "signed_out", { reportedAt: minutesAgo(600) }),
+      machine("m-relay", "Office desktop", "relay_disconnected", { reportedAt: minutesAgo(25) }),
+      machine("m-vault", "Mac mini", "account_vault_unreachable"),
+      machine("m-wait", "New MacBook Air", "waiting_for_account_secret", { reportedAt: minutesAgo(0) }),
+      machine("m-pc", "Studio PC", "older_ade", { reportedAt: null }),
+      machine("m-off", "Linux box", "offline", { reportedAt: minutesAgo(4_000) }),
+    ]
+    : [
+      thisMachine,
+      machine("m-mini", "Mac mini", on ? null : "off_for_account"),
+      mode === "all"
+        ? machine("m-pc", "Studio PC", null)
+        : machine("m-pc", "Studio PC", on ? "older_ade" : "off_for_account", { reportedAt: null }),
+    ];
   const status: RemoteMcpStatus = {
-    enabled: mode === "on",
+    enabled: on,
     signedIn: mode !== "signedout",
-    serverUrl: mode === "on" ? serverUrl : null,
+    serverUrl: on ? serverUrl : null,
     relayConnected: true,
     machineName: "Arul's MacBook Pro",
-    thisMachineServing: mode === "on",
-    machines: mode === "signedout" ? [] : [
-      { machineKey: "m-this", name: "Arul's MacBook Pro", included: true, supported: true, online: true, serving: mode === "on", isThisMachine: true },
-      { machineKey: "m-mini", name: "Mac mini", included: true, supported: true, online: false, serving: false, isThisMachine: false },
-      { machineKey: "m-pc", name: "Studio PC", included: true, supported: false, online: true, serving: false, isThisMachine: false },
-    ],
-    connections: mode === "on" ? connections : [],
+    thisMachineServing: thisMachine.serving,
+    machines,
+    connections: on && mode !== "empty" ? connections : [],
+    vault: mode === "vault"
+      ? {
+        state: "failing",
+        lastSyncedAt: minutesAgo(2_880),
+        pendingChanges: 3,
+        message: "This computer can't reach your account vault: the vault refused its key.",
+      }
+      : { state: "ok", lastSyncedAt: minutesAgo(1), pendingChanges: 0, message: null },
   };
   const activity: RemoteMcpActivityEntry[] = mode === "signedout" ? [] : [
     { at: minutesAgo(4), connectionId: "c1", label: "Claude", scope: "write", command: "chat inbox --json", outcome: "ok", exitCode: 0, durationMs: 412, tool: "inbox" },
@@ -1482,12 +1553,23 @@ const browserMockRemoteMcp = (() => {
     { at: minutesAgo(11), connectionId: "c1", label: "Claude", scope: "write", command: "chat respond 8f2c --approve", outcome: "ok", exitCode: 0, durationMs: 690, project: "ADE", tool: "chat_respond" },
     { at: minutesAgo(25), connectionId: "c2", label: "ChatGPT", scope: "read", command: "pr checks 1934", outcome: "ok", exitCode: 0, durationMs: 1_220, project: "ADE", via: "Mac mini" },
     { at: minutesAgo(31), connectionId: "c2", label: "ChatGPT", scope: "read", command: "lanes create fix-login", outcome: "refused", exitCode: null, durationMs: 3, detail: "Read-only connection." },
-    { at: minutesAgo(48), connectionId: "c4", label: "Nightly script", scope: "read", command: "usage limits --json", outcome: "timeout", exitCode: null, durationMs: 60_000 },
+    { at: minutesAgo(48), connectionId: "c8", label: "Nightly script", scope: "read", command: "usage limits --json", outcome: "timeout", exitCode: null, durationMs: 60_000 },
   ];
-  const servingOf = (machine: RemoteMcpStatus["machines"][number]): boolean =>
-    status.enabled && machine.included && machine.supported && machine.online !== false;
+  // Recompute from the reason each computer would have with the switch and
+  // its include as they are now; a reason that is not about either stays.
+  const settle = (machine: Machine) => {
+    const own = machine.notServingReason;
+    const sticky = own && own !== "off_for_account" && own !== "left_out" ? own : null;
+    machine.notServingReason = !status.enabled
+      ? "off_for_account"
+      : !machine.included
+        ? "left_out"
+        : sticky ?? (machine.supported ? (machine.online === false ? "offline" : null) : "older_ade");
+    machine.serving = machine.notServingReason === null;
+  };
   const snapshot = (): RemoteMcpStatus => ({
     ...status,
+    vault: { ...status.vault },
     machines: status.machines.map((machine) => ({ ...machine })),
     connections: status.connections.map((connection) => ({ ...connection })),
   });
@@ -1502,17 +1584,15 @@ const browserMockRemoteMcp = (() => {
         if (!status.signedIn) throw new Error("Sign in to your ADE account first.");
         status.enabled = args.enabled === true;
         status.serverUrl = status.enabled ? serverUrl : status.serverUrl;
-        status.thisMachineServing = status.enabled && (status.machines.find((m) => m.isThisMachine)?.included ?? true);
-        for (const machine of status.machines) {
-          machine.serving = servingOf(machine);
-        }
+        for (const machine of status.machines) settle(machine);
+        status.thisMachineServing = status.machines.find((m) => m.isThisMachine)?.serving ?? false;
         return snapshot();
       case "setMachineIncluded": {
         const machine = status.machines.find((m) => m.machineKey === args.machineKey);
         if (!machine) throw new Error("That computer isn't on your account.");
         machine.included = args.included === true;
-        machine.serving = servingOf(machine);
-        if (machine.isThisMachine) status.thisMachineServing = status.enabled && machine.included;
+        settle(machine);
+        if (machine.isThisMachine) status.thisMachineServing = machine.serving;
         return snapshot();
       }
       case "createToken": {
@@ -1527,6 +1607,7 @@ const browserMockRemoteMcp = (() => {
           lastUsedAt: null,
           redirectHost: null,
           onlyMachine: null,
+          app: null,
         };
         status.connections.push(connection);
         return { token, connection, serverUrl: status.serverUrl };

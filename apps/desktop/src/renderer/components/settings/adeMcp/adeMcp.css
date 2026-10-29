@@ -1,0 +1,354 @@
+/*
+ * Settings → You → ADE MCP. Built on the integration pages' frame
+ * (integrationPage.css: `.ade-ig-hero`, `.ade-ig-card`, steps and rows) in
+ * ADE's own violet, plus the app gallery, the setup sheet and the token
+ * dialog. Theme tokens only, apart from the hero's own banner colours.
+ */
+
+.ade-amcp-page { --ade-mcp-generic-tile: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+
+/* ── App logos: one rounded tile for every app ── */
+.ade-amcp-logo {
+  position: relative;
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 24%;
+  overflow: visible;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+/* The icon set's tile is clipped to the same corner radius. */
+.ade-amcp-logo > :first-child:not(.ade-amcp-logo-badge) { border-radius: 24% !important; overflow: hidden; }
+.ade-amcp-logo > img { border-radius: 0 !important; }
+.ade-amcp-logo-badge {
+  position: absolute;
+  right: -18%;
+  bottom: -18%;
+  display: inline-grid;
+  place-items: center;
+  border-radius: 999px;
+  color: #fff;
+  background: #2563EB;
+  box-shadow: 0 0 0 2px var(--color-card, var(--color-bg));
+}
+/* Dialogs portal outside the page, so they need the generic tile colour too. */
+.ade-amcp-dialog { --ade-mcp-generic-tile: color-mix(in srgb, var(--color-fg) 9%, transparent); --ig-accent: #8B7CF6; }
+
+/* ── Hero ── */
+.ade-amcp-hero {
+  background:
+    radial-gradient(55% 130% at 72% 10%, rgba(167, 139, 250, 0.42), transparent 62%),
+    radial-gradient(45% 120% at 0% 110%, rgba(56, 189, 248, 0.20), transparent 60%),
+    linear-gradient(120deg, #17123F 0%, #251A61 50%, #33227E 100%);
+}
+.ade-amcp-hero .ade-ig-hero-row { grid-template-columns: auto minmax(0, 1fr) minmax(260px, 360px); }
+.ade-amcp-hero .ade-ig-hero-tagline { max-width: 46ch; }
+
+/* App marks floating on the banner, between the name and the panel. */
+.ade-amcp-hero-art { position: absolute; inset: 0; z-index: 0; pointer-events: none; }
+.ade-amcp-hero-orbit {
+  position: absolute;
+  display: inline-grid;
+  padding: 5px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  opacity: 0.7;
+}
+.ade-amcp-hero-orbit[data-app="claude"] { right: calc(min(360px, 38%) + 150px); top: 22px; }
+.ade-amcp-hero-orbit[data-app="chatgpt"] { right: calc(min(360px, 38%) + 88px); top: 54px; opacity: 0.85; }
+.ade-amcp-hero-orbit[data-app="grok"] { right: calc(min(360px, 38%) + 160px); top: 104px; opacity: 0.6; }
+.ade-amcp-hero-orbit[data-app="cursor"] { right: calc(min(360px, 38%) + 60px); top: 126px; opacity: 0.55; }
+.ade-amcp-hero-orbit[data-app="claude-code"] { right: calc(min(360px, 38%) + 214px); top: 64px; opacity: 0.45; }
+
+.ade-amcp-page .ade-ig-chip[data-tone="crit"] > i { background: #EF4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.25); }
+.ade-amcp-page .ade-ig-chip[data-tone="off"] > i { background: rgba(255, 255, 255, 0.45); }
+
+.ade-amcp-hero-panel { gap: 8px; }
+.ade-amcp-hero-url { display: flex; align-items: flex-start; gap: 8px; min-width: 0; }
+.ade-amcp-hero-url > code {
+  flex: 1 1 auto;
+  min-width: 0;
+  font: 11.5px/1.45 var(--font-mono, ui-monospace, monospace);
+  overflow-wrap: anywhere;
+  user-select: all;
+  opacity: 0.95;
+}
+.ade-amcp-hero-panel > .ade-ig-hero-toggle {
+  margin: 4px -14px -14px;
+  padding: 10px 14px;
+  border-left: 0;
+  border-top: 1px solid rgba(255, 255, 255, 0.12);
+  justify-content: space-between;
+}
+
+/* ── Gallery ── */
+.ade-amcp-gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 10px;
+}
+.ade-amcp-app {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  min-width: 0;
+  padding: 11px 12px;
+  border-radius: 12px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+  background: color-mix(in srgb, var(--color-fg) 2%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 140ms ease, background 140ms ease, transform 160ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.ade-amcp-app:hover {
+  border-color: color-mix(in srgb, var(--ig-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 7%, transparent);
+  transform: translateY(-1px);
+}
+.ade-amcp-app:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-amcp-app[data-other="true"] { border-style: dashed; background: transparent; }
+@media (prefers-reduced-motion: reduce) { .ade-amcp-app { transition: none; } .ade-amcp-app:hover { transform: none; } }
+.ade-amcp-app-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1 1 auto; }
+.ade-amcp-app-text > b { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-amcp-app-text > small { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-app-caret { flex: none; color: var(--kit-text-3, var(--color-muted-fg)); transition: transform 140ms ease; }
+.ade-amcp-app:hover .ade-amcp-app-caret { transform: translateX(2px); color: var(--color-fg); }
+
+/* ── Rows (computers, connections) ── */
+.ade-amcp-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 18px;
+  min-width: 0;
+}
+.ade-amcp-row-main { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-amcp-row-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.ade-amcp-row-title > b { font-size: 13px; font-weight: 600; color: var(--color-fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-amcp-row-detail { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px; font-size: 12px; line-height: 1.45; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-row-detail-quiet { color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-row-detail-quiet > span + span::before { content: "·"; margin-right: 10px; }
+.ade-amcp-row-meta { font-size: 11px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-row-meta[data-tone="warn"] { color: var(--kit-warn, #B45309); }
+.ade-amcp-row-side { display: flex; align-items: center; gap: 8px; flex: none; }
+
+.ade-amcp-machine-icon {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: inline-grid;
+  place-items: center;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-amcp-machine[data-tone="ok"] .ade-amcp-machine-icon { color: var(--kit-ok, #16A34A); background: color-mix(in srgb, var(--kit-ok, #22C55E) 14%, transparent); }
+.ade-amcp-state { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--color-fg); white-space: nowrap; }
+.ade-amcp-state[data-tone="warn"] { color: var(--kit-warn, #B45309); }
+.ade-amcp-state[data-tone="crit"] { color: var(--kit-crit, #DC2626); }
+.ade-amcp-state[data-tone="neutral"] { color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-page .ade-ig-dot[data-tone="crit"] { background: #EF4444; box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.18); }
+
+/* Disconnect and Revoke take the same width, so the access switches line up. */
+.ade-amcp-remove { min-width: 88px; justify-content: center; }
+
+.ade-amcp-empty { padding: 14px 18px; font-size: 12px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 22px 12px 8px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+}
+.ade-amcp-empty-state > b { font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-amcp-empty-state > button { margin-top: 6px; }
+
+.ade-amcp-step-detail { margin: 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-step-detail code,
+.ade-amcp-note code,
+.ade-amcp-hint-text code,
+.ade-amcp-snippet-where code { font-family: var(--font-mono, ui-monospace, monospace); font-size: 11.5px; color: var(--color-fg); }
+
+/* ── Activity ── */
+.ade-amcp-activity-row {
+  display: grid;
+  grid-template-columns: 64px minmax(72px, 140px) minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 18px;
+  font-size: 12px;
+}
+.ade-amcp-activity-time { color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-activity-app,
+.ade-amcp-activity-cmd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-amcp-activity-hop { color: var(--kit-text-3, var(--color-muted-fg)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 140px; }
+.ade-amcp-activity-cmd { font-family: var(--font-mono, ui-monospace, monospace); color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-activity-more { align-self: flex-start; font-size: 12px; }
+
+/* ── Menu paths and snippets ── */
+.ade-amcp-path { display: inline; }
+.ade-amcp-path > span { white-space: nowrap; }
+.ade-amcp-path i { font-style: normal; margin: 0 4px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-path b { font-weight: 600; color: var(--color-fg); }
+
+.ade-amcp-snippet {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  min-width: 0;
+}
+.ade-amcp-snippet-caption { font-size: 10px; font-family: var(--font-mono, ui-monospace, monospace); letter-spacing: 0.08em; text-transform: uppercase; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-snippet-code {
+  margin: 0;
+  padding: 9px 86px 9px 11px;
+  border-radius: 9px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  font: 11.5px/1.5 var(--font-mono, ui-monospace, monospace);
+  color: var(--color-fg);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: all;
+  max-height: 220px;
+  overflow: auto;
+}
+.ade-amcp-snippet-code[data-secret="true"] { user-select: text; }
+.ade-amcp-snippet-copy { position: absolute; right: 6px; bottom: 6px; }
+.ade-amcp-snippet:not([data-multiline="true"]) .ade-amcp-snippet-copy { bottom: auto; top: 50%; transform: translateY(-50%); }
+.ade-amcp-snippet:not([data-multiline="true"]):has(.ade-amcp-snippet-caption) .ade-amcp-snippet-copy { top: auto; bottom: 5px; transform: none; }
+
+/* What ADE's sign-in page asks. */
+.ade-amcp-signin {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 4px;
+  padding: 9px 11px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--ig-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 7%, transparent);
+}
+.ade-amcp-signin-caption { font-size: 11.5px; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-signin-caption b { color: var(--color-fg); }
+.ade-amcp-signin-flow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-fg); }
+.ade-amcp-signin-flow > span {
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-card, var(--color-bg)) 80%, transparent);
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+}
+.ade-amcp-signin-flow > svg { color: var(--kit-text-3, var(--color-muted-fg)); }
+
+/* ── Setup sheet ── */
+.ade-amcp-sheet-head { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.ade-amcp-sheet-head h2 { margin: 0; font-size: 15px; font-weight: 600; color: var(--color-fg); }
+.ade-amcp-sheet-head p { margin: 2px 0 0; font-size: 12px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-sheet-body { display: flex; flex-direction: column; gap: 18px; padding-top: 4px; }
+.ade-amcp-ways { display: flex; flex-wrap: wrap; gap: 6px; }
+.ade-amcp-way {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 999px;
+  font-size: 11px;
+  color: var(--kit-text-3, var(--color-muted-fg));
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 9%, transparent));
+}
+.ade-amcp-way[data-on="true"] {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--ig-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 10%, transparent);
+}
+.ade-amcp-sheet-connected { margin: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--kit-ok, #16A34A); }
+.ade-amcp-steps .ade-ig-step { padding-bottom: 18px; }
+.ade-amcp-steps .ade-ig-step:last-child { padding-bottom: 0; }
+.ade-amcp-sheet-section { display: flex; flex-direction: column; gap: 8px; }
+.ade-amcp-note { margin: 0; display: flex; align-items: flex-start; gap: 7px; font-size: 12px; line-height: 1.5; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-note > svg { flex: none; margin-top: 2px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-hint-row { align-items: center; }
+.ade-amcp-hint-text { flex: 1 1 auto; min-width: 0; font-size: 12px; line-height: 1.45; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-hint-text b { color: var(--color-fg); font-weight: 600; }
+
+/* ── Token dialog ── */
+.ade-amcp-dialog-hint { font-size: 11.5px; color: var(--kit-text-3, var(--color-muted-fg)); }
+.ade-amcp-token-form,
+.ade-amcp-token-step { display: flex; flex-direction: column; gap: 14px; }
+.ade-amcp-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ade-amcp-field > span:first-child { font-size: 11.5px; font-weight: 600; color: var(--kit-text-2, var(--color-secondary-fg)); }
+.ade-amcp-access { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.ade-amcp-access-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 11px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 12%, transparent));
+  background: transparent;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-amcp-access-choice:hover { background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.ade-amcp-access-choice:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 2px; }
+.ade-amcp-access-choice[aria-checked="true"] {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--ig-accent) 60%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 11%, transparent);
+}
+.ade-amcp-access-choice > svg { flex: none; margin-top: 1px; }
+.ade-amcp-access-choice[aria-checked="true"] > svg { color: var(--ig-accent); }
+.ade-amcp-access-choice > span { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.ade-amcp-access-choice b { font-size: 12.5px; font-weight: 600; color: var(--color-fg); }
+.ade-amcp-access-choice small { font-size: 11.5px; line-height: 1.4; }
+
+.ade-amcp-snippet-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.ade-amcp-snippet-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 26px;
+  padding: 0 9px 0 5px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-rule, color-mix(in srgb, var(--color-fg) 10%, transparent));
+  background: transparent;
+  color: var(--kit-text-2, var(--color-secondary-fg));
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-amcp-snippet-tab:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 4%, transparent); }
+.ade-amcp-snippet-tab:focus-visible { outline: 2px solid var(--ig-accent); outline-offset: 1px; }
+.ade-amcp-snippet-tab[aria-selected="true"] {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--ig-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--ig-accent) 12%, transparent);
+}
+.ade-amcp-snippet-panel { display: flex; flex-direction: column; gap: 4px; margin-top: 4px; }
+.ade-amcp-snippet-where { margin: 0; font-size: 12px; color: var(--kit-text-2, var(--color-secondary-fg)); }
+
+/* ── Narrow windows ── */
+@container integrationpage (max-width: 980px) {
+  .ade-amcp-hero-art { display: none; }
+}
+@container integrationpage (max-width: 700px) {
+  .ade-amcp-hero .ade-ig-hero-row { grid-template-columns: auto minmax(0, 1fr); }
+  .ade-amcp-row { grid-template-columns: auto minmax(0, 1fr); }
+  .ade-amcp-row-side { grid-column: 2; flex-wrap: wrap; }
+}
+@container integrationpage (max-width: 560px) {
+  .ade-amcp-activity-row { grid-template-columns: 56px minmax(0, 1fr) auto auto; }
+  .ade-amcp-activity-app { display: none; }
+  .ade-amcp-activity-hop { max-width: 96px; }
+}

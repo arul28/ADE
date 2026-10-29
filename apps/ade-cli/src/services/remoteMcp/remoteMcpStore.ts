@@ -7,9 +7,11 @@ import {
   isRemoteMcpScope,
   type RemoteMcpConnectionKind,
   type RemoteMcpConnectionSummary,
+  type RemoteMcpKnownApp,
   type RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { isRemoteMcpMachineKey } from "./remoteMcpAccount";
+import { inferRemoteMcpAppFromRecord, isRemoteMcpKnownApp } from "./remoteMcpKnownApps";
 
 /**
  * The account's ADE MCP connections, kept in the account vault so a token
@@ -50,8 +52,23 @@ const CONNECTION_KEY_PREFIX = "connection:";
 /** A write the account stores refused because the signed-in account changed under it. */
 export const REMOTE_MCP_SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
 
-/** The slice of the account vault ADE MCP uses. */
-export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync">;
+/** The account vault's sync health, as the vault store reports it. */
+export type RemoteMcpVaultSyncHealth = {
+  state: "ok" | "failing" | "unavailable";
+  lastSyncedAt: string | null;
+  pendingChanges: number;
+  parked: number;
+  lastError: string | null;
+};
+
+/**
+ * The slice of the account vault ADE MCP uses. `health` is optional so a
+ * vault store that does not report it yet still works; the service then
+ * judges health from its own syncs.
+ */
+export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync" | "pendingKeys"> & {
+  health?: () => RemoteMcpVaultSyncHealth;
+};
 
 function hashRemoteMcpToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -86,6 +103,12 @@ function parseConnection(value: unknown): RemoteMcpConnection | null {
     createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
     lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
     redirectHost: typeof record.redirectHost === "string" ? record.redirectHost.slice(0, 253) : null,
+    // A record from before apps were recognised: from its host and label, when that is unambiguous.
+    app: isRemoteMcpKnownApp(record.app)
+      ? record.app
+      : record.kind === "app"
+        ? inferRemoteMcpAppFromRecord(typeof record.redirectHost === "string" ? record.redirectHost : null, typeof record.label === "string" ? record.label : "")
+        : null,
     ...(typeof record.clientKey === "string" && /^[a-f0-9]{64}$/.test(record.clientKey) ? { clientKey: record.clientKey } : {}),
     ...(isRemoteMcpMachineKey(record.machineKey) ? { machineKey: record.machineKey } : {}),
   };
@@ -198,15 +221,29 @@ export function createRemoteMcpStore(args: {
       label: string;
       scope: RemoteMcpScope;
       redirectHost?: string | null;
+      /** The app ADE recognised at sign-in. */
+      app?: RemoteMcpKnownApp | null;
       /**
-       * The app registration this sign-in came from. Signing in again with the
-       * same one replaces that connection, so an app that re-authorizes does
-       * not pile up rows (or fill the cap) with tokens it no longer uses.
+       * The app registration and return address this sign-in came from.
+       * Signing in again with the same one replaces that connection, so an
+       * app that re-authorizes does not pile up rows (or fill the cap) with
+       * tokens it no longer uses.
        */
       clientKey?: string;
+      /**
+       * The key a record made before return addresses were part of it carries
+       * (the registration alone). Such a record is replaced too when it came
+       * from the same host: apps that share one registration (Cursor's is used
+       * by Cursor, its cloud agents, Grok Bot and grok.com) differ by host.
+       */
+      legacyClientKey?: string;
     }): { token: string; connection: RemoteMcpConnectionSummary } {
       const current = read();
-      const replaced = input.clientKey ? current.filter((entry) => entry.clientKey === input.clientKey) : [];
+      const replaced = input.clientKey
+        ? current.filter((entry) => entry.clientKey === input.clientKey
+          || (input.legacyClientKey !== undefined && entry.clientKey === input.legacyClientKey
+            && entry.redirectHost === (input.redirectHost ?? null)))
+        : [];
       if (current.length - replaced.length >= MAX_REMOTE_MCP_CONNECTIONS) {
         throw new Error(
           `Your ADE account already has ${MAX_REMOTE_MCP_CONNECTIONS} ADE MCP connections. Remove one in Settings first.`,
@@ -223,6 +260,7 @@ export function createRemoteMcpStore(args: {
         createdAt: now().toISOString(),
         lastUsedAt: null,
         redirectHost: input.redirectHost ?? null,
+        app: input.app ?? null,
         ...(input.clientKey ? { clientKey: input.clientKey } : {}),
       };
       save(connection);

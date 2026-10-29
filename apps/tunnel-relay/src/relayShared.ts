@@ -280,10 +280,12 @@ export const MCP_ACCOUNT_MAX_MEMBERS = 32;
 export const MCP_MOUNT_HEADER = "x-ade-mcp-mount";
 /**
  * Set by a machine object on an account request it refused before the brain
- * could see it (`offline` or `ade_mcp_off`), so the Worker may try the next
- * computer. Never returned to a client.
+ * could see it, so the Worker may try the next computer: `offline`,
+ * `ade_mcp_off` (off there), or `not_member` (that computer is on another
+ * account, or none). Never returned to a client.
  */
 export const MCP_UNDELIVERED_HEADER = "x-ade-mcp-undelivered";
+export type McpUndeliveredReason = "offline" | "ade_mcp_off" | "not_member";
 export const MCP_MAX_REQUEST_BYTES = 1024 * 1024;
 // 32 random bytes in base64url is 43 characters; allow optional padding and
 // longer secrets, never a short or non-base64url one.
@@ -302,7 +304,16 @@ export async function mcpAccountKeyForSecret(secret: unknown): Promise<string | 
   return (await hmacSha256Hex(secret, "ade-mcp-account")).slice(0, 40);
 }
 
-export type McpAccountState = { members: string[]; front: string | null };
+/**
+ * `off`: machines that left the account because ADE MCP was turned off there
+ * (not because they moved to another account). It is what lets the account
+ * address tell "ADE MCP is off" from "nothing serves this address any more".
+ * Absent from objects written before it existed.
+ */
+export type McpAccountState = { members: string[]; front: string | null; off?: string[] };
+
+/** Why a machine leaves an account: ADE MCP turned off there, or anything else. */
+export type McpAccountLeaveReason = "off" | "moved";
 
 export const MCP_MACHINE_OFF_DESCRIPTION =
   "ADE MCP is off on that computer. Turn it on in ADE Settings → ADE MCP.";
@@ -313,9 +324,10 @@ export function mcpErrorResponse(
   error: string,
   description: string,
   extra: Record<string, string> = {},
+  fields: Record<string, string> = {},
 ): Response {
   return jsonResponse(
-    { error, error_description: description },
+    { error, error_description: description, ...fields },
     { status, headers: { "cache-control": "no-store", ...MCP_CORS_HEADERS, ...extra } },
   );
 }
