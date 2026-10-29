@@ -49,6 +49,11 @@ const cloneTree = (from: string, to: string) => {
 };
 // Windows stores a path as C:\x, C:/x and, inside JSON text, C:\\x. Each form of the source root is
 // rewritten to the same form of the copy root.
+// The copy root itself, or a path under it (not a sibling folder that only shares the prefix).
+const insideCopy = (candidate: string) => {
+  const resolved = path.resolve(candidate);
+  return resolved === copyRoot || resolved.startsWith(`${copyRoot}${path.sep}`);
+};
 const rootForms = (root: string): string[] =>
   isWindows ? [root, root.replaceAll("\\", "/"), JSON.stringify(root).slice(1, -1)] : [root];
 
@@ -149,7 +154,7 @@ if (fs.existsSync(sessionsDir)) {
 // measurement brain never runs git in the original's files.
 if (!cloneMode) {
   for (const lane of db.all<{ id: string; worktree_path: string | null }>("select id, worktree_path from lanes where archived_at is null and worktree_path is not null")) {
-    if (path.resolve(lane.worktree_path!).startsWith(copyRoot)) continue;
+    if (insideCopy(lane.worktree_path!)) continue;
     db.run("update lanes set worktree_path = ? where id = ?", [path.join(copyRoot, ".ade", "external-worktrees", lane.id), lane.id]);
     rewrittenCells += 1;
   }
@@ -191,7 +196,7 @@ if (cloneMode) {
   const remoteBranches = new Set(quietGit(["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin"], copyRoot).split("\n").filter(Boolean));
   for (const lane of lanes) {
     if (lane.archived_at || !lane.worktree_path || path.resolve(lane.worktree_path) === copyRoot) continue;
-    if (!path.resolve(lane.worktree_path).startsWith(copyRoot) || fs.existsSync(lane.worktree_path)) continue;
+    if (!insideCopy(lane.worktree_path) || fs.existsSync(lane.worktree_path)) continue;
     const branch = lane.branch_ref?.replace(/^refs\/heads\//, "") || `perf-copy/${lane.id}`;
     const start = remoteBranches.has(branch) ? `origin/${branch}` : "HEAD";
     if (start === "HEAD") worktreesFromHead += 1;

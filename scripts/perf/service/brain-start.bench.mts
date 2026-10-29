@@ -190,7 +190,7 @@ async function timeOne(n: number, variant: Variant): Promise<Timed> {
     return { readyMs, socketAcceptsConnect, ...(await stopBrain(child, sock)) };
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    fs.rmSync(sock, { force: true });
+    if (!isWindows) fs.rmSync(sock, { force: true });
   }
 }
 
