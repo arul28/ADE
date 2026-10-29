@@ -1,6 +1,6 @@
 import path from "node:path";
 
-export type DesktopPackageChannel = "alpha" | "beta";
+export type DesktopPackageChannel = "alpha";
 
 export type DesktopUserDataPathArgs = {
   channel: DesktopPackageChannel | null;

@@ -31,12 +31,13 @@ describe("isMachineAdeHome", () => {
 });
 
 describe("isSyncCapableAdeHome", () => {
-  // Alpha and Beta must keep phone sync: they are how a build is tested end to
-  // end. Any other home, and a channel brain in someone else's home, must not.
+  // Alpha must keep phone sync: it is how a branch build is tested end to end.
+  // Any other home, and a channel brain in someone else's home, must not. The
+  // removed Beta package channel's home is no longer a sync home.
   it.each([
     ["the default home", ".ade", {}, true],
     ["Alpha in its own home", ".ade-alpha", { ADE_PACKAGE_CHANNEL: "alpha" }, true],
-    ["Beta in its own home", ".ade-beta", { ADE_PACKAGE_CHANNEL: "beta" }, true],
+    ["the removed Beta channel in its old home", ".ade-beta", { ADE_PACKAGE_CHANNEL: "beta" }, false],
     ["Alpha's home without the channel", ".ade-alpha", {}, false],
     ["Alpha pointed at Beta's home", ".ade-beta", { ADE_PACKAGE_CHANNEL: "alpha" }, false],
     ["a scratch home", ".ade-scratch", { ADE_PACKAGE_CHANNEL: "alpha" }, false],
@@ -70,7 +71,7 @@ describe("resolveMachineAdeLayout", () => {
     expect(equivalent.desktopBridgeSocketPath).toBe(first.desktopBridgeSocketPath);
   });
 
-  it("uses distinct Windows runtime pipes for release channels", () => {
+  it("uses distinct Windows runtime pipes for release channels, and Stable's for a leftover beta value", () => {
     const alpha = resolveMachineAdeLayout(
       {
         ...arulEnv,
@@ -79,18 +80,21 @@ describe("resolveMachineAdeLayout", () => {
       },
       "win32",
     );
-    const beta = resolveMachineAdeLayout(
-      {
-        ...arulEnv,
-        ADE_HOME: "C:\\Users\\arul\\.ade-beta",
-        ADE_PACKAGE_CHANNEL: "beta",
-      },
+    const stable = resolveMachineAdeLayout(
+      { ...arulEnv, ADE_HOME: "C:\\Users\\arul\\.ade" },
+      "win32",
+    );
+    // Beta is a track of the normal install: a brain started with a leftover
+    // ADE_PACKAGE_CHANNEL=beta must listen where every Stable client looks.
+    const leftoverBeta = resolveMachineAdeLayout(
+      { ...arulEnv, ADE_HOME: "C:\\Users\\arul\\.ade", ADE_PACKAGE_CHANNEL: "beta" },
       "win32",
     );
 
-    expect(alpha.socketPath).not.toBe(beta.socketPath);
+    expect(alpha.socketPath).not.toBe(stable.socketPath);
     expect(alpha.socketPath).toContain("ade-runtime-alpha-");
-    expect(beta.socketPath).toContain("ade-runtime-beta-");
+    expect(leftoverBeta.socketPath).toBe(stable.socketPath);
+    expect(leftoverBeta.desktopBridgeSocketPath).toBe(stable.desktopBridgeSocketPath);
   });
 
   // On a Windows host the user is read from the process token, which one
@@ -191,15 +195,15 @@ describe("resolveMachineAdeLayout", () => {
       { ADE_HOME: "/Users/arul/.ade" },
       "darwin",
     );
-    const beta = resolveMachineAdeLayout(
-      { ADE_HOME: "/Users/arul/.ade-beta" },
+    const alpha = resolveMachineAdeLayout(
+      { ADE_HOME: "/Users/arul/.ade-alpha" },
       "darwin",
     );
     expect(stable.desktopBridgeSocketPath).toBe(
       path.join(path.resolve("/Users/arul/.ade"), "sock", "desktop-bridge.sock"),
     );
-    expect(beta.desktopBridgeSocketPath).toBe(
-      path.join(path.resolve("/Users/arul/.ade-beta"), "sock", "desktop-bridge.sock"),
+    expect(alpha.desktopBridgeSocketPath).toBe(
+      path.join(path.resolve("/Users/arul/.ade-alpha"), "sock", "desktop-bridge.sock"),
     );
   });
 
@@ -235,16 +239,16 @@ describe("resolveMachineAdeLayout", () => {
       { ...arulEnv, ADE_HOME: "C:\\Users\\arul\\.ade" },
       "win32",
     );
-    const beta = resolveMachineAdeLayout(
+    const alpha = resolveMachineAdeLayout(
       {
         ...arulEnv,
-        ADE_HOME: "C:\\Users\\arul\\.ade-beta",
-        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_HOME: "C:\\Users\\arul\\.ade-alpha",
+        ADE_PACKAGE_CHANNEL: "alpha",
       },
       "win32",
     );
-    expect(stable.desktopBridgeSocketPath).not.toBe(beta.desktopBridgeSocketPath);
+    expect(stable.desktopBridgeSocketPath).not.toBe(alpha.desktopBridgeSocketPath);
     expect(stable.desktopBridgeSocketPath).toContain("ade-desktop-bridge-stable-");
-    expect(beta.desktopBridgeSocketPath).toContain("ade-desktop-bridge-beta-");
+    expect(alpha.desktopBridgeSocketPath).toContain("ade-desktop-bridge-alpha-");
   });
 });

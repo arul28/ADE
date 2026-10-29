@@ -454,7 +454,7 @@ ade --socket /tmp/ade-runtime-dev.sock code
 `ade code remote` is a launcher around the same TUI. It reads saved desktop
 remote targets and uses the target's declared transport. Paired targets use the
 ordinary paired-secret plus pinned-DPoP sync runtime bridge. SSH targets probe
-stable/beta/alpha ADE homes, start `ade rpc --stdio`, and hand that stdio stream
+stable/alpha ADE homes, start `ade rpc --stdio`, and hand that stdio stream
 to `remoteBridge.ts`. Both transports expose a local one-connection JSON-RPC
 endpoint (temporary Unix socket on POSIX, loopback `tcp://` on Windows), then
 invoke the normal `runAdeCodeCli` with `--remote`, `--remote-label`,

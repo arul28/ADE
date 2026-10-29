@@ -224,7 +224,6 @@ function serviceChannelLabel(serviceName: string): string {
   const normalized = serviceName.trim().toLowerCase();
   if (normalized === "com.ade.runtime") return "stable";
   if (normalized.endsWith(".alpha")) return "alpha";
-  if (normalized.endsWith(".beta")) return "beta";
   return "custom";
 }
 

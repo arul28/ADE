@@ -25,7 +25,7 @@ the machine tools cache.
    destructive thing you may propose.
 4. **Never kill by name or pattern.** No `pkill -f ade`, no `pgrep … | xargs kill`, no
    `Stop-Process -Name`. Those patterns match this agent's own process, other ADE channels
-   (stable / beta / alpha each run their own brain), and unrelated dev runtimes. If a process
+   (stable and alpha each run their own brain), and unrelated dev runtimes. If a process
    truly must stop, get its exact PID from `ade brain status --text` or `ade runtime
    service-status --text`, verify the PID's own command line and working directory, then stop
    that one PID — or better, use `ade brain stop`, which stops the right thing by construction.
@@ -145,7 +145,7 @@ history, not a live failure — report it and move on.
 ### 3.4 Port conflicts (sync host bound off its default port)
 
 The Sync port row is `warn` when the brain bound something other than the default sync port, and
-names what it found holding the base port. Usually it is a second ADE channel (stable and beta
+names what it found holding the base port. Usually it is a second ADE channel (stable and alpha
 both running), a leftover brain, or an unrelated dev server.
 
 Read-only:
@@ -308,7 +308,7 @@ ade --version                 # is the CLI on PATH at all?
   module usually means a half-finished update; `ade brain update --text` re-stages it. Capture
   the exact error first.
 - **Wrong ADE**: `ADE_HOME` and `ADE_PACKAGE_CHANNEL` select a channel. If the user has stable
-  and beta installed, confirm which one you are talking to before diagnosing anything.
+  and alpha installed, confirm which one you are talking to before diagnosing anything.
 
 ### 3.12 Login service not registered or not loaded
 
@@ -317,7 +317,7 @@ ade runtime service-status --text   # (read-only) registration + load state
 ade brain status --text             # includes the same service block
 ```
 
-The service is a launchd LaunchAgent (`com.ade.runtime`, plus `.beta` / `.alpha`) on macOS, a
+The service is a launchd LaunchAgent (`com.ade.runtime`, plus `.alpha`) on macOS, a
 user systemd unit on Linux, and a per-user scheduled task on Windows whose name carries a hash —
 which is exactly why you should read `ade runtime service-status --text` instead of guessing the
 task name in `schtasks`.

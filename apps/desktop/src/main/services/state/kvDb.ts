@@ -9,6 +9,7 @@ import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
+import { snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
@@ -4933,6 +4934,13 @@ function mapExportedChangeRows(rows: ExportedChangeRow[]): CrsqlChangeRow[] {
 export type OpenKvDbOptions = {
   /** Conservative by default: compaction is unsafe unless zero sync peers is proven. */
   hasSyncPeers?: () => boolean;
+  /**
+   * The version of the app or brain opening the file. With it, the file is
+   * copied before the first open by a new version and `<db>.compat.json` is
+   * written after the migrations (`dbCompatRecord.ts`). Without it (tests,
+   * tools), neither happens.
+   */
+  appVersion?: string | null;
 };
 
 function sqliteFootprintBytes(dbPath: string): number {
@@ -4982,6 +4990,7 @@ export async function openKvDb(
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
   const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadataBeforeOpen(db);
+  const appVersion = options.appVersion?.trim() || null;
 
   try {
     // Inside the try so a conversion error that is not a lock still closes the
@@ -4990,6 +4999,11 @@ export async function openKvDb(
 
     if (existedBeforeOpen && !hadCrsqlMetadataBeforeOpen) {
       writeMigrationBackupIfNeeded(dbPath);
+    }
+    // Before anything below can change the file: the copy a broken migration
+    // is undone from (docs/plans/beta-track.md).
+    if (existedBeforeOpen && appVersion) {
+      await snapshotDatabaseBeforeVersionChange({ db, dbPath, appVersion, logger });
     }
 
     if (extensionPath && rawHasTable(db, "crsql_site_id")) {
@@ -5119,6 +5133,7 @@ export async function openKvDb(
     logger.error("db.init_failed", { dbPath, error: err, errorText: String(err) });
     throw err;
   }
+  if (appVersion) writeDbCompatRecord(dbPath, appVersion, logger);
 
   const getString = (key: string): string | null => {
     const row = getRow<{ value: string }>(db, "select value from kv where key = ? limit 1", [key]);

@@ -30,18 +30,17 @@ const stableConflict: SyncHostSingletonConflict = {
 describe("packagedSyncHostLaunchGate", () => {
   it("resolves launching app names for official channels", () => {
     expect(resolveLaunchingDesktopAppName(null)).toBe("ADE");
-    expect(resolveLaunchingDesktopAppName("beta")).toBe("ADE Beta");
     expect(resolveLaunchingDesktopAppName("alpha")).toBe("ADE Alpha");
-    expect(resolveLaunchingDesktopAppName("beta", { ADE_DESKTOP_APP_NAME: "Custom ADE" })).toBe("Custom ADE");
+    expect(resolveLaunchingDesktopAppName("alpha", { ADE_DESKTOP_APP_NAME: "Custom ADE" })).toBe("Custom ADE");
   });
 
   it("builds a clear dialog with the stop command", () => {
     const content = buildPackagedSyncHostConflictDialogContent({
-      launchingAppName: "ADE Beta",
+      launchingAppName: "ADE Alpha",
       conflict: stableConflict,
     });
 
-    expect(content.title).toBe("Cannot launch ADE Beta");
+    expect(content.title).toBe("Cannot launch ADE Alpha");
     expect(content.message).toContain("ADE is already running with phone sync");
     expect(content.detail).toContain("Only one official ADE build can host phone sync");
     expect(content.detail).toContain("Running now: ADE (pid 3735) on sync port 8828");
@@ -53,7 +52,7 @@ describe("packagedSyncHostLaunchGate", () => {
     const quit = vi.fn();
     const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: false,
-      channel: "beta",
+      channel: "alpha",
       detectConflict: () => stableConflict,
       quit,
     });
@@ -66,18 +65,18 @@ describe("packagedSyncHostLaunchGate", () => {
     const quit = vi.fn();
     const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: true,
-      channel: "beta",
+      channel: "alpha",
       env: {
-        ADE_PACKAGE_CHANNEL: "beta",
-        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_PACKAGE_CHANNEL: "alpha",
+        ADE_HOME: "/Users/admin/.ade-alpha",
       },
       detectConflict: () => ({
         ...stableConflict,
         owner: {
           ...stableConflict.owner,
-          appName: "ADE Beta",
-          packageChannel: "beta",
-          adeHome: "/Users/admin/.ade-beta",
+          appName: "ADE Alpha",
+          packageChannel: "alpha",
+          adeHome: "/Users/admin/.ade-alpha",
         },
       }),
       quit,
@@ -94,10 +93,10 @@ describe("packagedSyncHostLaunchGate", () => {
 
     const blocked = await blockPackagedLaunchForCrossChannelSyncConflict({
       isPackaged: true,
-      channel: "beta",
+      channel: "alpha",
       env: {
-        ADE_PACKAGE_CHANNEL: "beta",
-        ADE_HOME: "/Users/admin/.ade-beta",
+        ADE_PACKAGE_CHANNEL: "alpha",
+        ADE_HOME: "/Users/admin/.ade-alpha",
       },
       detectConflict: () => stableConflict,
       showDialog,
@@ -108,7 +107,7 @@ describe("packagedSyncHostLaunchGate", () => {
     expect(blocked).toBe(true);
     expect(copyToClipboard).toHaveBeenCalledWith(stableConflict.owner.quitCommand);
     expect(showDialog).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Cannot launch ADE Beta",
+      title: "Cannot launch ADE Alpha",
       quitCommand: stableConflict.owner.quitCommand,
     }));
     expect(quit).toHaveBeenCalledTimes(1);
@@ -116,8 +115,8 @@ describe("packagedSyncHostLaunchGate", () => {
 
   it("resolveCrossChannelSyncHostConflict ignores same-channel owners", () => {
     const conflict = resolveCrossChannelSyncHostConflict(stableConflict, {
-      ADE_PACKAGE_CHANNEL: "beta",
-      ADE_HOME: "/Users/admin/.ade-beta",
+      ADE_PACKAGE_CHANNEL: "alpha",
+      ADE_HOME: "/Users/admin/.ade-alpha",
     });
     expect(conflict).toEqual(stableConflict);
 
@@ -125,13 +124,13 @@ describe("packagedSyncHostLaunchGate", () => {
       ...stableConflict,
       owner: {
         ...stableConflict.owner,
-        appName: "ADE Beta",
-        packageChannel: "beta",
-        adeHome: "/Users/admin/.ade-beta",
+        appName: "ADE Alpha",
+        packageChannel: "alpha",
+        adeHome: "/Users/admin/.ade-alpha",
       },
     }, {
-      ADE_PACKAGE_CHANNEL: "beta",
-      ADE_HOME: "/Users/admin/.ade-beta",
+      ADE_PACKAGE_CHANNEL: "alpha",
+      ADE_HOME: "/Users/admin/.ade-alpha",
     });
     expect(sameChannel).toBeNull();
   });

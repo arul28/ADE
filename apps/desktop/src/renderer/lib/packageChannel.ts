@@ -26,5 +26,5 @@ export function isPrereleaseChannel(
 }
 
 export function packageChannelLabel(channel: AppPackageChannel): string {
-  return channel === "alpha" ? "ALPHA" : channel === "beta" ? "BETA" : "STABLE";
+  return channel === "alpha" ? "ALPHA" : "STABLE";
 }

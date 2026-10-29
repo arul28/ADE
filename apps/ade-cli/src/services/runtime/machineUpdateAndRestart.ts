@@ -20,6 +20,8 @@ import type {
   RemoteRuntimeUpdateStepStatus,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
+import { updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
+import { resolveSelectedUpdateTrack } from "./updateTrackStore";
 import type {
   DesktopAppUpdateInstallResult,
   DesktopAppUpdateRouting,
@@ -103,6 +105,11 @@ export type MachineUpdateAndRestartDeps = {
    * `attached: false`: no capable app is open and the standalone path runs.
    */
   requestDesktopAppUpdate?: (targetVersion: string | null) => Promise<DesktopAppUpdateRouting>;
+  /**
+   * The update track this machine follows (`update-track.json`). Absent: the
+   * track of `currentVersion`.
+   */
+  selectedTrack?: () => UpdateTrack;
 };
 
 export type MachineUpdateControlsArgs = {
@@ -149,6 +156,7 @@ export function createMachineUpdateControls(
 ): MachineUpdateAndRestartDeps {
   return {
     currentVersion: args.version,
+    selectedTrack: () => resolveSelectedUpdateTrack(args.version),
     checkForUpdate: async (targetVersion) => {
       const normalizedTarget = targetVersion?.trim() || null;
       const app = await args.installedApp?.().catch(() => null) ?? null;
@@ -489,9 +497,17 @@ function alreadyCurrentResult(
 
 export async function runMachineUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
-  targetVersion: string | null = null,
+  requestedTargetVersion: string | null = null,
 ): Promise<MachineUpdateAndRestartResult> {
   const ownVersion = deps.currentVersion?.trim() || null;
+  // A client on the other track names a build from its own track. "Update &
+  // restart" never moves a machine across tracks: that is the guarded switch,
+  // made on the machine itself, which checks its databases first. Such a
+  // request updates this machine on its own track instead (T3 does the same).
+  const selectedTrack = deps.selectedTrack?.() ?? updateTrackOfVersion(ownVersion);
+  const crossesTrack = requestedTargetVersion != null
+    && updateTrackOfVersion(requestedTargetVersion) !== selectedTrack;
+  const targetVersion = crossesTrack ? null : requestedTargetVersion;
   if (deps.requestDesktopAppUpdate) {
     let routing: DesktopAppUpdateRouting;
     try {

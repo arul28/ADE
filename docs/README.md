@@ -14,7 +14,7 @@ The mental model up front: ADE has a **brain** — the always-on, machine-owned 
 
 Running ADE from a checkout starts with
 [`development/local-development.md`](./development/local-development.md) for the
-glossary, the dev command matrix, lane worktrees, and local Alpha/Beta packaging.
+glossary, the dev command matrix, lane worktrees, and local Alpha packaging.
 
 Windows release engineering starts with
 [`development/windows-release-proof.md`](./development/windows-release-proof.md)

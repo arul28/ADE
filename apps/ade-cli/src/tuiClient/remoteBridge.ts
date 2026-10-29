@@ -34,7 +34,7 @@ type PendingRequest = {
 };
 
 export type RemoteRuntimeLayout = {
-  channel: "alpha" | "beta" | null;
+  channel: "alpha" | null;
   homeDirName: string;
   homeDirExpr: string;
   binDirExpr: string;

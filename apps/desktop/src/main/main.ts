@@ -346,6 +346,13 @@ import {
 } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
+import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
+import {
+  shippedVersionOrNull,
+  UPDATE_TRACK_ARGV_PREFIX,
+  updateTrackOfVersion,
+  type UpdateTrack,
+} from "../shared/updateTrack";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
@@ -532,7 +539,11 @@ const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 /** Appended to the user agent of the app window when it loads from the Vite dev server. */
 const DEV_APP_WINDOW_USER_AGENT_MARK = "ADEDevShell";
 
-type AdePackageChannel = "alpha" | "beta";
+// Alpha is the only package channel: a branch build with its own app id and
+// its own ADE home. Beta is not a channel; it is an update track of the
+// normal install (docs/plans/beta-track.md), so nothing here may read "beta"
+// out of a name or a version.
+type AdePackageChannel = "alpha";
 
 function normalizeAdeReleaseRepository(value: unknown): string | null {
   const normalized = typeof value === "string"
@@ -561,7 +572,7 @@ function readBundledAdeReleaseRepository(): string {
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  return normalized === "alpha" || normalized === "beta" ? normalized : null;
+  return normalized === "alpha" ? normalized : null;
 }
 
 function readBundledAdePackageChannel(): AdePackageChannel | null {
@@ -578,14 +589,12 @@ function readBundledAdePackageChannel(): AdePackageChannel | null {
     if (packageChannel) return packageChannel;
     const productName = typeof packageJson.productName === "string" ? packageJson.productName : "";
     if (/\balpha\b/i.test(productName)) return "alpha";
-    if (/\bbeta\b/i.test(productName)) return "beta";
   } catch {
     // Dev builds and older packaged apps do not need channel metadata.
   }
 
   const appName = app.getName();
   if (/\balpha\b/i.test(appName)) return "alpha";
-  if (/\bbeta\b/i.test(appName)) return "beta";
   return null;
 }
 
@@ -594,7 +603,7 @@ function applyPackagedChannelDefaults(): void {
   if (!channel) return;
 
   process.env.ADE_PACKAGE_CHANNEL = process.env.ADE_PACKAGE_CHANNEL || channel;
-  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || (channel === "alpha" ? "ADE Alpha" : "ADE Beta");
+  process.env.ADE_DESKTOP_APP_NAME = process.env.ADE_DESKTOP_APP_NAME || "ADE Alpha";
   process.env.ADE_HOME = process.env.ADE_HOME || path.join(os.homedir(), `.ade-${channel}`);
 }
 
@@ -1068,6 +1077,8 @@ async function createWindow(args: {
       // does not depend on when Chromium snapshotted process.env.
       additionalArguments: [
         `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+        // Same reason: the "Beta" label next to the logo is drawn at first paint.
+        `${UPDATE_TRACK_ARGV_PREFIX}${updateTrackOfVersion(app.getVersion())}`,
         ...(isMainSentryStarted() ? [SENTRY_ENABLED_ARGV] : []),
       ],
     },
@@ -2410,7 +2421,8 @@ app.whenReady().then(async () => {
     properties: {
       entry_point: pendingStartupProjectRoot ? "project_file" : envRoot ? "environment" : "app_icon",
       is_packaged: app.isPackaged,
-      release_channel: packagedChannel,
+      // Beta is a track of the normal install; its builds say so by version.
+      release_channel: !app.isPackaged ? "development" : packagedChannel ?? updateTrackOfVersion(app.getVersion()),
     },
   });
   const shouldRepairRuntimeServiceOnFallback =
@@ -3383,19 +3395,29 @@ app.whenReady().then(async () => {
     autoUpdateInstallRollbackReason = reason;
     await reinstallRuntimeServiceAfterUpdateAbort(reason);
   };
+  // Channel builds do not check for updates. There is no per-channel publish
+  // feed: an Alpha would poll Stable's feed and offer to "update" itself into
+  // a Stable installer with a different appId and ADE home.
+  const hasUpdateFeed = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     installTargetPath: process.execPath,
-    // Channel builds do not check for updates. There is no per-channel publish
-    // feed yet, so a Beta would poll Stable's `latest.yml` and offer to
-    // "update" itself into a Stable installer — a different appId, a different
-    // ADE home, and an install that would land beside itself rather than over
-    // itself. Rebuild a channel to move it forward until a real per-channel
-    // feed exists.
-    autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    autoCheckEnabled: hasUpdateFeed,
+    // Stable and Beta are tracks of this same install, not channels: the
+    // machine's choice lives in ~/.ade/update-track.json so the brain and the
+    // CLI read the same one (docs/plans/beta-track.md). A channel build (Alpha)
+    // has no feed and no track.
+    ...(hasUpdateFeed
+      ? {
+          readSelectedTrack: () => readSavedUpdateTrack()?.track ?? null,
+          writeSelectedTrack: (track: UpdateTrack) => {
+            writeSavedUpdateTrack(track);
+          },
+        }
+      : {}),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
@@ -3458,7 +3480,7 @@ app.whenReady().then(async () => {
     getService: () => autoUpdateService,
     // The same gate as the update checks themselves: a development or channel
     // build has no feed of its own, so the brain updates its standalone runtime.
-    supported: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    supported: hasUpdateFeed,
     // Only a service-managed app uninstalls its service before installing.
     preflightInstall: shouldRepairRuntimeServiceOnFallback ? checkRuntimeServiceRemovable : undefined,
     logger: updateLogger,
@@ -3911,6 +3933,7 @@ app.whenReady().then(async () => {
     const db = await measureProjectInitStep("db_open", () =>
       openKvDb(adePaths.dbPath, logger, {
         hasSyncPeers,
+        appVersion: shippedVersionOrNull(app.getVersion()),
       }),
     );
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
@@ -6655,6 +6678,7 @@ app.whenReady().then(async () => {
         // The machine runtime owns sync and the real storage doctor in this mode;
         // this dormant fallback has no authoritative local peer signal.
         hasSyncPeers: () => true,
+        appVersion: shippedVersionOrNull(app.getVersion()),
       }),
     ]);
     if (registered.status === "rejected") {

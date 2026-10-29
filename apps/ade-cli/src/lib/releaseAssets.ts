@@ -118,6 +118,25 @@ export function releaseAssetUrl(repo: string, version: string, assetName: string
   return `https://github.com/${trimmedRepo}/releases/download/${releaseTagForVersion(trimmedVersion)}/${assetName}`;
 }
 
+const RELEASE_MANIFEST_FETCH_TIMEOUT_MS = 15_000;
+
+/**
+ * Reads a release's `release-manifest.json` (or the Beta feed's `beta.json`).
+ * Null for a 404: the file is not there, which callers explain in their own
+ * words. Throws on any other failure. The desktop app, the brain and the CLI
+ * all read manifests through this one function.
+ */
+export async function fetchReleaseManifestJson(url: string): Promise<unknown | null> {
+  const response = await fetch(url, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(RELEASE_MANIFEST_FETCH_TIMEOUT_MS),
+    headers: { accept: "application/json" },
+  });
+  if (response.status === 404) return null;
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json();
+}
+
 /** Canonical published asset name for a runtime binary, e.g. `ade-linux-arm64`. */
 export function runtimeBinaryAssetName(target: string): string {
   return `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;

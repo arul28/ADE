@@ -69,6 +69,12 @@ export type ChatScheduledWorkRecord = {
   providerScheduleId?: string;
   /** Set only on rows ADE created itself (see `ChatScheduledWorkSource`). */
   source?: ChatScheduledWorkSource;
+  /**
+   * On a restart-resume row: how many automatic resumes in a row this chat
+   * has had without finishing a turn or hearing from the user. ADE stops
+   * resuming at a cap, so a chat that crashes ADE cannot loop (T3 #18461).
+   */
+  restartResumeStreak?: number;
 };
 
 export type ChatScheduledWorkState = {
@@ -232,6 +238,10 @@ function normalizeSchedule(value: unknown): ChatScheduledWorkRecord | null {
       ? { providerScheduleId: record.providerScheduleId }
       : {}),
     ...(adeArmedSource ? { source: adeArmedSource } : {}),
+    ...(typeof record.restartResumeStreak === "number" && Number.isInteger(record.restartResumeStreak)
+      && record.restartResumeStreak >= 0
+      ? { restartResumeStreak: record.restartResumeStreak }
+      : {}),
   };
 }
 

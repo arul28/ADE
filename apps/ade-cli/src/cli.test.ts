@@ -1227,8 +1227,8 @@ describe("ADE CLI", () => {
         lockPath,
         pid: ownerProcess.pid,
         port: 8801,
-        packageChannel: "beta",
-        adeHome: path.join(os.homedir(), ".ade-beta"),
+        packageChannel: "alpha",
+        adeHome: path.join(os.homedir(), ".ade-alpha"),
       });
 
       await expect(runCli(["serve", "--socket", socketPath])).rejects.toThrow(

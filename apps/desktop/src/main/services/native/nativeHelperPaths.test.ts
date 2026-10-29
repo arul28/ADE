@@ -126,12 +126,12 @@ describe("native helper paths", () => {
       fs.writeFileSync(path.join(contents, "Info.plist"), `<plist><dict><key>CFBundleIdentifier</key><string>${bundleId}</string></dict></plist>`);
       return path.join(contents, "Resources", "native", binaryName);
     };
-    const own = app("VLTest", "com.ade.desktop.beta");
+    const own = app("VLTest", "com.ade.desktop.alpha");
     // Named like this channel's app, but its bundle says it is the stable one.
-    app("ADE Beta", "com.ade.desktop");
+    app("ADE Alpha", "com.ade.desktop");
     const env = {
-      ADE_HOME: path.join(home, ".ade-beta"),
-      ADE_PACKAGE_CHANNEL: "beta",
+      ADE_HOME: path.join(home, ".ade-alpha"),
+      ADE_PACKAGE_CHANNEL: "alpha",
       ADE_DESKTOP_APP_NAME: "VLTest",
       ADE_RUNTIME_ROOT: path.join(home, "runtime"),
     };
@@ -141,7 +141,7 @@ describe("native helper paths", () => {
     expect(positions.app).toBeGreaterThanOrEqual(0);
     expect(positions.runtime).toBeGreaterThanOrEqual(0);
     expect(positions[order[0]]).toBeLessThan(positions[order[1]]);
-    expect(candidates).not.toContain(path.join(home, "Applications", "ADE Beta.app", "Contents", "Resources", "native", binaryName));
+    expect(candidates).not.toContain(path.join(home, "Applications", "ADE Alpha.app", "Contents", "Resources", "native", binaryName));
   });
 
   describe("ade signing marker", () => {

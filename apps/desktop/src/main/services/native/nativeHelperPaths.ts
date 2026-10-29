@@ -254,14 +254,15 @@ function readDesktopAppRecord(env: NodeJS.ProcessEnv, platform: NodeJS.Platform)
 
 /**
  * The app names this channel installs as, the channel's own first: `ADE`,
- * `ADE Beta`, `ADE Alpha`, with `ADE_DESKTOP_APP_NAME` ahead of them.
+ * `ADE Alpha`, with `ADE_DESKTOP_APP_NAME` ahead of them.
  */
 export function installedDesktopAppNames(env: NodeJS.ProcessEnv = process.env): string[] {
   const names: string[] = [];
   const explicit = env.ADE_DESKTOP_APP_NAME?.trim();
   if (explicit && !/[\\/]/.test(explicit)) names.push(explicit.replace(/\.(?:app|exe)$/i, ""));
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
-  names.push(channel === "alpha" ? "ADE Alpha" : channel === "beta" ? "ADE Beta" : "ADE");
+  // Beta builds keep the app name "ADE"; only Alpha installs under its own.
+  names.push(channel === "alpha" ? "ADE Alpha" : "ADE");
   return dedupePaths(names);
 }
 
@@ -507,7 +508,7 @@ export type InstalledDesktopApp = {
   platform: NodeJS.Platform;
   /** `.../ADE.app` on macOS; the app's `.exe` on Windows. */
   path: string;
-  /** `ADE`, `ADE Beta`, `ADE Alpha`. */
+  /** `ADE` or `ADE Alpha`. */
   name: string;
   /** Null when the app is there but its version cannot be read. */
   version: string | null;
@@ -544,7 +545,7 @@ export function readInstalledDesktopApp(input: {
   const platform = input.platform ?? process.platform;
   const env = input.env ?? process.env;
   const record = readDesktopAppRecord(env, platform);
-  const stableChannel = !["alpha", "beta"].includes(env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() ?? "");
+  const stableChannel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase() !== "alpha";
   if (platform === "darwin") {
     const applicationsDirs = input.applicationsDirs ?? defaultMacApplicationsDirs(input.homeDir);
     for (const appPath of macDesktopAppPaths(env, applicationsDirs, record)) {

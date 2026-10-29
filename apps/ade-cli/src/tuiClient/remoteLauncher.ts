@@ -459,25 +459,23 @@ function targetRoutes(target: RemoteRuntimeTarget): RemoteRuntimeTargetRoute[] {
   });
 }
 
-function normalizeRemoteRuntimeChannel(value: unknown): "alpha" | "beta" | null {
+function normalizeRemoteRuntimeChannel(value: unknown): "alpha" | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "alpha" || normalized === "beta") return normalized;
-  return null;
+  return normalized === "alpha" ? normalized : null;
 }
 
-function inferRemoteRuntimeChannelFromVersion(version: string | null | undefined): "alpha" | "beta" | null {
+/**
+ * Alpha builds carry `-alpha.` and live in `~/.ade-alpha`. A `-beta.` version
+ * is the Beta update track of the normal install, which lives in `~/.ade`
+ * like Stable, so it says nothing about the layout.
+ */
+function inferRemoteRuntimeChannelFromVersion(version: string | null | undefined): "alpha" | null {
   const normalized = version?.trim().toLowerCase() ?? "";
-  if (normalized.includes("alpha")) return "alpha";
-  if (normalized.includes("beta")) return "beta";
-  return null;
+  return normalized.includes("-alpha.") ? "alpha" : null;
 }
 
-function remoteRuntimeLayoutForChannel(channel: "alpha" | "beta" | null): RemoteRuntimeLayout {
-  const homeDirName = channel === "alpha"
-    ? ".ade-alpha"
-    : channel === "beta"
-      ? ".ade-beta"
-      : ".ade";
+function remoteRuntimeLayoutForChannel(channel: "alpha" | null): RemoteRuntimeLayout {
+  const homeDirName = channel === "alpha" ? ".ade-alpha" : ".ade";
   const homeDirExpr = `$HOME/${homeDirName}`;
   return {
     channel,
@@ -492,12 +490,11 @@ function remoteRuntimeLayoutForChannel(channel: "alpha" | "beta" | null): Remote
 
 export function remoteRuntimeLayoutCandidates(
   env: NodeJS.ProcessEnv = process.env,
-  preferredChannel: "alpha" | "beta" | null = normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL),
+  preferredChannel: "alpha" | null = normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL),
 ): RemoteRuntimeLayout[] {
   const channels = [
     preferredChannel,
     null,
-    "beta" as const,
     "alpha" as const,
   ];
   const seen = new Set<string>();

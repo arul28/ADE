@@ -1269,6 +1269,8 @@ export const IPC = {
   keepAwakeApplyLidClosed: "ade.keepAwake.applyLidClosed",
   remoteMcpCall: "ade.remoteMcp.call",
   updateCheckForUpdates: "ade.update.checkForUpdates",
+  updateCheckTrackSwitch: "ade.update.checkTrackSwitch",
+  updateSwitchTrack: "ade.update.switchTrack",
   updateGetState: "ade.update.getState",
   updateGetPreferences: "ade.update.getPreferences",
   updateSetPreferences: "ade.update.setPreferences",

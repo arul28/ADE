@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vite
 import { CancellationToken } from "builder-util-runtime";
 import { ElectronHttpExecutor } from "electron-updater/out/electronHttpExecutor";
 import { createAutoUpdateService } from "./autoUpdateService";
+import { checkTrackSwitch } from "./trackSwitchGuard";
 import { deferToRunningWindowsInstall, takeWindowsInstallProgressReport, takeWindowsLaunchRequest } from "./windowsInstallProgress";
 import { switchUpdaterToNodeTransport } from "./updaterNetRecovery";
 import {
@@ -24,6 +25,8 @@ import {
 import { runUpdateTransaction, UPDATE_TRANSACTION_FAILURE_COPY } from "./updateTransaction";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, type AutoUpdateSnapshot } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
+import { readGlobalState, writeGlobalState } from "../state/globalState";
+import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 
 const electronAppMock = vi.hoisted(() => ({ isPackaged: false }));
 vi.mock("electron", () => ({ app: electronAppMock }));
@@ -3620,5 +3623,161 @@ describe("Windows update window files", () => {
     expect(takeWindowsInstallProgressReport(null)).toEqual(["+0.2s started", "+3.4s parent_exited"]);
     expect(takeWindowsInstallProgressReport(null)).toBeNull();
     expect(fs.existsSync(path.join(dir, "progress.log"))).toBe(false);
+  });
+});
+
+// Update tracks (docs/plans/beta-track.md). The feed and the disk are the
+// boundaries: the fake updater answers checks the way electron-updater does,
+// and the track choice is a real ~/.ade/update-track.json in a temp home.
+describe("update tracks", () => {
+  function trackService(args: {
+    currentVersion: string;
+    saved?: "stable" | "beta";
+    offer: string;
+    statePath?: string;
+  }) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "ade-update-track-"));
+    const env = { ADE_HOME: home } as NodeJS.ProcessEnv;
+    if (args.saved) writeSavedUpdateTrack(args.saved, env);
+    const updater = new FakeAutoUpdater() as FakeAutoUpdater & {
+      allowPrerelease?: boolean;
+      allowDowngrade?: boolean;
+      downloadUpdate: Mock<[], Promise<unknown>>;
+    };
+    updater.allowPrerelease = true;
+    updater.allowDowngrade = false;
+    let offer = args.offer;
+    updater.checkForUpdates.mockImplementation(async () => {
+      updater.emit("checking-for-update");
+      // electron-updater offers only a newer build unless allowDowngrade is on.
+      const newer = compareUpdateVersions(offer, args.currentVersion) > 0;
+      if (!newer && !updater.allowDowngrade) {
+        updater.emit("update-not-available", { version: offer });
+        return null;
+      }
+      const updateInfo = { version: offer, files: [{ url: `ADE-${offer}-mac.zip`, size: 10, sha512: "x" }] };
+      updater.emit("update-available", updateInfo);
+      return { updateInfo, cancellationToken: new CancellationToken() };
+    });
+    updater.downloadUpdate = vi.fn(async () => {
+      updater.emit("update-downloaded", { version: offer, downloadedFile: path.join(home, "update.zip") });
+      return [];
+    });
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: args.currentVersion,
+      globalStatePath: args.statePath ?? makeStatePath(),
+      updaterCacheDir: makeUpdaterCacheDir(),
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      autoApplyEnabled: false,
+      updater,
+      readSelectedTrack: () => readSavedUpdateTrack(env)?.track ?? null,
+      writeSelectedTrack: (track) => {
+        writeSavedUpdateTrack(track, env);
+      },
+    });
+    return { service, updater, env, setOffer: (next: string) => { offer = next; } };
+  }
+
+  it.each([
+    // [running, saved choice, the feed's answer, offered?]
+    ["1.2.127", undefined, "1.2.128", true],
+    ["1.2.127", undefined, "1.2.128-beta.1", false],
+    ["1.2.128-beta.7", undefined, "1.2.128", false],
+    ["1.2.128-beta.7", undefined, "1.2.128-beta.8", true],
+    ["1.2.128-beta.7", "beta", "1.2.127", false],
+  ] as const)("on %s (saved %s) a check offered %s: offered=%s", async (currentVersion, saved, offer, offered) => {
+    const { service, updater } = trackService({ currentVersion, saved, offer });
+    await service.checkForUpdates();
+    const snapshot = service.getSnapshot();
+    expect(snapshot.status === "ready").toBe(offered);
+    expect(updater.downloadUpdate).toHaveBeenCalledTimes(offered ? 1 : 0);
+    expect(snapshot.version === offer).toBe(offered);
+    // Never an older build without a guarded switch.
+    expect(updater.allowDowngrade).toBe(false);
+    service.dispose();
+  });
+
+  it("a switch takes the other track's build, and only the build it installed saves the choice", async () => {
+    const statePath = makeStatePath();
+    const first = trackService({ currentVersion: "1.2.128-beta.7", offer: "1.2.127", statePath });
+    expect(readSavedUpdateTrack(first.env)).toBeNull();
+
+    expect(first.service.startTrackSwitch("stable")).toEqual({ ok: true, target: "stable" });
+    await vi.waitFor(() => expect(first.service.getSnapshot()).toMatchObject({ status: "ready", version: "1.2.127" }));
+    // Beta back to Stable is an older build: allowed only inside the switch.
+    expect(first.updater.allowDowngrade).toBe(true);
+    expect(first.updater.setFeedURL).toHaveBeenLastCalledWith({ provider: "github", owner: "arul28", repo: "ADE" });
+    // Nothing is saved before the install lands: quitting now changes nothing.
+    expect(readSavedUpdateTrack(first.env)).toBeNull();
+    first.service.dispose();
+
+    // The relaunch on 1.2.127 finds the pending install from the beta.
+    const state = readGlobalState(statePath);
+    writeGlobalState(statePath, {
+      ...state,
+      pendingInstallUpdate: { fromVersion: "1.2.128-beta.7", targetVersion: "1.2.127", releaseNotesUrl: null, requestedAt: new Date().toISOString() },
+    });
+    const home = first.env.ADE_HOME!;
+    const relaunched = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.127",
+      globalStatePath: statePath,
+      updaterCacheDir: makeUpdaterCacheDir(),
+      getDiskSpace: plentyOfDisk,
+      autoCheckEnabled: false,
+      autoApplyEnabled: false,
+      updater: new FakeAutoUpdater(),
+      readSelectedTrack: () => readSavedUpdateTrack({ ADE_HOME: home })?.track ?? null,
+      writeSelectedTrack: (track) => {
+        writeSavedUpdateTrack(track, { ADE_HOME: home });
+      },
+    });
+    expect(readSavedUpdateTrack({ ADE_HOME: home })?.track).toBe("stable");
+    expect(relaunched.getSnapshot().track).toEqual({ selected: "stable", running: "stable", switching: null });
+    relaunched.dispose();
+  });
+});
+
+// The data guard before a track switch: it reads real `<db>.compat.json`
+// records beside real files; only the release manifest fetch is faked.
+describe("track switch guard", () => {
+  type FetchManifest = () => Promise<unknown | null>;
+  const manifest = (version: string, dbCompat: unknown): FetchManifest =>
+    async () => ({ version, dbCompat, syncProtocol: { version: 1, minSupported: 1 } });
+  const missing: FetchManifest = async () => null;
+  const offline: FetchManifest = async () => { throw new Error("offline"); };
+
+  it.each([
+    // [label, target, running, the manifest fetch, the database's record, allowed]
+    ["to Beta with a readable record", "beta", "1.2.127", manifest("1.2.128-beta.3", 1), { level: 1 }, true],
+    ["to an older Stable that knows this level", "stable", "1.2.128-beta.3", manifest("1.2.127", 1), { level: 1 }, true],
+    ["to Stable that predates manifests (404)", "stable", "1.2.128-beta.3", missing, null, true],
+    ["a database a newer build migrated", "stable", "1.2.129-beta.1", manifest("1.2.128", 1), { level: 2 }, false],
+    // No project file yet: only the floor at this build's own level can see
+    // that this build will migrate the next one it opens.
+    ["a target below this build's own level", "stable", "1.2.129-beta.1", manifest("1.2.128", 0), "no-database", false],
+    ["an unreadable record", "stable", "1.2.128-beta.3", manifest("1.2.127", 1), "{garbage", false],
+    ["a manifest with no level", "stable", "1.2.128-beta.3", manifest("1.2.127", undefined), null, false],
+    ["a manifest from the wrong track", "beta", "1.2.127", manifest("1.2.128", 1), null, false],
+    ["no Beta build yet (404)", "beta", "1.2.127", missing, null, false],
+    ["GitHub unreachable", "stable", "1.2.128-beta.3", offline, null, false],
+  ] as const)("%s", async (_label, target, runningVersion, fetchJson, record, allowed) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-track-guard-"));
+    const dbPath = path.join(dir, "ade.db");
+    if (record !== "no-database") fs.writeFileSync(dbPath, "sqlite");
+    if (record !== null && record !== "no-database") {
+      fs.writeFileSync(`${dbPath}.compat.json`, typeof record === "string" ? record : JSON.stringify(record));
+    }
+    const result = await checkTrackSwitch({
+      target,
+      runningVersion,
+      deps: { fetchJson, listDatabasePaths: () => [{ label: "Test project", dbPath }] },
+    });
+    expect(result.allowed).toBe(allowed);
+    expect(result.target).toBe(target);
+    if (!result.allowed) expect(result.reason.length).toBeGreaterThan(20);
+    fs.rmSync(dir, { recursive: true, force: true });
   });
 });

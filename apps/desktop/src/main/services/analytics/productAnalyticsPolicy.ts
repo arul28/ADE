@@ -146,6 +146,9 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "maintenance_run",
   "header_opened",
   "preferences_changed",
+  // Settings › About › Update track: a switch to the other track started
+  // (feature "updates"; outcome to_stable | to_beta).
+  "track_switch",
   "brain_repair",
   // The project recovery screen's choices when a project's ADE data went
   // missing or was swapped: put it back from the Trash, or open with new data
@@ -444,6 +447,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",
     "partial", "failed", "idle_only", "immediate",
+    // Update track switches (action "track_switch"): which way people move.
+    "to_stable", "to_beta",
     // Which keep-awake level an installation chose. The product question is
     // whether people opt into ADE holding their machine awake at all, and how
     // many go as far as the lid-closed level that needs a password. Three

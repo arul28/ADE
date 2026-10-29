@@ -10,6 +10,7 @@ import {
   RELEASE_DOWNLOAD_TIMEOUT_MS,
   detectRuntimeTargetResult,
   downloadReleaseAsset,
+  fetchReleaseManifestJson,
   readSha256SumsFile,
   releaseAssetUrl,
   runtimeBinaryAssetName,
@@ -17,6 +18,14 @@ import {
   sha256File,
 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import {
+  BETA_FEED_MANIFEST_URL,
+  parseReleaseManifest,
+  updateTrackLabel,
+  updateTrackOfVersion,
+  type UpdateTrack,
+} from "../../../desktop/src/shared/updateTrack";
+import { resolveSelectedUpdateTrack } from "../services/runtime/updateTrackStore";
 import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
 
@@ -96,7 +105,52 @@ export type BrainUpdateDeps = {
   runCommand?: typeof runCommand;
   /** Where macOS looks for the installed ADE app. */
   applicationsDirs?: readonly string[];
+  /** Reads the Beta feed's `beta.json` (null for a 404). Injected in tests. */
+  fetchBetaManifest?: () => Promise<unknown | null>;
 };
+
+/**
+ * "latest" on the Beta track is the build the Beta feed names. It never falls
+ * back to the stable release: a machine that chose Beta must not be moved to
+ * Stable because a feed read failed, and the reverse holds too. A pinned
+ * `--version` is used as given.
+ */
+async function resolveRequestedBrainVersion(
+  options: BrainUpdateOptions,
+  deps: BrainUpdateDeps,
+  env: NodeJS.ProcessEnv,
+): Promise<{ version: string; track: UpdateTrack }> {
+  const track = resolveSelectedUpdateTrack(deps.currentVersion ?? null, env);
+  if (options.version !== "latest" || options.repo !== DEFAULT_RELEASE_REPO) {
+    return { version: options.version, track };
+  }
+  // A switch whose install did not land leaves the choice on one track and
+  // the running build on the other. "latest" there would cross tracks without
+  // the database check the desktop runs, so it is refused.
+  const runningTrack = deps.currentVersion ? updateTrackOfVersion(deps.currentVersion) : track;
+  if (runningTrack !== track) {
+    throw new Error(
+      `This machine's switch to ${updateTrackLabel(track)} didn't finish. Finish it in ADE › Settings › About, or pass --version.`,
+    );
+  }
+  if (track !== "beta") return { version: options.version, track };
+  let raw: unknown | null;
+  try {
+    raw = await (deps.fetchBetaManifest ?? (() => fetchReleaseManifestJson(BETA_FEED_MANIFEST_URL)))();
+  } catch (error) {
+    throw new Error(
+      `Could not read the Beta feed (${error instanceof Error ? error.message : String(error)}). This machine follows Beta, so nothing was changed. Try again later.`,
+    );
+  }
+  if (raw === null) {
+    throw new Error("There is no Beta build right now. This machine follows Beta, so nothing was changed.");
+  }
+  const manifest = parseReleaseManifest(raw);
+  if (!manifest || manifest.track !== "beta") {
+    throw new Error("The Beta feed has no usable build right now. This machine follows Beta, so nothing was changed.");
+  }
+  return { version: manifest.tag, track };
+}
 
 function nowIso(deps: BrainUpdateDeps): string {
   return (deps.now?.() ?? new Date()).toISOString();
@@ -931,6 +985,9 @@ export async function runBrainUpdateCommand(
     return applyStagedBrainUpdate(options.manifestPath, deps);
   }
 
+  const resolvedVersion = await resolveRequestedBrainVersion(options, deps, env);
+  options.version = resolvedVersion.version;
+
   const layout = resolveMachineAdeLayout(env, deps.platform ?? process.platform);
   const target = detectRuntimeTarget(deps.platform ?? process.platform, deps.arch ?? os.arch());
   if (target === "win32-x64" && !options.restartService) {
@@ -956,6 +1013,7 @@ export async function runBrainUpdateCommand(
     dryRun: options.dryRun,
     repo: options.repo,
     requestedVersion: options.version,
+    track: resolvedVersion.track,
     currentVersion,
     target,
     binaryUrl,

@@ -1812,11 +1812,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   machine brain and starts it if needed.
 
     $ ade desktop
-    $ ade desktop --app-name "ADE Beta"
+    $ ade desktop --app-name "ADE Alpha"
 
   Flags:
-    --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
-                            or ADE Alpha based on the installed CLI wrapper.
+    --app-name <name>       Installed app name to open. Defaults to ADE, or
+                            ADE Alpha based on the installed CLI wrapper.
 `,
   jira: `${ADE_BANNER}
   ADE Jira

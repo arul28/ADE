@@ -24,7 +24,7 @@ import {
 } from "../../../../desktop/src/main/services/chat/personalHostPaths";
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
-import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { resolveMachineAdeLayout, resolvePersonalChatsStateRoot } from "../projects/machineLayout";
 import { asObject, requiredString, type ObjectArgs } from "./rpcArgs";
 import { credentialStoreProviderForHarness } from "../../../../desktop/src/shared/harnessCredentialProviders";
 import { EmbeddedHostSettings } from "./embeddedHostSettings";
@@ -285,7 +285,7 @@ export class PersonalChatScope {
    */
   async warmExisting(): Promise<void> {
     const layout = resolveMachineAdeLayout();
-    const stateRoot = layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+    const stateRoot = resolvePersonalChatsStateRoot(layout);
     if (!fs.existsSync(path.join(stateRoot, ".ade", "ade.db"))) return;
     await this.getRuntime();
   }
@@ -1007,7 +1007,7 @@ export class PersonalChatScope {
 
   private async createRuntime(): Promise<AdeRuntime> {
     const layout = resolveMachineAdeLayout();
-    const stateRoot = layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+    const stateRoot = resolvePersonalChatsStateRoot(layout);
     const workspaceRoot = layout.personalChatsWorkspaceRoot ?? path.join(layout.adeDir, "personal-chats", "workspaces");
     fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
     fs.mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });

@@ -111,20 +111,20 @@ describe("ade code remote launcher", () => {
 
   it("builds the remote ADE stdio command for the selected runtime home", () => {
     const layout: Parameters<typeof buildRemoteRuntimeRpcCommand>[0] = {
-      channel: "beta",
-      homeDirName: ".ade-beta",
-      homeDirExpr: "$HOME/.ade-beta",
-      binDirExpr: "$HOME/.ade-beta/bin",
-      runtimeDirExpr: "$HOME/.ade-beta/runtime",
-      socketExpr: "$HOME/.ade-beta/sock/ade.sock",
-      binaryExpr: "$HOME/.ade-beta/bin/ade",
+      channel: "alpha",
+      homeDirName: ".ade-alpha",
+      homeDirExpr: "$HOME/.ade-alpha",
+      binDirExpr: "$HOME/.ade-alpha/bin",
+      runtimeDirExpr: "$HOME/.ade-alpha/runtime",
+      socketExpr: "$HOME/.ade-alpha/sock/ade.sock",
+      binaryExpr: "$HOME/.ade-alpha/bin/ade",
     };
 
-    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_HOME="$HOME/.ade-beta"');
-    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_PACKAGE_CHANNEL="beta"');
+    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_HOME="$HOME/.ade-alpha"');
+    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_PACKAGE_CHANNEL="alpha"');
     expect(buildRemoteRuntimeRpcCommand(layout)).toContain("export ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1");
-    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_PTY_HOST_WORKER_COMMAND="$HOME/.ade-beta/bin/ade"');
-    expect(buildRemoteRuntimeRpcCommand(layout)).toContain("exec $HOME/.ade-beta/bin/ade --socket $HOME/.ade-beta/sock/ade.sock rpc --stdio");
+    expect(buildRemoteRuntimeRpcCommand(layout)).toContain('export ADE_PTY_HOST_WORKER_COMMAND="$HOME/.ade-alpha/bin/ade"');
+    expect(buildRemoteRuntimeRpcCommand(layout)).toContain("exec $HOME/.ade-alpha/bin/ade --socket $HOME/.ade-alpha/sock/ade.sock rpc --stdio");
   });
 
   it("attaches to stable remote runtimes without repairing or installing services", () => {
@@ -143,15 +143,13 @@ describe("ade code remote launcher", () => {
   });
 
   it("checks the saved remote target channel before the shared runtime home", () => {
-    expect(remoteRuntimeLayoutCandidates({}, "beta").map((layout) => layout.homeDirName)).toEqual([
-      ".ade-beta",
+    expect(remoteRuntimeLayoutCandidates({}, null).map((layout) => layout.homeDirName)).toEqual([
       ".ade",
       ".ade-alpha",
     ]);
     expect(remoteRuntimeLayoutCandidates({}, "alpha").map((layout) => layout.homeDirName)).toEqual([
       ".ade-alpha",
       ".ade",
-      ".ade-beta",
     ]);
   });
 

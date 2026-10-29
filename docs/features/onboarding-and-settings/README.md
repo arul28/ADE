@@ -30,7 +30,7 @@ directories. Onboarding writes to both.
 
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; the Alpha channel build uses `~/.ade-alpha/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
@@ -3181,7 +3181,7 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
   `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
   8787 at runtime so phones that saved 8787 reconnect without a restart.
   The "ADE is already running with phone sync" dialog is the cross-channel
-  case (ADE vs ADE Beta) and is intentional. Full bind/reap/migrate contract:
+  case (ADE vs ADE Alpha) and is intentional. Full bind/reap/migrate contract:
   [sync and multi-device](../sync-and-multi-device/README.md).
 - **Config reload.** On save, dependent services receive reload
   callbacks (the config service iterates listeners). A hot reload is

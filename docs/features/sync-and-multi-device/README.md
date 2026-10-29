@@ -132,7 +132,7 @@ has not started" in the gap).
 #### Two ADE apps on one computer
 
 One machine has one sync host, so a second ADE app on the same computer — the
-release build plus an Alpha or Beta channel, each with its own `ADE_HOME` and
+release build plus an Alpha channel build, each with its own `ADE_HOME` and
 its own brain — is idle for sync rather than fighting for it. The lease is
 machine-wide across channels (`$TMPDIR/ade-sync-host-<uid>.json` records the
 owning pid, channel, and home), and the non-owning brain takes no lease, binds
@@ -779,13 +779,13 @@ Runtime support files outside `services/sync/`:
   project registry publishes on the same terms as any other — see *Hosting sync,
   and publishing, with no project*. It reports `no_active_sync_scope` only when
   this brain does not hold the lease at all. The published
-  machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
-  build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
-  stable build (or an already-suffixed name) is left untouched, so the same
+  machine `name` is suffixed by package channel (`publishedMachineName`): an Alpha
+  build advertises `<name> · Alpha`, while a
+  stable build (a Beta-track build is stable here) or an already-suffixed name is left untouched, so the same
   physical computer running two channels shows as two distinguishable directory rows.
   The registration also sends the install as structured fields
   (`describeAdeInstall`): `channel` (`stable` only for the default `~/.ade`
-  home, else `alpha`/`beta` from the package channel, omitted for a custom
+  home, else `alpha` from the package channel, omitted for a custom
   home) and `adeHome` (the home relative to the user's home folder, as
   `~/.ade-alpha`, or only the folder name for a home outside it, never a
   username). The Worker stores them in the `channel` and `ade_home` columns
@@ -913,8 +913,8 @@ Runtime support files outside `services/sync/`:
   adeHomePath)`, salted with the account id, so one computer signed into two
   accounts produces two unrelated values and no server-side join can correlate
   them. **An anchor identifies an ADE install, not a chassis**: the platform
-  UUID is shared by every ADE on the box (Stable in `~/.ade`, Beta in
-  `~/.ade-beta`, a second OS user's home), and hashing it alone made all of them
+  UUID is shared by every ADE on the box (Stable in `~/.ade`, Alpha in
+  `~/.ade-alpha`, a second OS user's home), and hashing it alone made all of them
   one machine taking turns superseding each other's row, so the canonicalized
   ADE home path is folded in — a wipe and reinstall lands on the same path and
   still reproduces the same anchor, which is the whole point. On Windows that
@@ -2191,7 +2191,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   exclusion is **this process only** — launchd's tracked main pid is often
   the wedged predecessor still bound to 8787; excluding it is how a
   replacement brain used to stick on 8788 with two listeners on one machine
-  (dual-brain split). Cross-channel conflicts (ADE vs ADE Beta) are left
+  (dual-brain split). Cross-channel conflicts (ADE vs ADE Alpha) are left
   alone; the "ADE is already running with phone sync" dialog is intentional.
   When already listening on a fallback port, `tryMigrateToPort(8787)` binds
   the canonical port alongside the current listener, closes the old one on
@@ -3436,7 +3436,7 @@ install. Three mechanisms, each in a different layer, keep that from happening:
   wipe mints both afresh and matches nothing, while a per-account hash of an
   OS-level machine identifier survives it. It is salted with the account id and
   folded with the ADE home path, so it can neither correlate two accounts nor
-  merge a Beta install into Stable's row, and a host that cannot read one simply
+  merge an Alpha install into Stable's row, and a host that cannot read one simply
   omits it.
 
 ### Getting back on after a refusal
@@ -4400,7 +4400,7 @@ cannot be changed until it is.
   process pid). A live listener that landed on a fallback keeps probing
   `tryMigrateToPort(8787)` so phones that saved 8787 reconnect without a
   restart. The "ADE is already running with phone sync" dialog is the
-  cross-channel case (ADE vs ADE Beta) and is intentional.
+  cross-channel case (ADE vs ADE Alpha) and is intentional.
 
 - **Cross-machine session handoff is not database sync or provider-session
   migration.** It publishes the exact Git commit and sends a bounded,

@@ -1,9 +1,14 @@
 name: Release
 
 on:
+  # Stable tags only. Beta and preview tags (vX.Y.Z-beta.N...) belong to
+  # beta.yml, which creates them through release-publish.yml with
+  # GITHUB_TOKEN (and so starts no workflow anyway); the exclusion keeps a
+  # hand-pushed prerelease tag from starting a second, stable-shaped run.
   push:
     tags:
       - "v*"
+      - "!v*-*"
   workflow_dispatch:
     inputs:
       tag_name:

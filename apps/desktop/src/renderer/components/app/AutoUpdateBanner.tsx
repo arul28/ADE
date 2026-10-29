@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { updateTrackLabel } from "../../../shared/updateTrack";
 import { ArrowsClockwise, Bell } from "@phosphor-icons/react";
 import type { AutoUpdateSnapshot, UpdateTransactionResult } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "./useAutoUpdateSnapshot";
@@ -177,6 +178,7 @@ export function AutoUpdateBanner() {
     APP_BANNER,
   );
 
+  const switchingTrackLabel = snapshot.track?.switching ? updateTrackLabel(snapshot.track.switching) : null;
   useAppBanner(
     showReadyUpdatePrompt
       ? {
@@ -185,9 +187,14 @@ export function AutoUpdateBanner() {
           // A notice mark on the left; the install action on the right keeps
           // its arrow so the button still reads as "restart and install".
           icon: <Bell size={13} weight="bold" />,
-          title: `Update v${updateVersion} is ready to install`,
+          // During a track switch the ready build may be OLDER (Beta back to
+          // Stable), so it is named by its track, in the words Settings uses.
+          title: switchingTrackLabel
+            ? `${switchingTrackLabel} ${updateVersion} is ready`
+            : `Update v${updateVersion} is ready to install`,
+          ...(switchingTrackLabel ? { detail: `Restart ADE to finish switching to ${switchingTrackLabel}.` } : {}),
           actions: [{
-            label: installRequested ? "Restarting…" : "Restart and install",
+            label: installRequested ? "Restarting…" : switchingTrackLabel ? "Restart and switch" : "Restart and install",
             icon: <ArrowsClockwise size={12} weight="bold" />,
             variant: "primary",
             busy: installRequested,

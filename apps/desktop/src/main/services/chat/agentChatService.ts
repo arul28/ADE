@@ -1142,6 +1142,11 @@ import {
   buildRestartNote,
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
+  MAX_CONSECUTIVE_RESTART_RESUMES,
+  nextRestartResumeStreak,
+  restartInterruptedNotice,
+  restartResumeHold,
+  type RestartResumeHold,
   RESTART_RESUME_REASON,
   BACKGROUND_WORK_LOST_RESUME_PROMPT,
   BACKGROUND_WORK_LOST_RESUME_REASON,
@@ -5365,6 +5370,26 @@ type ManagedChatSession = {
   backgroundLossWakeState?: "scheduled" | "dispatched";
   /** This process already ran restart recovery for this chat; never twice. */
   restartRecoveryDone?: boolean;
+  /**
+   * `idleSinceAt` as it was when restart recovery began. Recovery closes the
+   * cut-off turn and marks the chat idle, which would otherwise read as "the
+   * resumed turn finished" and restart the resume streak (see
+   * `nextRestartResumeStreak`).
+   */
+  idleSinceBeforeRestartRecovery?: string | null;
+  /**
+   * `awaitingInput` as the chat's state file said when this process loaded
+   * the chat. Any persist with no runtime drops the flag, so recovery reads
+   * this, not the file, on every path (startup sweep, stale-row sweep, turn
+   * start), and never resumes past an open question.
+   */
+  awaitingInputAtLoad?: boolean;
+  /**
+   * When the user last sent a message, from the transcript, as restart
+   * recovery found it. A message after the last automatic resume means the
+   * user stepped in, so the resume streak starts again.
+   */
+  lastUserMessageBeforeRestartRecovery?: string | null;
   /**
    * When its parent's "+ child chats" Stop stopped this chat. Its stopped
    * report then lands as a quiet notice instead of waking the parent the user
@@ -21864,6 +21889,31 @@ export function createAgentChatService(args: {
     return !Number.isFinite(endedMs) || Date.now() - endedMs <= RESTART_RESUME_MAX_AGE_MS;
   };
 
+  /**
+   * The streak this chat's next automatic resume would have (see
+   * `nextRestartResumeStreak`). Before the scheduler is ready nothing can be
+   * armed yet, so it reads as a first resume.
+   */
+  const restartResumeStreakFor = (managed: ManagedChatSession): number => {
+    if (!scheduledWorkScheduler) return 1;
+    const sessionId = managed.session.id;
+    const previous = (scheduledWorkScheduler.list(sessionId) ?? [])
+      .find((schedule) => schedule.id === updateResumeScheduleId(sessionId));
+    const idleSince = managed.idleSinceBeforeRestartRecovery !== undefined
+      ? managed.idleSinceBeforeRestartRecovery
+      : managed.session.idleSinceAt;
+    return nextRestartResumeStreak(previous, idleSince, managed.lastUserMessageBeforeRestartRecovery ?? null);
+  };
+  /** The newest message the user typed (not an automatic wake), or null. */
+  const latestUserMessageAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const envelope = events[index]!;
+      if (envelope.event.type === "user_message" && !envelope.event.metadata?.scheduledWake) return envelope.timestamp;
+    }
+    return null;
+  };
+  const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
+    restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
   const armRestartResume = (
     managed: ManagedChatSession,
     resume: { prompt: string; reason: string } = { prompt: RESTART_RESUME_PROMPT, reason: RESTART_RESUME_REASON },
@@ -21876,6 +21926,24 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       if (!row || !isSchedulableAgentSession(row) || row.settledAt || row.archivedAt) return;
       if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
+      const restartResumeStreak = restartResumeStreakFor(managed);
+      if (restartResumeStreak > MAX_CONSECUTIVE_RESTART_RESUMES) {
+        logger.warn("agent_chat.restart_resume_capped", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak - 1,
+        });
+        // Recovery may have run before the scheduler could read the streak
+        // and promised a resume; this says what really happens.
+        if (resume.prompt === RESTART_RESUME_PROMPT) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: restartInterruptedNotice({ announceThisTurn: false, hold: "capped", cancelledLine: "" }),
+          });
+        }
+        return;
+      }
       const createdAt = Date.now();
       try {
         await scheduledWorkScheduler.upsert({
@@ -21890,8 +21958,13 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          restartResumeStreak,
         });
-        logger.info("agent_chat.restart_resume_armed", { sessionId, provider: managed.session.provider });
+        logger.info("agent_chat.restart_resume_armed", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak,
+        });
       } catch (error) {
         logger.warn("agent_chat.restart_resume_arm_failed", {
           sessionId,
@@ -21925,8 +21998,24 @@ export function createAgentChatService(args: {
     const announceThisTurn = options?.announceThisTurn === true;
     if (managed.restartRecoveryDone) return null;
     managed.restartRecoveryDone = true;
+    managed.idleSinceBeforeRestartRecovery = managed.session.idleSinceAt ?? null;
+    managed.lastUserMessageBeforeRestartRecovery = latestUserMessageAt(transcriptEvents);
+    // Either source saying "waiting for the user" holds the resume: the state
+    // read at load (a persist with no runtime drops the flag later), or the
+    // file now (a sibling that owned the chat may have asked since).
+    const awaitingUser = managed.awaitingInputAtLoad === true
+      || readPersistedState(managed.session.id)?.awaitingInput === true;
+    let resumeHold: RestartResumeHold | null = null;
     // Read before `reopen` clears the row's end time.
     const recent = cutOffRecently(sessionService.get(managed.session.id));
+    // One rule for the resume, the lost-work wake and the notice.
+    const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
+      continueEnabled: continueAfterRestartEnabled(),
+      recent,
+      awaitingUser,
+      capped: restartResumeCapReached(managed),
+      settledOrArchived: Boolean(row?.settledAt || row?.archivedAt),
+    });
     // Rows the transcript still shows running, plus rows the stale-run sweep
     // closed for this restart: what the dead process took with it. Minus what
     // an earlier recovery already reported (those rows keep their restart
@@ -21952,21 +22041,19 @@ export function createAgentChatService(args: {
     managed.backgroundLossWakePending = false;
     if (unsettled) {
       const row = sessionService.get(managed.session.id);
-      const willContinue = continueAfterRestartEnabled()
-        && recent
-        && !row?.settledAt
-        && !row?.archivedAt;
+      // A turn that waited for the user's answer or approval is not resumed:
+      // the question died with the process that asked it, and "continue"
+      // would let the agent go on without the answer (T3 #18461).
+      const hold = holdFor(row);
+      resumeHold = hold;
+      const willContinue = hold === null;
       const cancelledLine = cancelled.length
         ? ` ${cancelled.length === 1 ? "1 background job was" : `${cancelled.length} background jobs were`} stopped; the agent is told which.`
         : "";
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: announceThisTurn
-          ? `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`
-          : willContinue
-            ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
-            : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
+        message: restartInterruptedNotice({ announceThisTurn, hold, cancelledLine }),
         turnId: unsettled.turnId,
       });
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
@@ -21984,7 +22071,8 @@ export function createAgentChatService(args: {
     let wakeForLostWork = false;
     if (lostAwaitedWork) {
       const row = sessionService.get(managed.session.id);
-      wakeForLostWork = continueAfterRestartEnabled() && recent && !row?.settledAt && !row?.archivedAt;
+      // The same rule as a resume: never woken past an open question.
+      wakeForLostWork = holdFor(row) === null;
       // A shutdown that recorded the loss already named it in its own notice;
       // only work the transcript shows (a crash, or rows the stale-run sweep
       // closed) needs naming here.
@@ -22006,7 +22094,8 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
-    if (unsettled && recent) return "resume";
+    // The same decision the notice above told the user.
+    if (unsettled) return resumeHold === null ? "resume" : null;
     return wakeForLostWork ? "lost_work_wake" : null;
   };
 
@@ -22068,7 +22157,10 @@ export function createAgentChatService(args: {
         managed,
         findUnsettledParentTurn(managed, events),
         events,
-        { excludeIds, announceThisTurn: args.reason === "turn_start" },
+        {
+          excludeIds,
+          announceThisTurn: args.reason === "turn_start",
+        },
       );
       if (args.reason !== "turn_start") armRestartRecovery(managed, arm);
     } catch (error) {
@@ -28901,6 +28993,7 @@ export function createAgentChatService(args: {
     // same as "no runtime". A second brain on the same ADE home sees every
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
+    managed.awaitingInputAtLoad = persisted?.awaitingInput === true;
     if (row.status === "detached") {
       runRestartRecoveryIfPending(managed, {
         reason: "load",
@@ -67019,6 +67112,8 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          // The user accepted this update: a fresh start for the resume cap.
+          restartResumeStreak: 0,
         });
         if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
       } catch (error) {

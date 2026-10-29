@@ -36,7 +36,7 @@ function buildMachineLayout(adeDir: string): MachineAdeLayout {
 
 function stableLayoutForChannelHome(layout: MachineAdeLayout): MachineAdeLayout | null {
   const homeName = path.basename(layout.adeDir);
-  if (homeName !== ".ade-alpha" && homeName !== ".ade-beta") return null;
+  if (homeName !== ".ade-alpha") return null;
   const stableAdeDir = path.join(path.dirname(layout.adeDir), ".ade");
   if (path.resolve(stableAdeDir) === path.resolve(layout.adeDir)) return null;
   return buildMachineLayout(stableAdeDir);

@@ -18,6 +18,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
+import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
 import {
   detectCloudPlaceholderFile,
   detectCloudStorageProvider,
@@ -355,6 +356,7 @@ const chatRuntimeBudget = createChatRuntimeBudget();
 declare const __ADE_VERSION__: string | undefined;
 
 const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
+
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -996,6 +998,7 @@ export async function createAdeRuntime(args: {
     }
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
+      appVersion: shippedVersionOrNull(process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION),
     });
     // The app and the brain's project scope record it too, so a project used
     // only from the CLI is protected the same way as one opened in the app.
