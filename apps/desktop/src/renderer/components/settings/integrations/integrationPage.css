@@ -488,7 +488,18 @@
 }
 @container integrationpage (max-width: 760px) {
   .ade-ig-body { grid-template-columns: minmax(0, 1fr); }
-  .ade-ig-hero-toggle { margin-left: 0; border-left: 0; }
+  /* Facts two to a row, so a repository name is not cut to three letters;
+     the switch takes a row of its own. */
+  .ade-ig-hero-strip { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ade-ig-hero-strip > * { border-left: 0; border-top: 1px solid rgba(255, 255, 255, 0.12); }
+  .ade-ig-hero-strip > .ade-ig-hero-fact:nth-child(-n + 2) { border-top: 0; }
+  .ade-ig-hero-strip > .ade-ig-hero-fact:nth-child(even) { border-left: 1px solid rgba(255, 255, 255, 0.12); }
+  /* An odd last fact (just before the switch) spans the row. */
+  .ade-ig-hero-strip > .ade-ig-hero-fact:nth-child(odd):nth-last-child(2) { grid-column: 1 / -1; }
+  .ade-ig-hero-strip > .ade-ig-hero-toggle { grid-column: 1 / -1; margin-left: 0; justify-content: space-between; }
+  .ade-ig-hero[data-light="true"] .ade-ig-hero-strip > * { border-top-color: rgba(16, 21, 28, 0.08); }
+  .ade-ig-hero[data-light="true"] .ade-ig-hero-strip > .ade-ig-hero-fact:nth-child(even) { border-left-color: rgba(16, 21, 28, 0.08); }
+  .ade-ig-hero-panel > .ade-ig-hero-toggle { justify-content: space-between; }
 }
 
 /* ── The grid of integrations ── */
