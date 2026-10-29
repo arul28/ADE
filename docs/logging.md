@@ -543,6 +543,17 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Starting a switch in **Settings › About › Update track** records the same
+`ade_feature_used` event at the update-service owner boundary
+(`startTrackSwitch`), with `feature: "updates"`, `action: "track_switch"`, and
+a closed `outcome`: `to_beta` or `to_stable`. Choosing the running build's
+track again (a cancel) records nothing. It carries no version, path or
+database detail. A one-hour deduplication key per direction bounds it to at
+most 48 accepted events per installation per UTC day in theory, and in
+practice one or two, within the existing `ade_feature_used` ceilings. Beta
+builds report errors to Sentry with the environment `beta` (version read
+from the build), so Beta issues never mix with production ones.
+
 Pressing **Fix it** on the macOS banner that says ADE will ask for a password on
 every update (its app bundle belongs to root or another account) records the
 same `ade_feature_used` event at the IPC owner that runs the fix

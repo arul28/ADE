@@ -184,6 +184,8 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
+`ade brain update` follows the machine's update track (`~/.ade/update-track.json`): on Beta, "latest" is the build the Beta feed names, and it never falls back to Stable (or the reverse). A pinned `--version` is used as given. When the saved track and the running build's track differ (a switch that did not finish), "latest" is refused; finish the switch in ADE › Settings › About, or pass `--version`.
+
 The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade` (`ade.exe` on Windows), which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. On Windows, update stops the existing process before replacing the executable, restores the previous executable, native tree, and service if promotion fails, and delegates staging cleanup until the running helper exits so Windows file locks do not retain update payloads. Failed compensation reports and preserves the exact recovery files instead of silently discarding the rollback error. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
 ## Internal process command

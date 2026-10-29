@@ -151,11 +151,11 @@ describe("Windows remote runtime bootstrap contracts", () => {
 
   it("builds channel-separated native paths and SFTP paths when the profile contains spaces", () => {
     const layout = resolveWindowsRemoteRuntimeLayout("C:\\Users\\Ada Dev", {
-      ADE_PACKAGE_CHANNEL: "beta",
+      ADE_PACKAGE_CHANNEL: "alpha",
     } as NodeJS.ProcessEnv);
-    expect(layout.adeHome).toBe("C:\\Users\\Ada Dev\\.ade-beta");
-    expect(layout.binary).toBe("C:\\Users\\Ada Dev\\.ade-beta\\bin\\ade.exe");
-    expect(windowsSftpPath(layout.binary)).toBe("/C:/Users/Ada Dev/.ade-beta/bin/ade.exe");
+    expect(layout.adeHome).toBe("C:\\Users\\Ada Dev\\.ade-alpha");
+    expect(layout.binary).toBe("C:\\Users\\Ada Dev\\.ade-alpha\\bin\\ade.exe");
+    expect(windowsSftpPath(layout.binary)).toBe("/C:/Users/Ada Dev/.ade-alpha/bin/ade.exe");
   });
 
   it("encodes PowerShell so profile spaces and metacharacters never appear in the SSH command", () => {
@@ -325,7 +325,7 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
     })).toBe('ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ');
   });
 
-  it("uses isolated remote paths for Alpha and Beta channels", () => {
+  it("uses an isolated remote path for Alpha, and the shared home for a leftover beta value", () => {
     const alphaLayout = resolveRemoteRuntimeLayout({ ADE_PACKAGE_CHANNEL: "alpha" } as NodeJS.ProcessEnv);
     const betaLayout = resolveRemoteRuntimeLayout({ ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv);
 
@@ -339,23 +339,22 @@ describe("buildRemoteRuntimeEnvironmentPrefix", () => {
       nativeDepsReady: true,
       layout: alphaLayout,
     })).toBe('ADE_HOME="$HOME/.ade-alpha" PATH="$HOME/.ade-alpha/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="alpha" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 NODE_PATH="$HOME/.ade-alpha/runtime/darwin-arm64/node_modules${NODE_PATH:+:$NODE_PATH}" ');
+    // Beta is an update track of the normal install, which lives in ~/.ade.
     expect(betaLayout).toMatchObject({
-      homeDirName: ".ade-beta",
-      binaryRelative: ".ade-beta/bin/ade",
-      versionExpr: "$HOME/.ade-beta/bin/ade.version",
+      homeDirName: ".ade",
+      binaryRelative: ".ade/bin/ade",
+      versionExpr: "$HOME/.ade/bin/ade.version",
     });
   });
 
   it("checks the selected channel first, then falls back to shared and other channel runtime homes", () => {
-    expect(resolveRemoteRuntimeLayoutCandidates({ ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv).map((layout) => layout.homeDirName)).toEqual([
-      ".ade-beta",
+    expect(resolveRemoteRuntimeLayoutCandidates({} as NodeJS.ProcessEnv).map((layout) => layout.homeDirName)).toEqual([
       ".ade",
       ".ade-alpha",
     ]);
     expect(resolveRemoteRuntimeLayoutCandidates({ ADE_PACKAGE_CHANNEL: "alpha" } as NodeJS.ProcessEnv).map((layout) => layout.homeDirName)).toEqual([
       ".ade-alpha",
       ".ade",
-      ".ade-beta",
     ]);
   });
 });
@@ -1881,7 +1880,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   });
 
   it("falls back across channel homes when no bundled runtime is available in dev", async () => {
-    process.env.ADE_PACKAGE_CHANNEL = "beta";
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
     cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
     const fakeSsh = createFakeSsh();
@@ -1892,7 +1890,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) return remoteRuntimeIdentityOk({});
       if (isRemoteRuntimeIdentityCommand(command, ".ade")) return remoteRuntimeIdentityOk({});
       if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) {
         return remoteRuntimeIdentityOk({
@@ -1939,7 +1936,6 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   });
 
   it("tries another channel home when the preferred runtime cannot initialize compatible RPC", async () => {
-    process.env.ADE_PACKAGE_CHANNEL = "beta";
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
     cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
     const fakeSsh = createFakeSsh();
@@ -1950,21 +1946,20 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+      if (isRemoteRuntimeIdentityCommand(command, ".ade")) {
         return remoteRuntimeIdentityOk({
-          markerVersion: "1.8.0-beta.2",
-          sha256: "old-beta-sha",
-          executableVersion: "ade 1.8.0-beta.2",
+          markerVersion: "1.8.0",
+          sha256: "old-stable-sha",
+          executableVersion: "ade 1.8.0",
         });
       }
-      if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("");
       if (command === "test -x $HOME/.ade-alpha/bin/ade && $HOME/.ade-alpha/bin/ade --version || true") return ok("ade 1.9.0-alpha.4\n");
       if (command === "test -d $HOME/.ade-alpha/runtime/linux-x64/node_modules && echo ok || true") return ok("ok\n");
       return defaultRemoteBootstrapCommand(command);
     });
     initializeMock
       .mockResolvedValueOnce({
-        runtimeInfo: { version: "1.8.0-beta.2" },
+        runtimeInfo: { version: "1.8.0" },
         capabilities: { actions: { listChanged: true } },
       })
       .mockResolvedValueOnce({
@@ -1994,7 +1989,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
       1,
       fakeSsh.ssh,
-      'ADE_HOME="$HOME/.ade-beta" PATH="$HOME/.ade-beta/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ADE_PACKAGE_CHANNEL="beta" ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1 ade --socket $HOME/.ade-beta/sock/ade.sock rpc --stdio',
+      'ADE_HOME="$HOME/.ade" PATH="$HOME/.ade/bin:$HOME/.local/bin:$HOME/.npm-global/bin${PATH:+:$PATH}" ADE_DEFAULT_ROLE="cto" ade --socket $HOME/.ade/sock/ade.sock rpc --stdio',
     );
     expect(openSshRuntimeTransportMock).toHaveBeenNthCalledWith(
       2,
@@ -2009,8 +2004,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
   });
 
-  it("falls back to Stable when the packaged Beta helper closes", async () => {
-    process.env.ADE_PACKAGE_CHANNEL = "beta";
+  it("falls back to Stable when the packaged Alpha helper closes", async () => {
+    process.env.ADE_PACKAGE_CHANNEL = "alpha";
     const resources = createTempResources();
     cleanupResources = resources.cleanup;
     const fakeSsh = createFakeSsh();
@@ -2018,20 +2013,20 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     connectSshWithRouteMock.mockResolvedValue({ client: fakeSsh.ssh, route: uploadRoute });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) {
         return remoteRuntimeIdentityOk({
           markerVersion: APP_VERSION,
           executableVersion: `ade ${APP_VERSION}`,
           sha256: resources.binarySha256,
         });
       }
-      if (command.includes("wc -c < $HOME/.ade-beta/bin/ade") && command.includes("echo ok")) return ok("ok\n");
+      if (command.includes("wc -c < $HOME/.ade-alpha/bin/ade") && command.includes("echo ok")) return ok("ok\n");
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") return ok("ade 1.2.27\n");
       if (command === "test -d $HOME/.ade/runtime/linux-x64/node_modules && echo ok || true") return ok("ok\n");
       return defaultRemoteBootstrapCommand(command);
     });
     initializeMock
-      .mockRejectedValueOnce(new Error("Remote ADE service connection closed (exit code 1, stderr: beta brain unavailable)."))
+      .mockRejectedValueOnce(new Error("Remote ADE service connection closed (exit code 1, stderr: alpha brain unavailable)."))
       .mockResolvedValueOnce({
         runtimeInfo: { version: "1.2.27", multiProject: true },
         capabilities: {
@@ -2068,7 +2063,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
   });
 
   it("suppresses service installation when compatible RPC falls back to the shared runtime home", async () => {
-    process.env.ADE_PACKAGE_CHANNEL = "beta";
+    process.env.ADE_PACKAGE_CHANNEL = "alpha";
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
     cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
     const fakeSsh = createFakeSsh();
@@ -2079,7 +2074,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Linux x86_64\n");
-      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) {
         return remoteRuntimeIdentityOk({
           markerVersion: "1.8.0-beta.2",
           sha256: "old-beta-sha",
@@ -2125,8 +2120,8 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     );
   });
 
-  it("falls back from Beta to Stable, upgrades SSH trust through stdin, and saves paired credentials", async () => {
-    process.env.ADE_PACKAGE_CHANNEL = "beta";
+  it("falls back from Alpha to Stable, upgrades SSH trust through stdin, and saves paired credentials", async () => {
+    process.env.ADE_PACKAGE_CHANNEL = "alpha";
     const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-empty-"));
     cleanupResources = () => fs.rmSync(resourcesPath, { recursive: true, force: true });
     const fakeSsh = createFakeSsh();
@@ -2140,7 +2135,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     });
     execSshMock.mockImplementation(async (_client: Client, command: string) => {
       if (command === "uname -sm") return ok("Darwin arm64\n");
-      if (isRemoteRuntimeIdentityCommand(command, ".ade-beta")) {
+      if (isRemoteRuntimeIdentityCommand(command, ".ade-alpha")) {
         return remoteRuntimeIdentityOk({ executableVersion: "ade 1.0.0-beta.1" });
       }
       if (command === "test -x $HOME/.ade/bin/ade && $HOME/.ade/bin/ade --version || true") {
@@ -2170,7 +2165,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     execSshWithInputMock.mockImplementation(async (_client, command: string, input: string) => {
       const request = JSON.parse(input) as { device: { id: string; siteId: string } };
       expect(command).toContain("$HOME/.ade/bin/ade --socket $HOME/.ade/sock/ade.sock --json sync pair-device --json-stdin");
-      expect(command).not.toContain(".ade-beta");
+      expect(command).not.toContain(".ade-alpha");
       expect(command).not.toContain("secret");
       expect(request.device).toMatchObject({
         type: "desktop",
@@ -2293,7 +2288,7 @@ describe("bootstrapRemoteRuntime upload flow", () => {
       if (isRemoteRuntimeIdentityCommand(command)) {
         return remoteRuntimeIdentityOk({ executableVersion: "ade 1.2.27" });
       }
-      if (command.startsWith("test -x $HOME/.ade-beta/") || command.startsWith("test -x $HOME/.ade-alpha/")) return ok("");
+      if (command.startsWith("test -x $HOME/.ade-alpha/") || command.startsWith("test -x $HOME/.ade-alpha/")) return ok("");
       return defaultRemoteBootstrapCommand(command);
     });
     initializeMock.mockResolvedValue({

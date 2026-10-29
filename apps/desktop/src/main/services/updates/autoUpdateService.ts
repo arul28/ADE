@@ -2497,12 +2497,17 @@ export function createAutoUpdateService({
     }
     patchSnapshot(trackPatch());
     logger.info("autoUpdate.track_switch_started", { from: previousSelected, target, runningTrack: trackFeed.runningTrack });
-    productAnalyticsService?.captureInternal({
-      event: "ade_feature_used",
-      surface: "desktop",
-      properties: { feature: "updates", action: "track_switch", mode: target },
-    });
-    if (trackFeed.state().switching) void runUpdateCheck(true);
+    if (trackFeed.state().switching) {
+      productAnalyticsService?.captureInternal({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "updates", action: "track_switch", outcome: target === "beta" ? "to_beta" : "to_stable" },
+        // At most one accepted switch event per direction per hour per install.
+        dedupeKey: `update_track_switch:${target}`,
+        minimumIntervalMs: 60 * 60 * 1000,
+      });
+      void runUpdateCheck(true);
+    }
     return { ok: true, target };
   }
 

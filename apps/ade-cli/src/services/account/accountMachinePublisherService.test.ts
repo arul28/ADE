@@ -1550,7 +1550,7 @@ describe("brain account machine publisher directory policy", () => {
 });
 
 describe("account machine registration publisher", () => {
-  it("suffixes Beta and Alpha machine names but never stable names", () => {
+  it("suffixes Alpha machine names but never stable or Beta-track names", () => {
     const registrationName = (packageChannel: string | null) =>
       buildAccountMachineRegistration({
         machineKey: "machine-studio",
@@ -1558,8 +1558,9 @@ describe("account machine registration publisher", () => {
         packageChannel,
       })?.name;
 
-    expect(registrationName("beta")).toBe("Arul's Mac Studio · Beta");
     expect(registrationName(" ALPHA ")).toBe("Arul's Mac Studio · Alpha");
+    // Beta is an update track of the normal install: one machine, one name.
+    expect(registrationName("beta")).toBe("Arul's Mac Studio");
     expect(registrationName("stable")).toBe("Arul's Mac Studio");
     expect(registrationName(null)).toBe("Arul's Mac Studio");
   });
@@ -1576,8 +1577,8 @@ describe("account machine registration publisher", () => {
     // The home folder itself is "~": its folder name is the username.
     expect(describeAdeInstall({ ADE_HOME: home }, home)).toEqual({ adeHome: "~" });
     // Outside the home folder only the folder name leaves the machine.
-    expect(describeAdeInstall({ ADE_HOME: path.join(os.tmpdir(), "elsewhere", ".ade-beta"), ADE_PACKAGE_CHANNEL: "beta" }, home))
-      .toEqual({ channel: "beta", adeHome: ".ade-beta" });
+    expect(describeAdeInstall({ ADE_HOME: path.join(os.tmpdir(), "elsewhere", ".ade-alpha"), ADE_PACKAGE_CHANNEL: "alpha" }, home))
+      .toEqual({ channel: "alpha", adeHome: ".ade-alpha" });
 
     expect(buildAccountMachineRegistration({
       machineKey: "machine-studio",

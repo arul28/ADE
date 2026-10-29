@@ -71,9 +71,9 @@ final class SSHBootstrapTests: XCTestCase {
 
   func testPairingCommandPrefersRunningChannelSocketsBeforeInstalledBinaries() throws {
     let command = SSHBootstrapService.pairingCommand
-    let firstPass = try XCTUnwrap(command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#))
+    let firstPass = try XCTUnwrap(command.range(of: #"for entry in "stable:.ade" "alpha:.ade-alpha""#))
     let secondPass = try XCTUnwrap(
-      command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#, range: firstPass.upperBound..<command.endIndex)
+      command.range(of: #"for entry in "stable:.ade" "alpha:.ade-alpha""#, range: firstPass.upperBound..<command.endIndex)
     )
     XCTAssertLessThan(firstPass.lowerBound, secondPass.lowerBound)
     XCTAssertTrue(command[firstPass.lowerBound..<secondPass.lowerBound].contains(#"[ -S "$socket" ]"#))
@@ -85,9 +85,9 @@ final class SSHBootstrapTests: XCTestCase {
 
   func testPairingCommandLetsInstalledBinaryRecoverMissingOrStoppedRuntime() throws {
     let command = SSHBootstrapService.pairingCommand
-    let firstPass = try XCTUnwrap(command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#))
+    let firstPass = try XCTUnwrap(command.range(of: #"for entry in "stable:.ade" "alpha:.ade-alpha""#))
     let secondPass = try XCTUnwrap(
-      command.range(of: #"for entry in "stable:.ade" "beta:.ade-beta" "alpha:.ade-alpha""#, range: firstPass.upperBound..<command.endIndex)
+      command.range(of: #"for entry in "stable:.ade" "alpha:.ade-alpha""#, range: firstPass.upperBound..<command.endIndex)
     )
     let runningSocketPass = command[firstPass.lowerBound..<secondPass.lowerBound]
     let installedBinaryPass = command[secondPass.lowerBound..<command.endIndex]

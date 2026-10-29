@@ -1455,3 +1455,50 @@ describe("CREATE TABLE constraint stripping", () => {
     expect(() => accept(once)).not.toThrow();
   });
 });
+
+// Update tracks (docs/plans/beta-track.md): before a new app version first
+// opens a database, a copy is taken, and the file records the highest
+// compatibility level that ran its migrations, which a Beta-to-Stable switch
+// checks. A real file on disk, through the real open.
+describe("openKvDb version copies and compatibility records", () => {
+  it("copies a database before a new version opens it, keeps one copy per move, and never lowers the recorded level", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-kvdb-version-copy-"));
+    const dbPath = path.join(dir, "ade.db");
+    const copies = () => fs.readdirSync(dir).filter((name) => /^ade\.db\.pre-\d.*\.bak$/.test(name)).sort();
+    const open = async (appVersion: string) => {
+      const db = await openKvDb(dbPath, createLogger() as any, { appVersion });
+      return db;
+    };
+    activeDisposers.push(async () => fs.rmSync(dir, { recursive: true, force: true }));
+
+    let db = await open("1.2.127");
+    db.setJson("track:probe", "written by 1.2.127");
+    db.flushNow();
+    db.close();
+    // A brand-new file has nothing to protect.
+    expect(copies()).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(`${dbPath}.compat.json`, "utf8"))).toMatchObject({ level: 1, lastOpenedVersion: "1.2.127" });
+
+    // A newer build left a higher level: an older open must not lower it.
+    fs.writeFileSync(`${dbPath}.compat.json`, JSON.stringify({ level: 5, lastOpenedVersion: "1.2.127" }));
+    db = await open("1.2.128-beta.1");
+    db.close();
+    expect(copies()).toEqual(["ade.db.pre-1.2.128-beta.1-from-1.2.127.bak"]);
+    const copy = new DatabaseSync(path.join(dir, copies()[0]!));
+    expect((copy.prepare("select value from kv where key = ?").get("track:probe") as { value: string }).value)
+      .toContain("written by 1.2.127");
+    copy.close();
+    expect(JSON.parse(fs.readFileSync(`${dbPath}.compat.json`, "utf8"))).toMatchObject({ level: 5, lastOpenedVersion: "1.2.128-beta.1" });
+
+    // The same version again takes no copy; going back takes a new one.
+    db = await open("1.2.128-beta.1");
+    db.close();
+    expect(copies()).toHaveLength(1);
+    db = await open("1.2.127");
+    db.close();
+    expect(copies()).toEqual([
+      "ade.db.pre-1.2.127-from-1.2.128-beta.1.bak",
+      "ade.db.pre-1.2.128-beta.1-from-1.2.127.bak",
+    ]);
+  });
+});
