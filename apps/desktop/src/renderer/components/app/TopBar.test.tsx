@@ -157,6 +157,10 @@ function makeRemoteConnectionSnapshot(
 function resetStore() {
   useAppStore.setState({
     project: { rootPath: "/Users/arul/ADE", name: "ADE" } as any,
+    // Set every flag the project surface reads, so no test depends on what an
+    // earlier test left in the shared store (the Linear button needs both).
+    projectHydrated: true,
+    showWelcome: false,
     projectBinding: {
       kind: "local",
       key: "local:/Users/arul/ADE",
