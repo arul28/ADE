@@ -2099,6 +2099,9 @@ To add one: create `pages/<Name>.tsx` exporting a default component that
 takes `{ close }` (call it before navigating from a "Try it" button), then add
 its entry at the top of `ANNOUNCEMENT_PAGES`.
 
+The account management page introduces provider accounts, usage, settings and
+the initial context inventory, and links to AI connections.
+
 ### Boot splash and the ADE logo
 
 While a window starts, "Starting ADE" plays a liquid glass reveal of the logo
@@ -2123,6 +2126,9 @@ tiles: the group's own tile, screenshot tiles for its headline features
 (each tip's `size` and `shot` in `adeTips.ts`, listed in wall order, pack each
 group with no holes in four columns and in two) and icon tiles for the rest. Suggestions the user
 postponed sit first, under **For you**.
+
+The startup context tip points to provider settings, where the initial context
+inventory shows what a new chat receives and where each item is configured.
 
 Every tip has **Try it**. It goes where the feature lives (a page of the open
 project, a Settings card, a new chat, Home in a new tab, the Connections
