@@ -25,6 +25,12 @@
   // who approved a sign-in from a signed-in ADE app. Unset, that route answers
   // 503 and the app opens the browser page instead. It can sign in as any user
   // of that instance, so it is set out of band like the secret above.
+  //
+  // OPTIONAL SECRETS — CLERK_WEBHOOK_SIGNING_SECRET, POSTHOG_PROJECT_TOKEN
+  // `/webhooks/clerk` records one `ade_signed_up` PostHog event per new account
+  // (src/signupAnalytics.ts). Create a Clerk webhook for `user.created` pointing
+  // at https://<this worker>/webhooks/clerk, then set its `whsec_…` signing
+  // secret and the public `phc_…` project token. Unset, the route answers 503.
   "vars": {
     "ONLINE_WINDOW_MS": "90000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets

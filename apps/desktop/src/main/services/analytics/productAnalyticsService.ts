@@ -842,6 +842,11 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
               plan: "free",
               platform: process.platform,
               app_version: appVersion,
+              // The Clerk user id, so a person can be found in Clerk. The
+              // distinct id stays the hash every ADE client and the sign-up
+              // webhook use, which keeps one person one person.
+              clerk_user_id: normalizedUserId,
+              is_internal: isInternalInstall(),
             },
             $geoip_disable: true,
           },

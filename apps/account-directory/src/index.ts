@@ -24,6 +24,7 @@ import {
   type MusicDeveloperTokenEnv,
 } from "./musicDeveloperToken";
 import { cleanupJevBonusDays, handleJevBonusRequest, isJevBonusRequest, type JevBonusEnv } from "./jevBonus";
+import { handleSignupAnalyticsRequest, isSignupAnalyticsRequest, type SignupAnalyticsEnv } from "./signupAnalytics";
 import {
   cleanupUsageResearch,
   handleUsageResearchRequest,
@@ -31,7 +32,8 @@ import {
   type UsageResearchEnv,
 } from "./usageResearch";
 
-type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv & SentryEnv;
+type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
+  & SignupAnalyticsEnv & SentryEnv;
 
 function route(request: Request, env: WorkerEnv): Promise<Response> {
   // Diagnostics and usage research are matched before the directory because
@@ -52,6 +54,9 @@ function route(request: Request, env: WorkerEnv): Promise<Response> {
   // The Jev bonus: account bearer, POST only, no CORS — the ADE brain is the
   // only caller. It forwards to TypeSafe with ADE's key under a daily cap.
   if (isJevBonusRequest(url)) return handleJevBonusRequest(request, env);
+  // Clerk's sign-up webhook: Svix-signed, POST only, no CORS (Clerk is the
+  // only caller). It records one `ade_signed_up` per account.
+  if (isSignupAnalyticsRequest(url)) return handleSignupAnalyticsRequest(request, env);
   return handleRequest(request, env);
 }
 

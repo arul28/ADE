@@ -125,7 +125,9 @@ protocol ProductAnalyticsSink: AnyObject {
   var isConfigured: Bool { get }
   var canCapture: Bool { get }
   func capture(event: String, properties: [String: Any])
-  func identify(userHash: String)
+  /// `accountId` is the Clerk user id, set on the person so a profile can be
+  /// found in Clerk. The distinct id stays the hash every ADE client uses.
+  func identify(userHash: String, accountId: String)
   func resetIdentity()
   func setEnabled(_ enabled: Bool)
   func flush()
@@ -299,7 +301,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
     }
   }
 
-  func identify(userHash: String) {
+  func identify(userHash: String, accountId: String) {
     lock.withLock {
       guard requestedEnabled,
             Self.isValidUserHash(userHash),
@@ -316,6 +318,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
             "plan": "free",
             "platform": "ios",
             "app_version": Self.appVersion(),
+            "clerk_user_id": accountId,
           ],
           "$geoip_disable": true,
         ],
@@ -808,7 +811,7 @@ final class ProductAnalytics {
       lock.withLock {
         defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
       }
-      sink.identify(userHash: userHash)
+      sink.identify(userHash: userHash, accountId: normalizedUserId)
     }
   }
 

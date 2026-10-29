@@ -315,7 +315,7 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     ])
   }
 
-  func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
+  func testDirectIdentifyLinksAnonymousHistoryAndSetsTheClerkIdOnThePerson() throws {
     let defaults = makeDefaults()
     let factory = ProductAnalyticsTestTransportFactory()
     let sink = DirectPostHogProductAnalyticsSink(
@@ -344,8 +344,9 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(identifyProperties["$anon_distinct_id"] as? String, anonymousID)
     XCTAssertEqual(identifyProperties["$geoip_disable"] as? Bool, true)
     XCTAssertNil(identifyProperties["email"])
-    XCTAssertFalse(String(data: try XCTUnwrap(requests[1].httpBody), encoding: .utf8)?.contains("user_123") == true)
+    // The Clerk id lives only on the person, never as the distinct id.
     let setProperties = try XCTUnwrap(identifyProperties["$set"] as? [String: Any])
+    XCTAssertEqual(setProperties["clerk_user_id"] as? String, "user_123")
     XCTAssertEqual(setProperties["plan"] as? String, "free")
     XCTAssertEqual(setProperties["platform"] as? String, "ios")
     XCTAssertNotNil(setProperties["app_version"] as? String)
@@ -726,7 +727,7 @@ private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
     actions.append(.capture(event))
   }
 
-  func identify(userHash: String) {
+  func identify(userHash: String, accountId _: String) {
     identities.append(userHash)
     actions.append(.identify(userHash))
   }

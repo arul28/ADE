@@ -9,7 +9,7 @@ import {
   setMarketingAnalyticsEnabled,
 } from "../../lib/marketingAnalyticsBrowser";
 
-const EFFECTIVE_DATE = "July 29, 2026";
+const EFFECTIVE_DATE = "October 29, 2026";
 const CONTACT_EMAIL = "arulsharma1028@gmail.com";
 
 type Section = {
@@ -28,9 +28,9 @@ const sections: Section[] = [
   {
     title: "Privacy-bounded product analytics",
     body: [
-      "ADE desktop, runtime, hosted web, and native iOS surfaces use default-on, allowlisted product analytics. They honor the DO_NOT_TRACK=1 environment setting and any analytics opt-out you recorded in an earlier version. The public website asks for consent first. These events help understand activation, retention, feature adoption, reliability, and quota health.",
-      "Desktop and runtime events start with a random installation identity. If you sign in to an ADE account, ADE sends one PostHog identify request that links that anonymous history to a one-way hash of your account ID and sets only plan, platform, and app version. ADE does not send your account ID, email, name, identity provider, or access token to analytics. Signing out rotates the anonymous analytics identity.",
-      "Analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, session titles, raw error messages, or stack traces. ADE does not use analytics session recordings, automatic click or page capture, surveys, advertising profiles, or PostHog feature flags.",
+      "ADE desktop, runtime, hosted web, and native iOS surfaces use default-on, allowlisted product analytics. They honor the DO_NOT_TRACK=1 environment setting and any analytics opt-out you recorded in an earlier version. The public website has its own analytics switch on this page. These events help understand activation, retention, feature adoption, reliability, and quota health.",
+      "Desktop and runtime events start with a random installation identity. If you sign in to an ADE account, ADE sends one PostHog identify request that links that anonymous history to a one-way hash of your account ID, and records on that analytics profile your ADE account ID, plan, platform, app version, and whether the install belongs to the ADE team. When you create an ADE account, ADE's account service records one sign-up event on the same profile with how you signed up (for example GitHub, Google, or email). ADE does not send your email, name, or access token to analytics. Signing out rotates the anonymous analytics identity.",
+      "App analytics never includes prompts, source code, file or terminal content, repository names, file paths, URLs, query strings, URL fragments, referrers, branch names, session titles, raw error messages, or stack traces. ADE does not use analytics session recordings, automatic click or page capture, surveys, advertising profiles, or PostHog feature flags.",
       "Event collection is deduplicated and capped locally before transmission so a loop or high-frequency UI action cannot generate an unbounded event stream.",
     ],
   },
@@ -45,8 +45,8 @@ const sections: Section[] = [
   {
     title: "What this website collects",
     body: [
-      "After you allow analytics, the public marketing site manually records a daily app-open signal, an allowlisted page category, allowlisted CTA or feature-demo clicks, coarse browser error categories, and a daily event-budget summary. Before that choice, it sends no product analytics. It does not derive analytics from link destinations or visible text, and it never sends a full URL, query string, fragment, referrer, error message, or stack trace.",
-      "The site uses a random browser identifier stored in local storage for anonymous retention analysis. It sends at most 40 attempted events per UTC day, with lower per-event and per-feature limits plus burst deduplication. The PostHog project token is public configuration and does not grant account access. Requests omit credentials and referrers, disable PostHog person profiles and GeoIP enrichment, and use no analytics cookies. Like any HTTPS service, PostHog still receives network metadata needed to accept the request.",
+      "Unless you turn website analytics off on this page, the public marketing site manually records a daily app-open signal, an allowlisted page category, allowlisted CTA or feature-demo clicks, coarse browser error categories, and a daily event-budget summary. To understand where visitors come from, each event also carries the page address you are on, the site that linked you here, and any campaign tags (utm_source, utm_medium, utm_campaign, utm_term, utm_content) in the link you followed, plus the first such source this browser arrived from. Page addresses keep only the path and campaign tags; other query parameters and fragments are removed, and only the linking site's address without its query is kept. It does not derive analytics from link destinations or visible text, and it never sends an error message or stack trace.",
+      "The site uses a random browser identifier stored in local storage for anonymous retention analysis, and keeps the visit's arrival source in session storage and the first arrival source in local storage. It sends at most 40 attempted events per UTC day, with lower per-event and per-feature limits plus burst deduplication. The PostHog project token is public configuration and does not grant account access. Requests omit credentials, disable PostHog person profiles and GeoIP enrichment, and use no analytics cookies. Like any HTTPS service, PostHog still receives network metadata needed to accept the request.",
     ],
   },
   {
@@ -87,7 +87,7 @@ const sections: Section[] = [
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
           "Freebuff — an advertising-measurement pixel on this website only. Unless you have turned website analytics off, it records visits, keeps the click identifier from a Freebuff ad link, and reports when you press a download or copy-install button, so ADE can tell which ads lead to downloads.",
-          "PostHog — receives manually selected product events when analytics is enabled. ADE creates a pseudonymous person profile only after desktop/runtime account sign-in; autocapture, replay, surveys, and feature flags are disabled.",
+          "PostHog — receives manually selected product events when analytics is enabled. ADE creates a person profile, keyed by a hash of your account ID and carrying that ID, only after account sign-in; autocapture, replay, surveys, and feature flags are disabled.",
           "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",
@@ -101,7 +101,7 @@ const sections: Section[] = [
     body: [
       "Unpairing an iOS device clears its saved machine profile and pairing credentials, but synced project data, caches, the anonymous analytics identifier, and local quota counters can remain in the app container until you remove the app's data. Because iOS Keychain items can survive an uninstall on some systems, unpair before uninstalling when you want to clear pairing credentials explicitly.",
       "Desktop and runtime analytics state — including its anonymous installation identifier, pseudonymous signed-in identity hash, install and activation milestones, identifier-hashing salt, preference, and quota counters — is stored under the machine's .ade/secrets directory until you delete that state. Opting out immediately stops analytics transmission and discards queued events, but retains that local state so toggling cannot reset quota limits. Computer project data otherwise remains on your local disk and is yours to keep, move, or delete.",
-      "After consent, the marketing website stores an anonymous browser identifier, local event-budget counters, and your analytics preference. Withdrawing consent rotates the identifier but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. Sentry error reports are retained for 30 days. To request earlier deletion or ask what can be associated with your installation or pseudonymous account profile, email arulsharma1028@gmail.com. We may need information from your installation or account to locate applicable records. Data sent to AI providers is governed by each provider's retention policy.",
+      "The marketing website stores an anonymous browser identifier, local event-budget counters, the first source this browser arrived from, and your analytics preference. Turning analytics off rotates the identifier and forgets the first source but retains the preference and quota counters; clearing site data removes them. ADE retains PostHog analytics events for no longer than one year and may delete them sooner. Sentry error reports are retained for 30 days. To request earlier deletion or ask what can be associated with your installation or pseudonymous account profile, email arulsharma1028@gmail.com. We may need information from your installation or account to locate applicable records. Data sent to AI providers is governed by each provider's retention policy.",
     ],
   },
   {

@@ -10,11 +10,12 @@ Never send any of the following to PostHog:
 
 - prompts, responses, transcripts, code, diffs, file contents, terminal output, clipboard contents, screenshots, recordings, or proof artifacts;
 - project, repository, lane, branch, file, or directory names and paths;
-- command text or arguments, URLs, referrers, issue titles, PR titles, user-entered labels, raw errors, stack traces, or local log messages;
-- credentials, tokens, email addresses, raw account identifiers, device names, or other user-provided strings;
+- command text or arguments, URLs, referrers, issue titles, PR titles, user-entered labels, raw errors, stack traces, or local log messages (the one exception is the public marketing site's own page address, referrer, and campaign tags; see [Public marketing site](#public-marketing-site));
+- credentials, tokens, email addresses, device names, or other user-provided strings;
+- raw account identifiers anywhere but the person profile: `$identify` and the server-side `ade_signed_up` set the Clerk user id as the person property `clerk_user_id`, never as a distinct id or an event property;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
+No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets plan, platform, app version, `clerk_user_id` (the Clerk user id, so a profile can be found in Clerk) and, on desktop, `is_internal`. The distinct id stays the hash, so history recorded before this did not split. ADE does not send the email, name, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
 
@@ -453,8 +454,7 @@ adds an event.
 - `is_internal` — `true` on an ADE team install, marked with
   `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
   `secrets/product-analytics.json.internal` file beside the state file. Read
-  once per process. It is an event property only; `$identify` still sets only
-  plan, platform, and app version.
+  once per process. Desktop `$identify` also sets it on the person.
 
 `ade_app_installed` and `ade_activated` are once per installation, and a
 milestone counts as sent only once delivery is confirmed. The service sends it
@@ -482,6 +482,22 @@ The first `ade_app_opened` from each client carries `first_open: true`, once
 per installation per client (`openedSurfaces` in the state file), so a first
 TUI or hosted-web open is visible without a new event. A state file written
 before this existed reports no first open on any client.
+
+#### Sign-up (server-side)
+
+`ade_signed_up` is recorded by the account-directory Worker, not by an app,
+because sign-up happens on Clerk's own pages
+(`apps/account-directory/src/signupAnalytics.ts`, `POST /webhooks/clerk`).
+Clerk's `user.created` webhook, Svix-signed with
+`CLERK_WEBHOOK_SIGNING_SECRET`, becomes one event per account under the same
+`ade_user_…` hash the apps identify with. It carries `signup_method` (`github`,
+`google`, `apple`, `microsoft`, `gitlab`, `discord`, `linear`, `other_oauth`,
+or `email`), `client: "account"`, and `$set_once` `clerk_user_id` and
+`signed_up_at`; never the email or name. A retried delivery keeps its
+`svix-id`, which derives the event uuid, so PostHog keeps one. It needs
+`CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the Worker
+and a Clerk webhook subscribed to `user.created`; until then the route answers
+503 and records nothing. Volume is one event per new account.
 
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
@@ -1626,6 +1642,28 @@ The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
+Every event also carries the visit's attribution
+(`readMarketingLanding`, `marketingCurrentUrl` in `marketingAnalytics.ts`, wired
+in `marketingAnalyticsBrowser.ts`): `$current_url` (origin and path, plus only
+`utm_*`; other query parameters and the fragment are dropped, since `/pair`
+and `/open` links can carry codes), `$host`, `$pathname`, `$referrer` (the
+external referrer's origin and path, or `$direct`), `$referring_domain`, and
+any `utm_source` / `utm_medium` / `utm_campaign` / `utm_term` / `utm_content`
+from the landing URL. The landing is read once per tab session
+(sessionStorage), so moving between pages keeps the source the visit arrived
+with; a referrer from this site itself counts as `$direct`. The first source
+the browser ever arrived from rides along as `first_referring_domain` and
+`first_utm_source` / `first_utm_medium` / `first_utm_campaign`
+(localStorage, forgotten on opt-out). These are properties of the existing
+events and add none; the site sends no `$pageview`, because
+`ade_marketing_screen_viewed` already marks each real page view.
+
+An install cannot be tied to the visit that downloaded it: the installers are
+fixed files on GitHub, and the iPhone button opens a TestFlight public link,
+which takes no campaign tag. Download clicks carry the visit's source, so
+installs are attributed by comparing download clicks per source with
+`ade_app_installed` over the same days, not person by person.
+
 The install dialog (the modal behind every Mac/Windows download button and the
 Linux brain link) uses the existing taxonomy: opening it records one feature
 event per platform (`install_dialog_mac` / `install_dialog_windows` /
@@ -1634,8 +1672,8 @@ reports identically), copying a command records
 `copy_install_command_<platform>` or `copy_brew_command`, and the direct
 download buttons record the CTA event with closed labels
 (`download_mac_arm64`, `download_mac_x64`, `download_windows_x64`) at position
-`install_dialog`. Events carry no installer URL, release tag, platform
-fingerprint, or referrer, and fit inside the unchanged 12-CTA / 16-feature /
+`install_dialog`. Events carry no installer URL, release tag, or platform
+fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 16-feature /
 40-event public-site ceilings. The `/install.sh`, `/install.ps1`, and
 `/download/*` Vercel redirect endpoints are deliberately analytics-free — the
 dialog's client-side click is the funnel signal, and a test pins that the

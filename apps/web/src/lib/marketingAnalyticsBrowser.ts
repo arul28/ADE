@@ -1,5 +1,10 @@
 import {
+  FIRST_TOUCH_STORAGE_KEY,
+  firstTouchProperties,
   MarketingAnalytics,
+  marketingCurrentUrl,
+  marketingLandingProperties,
+  readMarketingLanding,
   MARKETING_ERROR_KINDS,
   type MarketingErrorKind,
   type MarketingFeature,
@@ -13,6 +18,7 @@ import {
 
 const PREFERENCE_STORAGE_KEY = "ade.analytics.enabled.v1";
 const PREFERENCE_EVENT = "ade:analytics-preference-changed";
+const LANDING_STORAGE_KEY = "ade.analytics.marketing.landing.v1";
 const DEFAULT_POSTHOG_HOST = "https://us.i.posthog.com";
 
 type AnalyticsPreferenceDetail = { enabled: boolean };
@@ -83,6 +89,52 @@ async function sendToPostHog(captureUrl: string, payload: PostHogCapturePayload)
   if (!response.ok) throw new Error(`PostHog capture failed with ${response.status}`);
 }
 
+/**
+ * The visit's landing, read once per browser tab session (sessionStorage), so
+ * moving between pages keeps the referrer and campaign the visit arrived with.
+ * The first landing this browser ever had is kept in localStorage.
+ */
+function landingContext(): (() => Record<string, string>) | undefined {
+  if (typeof window === "undefined") return undefined;
+  let landing: Record<string, string> | null = null;
+  try {
+    const stored = window.sessionStorage.getItem(LANDING_STORAGE_KEY);
+    if (stored) landing = JSON.parse(stored) as Record<string, string>;
+  } catch {
+    landing = null;
+  }
+  const arrival = readMarketingLanding(window.location.href, document.referrer);
+  if (!landing) {
+    landing = marketingLandingProperties(arrival);
+    try {
+      window.sessionStorage.setItem(LANDING_STORAGE_KEY, JSON.stringify(landing));
+    } catch {
+      // Without session storage the landing lives for this page load only.
+    }
+  }
+  const sessionLanding = landing;
+  return () => {
+    let firstTouch: Record<string, string> | null = null;
+    try {
+      const stored = window.localStorage.getItem(FIRST_TOUCH_STORAGE_KEY);
+      if (stored) {
+        firstTouch = JSON.parse(stored) as Record<string, string>;
+      } else {
+        firstTouch = firstTouchProperties(arrival);
+        window.localStorage.setItem(FIRST_TOUCH_STORAGE_KEY, JSON.stringify(firstTouch));
+      }
+    } catch {
+      firstTouch = null;
+    }
+    const page = marketingCurrentUrl(window.location.href);
+    return {
+      ...(firstTouch ?? {}),
+      ...sessionLanding,
+      ...(page ? { $current_url: page.url, $host: page.host, $pathname: page.pathname } : {}),
+    };
+  };
+}
+
 const captureUrl = typeof window === "undefined" ? null : captureUrlFromEnv();
 const analyticsStorage = typeof window === "undefined" ? null : browserStorage();
 const analytics =
@@ -91,6 +143,7 @@ const analytics =
         projectToken: projectTokenFromEnv(),
         storage: analyticsStorage,
         isEnabled: safePreferenceRead,
+        context: landingContext(),
         transport: (payload) => sendToPostHog(captureUrl, payload),
       })
     : null;

@@ -1532,10 +1532,15 @@ describe("productAnalyticsService", () => {
     expect(identify.distinctId).toMatch(/^ade_user_[0-9a-f]{32}$/);
     expect(identify.properties).toMatchObject({
       $anon_distinct_id: anonymousId,
-      $set: { plan: "free", platform: process.platform, app_version: "1.2.3" },
+      $set: {
+        plan: "free",
+        platform: process.platform,
+        app_version: "1.2.3",
+        clerk_user_id: "clerk_user_private_123",
+        is_internal: false,
+      },
       $geoip_disable: true,
     });
-    expect(JSON.stringify(identify)).not.toContain("clerk_user_private_123");
     expect(harness.service.identifyAccount("clerk_user_private_123")).toEqual({
       accepted: false,
       reason: "duplicate",
