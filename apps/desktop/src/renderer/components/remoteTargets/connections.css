@@ -288,8 +288,8 @@
   padding: 14px 12px 14px 16px;
   color: #fff;
   overflow: hidden;
-  border-top-left-radius: inherit;
-  border-top-right-radius: inherit;
+  /* The sheet is rounded-xl (12px) with a 1px border; match its inner curve. */
+  border-radius: 11px 11px 0 0;
   background:
     radial-gradient(70% 140% at 0% 0%, var(--cx-bright), transparent 70%),
     radial-gradient(60% 140% at 100% 0%, var(--cx-light), transparent 72%),
