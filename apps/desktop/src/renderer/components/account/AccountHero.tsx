@@ -12,8 +12,8 @@ export type AccountThisComputer = {
   name: string;
   /** "ADE 1.4.2", or both versions when the app and the brain differ. */
   version: string | null;
-  /** False when the account directory has no row for this computer. */
-  listed: boolean;
+  /** False when the account directory has no row for this computer; null until it answers. */
+  listed: boolean | null;
   routes: MachineRouteItem[];
 };
 
@@ -76,9 +76,9 @@ function ThisComputerCard({ computer }: { computer: AccountThisComputer | null }
           <div className="ade-ah-panel-eyebrow">This computer</div>
           <div className="ade-ah-panel-name" title={computer.name}>{computer.name}</div>
         </div>
-        <span className="ade-ah-status" data-tone={computer.listed ? "on" : "warn"}>
+        <span className="ade-ah-status" data-tone={computer.listed === true ? "on" : computer.listed === false ? "warn" : "idle"}>
           <i />
-          {computer.listed ? "Online" : "Not on your account"}
+          {computer.listed === true ? "Online" : computer.listed === false ? "Not on your account" : "Checking…"}
         </span>
       </div>
       <div className="ade-ah-panel-meta">

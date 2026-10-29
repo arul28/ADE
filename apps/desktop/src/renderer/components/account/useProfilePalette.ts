@@ -22,10 +22,11 @@ export function paletteFromTint(tint: string): ScenePalette {
   return {
     ramp: [
       fromHsl(h, sat * 0.6, 0.09),
-      fromHsl((h + 340) % 360, sat * 0.8, 0.22),
+      // `toHsl` hues run 0–1, so a shift in degrees is divided by 360.
+      fromHsl(h + 340 / 360, sat * 0.8, 0.22),
       fromHsl(h, sat, 0.38),
-      fromHsl((h + 24) % 360, sat, 0.52),
-      fromHsl((h + 48) % 360, sat * 0.9, 0.66),
+      fromHsl(h + 24 / 360, sat, 0.52),
+      fromHsl(h + 48 / 360, sat * 0.9, 0.66),
     ],
     luma: 0.3,
   };

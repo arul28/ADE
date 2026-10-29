@@ -606,6 +606,7 @@
   background: rgba(255, 255, 255, 0.12);
 }
 .ade-ah-status i { width: 6px; height: 6px; border-radius: 999px; background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.22); }
+.ade-ah-status[data-tone="idle"] i { background: rgba(255, 255, 255, 0.45); box-shadow: none; }
 .ade-ah-status[data-tone="warn"] i { background: #fbbf24; box-shadow: 0 0 0 3px rgba(251, 191, 36, 0.22); }
 .ade-ah-routes {
   list-style: none;

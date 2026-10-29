@@ -918,7 +918,11 @@ export function YourMacsCard({
   const thisRow = rows.find((row) => row.thisMac) ?? null;
   const thisRowMachine = thisRow?.accountMachine ?? null;
   const thisComputerName = thisRow?.name ?? THIS_MACHINE_NAME;
-  const thisComputerListed = !thisMachineMissing;
+  // Unknown until both the directory and this computer's identity answer, so
+  // the banner never calls an unverified computer Online.
+  const thisComputerListed: boolean | null = result?.state === "ok" && localIdentity?.machineKey
+    ? !thisMachineMissing
+    : null;
   const versionText = thisComputerVersion?.text ?? null;
   useEffect(() => {
     if (!onThisComputer || webMode) return;

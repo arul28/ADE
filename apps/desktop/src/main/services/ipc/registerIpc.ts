@@ -12713,9 +12713,24 @@ export function registerIpc({
       const response = await fetch(imageUrl, { signal: AbortSignal.timeout(8_000), redirect: "follow" });
       const contentType = response.headers.get("content-type")?.split(";")[0]?.trim() ?? "";
       if (!response.ok || !/^image\/(png|jpe?g|webp|gif)$/i.test(contentType)) return null;
-      const bytes = Buffer.from(await response.arrayBuffer());
-      if (bytes.length > 2 * 1024 * 1024) return null;
-      return `data:${contentType};base64,${bytes.toString("base64")}`;
+      // Read as a stream and stop at the limit, so an oversized response is
+      // never buffered whole in the main process.
+      const limit = 2 * 1024 * 1024;
+      const reader = response.body?.getReader();
+      if (!reader) return null;
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        total += value.byteLength;
+        if (total > limit) {
+          await reader.cancel().catch(() => {});
+          return null;
+        }
+        chunks.push(value);
+      }
+      return `data:${contentType};base64,${Buffer.concat(chunks).toString("base64")}`;
     } catch (error) {
       getCtx().logger.debug("account.avatar_fetch_failed", { error: getErrorMessage(error) });
       return null;

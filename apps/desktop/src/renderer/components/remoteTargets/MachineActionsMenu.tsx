@@ -50,6 +50,13 @@ export function MachineActionsMenu({ label, actions }: { label: string; actions:
       onClick={() => {
         setOpen(false);
         action.onSelect();
+        // The chosen item unmounts with the menu; unless the action moved
+        // focus somewhere (a rename field, a dialog), return it to the trigger.
+        requestAnimationFrame(() => {
+          if (document.activeElement === document.body || document.activeElement == null) {
+            anchorRef.current?.focus();
+          }
+        });
       }}
     >
       <span className="ade-cx-menu-icon">{action.icon}</span>

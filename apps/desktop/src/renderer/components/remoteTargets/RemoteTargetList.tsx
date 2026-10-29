@@ -493,18 +493,24 @@ export function RemoteTargetList({
     });
   }, [selectedId, statusById]);
 
+  // Only the latest scan's answer lands: an older scan finishing late must not
+  // replace a newer scan's result.
+  const discoveryScanRef = useRef(0);
   const loadDiscoveredMachines = useCallback(async () => {
+    const scan = ++discoveryScanRef.current;
     setLoadingDiscovered(true);
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
+      if (scan !== discoveryScanRef.current) return;
       setDiscoveredMachines(next.machines);
       setDiscoveryDiagnostics(next.diagnostics);
       setDiscoveryFetchError(null);
     } catch (err) {
+      if (scan !== discoveryScanRef.current) return;
       setDiscoveryDiagnostics([]);
       setDiscoveryFetchError(extractError(err));
     } finally {
-      setLoadingDiscovered(false);
+      if (scan === discoveryScanRef.current) setLoadingDiscovered(false);
     }
   }, []);
 
@@ -1387,7 +1393,7 @@ export function RemoteTargetList({
       key: "nearby",
       icon: <WifiHigh size={18} weight="bold" />,
       label: "Find nearby",
-      detail: "Computers on this Wi-Fi with ADE open",
+      detail: "Computers on this Wi-Fi or your Tailscale network with ADE open",
     },
     ...(thisComputerCode
       ? [{
