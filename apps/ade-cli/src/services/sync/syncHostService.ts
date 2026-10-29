@@ -6438,9 +6438,17 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // for, and a ready reseed is the whole compacted state (up to 4 MB),
         // which held a 3G phone's first screen 4.4 s for a 170 KB state. The
         // reseed sends everything from the phone's cursor next, so nothing is
-        // lost; this is the order a phone already gets while it builds.
-        if (reseed.status === "building" || (reseed.status === "ready" && peer.changesetBatchesSent === 0)) {
-          if (peer.changesetBatchesSent > 0) return;
+        // lost; this is the order a phone already gets while it builds. A
+        // ready reseed waits only while the phone has scanned nothing: when
+        // its first window holds nothing for it, no batch goes out but its
+        // cursor moves, and the reseed is next.
+        if (
+          peer.changesetBatchesSent === 0
+          && (reseed.status === "building" || (reseed.status === "ready" && reseedFromDbVersion === 0))
+        ) {
+          // The first batch goes out below.
+        } else if (reseed.status === "building") {
+          return;
         } else {
           if (reseed.status === "ready") {
             if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
