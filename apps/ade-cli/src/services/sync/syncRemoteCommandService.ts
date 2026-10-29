@@ -7616,6 +7616,10 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").rebaseAbort(parseConflictLaneArgs(payload, "git.rebaseAbort")));
   register("git.mergeContinue", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").mergeContinue(parseConflictLaneArgs(payload, "git.mergeContinue")));
+  register("git.mergeBaseIn", { viewerAllowed: true, queueable: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").mergeBaseIn({
+      laneId: requireString(payload.laneId, "git.mergeBaseIn requires laneId."),
+    }));
   register("git.mergeAbort", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").mergeAbort(parseConflictLaneArgs(payload, "git.mergeAbort")));
   register("git.listBranches", { viewerAllowed: true }, async (payload) =>

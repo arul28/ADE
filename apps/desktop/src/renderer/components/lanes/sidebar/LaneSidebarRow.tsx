@@ -12,6 +12,7 @@ import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
+import { LaneCatchUpButton, LaneCatchUpMenu, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
@@ -39,10 +40,13 @@ export type LaneSidebarRowProps = {
   runtime: LaneRuntime | null;
   agents: LaneAgent[];
   prs: LaneTabPrTag[] | undefined;
-  /** The quiet "3 behind main" line, when the lane needs a rebase. */
+  /** The quiet "3 behind main" line, when the lane is behind its base. */
   rebaseLine: LaneRebaseLine | null;
-  /** Runs the rebase the line offers, by row key. */
-  onRebase: (laneId: string) => void;
+  /**
+   * Where the row's Catch up runs, by row key: the lane's id on its machine
+   * and that machine's pin (refused while the machine is unreachable).
+   */
+  resolveCatchUpTarget: (laneKey: string) => LaneCatchUpTarget;
   /** Set while a delete runs; the row is inert and shows the step. */
   deleteStatusLabel: string | null;
   /** Set while the running delete can still stop; shows a Stop button. */
@@ -143,19 +147,21 @@ function AgentCluster({
 }
 
 /**
- * "3 behind main · Rebase": one quiet line, a warn dot and a small action. The
- * action runs the rebase without selecting the row.
+ * "3 behind main · Catch up": one quiet line, a warn dot and a small menu
+ * button. The menu opens without selecting the row.
  */
 function RebaseLineHint({
   lane,
   line,
   foreign = false,
-  onRebase,
+  hasPr,
+  resolveCatchUpTarget,
 }: {
   lane: LaneSummary;
   line: LaneRebaseLine;
   foreign?: boolean;
-  onRebase: (laneId: string) => void;
+  hasPr: boolean;
+  resolveCatchUpTarget: (laneKey: string) => LaneCatchUpTarget;
 }) {
   // While this machine's lane status is unconfirmed (a read is out, or
   // failed), the count shows quietly rather than as current.
@@ -170,19 +176,15 @@ function RebaseLineHint({
     >
       <span aria-hidden className="kit-dot" data-state="warn" />
       <span className="min-w-0 truncate tabular-nums">{line.text}</span>
-      {/* The same quiet kit action as the lane's overview (LaneIdentity). */}
-      <button
-        type="button"
-        className="kit-btn kit-btn-ghost shrink-0"
-        data-size="xs"
-        data-testid="lane-sidebar-rebase"
-        onClick={(event) => {
-          event.stopPropagation();
-          onRebase(lane.id);
-        }}
-      >
-        {line.actionLabel}
-      </button>
+      {/* The same menu as the lane's overview (LaneIdentity), in the row's inline size. */}
+      <LaneCatchUpMenu
+        lane={lane}
+        line={line}
+        target={resolveCatchUpTarget(lane.id)}
+        hasPr={hasPr}
+        placement="bottom-end"
+        trigger={(state) => <LaneCatchUpButton state={state} size="xs" ghost testId="lane-sidebar-catch-up" />}
+      />
     </span>
   );
 }
@@ -211,7 +213,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     agents,
     prs,
     rebaseLine,
-    onRebase,
+    resolveCatchUpTarget,
     deleteStatusLabel,
     onStopDelete = null,
     creating,
@@ -365,7 +367,15 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               </span>
             ) : null}
             <span className="min-w-0 flex-1" />
-            {rebaseLine ? <RebaseLineHint lane={lane} line={rebaseLine} foreign={foreign} onRebase={onRebase} /> : null}
+            {rebaseLine ? (
+              <RebaseLineHint
+                lane={lane}
+                line={rebaseLine}
+                foreign={foreign}
+                hasPr={(prs ?? []).some((pr) => pr.laneRole !== "previous")}
+                resolveCatchUpTarget={resolveCatchUpTarget}
+              />
+            ) : null}
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span

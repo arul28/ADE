@@ -3019,6 +3019,7 @@ export type SyncRemoteCommandAction =
   | "git.rebaseAbort"
   | "git.mergeContinue"
   | "git.mergeAbort"
+  | "git.mergeBaseIn"
   | "git.listBranches"
   | "git.checkoutBranch"
   | "terminal.list"

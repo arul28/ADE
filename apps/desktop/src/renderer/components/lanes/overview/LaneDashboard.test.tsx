@@ -128,7 +128,6 @@ function check(name: string, status: string, conclusion: string | null) {
 
 function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboard>> = {}) {
   const handlers = {
-    onRebase: vi.fn(),
     onStartChat: vi.fn(),
     onSelectCommit: vi.fn(),
     onOpenLaneMenu: vi.fn(),
@@ -144,7 +143,6 @@ function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboar
                 laneId="lane-1"
                 colorIndex={0}
                 rebaseLine={null}
-                rebaseError={null}
                 {...handlers}
                 {...props}
               />

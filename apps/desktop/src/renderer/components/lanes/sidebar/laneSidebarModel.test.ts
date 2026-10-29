@@ -291,7 +291,7 @@ describe("buildLaneSidebarLayout", () => {
 
   it("offers bulk actions only on Done, Behind main and Stale", () => {
     expect(laneGroupBulkActions("done")).toEqual(["archive"]);
-    expect(laneGroupBulkActions("behind")).toEqual(["rebase"]);
+    expect(laneGroupBulkActions("behind")).toEqual(["catchUp"]);
     expect(laneGroupBulkActions("stale")).toEqual(["archive", "delete"]);
     expect(laneGroupBulkActions("needs-you")).toEqual([]);
     expect(laneGroupBulkActions("active")).toEqual([]);

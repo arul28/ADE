@@ -613,6 +613,8 @@ import type {
   GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitMergeBaseInArgs,
+  GitMergeBaseInResult,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
@@ -4418,6 +4420,15 @@ declare global {
           args: string | { laneId: string },
           pin?: OpenProjectBinding | null,
         ) => Promise<GitActionResult>;
+        /**
+         * Merge the lane's compare base (`origin/<base>`, fetched first) into
+         * the lane. On a conflict or any failure it aborts and throws, leaving
+         * the lane as it was.
+         */
+        mergeBaseIn: (
+          args: GitMergeBaseInArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<GitMergeBaseInResult>;
         listBranches: (
           args: GitListBranchesArgs,
           pin?: OpenProjectBinding | null,

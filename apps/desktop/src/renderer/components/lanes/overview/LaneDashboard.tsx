@@ -9,6 +9,7 @@ import type { LaneAgent } from "../laneAgents";
 import { lanePrTagRoutePath } from "../lanePageModel";
 import { laneCompareBase, type LaneRebaseLine } from "../laneRebaseNeeds";
 import { LaneBuildOutputNotice } from "./LaneBuildOutputNotice";
+import { LaneCatchUpFailureBanner } from "../LaneCatchUpMenu";
 import { LaneChangesSection } from "./LaneChangesSection";
 import { LaneChatsSection } from "./LaneChatsSection";
 import { LaneHistoryFeed } from "./LaneHistoryFeed";
@@ -29,7 +30,6 @@ import {
   laneOverviewSections,
   splitLanePrs,
 } from "./laneOverviewModel";
-import { Banner } from "../../ui/notice";
 import { OverviewCollapseContext, type OverviewCollapse } from "./sectionUi";
 import { historyCommitsPath } from "../../history/historyUrlHydration";
 import { useTurnStallClock } from "../../../lib/useTurnStallClock";
@@ -108,8 +108,6 @@ export function LaneDashboard({
   active = true,
   agents = EMPTY_AGENTS,
   rebaseLine,
-  onRebase,
-  rebaseError,
   onStartChat,
   onSelectCommit,
   onOpenLaneMenu,
@@ -120,11 +118,8 @@ export function LaneDashboard({
   active?: boolean;
   /** The lane's live roster from the page; a change in it re-reads the chat rows. */
   agents?: LaneAgent[];
-  /** The quiet "3 behind main" line, when the lane needs a rebase. */
+  /** The quiet "3 behind main" line, when the lane is behind; it carries the Catch up menu. */
   rebaseLine: LaneRebaseLine | null;
-  /** Runs the rebase the line offers. */
-  onRebase: () => void;
-  rebaseError: string | null;
   onStartChat: ((laneId: string) => void) | null;
   /** Opens a commit in the Git pane next to the overview. */
   onSelectCommit: (commit: GitCommitSummary) => void;
@@ -308,7 +303,8 @@ export function LaneDashboard({
             primaryLane={primaryLane}
             compareBase={baseLabel}
             rebaseLine={rebaseLine}
-            onRebase={onRebase}
+            // Catch-ups run on the lane's machine: `pin` and `machineId` below.
+            hasPr={currentPr != null}
             upstream={upstream}
             createdBy={createdBy}
             active={active}
@@ -325,17 +321,7 @@ export function LaneDashboard({
             statusStale={!machine && boundLaneStatusStale}
           />
           <LaneBuildOutputNotice laneId={laneId} pin={pin} active={active} />
-          {rebaseError ? (
-            <Banner
-              layout="inline"
-              model={{
-                id: "lane-rebase-error",
-                tone: "error",
-                title: rebaseError,
-                report: { surface: "lane_rebase" },
-              }}
-            />
-          ) : null}
+          <LaneCatchUpFailureBanner laneId={lane.id} pin={pin} />
         </div>
 
         {sections.pr && currentPr ? (

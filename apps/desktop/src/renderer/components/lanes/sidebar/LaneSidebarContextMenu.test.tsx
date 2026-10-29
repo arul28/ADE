@@ -95,12 +95,12 @@ describe("LaneSidebarContextMenu single-lane actions", () => {
 });
 
 describe("LaneSidebarBulkContextMenu", () => {
-  it("offers manage, rebase, archive and delete for the actionable lanes", () => {
+  it("offers manage, catch up, archive and delete for the actionable lanes", () => {
     const props = renderBulkMenu();
 
     expect(screen.getByText("3 lanes selected")).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Manage 2 lanes…" })).toBeTruthy();
-    expect(screen.getByRole("menuitem", { name: "Rebase 2" })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: "Catch up 2" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Archive 2…" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Delete 2…" })).toBeTruthy();
     expect(screen.getByRole("menuitem", { name: "Copy lane names" })).toBeTruthy();
@@ -113,21 +113,21 @@ describe("LaneSidebarBulkContextMenu", () => {
     expect(props.onClose).toHaveBeenCalled();
   });
 
-  it("routes archive and rebase through the bulk action handler", () => {
+  it("routes archive and catch up through the bulk action handler", () => {
     const props = renderBulkMenu();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Archive 2…" }));
     expect(props.onBulkAction).toHaveBeenCalledWith("archive", ["lane-1", "lane-2"]);
 
-    fireEvent.click(screen.getByRole("menuitem", { name: "Rebase 2" }));
-    expect(props.onBulkAction).toHaveBeenCalledWith("rebase", ["lane-1", "lane-2"]);
+    fireEvent.click(screen.getByRole("menuitem", { name: "Catch up 2" }));
+    expect(props.onBulkAction).toHaveBeenCalledWith("catchUp", ["lane-1", "lane-2"]);
   });
 
   it("keeps copy and clear available when no lane is actionable", () => {
     const props = renderBulkMenu([]);
 
     expect(screen.queryByRole("menuitem", { name: /Manage/ })).toBeNull();
-    expect(screen.queryByRole("menuitem", { name: /Rebase|Archive|Delete/ })).toBeNull();
+    expect(screen.queryByRole("menuitem", { name: /Catch up|Archive|Delete/ })).toBeNull();
 
     fireEvent.click(screen.getByRole("menuitem", { name: "Clear selection" }));
     expect(props.onClearSelection).toHaveBeenCalledTimes(1);

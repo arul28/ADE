@@ -69,7 +69,6 @@ export function lanePrTagRoutePath(
     selectedPrNumber: target.githubPrNumber,
     repoOwner: target.repoOwner,
     repoName: target.repoName,
-    selectedRebaseItemId: null,
   })}`;
 }
 

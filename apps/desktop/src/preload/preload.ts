@@ -512,6 +512,8 @@ import type {
   GitSyncStatusesArgs,
   GitUpstreamSyncStatus,
   GitSyncArgs,
+  GitMergeBaseInArgs,
+  GitMergeBaseInResult,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppInstallationStatus,
@@ -12253,6 +12255,23 @@ const adeBridge = {
         { args: { laneId } },
         () => ipcRenderer.invoke(IPC.gitMergeAbort, { laneId }),
       );
+    },
+    mergeBaseIn: async (
+      args: GitMergeBaseInArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<GitMergeBaseInResult> => {
+      clearGitReadCaches();
+      try {
+        return await callPinnedOrBoundRuntimeActionOr<GitMergeBaseInResult>(
+          pin,
+          "git",
+          "mergeBaseIn",
+          { args },
+          () => ipcRenderer.invoke(IPC.gitMergeBaseIn, args),
+        );
+      } finally {
+        clearGitReadCaches();
+      }
     },
     listBranches: async (
       args: GitListBranchesArgs,

@@ -226,6 +226,9 @@ describe("LaneGitActionsPane rescue action", () => {
     commitTimelineMock.mockClear();
 
     globalThis.window.ade = {
+      agentChat: {
+        list: vi.fn(async () => []),
+      },
       diff: {
         getChanges: vi.fn(async ({ laneId }: { laneId: string }) => {
           if (failDiffRefresh) {
@@ -348,7 +351,7 @@ describe("LaneGitActionsPane rescue action", () => {
       </MemoryRouter>,
     );
 
-    await screen.findByTestId("git-pane-rebase");
+    await screen.findByTestId("git-pane-push");
 
     expect(window.ade.diff.getChanges).toHaveBeenCalledTimes(1);
     expect(window.ade.git.stashList).toHaveBeenCalledTimes(1);
@@ -458,7 +461,7 @@ describe("LaneGitActionsPane rescue action", () => {
   it("does not refresh the global lane store on initial mount", async () => {
     renderPane();
 
-    await screen.findByTestId("git-pane-rebase");
+    await screen.findByTestId("git-pane-push");
 
     expect(mockStoreState.refreshLanes).not.toHaveBeenCalled();
     expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
@@ -703,7 +706,7 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
   });
 
-  it("explains why sync is disabled when the lane is behind but still dirty", async () => {
+  it("offers only an agent, and says why, when the lane is behind but still dirty", async () => {
     mockStoreState = {
       ...mockStoreState,
       lanes: [
@@ -720,11 +723,16 @@ describe("LaneGitActionsPane rescue action", () => {
       ],
     };
 
+    const user = userEvent.setup();
     renderPane();
 
-    const rebaseButton = await screen.findByTestId("git-pane-rebase");
-    expect(rebaseButton.getAttribute("aria-label")).toBe("Rebase onto main and push");
-    expect((rebaseButton as HTMLButtonElement).disabled).toBe(true);
+    const catchUpButton = await screen.findByTestId("git-pane-catch-up");
+    expect(catchUpButton.getAttribute("aria-label")).toBe("Catch up with main");
+    await user.click(catchUpButton);
+    expect(await screen.findByTestId("lane-catch-up-agent")).toBeTruthy();
+    expect(screen.getByTestId("lane-catch-up-blocker").textContent).toContain("Uncommitted changes");
+    expect(screen.queryByTestId("lane-catch-up-rebase")).toBeNull();
+    expect(screen.queryByTestId("lane-catch-up-merge")).toBeNull();
   });
 
   it("updates the stash count after deleting a stash", async () => {

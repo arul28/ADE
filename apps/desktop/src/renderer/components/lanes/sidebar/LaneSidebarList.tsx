@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
 import type { LaneDeleteProgress, LaneListSnapshot } from "../../../../shared/types";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
+import type { LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import type { CreatingIssuePlaceholder } from "../../../lib/launchedLanesHighlight";
 import { getLaneDeleteStatusLabel, isLaneDeleteProgressActive } from "../../../lib/laneDeleteProgress";
 import { COLORS } from "../laneDesignTokens";
@@ -50,8 +51,8 @@ export type LaneSidebarListProps = {
   laneRuntimeById: ReadonlyMap<string, LaneListSnapshot["runtime"]>;
   /** The quiet "3 behind main" line per row key, for lanes that need a rebase. */
   rebaseLineByLaneId: ReadonlyMap<string, LaneRebaseLine>;
-  /** Runs the rebase a row's line offers, by row key. */
-  onRebaseLane: (laneId: string) => void;
+  /** Where a row's Catch up runs, by row key (the lane's id and machine). */
+  resolveCatchUpTarget: (laneKey: string) => LaneCatchUpTarget;
   agentsByLaneId: ReadonlyMap<string, LaneAgent[]>;
   lanePrTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
   deleteProgressByLaneId: Record<string, LaneDeleteProgress>;
@@ -104,7 +105,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     totalLaneCount,
     laneRuntimeById,
     rebaseLineByLaneId,
-    onRebaseLane,
+    resolveCatchUpTarget,
     agentsByLaneId,
     lanePrTagsByLaneId,
     deleteProgressByLaneId,
@@ -168,7 +169,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         agents={agentsByLaneId.get(laneId) ?? EMPTY_AGENTS}
         prs={lanePrTagsByLaneId.get(laneId)}
         rebaseLine={rebaseLineByLaneId.get(laneId) ?? null}
-        onRebase={onRebaseLane}
+        resolveCatchUpTarget={resolveCatchUpTarget}
         deleteStatusLabel={deleting ? getLaneDeleteStatusLabel(deleteProgress) : null}
         // Another machine's delete has no progress feed here, so its row
         // always offers Stop and that machine says whether it still can.

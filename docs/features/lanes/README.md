@@ -25,7 +25,23 @@ In **Create new branch** mode, choose **Start from**: the project default branch
 
 Settings → Lanes → New lanes saves the default or primary branch start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, phone, and `ade code` use these defaults. Run `ade lanes defaults --text` to inspect them.
 
-A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab and PRs → Rebase show a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
+A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
+
+### Catch up
+
+The notice carries a **Catch up** button that opens a small menu. The same menu (`LaneCatchUpMenu.tsx`) sits in the lane overview's status line, on the sidebar row, and in the Git pane's header. It offers only what is safe:
+
+- **Ask an agent** is always first and the default. It writes a prompt into a chat draft in the lane, never sent: the lane's newest Work chat, else a new chat in the lane. The prompt (`renderer/lib/laneCatchUpPrompt.ts`) says to fetch first, rebase if the branch was never pushed and merge otherwise, resolve conflicts keeping the lane's intent, run the checks, and not push without asking. For a lane built on merged work it says to rebase onto `origin/<base>` dropping that PR's commits.
+- **Rebase now** shows only when nothing is uncommitted, no rebase or merge is in progress, the scan predicts no conflict, and the branch was never pushed (no upstream and no pull request). It runs the lane rebase engine (`lanes.rebaseStart`, `pushMode: "none"`).
+- **Merge <base> in** shows under the same rules, pushed or not: it rewrites nothing. It runs `git.mergeBaseIn`.
+
+When neither direct way is safe, the menu shows **Ask an agent** and one quiet line saying why ("Conflicts expected in 2 files", "Uncommitted changes"; "Already pushed — rebasing would rewrite it" only when that is the only reason). The rules are `laneCatchUpOptions` in `laneCatchUp.ts`. A lane on another machine has no conflict scan, so its prediction is unknown rather than "none"; both direct ways undo themselves on a conflict.
+
+After a direct catch-up ADE shows a toast. A failure stays in the lane: the overview shows it inline (`LaneCatchUpFailureBanner`) with **Ask an agent**, which puts the error in the prompt; from the sidebar, when that lane's overview is not open, the failure is a toast with the same action. Nothing opens the PRs tab. Every read and write (`git.getSyncStatus`, `agentChat.list`, `lanes.rebaseStart`, `git.mergeBaseIn`, the chat draft) goes to the lane's own machine with its pin.
+
+The Behind main group's **Catch up all** (`LaneSidebarBulkCatchUpDialog.tsx`) applies the same rules per lane: never-pushed lanes are rebased, pushed ones get their base merged in, one at a time on their own machines, and a lane where neither is safe is listed with its reason and its own **Ask an agent**.
+
+`git.mergeBaseIn` (`gitOperationsService.mergeBaseIn`, `ade git merge --lane <lane>`) fetches `origin/<base>`, then runs `git merge --no-edit origin/<base>` (the local base when there is no remote copy) as a lane operation (`git_merge_base_in`). It refuses a dirty lane or one mid-rebase or merge. On a conflict, or any other failure, it aborts the merge and throws, so the lane is as it was. A failed fetch merges the last known copy and says so (`fetched: false`).
 
 Source files: `src/shared/laneStart.ts` defines start choices; `main/services/lanes/laneStartResolver.ts` resolves them; `newLaneSettingsStore.ts` stores defaults and templates; `laneCompareBase.ts` resolves the compare base; `renderer/components/settings/NewLaneSettingsSection.tsx` and `renderer/components/lanes/CreateLaneDialog.tsx` expose the choices.
 
@@ -169,11 +185,12 @@ Renderer components:
 | `renderer/components/lanes/LaneContextMenu.tsx`, `laneContextMenuItems.tsx` | Right-click menu on the lane list. `buildLaneMenuGroups` is the single action inventory shared with the Work sidebar's singleton-session **Lane** submenu; both render the same start-chat/pin, navigation, copy, **Open in**, split, appearance, and manage/batch groups. Copy, split, and appearance open as pointer-safe keyboard submenus; color swatches call `lanes.updateAppearance` directly. **Open in** is an `open-in` entry (`OpenInTarget`: worktree `rootPath` plus optional SSH `remote`) rendered by `OpenInSubmenu`; callers pass `openIn` from `resolveOpenInTarget({ worktreePath, binding })`. Paired remotes and empty worktree paths omit the group. Work callers may pass their own Work-sidebar pin toggle and pin ids, deliberately separate from the Lanes tab's pins. |
 | `renderer/components/lanes/LaneBranchDrift.tsx` | Branch-drift renderer surface. `useLaneBranchDrift(laneId)` reads `branchDrift` straight off the lane in the app store, so it costs nothing and stays exactly as fresh as the rest of the lane's git state. `LaneBranchDriftChip` is the compact always-visible chip that `WorkSurfaceHeader` renders next to the lane chip while a lane is drifted. `LaneBranchComposerChip` is the composer-strip chip: it asks (`Switch back` / `Keep`) once something is about to act on the branch, reading HEAD fresh at that point, and shows `Now on <branch> · Switch back` for ten minutes after ADE adopts a branch an agent switched to (it listens for `lane-branch-updated` with `adoptedByAgent`). A `renamed`/`missing` drift replaces those two buttons with a single `Update lane` (it is a calm `info` chip for `renamed`, a `warning` chip for `missing`), because switching back to a branch that no longer exists is impossible; `armLaneBranchDriftWarning(laneId)` is the imperative arming call, backed by a module-level armed-lane set plus a `useSyncExternalStore` subscription. Arm sites are `AgentChatPane.submit` and `ChatGitToolbar`'s PR button / `handlePr`; the strip itself renders above the composer in `AgentChatPane`, keyed to the composer's effective launch target rather than the pane's leftover lane. See [Branch drift](#branch-drift). |
 | `renderer/components/lanes/sidebar/LaneSidebarList.tsx`, `LaneSidebarRow.tsx`, `laneSidebarModel.ts` | Lane sidebar grouped by state, with Primary pinned at the top. |
-| `renderer/components/lanes/sidebar/LaneSidebarContextMenu.tsx`, `LaneSidebarBulkRebaseDialog.tsx` | Group "…" menus with bulk actions, always confirmed and never including Primary: Done → Archive all, Behind main → Rebase all, Stale → Archive all / Delete all. |
+| `renderer/components/lanes/sidebar/LaneSidebarContextMenu.tsx`, `LaneSidebarBulkCatchUpDialog.tsx` | Group "…" menus with bulk actions, always confirmed and never including Primary: Done → Archive all, Behind main → Catch up all, Stale → Archive all / Delete all. |
+| `renderer/components/lanes/LaneCatchUpMenu.tsx`, `laneCatchUp.ts`, `renderer/lib/laneCatchUpPrompt.ts` | The Catch up menu, its safety rules and per-lane run state, and the agent prompt. See [Catch up](#catch-up). |
 | `src/shared/laneEmoji.ts` | Jev's 69 meaning-rich emoji choices and the shared one-emoji normalization and legacy-icon mapping helpers. Crash, error, regression, race, and broken-behavior fixes take priority over a subsystem such as sync or cache. |
 | `renderer/components/lanes/LaneDiffPane.tsx` | Lane diff list + per-file stage/unstage/discard; file content uses shared `AdeDiffViewer` (commit comparisons read-only; working-tree file can be editable when unstaged). Takes an optional `runtimePin` and, under one, watches the lane's own machine through the pinned Files API (`createPinnedFilesApi`, whose `onChange` follows that machine's `file_change` feed) so live sync follows edits made there; the foreign diff itself stays read-only. |
 | `renderer/components/lanes/LaneGitActionsPane.tsx` | Lane git actions, changes, history, sync, and conflict controls. |
-| `renderer/components/lanes/overview/LaneDashboard.tsx` | Lane identity, status, rebase notice, PR, chats, changes, and recent activity. |
+| `renderer/components/lanes/overview/LaneDashboard.tsx` | Lane identity, status, the behind notice with Catch up, PR, chats, changes, and recent activity. |
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Env init step progress inside create dialog |
 | `renderer/components/lanes/LaneEmojiPicker.tsx`, `LaneEmojiPickerContent.tsx` | The name-field emoji slot and the on-demand picker. The picker searches and filters the Unicode emoji name set by category; the create dialog and Manage Lane rename editor share the same slot. |
 | `renderer/components/lanes/CreateLaneDialogHost.tsx` | Creation state, defaults, machine selection, and environment setup; the dialog offers New branch and Existing branch. |
@@ -1225,6 +1242,7 @@ Lane management (selected):
 | `ade.lanes.getBranchDrift` | `(args: { laneId: string }) => LaneBranchDrift \| null` — fresh HEAD read for callers about to act on the branch; `null` for archived lanes, an unavailable worktree, a detached HEAD, or no drift. See [Branch drift](#branch-drift). |
 | `ade.lanes.resolveBranchDrift` | `(args: ResolveLaneBranchDriftArgs) => ResolveLaneBranchDriftResult` — `switch-back` checks the worktree back onto the recorded branch; `keep-head` adopts the live HEAD in one transaction and keeps the lane name. |
 | `ade.lanes.rebaseStart` / `.rebaseAbort` / `.rebaseRollback` / `.rebasePush` | rebase run lifecycle |
+| `ade.git.mergeBaseIn` | `(args: { laneId }, pin?) => GitMergeBaseInResult` — merge the lane's compare base in; aborts and throws on a conflict. See [Catch up](#catch-up). Runtime action `git.mergeBaseIn`, sync command `git.mergeBaseIn`. |
 
 Runtime isolation (Phase 5):
 
@@ -1252,7 +1270,7 @@ notice, Pull request, Chats, Files changed, Recent activity) and
 `LaneSplitBody`. There are no lane tabs or tiled panes. New lanes are created
 from the sidebar's "+".
 
-- The lane dashboard shows a quiet rebase notice for a lane behind its compare base or built on merged work.
+- The lane dashboard shows a quiet notice with **Catch up** for a lane behind its compare base or built on merged work.
 - The dashboard's Chats section lists the lane's sessions in the Work
   status vocabulary; they open in Work. Chat sessions inherit
   `cwd = lane.worktreePath`.

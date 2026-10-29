@@ -26,7 +26,7 @@ type LaneStateGroupMeta = {
 export const LANE_STATE_GROUP_META: Record<LaneStateGroupId, LaneStateGroupMeta> = {
   "needs-you": {
     label: "Needs you",
-    description: "An agent is waiting, a PR is failing or has conflicts, or a rebase broke.",
+    description: "An agent is waiting, a PR is failing or has conflicts, or a catch-up broke.",
   },
   active: {
     label: "Active",
@@ -34,7 +34,7 @@ export const LANE_STATE_GROUP_META: Record<LaneStateGroupId, LaneStateGroupMeta>
   },
   behind: {
     label: "Behind main",
-    description: "The lane's base has moved on. Rebase to catch up.",
+    description: "The lane's base has moved on. Catch up to bring it current.",
   },
   done: {
     label: "Done",
@@ -52,7 +52,7 @@ export const LANE_STATE_GROUP_META: Record<LaneStateGroupId, LaneStateGroupMeta>
 
 const BULK_ACTION_META: Record<LaneGroupBulkAction, { icon: Icon; label: (count: number) => string }> = {
   archive: { icon: Archive, label: (count) => `Archive all ${count}` },
-  rebase: { icon: ArrowsClockwise, label: (count) => `Rebase all ${count}` },
+  catchUp: { icon: ArrowsClockwise, label: (count) => `Catch up all ${count}` },
   delete: { icon: Trash, label: (count) => `Delete all ${count}…` },
 };
 

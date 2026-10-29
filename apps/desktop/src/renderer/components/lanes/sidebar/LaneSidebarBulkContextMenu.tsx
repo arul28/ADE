@@ -25,7 +25,7 @@ export function LaneSidebarBulkContextMenu({
   point: { x: number; y: number };
   /** Selected row keys, in selection order. */
   laneIds: string[];
-  /** The selection filtered to what Manage/Rebase/Archive/Delete act on. */
+  /** The selection filtered to what Manage/Catch up/Archive/Delete act on. */
   actionableLaneIds: string[];
   lanesById: Map<string, LaneSummary>;
   onClose: () => void;
@@ -49,7 +49,7 @@ export function LaneSidebarBulkContextMenu({
   const manageEntries: LaneMenuEntry[] = count
     ? [
         { kind: "action", key: "manage", label: `Manage ${count} lane${count === 1 ? "" : "s"}…`, icon: Gear, onSelect: act(() => onManage(actionableLaneIds)) },
-        { kind: "action", key: "rebase", label: `Rebase ${count}`, icon: ArrowsClockwise, onSelect: act(() => onBulkAction("rebase", actionableLaneIds)) },
+        { kind: "action", key: "catchUp", label: `Catch up ${count}`, icon: ArrowsClockwise, onSelect: act(() => onBulkAction("catchUp", actionableLaneIds)) },
         { kind: "action", key: "archive", label: `Archive ${count}…`, icon: Archive, onSelect: act(() => onBulkAction("archive", actionableLaneIds)) },
         { kind: "action", key: "delete", label: `Delete ${count}…`, icon: Trash, onSelect: act(() => onBulkAction("delete", actionableLaneIds)) },
       ]

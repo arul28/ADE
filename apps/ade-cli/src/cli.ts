@@ -2340,6 +2340,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     pop/drop resolve the saved stash OID before changing it
     $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
+    $ ade git merge --lane <lane>                   Merge origin/<base> into the lane; undone on conflict
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
     $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
@@ -8236,9 +8237,17 @@ function buildGitPlan(args: string[]): CliPlan {
     };
   }
   if (sub === "merge") {
-    const mode = requireValue(firstPositional(args), "merge action");
+    const positional = firstPositional(args);
+    // No action: merge the lane's base in (fetch, merge, abort on conflict).
+    if (!positional)
+      return {
+        kind: "execute",
+        label: "merge base in",
+        steps: [actionStep("result", "git", "mergeBaseIn", withLane())],
+      };
+    const mode = positional;
     if (mode !== "continue" && mode !== "abort")
-      throw new CliUsageError("git merge supports continue or abort.");
+      throw new CliUsageError("git merge supports continue or abort, or no action to merge the lane's base in.");
     return {
       kind: "execute",
       label: `merge ${mode}`,

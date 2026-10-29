@@ -22,6 +22,7 @@ import { LaneBranchSwitcher } from "../detail/LaneBranchSwitcher";
 import { LinearIssueBadge } from "../LinearIssueBadge";
 import { COLORS, toneText } from "../laneDesignTokens";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
+import { LaneCatchUpButton, LaneCatchUpMenu } from "../LaneCatchUpMenu";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
@@ -66,19 +67,28 @@ function StatusGlyph({ item }: { item: LaneStatusItem }) {
   return <span aria-hidden className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: color }} />;
 }
 
-/** The small ghost button that runs the rebase the status line asks for. */
-function RebaseAction({ line, onRebase }: { line: LaneRebaseLine; onRebase: () => void }) {
+/** The small "Catch up" button after the status line's behind fact, with its menu. */
+function CatchUpAction({
+  lane,
+  line,
+  pin,
+  machineId,
+  hasPr,
+}: {
+  lane: LaneSummary;
+  line: LaneRebaseLine;
+  pin: OpenProjectBinding | null;
+  machineId: string | null;
+  hasPr: boolean;
+}) {
   return (
-    <button
-      type="button"
-      className="kit-btn shrink-0"
-      data-size="sm"
-      title={line.title}
-      onClick={onRebase}
-      data-testid="lane-rebase-action"
-    >
-      {line.actionLabel}
-    </button>
+    <LaneCatchUpMenu
+      lane={lane}
+      line={line}
+      target={{ ok: true, laneId: lane.id, pin, machineId }}
+      hasPr={hasPr}
+      trigger={(state) => <LaneCatchUpButton state={state} title={line.title} testId="lane-catch-up-action" />}
+    />
   );
 }
 
@@ -94,7 +104,7 @@ export function LaneIdentity({
   primaryLane,
   compareBase,
   rebaseLine,
-  onRebase,
+  hasPr = false,
   upstream,
   createdBy,
   active,
@@ -114,9 +124,10 @@ export function LaneIdentity({
   primaryLane: LaneSummary | null;
   /** The branch ahead/behind is measured against: the open PR's base, else the lane's base. */
   compareBase: string;
-  /** The quiet rebase line, when the lane needs one; adds a small Rebase action. */
+  /** The quiet "behind" line, when the lane needs one; adds the Catch up menu. */
   rebaseLine: LaneRebaseLine | null;
-  onRebase: () => void;
+  /** The lane has a pull request, so its branch is pushed (no "Rebase now"). */
+  hasPr?: boolean;
   upstream: GitUpstreamSyncStatus | null;
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
@@ -148,7 +159,7 @@ export function LaneIdentity({
   // "Up to date" would contradict a lane that still needs a rebase.
   const status = laneStatusItems({ lane, baseLabel: compareBase, upstream })
     .filter((item) => !(rebaseLine && item.glyph === "check"));
-  // "3 behind main" is already a status fact; the rebase line adds its action
+  // "3 behind main" is already a status fact; the rebase line adds Catch up
   // after it. "Built on work now in main" has no status fact, so it is its own.
   const behindShown = status.some((item) => item.key === "behind");
   const menuRef = React.useRef<HTMLSpanElement>(null);
@@ -260,7 +271,7 @@ export function LaneIdentity({
           <span className="inline-flex shrink-0 items-center gap-1.5" title={rebaseLine.title} data-status="rebase">
             <span aria-hidden className="kit-dot" data-state="warn" />
             {rebaseLine.text}
-            <RebaseAction line={rebaseLine} onRebase={onRebase} />
+            <CatchUpAction lane={lane} line={rebaseLine} pin={pin} machineId={machineId} hasPr={hasPr} />
           </span>
         ) : null}
         {status.map((item) => (
@@ -277,7 +288,7 @@ export function LaneIdentity({
             <StatusGlyph item={item} />
             {item.text}
             {item.key === "behind" && rebaseLine?.kind === "behind" ? (
-              <RebaseAction line={rebaseLine} onRebase={onRebase} />
+              <CatchUpAction lane={lane} line={rebaseLine} pin={pin} machineId={machineId} hasPr={hasPr} />
             ) : null}
           </span>
         ))}

@@ -109,7 +109,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
     ],
     write: [
       "abortRebase", "checkoutBranch", "cherryPickCommit", "commit", "continueRebase",
-      "createTag", "discardFile", "fetch", "mergeAbort",
+      "createTag", "discardFile", "fetch", "mergeAbort", "mergeBaseIn",
       "mergeContinue", "pull", "push", "rebaseAbort", "rebaseContinue", "redoLastHeadChange",
       "resetToCommit", "restoreStagedFile", "revertCommit", "stageAll", "stageFile",
       "stagePaths", "stash", "stashApply", "stashClear", "stashDrop", "stashPop", "stashPush",

@@ -14,6 +14,17 @@ const RESCAN_AFTER_MS = 30_000;
 const EMPTY_NEEDS: ReadonlyMap<string, RebaseNeed> = new Map();
 
 const scanInFlight = new Map<string, Promise<RebaseNeed[]>>();
+/** Mounted scanners, so a catch-up that did not go through the rebase engine (a merge) can ask for a fresh scan. */
+const rescanRequests = new Set<() => void>();
+
+/**
+ * Scan this machine's lanes again shortly, as a finished rebase does. A merge
+ * of the base sends no rebase event, and a "built on merged work" need would
+ * otherwise stay until the next scan.
+ */
+export function requestLaneRebaseNeedsRescan(): void {
+  for (const request of rescanRequests) request();
+}
 /** The last needs each project reported (scan or pushed event), so a revisit paints at once. */
 const lastNeedsByProject = new Map<string, { needs: ReadonlyMap<string, RebaseNeed>; atMs: number }>();
 
@@ -81,21 +92,24 @@ export function useLaneRebaseNeeds(active: boolean): ReadonlyMap<string, RebaseN
     const firstScan = last && Date.now() - last.atMs < RESCAN_AFTER_MS
       ? null
       : window.setTimeout(scan, FIRST_SCAN_DELAY_MS);
+    const scheduleRescan = () => {
+      if (rescanTimer != null) window.clearTimeout(rescanTimer);
+      rescanTimer = window.setTimeout(() => {
+        rescanTimer = null;
+        scan();
+      }, RESCAN_AFTER_REBASE_MS);
+    };
+    rescanRequests.add(scheduleRescan);
     const unsubscribe = window.ade.rebase.onEvent((event) => {
       if (event.type === "rebase-needs-updated") {
         apply(event.needs);
         return;
       }
-      if (event.type === "rebase-completed") {
-        if (rescanTimer != null) window.clearTimeout(rescanTimer);
-        rescanTimer = window.setTimeout(() => {
-          rescanTimer = null;
-          scan();
-        }, RESCAN_AFTER_REBASE_MS);
-      }
+      if (event.type === "rebase-completed") scheduleRescan();
     });
     return () => {
       cancelled = true;
+      rescanRequests.delete(scheduleRescan);
       if (firstScan != null) window.clearTimeout(firstScan);
       if (rescanTimer != null) window.clearTimeout(rescanTimer);
       unsubscribe();
@@ -105,25 +119,23 @@ export function useLaneRebaseNeeds(active: boolean): ReadonlyMap<string, RebaseN
   return needs;
 }
 
-/** What the lane's quiet rebase line says, and the label of its action. */
+/** What the lane's quiet "behind" line says, and what its Catch up menu needs. */
 export type LaneRebaseLine = {
   kind: RebaseNeed["kind"];
   behindBy: number;
   baseBranch: string;
   text: string;
-  actionLabel: string;
   title: string;
+  /**
+   * Whether bringing the lane up to date is expected to conflict. Null when
+   * no scan covers the lane (a lane on another machine): unknown, not "no".
+   */
+  conflictPredicted: boolean | null;
+  /** The files the scan expects to conflict; empty when none or unknown. */
+  conflictingFiles: string[];
+  /** For `built_on_merged`: the merged PR whose commits the lane still carries. */
+  mergedPrNumber: number | null;
 };
-
-function hiddenByUser(need: RebaseNeed | null | undefined, nowMs: number): boolean {
-  if (!need) return false;
-  if (need.dismissedAt) return true;
-  if (need.deferredUntil) {
-    const until = Date.parse(need.deferredUntil);
-    if (Number.isFinite(until) && until > nowMs) return true;
-  }
-  return false;
-}
 
 /**
  * The branch a lane is compared to and rebases onto. The brain decides it (its
@@ -137,9 +149,9 @@ export function laneCompareBase(lane: Pick<LaneSummary, "baseRef" | "status">): 
 
 /**
  * The one quiet line a lane shows when it needs a rebase: "3 behind main" or
- * "Built on work now in main". Null when it needs none, when the user
- * dismissed or deferred it, for the Primary lane, and for a lane whose PR
- * merged (rebasing finished work is never the next step).
+ * "Built on work now in main". Null when it needs none, for the Primary
+ * lane, and for a lane whose PR merged (catching up finished work is never
+ * the next step).
  *
  * The lane's own behind count wins over the scan's when it is set: it comes
  * from the same compare base and is refreshed by every git action.
@@ -148,12 +160,12 @@ export function laneRebaseLine(args: {
   lane: Pick<LaneSummary, "laneType" | "baseRef" | "status">;
   need: RebaseNeed | null | undefined;
   merged?: boolean;
-  nowMs?: number;
 }): LaneRebaseLine | null {
   const { lane, need } = args;
   if (lane.laneType === "primary" || args.merged) return null;
   if (lane.status?.rebaseInProgress) return null;
-  if (hiddenByUser(need, args.nowMs ?? Date.now())) return null;
+  const conflictPredicted = need ? need.conflictPredicted : null;
+  const conflictingFiles = need?.conflictPredicted ? need.conflictingFiles ?? [] : [];
   const baseBranch = branchNameFromLaneRef(need?.baseBranch) || laneCompareBase(lane);
   const statusBehind = lane.status?.behind ?? 0;
   if (need?.kind === "built_on_merged") {
@@ -163,21 +175,25 @@ export function laneRebaseLine(args: {
       behindBy: Math.max(statusBehind, need.behindBy),
       baseBranch,
       text: `Built on work now in ${baseBranch}`,
-      actionLabel: `Rebase onto ${baseBranch}`,
       title: prNumber
-        ? `This lane still carries the commits of #${prNumber}, which merged into ${baseBranch}. Rebase to drop them.`
-        : `This lane still carries commits that merged into ${baseBranch}. Rebase to drop them.`,
+        ? `This lane still carries the commits of #${prNumber}, which merged into ${baseBranch}.`
+        : `This lane still carries commits that merged into ${baseBranch}.`,
+      conflictPredicted,
+      conflictingFiles,
+      mergedPrNumber: prNumber ?? null,
     };
   }
   const behindBy = statusBehind > 0 ? statusBehind : need?.kind === "behind" ? need.behindBy : 0;
   if (behindBy <= 0) return null;
-  const conflict = need?.conflictPredicted ? " A rebase is likely to conflict." : "";
+  const conflict = need?.conflictPredicted ? " Catching up is likely to conflict." : "";
   return {
     kind: "behind",
     behindBy,
     baseBranch,
     text: `${behindBy} behind ${baseBranch}`,
-    actionLabel: "Rebase",
     title: `${behindBy} commit${behindBy === 1 ? "" : "s"} behind ${baseBranch}.${conflict}`,
+    conflictPredicted,
+    conflictingFiles,
+    mergedPrNumber: null,
   };
 }

@@ -35,7 +35,6 @@ import {
 } from "./ManageLaneDialog";
 import { LaneDashboard } from "./overview/LaneDashboard";
 import { useDialogBus } from "../../lib/useDialogBus";
-import { Dialog } from "../ui/dialog";
 import { showToast } from "../app/toast/toastStore";
 import {
   buildLaneActionClearedSearch,
@@ -60,7 +59,8 @@ import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/
 import { LaneSidebarList, LANES_FILTER_INPUT_ID } from "./sidebar/LaneSidebarList";
 import { LaneSidebarBulkContextMenu } from "./sidebar/LaneSidebarBulkContextMenu";
 import { LaneSidebarContextMenu } from "./sidebar/LaneSidebarContextMenu";
-import { LaneSidebarBulkRebaseDialog, type LaneBulkRebaseTarget } from "./sidebar/LaneSidebarBulkRebaseDialog";
+import { LaneSidebarBulkCatchUpDialog, type LaneBulkCatchUpTarget } from "./sidebar/LaneSidebarBulkCatchUpDialog";
+import type { LaneCatchUpTarget } from "./LaneCatchUpMenu";
 import {
   buildLaneSidebarLayout,
   buildLaneSidebarRows,
@@ -86,7 +86,6 @@ import { useLanesPageMachines } from "./useLanesPageMachines";
 import { laneCompareBase, laneRebaseLine, useLaneRebaseNeeds, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { confirmForeignLaneDeleted, requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { isRemoteOutcomeUnknownError } from "../../../shared/runtimeErrors";
-import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -102,7 +101,6 @@ import type {
   LaneListSnapshot,
   LaneSummary,
   PrSummary,
-  RebaseRun,
   LaneDeleteProgress,
 } from "../../../shared/types";
 import { machineIdForBinding } from "../../../shared/machineIdentity";
@@ -110,12 +108,6 @@ import { pickPrimaryPr } from "../../../shared/primaryPr";
 import { eventMatchesBinding, getEffectiveBinding } from "../../lib/keybindings";
 import { historyCommitsPath } from "../history/historyUrlHydration";
 import { settingsRouteFor } from "../settings/settingsManifest";
-
-type RebasePushReviewState = {
-  runId: string;
-  lanes: Array<{ laneId: string; laneName: string; selected: boolean }>;
-  resolve: (laneIds: string[] | null) => void;
-};
 
 export function shouldRetryLaneGithubSnapshotForceRefresh({
   currentProjectRoot,
@@ -347,7 +339,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // Tab the manage dialog opens on; set by the sidebar's group bulk actions.
   const [manageInitialTab, setManageInitialTab] = useState<ManageLaneTab | null>(null);
   // Lanes the Behind group's "Rebase all" confirm step lists.
-  const [bulkRebaseLaneIds, setBulkRebaseLaneIds] = useState<string[] | null>(null);
+  const [bulkCatchUpLaneIds, setBulkCatchUpLaneIds] = useState<string[] | null>(null);
   // Create-lane dialog is hosted by CreateLaneDialogHost, which owns the form,
   // submit and env-setup state. The page tracks only whether it is open, the
   // prefill, and (via a ref) whether a create is in flight so a forced close
@@ -377,8 +369,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const laneGithubSnapshotForceRefreshProjectRootRef = useRef<string | null>(null);
   const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
-  const [rebaseError, setRebaseError] = useState<string | null>(null);
-  const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
 
   const completedLaneDeleteRefreshesRef = useRef<Set<string>>(new Set());
   const pendingLaneDeleteRefreshIdsRef = useRef<Set<string>>(new Set());
@@ -513,7 +503,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   // pushed updates. A lane on another machine shows its own behind count.
   const rebaseNeeds = useLaneRebaseNeeds(active);
   const rebaseLineByLaneId = useMemo(() => {
-    const nowMs = Date.now();
     const lines = new Map<string, LaneRebaseLine>();
     for (const lane of allViewLanes) {
       const prs = (lanePrTagsByLaneId.get(lane.id) ?? []).filter((pr) => pr.laneRole !== "previous");
@@ -521,7 +510,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         lane,
         need: foreignRowByKey.has(lane.id) ? null : rebaseNeeds.get(lane.id),
         merged: pickPrimaryPr(prs)?.state === "merged",
-        nowMs,
       });
       if (line) lines.set(lane.id, line);
     }
@@ -789,17 +777,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     });
     return unsubscribe;
   }, [active, clearLaneInspectorTab, queueLaneDeleteRefresh, selectLane, setDeleteProgressByLaneId]);
-
-  useEffect(() => {
-    if (!active) return;
-    const unsubscribe = window.ade.lanes.rebaseSubscribe((event) => {
-      if (event.type !== "rebase-run-updated") return;
-      if (event.run.state !== "failed" || !event.run.failedLaneId) return;
-      const failedLane = lanesById.get(event.run.failedLaneId)?.name ?? event.run.failedLaneId;
-      setRebaseError(`Rebase needs attention for ${failedLane}. ${event.run.error ?? ""}`.trim());
-    });
-    return unsubscribe;
-  }, [active, lanesById]);
 
   useEffect(() => {
     lanePrTagsRequestRef.current += 1;
@@ -1433,125 +1410,49 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageOpen(true);
   }, [bulkActionableLaneIds, foreignRowByKey]);
 
-  const requestPushSelection = useCallback((run: RebaseRun) => {
-    const succeededLanes = run.lanes
-      .filter((lane) => lane.status === "succeeded")
-      .map((lane) => ({ laneId: lane.laneId, laneName: lane.laneName, selected: true }));
-    if (succeededLanes.length === 0) return Promise.resolve<string[] | null>([]);
-    return new Promise<string[] | null>((resolve) => {
-      setRebasePushReview({
-        runId: run.runId,
-        lanes: succeededLanes,
-        resolve
-      });
-    });
-  }, []);
-
-  /**
-   * `laneKey` is a row key. A lane on another machine rebases on that machine:
-   * the run and its push are pinned there, the run's lane ids are that
-   * machine's, and the PRs tab's rebase view (the tab's machine only) is not
-   * opened for it.
-   */
-  const runRebaseFlow = useCallback(async (laneKey: string, mode: "local_only" | "local_and_remote") => {
-    setRebaseError(null);
+  // Where a lane's Catch up runs: its id on its own machine and that
+  // machine's pin (null for the tab's own). Refused while the machine is
+  // unreachable, so nothing is sent unpinned.
+  const resolveCatchUpTarget = useCallback((laneKey: string): LaneCatchUpTarget => {
     const target = resolveLaneTarget(laneKey);
-    if (!target.ok) {
-      setRebaseError(target.reason);
-      return;
-    }
-    const pinned = target.pin != null;
-    const nameOnMachine = (laneId: string) => (pinned && target.machineId
-      ? foreignRowByKeyRef.current.get(foreignLaneKey(target.machineId, laneId))?.lane.name
-      : lanesById.get(laneId)?.name) ?? laneId;
-    try {
-      const start = await window.ade.lanes.rebaseStart({
-        laneId: target.laneId,
-        pushMode: mode === "local_and_remote" ? "review_then_push" : "none",
-        actor: "user"
-      }, ...pinArg(target.pin));
+    return target.ok
+      ? { ok: true, laneId: target.laneId, pin: target.pin, machineId: target.machineId }
+      : { ok: false, reason: target.reason };
+  }, [resolveLaneTarget]);
 
-      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-        const failedLane = start.run.failedLaneId ? nameOnMachine(start.run.failedLaneId) : null;
-        const detail = start.run.error ?? "Rebase failed.";
-        setRebaseError(`Rebase needs attention${failedLane ? ` for ${failedLane}` : ""}. ${detail}`);
-        if (!pinned) navigate("/prs?tab=workflows&workflow=rebase");
-        return;
-      }
-
-      if (mode === "local_and_remote") {
-        const laneIds = await requestPushSelection(start.run);
-        if (laneIds == null) return;
-        if (laneIds.length > 0) {
-          await window.ade.lanes.rebasePush({ runId: start.runId, laneIds }, ...pinArg(target.pin));
-        }
-      }
-
-      try {
-        if (pinned && target.machineId) requestCrossMachineLanesForMachine(target.machineId);
-        else await refreshLanes();
-      } catch (refreshErr) {
-        console.error("Lane refresh failed:", refreshErr);
-      }
-    } catch (err) {
-      const message = extractError(err);
-      setRebaseError(message);
-      if (!pinned) navigate("/prs?tab=workflows&workflow=rebase");
-    }
-  }, [foreignRowByKeyRef, lanesById, navigate, refreshLanes, requestPushSelection, resolveLaneTarget]);
+  // Lanes that have a pull request: their branch is on the remote.
+  const laneHasPr = useCallback((laneKey: string) => (lanePrTagsByLaneId.get(laneKey) ?? [])
+    .some((pr) => pr.laneRole !== "previous"), [lanePrTagsByLaneId]);
 
   // Group header bulk actions. Archive and delete go through the same batch
-  // manage dialog as Cmd-click (it lists the lanes and confirms); rebase has
-  // its own confirm step. Primary is never in a group, and is filtered again.
+  // manage dialog as Cmd-click (it lists the lanes and confirms); catch up
+  // has its own dialog. Primary is never in a group, and is filtered again.
   const handleGroupBulkAction = useCallback((action: LaneGroupBulkAction, laneIds: string[]) => {
-    if (action === "rebase") {
-      // Each lane rebases on its own machine (see `rebaseLaneForBulk`).
-      const targets = bulkActionableLaneIds(laneIds);
-      if (targets.length > 0) setBulkRebaseLaneIds(targets);
+    if (action === "catchUp") {
+      // Only lanes that are behind; each catches up on its own machine.
+      const targets = bulkActionableLaneIds(laneIds).filter((id) => rebaseLineByLaneId.has(id));
+      if (targets.length > 0) setBulkCatchUpLaneIds(targets);
       return;
     }
     openBatchManage(laneIds, action);
-  }, [bulkActionableLaneIds, openBatchManage]);
+  }, [bulkActionableLaneIds, openBatchManage, rebaseLineByLaneId]);
 
-  // One lane of "Rebase all": the rebase the Git pane's "Rebase now" runs,
-  // scoped to this lane only and without a push.
-  const rebaseLaneForBulk = useCallback(async (laneKey: string): Promise<string | null> => {
-    const target = resolveLaneTarget(laneKey);
-    if (!target.ok) return target.reason;
-    const start = await window.ade.lanes.rebaseStart(
-      { laneId: target.laneId, pushMode: "none", actor: "user" },
-      ...pinArg(target.pin),
-    );
-    if (target.pin && target.machineId) requestCrossMachineLanesForMachine(target.machineId);
-    if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-      return start.run.error ?? "Rebase failed.";
-    }
-    return null;
-  }, [resolveLaneTarget]);
-
-  const bulkRebaseTargets = useMemo((): LaneBulkRebaseTarget[] => {
-    if (!bulkRebaseLaneIds) return [];
-    return bulkRebaseLaneIds.flatMap((laneId) => {
-      const lane = lanesById.get(laneId);
-      if (!lane) return [];
-      const behind = Math.max(lane.status.behind, rebaseLineByLaneId.get(laneId)?.behindBy ?? 0);
-      return [{ lane, colorIndex: colorIndexByLaneId.get(laneId) ?? 0, behind }];
+  const bulkCatchUpTargets = useMemo((): LaneBulkCatchUpTarget[] => {
+    if (!bulkCatchUpLaneIds) return [];
+    return bulkCatchUpLaneIds.flatMap((laneKey) => {
+      const lane = lanesById.get(laneKey);
+      const line = rebaseLineByLaneId.get(laneKey);
+      if (!lane || !line) return [];
+      return [{
+        key: laneKey,
+        lane,
+        colorIndex: colorIndexByLaneId.get(laneKey) ?? 0,
+        line,
+        target: resolveCatchUpTarget(laneKey),
+        hasPr: laneHasPr(laneKey),
+      }];
     });
-  }, [bulkRebaseLaneIds, colorIndexByLaneId, rebaseLineByLaneId, lanesById]);
-
-  const openRebaseDetails = useCallback((laneId?: string | null) => {
-    const trimmedLaneId = typeof laneId === "string" ? laneId.trim() : "";
-    if (trimmedLaneId.length) {
-      const search = buildPrsRouteSearch({
-        activeTab: "rebase",
-        selectedPrId: null,
-        selectedRebaseItemId: trimmedLaneId,
-      });
-      navigate(`/prs${search}`);
-      return;
-    }
-    navigate("/prs?tab=workflows&workflow=rebase");
-  }, [navigate]);
+  }, [bulkCatchUpLaneIds, colorIndexByLaneId, laneHasPr, lanesById, rebaseLineByLaneId, resolveCatchUpTarget]);
 
   /* ---- Git pane selection ---- */
 
@@ -2160,7 +2061,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       rebaseLineByLaneId={rebaseLineByLaneId}
-      onRebaseLane={(laneKey) => { void runRebaseFlow(laneKey, "local_only"); }}
+      resolveCatchUpTarget={resolveCatchUpTarget}
       agentsByLaneId={agentsByLaneId}
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}
@@ -2240,10 +2141,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       colorIndex={detailColorIndex}
                       active={active}
                       onOpenLaneMenu={(_realLaneId, anchor) => openLaneMenuAt(detailLaneId, anchor)}
-                      // A rebase runs on the lane's own machine (see `runRebaseFlow`).
+                      // Catch up runs on the lane's own machine (the dashboard's `machine.pin`).
                       rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
-                      onRebase={() => { void runRebaseFlow(detailLaneId, "local_only"); }}
-                      rebaseError={rebaseError}
                       onStartChat={(realLaneId) => startChatInLane(realLaneId, { machineId: detailForeignRow.machineId })}
                       onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
                       machine={detailForeignRow.pin ? {
@@ -2264,10 +2163,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                         runtimePin={detailForeignRow.pin}
                         active={active}
                         compareBase={detailCompareBase}
-                        // Pinned to the lane's machine via its row key; the
-                        // pane's own id argument is that machine's lane id.
-                        onRebaseNowLocal={() => runRebaseFlow(detailLaneId, "local_only")}
-                        onRebaseAndPush={() => runRebaseFlow(detailLaneId, "local_and_remote")}
+                        // Catch up runs on `runtimePin`, the lane's machine.
+                        rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
+                        laneHasPr={laneHasPr(detailLaneId)}
                         selectedPath={laneDetail.selectedFilePath}
                         selectedMode={laneDetail.selectedFileMode}
                         selectedCommit={laneDetail.selectedCommit ?? null}
@@ -2290,8 +2188,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   agents={agentsByLaneId.get(detailLaneId)}
                   onOpenLaneMenu={openLaneMenuAt}
                   rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
-                  onRebase={() => { void runRebaseFlow(detailLaneId, "local_only"); }}
-                  rebaseError={rebaseError}
                   onStartChat={startChatInLane}
                   onSelectCommit={(commit) => handleSelectCommit(detailLaneId, commit)}
                 />
@@ -2305,9 +2201,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                     laneId={detailLaneId}
                     active={active}
                     compareBase={detailCompareBase}
-                    onRebaseNowLocal={(targetLaneId) => runRebaseFlow(targetLaneId, "local_only")}
-                    onRebaseAndPush={(targetLaneId) => runRebaseFlow(targetLaneId, "local_and_remote")}
-                    onViewRebaseDetails={openRebaseDetails}
+                    rebaseLine={rebaseLineByLaneId.get(detailLaneId) ?? null}
+                    laneHasPr={laneHasPr(detailLaneId)}
                     selectedPath={laneDetail.selectedFilePath}
                     selectedMode={laneDetail.selectedFileMode}
                     selectedCommit={laneDetail.selectedCommit ?? null}
@@ -2430,12 +2325,10 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         />
       ) : null}
 
-      <LaneSidebarBulkRebaseDialog
-        open={bulkRebaseLaneIds != null}
-        targets={bulkRebaseTargets}
-        onOpenChange={(open) => { if (!open) setBulkRebaseLaneIds(null); }}
-        rebaseLane={rebaseLaneForBulk}
-        onFinished={() => { refreshLanes().catch(() => {}); }}
+      <LaneSidebarBulkCatchUpDialog
+        open={bulkCatchUpLaneIds != null}
+        targets={bulkCatchUpTargets}
+        onOpenChange={(open) => { if (!open) setBulkCatchUpLaneIds(null); }}
       />
 
       <CreateLaneDialogHost
@@ -2449,65 +2342,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onNavigateToTemplates={() => navigate(settingsRouteFor("lanes-git.lane-templates"))}
       />
 
-      {rebasePushReview ? (
-        <Dialog
-          open
-          onOpenChange={(open) => {
-            if (open) return;
-            rebasePushReview.resolve(null);
-            setRebasePushReview(null);
-          }}
-          title="Review then push"
-          description="Select rebased lanes to push to remote."
-          size="md"
-          actions={[
-            {
-              label: "Cancel",
-              variant: "secondary",
-              onClick: () => {
-                rebasePushReview.resolve(null);
-                setRebasePushReview(null);
-              },
-            },
-            {
-              label: "Push selected",
-              variant: "solid",
-              autoFocus: true,
-              onClick: () => {
-                const laneIds = rebasePushReview.lanes.filter((lane) => lane.selected).map((lane) => lane.laneId);
-                rebasePushReview.resolve(laneIds);
-                setRebasePushReview(null);
-              },
-            },
-          ]}
-        >
-          <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 240, overflowY: "auto" }}>
-            {rebasePushReview.lanes.map((lane) => (
-              <label
-                key={lane.laneId}
-                className="flex items-center gap-2"
-                style={{ fontSize: 12, color: COLORS.textSecondary, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: "8px 10px" }}
-              >
-                <input
-                  type="checkbox"
-                  checked={lane.selected}
-                  onChange={(event) => {
-                    const checked = event.target.checked;
-                    setRebasePushReview((prev) => {
-                      if (!prev) return prev;
-                      return {
-                        ...prev,
-                        lanes: prev.lanes.map((entry) => entry.laneId === lane.laneId ? { ...entry, selected: checked } : entry)
-                      };
-                    });
-                  }}
-                />
-                <span className="truncate">{lane.laneName}</span>
-              </label>
-            ))}
-          </div>
-        </Dialog>
-      ) : null}
     </div>
   );
 }

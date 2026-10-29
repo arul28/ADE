@@ -171,7 +171,7 @@ export type LaneStateInput = {
   agents: readonly Pick<LaneAgent, "activity" | "lastActivityAt">[];
   runtime: LaneRuntime | null | undefined;
   prs: readonly Pick<LaneTabPrTag, "state" | "githubPrNumber" | "checksStatus" | "reviewStatus" | "mergeConflicts" | "laneRole" | "updatedAt">[] | undefined;
-  /** The lane's rebase need from the scan, left out when the user dismissed or deferred it. */
+  /** The lane's rebase need from the scan. */
   rebaseNeed?: Pick<RebaseNeed, "kind" | "behindBy"> | null;
   nowMs: number;
 };
@@ -321,12 +321,12 @@ export function laneSidebarVisibleLaneIds(
 }
 
 /** What a group header's "…" menu offers. */
-export type LaneGroupBulkAction = "archive" | "rebase" | "delete";
+export type LaneGroupBulkAction = "archive" | "catchUp" | "delete";
 
 export function laneGroupBulkActions(id: LaneStateGroupId): LaneGroupBulkAction[] {
   switch (id) {
     case "done": return ["archive"];
-    case "behind": return ["rebase"];
+    case "behind": return ["catchUp"];
     case "stale": return ["archive", "delete"];
     default: return [];
   }

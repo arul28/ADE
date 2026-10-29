@@ -67,7 +67,7 @@ function renderRow(overrides: Partial<LaneSidebarRowProps> = {}) {
     agents: [],
     prs: undefined,
     rebaseLine: null,
-    onRebase: vi.fn(),
+    resolveCatchUpTarget: (laneKey: string) => ({ ok: true as const, laneId: laneKey, pin: null, machineId: null }),
     deleteStatusLabel: null,
     creating: false,
     onSelect: vi.fn(),

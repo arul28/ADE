@@ -112,6 +112,17 @@ ade git rebase continue --lane <lane> --text
 `--ai` runs the rebase with ADE's AI-assisted conflict support;
 `ade git conflict show` prints ADE's view of the conflicted files.
 
+A branch that is already pushed should not be rebased (that rewrites it).
+Merge its base in instead:
+
+```bash
+ade git merge --lane <lane> --text
+```
+
+It fetches, then merges `origin/<base>` (the lane's compare base) into the
+lane. On a conflict it undoes the merge and reports the files, so the lane is
+left as it was; resolve by hand with `git merge origin/<base>` if you need to.
+
 ## Gotchas
 
 - Use `--lane` for anything other than the active workspace.

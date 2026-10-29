@@ -570,6 +570,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listRecentCommits",
     "listStashes",
     "mergeAbort",
+    "mergeBaseIn",
     "mergeContinue",
     "pull",
     "push",

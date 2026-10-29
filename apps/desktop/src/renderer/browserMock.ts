@@ -9515,6 +9515,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       rebaseAbort: resolvedArg({ ok: true }),
       mergeContinue: resolvedArg({ ok: true }),
       mergeAbort: resolvedArg({ ok: true }),
+      mergeBaseIn: resolvedArg({ operationId: "mock", preHeadSha: null, postHeadSha: null, baseBranch: "main", mergedRef: "origin/main", upToDate: false, fetched: true }),
       listBranches: resolvedArg([]),
       checkoutBranch: resolvedArg({ ok: true }),
     },

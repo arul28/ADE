@@ -854,6 +854,7 @@ export const IPC = {
   gitRebaseAbort: "ade.git.rebaseAbort",
   gitMergeContinue: "ade.git.mergeContinue",
   gitMergeAbort: "ade.git.mergeAbort",
+  gitMergeBaseIn: "ade.git.mergeBaseIn",
   gitListBranches: "ade.git.listBranches",
   gitGetUserIdentity: "ade.git.getUserIdentity",
   gitCheckoutBranch: "ade.git.checkoutBranch",

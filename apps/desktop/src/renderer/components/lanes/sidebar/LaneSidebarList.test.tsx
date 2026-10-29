@@ -65,7 +65,7 @@ function renderList(overrides: Partial<LaneSidebarListProps> = {}) {
     totalLaneCount: lanes.length,
     laneRuntimeById: new Map(),
     rebaseLineByLaneId: new Map(),
-    onRebaseLane: vi.fn(),
+    resolveCatchUpTarget: (laneKey: string) => ({ ok: true as const, laneId: laneKey, pin: null, machineId: null }),
     agentsByLaneId: new Map(),
     lanePrTagsByLaneId: new Map(),
     deleteProgressByLaneId: {},

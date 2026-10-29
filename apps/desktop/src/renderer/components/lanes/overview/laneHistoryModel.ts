@@ -373,6 +373,7 @@ const OPERATION_TEXT: Record<string, { ok: string; failed: string }> = {
   lane_rebase: { ok: "Rebased onto base", failed: "Rebase failed" },
   git_rebase_abort: { ok: "Rebase aborted", failed: "Rebase abort failed" },
   git_merge_abort: { ok: "Merge aborted", failed: "Merge abort failed" },
+  git_merge_base_in: { ok: "Merged base in", failed: "Merge of base failed" },
   git_checkout_branch: { ok: "Switched branch", failed: "Branch switch failed" },
   git_revert: { ok: "Reverted a commit", failed: "Revert failed" },
   git_reset_hard: { ok: "Reset the branch", failed: "Reset failed" },

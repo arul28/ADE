@@ -69,6 +69,26 @@ export type GitPullArgs = {
   mode?: GitPullMode;
 };
 
+/** Merge the lane's compare base into the lane (`git.mergeBaseIn`). */
+export type GitMergeBaseInArgs = {
+  laneId: string;
+};
+
+/**
+ * A finished `git.mergeBaseIn`. A conflict or any other failure throws instead,
+ * after the merge is aborted, so the lane is as it was.
+ */
+export type GitMergeBaseInResult = GitActionResult & {
+  /** The branch merged in, e.g. `main`. */
+  baseBranch: string;
+  /** The ref actually merged: `origin/main`, or `main` when there is no remote copy. */
+  mergedRef: string;
+  /** The lane already contained the base; nothing was merged. */
+  upToDate: boolean;
+  /** False when the fetch before the merge failed and the last known copy was used. */
+  fetched: boolean;
+};
+
 export type GitHeadChangeActionArgs = {
   laneId: string;
 };

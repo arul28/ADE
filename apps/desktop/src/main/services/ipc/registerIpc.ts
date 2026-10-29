@@ -367,6 +367,8 @@ import type {
   GitStashRefArgs,
   GitStashSummary,
   GitSyncArgs,
+  GitMergeBaseInArgs,
+  GitMergeBaseInResult,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
@@ -11897,6 +11899,11 @@ export function registerIpc({
   ipcMain.handle(IPC.gitMergeAbort, async (_event, arg: { laneId: string }): Promise<GitActionResult> => {
     const ctx = ensureGitContext();
     return await ctx.gitService.mergeAbort({ laneId: arg?.laneId ?? "" });
+  });
+
+  ipcMain.handle(IPC.gitMergeBaseIn, async (_event, arg: GitMergeBaseInArgs): Promise<GitMergeBaseInResult> => {
+    const ctx = ensureGitContext();
+    return await ctx.gitService.mergeBaseIn({ laneId: arg?.laneId ?? "" });
   });
 
   ipcMain.handle(IPC.gitListBranches, async (_event, arg: GitListBranchesArgs): Promise<GitBranchSummary[]> => {

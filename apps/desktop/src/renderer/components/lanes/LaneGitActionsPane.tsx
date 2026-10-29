@@ -11,7 +11,8 @@ import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { plainLaneStartBranch } from "../../../shared/laneStart";
-import { laneCompareBase } from "./laneRebaseNeeds";
+import { laneCompareBase, laneRebaseLine, type LaneRebaseLine } from "./laneRebaseNeeds";
+import { LaneCatchUpMenu } from "./LaneCatchUpMenu";
 import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
@@ -76,9 +77,7 @@ type NextActionHint = {
 type ResponsiveMode = "narrow" | "medium" | "wide";
 
 /** A push held back by the divergence guard, replayed verbatim on confirm. */
-type PendingGuardedPush =
-  | { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> }
-  | { kind: "rebase-push"; confirmPublish: boolean; warning: NonNullable<DivergenceWarning> };
+type PendingGuardedPush = { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> };
 
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 /** Files list rows are virtualized; the estimate stands in until each row is measured. */
@@ -515,9 +514,8 @@ function ChangeList({
 export function LaneGitActionsPane({
   laneId,
   active = true,
-  onRebaseNowLocal,
-  onRebaseAndPush,
-  onViewRebaseDetails,
+  rebaseLine,
+  laneHasPr = false,
   compareBase = null,
   onSelectFile,
   onSelectCommit,
@@ -534,9 +532,13 @@ export function LaneGitActionsPane({
 }: {
   laneId: string | null;
   active?: boolean;
-  onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
-  onRebaseAndPush?: (laneId: string) => Promise<void> | void;
-  onViewRebaseDetails?: (laneId?: string | null) => void;
+  /**
+   * The lane's "behind" line, which shows the header's Catch up menu. Unset
+   * (Work → Tools → Git) derives it from the lane's own behind count.
+   */
+  rebaseLine?: LaneRebaseLine | null;
+  /** The lane has a pull request, so its branch is pushed. */
+  laneHasPr?: boolean;
   /**
    * The branch this lane rebases onto (`laneCompareBase`: the brain's compare
    * base). Unset reads it from the lane.
@@ -959,8 +961,7 @@ export function LaneGitActionsPane({
         actionName === "fetch" ||
         actionName === "push" ||
         actionName === "force push" ||
-        actionName === "rebase" ||
-        actionName === "rebase and push";
+        actionName === "rebase";
       await refreshAll({ fetchRemote: isRemoteAction }, actionLaneId);
       if (isRemoteAction && isViewingLane(actionLaneId)) {
         setForcePushSuggested(false);
@@ -995,8 +996,6 @@ export function LaneGitActionsPane({
         } else {
           showToast({ title: `Pulled ${laneLabel}`, tone: "success" });
         }
-      } else if (actionName === "rebase and push") {
-        showToast({ title: `Rebased & pushed ${laneLabel}`, tone: "success" });
       }
       scheduleLaneGitActionRuntimeClear(actionScopeKey, actionVersion, 3_000, {
         notice: null,
@@ -1468,100 +1467,13 @@ export function LaneGitActionsPane({
     });
   };
 
-  const executeRebaseAndPushFlow = (confirmPublish: boolean) => {
-    if (!laneId) return;
-    void runAction("rebase and push", async () => {
-      if (onRebaseAndPush) {
-        await onRebaseAndPush(laneId);
-        return;
-      }
-
-      invalidateLaneGitCaches(projectStateKey, laneId);
-      const start = await window.ade.lanes.rebaseStart({
-        laneId,
-        pushMode: "none",
-        actor: "user"
-      }, pin);
-      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-        throw new Error(start.run.error ?? "Rebase failed.");
-      }
-
-      await window.ade.git.fetch({ laneId }, pin).catch(() => {});
-      const latestSyncStatus = await window.ade.git.getSyncStatus({ laneId }, pin);
-      setSyncStatus(latestSyncStatus);
-
-      if (!latestSyncStatus.hasUpstream) {
-        const missingRemote = latestSyncStatus.upstreamState === "missing";
-        if (confirmPublish) {
-          const ok = await confirmDialog(
-            missingRemote
-              ? {
-                title: `The remote branch for lane '${lane?.name ?? laneId}' is missing.`,
-                message: `Recreate origin/${lane?.branchRef ?? "current branch"}?`,
-                confirmLabel: "Recreate",
-              }
-              : {
-                title: `Publish lane '${lane?.name ?? laneId}' to origin/${lane?.branchRef ?? "current branch"}?`,
-                confirmLabel: "Publish",
-              },
-          );
-          if (!ok) throw new Error("__ade_cancelled__");
-        }
-        invalidateLaneGitCaches(projectStateKey, laneId);
-        await window.ade.git.push({ laneId }, pin);
-        return;
-      }
-
-      if (latestSyncStatus.diverged && latestSyncStatus.ahead > 0) {
-        if (confirmPublish) {
-          const ok = await confirmDialog({
-            title: `Lane '${lane?.name ?? laneId}' diverged from remote (${latestSyncStatus.ahead} local ahead, ${latestSyncStatus.behind} remote ahead).`,
-            message: "Force push with lease now?",
-            confirmLabel: "Force push",
-            destructive: true,
-          });
-          if (!ok) throw new Error("__ade_cancelled__");
-        }
-        invalidateLaneGitCaches(projectStateKey, laneId);
-        await window.ade.git.push({ laneId, forceWithLease: true }, pin);
-        return;
-      }
-
-      if (latestSyncStatus.ahead > 0) {
-        if (confirmPublish) {
-          const ok = await confirmDialog({
-            title: `Push ${latestSyncStatus.ahead} commit${latestSyncStatus.ahead === 1 ? "" : "s"} for lane '${lane?.name ?? laneId}' now?`,
-            confirmLabel: "Push",
-          });
-          if (!ok) throw new Error("__ade_cancelled__");
-        }
-        invalidateLaneGitCaches(projectStateKey, laneId);
-        await window.ade.git.push({ laneId }, pin);
-      }
-    });
-  };
-
-  const runRebaseAndPushFlow = (confirmPublish = true) => {
-    if (!laneId) return;
-    const warning = resolvePushDivergence();
-    if (warning) {
-      setPendingPush({ kind: "rebase-push", confirmPublish, warning });
-      return;
-    }
-    executeRebaseAndPushFlow(confirmPublish);
-  };
-
   // Plain function (not memoized) so the replayed push always closes over the
   // current lane state rather than the state at the moment the dialog opened.
   const confirmPendingPush = () => {
     const pending = pendingPush;
     setPendingPush(null);
     if (!pending) return;
-    if (pending.kind === "push") {
-      executePush(pending.forceWithLease);
-      return;
-    }
-    executeRebaseAndPushFlow(pending.confirmPublish);
+    executePush(pending.forceWithLease);
   };
 
   const cancelPendingPush = useCallback(() => setPendingPush(null), []);
@@ -1634,10 +1546,12 @@ export function LaneGitActionsPane({
   const divergedSync = Boolean(syncStatus?.diverged);
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
-  // The primary lane is the base; it never rebases onto it.
-  const canRebaseOntoBase = lane != null && lane.laneType !== "primary";
   const rebaseBase = compareBase?.trim() || (lane ? laneCompareBase(lane) : "");
-  const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
+  // The header's Catch up menu, while the lane is behind its base (never the
+  // primary lane, which is the base).
+  const catchUpLine = rebaseLine !== undefined
+    ? rebaseLine
+    : lane ? laneRebaseLine({ lane, need: null }) : null;
 
   const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
     const rowSelected = selectedPath === file.path && selectedMode === mode;
@@ -2405,15 +2319,28 @@ export function LaneGitActionsPane({
         >
           <ArrowUp size={16} />
         </WorkToolChromeButton>
-        {canRebaseOntoBase ? (
-          <WorkToolChromeButton
-            label={`Rebase onto ${rebaseBase} and push`}
-            onClick={() => runRebaseAndPushFlow(true)}
-            disabled={syncButtonDisabled}
-            testId="git-pane-rebase"
-          >
-            <Stack size={16} />
-          </WorkToolChromeButton>
+        {catchUpLine && lane && laneId ? (
+          <LaneCatchUpMenu
+            lane={lane}
+            line={catchUpLine}
+            // The pane's machine: `pin` is null for the tab's own.
+            target={{ ok: true, laneId, pin, machineId: null }}
+            hasPr={laneHasPr}
+            inProgress={Boolean(conflictState?.inProgress)}
+            placement="bottom-end"
+            onFinished={() => { refreshAll({ fetchRemote: false }).catch(() => {}); }}
+            trigger={(state) => (
+              <WorkToolChromeButton
+                label={state.busy ? (state.busy === "rebase" ? "Rebasing…" : "Merging…") : `Catch up with ${catchUpLine.baseBranch}`}
+                onClick={state.toggle}
+                active={state.open}
+                disabled={busyAction != null || state.busy != null}
+                testId="git-pane-catch-up"
+              >
+                <Stack size={16} />
+              </WorkToolChromeButton>
+            )}
+          />
         ) : null}
         <span ref={advancedTriggerRef} className="inline-flex">
           <WorkToolChromeButton
@@ -2499,63 +2426,6 @@ export function LaneGitActionsPane({
                   warning: "This will overwrite remote history",
                 }}
               />
-              {canRebaseOntoBase ? (
-                <ActionButton
-                  title={`Rebase onto ${rebaseBase}`}
-                  icon={<Stack size={14} />}
-                  detail={lane?.status.behind === 0
-                    ? `Already up to date with ${rebaseBase}.`
-                    : lane?.status.dirty
-                      ? "Commit or stash uncommitted changes before rebasing."
-                      : `Replay this lane's commits on top of ${rebaseBase} without pushing anything yet.`}
-                  disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
-                  onClick={() => {
-                    if (!laneId) return;
-                    if (onRebaseNowLocal) {
-                      void runAction("rebase", async () => {
-                        await onRebaseNowLocal(laneId);
-                      });
-                      return;
-                    }
-                    void runAction("rebase", async () => {
-                      invalidateLaneGitCaches(projectStateKey, laneId);
-                      const start = await window.ade.lanes.rebaseStart({
-                        laneId,
-                        pushMode: "none",
-                        actor: "user"
-                      }, pin);
-                      if (start.run.state === "failed" || start.run.failedLaneId || start.run.error) {
-                        throw new Error(start.run.error ?? "Rebase failed.");
-                      }
-                    });
-                  }}
-                  smartTooltip={{
-                    label: `Rebase onto ${rebaseBase}`,
-                    description: `Replay your commits on top of ${rebaseBase} without pushing. Use this to stay current before pushing.`,
-                    gitCommand: `git rebase ${rebaseBase}`,
-                    effect: lane?.status.behind === 0
-                      ? `Already up to date with ${rebaseBase}`
-                      : lane?.status.dirty
-                        ? "Cannot rebase: uncommitted changes present"
-                        : `${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind ${rebaseBase}`,
-                    warning: lane?.status.dirty ? "Commit or stash changes first" : undefined,
-                  }}
-                />
-              ) : null}
-              {canRebaseOntoBase ? (
-                <ActionButton
-                  title="View rebase details"
-                  icon={<GitBranch size={14} />}
-                  detail="See detailed rebase history, including conflicts and timing."
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => onViewRebaseDetails?.(laneId)}
-                  smartTooltip={{
-                    label: "View Rebase Details",
-                    description: "See detailed rebase history, including conflicts and timing.",
-                    effect: "Open the rebase details panel",
-                  }}
-                />
-              ) : null}
               <ActionButton
                 title="Revert commit"
                 icon={<ArrowUUpLeft size={14} />}
