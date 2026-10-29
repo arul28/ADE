@@ -294,13 +294,23 @@ describe("account vault", () => {
     expect((await call("DELETE", `/attention/account/vault/all/secret/${encodeURIComponent(key)}`)).status).toBe(400);
   });
 
-  // A client that asks for per-item answers gets them: one refused item no
-  // longer holds back the rest, and it learns which one and why.
+  // A client that asks for per-item answers gets them: one refused or stale
+  // item no longer holds back the rest, and it learns which one and why. A
+  // write older than the stored row (an eight-day-old queued Linear token
+  // after another machine rotated it) comes back with that row to adopt.
   it("answers each item on its own when asked, writing the good ones", async () => {
+    await put([sealed({ kind: "linear_refresh_token", key: "default", value: "rotated", refreshOwner: "device-1" })]);
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
     const result = await call("PUT", "/attention/account/vault", {
       itemResults: true,
-      deviceId: "device-1",
-      items: [sealed(), sealed({ kind: "ssh_key", key: "other" }), sealed({ key: "big", value: "x".repeat(10_000) })],
+      sentAt: new Date().toISOString(),
+      deviceId: "device-old",
+      items: [
+        sealed(),
+        sealed({ kind: "ssh_key", key: "other" }),
+        sealed({ key: "big", value: "x".repeat(10_000) }),
+        sealed({ kind: "linear_refresh_token", key: "default", value: "eight-days-old", writtenAt: eightDaysAgo }),
+      ],
     });
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({
@@ -310,81 +320,53 @@ describe("account vault", () => {
         { status: "written" },
         { status: "rejected", reason: "unknown kind" },
         { status: "rejected", reason: "value too large" },
+        { status: "stale", current: { key: "default", value: "rotated", refreshOwner: "device-1" } },
       ],
     });
-    expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ key: "anthropic" }]);
+    const items = (await call("GET", "/attention/account/vault")).body.items as Array<{ key: string; value: string }>;
+    expect(items.map((item) => [item.key, item.value]).sort()).toEqual([["anthropic", expect.any(String)], ["default", "rotated"]]);
   });
 
   describe("a write made before the stored row", () => {
     const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
     const DAY = 24 * 60 * 60_000;
 
-    const checkedPut = (items: unknown[], sentAt = at(0)) =>
-      call("PUT", "/attention/account/vault", { itemResults: true, sentAt, deviceId: "device-old", items });
-
-    it("is refused for that item only, with the stored row to adopt", async () => {
-      await put([sealed({ kind: "linear_refresh_token", key: "default", value: "rotated", refreshOwner: "device-1" })]);
-      const result = await checkedPut([
-        sealed({ kind: "linear_refresh_token", key: "default", value: "eight-days-old", writtenAt: at(-8 * DAY) }),
-        sealed({ key: "fresh", value: "new", writtenAt: at(-8 * DAY) }),
-      ]);
-      expect(result.body).toMatchObject({
-        ok: true,
-        written: 1,
-        results: [
-          { status: "stale", current: { key: "default", value: "rotated", refreshOwner: "device-1" } },
-          { status: "written" },
-        ],
-      });
-      const items = (await call("GET", "/attention/account/vault")).body.items as Array<{ key: string; value: string }>;
-      expect(items.find((item) => item.key === "default")?.value).toBe("rotated");
-    });
-
-    it("still wins when it was made after the stored row", async () => {
-      await put([sealed({ value: "older" })]);
-      const result = await checkedPut([sealed({ value: "newer", writtenAt: at(60_000) })], at(60_000));
-      expect(result.body).toMatchObject({ results: [{ status: "written" }] });
-      expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ value: "newer" }]);
-    });
-
-    // A machine whose clock runs a day slow made its edit just now; corrected by
-    // its own `sentAt`, the edit is not mistaken for a day-old one.
-    it("is judged on the Worker's clock, not the machine's", async () => {
-      await put([sealed({ value: "from-another-machine" })]);
+    // Wins: made after the stored row; made just now on a machine whose clock
+    // runs a day slow (corrected by its own `sentAt`); or made while this same
+    // device's earlier write was still in flight.
+    it.each([
+      { label: "made after the stored row", writtenAt: () => at(60_000), sentAt: () => at(60_000), deviceId: "device-old" },
+      { label: "made just now on a day-slow clock", writtenAt: () => at(-DAY), sentAt: () => at(-DAY), deviceId: "device-old" },
+      { label: "made by the device that wrote the stored row", writtenAt: () => at(-DAY), sentAt: () => at(0), deviceId: "device-1" },
+    ])("is written when $label", async ({ writtenAt, sentAt, deviceId }) => {
+      await put([sealed({ value: "stored" })]);
       raw.exec(`update account_vault_items set updated_at = '${at(-60_000)}'`);
-      const result = await checkedPut([sealed({ value: "mine", writtenAt: at(-DAY) })], at(-DAY));
-      expect(result.body).toMatchObject({ results: [{ status: "written" }] });
-    });
-
-    it("is a stale delete: refused with 409 and the stored row", async () => {
-      await put([sealed({ value: "kept" })]);
-      const stale = await call(
-        "DELETE",
-        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(-DAY))}&sentAt=${encodeURIComponent(at(0))}`,
-      );
-      expect(stale.status).toBe(409);
-      expect(stale.body).toMatchObject({ code: "stale", current: { key: "anthropic", value: "kept" } });
-      const fresh = await call(
-        "DELETE",
-        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(1_000))}&sentAt=${encodeURIComponent(at(0))}`,
-      );
-      expect(fresh.body).toMatchObject({ ok: true, deleted: true });
-    });
-
-    // Its own earlier write was still in flight when it made this one: the
-    // stored row is not newer than anything this device knew.
-    it("is not refused when the same device wrote the stored row", async () => {
-      await put([sealed({ value: "first" })]);
-      const own = await call("PUT", "/attention/account/vault", {
-        itemResults: true, sentAt: at(0), deviceId: "device-1", items: [sealed({ value: "second", writtenAt: at(-DAY) })],
+      const result = await call("PUT", "/attention/account/vault", {
+        itemResults: true, sentAt: sentAt(), deviceId, items: [sealed({ value: "mine", writtenAt: writtenAt() })],
       });
-      expect(own.body).toMatchObject({ results: [{ status: "written" }] });
-      expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ value: "second" }]);
-      const deleted = await call(
+      expect(result.body).toMatchObject({ ok: true, written: 1, results: [{ status: "written" }] });
+      expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ value: "mine" }]);
+    });
+
+    it.each([
+      { label: "an older delete from another device", writtenAt: -DAY, deviceId: "device-old", deleted: false },
+      { label: "a newer delete", writtenAt: 1_000, deviceId: "device-old", deleted: true },
+      { label: "an older delete from the device that wrote it", writtenAt: -DAY, deviceId: "device-1", deleted: true },
+    ])("answers $label against the stored row", async ({ writtenAt, deviceId, deleted }) => {
+      await put([sealed({ value: "kept" })]);
+      const result = await call(
         "DELETE",
-        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(-DAY))}&sentAt=${encodeURIComponent(at(0))}&deviceId=device-1`,
+        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(writtenAt))}`
+          + `&sentAt=${encodeURIComponent(at(0))}&deviceId=${deviceId}`,
       );
-      expect(deleted.body).toMatchObject({ ok: true, deleted: true });
+      if (deleted) {
+        expect(result.body).toMatchObject({ ok: true, deleted: true });
+      } else {
+        expect(result.status).toBe(409);
+        expect(result.body).toMatchObject({ code: "stale", current: { key: "anthropic", value: "kept" } });
+      }
+      expect((await call("GET", "/attention/account/vault")).body.items)
+        .toMatchObject([deleted ? { deleted: true, value: null } : { value: "kept" }]);
     });
   });
 

@@ -136,6 +136,20 @@ Main process:
   has no row for them. A cold empty cache does not seed, because that cache
   has not merged the Worker yet. Vault writes that fail while the brain is
   down retry a few times on an unref'd timer.
+  One item the Worker refuses never blocks the queue: the store asks for
+  per-item answers (and, against an older Worker that refuses whole batches,
+  splits the batch until the bad item stands alone), parks that item locally
+  with its reason, sends the rest, and still pulls. Parked items retry hourly
+  or when written again. Each queued write carries the time it was made; the
+  Worker refuses one older than the stored row (corrected for the computer's
+  clock, and never for the device that wrote that row), and the store adopts
+  the newer row instead, so a computer whose queue was stuck for days cannot
+  overwrite newer values (a rotated Linear token) when it unjams. Both stores
+  expose `health()` (ok / failing / unavailable, last sync, pending, parked,
+  a plain error sentence), which Settings › ADE MCP shows, and log failures,
+  rate-limited, to `<ade home>/runtime/brain.jsonl` whoever created the store.
+  An ADE from before this check uploads its queue unchecked once the Worker
+  accepts it.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
   receipt-backed sign-in migration and hydration for provider API keys, Linear

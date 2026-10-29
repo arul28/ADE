@@ -25,7 +25,9 @@ model is `apps/desktop/src/shared/mcpRegistry.ts`.
 variables and headers. Their values live in the account vault: kind `secret`,
 scope `all`, key `mcp/<server>/env/<NAME>` or `mcp/<server>/header/<NAME>`
 (`mcpSecretVaultKey`). Settings rows are stored and synced as readable JSON;
-the vault is sealed.
+the vault is sealed. The push relay accepts these slash-separated keys (one
+or more segments, none empty or starting with a dot); before it did, one such
+key failed its computer's whole vault upload.
 
 **A launch never puts a secret on a command line.** The Claude Agent SDK hands
 the Claude CLI every MCP server, env values and headers included, as one inline
