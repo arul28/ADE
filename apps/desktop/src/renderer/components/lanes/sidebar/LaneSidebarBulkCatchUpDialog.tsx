@@ -4,7 +4,6 @@ import type { LaneSummary } from "../../../../shared/types";
 import { buildLaneCatchUpPrompt, type LaneCatchUpPromptInput } from "../../../lib/laneCatchUpPrompt";
 import { useAppStore } from "../../../state/appStore";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
-import { Button } from "../../ui/Button";
 import { LaneDialogShell } from "../LaneDialogShell";
 import { laneCatchUpOptions } from "../laneCatchUp";
 import { runLaneCatchUpDirect, useLaneCatchUpAskAgent, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
@@ -224,20 +223,21 @@ export function LaneSidebarBulkCatchUpDialog({
               <span className="truncate">{`Catching up ${progress.index + 1} of ${progress.total} · ${progress.laneName}`}</span>
             </span>
           ) : checking ? (
-            <span className="mr-auto text-xs" style={{ color: COLORS.textMuted }}>Checking which branches are pushed…</span>
+            <span className="mr-auto text-xs" style={{ color: COLORS.textMuted }}>Checking each lane…</span>
           ) : null}
-          <Button size="sm" variant="ghost" disabled={busy} onClick={() => onOpenChange(false)}>
+          <button type="button" className="kit-btn kit-btn-ghost" data-size="sm" disabled={busy} onClick={() => onOpenChange(false)}>
             Cancel
-          </Button>
-          <Button
-            size="sm"
-            variant="primary"
+          </button>
+          <button
+            type="button"
+            className="kit-btn kit-btn-primary"
+            data-size="sm"
             data-testid="lane-bulk-catch-up-confirm"
             disabled={busy || checking || count === 0}
             onClick={() => { void run(); }}
           >
             {count === 1 ? "Catch up 1 lane" : `Catch up ${count} lanes`}
-          </Button>
+          </button>
         </div>
       )}
     >
