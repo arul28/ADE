@@ -491,7 +491,7 @@ merged are in the PR, not here. A row wins only when its worst run wins.
 | F3 | One `git rev-parse HEAD` through `runGit`, 200 per run | `spawn.bench.mts --project` | 28.3 ms (29.2) | 2.7-3.0 ms (macOS/Linux) | loss: a bare `git --version` is 26.9 ms here, so this is the Windows process start |
 | F4 | Git processes / full `git status` runs for 1 refresh + 4 overlapping (`get_lane_status`) | `git-status-burst.bench.mts --project` | 20 (35) processes, 3 (13) status runs | at most 2 status runs | loss |
 | F2 | Longest database step on the event loop while a phone reconnects and the lane list is read 5 times | `brain-db-steps.bench.mts --project` | 1.69 ms (31.9) | 12.7 ms | loss on the worst run |
-| F2b | Worst wait of a request sent every 10 ms beside that load (idle: 0.3 ms) | same | 59.9 ms (245.8) | 260 ms | win, narrow on the worst run |
+| F2b | Worst wait of a request sent every 10 ms beside that load (idle: 0.3 ms) | same | 59.9 ms (245.8) in this run; the cold-connect run measured 956-1,134 ms on the same build in the interleaved A/B below (each brain writes to the copy, so only interleaved pairs compare) | 260 ms | loss on the worst run (see **Fixes in this round**) |
 | D4 | 200 streamed updates at 1,000 items, slowest of five chats | `chat-timeline.bench.mts` (Mac branch), esbuild bundle run in Electron 44's V8 (`ELECTRON_RUN_AS_NODE`), 3 rounds | 3.1 ms (4.6) | 15.48 ms | win |
 | S7 | One full rebuild of a long chat's rows (11,649 events) | same | 12.5 ms (13.8); 10.6 ms (11.4) with the Mac branch's row-builder change | 8.6 ms, measured on other hardware | loss |
 | S8 | One tool completing in that chat | same | 0.028 ms (0.054) | 0.28 ms | win |
