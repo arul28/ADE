@@ -49,8 +49,14 @@ all and the surface does not exist.
 | Moving a project to another folder or drive | Blocked | Settings → General → Project location shows "Available on macOS for now." in place of the **Move…** button, and the move preflight refuses a move on Windows. | The move copies with macOS `ditto`, checks volumes with `df` and `diskutil`, and finds open files with `lsof`. None of those has a Windows implementation yet. |
 | Keep awake with the lid closed | Blocked | The Keep awake picker has no lid-closed level (it is absent, not greyed out). "While I'm away" says it stops idle sleep, not the lid. | Windows has no `pmset disablesleep` equivalent, and the wake lock Windows uses stops idle sleep only. |
 
-Two things that are **not** downgrades, recorded here because they are commonly
+Three things that are **not** downgrades, recorded here because they are commonly
 assumed to be:
+
+- Git costs one process start per command, as on macOS. Git for Windows puts only
+  its launcher (`Gitcmdgit.exe`) on PATH, which starts the real git as a second
+  process; ADE runs the real `<Git><build>ingit.exe` directly (`runGit`). A
+  brain started from Git Bash (`MSYSTEM` set) keeps the launcher, so measure git
+  costs from PowerShell or the installed app, not from Git Bash.
 
 - Cursor runs natively on Windows x64. The onboarding flow installs it with
   `irm 'https://cursor.com/install?win32=true' | iex`; there is no WSL
