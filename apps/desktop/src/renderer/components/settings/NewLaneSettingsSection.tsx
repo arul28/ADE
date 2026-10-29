@@ -193,16 +193,26 @@ export function NewLaneSettingsSection() {
             const active = start.from === from;
             const FromIcon = FROM_ICON[from];
             const branch = from === "default" ? snapshot.defaultBranch : snapshot.primaryBranch;
+            const pick = () => {
+              if (!active) void save({ from, on: start.on });
+            };
+            // A div, not a button: the primary card holds the branch switcher,
+            // and a button cannot hold another.
             return (
-              <button
+              <div
                 key={from}
-                type="button"
                 role="radio"
+                tabIndex={0}
                 aria-checked={active}
                 className="ade-ap-choice"
                 data-active={active}
-                onClick={() => {
-                  if (!active) void save({ from, on: start.on });
+                onClick={pick}
+                onKeyDown={(event) => {
+                  if (event.target !== event.currentTarget) return;
+                  if (event.key === " " || event.key === "Enter") {
+                    event.preventDefault();
+                    pick();
+                  }
                 }}
               >
                 <span className="ade-modern-choice-body">
@@ -211,27 +221,33 @@ export function NewLaneSettingsSection() {
                     {LANE_START_FROM_LABEL[from]}
                     {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
                   </span>
-                  <span className="ade-modern-choice-hint ade-nl-mono">
-                    {branch || (from === "primary" ? "No branch checked out" : "The repository's main branch")}
-                  </span>
+                  {from === "primary" && primaryLane ? (
+                    // Switching the primary lane's branch is how a project
+                    // points every new lane at another branch.
+                    <span
+                      className="ade-nl-primary"
+                      title="Switch the primary lane's branch to change where new lanes start."
+                      onClick={(event) => event.stopPropagation()}
+                      onKeyDown={(event) => event.stopPropagation()}
+                    >
+                      <LaneBranchSwitcher
+                        lane={primaryLane}
+                        active
+                        pin={pin}
+                        confirmSwitch={confirmPrimarySwitch}
+                        onSwitched={afterPrimarySwitch}
+                      />
+                    </span>
+                  ) : (
+                    <span className="ade-modern-choice-hint ade-nl-mono">
+                      {branch || (from === "primary" ? "No branch checked out" : "The repository's main branch")}
+                    </span>
+                  )}
                 </span>
-              </button>
+              </div>
             );
           })}
         </div>
-        {start.from === "primary" && primaryLane ? (
-          <div className="ade-nl-primary">
-            <span>The primary lane is on</span>
-            <LaneBranchSwitcher
-              lane={primaryLane}
-              active
-              pin={pin}
-              confirmSwitch={confirmPrimarySwitch}
-              onSwitched={afterPrimarySwitch}
-            />
-            <span className="ade-nl-primary-hint">Switch it to change where new lanes start.</span>
-          </div>
-        ) : null}
       </NewLaneStep>
 
       <NewLaneStep title="On">

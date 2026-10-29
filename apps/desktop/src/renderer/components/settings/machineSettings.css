@@ -123,16 +123,9 @@
 .ade-nl-loading { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .ade-nl-loading > span { height: 72px; border-radius: var(--radius-lg); }
 
-/* "The primary lane is on [develop ⌄]": the lane header's branch switcher. */
-.ade-nl-primary {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  font-size: 12.5px;
-  color: var(--kit-text-2);
-}
-.ade-nl-primary-hint { color: var(--kit-text-3); }
+/* The primary card's branch switcher, in place of the branch line. Its
+   trigger has its own padding, so it is pulled back to the title's edge. */
+.ade-nl-primary { display: flex; min-width: 0; margin-left: -8px; }
 
 /* The one-line answer under the choices. */
 .ade-nl-summary {
