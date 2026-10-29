@@ -6154,6 +6154,16 @@ function readLaneStartFlags(args: string[]): { from?: string; bring?: string } {
   if (bring && !["pushed", "local", "uncommitted"].includes(bring)) throw new CliUsageError("--bring must be pushed, local, or uncommitted.");
   return { ...(from ? { from } : {}), ...(bring ? { bring } : {}) };
 }
+/** An action step's result, out of its `{ domain, action, result }` envelope. */
+function unwrappedRecord(value: unknown): JsonObject {
+  const unwrapped = unwrapActionEnvelope(value);
+  return isRecord(unwrapped) ? unwrapped : {};
+}
+/** The saved start inside a `lane.getNewLaneDefaults` step's result, or null. */
+function savedLaneStart(value: unknown): unknown {
+  const defaults = unwrappedRecord(value).defaults;
+  return isRecord(defaults) ? defaults.start ?? null : null;
+}
 function mergeLaneStart(changes: { from?: string; bring?: string }, value: unknown): JsonObject {
   const prior = isRecord(value) ? value : { from: "default", bring: "pushed" };
   const from = changes.from;
@@ -6161,8 +6171,10 @@ function mergeLaneStart(changes: { from?: string; bring?: string }, value: unkno
   return { from: branch ? "branch" : from ?? prior.from, ...(branch ? { branch } : !from && prior.from === "branch" ? { branch: prior.branch } : {}), bring: changes.bring ?? prior.bring };
 }
 function formatLaneDefaultsText(value: unknown): string {
-  const snapshot = isRecord(value) ? value : {};
-  const defaults = isRecord(snapshot.defaults) ? snapshot.defaults : {};
+  const snapshot = unwrappedRecord(value);
+  // Never print built-in values as if they were the project's.
+  if (!isRecord(snapshot.defaults)) return "ADE couldn't read this project's new-lane defaults. The brain may need a newer ADE.";
+  const defaults = snapshot.defaults;
   const start = isRecord(defaults.start) ? defaults.start : {};
   const branch = start.from === "branch" ? asString(start.branch) : start.from === "primary" ? asString(snapshot.primaryBranch) : asString(snapshot.defaultBranch);
   const from = start.from === "primary" ? "Primary lane's branch" : start.from === "branch" ? "Branch" : "Default branch";
@@ -6499,11 +6511,11 @@ function buildLanePlan(args: string[]): CliPlan {
     if (template != null && noTemplate) throw new CliUsageError("Choose --template or --no-template.");
     const steps: InvocationStep[] = [actionStep("defaults", "lane", "getNewLaneDefaults")];
     if (set) steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: (values) => {
-      const snapshot = isRecord(values.defaults) ? values.defaults : {};
+      const snapshot = unwrappedRecord(values.defaults);
       const defaults = isRecord(snapshot.defaults) ? snapshot.defaults : {};
       return { name: "run_ade_action", arguments: { domain: "lane", action: "setNewLaneDefaults", args: { defaults: { ...defaults, start: mergeLaneStart(changes, defaults.start), ...(template != null ? { templateId: template } : noTemplate ? { templateId: null } : {}) } } } };
     }});
-    return { kind: "execute", label: "lane defaults", steps, shapeResult: values => set ? values.result : values.defaults, formatText: formatLaneDefaultsText };
+    return { kind: "execute", label: "lane defaults", steps, shapeResult: values => unwrapActionEnvelope(set ? values.result : values.defaults), formatText: formatLaneDefaultsText };
   }
   if (sub === "create") {
     const existing = readValue(args, ["--existing-branch"]);
@@ -6528,7 +6540,7 @@ function buildLanePlan(args: string[]): CliPlan {
     if (noTemplate) input.skipSetup = true;
     const steps: InvocationStep[] = [];
     if (!existing && (changes.from || changes.bring)) steps.push(actionStep("defaults", "lane", "getNewLaneDefaults"));
-    steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: existing ? "import_lane" : "create_lane", arguments: { ...input, ...(existing ? { branchRef: existing } : changes.from || changes.bring ? { start: mergeLaneStart(changes, isRecord(values.defaults) && isRecord(values.defaults.defaults) ? values.defaults.defaults.start : null) } : {}) } }) });
+    steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: existing ? "import_lane" : "create_lane", arguments: { ...input, ...(existing ? { branchRef: existing } : changes.from || changes.bring ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}) } }) });
     return { kind: "execute", label: "lane create", formatText: formatLaneCreateResultText, shapeResult: values => unwrapActionEnvelope(values.result), exitCodeFromResult: result => newLaneSetupFailed(result) ? 1 : 0, steps };
   }
   if (
@@ -7254,7 +7266,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     const flags = isRecord(create._startFlags) ? create._startFlags as { from?: string; bring?: string } : null;
     delete create._startFlags;
     if (flags) steps.push(actionStep("laneDefaults", "lane", "getNewLaneDefaults"));
-    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: create.branchRef ? "import_lane" : "create_lane", arguments: { ...create, ...(flags ? { start: mergeLaneStart(flags, isRecord(values.laneDefaults) && isRecord(values.laneDefaults.defaults) ? values.laneDefaults.defaults.start : null) } : {}) } }) });
+    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: create.branchRef ? "import_lane" : "create_lane", arguments: { ...create, ...(flags ? { start: mergeLaneStart(flags, savedLaneStart(values.laneDefaults)) } : {}) } }) });
   }
   // The new lane's template setup runs inside `create_lane`.
   const laneSetupTimeoutMs = lane.autoCreateLane ? newLaneSetupTimeoutMs() : null;
@@ -7623,7 +7635,7 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
   const steps: InvocationStep[] = [];
   if (startFlags.from || startFlags.bring) steps.push(actionStep("defaults", "lane", "getNewLaneDefaults"));
   const laneInput = collectGenericObjectArgs(args, createInput);
-  steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: "create_lane", arguments: { ...laneInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, isRecord(values.defaults) && isRecord(values.defaults.defaults) ? values.defaults.defaults.start : null) } : {}) } }) });
+  steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: "create_lane", arguments: { ...laneInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, savedLaneStart(values.defaults)) } : {}) } }) });
 
   if (startChat) {
     steps.push({
@@ -7734,7 +7746,7 @@ function buildBatchCreateLanesFromLinearPlan(args: string[], issues: JsonObject[
     };
     return {
       key, method: "ade/actions/call", unwrapToolResult: true,
-      params: values => ({ name: "create_lane", arguments: { ...createInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, isRecord(values.defaults) && isRecord(values.defaults.defaults) ? values.defaults.defaults.start : null) } : {}) } }),
+      params: values => ({ name: "create_lane", arguments: { ...createInput, ...(startFlags.from || startFlags.bring ? { start: mergeLaneStart(startFlags, savedLaneStart(values.defaults)) } : {}) } }),
       optional: true,
     };
   });
