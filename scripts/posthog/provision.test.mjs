@@ -25,7 +25,7 @@ function findInsight(key) {
 }
 
 test("dashboard spec is valid and excludes replay queries", () => {
-  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 34 });
+  assert.deepEqual(validateDashboardSpec(), { dashboards: 5, insights: 37 });
   assert.doesNotMatch(JSON.stringify(dashboardSpec), /\$snapshot|session replay|recording_property/i);
 });
 
@@ -172,7 +172,7 @@ test("dry run plans every object without issuing writes", async () => {
     output: { write(chunk) { output += chunk; } },
   });
 
-  assert.deepEqual(summary, { created: 39, updated: 0, unchanged: 0 });
+  assert.deepEqual(summary, { created: 42, updated: 0, unchanged: 0 });
   assert.equal(writes.length, 0);
   assert.match(output, /would create dashboard: ADE · Growth and retention/);
   assert.match(output, /would create dashboard: ADE · Marketing acquisition/);
@@ -226,11 +226,11 @@ test("managed objects that already match are not rewritten", async () => {
   };
 
   const first = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(first, { created: 39, updated: 0, unchanged: 0 });
-  assert.equal(writes.length, 39);
+  assert.deepEqual(first, { created: 42, updated: 0, unchanged: 0 });
+  assert.equal(writes.length, 42);
 
   writes.length = 0;
   const second = await provisionDashboards({ api, output: { write() {} } });
-  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 39 });
+  assert.deepEqual(second, { created: 0, updated: 0, unchanged: 42 });
   assert.equal(writes.length, 0);
 });
