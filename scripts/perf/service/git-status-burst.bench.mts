@@ -30,6 +30,8 @@ if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
   throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
 }
 const runs = Number(flag("--runs") ?? 5);
+// --cli <built cli.cjs>: measure another build (A/B against a saved perfdist-*/cli.cjs).
+const cli = flag("--cli");
 const gapMs = Number(flag("--gap-ms") ?? 300);
 const here = import.meta.dirname;
 const spawnTrace = path.resolve(here, "../ui/spawn-trace.cjs");
@@ -67,7 +69,7 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 };
 
-const record = startMeasureBrain({ ...brain, preloads: [spawnTrace], env: { ADE_SPAWN_TRACE_DIR: traceDir } });
+const record = startMeasureBrain({ ...brain, cli, preloads: [spawnTrace], env: { ADE_SPAWN_TRACE_DIR: traceDir } });
 
 const rows: Array<{ run: number; gitProcesses: number; statusRuns: number; trailingGit: number; wallMs: number; byVerb: Record<string, number> }> = [];
 let client: BrainClient | null = null;
@@ -120,5 +122,8 @@ console.log(JSON.stringify({
   trailingGit: summary("trailingGit"),
   wallMs: summary("wallMs"),
 }));
+// --keep-trace <dir>: keep the spawn trace (with each process's call stack) for attribution.
+const keepTrace = flag("--keep-trace");
+if (keepTrace) fs.cpSync(traceDir, keepTrace, { recursive: true });
 fs.rmSync(scratch, { recursive: true, force: true });
 process.exit(0);

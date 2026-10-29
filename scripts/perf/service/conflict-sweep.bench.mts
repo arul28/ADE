@@ -3,24 +3,18 @@
 // a scratch repository with <lanes> lane worktrees (default 8), each one commit
 // ahead of main, then `runPrediction({})` (the two-minute sweep) four times
 // with no commit in between, and once more after one lane commits. Counts the
-// git processes each sweep starts (through a counting ADE_GIT_EXECUTABLE
-// wrapper) and its wall time. Everything lives in a temp folder; it never
-// touches ~/.ade or a real project.
-import { execFileSync, spawnSync } from "node:child_process";
+// git processes each sweep starts (git-count.mts) and its wall time. Everything
+// lives in a temp folder; it never touches ~/.ade or a real project.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { gitCounter } from "./git-count.mts";
 
 const laneCount = Number(process.argv[2] ?? 8);
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-conflict-sweep-"));
-const counter = path.join(root, "git-count.log");
-const wrapper = path.join(root, "git-wrapper.sh");
-const realGit = spawnSync("/bin/sh", ["-c", "command -v git"], { encoding: "utf8" }).stdout.trim();
-const appleGit = process.platform === "darwin"
-  ? spawnSync("/usr/bin/xcrun", ["--find", "git"], { encoding: "utf8" }).stdout.trim() || realGit
-  : realGit;
-fs.writeFileSync(wrapper, `#!/bin/sh\necho "$*" >> ${JSON.stringify(counter)}\nexec ${JSON.stringify(appleGit)} "$@"\n`, { mode: 0o755 });
-process.env.ADE_GIT_EXECUTABLE = wrapper;
+const counter = gitCounter(root);
+const appleGit = counter.realGit;
 
 const { openKvDb } = await import("../../../apps/desktop/src/main/services/state/kvDb");
 const { createConflictService } = await import("../../../apps/desktop/src/main/services/conflicts/conflictService");
@@ -55,7 +49,8 @@ for (let i = 0; i < laneCount; i++) {
 }
 const service = createConflictService({
   db, logger, projectId, projectRoot: repo,
-  laneService: { list: async () => lanes, getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
+  // No lane has an open PR here, so every lane compares against its base (main).
+  laneService: { list: async () => lanes, getCompareBase: () => "main", getLaneBaseAndBranch: ({ laneId }: { laneId: string }) => {
     const lane = lanes.find((entry) => entry.id === laneId)!;
     return { worktreePath: lane.worktreePath, baseRef: lane.baseRef, branchRef: lane.branchRef };
   } } as any,
@@ -64,14 +59,14 @@ const service = createConflictService({
 
 let lastDbVersion: number | null = db.get<{ v: number }>("select crsql_db_version() as v")?.v ?? null;
 const sweep = async (label: string) => {
-  fs.writeFileSync(counter, "");
+  counter.reset();
   // Past the git read cache's 1.5 s window, as two minutes apart would be.
   await new Promise((resolve) => setTimeout(resolve, 1_600));
   const t = performance.now();
   await service.runPrediction({});
   const ms = performance.now() - t;
   // The verb is the first argument after ADE's leading `-c key=value` pairs.
-  const verbs = fs.readFileSync(counter, "utf8").split("\n").filter(Boolean)
+  const verbs = counter.runs()
     .map((line) => line.replace(/^(?:-c \S+ )*/, "").split(" ")[0]!);
   const byVerb: Record<string, number> = {};
   for (const verb of verbs) byVerb[verb] = (byVerb[verb] ?? 0) + 1;

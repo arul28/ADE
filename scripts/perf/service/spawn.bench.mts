@@ -75,4 +75,46 @@ if (resolved.npx) {
   }
   console.log(JSON.stringify({ row: "runGit rev-parse HEAD", executable, n: 200, runs, runMediansMs: runMedians.map(r1), medianMs: r1(med(runMedians)), worstRunMs: r1(Math.max(...runMedians)), maxMs: r1(maxMs) }));
 }
+// Windows: Git for Windows' launcher (<Git>\cmd\git.exe, the only git a normal install puts on PATH)
+// against the real <Git>\<build>\bin\git.exe it starts. `git config --get` (exit 0), 200 runs per
+// side per round, <runs> rounds alternated; p50 and p90 per side.
+if (process.platform === "win32") {
+  const fs = await import("node:fs");
+  const launcher = (process.env.ProgramFiles ?? "C:\\Program Files") + "\\Git\\cmd\\git.exe";
+  const real = ["ucrt64", "clangarm64", "mingw64", "mingw32"]
+    .map((build) => path.win32.join(path.win32.dirname(path.win32.dirname(launcher)), build, "bin", "git.exe"))
+    .find((candidate) => fs.existsSync(candidate));
+  if (fs.existsSync(launcher) && real) {
+    const pct = (xs: number[], p: number) => [...xs].sort((a, b) => a - b)[Math.min(xs.length - 1, Math.floor(xs.length * p))]!;
+    const sides: Record<string, number[]> = { launcher: [], real: [] };
+    const roundP50: Record<string, number[]> = { launcher: [], real: [] };
+    // Plain env: no MSYSTEM, as a desktop-started brain has (Git Bash sets it).
+    const env = { ...process.env };
+    delete env.MSYSTEM;
+    for (let round = 0; round < runs; round++) {
+      for (const [side, exe] of [["launcher", launcher], ["real", real]] as const) {
+        const ms: number[] = [];
+        for (let i = 0; i < 200; i++) {
+          const t = performance.now();
+          spawnSync(exe, ["config", "--get", "core.bare"], { cwd: repo, encoding: "utf8", windowsHide: true, env });
+          ms.push(performance.now() - t);
+        }
+        sides[side]!.push(...ms);
+        roundP50[side]!.push(pct(ms, 0.5));
+      }
+    }
+    for (const side of ["launcher", "real"] as const) {
+      console.log(JSON.stringify({
+        row: `git config --get through the ${side === "launcher" ? "launcher (cmd\\git.exe)" : "real git.exe"}`,
+        executable: side === "launcher" ? launcher : real,
+        n: sides[side]!.length,
+        p50Ms: r1(pct(sides[side]!, 0.5)),
+        p90Ms: r1(pct(sides[side]!, 0.9)),
+        roundP50Ms: roundP50[side]!.map(r1),
+        worstRoundP50Ms: r1(Math.max(...roundP50[side]!)),
+        processesPerRun: side === "launcher" ? 2 : 1,
+      }));
+    }
+  }
+}
 console.log(JSON.stringify({ repo }));

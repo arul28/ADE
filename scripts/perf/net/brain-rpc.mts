@@ -10,10 +10,12 @@ const measureBrain = path.resolve(import.meta.dirname, "measure-brain.mjs");
 
 export type MeasureBrainRecord = { pid: number; socket: string; syncPort: number | null; home: string; log: string };
 
-export function startMeasureBrain(opts: { dir: string; n: string; preloads?: string[]; env?: Record<string, string> }): MeasureBrainRecord {
+// `cli` measures another build (a saved perfdist-<name> folder's cli.cjs) with the same isolation.
+export function startMeasureBrain(opts: { dir: string; n: string; cli?: string; preloads?: string[]; env?: Record<string, string> }): MeasureBrainRecord {
   const env: NodeJS.ProcessEnv = { ...process.env, ...opts.env };
   if (opts.preloads?.length) env.ADE_PERF_EXTRA_REQUIRE = opts.preloads.join(path.delimiter);
-  const started = spawnSync(process.execPath, [measureBrain, "start", "--dir", opts.dir, "--n", opts.n], { encoding: "utf8", env });
+  const cliArgs = opts.cli ? ["--cli", opts.cli] : [];
+  const started = spawnSync(process.execPath, [measureBrain, "start", "--dir", opts.dir, "--n", opts.n, ...cliArgs], { encoding: "utf8", env });
   if (started.status !== 0) throw new Error(`measurement brain did not start: ${started.stderr || started.stdout}`);
   return JSON.parse(started.stdout.trim().split("\n").pop()!) as MeasureBrainRecord;
 }

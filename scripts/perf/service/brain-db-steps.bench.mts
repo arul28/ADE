@@ -30,6 +30,8 @@ if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
   throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
 }
 const runs = Number(flag("--runs") ?? 5);
+// --cli <built cli.cjs>: measure another build (A/B against a saved perfdist-*/cli.cjs).
+const cli = flag("--cli");
 const settleMs = Number(flag("--settle-ms") ?? 20_000);
 const here = import.meta.dirname;
 const phoneBench = path.resolve(here, "../net/phone-sync.bench.mts");
@@ -46,7 +48,7 @@ const traceFile = path.join(scratch, "sql.jsonl");
 const phoneState = path.join(scratch, "phone.json");
 const brain = { dir: scratch, n: "f2" };
 await releaseCopySyncHost(projectRoot);
-const record = startMeasureBrain({ ...brain, preloads: [sqlTrace], env: { ADE_PERF_SQLTRACE_FILE: traceFile } });
+const record = startMeasureBrain({ ...brain, cli, preloads: [sqlTrace], env: { ADE_PERF_SQLTRACE_FILE: traceFile } });
 if (!record.syncPort) throw new Error("the measurement brain has no sync port");
 
 // The phone bench runs through tsx, as this bench does (process.execArgv carries tsx's loader).
