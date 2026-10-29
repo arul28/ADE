@@ -223,8 +223,9 @@ const TITLE = "Lane templates";
 const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
 
 export function LaneTemplatesSection() {
-  // Templates live in each machine's `.ade/local.yaml`, so they are read and
-  // written on the machine the Settings page shows.
+  // A project's templates follow the account (per repository); they are read
+  // and written through the machine the Settings page shows, which also adds
+  // any templates committed in the repository's shared config.
   const { pin, machineName } = useSettingsMachineScope();
   const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin, machineName, origin: "settings" });
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
@@ -359,8 +360,8 @@ export function LaneTemplatesSection() {
         <>
           <ModernRows>
             <ModernRow
-              title="Use for new lanes"
-              hint="Picked for you when you create a lane. You can still choose a different one there."
+              title="Set up new lanes with"
+              hint="Auto-create lane uses it too. The New lane dialog starts with it picked, and you can choose another there."
               control={(
                 <SettingsSelect
                   value={defaultId ?? ""}

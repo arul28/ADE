@@ -1,6 +1,6 @@
 /*
- * The new-lane composer: a name field, the three ways to start a lane, one or
- * two aligned rows of choices, then optional extras. Every list opens in a
+ * The new-lane composer: a name field, the two ways to start a lane (a new
+ * branch or an existing one), aligned rows of choices, then optional extras. Every list opens in a
  * popover, so the dialog never grows past one screen.
  */
 
@@ -8,7 +8,6 @@
 .cl-composer, .cl-pop {
   --cl-new: #34d399;
   --cl-import: #38bdf8;
-  --cl-child: #a78bfa;
   --cl-linear: #7c86f0;
 }
 .cl-composer {
@@ -17,9 +16,8 @@
   gap: 16px;
 }
 /* The current mode's colour, used by its switch and its field icon. */
-[data-mode="primary"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-new); }
+[data-mode="new"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-new); }
 [data-mode="existing"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-import); }
-[data-mode="child"]:is(.cl-composer, .cl-pop) { --cl-mode: var(--cl-child); }
 
 /* ── Name ─────────────────────────────────────────────────────────────────── */
 .cl-name {
@@ -86,10 +84,10 @@
 .cl-dot:hover > i, .cl-dot[data-state="open"] > i { transform: scale(1.15); }
 .cl-dot:focus-visible { outline: 1px solid color-mix(in srgb, var(--color-fg) 40%, transparent); }
 
-/* ── Mode switch: New branch · Import branch · Child lane ─────────────────── */
+/* ── Mode switch: New branch · Existing branch ───────────────────────────── */
 .cl-modes {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   gap: 4px;
   padding: 4px;
   border-radius: 12px;
@@ -115,7 +113,6 @@
   transition: background-color 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 .cl-mode[data-mode="existing"] { --c: var(--cl-import); }
-.cl-mode[data-mode="child"] { --c: var(--cl-child); }
 .cl-mode > svg { flex: none; color: color-mix(in srgb, var(--c) 70%, var(--kit-text-3)); transition: color 120ms ease; }
 .cl-mode:hover:not(:disabled) { color: var(--color-fg); background: var(--kit-hover); }
 /* Selected is a fill; focus is the ring below. Two edges stacked on one
@@ -226,6 +223,11 @@
 .cl-tag[data-tone="ok"] { --c: var(--kit-ok); }
 
 /* A quiet line under a field; wraps instead of cutting off. */
+/* Bring: three equal segments across the control column. */
+.cl-bring { display: grid; grid-template-columns: repeat(3, 1fr); width: 100%; }
+.cl-bring > button { justify-content: center; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cl-bring > button:disabled { opacity: 0.4; cursor: default; }
+
 .cl-hint { font-size: 11.5px; line-height: 1.45; color: var(--kit-text-3); padding-left: 2px; }
 .cl-hint b { font-weight: 500; color: var(--kit-text-2); }
 .cl-hint code { font-family: var(--font-mono); font-size: 11px; color: var(--kit-text-2); word-break: break-all; }

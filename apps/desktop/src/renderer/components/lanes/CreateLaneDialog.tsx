@@ -8,7 +8,6 @@ import {
   GitBranch,
   Palette,
   SpinnerGap,
-  StackSimple,
   X,
 } from "@phosphor-icons/react";
 import { Banner } from "../ui/notice/Banner";
@@ -18,9 +17,15 @@ import type {
   LaneSummary,
   LaneEnvInitProgress,
   LaneTemplate,
-  NewLaneBaseSource,
+  NewLaneDefaultsSnapshot,
 } from "../../../shared/types";
-import { refOnlyBranch, stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
+import {
+  LANE_START_BRING_LABEL,
+  LANE_START_BRING_VALUES,
+  type LaneStart,
+  type LaneStartBring,
+} from "../../../shared/laneStart";
+import { stripRemotePrefix, type LaneBranchOption } from "./laneUtils";
 import { LaneEnvInitProgressPanel } from "./LaneEnvInitProgress";
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LaneColorPicker } from "./LaneColorPicker";
@@ -33,14 +38,21 @@ import { linearIssueLaneName, resolveLinearIssueBranchName } from "../../../shar
 import { branchExistsForLinearIssue } from "./linearIssueDisplay";
 import { LinearMark } from "./linearBrand";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
-import { listNewLaneBaseOptions, selectDefaultNewLaneBaseRef } from "./newLaneBaseSource";
+import {
+  laneHoldingBranch,
+  startBranchItems,
+  startFromPickerRef,
+  startPickerRef,
+  startRefLabel,
+  startSourceBranch,
+} from "./laneStartOptions";
 import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import type { LaneMachineOption } from "./laneMachines";
 import { ComposerPopover, LaneMachineChip, LaneTemplateChip } from "./createLaneComposerChips";
 import "./createLaneComposer.css";
 import { isImeComposing } from "../../lib/imeComposition";
 
-export type CreateLaneMode = "primary" | "existing" | "child";
+export type CreateLaneMode = "new" | "existing";
 export type CreateLaneSetupStep = {
   label: string;
   detail: string;
@@ -48,30 +60,41 @@ export type CreateLaneSetupStep = {
 };
 
 const MODE_LABEL: Record<CreateLaneMode, string> = {
-  primary: "New branch",
+  new: "New branch",
   existing: "Existing branch",
-  child: "Child lane",
 };
 
 const MODE_HELP: Record<CreateLaneMode, string> = {
-  primary: "Creates a fresh branch for this lane, starting from any remote or local branch you pick.",
-  existing: "Opens a branch that already exists as a lane. The lane works on that branch directly; no new branch is made.",
-  child: "Creates a new branch stacked on another lane. The child rebases when its parent moves.",
+  new: "Makes a fresh branch for this lane, starting from the branch you pick.",
+  existing: "The lane works directly on a branch that already exists. No new branch is made.",
 };
 
 const MODE_ICON: Record<CreateLaneMode, typeof GitBranch> = {
-  primary: GitBranch,
+  new: GitBranch,
   existing: ArrowSquareIn,
-  child: StackSimple,
 };
 
 const MODE_TOUR: Record<CreateLaneMode, string> = {
-  primary: "lanes.createDialog.primaryTab",
+  new: "lanes.createDialog.primaryTab",
   existing: "lanes.createDialog.branchTab",
-  child: "lanes.createDialog.childTab",
 };
 
-const MODE_ORDER: readonly CreateLaneMode[] = ["primary", "existing", "child"];
+const MODE_ORDER: readonly CreateLaneMode[] = ["new", "existing"];
+
+/** What each "Bring" choice means for the branch the lane starts from. */
+function bringHint(bring: LaneStartBring, refLabel: string, holder: LaneSummary | null): string {
+  if (bring === "pushed") {
+    return refLabel ? `Fetches first, then branches from ${refLabel}.` : "Fetches first, then branches from the remote copy.";
+  }
+  if (bring === "local") {
+    return refLabel
+      ? `Branches from your local ${refLabel}, including commits you haven't pushed.`
+      : "Branches from your local copy, including commits you haven't pushed.";
+  }
+  if (!holder) return "Copies uncommitted changes from the lane that has this branch open.";
+  const where = holder.laneType === "primary" ? "Primary" : holder.name;
+  return `Branches from your local ${refLabel} and copies the uncommitted changes in ${where}. ${where} keeps them too.`;
+}
 
 function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranchOption[]): string {
   const branch = branches.find((candidate) => candidate.name === branchName);
@@ -86,9 +109,7 @@ function submitLabel(
 ): string {
   if (busy) return "Setting up…";
   if (laneCreated) return "Retry setup";
-  if (mode === "existing") return "Import branch";
-  if (mode === "child") return "Create child lane";
-  return "Create lane";
+  return mode === "existing" ? "Create lane on this branch" : "Create lane";
 }
 
 export function CreateLaneDialog({
@@ -98,16 +119,11 @@ export function CreateLaneDialog({
   setCreateLaneName,
   createMode,
   setCreateMode,
-  createParentLaneId,
-  setCreateParentLaneId,
-  createBaseSource,
-  setCreateBaseSource,
-  createBaseBranch,
-  setCreateBaseBranch,
+  createStart,
+  setCreateStart,
+  newLaneDefaults,
   createImportBranch,
   setCreateImportBranch,
-  createChildBaseBranch,
-  setCreateChildBaseBranch,
   projectRoot,
   createBranches,
   lanes,
@@ -125,7 +141,6 @@ export function CreateLaneDialog({
   setSelectedTemplateId,
   onNavigateToTemplates,
   onOpenLinearSettings,
-  importBranchWarning,
   selectedColor,
   setSelectedColor,
   selectedEmoji,
@@ -150,16 +165,13 @@ export function CreateLaneDialog({
   setCreateLaneName: (v: string) => void;
   createMode: CreateLaneMode;
   setCreateMode: (v: CreateLaneMode) => void;
-  createParentLaneId: string;
-  setCreateParentLaneId: (v: string) => void;
-  createBaseSource: NewLaneBaseSource;
-  setCreateBaseSource: (v: NewLaneBaseSource) => void;
-  createBaseBranch: string;
-  setCreateBaseBranch: (v: string) => void;
+  /** New branch: where it starts and what it brings. */
+  createStart: LaneStart;
+  setCreateStart: (start: LaneStart) => void;
+  /** The project's saved new-lane defaults on the lane's machine; null while loading. */
+  newLaneDefaults: NewLaneDefaultsSnapshot | null;
   createImportBranch: string;
   setCreateImportBranch: (v: string) => void;
-  createChildBaseBranch: string;
-  setCreateChildBaseBranch: (v: string) => void;
   /** Project scope for shared Linear issue browser cache/filter persistence. */
   projectRoot?: string | null;
   createBranches: LaneBranchOption[];
@@ -181,8 +193,6 @@ export function CreateLaneDialog({
   setSelectedTemplateId: (id: string) => void;
   onNavigateToTemplates?: () => void;
   onOpenLinearSettings?: () => void;
-  /** Warning shown below the import branch selector (e.g. uncommitted changes). */
-  importBranchWarning?: string | null;
   selectedColor: string | null;
   setSelectedColor: (c: string | null) => void;
   selectedEmoji: string | null;
@@ -213,14 +223,6 @@ export function CreateLaneDialog({
    */
   machineRequired?: boolean;
 }) {
-  const baseBranchOptions = React.useMemo(
-    () => listNewLaneBaseOptions(createBranches, createBaseSource),
-    [createBaseSource, createBranches],
-  );
-  const selectedBaseBranchValid = React.useMemo(
-    () => !!createBaseBranch && baseBranchOptions.some((option) => option.ref === createBaseBranch),
-    [baseBranchOptions, createBaseBranch],
-  );
   const usedColors = React.useMemo(() => colorsInUse(lanes), [lanes]);
   const usedColorOwners = React.useMemo(() => {
     const map = new Map<string, string>();
@@ -247,7 +249,7 @@ export function CreateLaneDialog({
 
   React.useEffect(() => {
     if (selectedLinearIssue && createMode === "existing") {
-      setCreateMode("primary");
+      setCreateMode("new");
       setCreateImportBranch("");
     }
   }, [createMode, selectedLinearIssue, setCreateImportBranch, setCreateMode]);
@@ -292,6 +294,27 @@ export function CreateLaneDialog({
     return { branch, pr: findBranchPullRequest(prByBranch, branch) };
   }, [createBranches, createImportBranch, prByBranch]);
 
+  // New branch: where it starts.
+  const startItems = React.useMemo(
+    () => startBranchItems({ branches: createBranches, lanes, snapshot: newLaneDefaults }),
+    [createBranches, lanes, newLaneDefaults],
+  );
+  const startSource = startSourceBranch(createStart, newLaneDefaults);
+  const startRef = startRefLabel(createStart, newLaneDefaults);
+  // The folder whose uncommitted changes "Local + uncommitted" copies.
+  const startHolder = laneHoldingBranch(startSource, lanes);
+  const startMissing = createStart.from === "primary" && newLaneDefaults !== null && !newLaneDefaults.primaryBranch;
+  const uncommittedBlocked = !startHolder;
+  let startTitle: string;
+  if (createStart.from === "default") startTitle = "Default branch";
+  else if (createStart.from === "primary") startTitle = "Primary lane's branch";
+  else startTitle = startSource || "Pick a branch…";
+
+  // Existing branch: a branch already open in a lane is that lane.
+  const importHolder = createMode === "existing" && createImportBranch
+    ? laneHoldingBranch(createImportBranch.replace(/^origin\//, ""), lanes)
+    : null;
+
   let branchPickerPlaceholder: string;
   if (loadingBranches) branchPickerPlaceholder = "Loading branches…";
   else if (createBranches.length === 0) branchPickerPlaceholder = "No branches found";
@@ -316,13 +339,12 @@ export function CreateLaneDialog({
     : (busy
       || machineMissing
       || !createLaneName.trim()
-      || (createMode === "child" && !createParentLaneId)
-      || (createMode === "primary" && (!selectedBaseBranchValid || loadingBranches))
-      || (createMode === "existing" && !createImportBranch)
+      || (createMode === "new" && (!startSource || startMissing || (createStart.bring === "uncommitted" && uncommittedBlocked)))
+      || (createMode === "existing" && (!createImportBranch || Boolean(importHolder)))
       || selectedLinearBranchConflict);
 
   const locked = Boolean(busy || laneCreated);
-  const [openChip, setOpenChip] = React.useState<null | "color" | "machine" | "source" | "childBase" | "template">(null);
+  const [openChip, setOpenChip] = React.useState<null | "color" | "machine" | "source" | "template">(null);
   const chipProps = (chip: NonNullable<typeof openChip>) => ({
     open: openChip === chip,
     mode: createMode,
@@ -336,62 +358,8 @@ export function CreateLaneDialog({
     if (!isSubmitDisabled) onSubmit();
   }, [isSubmitDisabled, onSubmit]);
 
-  const chooseMode = (mode: CreateLaneMode) => {
-    setCreateMode(mode);
-    if (mode !== "child") {
-      setCreateParentLaneId("");
-      setCreateChildBaseBranch("");
-    }
-  };
+  const chooseMode = (mode: CreateLaneMode) => setCreateMode(mode);
 
-  // ── Base branch list: the project's default base pinned first, then search ─
-  const primaryLane = React.useMemo(() => lanes.find((lane) => lane.laneType === "primary") ?? null, [lanes]);
-  const defaultBaseRef = React.useMemo(
-    () => selectDefaultNewLaneBaseRef({ branches: createBranches, source: createBaseSource, primaryBaseRef: primaryLane?.baseRef }),
-    [createBaseSource, createBranches, primaryLane?.baseRef],
-  );
-  const branchByName = React.useMemo(() => new Map(createBranches.map((branch) => [branch.name, branch])), [createBranches]);
-  // A ref missing from the branch list (a pruned upstream, a lane's branch on
-  // another checkout) still searches and finds its PR by name.
-  const branchFor = React.useCallback(
-    (name: string, isRemote: boolean): LaneBranchOption =>
-      branchByName.get(name) ?? refOnlyBranch(name, isRemote),
-    [branchByName],
-  );
-  const baseListItems = React.useMemo<LaneBranchListItem[]>(
-    () => baseBranchOptions.map((option) => ({
-      ref: option.ref,
-      branch: branchFor(option.ref, option.source === "remote"),
-      pinned: option.ref === defaultBaseRef,
-      tag: option.ref === defaultBaseRef ? "default" : undefined,
-    })),
-    [baseBranchOptions, branchFor, defaultBaseRef],
-  );
-  // A child lane's parent: every lane, with its branch's last commit.
-  const parentListItems = React.useMemo<LaneBranchListItem[]>(
-    () => lanes.map((lane) => ({
-      ref: lane.id,
-      label: lane.name,
-      branch: branchFor(lane.branchRef, false),
-      swatch: lane.color ?? null,
-    })),
-    [branchFor, lanes],
-  );
-  // A child lane's base: the parent's branch by default, or any branch.
-  const childBaseListItems = React.useMemo<LaneBranchListItem[]>(() => {
-    const parent = lanes.find((lane) => lane.id === createParentLaneId) ?? null;
-    const items: LaneBranchListItem[] = parent
-      ? [{
-        ref: "",
-        label: parent.branchRef,
-        branch: branchFor(parent.branchRef, false),
-        pinned: true,
-        tag: "parent",
-      }]
-      : [];
-    for (const branch of createBranches) items.push({ ref: branch.name, branch });
-    return items;
-  }, [branchFor, createBranches, createParentLaneId, lanes]);
   // Existing branches: the checked-out one first, then most recently touched.
   const importListItems = React.useMemo<LaneBranchListItem[]>(() => {
     const time = (branch: LaneBranchOption) => (branch.lastCommitDate ? Date.parse(branch.lastCommitDate) || 0 : 0);
@@ -400,7 +368,6 @@ export function CreateLaneDialog({
       .map((branch) => ({ ref: branch.name, branch }));
   }, [createBranches]);
 
-  const parentLane = lanes.find((lane) => lane.id === createParentLaneId) ?? null;
   const ModeIcon = MODE_ICON[createMode];
 
   return (
@@ -576,10 +543,10 @@ export function CreateLaneDialog({
         </div>
 
         <div className="cl-rows">
-          {/* New branch: the base it branches off */}
-          {createMode === "primary" ? (
+          {/* New branch: where it starts, and what it brings along */}
+          {createMode === "new" ? (
             <>
-              <span className="cl-label">Based on</span>
+              <span className="cl-label">Start from</span>
               <div className="cl-cell">
                 <ComposerPopover
                   {...chipProps("source")}
@@ -588,55 +555,66 @@ export function CreateLaneDialog({
                       type="button"
                       className="cl-field"
                       disabled={locked}
-                      data-empty={selectedBaseBranchValid ? undefined : "true"}
-                      aria-label="Base branch"
+                      data-empty={startSource ? undefined : "true"}
+                      aria-label="Start from"
                       data-tour="lanes.createDialog.branchBase"
                     >
                       <span className="cl-tile" data-tone="mode"><ModeIcon size={13} weight="bold" /></span>
-                      <span className="cl-field-text">
-                        {selectedBaseBranchValid ? createBaseBranch : loadingBranches ? "Loading branches…" : "Pick a base branch…"}
-                      </span>
-                      {selectedBaseBranchValid && createBaseBranch === defaultBaseRef ? <span className="cl-tag" data-tone="mode">default</span> : null}
-                      <span className="cl-field-meta">{createBaseSource === "remote" ? "Remote" : "Local"}</span>
+                      <span className="cl-field-text">{startTitle}</span>
+                      {createStart.from !== "branch" && startSource ? <span className="cl-tag" data-tone="mode">{startSource}</span> : null}
+                      {startMissing ? <span className="cl-field-meta">no branch checked out</span> : null}
                       <CaretUpDown size={12} className="cl-field-caret" />
                     </button>
                   )}
                 >
                   <LaneBranchList
-                    items={baseListItems}
+                    items={startItems}
                     pullRequests={branchPullRequests}
                     currentUserName={currentGitUserName}
-                    selectedRef={createBaseBranch}
+                    selectedRef={startPickerRef(createStart)}
                     loading={loadingBranches}
-                    emptyLabel={`No ${createBaseSource === "remote" ? "remote-tracking refs" : "local branches"} found.`}
-                    ariaLabel="Base branch"
+                    emptyLabel="No branches found in this repo."
+                    ariaLabel="Start from"
                     onSelect={(ref) => {
-                      setCreateBaseBranch(ref);
+                      setCreateStart(startFromPickerRef(ref, createStart.bring));
                       setOpenChip(null);
                     }}
-                    headerExtra={(
-                      <div className="kit-seg" data-case="sentence" role="radiogroup" aria-label="Base source">
-                        {(["remote", "local"] as const).map((source) => (
-                          <button
-                            key={source}
-                            type="button"
-                            role="radio"
-                            aria-checked={createBaseSource === source}
-                            title={source === "remote" ? "Branch off the fetched upstream" : "Branch off your local branch tip"}
-                            onClick={() => setCreateBaseSource(source)}
-                          >
-                            {source === "remote" ? "Remote" : "Local"}
-                          </button>
-                        ))}
-                      </div>
-                    )}
                   />
                 </ComposerPopover>
+              </div>
+
+              <span className="cl-label">Bring</span>
+              <div className="cl-cell">
+                <div className="kit-seg cl-bring" data-case="sentence" role="radiogroup" aria-label="Bring">
+                  {LANE_START_BRING_VALUES.map((bring) => {
+                    const blocked = bring === "uncommitted" && uncommittedBlocked;
+                    return (
+                      <button
+                        key={bring}
+                        type="button"
+                        role="radio"
+                        aria-checked={createStart.bring === bring}
+                        disabled={locked || blocked}
+                        title={blocked
+                          ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
+                          : undefined}
+                        onClick={() => setCreateStart({ ...createStart, bring })}
+                      >
+                        {LANE_START_BRING_LABEL[bring]}
+                      </button>
+                    );
+                  })}
+                </div>
+                <span className="cl-hint" data-tone={createStart.bring === "uncommitted" && uncommittedBlocked ? "warn" : undefined}>
+                  {createStart.bring === "uncommitted" && uncommittedBlocked
+                    ? `${startSource || "This branch"} isn't open in any lane, so there are no uncommitted changes to copy.`
+                    : bringHint(createStart.bring, startRef, startHolder)}
+                </span>
               </div>
             </>
           ) : null}
 
-          {/* Import branch: the lane works on that branch itself */}
+          {/* Existing branch: the lane works on that branch itself */}
           {createMode === "existing" ? (
             <>
               <span className="cl-label">Branch</span>
@@ -649,8 +627,8 @@ export function CreateLaneDialog({
                       className="cl-field"
                       disabled={locked || (loadingBranches && createBranches.length === 0)}
                       data-empty={selectedBranchMeta.branch ? undefined : "true"}
-                      aria-label="Choose import branch"
-                      aria-describedby={importBranchWarning ? "import-branch-warning" : undefined}
+                      aria-label="Existing branch"
+                      data-tone={importHolder ? "warn" : undefined}
                       data-tour="lanes.createDialog.branchPickerOpen"
                     >
                       <span className="cl-tile" data-tone="mode"><ModeIcon size={13} weight="bold" /></span>
@@ -681,87 +659,18 @@ export function CreateLaneDialog({
                     }}
                   />
                 </ComposerPopover>
-              </div>
-            </>
-          ) : null}
-
-          {/* Child lane: stacked on another lane */}
-          {createMode === "child" ? (
-            <>
-              <span className="cl-label">Parent</span>
-              <div className="cl-cell">
-                <ComposerPopover
-                  {...chipProps("source")}
-                  trigger={(
-                    <button
-                      type="button"
-                      className="cl-field"
-                      disabled={locked}
-                      data-empty={parentLane ? undefined : "true"}
-                      aria-label="Parent lane"
-                    >
-                      <span className="cl-tile" data-tone={parentLane ? "muted" : "mode"}>
-                        {parentLane
-                          ? <span className="cl-swatch" style={{ margin: 0, background: parentLane.color ?? "var(--cl-child)" }} />
-                          : <ModeIcon size={13} weight="bold" />}
-                      </span>
-                      <span className="cl-field-text">{parentLane?.name ?? "Pick a parent lane…"}</span>
-                      {parentLane ? <span className="cl-field-meta">{parentLane.branchRef}</span> : null}
-                      <CaretUpDown size={12} className="cl-field-caret" />
-                    </button>
-                  )}
-                >
-                  <LaneBranchList
-                    items={parentListItems}
-                    pullRequests={branchPullRequests}
-                    currentUserName={currentGitUserName}
-                    selectedRef={createParentLaneId}
-                    emptyLabel="No lanes yet."
-                    ariaLabel="Parent lane"
-                    onSelect={(laneId) => {
-                      setCreateParentLaneId(laneId);
-                      setOpenChip(null);
-                    }}
-                  />
-                </ComposerPopover>
-              </div>
-
-              <span className="cl-label">Based on</span>
-              <div className="cl-cell">
-                <ComposerPopover
-                  {...chipProps("childBase")}
-                  trigger={(
-                    <button
-                      type="button"
-                      className="cl-field"
-                      disabled={locked || !parentLane}
-                      data-empty={parentLane ? undefined : "true"}
-                      aria-label="Child base branch override"
-                    >
-                      <span className="cl-tile" data-tone="mode"><GitBranch size={13} weight="bold" /></span>
-                      <span className="cl-field-text">
-                        {parentLane ? (createChildBaseBranch || parentLane.branchRef) : "Pick a parent first"}
-                      </span>
-                      {parentLane && !createChildBaseBranch ? <span className="cl-tag" data-tone="mode">parent</span> : null}
-                      <CaretUpDown size={12} className="cl-field-caret" />
-                    </button>
-                  )}
-                >
-                  <LaneBranchList
-                    items={childBaseListItems}
-                    pullRequests={branchPullRequests}
-                    currentUserName={currentGitUserName}
-                    selectedRef={createChildBaseBranch}
-                    loading={loadingBranches}
-                    emptyLabel="No branches found in this repo."
-                    ariaLabel="Child base branch"
-                    onSelect={(ref) => {
-                      setCreateChildBaseBranch(ref);
-                      setOpenChip(null);
-                    }}
-                  />
-                </ComposerPopover>
-                {parentLane ? <span className="cl-hint">Rebases follow <b>{parentLane.name}</b>.</span> : null}
+                {importHolder ? (
+                  <span className="cl-hint" data-tone="warn">
+                    <b>{createImportBranch}</b> is already open in {importHolder.laneType === "primary" ? "Primary" : <b>{importHolder.name}</b>}.
+                    {" "}A branch can only be open in one lane at a time.
+                  </span>
+                ) : createImportBranch ? (
+                  <span className="cl-hint">
+                    No new branch is made. The lane's commits go onto <b>{createImportBranch.replace(/^origin\//, "")}</b>.
+                  </span>
+                ) : (
+                  <span className="cl-hint">The lane works directly on the branch you pick.</span>
+                )}
               </div>
             </>
           ) : null}
@@ -783,13 +692,6 @@ export function CreateLaneDialog({
             </>
           ) : null}
         </div>
-
-        {createMode === "existing" && importBranchWarning ? (
-          <Banner
-            model={{ id: "import-branch-warning", tone: "warning", title: importBranchWarning }}
-            layout="inline"
-          />
-        ) : null}
 
         {/* Extras: attach a Linear issue, use a template */}
         <div className="cl-extras">

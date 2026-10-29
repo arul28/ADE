@@ -227,6 +227,7 @@ function buildLaneListEntries(input: {
         name: AUTO_CREATE_LANE_GROUPED_LABEL,
         color: null,
         branchLabel: null,
+        detail: autoCreateLane.detail ?? null,
       });
     }
     for (const lane of machineLanes) {
@@ -718,8 +719,14 @@ export function LaneCombobox({
                           onClick={() => selectItem(item.id)}
                         >
                           <span className="ade-orchestrator-rainbow-text">{item.name}</span>
+                          {item.detail ? (
+                            // Where the new lane will start, e.g. "from origin/main".
+                            <span className="ml-auto min-w-0 shrink truncate pl-2 text-[10px] text-muted-fg/60" title={item.detail}>
+                              {item.detail}
+                            </span>
+                          ) : null}
                           {isSelected ? (
-                            <Check size={12} weight="bold" className="shrink-0 text-accent" />
+                            <Check size={12} weight="bold" className={cn("shrink-0 text-accent", item.detail ? null : "ml-auto")} />
                           ) : null}
                         </button>
                       );

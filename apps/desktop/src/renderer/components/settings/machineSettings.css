@@ -93,38 +93,58 @@
 .ade-ms-privacy { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; margin-top: 4px; }
 .ade-ms-privacy > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 
-/* ── Lanes: a tiny lane card for the rebase-suggestion choices ──────── */
+/* ── New lanes: where they start ───────────────────────────────────── */
 
-.ade-lb-mini {
+.ade-nl { display: flex; flex-direction: column; gap: 10px; }
+.ade-nl-eyebrow { margin-top: 6px; color: var(--kit-text-3); }
+.ade-nl-eyebrow:first-child { margin-top: 0; }
+.ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-nl-loading { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.ade-nl-loading > span { height: 128px; border-radius: var(--radius-lg); }
+
+/* Who the settings follow: one quiet pill in the section header. */
+.ade-nl-scope {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-rule);
+  font-size: 11px;
+  color: var(--kit-text-2);
+  white-space: nowrap;
+  cursor: default;
+}
+.ade-nl-scope-repo { font-family: var(--font-mono); font-size: 10.5px; color: var(--kit-text-3); }
+
+/* "A specific branch": the branch field, aligned under the cards. */
+.ade-nl-branch {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 360px);
+  align-items: center;
+  gap: 12px;
+  padding: 2px 0 4px;
+}
+.ade-nl-branch-label { font-size: 12px; color: var(--kit-text-3); }
+
+/* The one-line answer under the choices. */
+.ade-nl-summary {
   display: flex;
-  flex-direction: column;
-  gap: 7px;
-  width: 64%;
-  padding: 9px 10px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
-  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
-  overflow: hidden;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--kit-panel-bg);
+  border: 1px solid var(--kit-panel-edge);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
 }
-.ade-lb-mini-banner {
-  height: 6px;
-  margin: -9px -10px 0;
-  background: color-mix(in srgb, var(--kit-warn) 55%, transparent);
-}
-.ade-lb-mini-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.ade-lb-mini-line { height: 4px; width: 55%; border-radius: 2px; background: currentColor; opacity: 0.4; }
-.ade-lb-mini-line--short { width: 35%; opacity: 0.22; }
-.ade-lb-mini-badge {
-  flex: none;
-  height: 12px;
-  padding: 0 4px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 7.5px;
-  line-height: 12px;
-  color: var(--kit-warn);
-  background: color-mix(in srgb, var(--kit-warn) 16%, transparent);
-}
+.ade-nl-summary > svg { flex: none; margin-top: 2px; color: var(--kit-text-3); }
+.ade-nl-summary b { font-weight: 500; color: var(--color-fg); font-family: var(--font-mono); font-size: 12px; }
+.ade-nl-summary[data-tone="warn"] > svg { color: var(--kit-warn); }
 
 /* ── Lane templates ─────────────────────────────────────────────────── */
 

@@ -1,6 +1,6 @@
 import React from "react";
 import { useLocation } from "react-router-dom";
-import { Archive, ArrowClockwise, GitBranch, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
+import { Archive, ArrowClockwise, GitBranch, GitFork, HardDrives, SlidersHorizontal } from "@phosphor-icons/react";
 import { ModernSection } from "../primitives";
 import { useSettingsMachineScope } from "../SettingsMachineScope";
 import { useSettingsSearchAnchors } from "../settingsSearchContext";
@@ -8,7 +8,7 @@ import { decodeSettingsHash } from "../settingsHash";
 import { ArchiveSection } from "../ArchiveSection";
 import { SessionLifecycleSection } from "../SessionLifecycleSection";
 import { ProjectSection } from "../ProjectSection";
-import { LaneBehaviorSection } from "../LaneBehaviorSection";
+import { NewLaneSettingsSection } from "../NewLaneSettingsSection";
 import { LaneTemplatesSection } from "../LaneTemplatesSection";
 import { HEALTH_DETAIL_ANCHORS, HealthSpace } from "../health/HealthSpace";
 import { HealthCleanups } from "../health/HealthCleanups";
@@ -25,7 +25,7 @@ import "../health/health.css";
 import "./lanes.css";
 import { isAdeAvailable } from "../../../lib/adeAvailability";
 
-type ViewId = "lanes" | "lane-rules" | "space" | "archive" | "cleanup-rules";
+type ViewId = "lanes" | "new-lanes" | "space" | "archive" | "cleanup-rules";
 
 type View = {
   id: ViewId;
@@ -38,10 +38,10 @@ type View = {
 const LANES_VIEWS: readonly View[] = [
   { id: "lanes", label: "Your lanes", icon: <GitBranch size={13} weight="duotone" />, anchors: ["lane-list"] },
   {
-    id: "lane-rules",
-    label: "Rules",
-    icon: <SlidersHorizontal size={13} weight="duotone" />,
-    anchors: ["new-lane-base", "auto-rebase", "rebase-suggestions", "rebase-min-behind", "lane-templates"],
+    id: "new-lanes",
+    label: "New lanes",
+    icon: <GitFork size={13} weight="duotone" />,
+    anchors: ["new-lane-start", "lane-templates"],
   },
 ];
 
@@ -57,7 +57,7 @@ const STORAGE_VIEWS: readonly View[] = [
 ];
 
 /** The hosted web client can reach only the archive and the rules. */
-const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["lane-rules", "archive", "cleanup-rules"]);
+const WEB_VIEWS: ReadonlySet<ViewId> = new Set(["new-lanes", "archive", "cleanup-rules"]);
 
 /** The view among `views` that draws `anchor`, or null when none of them does. */
 function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | null {
@@ -67,7 +67,8 @@ function viewForAnchor(views: readonly View[], anchor: string | null): ViewId | 
 
 /**
  * Settings → Project → Lanes: the lanes themselves (stale ones first, with a
- * safe bulk archive), and the rules for how new lanes start and stay current.
+ * safe bulk archive), and how new lanes start: where they branch from and the
+ * template that sets them up.
  */
 export function LanesSettingsPage() {
   return <ProjectViewsPage allViews={LANES_VIEWS} label="Lanes settings" />;
@@ -221,10 +222,10 @@ function ProjectViewsPage({ allViews, label }: { allViews: readonly View[]; labe
         );
       case "archive":
         return <ArchiveSection />;
-      case "lane-rules":
+      case "new-lanes":
         return (
           <>
-            <LaneBehaviorSection />
+            <NewLaneSettingsSection />
             <LaneTemplatesSection />
           </>
         );
