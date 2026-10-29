@@ -881,11 +881,26 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     return { payload: { ...payload, updatedAt }, updatedAt };
   };
 
+  // Every read reconciles both halves, so an unchanged half is left alone: a
+  // rewrite renamed a temp file over identity.yaml, and an upsert made a synced
+  // database version, on every identity read (each CTO operator action).
   const writeIdentityToFile = (payload: CtoIdentity): void => {
-    writeTextAtomic(identityPath, YAML.stringify(payload, { indent: 2 }));
+    const text = YAML.stringify(payload, { indent: 2 });
+    try {
+      if (fs.readFileSync(identityPath, "utf8") === text) return;
+    } catch {
+      // Missing or unreadable: write it.
+    }
+    writeTextAtomic(identityPath, text);
   };
 
   const writeIdentityToDb = (payload: CtoIdentity): void => {
+    const payloadJson = JSON.stringify(payload);
+    const stored = args.db.get<{ version: number; payload_json: string; updated_at: string }>(
+      "select version, payload_json, updated_at from cto_identity_state where project_id = ? limit 1",
+      [args.projectId]
+    );
+    if (stored && stored.version === payload.version && stored.payload_json === payloadJson && stored.updated_at === payload.updatedAt) return;
     args.db.run(
       `
         insert into cto_identity_state(project_id, version, payload_json, updated_at)
@@ -895,7 +910,7 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
           payload_json = excluded.payload_json,
           updated_at = excluded.updated_at
       `,
-      [args.projectId, payload.version, JSON.stringify(payload), payload.updatedAt]
+      [args.projectId, payload.version, payloadJson, payload.updatedAt]
     );
   };
 
@@ -1031,14 +1046,20 @@ export function createCtoStateService(args: CtoStateServiceArgs) {
     sessionLogsFromFile: CtoSessionLogEntry[];
   };
 
-  const reconcileAll = (): ReconciledState => {
+  const reconcileIdentity = (): CtoIdentity => {
     const identity = chooseCanonical(readIdentityFromFile(), readIdentityFromDb(), makeDefaultIdentity);
     writeIdentityToFile(identity);
     writeIdentityToDb(identity);
-    return { identity, sessionLogsFromFile: reconcileSessionLogs() };
+    return identity;
   };
 
-  const getIdentity = (): CtoIdentity => reconcileAll().identity;
+  const reconcileAll = (): ReconciledState => ({
+    identity: reconcileIdentity(),
+    sessionLogsFromFile: reconcileSessionLogs(),
+  });
+
+  // The identity alone: the session log (an unbounded file) is not part of it.
+  const getIdentity = (): CtoIdentity => reconcileIdentity();
 
   const getSessionLogs = (limit = 20): CtoSessionLogEntry[] => {
     const { sessionLogsFromFile } = reconcileAll();
