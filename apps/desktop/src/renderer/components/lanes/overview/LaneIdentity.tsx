@@ -101,7 +101,6 @@ function CatchUpAction({
 export function LaneIdentity({
   lane,
   accent,
-  primaryLane,
   compareBase,
   rebaseLine,
   hasPr = false,
@@ -121,7 +120,6 @@ export function LaneIdentity({
 }: {
   lane: LaneSummary;
   accent: string;
-  primaryLane: LaneSummary | null;
   /** The branch ahead/behind is measured against: the open PR's base, else the lane's base. */
   compareBase: string;
   /** The quiet "behind" line, when the lane needs one; adds the Catch up menu. */

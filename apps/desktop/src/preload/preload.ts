@@ -424,7 +424,6 @@ import type {
   CtoSetLinearOAuthClientArgs,
   CtoSetLinearTokenArgs,
   AutomationsEventPayload,
-  ConflictExternalResolverRunSummary,
   ConflictProposal,
   ConflictProposalPreview,
   ConflictEventPayload,
@@ -819,20 +818,9 @@ import type {
   PtyExitEvent,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
-  RunExternalConflictResolverArgs,
-  ListExternalConflictResolverRunsArgs,
-  CommitExternalConflictResolverRunArgs,
-  CommitExternalConflictResolverRunResult,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
   UndoConflictProposalArgs,
-  PrepareResolverSessionArgs,
-  PrepareResolverSessionResult,
-  AttachResolverSessionArgs,
-  FinalizeResolverSessionArgs,
-  CancelResolverSessionArgs,
-  SuggestResolverTargetArgs,
-  SuggestResolverTargetResult,
   AddGitHubPrStackPullRequestsArgs,
   CreateGitHubPrStackArgs,
   ListGitHubPrStacksArgs,
@@ -12324,78 +12312,6 @@ const adeBridge = {
     ): Promise<ConflictProposal> =>
       callProjectRuntimeActionOr("conflicts", "undoProposal", { args }, () =>
         ipcRenderer.invoke(IPC.conflictsUndoProposal, args),
-      ),
-    runExternalResolver: async (
-      args: RunExternalConflictResolverArgs,
-    ): Promise<ConflictExternalResolverRunSummary> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "runExternalResolver",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsRunExternalResolver, args),
-      ),
-    listExternalResolverRuns: async (
-      args: ListExternalConflictResolverRunsArgs = {},
-    ): Promise<ConflictExternalResolverRunSummary[]> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "listExternalResolverRuns",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsListExternalResolverRuns, args),
-      ),
-    commitExternalResolverRun: async (
-      args: CommitExternalConflictResolverRunArgs,
-    ): Promise<CommitExternalConflictResolverRunResult> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "commitExternalResolverRun",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsCommitExternalResolverRun, args),
-      ),
-    prepareResolverSession: async (
-      args: PrepareResolverSessionArgs,
-    ): Promise<PrepareResolverSessionResult> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "prepareResolverSession",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsPrepareResolverSession, args),
-      ),
-    attachResolverSession: async (
-      args: AttachResolverSessionArgs,
-    ): Promise<ConflictExternalResolverRunSummary> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "attachResolverSession",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsAttachResolverSession, args),
-      ),
-    finalizeResolverSession: async (
-      args: FinalizeResolverSessionArgs,
-    ): Promise<ConflictExternalResolverRunSummary> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "finalizeResolverSession",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsFinalizeResolverSession, args),
-      ),
-    cancelResolverSession: async (
-      args: CancelResolverSessionArgs,
-    ): Promise<ConflictExternalResolverRunSummary> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "cancelResolverSession",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsCancelResolverSession, args),
-      ),
-    suggestResolverTarget: async (
-      args: SuggestResolverTargetArgs,
-    ): Promise<SuggestResolverTargetResult> =>
-      callProjectRuntimeActionOr(
-        "conflicts",
-        "suggestResolverTarget",
-        { args },
-        () => ipcRenderer.invoke(IPC.conflictsSuggestResolverTarget, args),
       ),
     onEvent: subscribeConflictEvents,
   },

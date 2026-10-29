@@ -1,16 +1,24 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ArrowsClockwise, CircleNotch, GitMerge, Sparkle, Stack } from "@phosphor-icons/react";
-import type { LaneSummary } from "../../../../shared/types";
+import type { LaneSummary, OpenProjectBinding } from "../../../../shared/types";
 import { buildLaneCatchUpPrompt, type LaneCatchUpPromptInput } from "../../../lib/laneCatchUpPrompt";
 import { useAppStore } from "../../../state/appStore";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../../app/toast/toastStore";
 import { LaneDialogShell } from "../LaneDialogShell";
-import { laneCatchUpOptions } from "../laneCatchUp";
-import { laneCatchUpMergeAvailable, runLaneCatchUpDirect, useLaneCatchUpAskAgent, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
+import {
+  laneCatchUpMergeAvailable,
+  laneCatchUpOptions,
+  laneCatchUpPromptInput,
+  lanePushedFromStatus,
+  readLaneCatchUpConflict,
+  runLaneCatchUpDirect,
+  useLaneCatchUpAskAgent,
+  type LaneCatchUpConflict,
+} from "../laneCatchUp";
+import type { LaneCatchUpTarget } from "../LaneCatchUpMenu";
 import { getLaneAccent } from "../laneColorPalette";
 import { COLORS } from "../laneDesignTokens";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
-import { laneBranchLabel } from "./laneSidebarModel";
 
 export type LaneBulkCatchUpTarget = {
   /** Row key. */
@@ -26,22 +34,10 @@ type Plan =
   | { kind: "rebase" | "merge" }
   | { kind: "agent"; reason: string };
 
-function promptFor(item: LaneBulkCatchUpTarget, pushed: boolean | null) {
-  return (failure: LaneCatchUpPromptInput["failure"] = null): LaneCatchUpPromptInput => ({
-    laneName: item.lane.name,
-    branch: laneBranchLabel(item.lane.branchRef),
-    baseBranch: item.line.baseBranch,
-    kind: item.line.kind,
-    behindBy: item.line.behindBy,
-    mergedPrNumber: item.line.mergedPrNumber,
-    pushed,
-    conflictingFiles: item.line.conflictingFiles,
-    failure,
-  });
-}
+const CHECKING: LaneCatchUpConflict = { state: "checking" };
 
 /** One lane's "Ask an agent", on that lane's machine. */
-function AskAgentButton({ item, pushed, onAsked }: { item: LaneBulkCatchUpTarget; pushed: boolean | null; onAsked: () => void }) {
+function AskAgentButton({ item, prompt, onAsked }: { item: LaneBulkCatchUpTarget; prompt: LaneCatchUpPromptInput; onAsked: () => void }) {
   const target = item.target;
   const askAgent = useLaneCatchUpAskAgent(target.ok ? target.pin : null);
   return (
@@ -55,7 +51,7 @@ function AskAgentButton({ item, pushed, onAsked }: { item: LaneBulkCatchUpTarget
       onClick={() => {
         if (!target.ok) return;
         onAsked();
-        void askAgent(target.laneId, buildLaneCatchUpPrompt(promptFor(item, pushed)()));
+        void askAgent(target.laneId, buildLaneCatchUpPrompt(prompt));
       }}
     >
       <Sparkle size={10} weight="duotone" aria-hidden style={{ color: COLORS.accent }} />
@@ -86,8 +82,8 @@ export function LaneSidebarBulkCatchUpDialog({
   const busy = progress != null;
   // Whether each lane's branch is on the remote, read once per machine on open.
   const [syncPushed, setSyncPushed] = useState<ReadonlyMap<string, boolean> | null>(null);
-  // A fresh conflict check per lane, on its own machine; missing = couldn't check.
-  const [conflicts, setConflicts] = useState<ReadonlyMap<string, { predicted: boolean; files: string[] }> | null>(null);
+  // A fresh conflict check per lane, on its own machine.
+  const [conflicts, setConflicts] = useState<ReadonlyMap<string, LaneCatchUpConflict> | null>(null);
   // Keyed on the lanes and their machines, not the array: the page rebuilds it on every refresh.
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
@@ -104,41 +100,33 @@ export function LaneSidebarBulkCatchUpDialog({
       return;
     }
     let cancelled = false;
-    void Promise.all(targets.map(async (item) => {
-      if (!item.target.ok) return [];
-      try {
-        const need = await window.ade.rebase?.getNeed(item.target.laneId, item.target.pin);
-        if (need === undefined) throw new Error("This machine can't check for conflicts.");
-        const result = need
-          ? { predicted: need.conflictPredicted, files: need.conflictPredicted ? need.conflictingFiles ?? [] : [] }
-          : { predicted: false, files: [] as string[] };
-        return [[item.key, result] as const];
-      } catch (error) {
-        console.warn("lane_catch_up.conflict_check_failed", error);
-        return [];
-      }
-    })).then((entries) => {
-      if (!cancelled) setConflicts(new Map(entries.flat()));
-    });
-    const byMachine = new Map<string, { pin: LaneCatchUpTarget & { ok: true }; items: LaneBulkCatchUpTarget[] }>();
+    // Each lane by its machine, already narrowed to the ones that can run.
+    const byMachine = new Map<string, { pin: OpenProjectBinding | null; lanes: { laneId: string; key: string }[] }>();
     for (const item of targets) {
-      if (!item.target.ok) continue;
-      const machineKey = item.target.pin?.key ?? "tab";
-      const group = byMachine.get(machineKey) ?? { pin: item.target, items: [] };
-      group.items.push(item);
+      const target = item.target;
+      if (!target.ok) continue;
+      const machineKey = target.pin?.key ?? "tab";
+      const group = byMachine.get(machineKey) ?? { pin: target.pin, lanes: [] };
+      group.lanes.push({ laneId: target.laneId, key: item.key });
       byMachine.set(machineKey, group);
     }
-    void Promise.all([...byMachine.values()].map(async ({ pin, items }) => {
+    const groups = [...byMachine.values()];
+    void Promise.all(groups.flatMap(({ pin, lanes }) => lanes.map(async ({ laneId, key }) => (
+      [key, await readLaneCatchUpConflict(laneId, pin)] as const
+    )))).then((entries) => {
+      if (!cancelled) setConflicts(new Map(entries));
+    });
+    void Promise.all(groups.map(async ({ pin, lanes }) => {
       const statuses = await window.ade.git
-        .getSyncStatuses({ laneIds: items.map((item) => (item.target.ok ? item.target.laneId : "")) }, pin.pin)
+        .getSyncStatuses({ laneIds: lanes.map((lane) => lane.laneId) }, pin)
         .catch((error) => {
           // Unknown means not pushed is unproven: those lanes get no rebase.
           console.warn("lane_catch_up.sync_statuses_failed", error);
           return {} as Record<string, { hasUpstream: boolean } | null>;
         });
-      return items.flatMap((item) => {
-        const status = item.target.ok ? statuses[item.target.laneId] : null;
-        return status ? [[item.key, status.hasUpstream] as const] : [];
+      return lanes.flatMap(({ laneId, key }) => {
+        const status = statuses[laneId];
+        return status ? [[key, status.hasUpstream] as const] : [];
       });
     })).then((entries) => {
       if (!cancelled) setSyncPushed(new Map(entries.flat()));
@@ -147,26 +135,23 @@ export function LaneSidebarBulkCatchUpDialog({
   }, [open, targetsKey]);
 
   const rows = useMemo(() => targets.map((item) => {
-    const statusPushed = item.hasPr || (item.lane.status?.remoteBehind ?? -1) >= 0;
-    const pushed = statusPushed ? true : syncPushed?.get(item.key) ?? null;
-    if (!item.target.ok) return { item, pushed, plan: { kind: "agent", reason: item.target.reason } as Plan };
-    const checked = conflicts?.get(item.key);
+    const pushed = lanePushedFromStatus(item.lane, item.hasPr) ?? syncPushed?.get(item.key) ?? null;
+    const conflict = conflicts?.get(item.key) ?? CHECKING;
+    const prompt = laneCatchUpPromptInput(item.lane, item.line, pushed, conflict);
+    if (!item.target.ok) return { item, prompt, plan: { kind: "agent", reason: item.target.reason } as Plan };
     const options = laneCatchUpOptions({
-      line: checked
-        ? { conflictPredicted: checked.predicted, conflictingFiles: checked.files }
-        : { conflictPredicted: null, conflictingFiles: [] },
-      conflictCheck: conflicts == null ? "checking" : checked ? "done" : "failed",
+      conflict,
       dirty: Boolean(item.lane.status?.dirty),
       inProgress: Boolean(item.lane.status?.rebaseInProgress),
       pushed,
-      mergeAvailable: item.target.ok ? laneCatchUpMergeAvailable(item.target.pin) : false,
+      mergeAvailable: laneCatchUpMergeAvailable(item.target.pin),
     });
     const plan: Plan = options.rebase
       ? { kind: "rebase" }
       : options.merge
         ? { kind: "merge" }
         : { kind: "agent", reason: options.blocker ?? "Needs a closer look" };
-    return { item, pushed, plan };
+    return { item, prompt, plan };
   }), [conflicts, syncPushed, targets]);
 
   const direct = rows.filter((row) => row.plan.kind !== "agent");
@@ -186,7 +171,7 @@ export function LaneSidebarBulkCatchUpDialog({
         machineId: target.machineId,
         laneName: row.item.lane.name,
         baseBranch: row.item.line.baseBranch,
-        prompt: promptFor(row.item, row.pushed),
+        prompt: row.prompt,
         refreshLanes,
         quiet: true,
       });
@@ -245,7 +230,7 @@ export function LaneSidebarBulkCatchUpDialog({
       )}
     >
       <ul className="space-y-1" data-testid="lane-bulk-catch-up-list">
-        {rows.map(({ item, pushed, plan }) => (
+        {rows.map(({ item, prompt, plan }) => (
           <li
             key={item.key}
             className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1.5 text-xs"
@@ -258,7 +243,7 @@ export function LaneSidebarBulkCatchUpDialog({
             {plan.kind === "agent" ? (
               <>
                 <span className="shrink-0 truncate" style={{ color: COLORS.warning, maxWidth: 200 }} title={plan.reason}>{plan.reason}</span>
-                <AskAgentButton item={item} pushed={pushed} onAsked={() => onOpenChange(false)} />
+                <AskAgentButton item={item} prompt={prompt} onAsked={() => onOpenChange(false)} />
               </>
             ) : (
               <span className="inline-flex shrink-0 items-center gap-1" style={{ color: COLORS.textSecondary }}>

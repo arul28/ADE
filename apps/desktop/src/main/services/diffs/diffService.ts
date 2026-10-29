@@ -389,7 +389,7 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
   };
 
   const startBranchRead = (laneId: string): Promise<BranchDiffChanges> => {
-    // `read` is assigned at once; the read itself flags the entry when it starts on the tree.
+    // `read` is assigned at once; the read itself flags the entry once it starts the git diff of its commits.
     const entry = { readingGit: false } as BranchRead;
     entry.read = readBranchChanges(laneId, entry);
     branchReads.set(laneId, entry);

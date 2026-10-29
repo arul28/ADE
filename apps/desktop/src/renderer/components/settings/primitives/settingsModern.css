@@ -44,6 +44,13 @@
 /* Header actions and meta sit on the title line: a box exactly the heading's
    line height, with everything centred in it (taller buttons overflow evenly). */
 .ade-ap-actions { display: flex; align-items: center; gap: 4px; flex: none; height: 20px; }
+
+/* `ModernSection size="step"`: a step inside a page whose tab is the heading. */
+.ade-modern-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; scroll-margin-top: 16px; }
+.ade-modern-step-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.ade-modern-step-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-fg); }
+.ade-modern-step-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-3); }
+.ade-modern-step-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 .ade-ap-check { margin-left: auto; color: var(--color-fg); opacity: 0.85; flex: none; }
 .ade-ap-grid3 {
   display: grid;

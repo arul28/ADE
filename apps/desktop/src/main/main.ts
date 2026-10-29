@@ -4391,8 +4391,6 @@ app.whenReady().then(async () => {
       projectConfigService,
       operationService,
       aiIntegrationService,
-      sessionService,
-      laneWorktreeLockService,
       conflictPacksDir: path.join(adePaths.packsDir, "conflicts"),
       onEvent: (event) => {
         emitProjectEvent(projectRoot, IPC.conflictsEvent, event);

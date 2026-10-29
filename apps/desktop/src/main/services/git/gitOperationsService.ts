@@ -205,6 +205,12 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
   return dir.length ? dir : null;
 }
 
+/** The files left unmerged by a stopped rebase or merge, sorted; empty when git can't say. */
+async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promise<string[]> {
+  const res = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: worktreePath, timeoutMs });
+  return res.exitCode === 0 ? parseDiffNameOnlySorted(res.stdout) : [];
+}
+
 export function createGitOperationsService({
   laneService,
   operationService,
@@ -534,12 +540,7 @@ export function createGitOperationsService({
       if (!gitDir) return false;
       const kind = detectConflictKind(gitDir);
       if (kind !== expected) return false;
-      const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-      if (unmergedRes.exitCode !== 0) return false;
-      return parseDiffNameOnlySorted(unmergedRes.stdout).length > 0;
+      return (await listUnmergedFiles(lane.worktreePath, 10_000)).length > 0;
     };
 
     if (mode === "rebase") {
@@ -1524,11 +1525,7 @@ export function createGitOperationsService({
         const gitDir = await getAbsoluteGitDir(lane.worktreePath);
         const kind = gitDir ? detectConflictKind(gitDir) : null;
 
-        const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-          cwd: lane.worktreePath,
-          timeoutMs: 10_000
-        });
-        const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
+        const conflictedFiles = await listUnmergedFiles(lane.worktreePath, 10_000);
         const inProgress = kind != null;
 
         return {
@@ -1668,11 +1665,7 @@ export function createGitOperationsService({
           });
           if (merge.exitCode === 0) return;
 
-          const unmerged = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-            cwd: lane.worktreePath,
-            timeoutMs: 15_000,
-          });
-          const conflicted = unmerged.exitCode === 0 ? parseDiffNameOnlySorted(unmerged.stdout) : [];
+          const conflicted = await listUnmergedFiles(lane.worktreePath, 15_000);
           // A merge that stopped part-way leaves MERGE_HEAD; one that refused
           // to start (an untracked file in the way) changed nothing.
           const mergeHead = await runGit(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {

@@ -1,39 +1,41 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { CaretDown, CircleNotch, GitMerge, Sparkle, Stack, Warning } from "@phosphor-icons/react";
 import type { AgentChatSessionSummary, LaneSummary, OpenProjectBinding } from "../../../shared/types";
-import { isUnsupportedAdeActionError, stripElectronErrorWrapper } from "../../../shared/codedError";
-import { machineIdForBinding } from "../../../shared/machineIdentity";
-import { extractError } from "../../lib/format";
-import { useLaneChatHandoff } from "../../lib/laneChatHandoff";
-import { buildLaneCatchUpPrompt, newestLaneWorkChat, type LaneCatchUpPromptInput } from "../../lib/laneCatchUpPrompt";
+import { buildLaneCatchUpPrompt, newestLaneWorkChat } from "../../lib/laneCatchUpPrompt";
 import { useAppStore } from "../../state/appStore";
-import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { READABLE_TOAST_DURATION_MS, showToast } from "../app/toast/toastStore";
 import { AnchoredMenu, type AnchoredMenuPlacement } from "../ui/AnchoredMenu";
 import { Banner } from "../ui/notice";
 import { Z_LAYERS } from "../ui/zLayers";
 import { COLORS } from "./laneDesignTokens";
 import {
+  laneCatchUpBusyLabel,
   laneCatchUpHasInlineHost,
   laneCatchUpKey,
+  laneCatchUpMergeAvailable,
   laneCatchUpOptions,
+  laneCatchUpPromptInput,
+  lanePushedFromStatus,
   patchLaneCatchUp,
-  readLaneCatchUp,
+  readLaneCatchUpConflict,
+  runLaneCatchUpDirect,
+  useLaneCatchUpAskAgent,
   useLaneCatchUpFailureHost,
   useLaneCatchUpState,
-  type LaneCatchUpFailure,
+  type LaneCatchUpConflict,
 } from "./laneCatchUp";
-import { requestLaneRebaseNeedsRescan, type LaneRebaseLine } from "./laneRebaseNeeds";
-import { laneBranchLabel } from "./sidebar/laneSidebarModel";
+import type { LaneRebaseLine } from "./laneRebaseNeeds";
+import type { LaneTarget } from "./useLanesPageMachines";
 
 /**
- * Where a lane's catch-up runs. `laneId` is the lane's id on its own machine;
- * `pin` is that machine when it is not the tab's (null keeps the tab's route);
- * `machineId` names it for refreshing its lane list afterwards.
+ * Where a lane's catch-up runs: the Lanes page's lane target without its
+ * name. `laneId` is the lane's id on its own machine; `pin` is that machine
+ * when it is not the tab's (null keeps the tab's route); `machineId` names it
+ * for refreshing its lane list afterwards.
  */
 export type LaneCatchUpTarget =
-  | { ok: true; laneId: string; pin: OpenProjectBinding | null; machineId: string | null }
-  | { ok: false; reason: string };
+  | Omit<Extract<LaneTarget, { ok: true }>, "name">
+  | Extract<LaneTarget, { ok: false }>;
 
 export type LaneCatchUpTriggerState = {
   open: boolean;
@@ -46,122 +48,8 @@ function chatTitle(session: Pick<AgentChatSessionSummary, "title" | "sessionId">
   return title && title.length > 0 ? title : "the lane's chat";
 }
 
-/**
- * "Ask an agent": a chat draft in the lane, never sent. The lane's newest
- * Work chat gets it (it knows the lane's intent); else a new chat in the lane.
- * Every call goes to the lane's machine.
- */
-export function useLaneCatchUpAskAgent(pin: OpenProjectBinding | null) {
-  const handOff = useLaneChatHandoff(pin, { startDraftInLane: true });
-  return useCallback(async (laneId: string, prompt: string, knownChats?: AgentChatSessionSummary[] | null) => {
-    const chats = knownChats ?? await window.ade.agentChat
-      .list({ laneId, includeArchived: false }, pin)
-      .catch((error) => {
-        // A new chat in the lane still works; the newest one just isn't reused.
-        console.warn("lane_catch_up.chat_list_failed", error);
-        return [] as AgentChatSessionSummary[];
-      });
-    const chat = newestLaneWorkChat(chats);
-    handOff({ laneId, sessionId: chat?.sessionId ?? null, prompt });
-  }, [handOff, pin]);
-}
-
 function failureIsTheUsersToFix(message: string): boolean {
   return /conflict|uncommitted|in progress/i.test(message);
-}
-
-export type LaneCatchUpOutcome =
-  | { ok: true; upToDate: boolean }
-  | { ok: false; failure: LaneCatchUpFailure };
-
-/**
- * Run a direct catch-up on the lane's machine: the rebase engine
- * (`lanes.rebaseStart`, no push) or `git.mergeBaseIn`. Both undo themselves
- * on a conflict. Marks the lane busy while it runs, records a failure for the
- * lane's overview, toasts a success unless `quiet`, and refreshes the lane
- * list it came from. Resolves to null when this lane is already running one.
- */
-/** Machines (by pin key; "" for the tab's own) whose ADE predates `git.mergeBaseIn`. */
-const mergeUnsupportedHosts = new Set<string>();
-
-/**
- * Whether the lane's machine can run "Merge <base> in". There is no cheap
- * probe, so a machine counts as able until it refuses the action once.
- */
-export function laneCatchUpMergeAvailable(pin: OpenProjectBinding | null): boolean {
-  return typeof window.ade?.git?.mergeBaseIn === "function" && !mergeUnsupportedHosts.has(pin?.key ?? "");
-}
-
-export async function runLaneCatchUpDirect(args: {
-  action: "rebase" | "merge";
-  laneId: string;
-  pin: OpenProjectBinding | null;
-  machineId: string | null;
-  laneName: string;
-  baseBranch: string;
-  prompt: (failure: LaneCatchUpPromptInput["failure"]) => LaneCatchUpPromptInput;
-  refreshLanes: () => Promise<unknown>;
-  quiet?: boolean;
-}): Promise<LaneCatchUpOutcome | null> {
-  const { action, laneId, pin, laneName: name } = args;
-  const key = laneCatchUpKey(laneId, pin);
-  if (readLaneCatchUp(key).busy) return null;
-  patchLaneCatchUp(key, { busy: action, failure: null });
-  try {
-    let upToDate: boolean;
-    if (action === "rebase") {
-      const start = await window.ade.lanes.rebaseStart({ laneId, pushMode: "none", actor: "user" }, pin);
-      const run = start.run;
-      if (run.state === "failed" || run.failedLaneId || run.error) {
-        const files = run.lanes.find((entry) => entry.laneId === run.failedLaneId)?.conflictingFiles ?? [];
-        throw new Error(files.length > 0
-          ? `Rebasing onto origin/${args.baseBranch} conflicts in ${files.length} file${files.length === 1 ? "" : "s"} (${files.slice(0, 5).join(", ")}${files.length > 5 ? ", …" : ""}). The rebase was undone; nothing changed.`
-          : run.error ?? "Rebase failed.");
-      }
-      upToDate = run.lanes.every((entry) => entry.status === "skipped");
-      if (!args.quiet) {
-        showToast({
-          tone: "success",
-          title: upToDate ? `${name} is already up to date` : `Rebased ${name} onto ${run.baseBranch || args.baseBranch}`,
-          message: "Nothing was pushed.",
-        });
-      }
-    } else {
-      const result = await window.ade.git.mergeBaseIn({ laneId }, pin);
-      upToDate = result.upToDate;
-      if (!args.quiet) {
-        showToast({
-          tone: "success",
-          title: result.upToDate ? `${name} is already up to date` : `Merged ${result.mergedRef} into ${name}`,
-          message: result.fetched
-            ? "Nothing was pushed."
-            : `Could not fetch, so the last known ${result.mergedRef} was used. Nothing was pushed.`,
-        });
-      }
-    }
-    patchLaneCatchUp(key, { busy: null });
-    return { ok: true, upToDate };
-  } catch (error) {
-    const unsupported = action === "merge" && isUnsupportedAdeActionError(error);
-    if (unsupported) mergeUnsupportedHosts.add(pin?.key ?? "");
-    const message = unsupported
-      ? "The ADE on this lane's machine is too old to merge here. Update it, or ask an agent."
-      : stripElectronErrorWrapper(extractError(error));
-    const failure: LaneCatchUpFailure = { action, message, laneId, pin, prompt: args.prompt({ action, error: message }) };
-    patchLaneCatchUp(key, { busy: null, failure });
-    return { ok: false, failure };
-  } finally {
-    try {
-      if (pin) requestCrossMachineLanesForMachine(args.machineId ?? machineIdForBinding(pin));
-      else {
-        await args.refreshLanes();
-        requestLaneRebaseNeedsRescan();
-      }
-    } catch (error) {
-      // The next lane refresh picks it up.
-      console.warn("lane_catch_up.refresh_failed", error);
-    }
-  }
 }
 
 /**
@@ -210,30 +98,16 @@ export function LaneCatchUpMenu({
   // remote, and which chat would get the draft.
   const [syncPushed, setSyncPushed] = useState<boolean | null>(null);
   const [chats, setChats] = useState<AgentChatSessionSummary[] | null>(null);
-  // A fresh conflict check (`git merge-tree` against the base) on the lane's
-  // own machine, so a lane on another computer is checked like a local one.
-  const [check, setCheck] = useState<
-    { state: "checking" } | { state: "done"; predicted: boolean; files: string[] } | { state: "failed" }
-  >({ state: "checking" });
+  const [conflict, setConflict] = useState<LaneCatchUpConflict>({ state: "checking" });
   useEffect(() => {
     if (!open || !laneId) return;
     let cancelled = false;
     setSyncPushed(null);
     setChats(null);
-    setCheck({ state: "checking" });
-    // A host without the check rejects here, which reads as "couldn't check".
-    void Promise.resolve().then(() => window.ade.rebase.getNeed(laneId, pin))
-      .then((need) => {
-        if (cancelled) return;
-        // No need means nothing to catch up with now: nothing to conflict.
-        setCheck(need
-          ? { state: "done", predicted: need.conflictPredicted, files: need.conflictPredicted ? need.conflictingFiles ?? [] : [] }
-          : { state: "done", predicted: false, files: [] });
-      })
-      .catch((error) => {
-        console.warn("lane_catch_up.conflict_check_failed", error);
-        if (!cancelled) setCheck({ state: "failed" });
-      });
+    setConflict({ state: "checking" });
+    void readLaneCatchUpConflict(laneId, pin).then((next) => {
+      if (!cancelled) setConflict(next);
+    });
     void window.ade.git.getSyncStatus({ laneId }, pin)
       .then((status) => { if (!cancelled) setSyncPushed(status ? status.hasUpstream : null); })
       .catch((error) => console.warn("lane_catch_up.sync_status_failed", error));
@@ -249,38 +123,26 @@ export function LaneCatchUpMenu({
   }, [open, laneId, pinKey]);
 
   // A tracked upstream or a PR means pushed for sure; otherwise ask git.
-  const statusPushed = hasPr || (lane.status?.remoteBehind ?? -1) >= 0;
-  const pushed = statusPushed ? true : syncPushed;
-  const checkedLine = check.state === "done"
-    ? { conflictPredicted: check.predicted, conflictingFiles: check.files }
-    : { conflictPredicted: null, conflictingFiles: [] as string[] };
+  const pushed = lanePushedFromStatus(lane, hasPr) ?? syncPushed;
   const options = laneCatchUpOptions({
-    line: checkedLine,
-    conflictCheck: check.state,
+    conflict,
     dirty: Boolean(lane.status?.dirty),
     inProgress: inProgress || Boolean(lane.status?.rebaseInProgress),
     pushed,
     mergeAvailable: laneCatchUpMergeAvailable(pin),
   });
 
-  const promptInput = useCallback((failure: LaneCatchUpPromptInput["failure"] = null): LaneCatchUpPromptInput => ({
-    laneName: lane.name,
-    branch: laneBranchLabel(lane.branchRef),
-    baseBranch: line.baseBranch,
-    kind: line.kind,
-    behindBy: line.behindBy,
-    mergedPrNumber: line.mergedPrNumber,
-    pushed,
-    conflictingFiles: check.state === "done" ? check.files : line.conflictingFiles,
-    failure,
-  }), [check, lane.branchRef, lane.name, line, pushed]);
+  const promptInput = useMemo(
+    () => laneCatchUpPromptInput(lane, line, pushed, conflict),
+    [conflict, lane, line, pushed],
+  );
 
   const close = useCallback(() => setOpen(false), []);
 
   const askAgent = useCallback(() => {
     if (!laneId) return;
     setOpen(false);
-    void askAgentIn(laneId, buildLaneCatchUpPrompt(promptInput()), chats);
+    void askAgentIn(laneId, buildLaneCatchUpPrompt(promptInput), chats);
   }, [askAgentIn, chats, laneId, promptInput]);
 
   const runDirect = useCallback(async (action: "rebase" | "merge") => {
@@ -431,7 +293,7 @@ export function LaneCatchUpMenu({
               data-testid="lane-catch-up-blocker"
             >
               <Warning size={12} weight="fill" className="shrink-0" style={{ color: COLORS.warning }} />
-              <span className="min-w-0 truncate" title={checkedLine.conflictingFiles.join("\n") || undefined}>{options.blocker}</span>
+              <span className="min-w-0 truncate" title={conflict.state === "done" ? conflict.files.join("\n") || undefined : undefined}>{options.blocker}</span>
             </div>
           ) : null}
         </div>
@@ -457,7 +319,7 @@ export function LaneCatchUpButton({
   title?: string;
   testId?: string;
 }) {
-  const label = state.busy === "rebase" ? "Rebasing…" : state.busy === "merge" ? "Merging…" : "Catch up";
+  const label = laneCatchUpBusyLabel(state.busy) ?? "Catch up";
   return (
     <button
       type="button"

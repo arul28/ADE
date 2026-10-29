@@ -216,11 +216,7 @@ function PRsPageInner({ active }: { active: boolean }) {
           setSelectedPrTarget((previous) => (
             prRouteTargetsEqual(previous, routeTarget) ? previous : routeTarget
           ));
-        }
-        if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
           setSelectedDetailTab(routeState.detailTab);
-        }
-        if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
           setGithubSort(routeState.githubSort);
         }
         if (createRequest && consumedCreateRouteKeyRef.current !== createRequest.key) {

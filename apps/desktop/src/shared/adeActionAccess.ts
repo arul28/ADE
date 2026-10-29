@@ -125,14 +125,12 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   conflicts: {
     read: [
-      "getBatchAssessment", "getLaneStatus", "getRiskMatrix", "listExternalResolverRuns",
-      "listOverlaps", "listProposals", "scanRebaseNeeds", "getRebaseNeed",
+      "getBatchAssessment", "getLaneStatus", "getRiskMatrix", "listOverlaps", "listProposals",
+      "scanRebaseNeeds", "getRebaseNeed",
     ],
     write: [
-      "applyProposal", "attachResolverSession", "cancelResolverSession",
-      "commitExternalResolverRun", "finalizeResolverSession", "prepareProposal",
-      "prepareResolverSession", "rebaseLane", "requestProposal", "runExternalResolver",
-      "runPrediction", "simulateMerge", "suggestResolverTarget", "undoProposal",
+      "applyProposal", "prepareProposal", "rebaseLane", "requestProposal", "runPrediction",
+      "simulateMerge", "undoProposal",
     ],
   },
   pr: {

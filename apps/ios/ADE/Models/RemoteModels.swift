@@ -640,7 +640,7 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var devicesOpen: [DeviceMarker]?
 }
 
-/// Where a new lane's branch starts and how much work it brings along
+/// Where a new lane's branch starts, and on which copy of that branch
 /// (`LaneStart` in `apps/desktop/src/shared/laneStart.ts`).
 /// - `from`: the project's default branch, the primary lane's branch, or a named `branch`.
 /// - `on`: `remote` fetches and starts from `origin/<branch>`; `local` starts from the

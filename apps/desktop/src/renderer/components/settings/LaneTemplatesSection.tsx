@@ -8,6 +8,7 @@ import {
 import {
   ModernRow,
   ModernRows,
+  ModernSection,
   SettingsDisclosure,
   SettingsSelect,
   SettingsTextField,
@@ -26,7 +27,6 @@ import type {
   LaneSetupScriptConfig,
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { NewLaneStep } from "./NewLaneSettingsSection";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
 import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
@@ -215,10 +215,11 @@ function removeAt<T>(items: T[], index: number): T[] {
  * Matches `lanes-git.lane-templates` in `settingsManifest.ts`. Every state of
  * this section renders it, so a Cmd-K result or `?tab=lanes-git#lane-templates`
  * deeplink lands here whether templates are still loading or one is open in the
- * editor. `NewLaneStep` sets the id and its `data-settings-anchor` mirror, so
+ * editor. `ModernSection` sets the id and its `data-settings-anchor` mirror, so
  * settings search can filter this step too.
  */
 const ANCHOR = "lane-templates";
+const GROUP = "New lanes";
 
 const TITLE = "Template";
 const DESCRIPTION = "Set up new lanes the same way: copy files in, install packages, run a script.";
@@ -314,15 +315,15 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <NewLaneStep anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <ModernSection size="step" group={GROUP} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <p className="ade-modern-muted">Loading templates...</p>
-      </NewLaneStep>
+      </ModernSection>
     );
   }
 
   if (editing) {
     return (
-      <NewLaneStep anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <ModernSection size="step" group={GROUP} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <div className="ade-lt-editor">
           <TemplateEditor
             template={editing}
@@ -330,12 +331,14 @@ export function LaneTemplatesSection() {
             onCancel={() => setEditing(null)}
           />
         </div>
-      </NewLaneStep>
+      </ModernSection>
     );
   }
 
   return (
-    <NewLaneStep
+    <ModernSection
+      size="step"
+      group={GROUP}
       anchor={ANCHOR}
       title={TITLE}
       hint={DESCRIPTION}
@@ -398,7 +401,7 @@ export function LaneTemplatesSection() {
           </div>
         </>
       )}
-    </NewLaneStep>
+    </ModernSection>
   );
 }
 

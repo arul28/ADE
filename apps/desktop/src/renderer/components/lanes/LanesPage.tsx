@@ -60,7 +60,7 @@ import { LaneSidebarList, LANES_FILTER_INPUT_ID } from "./sidebar/LaneSidebarLis
 import { LaneSidebarBulkContextMenu } from "./sidebar/LaneSidebarBulkContextMenu";
 import { LaneSidebarContextMenu } from "./sidebar/LaneSidebarContextMenu";
 import { LaneSidebarBulkCatchUpDialog, type LaneBulkCatchUpTarget } from "./sidebar/LaneSidebarBulkCatchUpDialog";
-import type { LaneCatchUpTarget } from "./LaneCatchUpMenu";
+import { laneHasCurrentPr } from "./laneCatchUp";
 import {
   buildLaneSidebarLayout,
   buildLaneSidebarRows,
@@ -1410,19 +1410,11 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setManageOpen(true);
   }, [bulkActionableLaneIds, foreignRowByKey]);
 
-  // Where a lane's Catch up runs: its id on its own machine and that
-  // machine's pin (null for the tab's own). Refused while the machine is
-  // unreachable, so nothing is sent unpinned.
-  const resolveCatchUpTarget = useCallback((laneKey: string): LaneCatchUpTarget => {
-    const target = resolveLaneTarget(laneKey);
-    return target.ok
-      ? { ok: true, laneId: target.laneId, pin: target.pin, machineId: target.machineId }
-      : { ok: false, reason: target.reason };
-  }, [resolveLaneTarget]);
-
   // Lanes that have a pull request: their branch is on the remote.
-  const laneHasPr = useCallback((laneKey: string) => (lanePrTagsByLaneId.get(laneKey) ?? [])
-    .some((pr) => pr.laneRole !== "previous"), [lanePrTagsByLaneId]);
+  const laneHasPr = useCallback(
+    (laneKey: string) => laneHasCurrentPr(lanePrTagsByLaneId.get(laneKey)),
+    [lanePrTagsByLaneId],
+  );
 
   // Group header bulk actions. Archive and delete go through the same batch
   // manage dialog as Cmd-click (it lists the lanes and confirms); catch up
@@ -1448,11 +1440,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         lane,
         colorIndex: colorIndexByLaneId.get(laneKey) ?? 0,
         line,
-        target: resolveCatchUpTarget(laneKey),
+        // Its id on its own machine and that machine's pin; refused while the machine is unreachable.
+        target: resolveLaneTarget(laneKey),
         hasPr: laneHasPr(laneKey),
       }];
     });
-  }, [bulkCatchUpLaneIds, colorIndexByLaneId, laneHasPr, lanesById, rebaseLineByLaneId, resolveCatchUpTarget]);
+  }, [bulkCatchUpLaneIds, colorIndexByLaneId, laneHasPr, lanesById, rebaseLineByLaneId, resolveLaneTarget]);
 
   /* ---- Git pane selection ---- */
 
@@ -2061,7 +2054,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       totalLaneCount={visibleLanes.length}
       laneRuntimeById={laneRuntimeById}
       rebaseLineByLaneId={rebaseLineByLaneId}
-      resolveCatchUpTarget={resolveCatchUpTarget}
+      resolveCatchUpTarget={resolveLaneTarget}
       agentsByLaneId={agentsByLaneId}
       lanePrTagsByLaneId={lanePrTagsByLaneId}
       deleteProgressByLaneId={deleteProgressByLaneId}

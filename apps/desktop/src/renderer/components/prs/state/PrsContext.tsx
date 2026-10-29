@@ -181,12 +181,6 @@ function readInitialSelectedPrId(fallback?: PrsContextWarmCache | null): string 
   return null;
 }
 
-function requirePrId(prId: string): string {
-  const normalized = String(prId ?? "").trim();
-  if (!normalized) throw new Error("PR id is required.");
-  return normalized;
-}
-
 /** Remove entries from a keyed record whose key is not in the allowed set. */
 function pruneByAllowedIds<T>(record: Record<string, T>, allowedIds: Set<string>): Record<string, T> {
   const next = Object.fromEntries(

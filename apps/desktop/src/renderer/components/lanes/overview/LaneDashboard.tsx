@@ -136,7 +136,6 @@ export function LaneDashboard({
   const selectLane = useAppStore((s) => s.selectLane);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
   const lane = useMemo(() => lanes.find((row) => row.id === laneId) ?? null, [laneId, lanes]);
-  const primaryLane = useMemo(() => lanes.find((row) => row.laneType === "primary") ?? null, [lanes]);
 
   // Folded sections, saved per project like the sidebar's folded groups, so
   // a section stays folded as you move between lanes.
@@ -300,7 +299,6 @@ export function LaneDashboard({
           <LaneIdentity
             lane={lane}
             accent={accent}
-            primaryLane={primaryLane}
             compareBase={baseLabel}
             rebaseLine={rebaseLine}
             // Catch-ups run on the lane's machine: `pin` and `machineId` below.

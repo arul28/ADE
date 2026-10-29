@@ -127,11 +127,10 @@ export type LaneRebaseLine = {
   text: string;
   title: string;
   /**
-   * Whether bringing the lane up to date is expected to conflict. Null when
-   * no scan covers the lane (a lane on another machine): unknown, not "no".
+   * The files the scan expects to conflict; empty when none, or when no scan
+   * covers the lane (a lane on another machine). The Catch up menu runs its
+   * own check before offering a direct way.
    */
-  conflictPredicted: boolean | null;
-  /** The files the scan expects to conflict; empty when none or unknown. */
   conflictingFiles: string[];
   /** For `built_on_merged`: the merged PR whose commits the lane still carries. */
   mergedPrNumber: number | null;
@@ -164,7 +163,6 @@ export function laneRebaseLine(args: {
   const { lane, need } = args;
   if (lane.laneType === "primary" || args.merged) return null;
   if (lane.status?.rebaseInProgress) return null;
-  const conflictPredicted = need ? need.conflictPredicted : null;
   const conflictingFiles = need?.conflictPredicted ? need.conflictingFiles ?? [] : [];
   const baseBranch = branchNameFromLaneRef(need?.baseBranch) || laneCompareBase(lane);
   const statusBehind = lane.status?.behind ?? 0;
@@ -178,7 +176,6 @@ export function laneRebaseLine(args: {
       title: prNumber
         ? `This lane still carries the commits of #${prNumber}, which merged into ${baseBranch}.`
         : `This lane still carries commits that merged into ${baseBranch}.`,
-      conflictPredicted,
       conflictingFiles,
       mergedPrNumber: prNumber ?? null,
     };
@@ -192,7 +189,6 @@ export function laneRebaseLine(args: {
     baseBranch,
     text: `${behindBy} behind ${baseBranch}`,
     title: `${behindBy} commit${behindBy === 1 ? "" : "s"} behind ${baseBranch}.${conflict}`,
-    conflictPredicted,
     conflictingFiles,
     mergedPrNumber: null,
   };

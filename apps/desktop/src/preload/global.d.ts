@@ -235,7 +235,6 @@ import type {
   AutomationWebhookTestResult,
   AutomationWebhookGatewayStatus,
   ConflictProposal,
-  ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
   ConflictEventPayload,
   ConflictOverlap,
@@ -737,7 +736,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  PrAgentPermissionMode,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
   LaneGitHubIssue,
@@ -790,18 +788,7 @@ import type {
   RunTestSuiteArgs,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
-  RunExternalConflictResolverArgs,
-  ListExternalConflictResolverRunsArgs,
-  CommitExternalConflictResolverRunArgs,
-  CommitExternalConflictResolverRunResult,
   RunConflictPredictionArgs,
-  PrepareResolverSessionArgs,
-  PrepareResolverSessionResult,
-  AttachResolverSessionArgs,
-  FinalizeResolverSessionArgs,
-  CancelResolverSessionArgs,
-  SuggestResolverTargetArgs,
-  SuggestResolverTargetResult,
   SessionDeltaSummary,
   SessionLifecycleSettings,
   SessionGitHubIssueLink,
@@ -4435,30 +4422,6 @@ declare global {
         undoProposal: (
           args: UndoConflictProposalArgs,
         ) => Promise<ConflictProposal>;
-        runExternalResolver: (
-          args: RunExternalConflictResolverArgs,
-        ) => Promise<ConflictExternalResolverRunSummary>;
-        listExternalResolverRuns: (
-          args?: ListExternalConflictResolverRunsArgs,
-        ) => Promise<ConflictExternalResolverRunSummary[]>;
-        commitExternalResolverRun: (
-          args: CommitExternalConflictResolverRunArgs,
-        ) => Promise<CommitExternalConflictResolverRunResult>;
-        prepareResolverSession: (
-          args: PrepareResolverSessionArgs,
-        ) => Promise<PrepareResolverSessionResult>;
-        attachResolverSession: (
-          args: AttachResolverSessionArgs,
-        ) => Promise<ConflictExternalResolverRunSummary>;
-        finalizeResolverSession: (
-          args: FinalizeResolverSessionArgs,
-        ) => Promise<ConflictExternalResolverRunSummary>;
-        cancelResolverSession: (
-          args: CancelResolverSessionArgs,
-        ) => Promise<ConflictExternalResolverRunSummary>;
-        suggestResolverTarget: (
-          args: SuggestResolverTargetArgs,
-        ) => Promise<SuggestResolverTargetResult>;
         onEvent: (cb: (ev: ConflictEventPayload) => void) => () => void;
       };
       github: {

@@ -34,11 +34,6 @@ export function startSourceBranch(start: LaneStart, snapshot: NewLaneDefaultsSna
   });
 }
 
-/** `origin/main` or `main`: where the new branch will begin. */
-export function startRefLabel(start: LaneStart, snapshot: NewLaneDefaultsSnapshot | null): string {
-  return laneStartRefLabel(start, startSourceBranch(start, snapshot));
-}
-
 /** The lane that has the start's branch checked out: the folder uncommitted changes are copied from. */
 export function laneHoldingBranch(branch: string, lanes: LaneSummary[]): LaneSummary | null {
   if (!branch) return null;
@@ -103,7 +98,8 @@ export function startBranchItems(args: {
 /** The auto-create row's note: "from origin/main", "from main + changes". */
 export function describeAutoCreateStart(snapshot: NewLaneDefaultsSnapshot): string | null {
   const start = snapshot.defaults.start;
-  const ref = startRefLabel(start, snapshot);
+  // `origin/main` or `main`: where the new branch will begin.
+  const ref = laneStartRefLabel(start, startSourceBranch(start, snapshot));
   if (!ref) return null;
   return start.on === "uncommitted" ? `from ${ref} + changes` : `from ${ref}`;
 }

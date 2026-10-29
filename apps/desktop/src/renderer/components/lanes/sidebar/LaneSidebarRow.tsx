@@ -13,6 +13,7 @@ import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import { LaneCatchUpButton, LaneCatchUpMenu, type LaneCatchUpTarget } from "../LaneCatchUpMenu";
+import { laneHasCurrentPr } from "../laneCatchUp";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
@@ -372,7 +373,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
                 lane={lane}
                 line={rebaseLine}
                 foreign={foreign}
-                hasPr={(prs ?? []).some((pr) => pr.laneRole !== "previous")}
+                hasPr={laneHasCurrentPr(prs)}
                 resolveCatchUpTarget={resolveCatchUpTarget}
               />
             ) : null}

@@ -8,7 +8,8 @@ import "./settingsModern.css";
  * - `ModernPage` — the page column: sections 44px apart.
  * - `ModernSection` — heading + one-line hint + optional actions over a block.
  *   It carries `data-settings-group` / `data-settings-anchor` so settings search
- *   and deep links keep working.
+ *   and deep links keep working. `size="step"` is a step inside a page whose
+ *   tab is already the heading (Lanes → New lanes): a smaller h3, tighter gap.
  * - `ModernRows` + `ModernRow` — a grouped panel of rows: title and hint on the
  *   left, the control on the right, optional extra content under the row.
  * - Choice cards use the `.ade-ap-grid3` / `.ade-ap-choice` classes directly.
@@ -25,6 +26,7 @@ export function ModernSection({
   hint,
   icon,
   tone = "accent",
+  size = "section",
   actions,
   children,
 }: {
@@ -35,20 +37,27 @@ export function ModernSection({
   /** A tinted glyph before the heading, so a long page scans by shape. */
   icon?: ReactNode;
   tone?: SettingsTone | string;
+  size?: "section" | "step";
   actions?: ReactNode;
   children: ReactNode;
 }) {
+  const step = size === "step";
   return (
-    <section data-settings-group={group} data-settings-anchor={anchor} id={anchor} className="ade-ap-section">
-      <header className="ade-ap-head">
+    <section
+      data-settings-group={group}
+      data-settings-anchor={anchor}
+      id={anchor}
+      className={step ? "ade-modern-step" : "ade-ap-section"}
+    >
+      <header className={step ? "ade-modern-step-head" : "ade-ap-head"}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, minWidth: 0 }}>
           {icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null}
           <div style={{ minWidth: 0 }}>
-            <h2>{title}</h2>
+            {step ? <h3>{title}</h3> : <h2>{title}</h2>}
             {hint ? <p>{hint}</p> : null}
           </div>
         </div>
-        {actions ? <div className="ade-ap-actions">{actions}</div> : null}
+        {actions ? <div className={step ? "ade-modern-step-actions" : "ade-ap-actions"}>{actions}</div> : null}
       </header>
       {children}
     </section>

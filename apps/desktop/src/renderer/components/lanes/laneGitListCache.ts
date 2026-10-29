@@ -1,4 +1,11 @@
-import type { BranchDiffChanges, GitCommitSummary } from "../../../shared/types";
+import type {
+  BranchDiffChanges,
+  DiffChanges,
+  GitCommitSummary,
+  GitConflictState,
+  GitStashSummary,
+  GitUpstreamSyncStatus,
+} from "../../../shared/types";
 
 /**
  * The last successful Branch diff and History read for each lane, kept across
@@ -11,6 +18,9 @@ import type { BranchDiffChanges, GitCommitSummary } from "../../../shared/types"
  * which calls `invalidateLaneGitListCache` and also drops the uncommitted changes.
  * A read that started before any invalidation is never written back, so rows
  * from before a mutation cannot return through a read that was still in flight.
+ *
+ * The Git pane's other per-lane state (uncommitted changes, stashes, sync and
+ * conflict state) is kept here too, under the same scope key.
  */
 
 type LaneGitListEntry = {
@@ -74,6 +84,81 @@ export function isSameListResult<T>(previous: T | null | undefined, next: T): bo
   return previous != null && JSON.stringify(previous) === JSON.stringify(next);
 }
 
+/* ---- The Git pane's uncommitted changes, stashes and sync state ---- */
+
+type LaneGitActionsCachedState = {
+  changes?: DiffChanges;
+  stashes: GitStashSummary[];
+  syncStatus: GitUpstreamSyncStatus | null;
+  forcePushSuggested: boolean;
+  conflictState: GitConflictState | null;
+  stuckRebase: GitConflictState | null;
+  updatedAtMs: number;
+};
+
+export const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
+const MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES = 96;
+const laneGitActionsStateByScope = new Map<string, LaneGitActionsCachedState>();
+
+export function readLaneGitActionsCachedState(
+  projectKey: string | null | undefined,
+  laneId: string | null,
+): LaneGitActionsCachedState | null {
+  const key = laneGitListScope(projectKey, laneId);
+  if (!key) return null;
+  const cached = laneGitActionsStateByScope.get(key) ?? null;
+  if (!cached) return null;
+  laneGitActionsStateByScope.delete(key);
+  laneGitActionsStateByScope.set(key, cached);
+  return cached;
+}
+
+export function patchLaneGitActionsCachedState(
+  projectKey: string | null | undefined,
+  laneId: string | null,
+  patch: Partial<Omit<LaneGitActionsCachedState, "updatedAtMs">>,
+): LaneGitActionsCachedState | null {
+  const key = laneGitListScope(projectKey, laneId);
+  if (!key) return null;
+  const previous = laneGitActionsStateByScope.get(key);
+  const next: LaneGitActionsCachedState = {
+    // A cleared entry keeps `changes` undefined: defaulting it back to the
+    // empty placeholder would read as "changes already loaded" on the next mount.
+    changes: previous ? previous.changes : EMPTY_CHANGES,
+    stashes: previous?.stashes ?? [],
+    syncStatus: previous?.syncStatus ?? null,
+    forcePushSuggested: previous?.forcePushSuggested ?? false,
+    conflictState: previous?.conflictState ?? null,
+    stuckRebase: previous?.stuckRebase ?? null,
+    ...patch,
+    updatedAtMs: Date.now(),
+  };
+  laneGitActionsStateByScope.delete(key);
+  laneGitActionsStateByScope.set(key, next);
+  while (laneGitActionsStateByScope.size > MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES) {
+    const oldest = laneGitActionsStateByScope.keys().next().value;
+    if (!oldest) break;
+    laneGitActionsStateByScope.delete(oldest);
+  }
+  return next;
+}
+
+/**
+ * Runs before every local git mutation on a lane. Drops the lane's cached
+ * Branch diff, History and uncommitted changes, so a remount before the
+ * post-mutation refresh lands shows the loading state and never the rows from
+ * before the mutation.
+ */
+export function invalidateLaneGitCaches(projectKey: string | null | undefined, laneId: string | null): void {
+  invalidateLaneGitListCache(projectKey, laneId);
+  const key = laneGitListScope(projectKey, laneId);
+  const cached = key ? laneGitActionsStateByScope.get(key) : undefined;
+  if (key && cached?.changes) {
+    laneGitActionsStateByScope.set(key, { ...cached, changes: undefined, updatedAtMs: Date.now() });
+  }
+}
+
 export function __resetLaneGitListCacheForTests(): void {
   entries.clear();
+  laneGitActionsStateByScope.clear();
 }

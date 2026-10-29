@@ -3,7 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { GitConflictState } from "./git";
-import type { PrAgentPermissionMode, RebaseNeed } from "./prs";
+import type { RebaseNeed } from "./prs";
 
 export type ConflictStatusValue =
   | "merge-ready"
@@ -157,96 +157,6 @@ export type ConflictProposal = {
 
 export type ConflictProposalProvider = "subscription";
 
-export type ExternalConflictResolverProvider = "codex" | "claude";
-
-export type ConflictResolverOriginSurface = "integration" | "rebase" | "queue" | "manual";
-
-export type ConflictResolverPermissionMode = "read_only" | "guarded_edit" | "full_edit";
-
-export type ConflictResolverPostActionState = {
-  autoCommit: boolean;
-  autoPush: boolean;
-  commitMessage: string | null;
-  committedAt: string | null;
-  commitSha: string | null;
-  pushAt: string | null;
-  pushSucceeded: boolean | null;
-  error: string | null;
-};
-
-export type ConflictExternalResolverRunStatus = "pending" | "running" | "completed" | "failed" | "blocked" | "canceled";
-
-export type ConflictExternalResolverContextGap = {
-  code: string;
-  message: string;
-};
-
-export type ConflictExternalResolverRunSummary = {
-  runId: string;
-  provider: ExternalConflictResolverProvider;
-  status: ConflictExternalResolverRunStatus;
-  startedAt: string;
-  completedAt: string | null;
-  targetLaneId: string;
-  sourceLaneIds: string[];
-  cwdLaneId: string;
-  integrationLaneId: string | null;
-  summary: string | null;
-  patchPath: string | null;
-  logPath: string | null;
-  changedFiles: string[];
-  insufficientContext: boolean;
-  contextGaps: ConflictExternalResolverContextGap[];
-  warnings: string[];
-  scenario: ResolverSessionScenario;
-  model: string | null;
-  reasoningEffort: string | null;
-  permissionMode: PrAgentPermissionMode | null;
-  command: string[];
-  originSurface: ConflictResolverOriginSurface;
-  originRunId: string | null;
-  originLabel: string | null;
-  ptyId: string | null;
-  sessionId: string | null;
-  committedAt?: string | null;
-  commitSha?: string | null;
-  commitMessage?: string | null;
-  postActions?: ConflictResolverPostActionState | null;
-  error: string | null;
-};
-
-export type RunExternalConflictResolverArgs = {
-  provider: ExternalConflictResolverProvider;
-  targetLaneId: string;
-  sourceLaneIds: string[];
-  cwdLaneId?: string;
-  integrationLaneName?: string;
-  model?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: PrAgentPermissionMode | null;
-  originSurface?: ConflictResolverOriginSurface;
-  originRunId?: string | null;
-  originLabel?: string | null;
-};
-
-export type ListExternalConflictResolverRunsArgs = {
-  laneId?: string;
-  limit?: number;
-};
-
-export type CommitExternalConflictResolverRunArgs = {
-  runId: string;
-  message?: string;
-};
-
-export type CommitExternalConflictResolverRunResult = {
-  runId: string;
-  laneId: string;
-  commitSha: string;
-  message: string;
-  committedPaths: string[];
-};
-
 export type ConflictProposalPreviewFile = {
   path: string;
   includeReason: "conflicted" | "overlap";
@@ -381,67 +291,6 @@ export type ApplyConflictProposalArgs = {
 export type UndoConflictProposalArgs = {
   laneId: string;
   proposalId: string;
-};
-
-// --------------------------------
-// Conflicts Tab Redesign (Phase 8+)
-// --------------------------------
-
-export type ResolverSessionScenario = "single-merge" | "sequential-merge" | "integration-merge";
-
-export type PrepareResolverSessionArgs = {
-  provider: ExternalConflictResolverProvider;
-  targetLaneId: string;
-  sourceLaneIds: string[];
-  cwdLaneId?: string;
-  integrationLaneName?: string;
-  scenario?: ResolverSessionScenario;
-  model?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: PrAgentPermissionMode | null;
-  originSurface?: ConflictResolverOriginSurface;
-  originRunId?: string | null;
-  originLabel?: string | null;
-  additionalInstructions?: string | null;
-};
-
-export type PrepareResolverSessionResult = {
-  runId: string;
-  promptFilePath: string;
-  cwdWorktreePath: string;
-  cwdLaneId: string;
-  integrationLaneId: string | null;
-  warnings: string[];
-  contextGaps: ConflictExternalResolverContextGap[];
-  status: "ready" | "blocked";
-};
-
-export type FinalizeResolverSessionArgs = {
-  runId: string;
-  exitCode: number;
-  postActions?: Partial<ConflictResolverPostActionState> | null;
-};
-
-export type AttachResolverSessionArgs = {
-  runId: string;
-  ptyId?: string | null;
-  sessionId: string;
-  command?: string[];
-};
-
-export type CancelResolverSessionArgs = {
-  runId: string;
-  reason?: string | null;
-};
-
-export type SuggestResolverTargetArgs = {
-  sourceLaneId: string;
-  targetLaneId: string;
-};
-
-export type SuggestResolverTargetResult = {
-  suggestion: "source" | "target";
-  reason: string;
 };
 
 // --------------------------------

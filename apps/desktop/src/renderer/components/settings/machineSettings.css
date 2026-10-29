@@ -112,12 +112,6 @@
 .ade-nl-meta-end { display: inline-flex; align-items: center; gap: 8px; flex: none; }
 .ade-nl-scope-repo { color: var(--kit-text-3); }
 
-.ade-nl-step { display: flex; flex-direction: column; gap: 10px; min-width: 0; scroll-margin-top: 16px; }
-.ade-nl-step-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
-.ade-nl-step-head h3 { margin: 0; font-size: 13px; font-weight: 600; color: var(--color-fg); }
-.ade-nl-step-head p { margin: 2px 0 0; font-size: 12px; line-height: 1.5; color: var(--kit-text-3); }
-.ade-nl-step-actions { display: flex; align-items: center; gap: 8px; flex: none; }
-
 .ade-nl-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-nl-loading { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }

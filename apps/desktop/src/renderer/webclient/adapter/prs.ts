@@ -86,6 +86,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     generatedAt: new Date().toISOString(),
     prs: [],
     stacks: [],
+    workflowCards: [],
     capabilities: {},
     createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
     live: false,

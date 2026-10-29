@@ -293,7 +293,6 @@ import type {
   BuiltInBrowserTabTargetArgs,
   AdeActionRegistryEntry,
   ConflictProposal,
-  ConflictExternalResolverRunSummary,
   ConflictProposalPreview,
   ConflictOverlap,
   ConflictStatus,
@@ -643,14 +642,8 @@ import type {
   RiskMatrixEntry,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
-  RunExternalConflictResolverArgs,
-  ListExternalConflictResolverRunsArgs,
-  CommitExternalConflictResolverRunArgs,
-  CommitExternalConflictResolverRunResult,
-  AttachResolverSessionArgs,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
-  CancelResolverSessionArgs,
   RunTestSuiteArgs,
   SessionDeltaSummary,
   SessionLifecycleSettings,
@@ -11694,41 +11687,6 @@ export function registerIpc({
     ctx.jobEngine.runConflictPredictionNow({ laneId: arg.laneId });
     return updated;
   });
-
-  ipcMain.handle(IPC.conflictsRunExternalResolver, async (_event, arg: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const ctx = ensureConflictContext();
-    return await ctx.conflictService.runExternalResolver(arg);
-  });
-
-  ipcMain.handle(IPC.conflictsListExternalResolverRuns, async (_event, arg: ListExternalConflictResolverRunsArgs = {}): Promise<ConflictExternalResolverRunSummary[]> => {
-    const ctx = ensureConflictContext();
-    return ctx.conflictService.listExternalResolverRuns(arg);
-  });
-
-  ipcMain.handle(
-    IPC.conflictsCommitExternalResolverRun,
-    async (_event, arg: CommitExternalConflictResolverRunArgs): Promise<CommitExternalConflictResolverRunResult> => {
-      const ctx = getCtx();
-      requireAppContextServices(ctx, ["conflictService", "jobEngine"] as const);
-      const committed = await ctx.conflictService.commitExternalResolverRun(arg);
-      ctx.jobEngine.runConflictPredictionNow({ laneId: committed.laneId });
-      return committed;
-    }
-  );
-
-  ipcMain.handle(IPC.conflictsPrepareResolverSession, async (_event, arg) => ensureConflictContext().conflictService.prepareResolverSession(arg));
-
-  ipcMain.handle(IPC.conflictsAttachResolverSession, async (_event, arg: AttachResolverSessionArgs) =>
-    ensureConflictContext().conflictService.attachResolverSession(arg)
-  );
-
-  ipcMain.handle(IPC.conflictsFinalizeResolverSession, async (_event, arg) => ensureConflictContext().conflictService.finalizeResolverSession(arg));
-
-  ipcMain.handle(IPC.conflictsCancelResolverSession, async (_event, arg: CancelResolverSessionArgs) =>
-    ensureConflictContext().conflictService.cancelResolverSession(arg)
-  );
-
-  ipcMain.handle(IPC.conflictsSuggestResolverTarget, async (_event, arg) => ensureConflictContext().conflictService.suggestResolverTarget(arg));
 
   const broadcastGithubStatus = (status: GitHubStatus): void => {
     for (const win of BrowserWindow.getAllWindows()) {

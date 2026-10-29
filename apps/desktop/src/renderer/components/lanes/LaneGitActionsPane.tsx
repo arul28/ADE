@@ -1,7 +1,6 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash, X } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, CheckCircle, DotsThree, Folder, GitBranch, GitCommit, Minus, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -13,6 +12,7 @@ import { stripElectronErrorWrapper } from "../../../shared/codedError";
 import { plainLaneStartBranch } from "../../../shared/laneStart";
 import { laneCompareBase, laneRebaseLine, type LaneRebaseLine } from "./laneRebaseNeeds";
 import { LaneCatchUpMenu } from "./LaneCatchUpMenu";
+import { laneCatchUpBusyLabel } from "./laneCatchUp";
 import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
@@ -35,18 +35,31 @@ import {
   WorkToolChromeButton,
 } from "../terminals/workToolChrome";
 import { COLORS, MONO_FONT, SANS_FONT } from "./laneDesignTokens";
+import {
+  buildChangeTree,
+  buildChangeTreeStatsByPath,
+  ChangeList,
+  flattenChangeTreeRows,
+  MAX_RENDERED_CHANGE_ROWS_PER_SECTION,
+  type ChangeListRow,
+  type ChangeSection,
+} from "./laneGitChangeList";
 import { CommitTimeline } from "./CommitTimeline";
 import "./laneGitPane.css";
 import {
   __resetLaneGitListCacheForTests,
-  invalidateLaneGitListCache,
+  EMPTY_CHANGES,
+  invalidateLaneGitCaches,
   isSameListResult,
   laneGitListEpoch,
   laneGitListScope,
+  patchLaneGitActionsCachedState,
+  readLaneGitActionsCachedState,
   readLaneGitListCache,
   writeLaneGitListCache,
 } from "./laneGitListCache";
 import { LaneDiffPane } from "./LaneDiffPane";
+import { LaneGitStashSection } from "./LaneGitStashSection";
 import { PushDivergenceDialog } from "./PushDivergenceDialog";
 import {
   detectPushDivergence,
@@ -77,14 +90,7 @@ type NextActionHint = {
 type ResponsiveMode = "narrow" | "medium" | "wide";
 
 /** A push held back by the divergence guard, replayed verbatim on confirm. */
-type PendingGuardedPush = { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> };
-
-const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
-/** Files list rows are virtualized; the estimate stands in until each row is measured. */
-const CHANGE_LIST_ROW_ESTIMATE_PX = 28;
-/** The gaps the flex column put between rows and between the Staged and Unstaged sections. */
-const CHANGE_LIST_ROW_GAP_PX = 2;
-const CHANGE_LIST_SECTION_GAP_PX = 8;
+type PendingGuardedPush = { forceWithLease: boolean; warning: NonNullable<DivergenceWarning> };
 
 export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null): string {
   const raw = err instanceof Error ? err.message : String(err ?? "");
@@ -93,83 +99,6 @@ export function formatLaneGitError(err: unknown, pin?: OpenProjectBinding | null
     return "That machine disconnected. Stay on this chat or switch back to reconnect.";
   }
   return message || "Git action failed.";
-}
-
-type LaneGitActionsCachedState = {
-  changes?: DiffChanges;
-  stashes: GitStashSummary[];
-  syncStatus: GitUpstreamSyncStatus | null;
-  forcePushSuggested: boolean;
-  conflictState: GitConflictState | null;
-  stuckRebase: GitConflictState | null;
-  updatedAtMs: number;
-};
-
-const EMPTY_CHANGES: DiffChanges = { unstaged: [], staged: [] };
-const MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES = 96;
-const laneGitActionsStateByScope = new Map<string, LaneGitActionsCachedState>();
-
-function laneGitActionsStateKey(projectKey: string | null | undefined, laneId: string | null): string | null {
-  if (!laneId) return null;
-  return `${projectKey?.trim() || "__project__"}::${laneId}`;
-}
-
-function readLaneGitActionsCachedState(
-  projectKey: string | null | undefined,
-  laneId: string | null,
-): LaneGitActionsCachedState | null {
-  const key = laneGitActionsStateKey(projectKey, laneId);
-  if (!key) return null;
-  const cached = laneGitActionsStateByScope.get(key) ?? null;
-  if (!cached) return null;
-  laneGitActionsStateByScope.delete(key);
-  laneGitActionsStateByScope.set(key, cached);
-  return cached;
-}
-
-function patchLaneGitActionsCachedState(
-  projectKey: string | null | undefined,
-  laneId: string | null,
-  patch: Partial<Omit<LaneGitActionsCachedState, "updatedAtMs">>,
-): LaneGitActionsCachedState | null {
-  const key = laneGitActionsStateKey(projectKey, laneId);
-  if (!key) return null;
-  const previous = laneGitActionsStateByScope.get(key);
-  const next: LaneGitActionsCachedState = {
-    // A cleared entry keeps `changes` undefined: defaulting it back to the
-    // empty placeholder would read as "changes already loaded" on the next mount.
-    changes: previous ? previous.changes : EMPTY_CHANGES,
-    stashes: previous?.stashes ?? [],
-    syncStatus: previous?.syncStatus ?? null,
-    forcePushSuggested: previous?.forcePushSuggested ?? false,
-    conflictState: previous?.conflictState ?? null,
-    stuckRebase: previous?.stuckRebase ?? null,
-    ...patch,
-    updatedAtMs: Date.now(),
-  };
-  laneGitActionsStateByScope.delete(key);
-  laneGitActionsStateByScope.set(key, next);
-  while (laneGitActionsStateByScope.size > MAX_LANE_GIT_ACTIONS_CACHE_ENTRIES) {
-    const oldest = laneGitActionsStateByScope.keys().next().value;
-    if (!oldest) break;
-    laneGitActionsStateByScope.delete(oldest);
-  }
-  return next;
-}
-
-/**
- * Runs before every local git mutation on a lane. Drops the lane's cached
- * Branch diff, History and uncommitted changes, so a remount before the
- * post-mutation refresh lands shows the loading state and never the rows from
- * before the mutation.
- */
-function invalidateLaneGitCaches(projectKey: string | null | undefined, laneId: string | null): void {
-  invalidateLaneGitListCache(projectKey, laneId);
-  const key = laneGitActionsStateKey(projectKey, laneId);
-  const cached = key ? laneGitActionsStateByScope.get(key) : undefined;
-  if (key && cached?.changes) {
-    laneGitActionsStateByScope.set(key, { ...cached, changes: undefined, updatedAtMs: Date.now() });
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -204,15 +133,7 @@ import {
 import { toLayoutPx } from "../../lib/webZoom";
 import { extractError } from "../../lib/format";
 
-export {
-  beginLaneGitActionRuntime,
-  patchLaneGitActionRuntimeStateIfCurrent,
-  scheduleLaneGitActionRuntimeClear,
-  useLaneGitActionRuntimeState,
-};
-
 export function __resetLaneGitActionRuntimeForTests(): void {
-  laneGitActionsStateByScope.clear();
   __resetLaneGitListCacheForTests();
   clearLaneGitActionRuntimeState();
 }
@@ -226,21 +147,6 @@ function confirmForcePushWithLease(): Promise<boolean> {
   });
 }
 
-function formatRelativeTime(ts: string | null): string {
-  if (!ts) return "unknown time";
-  const date = new Date(ts);
-  if (Number.isNaN(date.getTime())) return ts;
-  const diffMs = Date.now() - date.getTime();
-  const minutes = Math.floor(diffMs / 60_000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  if (days < 30) return `${days}d ago`;
-  return date.toLocaleDateString();
-}
-
 function getResponsiveMode(width: number): ResponsiveMode {
   if (width < 640) return "narrow";
   if (width < 900) return "medium";
@@ -252,108 +158,6 @@ function getFileKindColor(kind: FileChange["kind"]): string {
   if (kind === "added") return COLORS.success;
   if (kind === "deleted") return COLORS.danger;
   return COLORS.warning;
-}
-
-type ChangeTreeNode = {
-  name: string;
-  path: string;
-  dirs: Map<string, ChangeTreeNode>;
-  files: FileChange[];
-};
-
-type ChangeTreeStats = {
-  files: number;
-  additions: number;
-  deletions: number;
-};
-
-function createChangeTreeNode(name: string, path: string): ChangeTreeNode {
-  return { name, path, dirs: new Map(), files: [] };
-}
-
-function buildChangeTree(files: FileChange[]): ChangeTreeNode {
-  const root = createChangeTreeNode("", "");
-  for (const file of files) {
-    const parts = file.path.split("/").filter(Boolean);
-    let node = root;
-    for (const part of parts.slice(0, -1)) {
-      const nextPath = node.path ? `${node.path}/${part}` : part;
-      let next = node.dirs.get(part);
-      if (!next) {
-        next = createChangeTreeNode(part, nextPath);
-        node.dirs.set(part, next);
-      }
-      node = next;
-    }
-    node.files.push(file);
-  }
-  return root;
-}
-
-function getChangeTreeStats(node: ChangeTreeNode, statsByPath?: Map<string, ChangeTreeStats>): ChangeTreeStats {
-  let files = node.files.length;
-  let additions = node.files.reduce((sum, file) => sum + (file.additions ?? 0), 0);
-  let deletions = node.files.reduce((sum, file) => sum + (file.deletions ?? 0), 0);
-  for (const child of node.dirs.values()) {
-    const stats = getChangeTreeStats(child, statsByPath);
-    files += stats.files;
-    additions += stats.additions;
-    deletions += stats.deletions;
-  }
-  const stats = { files, additions, deletions };
-  if (node.path) statsByPath?.set(node.path, stats);
-  return stats;
-}
-
-function buildChangeTreeStatsByPath(files: FileChange[]): Map<string, ChangeTreeStats> {
-  const statsByPath = new Map<string, ChangeTreeStats>();
-  getChangeTreeStats(buildChangeTree(files), statsByPath);
-  return statsByPath;
-}
-
-/**
- * One row of the Files list in display order. The tree is folded into rows so
- * the list can be virtualized: a collapsed folder's children never enter the
- * list, and only the rows in view mount.
- */
-type ChangeListRow =
-  | { key: string; kind: "section"; label: string; count: number; gapAbove: boolean }
-  | { key: string; kind: "folder"; mode: LaneDiffMode; name: string; depth: number; collapsed: boolean; stats: ChangeTreeStats }
-  | { key: string; kind: "file"; mode: LaneDiffMode; file: FileChange; depth: number }
-  | { key: string; kind: "notice"; section: ChangeSection; total: number; noun: string };
-
-function flattenChangeTreeRows(
-  node: ChangeTreeNode,
-  mode: LaneDiffMode,
-  depth: number,
-  collapsedFolders: ReadonlySet<string>,
-  statsByPath: Map<string, ChangeTreeStats>,
-  rows: ChangeListRow[],
-): void {
-  const dirs = [...node.dirs.values()].sort((a, b) => a.name.localeCompare(b.name));
-  const files = [...node.files].sort((a, b) => a.path.localeCompare(b.path));
-
-  for (const dir of dirs) {
-    const key = `${mode}:${dir.path}`;
-    const collapsed = collapsedFolders.has(key);
-    const stats = statsByPath.get(dir.path) ?? getChangeTreeStats(dir);
-    rows.push({ key, kind: "folder", mode, name: dir.name, depth, collapsed, stats });
-    if (!collapsed) flattenChangeTreeRows(dir, mode, depth + 1, collapsedFolders, statsByPath, rows);
-  }
-
-  for (const file of files) {
-    rows.push({ key: `${mode}:wrap:${file.path}`, kind: "file", mode, file, depth });
-  }
-}
-
-/** Index of the next row after `from` that has a control Tab can stop on, or -1 at the end of the list. */
-function nextChangeListRowWithControls(rows: ChangeListRow[], from: number, step: 1 | -1): number {
-  for (let index = from + step; index >= 0 && index < rows.length; index += step) {
-    const row = rows[index];
-    // Section labels and branch file rows are plain text; folders, notices and uncommitted file rows hold buttons.
-    if (row && (row.kind === "folder" || row.kind === "notice" || (row.kind === "file" && row.mode !== "branch"))) return index;
-  }
-  return -1;
 }
 
 /** One row of the "More git actions" menu: icon, sentence-case label, optional badge. */
@@ -414,8 +218,6 @@ function ActionButton({
   return smartTooltip ? <SmartTooltip content={smartTooltip}>{wrapped}</SmartTooltip> : wrapped;
 }
 
-type ChangeSection = "staged" | "unstaged" | "branch";
-
 /** "Showing first N of M files. Show all" under a capped change list. */
 function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; noun: string; onShowAll: () => void }) {
   return (
@@ -424,89 +226,6 @@ function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; nou
       <button type="button" className="kit-btn kit-btn-ghost" data-size="xs" onClick={onShowAll}>
         Show all
       </button>
-    </div>
-  );
-}
-
-/**
- * One section's file list. It is as tall as its rows up to the section's cap,
- * then scrolls on its own, so Uncommitted and Committed never push each other
- * or History off the pane. Rows are virtualized: a lane far from its base can
- * list thousands of files.
- */
-function ChangeList({
-  rows,
-  renderRow,
-  testId,
-}: {
-  rows: ChangeListRow[];
-  renderRow: (row: ChangeListRow) => React.ReactNode;
-  testId: string;
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null);
-  // The row that holds keyboard focus, as state: moving focus re-renders the window so the rows Tab can reach next are mounted.
-  const [focusedRowKey, setFocusedRowKey] = useState<string | null>(null);
-  const focusedIndex = focusedRowKey == null ? -1 : rows.findIndex((row) => row.key === focusedRowKey);
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => scrollRef.current,
-    getItemKey: (index) => rows[index]?.key ?? index,
-    estimateSize: () => CHANGE_LIST_ROW_ESTIMATE_PX,
-    overscan: 4,
-    gap: CHANGE_LIST_ROW_GAP_PX,
-    // Tab moves focus in the browser's own order and does not wait for a scroll to mount the next row, so the rows
-    // it can land on are mounted here: the focused row (it keeps focus when it scrolls out of view) and the nearest
-    // row with controls on each side. Rows in between hold no controls, so Tab never needs them.
-    rangeExtractor: (range) => {
-      const indexes = defaultRangeExtractor(range);
-      if (focusedIndex < 0) return indexes;
-      const reachable = [
-        focusedIndex,
-        nextChangeListRowWithControls(rows, focusedIndex, 1),
-        nextChangeListRowWithControls(rows, focusedIndex, -1),
-      ].filter((index) => index >= 0 && !indexes.includes(index));
-      return reachable.length === 0 ? indexes : [...indexes, ...reachable].sort((a, b) => a - b);
-    },
-  });
-
-  return (
-    <div
-      ref={scrollRef}
-      className="ade-git-list"
-      data-testid={testId}
-      // Focus landing in a row mounts its neighbours before the next Tab. Focus leaving the list releases them.
-      onFocus={(event) => {
-        const index = Number((event.target as HTMLElement).closest<HTMLElement>("[data-index]")?.dataset.index);
-        setFocusedRowKey(rows[index]?.key ?? null);
-      }}
-      onBlur={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-        setFocusedRowKey(null);
-      }}
-    >
-      <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
-        {virtualizer.getVirtualItems().map((virtualRow) => {
-          const row = rows[virtualRow.index];
-          if (!row) return null;
-          return (
-            <div
-              key={row.key}
-              data-index={virtualRow.index}
-              ref={virtualizer.measureElement}
-              style={{
-                position: "absolute",
-                top: 0,
-                left: 0,
-                width: "100%",
-                transform: `translateY(${virtualRow.start}px)`,
-                paddingTop: row.kind === "section" && row.gapAbove ? CHANGE_LIST_SECTION_GAP_PX - CHANGE_LIST_ROW_GAP_PX : undefined,
-              }}
-            >
-              {renderRow(row)}
-            </div>
-          );
-        })}
-      </div>
     </div>
   );
 }
@@ -658,7 +377,7 @@ export function LaneGitActionsPane({
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
   const [pendingPush, setPendingPush] = useState<PendingGuardedPush | null>(null);
-  const laneGitActionScopeKey = laneGitActionsStateKey(projectStateKey, laneId);
+  const laneGitActionScopeKey = laneGitListScope(projectStateKey, laneId);
   const laneGitActionRuntime = useLaneGitActionRuntimeState(laneGitActionScopeKey);
   const busyAction = laneGitActionRuntime.busyAction;
   const notice = laneGitActionRuntime.notice;
@@ -947,7 +666,7 @@ export function LaneGitActionsPane({
   const runAction = async (actionName: string, fn: () => Promise<void>) => {
     const actionLaneId = laneId;
     if (!actionLaneId) return;
-    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
+    const actionScopeKey = laneGitListScope(projectStateKey, actionLaneId);
     const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
       busyAction: actionName,
       notice: null,
@@ -960,8 +679,7 @@ export function LaneGitActionsPane({
         actionName === "pull" ||
         actionName === "fetch" ||
         actionName === "push" ||
-        actionName === "force push" ||
-        actionName === "rebase";
+        actionName === "force push";
       await refreshAll({ fetchRemote: isRemoteAction }, actionLaneId);
       if (isRemoteAction && isViewingLane(actionLaneId)) {
         setForcePushSuggested(false);
@@ -1301,7 +1019,7 @@ export function LaneGitActionsPane({
     if (name == null) return;
 
     const actionLaneId = laneId;
-    const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
+    const actionScopeKey = laneGitListScope(projectStateKey, actionLaneId);
     const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
       busyAction: "new lane with changes",
       notice: null,
@@ -1434,7 +1152,7 @@ export function LaneGitActionsPane({
     if (!laneId) return;
     const warning = resolvePushDivergence();
     if (warning) {
-      setPendingPush({ kind: "push", forceWithLease, warning });
+      setPendingPush({ forceWithLease, warning });
       return;
     }
     executePush(forceWithLease);
@@ -1804,179 +1522,21 @@ export function LaneGitActionsPane({
 
   /* Saved stashes, opened from the chrome row's "More git actions". */
   const stashSection = showStashes ? (
-    <section className="ade-git-section" data-section="stashes" aria-label="Branch stashes">
-      <header className="ade-git-section-head">
-        <span className={WORK_TOOL_SECTION_LABEL_TEXT}>Branch stashes</span>
-        <span className="ade-git-count">{stashes.length === 0 ? "None saved" : `${stashes.length} saved`}</span>
-        <div className="ade-git-section-aside">
-          {stashes.length > 0 ? (
-            <SmartTooltip content={{
-              label: "Clear Branch Stashes",
-              description: "Permanently delete this branch's visible stash entries. You'll be asked to confirm by typing the count.",
-              gitCommand: "git stash drop <branch stash refs>",
-              effect: `Delete ${stashes.length} branch stash${stashes.length === 1 ? "" : "es"}`,
-              warning: "This cannot be undone",
-            }}>
-              <button
-                type="button"
-                className="kit-btn kit-btn-ghost"
-                data-size="sm"
-                data-tone="crit"
-                disabled={!laneId || busyAction != null}
-                onClick={() => {
-                  if (!laneId) return;
-                  void runAction("stash clear", async () => {
-                    const confirmation = await requestTextInput({
-                      title: "Clear branch stashes?",
-                      message: `This will permanently delete ${stashes.length} stash${stashes.length === 1 ? "" : "es"} saved for this branch. Type "${stashes.length}" to confirm.`,
-                      placeholder: `Type ${stashes.length} to confirm`,
-                      confirmLabel: "Delete all",
-                      validate: (v) => v.trim() === String(stashes.length) ? null : "Type the number to confirm",
-                    });
-                    if (confirmation == null) throw new Error("__ade_cancelled__");
-                    invalidateLaneGitCaches(projectStateKey, laneId);
-                    await window.ade.git.stashClear({ laneId }, pin);
-                    await refreshGitMeta(laneId);
-                  });
-                }}
-              >
-                Clear stashes
-              </button>
-            </SmartTooltip>
-          ) : null}
-          <SmartTooltip content={{
-            label: "Save Changes",
-            description: "Save this branch's current staged and unstaged changes to a stash without committing. You can restore them later.",
-            gitCommand: hasUntrackedChanges ? "git stash push -u" : "git stash push",
-            effect: hasUncommittedChanges
-              ? `Stash ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"}${hasUntrackedChanges ? ", including untracked files" : ""}`
-              : "No changes to save",
-          }}>
-            <button
-              type="button"
-              className="kit-btn kit-btn-ghost"
-              data-size="sm"
-              disabled={!laneId || busyAction != null || !hasUncommittedChanges}
-              onClick={() => {
-                if (!laneId) return;
-                void runAction("stash push", async () => {
-                  const msg = await requestTextInput({
-                    title: "Stash message",
-                    placeholder: "Optional note",
-                    confirmLabel: "Save stash",
-                  });
-                  if (msg == null) throw new Error("__ade_cancelled__");
-                  invalidateLaneGitCaches(projectStateKey, laneId);
-                  await window.ade.git.stashPush({ laneId, message: msg || undefined, includeUntracked: hasUntrackedChanges }, pin);
-                });
-              }}
-            >
-              Save changes
-            </button>
-          </SmartTooltip>
-          <WorkToolChromeButton label="Hide stashes" onClick={() => setShowStashes(false)} testId="git-pane-stashes-close">
-            <X size={14} />
-          </WorkToolChromeButton>
-        </div>
-      </header>
-      {stashes.length > 0 ? (
-        <div className="ade-git-stash-list">
-          {stashes.slice(0, maxVisibleStashes).map((stash) => (
-            <div key={stash.ref} className="ade-git-stash-row">
-              <div className="ade-git-stash-text">
-                <div className="ade-git-stash-subject truncate">{stash.subject || stash.ref}</div>
-                <div className="ade-git-stash-meta kit-num truncate">
-                  {stash.ref} · {formatRelativeTime(stash.createdAt)}
-                </div>
-              </div>
-              <SmartTooltip content={{
-                label: "Restore",
-                description: "Apply this stash's changes to your working directory and remove the stash entry. One-time use.",
-                gitCommand: `git stash pop ${stash.ref}`,
-                effect: `Restore "${stash.subject || stash.ref}" and remove it from stashes`,
-              }}>
-                <button
-                  type="button"
-                  className="kit-btn kit-btn-ghost"
-                  data-size="sm"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("stash pop", async () => {
-                      invalidateLaneGitCaches(projectStateKey, laneId);
-                      await window.ade.git.stashPop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                      await refreshGitMeta(laneId);
-                    });
-                  }}
-                >
-                  Restore
-                </button>
-              </SmartTooltip>
-              <SmartTooltip content={{
-                label: "Copy to Worktree",
-                description: "Apply this stash's changes to your working directory but keep the stash entry. Can be reused multiple times.",
-                gitCommand: `git stash apply ${stash.ref}`,
-                effect: `Apply "${stash.subject || stash.ref}" (stash stays saved)`,
-              }}>
-                <button
-                  type="button"
-                  className="kit-btn kit-btn-ghost"
-                  data-size="sm"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("stash apply", async () => {
-                      invalidateLaneGitCaches(projectStateKey, laneId);
-                      await window.ade.git.stashApply({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                    });
-                  }}
-                >
-                  Copy to worktree
-                </button>
-              </SmartTooltip>
-              <SmartTooltip content={{
-                label: "Delete Stash",
-                description: "Permanently delete this stash entry without restoring any changes.",
-                gitCommand: `git stash drop ${stash.ref}`,
-                effect: `Delete "${stash.subject || stash.ref}"`,
-                warning: "Changes in this stash will be lost permanently",
-              }}>
-                <button
-                  type="button"
-                  className="kit-btn kit-btn-ghost"
-                  data-size="sm"
-                  data-tone="crit"
-                  disabled={!laneId || busyAction != null}
-                  onClick={() => {
-                    if (!laneId) return;
-                    void runAction("stash drop", async () => {
-                      const confirmation = await requestTextInput({
-                        title: "Delete stash?",
-                        message: `This will permanently delete "${stash.subject || stash.ref}". Type "delete" to confirm.`,
-                        placeholder: "Type delete to confirm",
-                        confirmLabel: "Delete stash",
-                        validate: (v) => v.trim().toLowerCase() === "delete" ? null : "Type delete to confirm",
-                      });
-                      if (confirmation == null) throw new Error("__ade_cancelled__");
-                      invalidateLaneGitCaches(projectStateKey, laneId);
-                      await window.ade.git.stashDrop({ laneId, stashRef: stash.ref, stashOid: stash.oid }, pin);
-                      await refreshGitMeta(laneId);
-                    });
-                  }}
-                >
-                  Delete
-                </button>
-              </SmartTooltip>
-            </div>
-          ))}
-          {stashes.length > maxVisibleStashes ? (
-            <div className="ade-git-stash-more">
-              +{stashes.length - maxVisibleStashes} more stash entr{stashes.length - maxVisibleStashes === 1 ? "y" : "ies"}.
-            </div>
-          ) : null}
-        </div>
-      ) : null}
-    </section>
+    <LaneGitStashSection
+      laneId={laneId}
+      pin={pin}
+      projectKey={projectStateKey}
+      stashes={stashes}
+      maxVisible={maxVisibleStashes}
+      busy={busyAction != null}
+      changedFileCount={changedFileCount}
+      hasUncommittedChanges={hasUncommittedChanges}
+      hasUntrackedChanges={hasUntrackedChanges}
+      runAction={runAction}
+      requestTextInput={requestTextInput}
+      refreshGitMeta={refreshGitMeta}
+      onHide={() => setShowStashes(false)}
+    />
   ) : null;
 
   /* Work not committed yet: staged and unstaged files, then the commit box. */
@@ -2333,7 +1893,7 @@ export function LaneGitActionsPane({
             }}
             trigger={(state) => (
               <WorkToolChromeButton
-                label={state.busy ? (state.busy === "rebase" ? "Rebasing…" : "Merging…") : `Catch up with ${catchUpLine.baseBranch}`}
+                label={laneCatchUpBusyLabel(state.busy) ?? `Catch up with ${catchUpLine.baseBranch}`}
                 onClick={state.toggle}
                 active={state.open}
                 disabled={busyAction != null || state.busy != null}

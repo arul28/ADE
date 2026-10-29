@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Check,
   CloudArrowDown,
@@ -11,7 +11,7 @@ import {
   type Icon,
 } from "@phosphor-icons/react";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
-import { SavedFlash, useSavedFlash } from "./primitives";
+import { ModernSection, SavedFlash, useSavedFlash } from "./primitives";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { getNewLaneDefaultsCached, saveNewLaneDefaults, useNewLaneDefaultsState } from "../../lib/newLaneDefaultsCache";
 import { Banner } from "../ui/notice";
@@ -50,38 +50,6 @@ const ON_HINT: Record<LaneStartOn, string> = {
 };
 
 /**
- * One step of the New lanes flow: a small heading, an optional line under it,
- * and the step's choices. The tab is the page's heading, so steps carry no
- * card header of their own.
- */
-export function NewLaneStep({
-  anchor,
-  title,
-  hint,
-  actions,
-  children,
-}: {
-  anchor?: string;
-  title: string;
-  hint?: ReactNode;
-  actions?: ReactNode;
-  children: ReactNode;
-}) {
-  return (
-    <section className="ade-nl-step" id={anchor} data-settings-anchor={anchor} data-settings-group="New lanes">
-      <header className="ade-nl-step-head">
-        <div className="min-w-0">
-          <h3>{title}</h3>
-          {hint ? <p>{hint}</p> : null}
-        </div>
-        {actions ? <div className="ade-nl-step-actions">{actions}</div> : null}
-      </header>
-      {children}
-    </section>
-  );
-}
-
-/**
  * Settings → Lanes → New lanes: where every new lane starts, and on which
  * copy of that branch.
  *
@@ -104,7 +72,7 @@ export function NewLaneSettingsSection() {
   // its primary lane, whose branch the switcher changes.
   const [lanes, setLanes] = useState<LaneSummary[]>([]);
   const loadLanes = useCallback(() => {
-    void (pin ? window.ade.lanes.list({ includeStatus: false }, pin) : window.ade.lanes.list({ includeStatus: false }))
+    void window.ade.lanes.list({ includeStatus: false }, pin)
       .then((next) => setLanes(Array.isArray(next) ? next : []))
       .catch((error) => {
         console.warn("new_lane_settings.lanes_load_failed", error);
@@ -187,7 +155,7 @@ export function NewLaneSettingsSection() {
         </span>
       </div>
 
-      <NewLaneStep anchor="new-lane-start" title="Start from">
+      <ModernSection size="step" group="New lanes" anchor="new-lane-start" title="Start from">
         <div role="radiogroup" aria-label="Start from" className="ade-nl-grid2">
           {LANE_START_DEFAULT_FROM_VALUES.map((from) => {
             const active = start.from === from;
@@ -248,9 +216,9 @@ export function NewLaneSettingsSection() {
             );
           })}
         </div>
-      </NewLaneStep>
+      </ModernSection>
 
-      <NewLaneStep title="On">
+      <ModernSection size="step" group="New lanes" title="On">
         <div role="radiogroup" aria-label="On" className="ade-ap-grid3">
           {LANE_START_ON_VALUES.map((on) => {
             const active = start.on === on;
@@ -280,7 +248,7 @@ export function NewLaneSettingsSection() {
           })}
         </div>
         <StartSummary start={start} sourceBranch={sourceBranch} holder={holder} />
-      </NewLaneStep>
+      </ModernSection>
     </>
   );
 }
