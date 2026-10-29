@@ -36,8 +36,11 @@ type CardOutcome = { tone: "success" | "warning" | "danger"; message: string };
 export function ThisComputerStatus({
   accountSignedIn,
   onAccountMachinesChanged,
+  hideHealthy = false,
 }: {
   accountSignedIn: boolean;
+  /** Say nothing when this computer is fine; the card's Online pill already does. */
+  hideHealthy?: boolean;
   /** The popover's roster comes from the directory; re-read it after success. */
   onAccountMachinesChanged?: () => void;
 }) {
@@ -204,6 +207,7 @@ export function ThisComputerStatus({
     : outcome;
   // A failed reconnect already shows its reason as the detail line.
   const showOutcome = shownOutcome && !(reconnectView && shownOutcome.tone !== "success");
+  if (hideHealthy && tone === "healthy" && !button && !detail && !showOutcome) return null;
 
   return (
     <div data-this-computer-card style={{ display: "grid", gap: 6, minWidth: 0 }}>

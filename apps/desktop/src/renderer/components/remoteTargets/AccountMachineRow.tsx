@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MachineAvatar, machineFormFactor, machinePlatform } from "./MachineIdentity";
 import {
+  ArrowCounterClockwise,
   CaretDown,
   CaretUp,
   Check,
@@ -29,6 +30,7 @@ import { COLORS, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
 import { ConnectionDoctorPanel } from "./ConnectionDoctorPanel";
 import { ConnectionRouteDetails } from "./ConnectionRouteDetails";
 import { Banner } from "../ui/notice";
+import { MachineActionsMenu } from "./MachineActionsMenu";
 import {
   formatMachineEndpoint,
   isMachineStateConnectError,
@@ -43,7 +45,7 @@ import {
   machineRowStyle,
   nameStyle,
   connectButtonStyle,
-  iconActionButtonStyle,
+
   subTextStyle,
 } from "./remoteTargetListStyles";
 
@@ -279,33 +281,6 @@ export function AccountMachineRow({
           </div>
 
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", justifyContent: "flex-end" }}>
-            {!renaming ? (
-              <button
-                type="button"
-                aria-label={`Rename ${displayName}`}
-                disabled={busy}
-                title="Rename"
-                onClick={() => setRenaming(true)}
-                style={{ ...iconActionButtonStyle, opacity: busy ? 0.35 : 0.7, order: 1 }}
-              >
-                <PencilSimple size={15} />
-              </button>
-            ) : null}
-            {!renaming ? (
-              // The saved-machine rows end in [edit][delete]; this empty delete
-              // slot keeps every row's pencil in the same column (gap 6 vs 2).
-              <span aria-hidden style={{ width: 24, flexShrink: 0, order: 2 }} />
-            ) : null}
-            {machine.customName && !renaming ? (
-              <button
-                type="button"
-                disabled={busy || renameBusy}
-                onClick={() => void saveRename(null)}
-                style={outlineButton({ height: 30, padding: "0 8px", fontSize: 11 })}
-              >
-                Use hostname
-              </button>
-            ) : null}
             {connecting ? (
               <button
                 type="button"
@@ -340,6 +315,30 @@ export function AccountMachineRow({
                 {needsSetup ? "How to connect" : "Why offline?"}
                 {detailOpen ? <CaretUp size={12} weight="bold" /> : <CaretDown size={12} weight="bold" />}
               </button>
+            ) : null}
+            {!renaming ? (
+              <MachineActionsMenu
+                label={`Actions for ${displayName}`}
+                actions={[
+                  {
+                    key: "rename",
+                    label: "Rename",
+                    ariaLabel: `Rename ${displayName}`,
+                    icon: <PencilSimple size={14} />,
+                    disabled: busy,
+                    onSelect: () => setRenaming(true),
+                  },
+                  ...(machine.customName
+                    ? [{
+                        key: "hostname",
+                        label: "Use hostname",
+                        icon: <ArrowCounterClockwise size={14} />,
+                        disabled: busy || renameBusy,
+                        onSelect: () => void saveRename(null),
+                      }]
+                    : []),
+                ]}
+              />
             ) : null}
           </div>
         </div>
@@ -398,7 +397,7 @@ export function AccountMachineRow({
       </div>
 
       {canExplain && detailOpen ? (
-        <div id={`account-machine-detail-${row.id}`} style={inlineDetailStyle}>
+        <div id={`account-machine-detail-${row.id}`} className="ade-cx-inset" style={inlineDetailStyle}>
           <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600 }}>
             {needsSetup ? "Finish setup on the other computer" : relativeLastSeen(machine.lastSeenAt)}
           </div>

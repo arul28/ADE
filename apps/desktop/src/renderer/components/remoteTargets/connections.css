@@ -1,0 +1,365 @@
+/* The Connections popover and the machine list it shares with the command palette. */
+
+/* ── list header ─────────────────────────────────────────────────────── */
+.ade-cx-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 30px; }
+.ade-cx-list-title { font-size: 13px; font-weight: 650; color: var(--color-fg); }
+.ade-cx-icon-btn {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-2, rgba(255, 255, 255, 0.7));
+  cursor: pointer;
+}
+.ade-cx-icon-btn:hover { background: color-mix(in srgb, var(--color-fg) 8%, transparent); color: var(--color-fg); }
+.ade-cx-icon-btn:disabled { opacity: 0.5; cursor: default; }
+.ade-cx-add-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px 0 10px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 45%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.ade-cx-add-btn:hover { background: color-mix(in srgb, var(--color-accent) 28%, transparent); }
+.ade-cx-add-btn[data-size="lg"] { height: 32px; padding: 0 16px 0 13px; font-size: 12.5px; }
+.ade-cx-ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 14%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--kit-text-2, rgba(255, 255, 255, 0.75));
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 550;
+  cursor: pointer;
+}
+.ade-cx-ghost-btn:hover { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+
+/* ── sections and rows ───────────────────────────────────────────────── */
+.ade-cx-section { display: grid; gap: 7px; }
+.ade-cx-section-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 2px;
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--kit-text-3, rgba(255, 255, 255, 0.5));
+}
+.ade-cx-count {
+  display: inline-grid;
+  place-items: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 999px;
+  font-size: 10px;
+  letter-spacing: 0;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-cx-list {
+  border-radius: 12px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 9%, transparent);
+  background: color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+  overflow: hidden;
+}
+.ade-cx-list > * + * { border-top: 1px solid color-mix(in srgb, var(--color-fg) 7%, transparent); }
+.ade-cx-list > * { transition: background-color 120ms ease; }
+.ade-cx-list > *:hover { background: color-mix(in srgb, var(--color-fg) 2.5%, transparent); }
+/* A row's opened panel (test, settings, how-to) sits inside the row, inset. */
+.ade-cx-inset { margin: 0 12px 12px; }
+.ade-cx-found-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+}
+
+.ade-cx-kebab {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-3, rgba(255, 255, 255, 0.55));
+  cursor: pointer;
+}
+.ade-cx-kebab:hover, .ade-cx-kebab[aria-expanded="true"] { color: var(--color-fg); background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+.ade-cx-menu {
+  min-width: 200px;
+  padding: 4px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+  background: var(--ade-shell-surface, #17151f);
+  box-shadow: 0 16px 40px -18px rgba(0, 0, 0, 0.85);
+}
+.ade-cx-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  height: 30px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-cx-menu-item:hover:not(:disabled), .ade-cx-menu-item:focus-visible { background: color-mix(in srgb, var(--color-fg) 8%, transparent); outline: none; }
+.ade-cx-menu-item:disabled { opacity: 0.45; cursor: default; }
+.ade-cx-menu-item[data-tone="danger"] { color: var(--color-danger, #f87171); }
+.ade-cx-menu-icon { display: inline-flex; opacity: 0.8; }
+.ade-cx-menu-rule { height: 1px; margin: 4px 6px; background: color-mix(in srgb, var(--color-fg) 9%, transparent); }
+
+/* ── add a computer ──────────────────────────────────────────────────── */
+.ade-cx-add {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border-radius: 14px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 28%, transparent);
+  background:
+    radial-gradient(120% 80% at 0% 0%, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 60%),
+    color-mix(in srgb, var(--color-fg) 2.5%, transparent);
+}
+.ade-cx-add-head { display: flex; align-items: center; gap: 6px; }
+.ade-cx-add-title { flex: 1; min-width: 0; font-size: 13px; font-weight: 650; color: var(--color-fg); padding-left: 2px; }
+.ade-cx-steps-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+}
+.ade-cx-steps-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12.5px; font-weight: 650; color: var(--color-fg); }
+.ade-cx-recommended {
+  height: 18px;
+  padding: 0 7px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.ade-cx-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.ade-cx-steps li { display: flex; align-items: center; gap: 10px; min-height: 24px; }
+.ade-cx-step-num {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-accent) 30%, transparent);
+}
+.ade-cx-step-copy { flex: 1; min-width: 0; font-size: 12px; line-height: 1.4; color: var(--kit-text-2, rgba(255, 255, 255, 0.75)); }
+.ade-cx-step-copy b { color: var(--color-fg); font-weight: 600; }
+.ade-cx-email { color: var(--color-fg); font-weight: 550; }
+.ade-cx-chip-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--color-fg);
+  color: var(--color-bg);
+  font: inherit;
+  font-size: 11px;
+  font-weight: 650;
+  cursor: pointer;
+}
+.ade-cx-chip-btn:hover { opacity: 0.88; }
+.ade-cx-signin { display: flex; align-items: center; gap: 12px; text-align: left; cursor: pointer; color: var(--color-fg); font: inherit; }
+.ade-cx-or { font-size: 10.5px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--kit-text-3, rgba(255, 255, 255, 0.5)); padding: 0 2px; }
+.ade-cx-ways { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+.ade-cx-way {
+  display: grid;
+  justify-items: start;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: 11px;
+  border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
+  background: color-mix(in srgb, var(--color-bg) 45%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+.ade-cx-way:hover { border-color: color-mix(in srgb, var(--color-accent) 50%, transparent); background: color-mix(in srgb, var(--color-accent) 8%, transparent); }
+.ade-cx-way-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-bottom: 4px;
+  border-radius: 9px;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+.ade-cx-way-icon[data-tone="accent"] { color: var(--color-accent); background: color-mix(in srgb, var(--color-accent) 16%, transparent); margin-bottom: 0; }
+.ade-cx-way-copy { display: grid; gap: 2px; flex: 1; min-width: 0; }
+.ade-cx-way-label { font-size: 12.5px; font-weight: 650; }
+.ade-cx-way-detail { font-size: 11px; line-height: 1.35; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); }
+.ade-cx-scanning { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--kit-text-2, rgba(255, 255, 255, 0.7)); }
+
+/* ── empty state ─────────────────────────────────────────────────────── */
+.ade-cx-empty {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  padding: 22px 18px 20px;
+  text-align: center;
+  border-radius: 14px;
+  border: 1px dashed color-mix(in srgb, var(--color-fg) 16%, transparent);
+  background: radial-gradient(80% 90% at 50% 0%, color-mix(in srgb, var(--color-accent) 10%, transparent), transparent 70%);
+}
+.ade-cx-empty-art { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+.ade-cx-empty-device {
+  display: inline-grid;
+  place-items: center;
+  width: 46px;
+  height: 46px;
+  border-radius: 13px;
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
+}
+.ade-cx-empty-device[data-dashed] { border-style: dashed; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); background: transparent; }
+.ade-cx-empty-link {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 999px;
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
+}
+.ade-cx-empty-title { font-size: 14px; font-weight: 650; color: var(--color-fg); }
+.ade-cx-empty-detail { max-width: 340px; font-size: 12px; line-height: 1.45; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); }
+.ade-cx-empty-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; margin-top: 6px; }
+
+/* ── popover chrome ──────────────────────────────────────────────────── */
+.ade-cx-head {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 14px 12px 14px 16px;
+  color: #fff;
+  overflow: hidden;
+  border-top-left-radius: inherit;
+  border-top-right-radius: inherit;
+  background:
+    radial-gradient(70% 140% at 0% 0%, var(--cx-bright), transparent 70%),
+    radial-gradient(60% 140% at 100% 0%, var(--cx-light), transparent 72%),
+    linear-gradient(120deg, var(--cx-deep), var(--cx-base));
+}
+.ade-cx-head::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(90deg, rgba(0, 0, 0, 0.35), rgba(0, 0, 0, 0.12) 60%, rgba(0, 0, 0, 0.3));
+}
+.ade-cx-head > * { position: relative; z-index: 1; }
+.ade-cx-head-who { display: flex; align-items: center; gap: 11px; flex: 1; min-width: 0; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.ade-cx-head-avatar { flex: none; width: 36px; height: 36px; border-radius: 999px; object-fit: cover; box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85), 0 6px 14px -6px rgba(0, 0, 0, 0.6); }
+.ade-cx-head-monogram { display: inline-grid; place-items: center; font-size: 13px; font-weight: 700; background: rgba(255, 255, 255, 0.18); }
+.ade-cx-head-name { display: block; font-size: 13.5px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-cx-head-email { display: block; font-size: 11.5px; opacity: 0.8; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ade-cx-head-btn {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 28px;
+  padding: 0 11px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+  font: inherit;
+  font-size: 11.5px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+}
+.ade-cx-head-btn:hover { background: rgba(255, 255, 255, 0.24); }
+.ade-cx-head-close { width: 28px; padding: 0; justify-content: center; }
+
+.ade-cx-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+.ade-cx-tab {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 30px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-3, rgba(255, 255, 255, 0.55));
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+.ade-cx-tab:hover { color: var(--color-fg); }
+.ade-cx-tab[aria-selected="true"] {
+  color: var(--color-fg);
+  background: var(--ade-shell-surface, #1b1924);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 2px 8px -3px rgba(0, 0, 0, 0.6);
+}
+.ade-cx-tab-dot { width: 6px; height: 6px; border-radius: 999px; background: #4ade80; box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.22); }
+
+/* This computer: route badges with the reachability check beside them. */
+.ade-cx-reach { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.ade-cx-reach-label { font-size: 11.5px; color: var(--kit-text-3, rgba(255, 255, 255, 0.55)); }

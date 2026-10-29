@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowClockwise,
   PencilSimple,
@@ -37,6 +37,7 @@ import {
   type SavedMachineRow as SavedMachineRowModel,
 } from "./remoteMachineModel";
 import { RemoteErrorCard } from "./RemoteErrorCard";
+import { MachineActionsMenu } from "./MachineActionsMenu";
 import { Banner } from "../ui/notice";
 import {
   RemoteTargetForm,
@@ -45,7 +46,6 @@ import {
 import {
   helperTextStyle,
   connectButtonStyle,
-  iconActionButtonStyle,
   inlineDetailStyle,
   inlineSuccessTextStyle,
   machineRowStyle,
@@ -178,7 +178,6 @@ export function SavedMachineRow({
       );
   // Says why a machine that is not connected will not come back on its own.
   const autoConnectOff = statusLabel === "Not connected" ? autoConnectOffReason(target) : null;
-  const [hovered, setHovered] = useState(false);
   const compatibilityWarnings = selected
     ? (status?.compatibilityWarnings ??
       (connected?.target.id === target.id
@@ -243,19 +242,10 @@ export function SavedMachineRow({
   const shownErrorCard = updatePhase === "restarting" ? null : errorCard;
   const showFinalUpdateStatus = Boolean(updateStatus) && !updatePhase;
   const behind = row.connected && updateTargetVersion != null;
-  const quiet = !hovered && !selected;
-  const iconButton = (disabled: boolean): CSSProperties => ({
-    ...iconActionButtonStyle,
-    opacity: disabled ? 0.35 : quiet ? 0.55 : 1,
-    cursor: disabled ? "not-allowed" : "pointer",
-    transition: "opacity 140ms ease",
-  });
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
         style={{
           ...machineRowStyle,
           opacity: section === "unavailable" ? 0.7 : 1,
@@ -283,11 +273,14 @@ export function SavedMachineRow({
               <PresenceDot state={presence} />
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
-              <VersionChip
-                version={row.versionLabel ?? row.version}
-                target={behind || updatePhase ? updateTargetVersion : null}
-                tone={showFinalUpdateStatus && updateStatus?.ok && !behind ? "success" : "muted"}
-              />
+              {/* The version only shows when it needs attention: behind, updating, or just updated. */}
+              {behind || updatePhase || (showFinalUpdateStatus && updateStatus?.ok) ? (
+                <VersionChip
+                  version={row.versionLabel ?? row.version}
+                  target={behind || updatePhase ? updateTargetVersion : null}
+                  tone={showFinalUpdateStatus && updateStatus?.ok && !behind ? "success" : "muted"}
+                />
+              ) : null}
               <span role={updatePhase ? "status" : undefined} style={subTextStyle}>{detailLine}</span>
             </div>
           </div>
@@ -332,62 +325,46 @@ export function SavedMachineRow({
                 {connectingStale ? "Retry" : "Connect"}
               </button>
             ) : null}
-            {row.connected ? (
-              <button
-                type="button"
-                aria-label="Disconnect"
-                title="Disconnect"
-                disabled={busy || updating}
-                onClick={() => onDisconnect(target.id)}
-                style={iconButton(busy || updating)}
-              >
-                <Plugs size={15} />
-              </button>
-            ) : null}
-            {/* Connected, Test also asks the machine itself whether other devices can reach it. */}
-            {section !== "unavailable" ? (
-              <button
-                type="button"
-                aria-label="Test"
-                title="Test connection"
-                aria-controls={`remote-target-test-${target.id}`}
-                aria-expanded={testOpen}
-                disabled={busy}
-                onClick={() => onToggleTest(target.id)}
-                style={iconButton(busy)}
-              >
-                <Pulse size={15} />
-              </button>
-            ) : (
-              // Keeps the icon rail in fixed columns across rows.
-              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
-            )}
-            {section !== "unavailable" ? (
-              <button
-                type="button"
-                aria-label="Edit"
-                title="Edit"
-                aria-controls={`remote-target-edit-${target.id}`}
-                aria-expanded={formOpen}
-                disabled={locked}
-                onClick={() => onToggleEdit(target)}
-                style={iconButton(locked)}
-              >
-                <PencilSimple size={15} />
-              </button>
-            ) : (
-              <span aria-hidden style={{ width: iconActionButtonStyle.width, flexShrink: 0 }} />
-            )}
-            <button
-              type="button"
-              aria-label={`Remove ${target.name}`}
-              title="Delete"
-              disabled={busy}
-              onClick={() => onRemove(target.id)}
-              style={iconButton(busy)}
-            >
-              <Trash size={15} />
-            </button>
+            <MachineActionsMenu
+              label={`Actions for ${target.name}`}
+              actions={[
+                ...(section !== "unavailable"
+                  ? [{
+                      key: "test",
+                      label: testOpen ? "Hide connection details" : "Test connection",
+                      ariaLabel: "Test",
+                      icon: <Pulse size={14} />,
+                      disabled: busy,
+                      onSelect: () => onToggleTest(target.id),
+                    }, {
+                      key: "edit",
+                      label: formOpen ? "Close settings" : "Rename and settings",
+                      ariaLabel: "Edit",
+                      icon: <PencilSimple size={14} />,
+                      disabled: locked,
+                      onSelect: () => onToggleEdit(target),
+                    }]
+                  : []),
+                ...(row.connected
+                  ? [{
+                      key: "disconnect",
+                      label: "Disconnect",
+                      icon: <Plugs size={14} />,
+                      disabled: busy || updating,
+                      onSelect: () => onDisconnect(target.id),
+                    }]
+                  : []),
+                {
+                  key: "remove",
+                  label: "Remove from this computer",
+                  ariaLabel: `Remove ${target.name}`,
+                  icon: <Trash size={14} />,
+                  danger: true,
+                  disabled: busy,
+                  onSelect: () => onRemove(target.id),
+                },
+              ]}
+            />
           </div>
         </div>
 
@@ -465,11 +442,14 @@ export function SavedMachineRow({
           machineName={target.name?.trim() || target.hostname}
         />
 
-        <ConnectionRouteDetails
-          attempts={routeAttempts}
-          correlationId={routeCorrelationId}
-          omittedAttemptCount={omittedAttemptCount}
-        />
+        {/* Which routes were tried lives with the failure, or under Test connection. */}
+        {shownErrorCard ? (
+          <ConnectionRouteDetails
+            attempts={routeAttempts}
+            correlationId={routeCorrelationId}
+            omittedAttemptCount={omittedAttemptCount}
+          />
+        ) : null}
 
         {selected && hostKeyTrust ? (
           <HostKeyTrustCard
@@ -483,7 +463,14 @@ export function SavedMachineRow({
       </div>
 
       {testOpen ? (
-        <div id={`remote-target-test-${target.id}`}>
+        <div id={`remote-target-test-${target.id}`} className="ade-cx-inset">
+          {!shownErrorCard ? (
+            <ConnectionRouteDetails
+              attempts={routeAttempts}
+              correlationId={routeCorrelationId}
+              omittedAttemptCount={omittedAttemptCount}
+            />
+          ) : null}
           <ConnectionDoctorPanel
             machineId={target.id}
             machineName={target.name?.trim() || target.hostname}
@@ -493,7 +480,7 @@ export function SavedMachineRow({
       ) : null}
 
       {formOpen ? (
-        <div id={`remote-target-edit-${target.id}`} style={inlineDetailStyle}>
+        <div id={`remote-target-edit-${target.id}`} className="ade-cx-inset" style={inlineDetailStyle}>
           <div
             style={{
               color: COLORS.textPrimary,

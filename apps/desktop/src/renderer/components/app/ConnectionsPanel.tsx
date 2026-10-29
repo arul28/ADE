@@ -9,23 +9,24 @@ import {
 } from "@phosphor-icons/react";
 import type { CSSProperties } from "react";
 import type {
+  AdeAccountMachine,
   AdeAccountMachinesResult,
+  MachineConnectionRoutes,
   GitHubStatus,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeTarget,
 } from "../../../shared/types";
-import { COLORS, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import { ThisComputerStatus } from "../remoteTargets/ThisComputerStatus";
 import { HostReachabilityCheck } from "../remoteTargets/HostReachabilityCheck";
 import {
   PhoneConnectionsTab,
+  ThisComputerPairingCode,
   ThisMacCard,
   WebConnectionsTab,
   useSyncConnections,
   type RevokeConfirm,
 } from "../settings/SyncDevicesSection";
-import { settingsRouteFor } from "../settings/settingsManifest";
 import { confirmDialog } from "../ui/dialog";
 import {
   accountAvatarImage,
@@ -42,6 +43,11 @@ import {
 } from "../../lib/account";
 import type { ConnectionsPanelTab } from "../../lib/connectionsPanel";
 import { flashRowHighlight } from "../../lib/flashRowHighlight";
+import { RoutePills } from "../account/MachineRoutes";
+import { machineRouteItems } from "../account/machineRouteModel";
+import { routesAvailable } from "../account/useMachineRoutes";
+import { rgbCss, useProfilePalette } from "../account/useProfilePalette";
+import "../remoteTargets/connections.css";
 
 type ConnectionsPanelProps = {
   initialTab?: ConnectionsPanelTab;
@@ -57,27 +63,7 @@ const TABS: Array<{ key: ConnectionsPanelTab; label: string; icon: typeof Deskto
   { key: "web", label: "Web", icon: Globe },
 ];
 
-function tabStyle(active: boolean): CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    gap: 6,
-    height: 32,
-    padding: "0 12px",
-    borderRadius: 8,
-    border: "none",
-    cursor: "pointer",
-    fontFamily: SANS_FONT,
-    fontSize: 12,
-    fontWeight: 600,
-    color: active ? COLORS.textPrimary : COLORS.textMuted,
-    background: active
-      ? fgTint(10)
-      : "transparent",
-    transition: "background-color 120ms, color 120ms",
-  };
-}
-
+/** The header: who is signed in, on a strip painted from their profile picture. */
 function AccountHeader({
   githubStatus,
   onNavigate,
@@ -92,121 +78,111 @@ function AccountHeader({
   const avatarImage = accountAvatarImage(status, githubStatus?.userLogin ?? null);
   const ringTint = providerTint(status, githubConnected);
   const [imgBroken, setImgBroken] = useState(false);
+  const palette = useProfilePalette(imgBroken ? null : avatarImage, ringTint);
+  const [base, deep, , bright, light] = palette.ramp;
 
   // State-first title so the panel reads honestly at a glance. A session that
   // could not be READ is not a sign-out, and must not be summarized as one.
   const sessionState = accountSessionState(status);
-  const title = accountSessionTitle(sessionState);
-  const subtitle = sessionState === "active"
-    ? status.email ?? accountSessionConnectionsSubtitle(sessionState)
+  const active = sessionState === "active";
+  const title = active ? status.name || status.email || accountSessionTitle(sessionState) : accountSessionTitle(sessionState);
+  const subtitle = active
+    ? status.name && status.email ? status.email : accountSessionConnectionsSubtitle(sessionState)
     : accountSessionConnectionsSubtitle(sessionState);
 
   return (
     <div
+      className="ade-cx-head"
       style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 10,
-        padding: "12px 12px 12px 16px",
-        borderBottom: `1px solid ${COLORS.borderMuted}`,
-      }}
+        "--cx-base": rgbCss(base!),
+        "--cx-deep": rgbCss(deep!),
+        "--cx-bright": rgbCss(bright!, 0.85),
+        "--cx-light": rgbCss(light!, 0.55),
+      } as CSSProperties}
     >
       {/* Close is rendered first so it remains the panel's leading focus stop,
           then ordered to the right for layout. */}
       <button
         type="button"
-        className="ade-shell-control inline-flex h-7 w-7 items-center justify-center rounded-md"
-        data-variant="ghost"
+        className="ade-cx-head-btn ade-cx-head-close"
         onClick={onClose}
         title="Close connections"
         aria-label="Close connections"
-        style={{ order: 3, flexShrink: 0, border: `1px solid ${COLORS.borderMuted}` }}
+        style={{ order: 3 }}
       >
-        <X size={13} weight="regular" />
+        <X size={13} weight="bold" />
       </button>
       <button
         type="button"
         onClick={onNavigate}
-        style={{
-          order: 1,
-          display: "flex",
-          minWidth: 0,
-          flex: 1,
-          alignItems: "center",
-          gap: 11,
-          padding: 0,
-          border: "none",
-          background: "transparent",
-          cursor: "pointer",
-          textAlign: "left",
-        }}
+        className="ade-cx-head-who"
+        style={{ order: 1 }}
         aria-label={accountSessionConnectionsActionAria(sessionState)}
       >
-        <span style={{ flexShrink: 0 }}>
-          {avatarImage && !imgBroken ? (
-            <img
-              src={avatarImage}
-              alt=""
-              width={30}
-              height={30}
-              draggable={false}
-              onError={() => setImgBroken(true)}
-              style={{ width: 30, height: 30, borderRadius: "50%", objectFit: "cover", boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)` }}
-            />
-          ) : status.signedIn ? (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: 30,
-                height: 30,
-                borderRadius: "50%",
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                fontWeight: 700,
-                color: COLORS.textPrimary,
-                background: `color-mix(in srgb, ${ringTint} 20%, transparent)`,
-                boxShadow: `0 0 0 1.5px color-mix(in srgb, ${ringTint} 55%, transparent)`,
-              }}
-            >
-              {accountInitials(status)}
-            </span>
-          ) : (
-            <UserCircle size={30} weight="regular" color={COLORS.textMuted} />
-          )}
-        </span>
+        {avatarImage && !imgBroken ? (
+          <img
+            src={avatarImage}
+            alt=""
+            width={36}
+            height={36}
+            draggable={false}
+            onError={() => setImgBroken(true)}
+            className="ade-cx-head-avatar"
+          />
+        ) : status.signedIn ? (
+          <span className="ade-cx-head-avatar ade-cx-head-monogram">{accountInitials(status)}</span>
+        ) : (
+          <UserCircle size={36} weight="regular" />
+        )}
         <span style={{ minWidth: 0, flex: 1 }}>
-          <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {title}
-          </span>
-          <span style={{ display: "block", fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-            {subtitle}
-          </span>
+          <span className="ade-cx-head-name">{title}</span>
+          {subtitle ? <span className="ade-cx-head-email">{subtitle}</span> : null}
         </span>
       </button>
-
-      <button
-        type="button"
-        onClick={onNavigate}
-        style={{
-          order: 2,
-          flexShrink: 0,
-          height: 28,
-          padding: "0 10px",
-          borderRadius: 8,
-          border: `1px solid ${COLORS.borderMuted}`,
-          background: "transparent",
-          color: COLORS.textSecondary,
-          fontFamily: SANS_FONT,
-          fontSize: 11.5,
-          fontWeight: 600,
-          cursor: "pointer",
-        }}
-      >
-        {accountSessionConnectionsAction(sessionState)}
+      <button type="button" onClick={onNavigate} className="ade-cx-head-btn" style={{ order: 2 }}>
+        {active ? <UserCircle size={13} weight="bold" /> : null}
+        {active ? "Account" : accountSessionConnectionsAction(sessionState)}
       </button>
     </div>
+  );
+}
+
+/**
+ * This computer's routes as the Account page's badges: which ways other
+ * devices can reach it. Only for this computer itself; a window bound to
+ * another machine shows that machine in the card, and these would describe
+ * the wrong one.
+ */
+function ThisComputerRouteBadges({ accountMachines }: { accountMachines: AdeAccountMachine[] | undefined }) {
+  const [routes, setRoutes] = useState<MachineConnectionRoutes | null>(null);
+  const [localKey, setLocalKey] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void window.ade?.account?.getConnectionRoutes?.({ machineKey: null })
+      .then((next) => {
+        if (!cancelled) setRoutes(next);
+      })
+      .catch(() => {});
+    void window.ade?.account?.getLocalMachineIdentity?.()
+      .then((identity) => {
+        if (!cancelled) setLocalKey(identity.machineKey);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  const machine = accountMachines?.find((entry) => entry.machineKey === localKey) ?? null;
+  const items = useMemo(() => machineRouteItems(machine, routes), [machine, routes]);
+  if (!routes && !machine) return <span className="ade-cx-reach-label">Can other devices reach this computer?</span>;
+  const on = items.filter((item) => item.tone === "on").length;
+  return (
+    <span className="ade-cx-reach">
+      <RoutePills items={items} />
+      <span className="ade-cx-reach-label">
+        {on === 0 ? "Not reachable yet" : `Reachable ${on} of ${items.length} ways`}
+      </span>
+    </span>
   );
 }
 
@@ -331,12 +307,8 @@ export function ConnectionsPanel({
     });
   }, [location.hash, location.pathname, location.search, navigate, onClose]);
 
-  // Settings > Account > Your computers: the list of this account's computers,
-  // with Reconnect and Repair for this one.
-  const goToYourComputers = useCallback(() => {
-    onClose();
-    navigate(settingsRouteFor("account.computers"));
-  }, [navigate, onClose]);
+  // Only where this ADE can read this computer's routes (not hosted web).
+  const routesReadable = routesAvailable();
 
   return (
     <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)" }}>
@@ -346,52 +318,42 @@ export function ConnectionsPanel({
         <ThisMacCard
           sync={sync}
           sessionState={accountSessionState(accountStatus)}
-          onOpenYourComputers={goToYourComputers}
+          hidePairing
           statusSlot={(
             <>
               <ThisComputerStatus
                 accountSignedIn={accountStatus.signedIn}
                 onAccountMachinesChanged={reloadAccountMachines}
+                hideHealthy
               />
-              <HostReachabilityCheck />
+              <HostReachabilityCheck
+                leading={sync.isRemoteBound || !routesReadable ? undefined : (
+                  <ThisComputerRouteBadges accountMachines={accountMachines?.machines} />
+                )}
+              />
             </>
           )}
         />
       </div>
 
-      <div
-        role="tablist"
-        aria-label="Connections"
-        style={{ display: "flex", gap: 4, padding: "12px 12px 0" }}
-      >
-        {TABS.map(({ key, label, icon: Icon }) => (
-          <button
-            key={key}
-            type="button"
-            role="tab"
-            aria-selected={tab === key}
-            aria-label={activeTabs[key] ? `${label}, active connection` : label}
-            onClick={() => setTab(key)}
-            style={tabStyle(tab === key)}
-          >
-            <Icon size={15} weight="regular" />
-            {label}
-            {activeTabs[key] ? (
-              <span
-                aria-hidden
-                title="Active connection"
-                style={{
-                  width: 6,
-                  height: 6,
-                  borderRadius: "50%",
-                  flexShrink: 0,
-                  background: COLORS.success,
-                  boxShadow: `0 0 0 2px color-mix(in srgb, ${COLORS.success} 22%, transparent)`,
-                }}
-              />
-            ) : null}
-          </button>
-        ))}
+      <div style={{ padding: "12px 12px 0" }}>
+        <div role="tablist" aria-label="Connections" className="ade-cx-tabs">
+          {TABS.map(({ key, label, icon: Icon }) => (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={tab === key}
+              aria-label={activeTabs[key] ? `${label}, active connection` : label}
+              onClick={() => setTab(key)}
+              className="ade-cx-tab"
+            >
+              <Icon size={15} weight={tab === key ? "bold" : "regular"} />
+              {label}
+              {activeTabs[key] ? <span aria-hidden title="Active connection" className="ade-cx-tab-dot" /> : null}
+            </button>
+          ))}
+        </div>
       </div>
 
       <div style={{ overflowY: "auto", padding: 12 }} data-onboarding-anchor={`connections-${tab}`}>
@@ -404,6 +366,8 @@ export function ConnectionsPanel({
             accountSignedIn={accountStatus.signedIn}
             onAccountRequested={goToAccount}
             onAccountMachinesChanged={reloadAccountMachines}
+            accountEmail={accountStatus.email ?? null}
+            thisComputerCode={sync.isRemoteBound ? null : <ThisComputerPairingCode sync={sync} />}
           />
         ) : null}
         {tab === "mobile" ? (

@@ -51,3 +51,6 @@ export const docs = {
 
 export type DocsKey = keyof typeof docs;
 export const DOCS_HOME = docs.home;
+
+/** ADE's website, where the app is downloaded. */
+export const ADE_SITE_URL = SITE_BASE;

@@ -216,9 +216,12 @@ export function ThisMacCard({
   sessionState,
   statusSlot = null,
   onOpenYourComputers,
+  hidePairing = false,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
+  /** The popover offers the pairing code under Add computer instead (`ThisComputerPairingCode`). */
+  hidePairing?: boolean;
   /**
    * Opens Settings > Account > Your computers. The Connections popover passes
    * it; the settings page itself does not need a link to the page it is on.
@@ -234,7 +237,7 @@ export function ThisMacCard({
 }) {
   const hideDirectorySummary = statusSlot != null;
   const accountSignedIn = sessionState === "active";
-  const { status, projectStatus, busy, error, notice, isRemoteBound, boundMachineName } = sync;
+  const { status, projectStatus, busy, error, notice, isRemoteBound } = sync;
   const appInfo = useAppInfoLine();
   // The version the brain runs (what actually answers other machines), else
   // the app package's; both when they differ ("1.2.123 · brain 1.2.125").
@@ -680,24 +683,9 @@ export function ThisMacCard({
         />
       ) : null}
 
-      {host && !crdtUnavailable ? (
+      {host && !crdtUnavailable && !hidePairing ? (
         <PairingDisclosure>
-          {isRemoteBound ? (
-            <PinManagerRemoteNote
-              pin={status.pairingPin}
-              pinConfigured={status.pairingPinConfigured}
-              boundMachineName={boundMachineName}
-            />
-          ) : (
-            <PinManager
-              pin={status.pairingPin}
-              pinConfigured={status.pairingPinConfigured}
-              busy={busy}
-              onSetPin={sync.setPinValue}
-              onGenerate={sync.generatePin}
-              onRemove={sync.clearPin}
-            />
-          )}
+          <PairingCodeControls sync={sync} />
         </PairingDisclosure>
       ) : null}
 
@@ -709,6 +697,38 @@ export function ThisMacCard({
       ) : null}
     </div>
   );
+}
+
+function PairingCodeControls({ sync }: { sync: SyncConnections }) {
+  const { status, busy, isRemoteBound, boundMachineName } = sync;
+  if (!status) return null;
+  return isRemoteBound ? (
+    <PinManagerRemoteNote
+      pin={status.pairingPin}
+      pinConfigured={status.pairingPinConfigured}
+      boundMachineName={boundMachineName}
+    />
+  ) : (
+    <PinManager
+      pin={status.pairingPin}
+      pinConfigured={status.pairingPinConfigured}
+      busy={busy}
+      onSetPin={sync.setPinValue}
+      onGenerate={sync.generatePin}
+      onRemove={sync.clearPin}
+    />
+  );
+}
+
+/**
+ * This computer's pairing code, on its own: the popover's Add computer sheet
+ * shows it under "Pairing code". Null when this computer can't take a pairing
+ * (it doesn't host sync, or sync storage is unavailable).
+ */
+export function ThisComputerPairingCode({ sync }: { sync: SyncConnections }) {
+  const status = sync.status;
+  if (!status || !isSyncHost(status) || isCrdtSyncUnavailable(status)) return null;
+  return <PairingCodeControls sync={sync} />;
 }
 
 /**
