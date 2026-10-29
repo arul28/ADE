@@ -283,8 +283,8 @@ The root is resolved by `resolveMachineToolsRoot` in `paths.ts`:
 | otherwise | `~/.ade/tools` |
 
 The root is **deliberately not derived from `ADE_HOME`**. `ADE_HOME` is
-channel-scoped (`~/.ade`, `~/.ade-beta`, `~/.ade-alpha`), and the entire point of
-this cache is that stable, beta, and the brain runtime share one copy of a
+channel-scoped (`~/.ade`, `~/.ade-alpha`), and the entire point of
+this cache is that stable, alpha, and the brain runtime share one copy of a
 ~300 MB binary. Contents are addressed by exact package name plus exact version,
 so cross-channel sharing can never mix builds: two channels either pin the same
 version and reuse the directory, or pin different versions and get different

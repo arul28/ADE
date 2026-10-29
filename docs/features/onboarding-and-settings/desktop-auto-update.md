@@ -132,8 +132,8 @@ unreachable from the phone, until ADE is next opened. `install-path.cmd` broadca
 per-window timeout stacked to 82 s inside the installer. `customCheckAppRunning`
 replaces electron-builder's app-running check with one PowerShell pass instead
 of three or four. Every step appends its duration to
-`runtime/install-steps.log` in the channel's ADE home (`~/.ade` on Stable,
-`~/.ade-beta` and `~/.ade-alpha` on the channels).
+`runtime/install-steps.log` in the channel's ADE home (`~/.ade`, or `~/.ade-alpha`
+on the Alpha channel).
 
 Measured in Windows Sandbox with real installers (2026-10-07): from
 `quit_and_install` to the new ADE on screen took 77 s before these changes
@@ -216,8 +216,8 @@ brain of its own version built differently takes the service back anyway. When
 the app part succeeds, the standalone `ade` is still promoted to the same
 version, as a command only. Anything that cannot be done safely changes
 nothing and says why: an unwritable bundle (with the `chown` to run), a failed
-check, `--no-restart`, or a feed with no such version. ADE Beta and Alpha have
-no feed; their app is left alone and the status says it is behind. With no app
+check, `--no-restart`, or a feed with no such version. An Alpha app has
+no feed; its app is left alone and the status says it is behind. With no app
 installed (servers, Linux) only the brain is updated, as before.
 
 `brain update --dry-run` names the app it would update (`desktopApp`).
@@ -225,8 +225,8 @@ installed (servers, Linux) only the brain is updated, as before.
 platform, so a brain already on the target beside an older closed app is still
 updated. It reads the app through the same `readInstalledDesktopApp`
 (`nativeHelperPaths.ts`) the brain reports, `ade doctor` shows and the macOS
-app update swaps, so a machine is judged on the version it reports. A Beta or
-Alpha app behind its brain is reported as such ("has no update feed … rebuild
+app update swaps, so a machine is judged on the version it reports. An Alpha
+app behind its brain is reported as such ("has no update feed … rebuild
 it"), not offered an update that would change nothing. The macOS swap restores
 the old app only when it moved it, and checks again that ADE is still closed
 after the service stops.
@@ -242,6 +242,48 @@ installer has passed the clean standard-user Windows checks, which the
 `windows_proof` dispatch input on `prepare-release.yml` produces without
 publishing anything. Validate version-to-version automatic updating after two
 signed Windows releases exist.
+
+## Update tracks (Stable and Beta)
+
+Beta is an update track of the normal install. It is not a separate app. Both
+tracks use `ADE.app` (app id `com.ade.desktop`), `~/.ade`, the `com.ade.runtime`
+service and the `ade` CLI. The plan is `docs/plans/beta-track.md`.
+
+- **Reading the track.** The track of a build comes from its version only.
+  A `X.Y.Z-beta.N` version is Beta. Any other version is Stable.
+  See `apps/desktop/src/shared/updateTrack.ts`.
+- **The choice.** `~/.ade/update-track.json` holds `{ track, updatedAt }`. The app,
+  the brain and the CLI all read it. A missing file means the track of the
+  running version. `apps/ade-cli/src/services/runtime/updateTrackStore.ts`
+  reads it for the brain and the CLI.
+- **The Beta feed.** Beta reads the fixed GitHub prerelease `beta-feed`. It holds
+  `latest-mac.yml`, `latest.yml` and `beta.json`. A 404 means no Beta build
+  exists now, so ADE shows no error. electron-updater's GitHub provider is not
+  used for Beta. For a `-beta.` version it takes the newest release of any kind,
+  including Stable. The fixed feed names exactly one build.
+  `apps/desktop/src/main/services/updates/autoUpdateService.ts` reads it.
+- **The offer filter.** Ordinary checks offer a build only when it is on the
+  selected track and newer than the running build. They never cross tracks.
+  An install that lands on the other track does not count as landed.
+- **The guarded switch.** Settings > About > Updates has the Update track
+  control. A switch first reads `release-manifest.json` of the target build.
+  It compares the manifest `dbCompat` with the `<db>.compat.json` level of each
+  local database. The switch is blocked when a database level is higher.
+  It is also blocked when a level or the manifest cannot be read. Unknown blocks.
+  See `apps/desktop/src/main/services/updates/trackSwitchGuard.ts` and
+  `apps/desktop/src/main/services/state/dbCompatRecord.ts`.
+  `DB_COMPAT_LEVEL` is in `apps/desktop/src/shared/releaseCompat.ts`.
+- **Database copy.** Before the first open by a new app version, ADE copies each
+  database to `<db>.pre-<version>.bak`. The copy uses the SQLite online backup
+  in small steps. ADE keeps the last 2 copies. `dbCompatRecord.ts` makes them.
+- **Remote "Update & restart".** It never moves a machine across tracks. A
+  request that names a build of the other track updates the machine on its own
+  track. See `apps/ade-cli/src/services/runtime/machineUpdateAndRestart.ts`.
+- **`ade brain update`.** The version `latest` follows the machine track. On Beta
+  it is the build that `beta.json` names. It never falls back to the other
+  track. See `apps/ade-cli/src/commands/brainUpdate.ts`.
+
+Beta builds come from `.github/workflows/beta.yml`. See "CI notes" in the plan.
 
 ## Artifact size limits
 

@@ -51,7 +51,7 @@ implementation details only:
 - project delete/forget operations cannot remove personal chat state.
 
 The runtime is channel-scoped with the rest of ADE machine state, so stable,
-beta, alpha, and isolated development homes do not share conversations. It is
+alpha, and isolated development homes do not share conversations. It is
 chat-only and remains lazy for fresh installs; when existing personal-chat
 state is present, the brain prewarms it in the background so opening Chats does
 not pay the cold-start cost. It does not run its own sync listener and

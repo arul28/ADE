@@ -394,7 +394,7 @@ the lane opened and which user apps it holds windows of
    it does not restart the helper, because that would close the display. It
    never starts a display; Start is the only start. A folded help line, "It's
    on, but still says missing?", gives the fix for a stale macOS entry: select
-   the app (`responsibleAppName`, `ADE`/`ADE Alpha`/`ADE Beta`), press −, add
+   the app (`responsibleAppName`, `ADE`/`ADE Alpha`), press −, add
    it again with +, and press Check again. It is open by default when the build
    is ad-hoc (`signing === "adhoc"`), because macOS forgets the grant on every
    rebuild of such a build. While a viewer is reading the lane's status the service tells

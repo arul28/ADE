@@ -176,8 +176,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   first relay tunnel. The row also carries the host's Ed25519 identity as
   `pubkey`, which same-account clients verify before a sealed `ade-adopt-v1`
   adoption over a direct route (see the [Sync](../sync-and-multi-device/README.md)
-  security model). The published machine name is channel-suffixed (`<name> ·
-  Beta` / `<name> · Alpha`, stable left bare) so two channels on one computer are
+  security model). The published machine name is channel-suffixed (`<name> · Alpha`, stable left bare) so two channels on one computer are
   distinguishable rows.
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/ade-cli/src/bootstrap.ts` — the relay side of a paired route. The tunnel
@@ -282,7 +281,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   when the endpoint answered with the wrong identity (`runtime_older`,
   `build_mismatch`, `role_mismatch`) the brain is running and responsive, so an
   idempotent install would report "already installed and running" and leave it —
-  a fresh Alpha/Beta app then staleness-locks onto a brain left by an earlier
+  a fresh Alpha app then staleness-locks onto a brain left by an earlier
   build. Repairing a *missing* endpoint stays a plain install (nothing to
   replace), and isolated recovery also forces, since it only runs after the
   primary endpoint failed to probe compatible. A forced install cannot replace
@@ -1041,7 +1040,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   dies mid-run still leaves its timestamp; an unwritable runtime directory means
   the watcher stops killing rather than kills on stale information.
 - `apps/ade-cli/src/serviceManager/installLaunchdWatchdog.ts` — install/uninstall
-  of the `com.ade.watchdog` launch agent (`.beta` / `.alpha` per channel,
+  of the `com.ade.watchdog` launch agent (`.alpha` for the Alpha channel,
   `StartInterval` 60 s), done alongside the brain's own agent and best effort: a
   machine that cannot install the watchdog still gets a brain.
 - `apps/ade-cli/src/serviceManager/runtimeServiceBudgets.ts` — every timeout in
@@ -1353,9 +1352,9 @@ the final error aggregates the routes/runtimes that were actually attempted.
 
 After connecting, the desktop persists the active remote project to `globalState.lastRemoteProjectBinding` and records it in the unified recent-project list with target id, project id, runtime name, and hostname. Remote recents are keyed as `remote:<targetId>:<projectId>`, so a remote project can share a path string with a local checkout without colliding; the welcome screen can reconnect/open the remote row directly from that metadata. Each target also persists an explicit `autoConnect` preference: a successful Connect enables it, and Disconnect disables it. Only targets with that preference enabled reconnect at launch or after wake; an explicit failed Connect does not change the saved preference. Implicit retries use bounded exponential backoff from 30 s through 5 minutes and remain eligible after repeated failures. Pressing Connect bypasses the current backoff without bypassing SSH or pairing authentication. An unpackaged (development) desktop runs with `explicitConnectOnly`: it never reconnects saved targets at launch, after wake, or for implicit use, and connects only when the person presses Connect in it. A paired host keeps one connection per device and every ADE on a computer shares that device pairing, so a dev app reconnecting on its own took machines from the installed app (which then shows the superseded error and waits). `ADE_DEV_REMOTE_AUTOCONNECT=1` turns auto-connect back on for a dev app.
 
-Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha|beta` upload to `~/.ade-alpha/` or `~/.ade-beta/` instead of `~/.ade/` so a remote machine can host stable, beta, and alpha runtimes side by side. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
+Per-channel layout: builds with `ADE_PACKAGE_CHANNEL=alpha` upload to `~/.ade-alpha/` instead of `~/.ade/` so a remote machine can host stable and alpha runtimes side by side. Beta is an update track of the normal install and uses `~/.ade/`. Runtime binaries, native deps, PTY workers, and bundled ADE agent skills all live under the selected home. Remote compatibility launches keep `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` so remote probes do not fight the user's login service.
 
-A packaged Beta upload that cannot initialize is not terminal by itself. ADE
+A packaged Alpha upload that cannot initialize is not terminal by itself. ADE
 still probes the isolated Stable and other channel homes and accepts the first
 runtime whose initialization and machine-project capabilities are compatible;
 the selected home is then used consistently for follow-up commands such as the
@@ -1455,9 +1454,9 @@ responding (overloaded, asleep or off the network).
 Version skew and capability skew no longer fail the connect outright. The bootstrap performs the JSON-RPC `ade/initialize` handshake, normalizes the `capabilities.machineProjects` flags returned by the remote runtime, and reports the result as `RemoteRuntimeCapabilities` plus a `compatibilityWarnings` array on the `RemoteRuntimeConnectResult`. The renderer's remote target panel displays the capability warnings inline in the machine row. Warnings cover:
 
 - Runtime version mismatch, shown as the machine row's version chip (`X → Y`) rather than a sentence; the older machine is the one to update.
-- Remote package channel mismatch (e.g. desktop is `beta`, remote runtime advertises `stable`).
+- Remote package channel mismatch (e.g. desktop is `alpha`, remote runtime advertises `stable`).
 - Missing `machineProjects` capabilities — `browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`. These map to the `projects.*` RPCs the renderer uses for the project picker / new-project / clone flows. Missing capabilities do not block connect, but the connection pool refuses the matching call with a self-describing error when the renderer attempts it (e.g. `Remote ADE service 0.7.2 does not support cloning remote projects.`).
-- The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-beta because .ade did not contain an ADE service for darwin-arm64.`).
+- The bootstrap fell back to a different ADE home (`Using remote runtime home .ade-alpha because .ade did not contain an ADE service for darwin-arm64.`).
 
 ## Runtime artifact layout
 
@@ -1522,7 +1521,7 @@ or behind the desktop that installed it. A version that is not a release tag
 
 | Step | Behavior |
 | --- | --- |
-| Cache location | `<machine ADE dir>/runtime-sidecars/<tag>/<target>/` — channel-scoped like the rest of the ADE home, since a beta desktop uploads beta bytes. Overridable via `RemoteSidecarDeps.cacheRoot` in tests. |
+| Cache location | `<machine ADE dir>/runtime-sidecars/<tag>/<target>/` — channel-scoped like the rest of the ADE home, since an Alpha desktop uploads Alpha bytes. Overridable via `RemoteSidecarDeps.cacheRoot` in tests. |
 | Download | `ade-<target>[.exe]`, `ade-<target>.native.tar.gz`, and that release's `SHA256SUMS`, into a `.staging-<target>-XXXXXX` dir inside the version dir. |
 | Verify | Every asset is checked against the release's own `SHA256SUMS`. A missing entry is as fatal as a mismatch. |
 | Publish | `rename(staging, cacheDir)` — same volume by construction. Losing the race to a concurrent bootstrap adopts its (equally verified) copy; a half-written directory from an interrupted run is removed and re-published rather than wedging every future fetch. |
@@ -1602,7 +1601,7 @@ A standalone brain (`$ADE_HOME/bin/ade serve`, a Node SEA) has no app
   (`$ADE_RUNTIME_ROOT/native/`), then in the installed ADE app's
   `Contents/Resources/native` (Windows: `resources\native`). The app is the one
   the desktop recorded in `$ADE_HOME/runtime/desktop-app.json`, then the
-  channel's app (`ADE`, `ADE Beta`, `ADE Alpha`, or `ADE_DESKTOP_APP_NAME`) in
+  channel's app (`ADE`, `ADE Alpha`, or `ADE_DESKTOP_APP_NAME`) in
   `/Applications` and `~/Applications`, skipping a bundle whose id is another
   channel's, and last the app Spotlight finds by the channel's bundle id (a miss is asked again after five minutes).
   A Spotlight hit counts only when `codesign --verify --strict` passes and its
@@ -1884,8 +1883,8 @@ Three layers now cover that, and they are deliberately different in kind:
   macOS check is a fresh process every 60 s and reads the variable at the next
   check, while the Windows supervisor reads it once at start, so a changed
   machine variable applies after the brain service restarts.
-  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.beta`/`.alpha` per
-    channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
+  - *macOS*: a separate launch agent, `com.ade.watchdog` (`.alpha` for the
+    Alpha channel), `StartInterval` 60 s, running `ade runtime watchdog-check` from
     the same binary the brain was installed from. It is installed and removed
     alongside the brain's own launch agent, best effort — a machine that cannot
     install the watchdog still gets a brain.

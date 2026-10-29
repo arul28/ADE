@@ -41,7 +41,7 @@ all and the surface does not exist.
 | Open files of another process (import-list liveness / CLI session capture) | Degraded | When Sysinternals `handle.exe` is on PATH, ADE lists files a provider CLI has open and treats that as live. Without it, ADE cannot enumerate handles: it does not guess from mtime except as an explicit last-resort fallback, and Claude `--session-id` assignment plus transcript capture still identify ADE-owned sessions. | Windows has no `lsof`. `openfiles /query` requires a global audit flag. |
 | Claude Code sandbox permission modes | Blocked | Permission modes themselves work; the sandbox does not. | Vendor limitation — Claude Code sandboxing is WSL-2 only. Not an ADE gap. |
 | Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | No Keychain. DPAPI is user-scoped rather than per-item ACL'd, so it is a weaker boundary than a Keychain item. |
-| Remote runtime bootstrap from a locally built channel | Blocked | A local `package:beta` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
+| Remote runtime bootstrap from a locally built channel | Blocked | A local `package:alpha` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
 | Windows as an SSH-bootstrap runtime target | Supported | Windows 10 22H2 (build 19045) and Windows 11 x64 can be bootstrapped over Windows OpenSSH Server. | Requires PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server remain unsupported as targets. |
 | Windows ARM64 | Unavailable | x64 only. The Cursor provider is additionally gated on ARM64 even under emulation. | Native and provider payloads are incomplete; `@cursor/sdk` publishes no `win32-arm64` package. |
 | Cross-channel phone-sync launch gate | Degraded | The launch gate skips the listener scan and answers from the sync-host lock file. A hard-killed brain's lock is cleared once its PID is dead. The owner-identity check that rejects a reused PID still runs off the main thread: awaited for a live owner on another channel, and in the background for a same-channel owner, where it only clears a stale lock. The gap: a brain that holds phone sync without a usable lock file (missing, unreadable, or another lock version) is not seen at launch, so two channels can briefly both hold phone sync. `ade serve` still runs the full scan when it starts a brain. | The listener scan is a full-machine `Get-NetTCPConnection` + `Get-CimInstance` PowerShell query. It runs before any window exists, so on every launch it would block first paint — the cost `lsof` does not carry on macOS. |
@@ -243,7 +243,7 @@ prove crash detection and recovery through the supported `ade brain start` or
 repair path rather than claiming that the launcher contains an automatic
 restart loop.
 
-Stable, Beta, Alpha, and custom service labels get separate value names,
+Stable, Alpha, and custom service labels get separate value names,
 launchers, ADE homes, and named pipes. Installation and uninstall also query and
 remove exact Scheduled Task names created by older preview builds. A Scheduled
 Task found during migration is legacy residue; it is not the active supervisor
@@ -311,7 +311,7 @@ the named pipe is healthy.
 
 ## Desktop cannot attach to the local brain
 
-- Confirm desktop and CLI are the same channel. Stable and Beta intentionally
+- Confirm desktop and CLI are the same channel. Stable and Alpha intentionally
   use different ADE homes and pipe names.
 - Close only the affected channel, restart its brain, then relaunch that channel.
 - A second Windows account must not be able to use the first account's pipe.

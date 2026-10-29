@@ -418,7 +418,7 @@ the user can jump directly to either GitHub or the ADE PRs tab.
 ## Channel handling
 
 Only the **Stable** channel claims `ade://` as the OS-default handler.
-Beta and Alpha builds still install the single-instance lock and the
+Alpha builds still install the single-instance lock and the
 `open-url` / `second-instance` listeners (so a manual `duti` binding
 still routes deeplinks to them), but they skip
 `app.setAsDefaultProtocolClient` so they don't fight Stable for the
