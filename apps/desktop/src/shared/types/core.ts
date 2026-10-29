@@ -54,7 +54,7 @@ export type LocalRuntimeStatus = {
   } | null;
   /**
    * "isolated" means the desktop fell back to an app-owned no-sync brain
-   * (phone sync and ADE Code attach to the channel service, which is down).
+   * (phone sync and other machines attach to the channel service, which is down).
    * The pool keeps probing and reinstalling until it migrates back to
    * "primary". "app_fallback" uses the primary socket but disables sync
    * because the desktop owns the brain instead of the machine service.
@@ -705,7 +705,7 @@ export type AppNavigationTarget =
 
 export type AppNavigationRequest = {
   target: AppNavigationTarget;
-  source?: "ade-code" | "desktop" | "cli" | string;
+  source?: "desktop" | "cli" | string;
 };
 
 /**

@@ -13,22 +13,6 @@ const external = [
   "sqlite3",
   "zod",
 ];
-const tuiNoExternal = [
-  "ink",
-  "ink-text-input",
-  "react",
-  "react/jsx-runtime",
-  /^@opencode\/client(?:\/.*)?$/,
-  "@xterm/headless",
-  "marked",
-  "string-width",
-  "ws",
-  "yaml",
-  /^highlight\.js(?:\/.*)?$/,
-  // Reached through the shared logger's Sentry bridge; a no-op in the TUI,
-  // which never starts a Sentry client.
-  /^@sentry\//,
-];
 const packageRoot = path.dirname(fileURLToPath(import.meta.url));
 const cliNodeModules = path.join(packageRoot, "node_modules");
 const packageJson = JSON.parse(readFileSync(path.join(packageRoot, "package.json"), "utf8")) as { version?: string };
@@ -62,7 +46,7 @@ export default defineConfig([
     // Electron-as-node cannot resolve. @muse-code/sdk is ESM-only (zero deps)
     // and inlined for the same reason.
     // string-width: cli.ts reaches it at module scope through
-    // tuiClient/displayWidth (table formatters); the packaged CLI resolves
+    // lib/displayWidth (table formatters); the packaged CLI resolves
     // externals through NODE_PATH into apps/desktop's production tree, which
     // does not ship it (v1.2.75 release smoke). verify-built-cli.mjs guards
     // this class.
@@ -93,50 +77,6 @@ export default defineConfig([
       options.alias = {
         ...(options.alias ?? {}),
         sqlite: "node:sqlite",
-        "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
-        electron: path.join(packageRoot, "src", "electronUnavailableStub.cjs"),
-      };
-    },
-  },
-  {
-    entry: {
-      "tuiClient/cli": "src/tuiClient/cli.tsx"
-    },
-    format: ["esm"],
-    platform: "node",
-    target: "node22",
-    outDir: "dist",
-    sourcemap: true,
-    clean: false,
-    splitting: false,
-    noExternal: tuiNoExternal,
-    banner: {
-      js: [
-        "import { createRequire as __adeCreateRequire } from 'node:module';",
-        "import { fileURLToPath as __adeFileURLToPath } from 'node:url';",
-        "import { dirname as __adeDirname } from 'node:path';",
-        "const require = __adeCreateRequire(import.meta.url);",
-        "const __filename = __adeFileURLToPath(import.meta.url);",
-        "const __dirname = __adeDirname(__filename);",
-      ].join("\n"),
-    },
-    outExtension: () => ({
-      js: ".mjs"
-    }),
-    external,
-    plugins: [asciiBundleSource()],
-    esbuildOptions(options) {
-      options.nodePaths = Array.from(new Set([cliNodeModules, ...(options.nodePaths ?? [])]));
-      options.define = {
-        ...(options.define ?? {}),
-        __ADE_VERSION__: JSON.stringify(version),
-        __ADE_POSTHOG_PROJECT_TOKEN__: JSON.stringify(posthogProjectToken),
-        __ADE_POSTHOG_HOST__: JSON.stringify(process.env.ADE_POSTHOG_HOST?.trim() ?? ""),
-      };
-      options.alias = {
-        ...(options.alias ?? {}),
-        sqlite: "node:sqlite",
-        "react-devtools-core": path.join(packageRoot, "src", "tuiClient", "reactDevtoolsStub.ts"),
         electron: path.join(packageRoot, "src", "electronUnavailableStub.cjs"),
       };
     },

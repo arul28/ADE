@@ -902,7 +902,7 @@ export async function createAdeRuntime(args: {
    * How much of the runtime to build.
    *
    * - "full": everything (the machine brain / project daemon).
-   * - "chat": the TUI + personal-chat runtime. Drops iOS-sim, app-control, and
+   * - "chat": the personal-chat runtime. Drops iOS-sim, app-control, and
    *   the built-in browser bridge, all of which need a desktop host.
    * - "embedded": "chat" minus everything an external embedder must not get.
    *   Automations, their ingress rule dispatch, and auto-update are off, and
@@ -1279,7 +1279,7 @@ export async function createAdeRuntime(args: {
     const processRegistry = createProcessRegistryService({
       db,
       logger,
-      role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
+      role: chatOnlyRuntime ? "chat-runtime" : "ade-serve-daemon",
       projectRoot,
     });
     teardown.push(() => processRegistry.stop());

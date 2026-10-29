@@ -78,7 +78,7 @@ type PersonalChatScopeOptions = {
   createRuntime?: typeof import("../../bootstrap").createAdeRuntime;
   /**
    * Runtime profile for the hidden machine-chat runtime. "chat" is the default
-   * and what the desktop, TUI, and brain all use. "embedded" is for a runtime
+   * and what the desktop and brain both use. "embedded" is for a runtime
    * an external embedder started (`ade runtime run --profile embedded`): same
    * personal-chat surface, no automations, and sync forced off.
    */

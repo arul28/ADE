@@ -407,7 +407,7 @@ describe("parseCursorCliModelsStdout", () => {
     expect(descriptors).toEqual([]);
 
     // The authoritative empty probe must also drop the stale SDK cache, so a
-    // later passive cached-or-fallback read (status/mobile/TUI) reflects the
+    // later passive cached-or-fallback read (status/mobile) reflects the
     // empty result instead of resurrecting the warmed rows.
     const passive = await discoverCursorSdkModelDescriptors("crsr_test", { mode: "cached-or-fallback" });
     expect(passive).toEqual([]);

@@ -66,6 +66,8 @@ private enum WorkUsageColors {
   static let client: [String: Color] = [
     "desktop": ADEColor.purpleAccent,
     "mobile": Color.pink,
+    "cli": ADEColor.success,
+    // An older brain still names the command line `tui`.
     "tui": ADEColor.success,
     "web": Color.teal,
     "api": ADEColor.warning,
@@ -763,7 +765,7 @@ private struct WorkUsageClientMix: View {
     switch client {
     case "desktop": return "Desktop"
     case "mobile": return "Mobile"
-    case "tui": return "ADE Code"
+    case "cli", "tui": return "CLI"
     case "web": return "Web"
     default: return "API"
     }

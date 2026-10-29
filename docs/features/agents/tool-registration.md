@@ -285,7 +285,7 @@ using the active lane worktree as `cwd`, so lane-local
 and bundled ADE resources appear before inherited environment,
 packaged app, and source-fallback roots. The same full root list is
 joined into `ADE_AGENT_SKILLS_DIRS` for ADE-launched CLI sessions,
-Work-tab CLI launches, ADE Code/TUI sessions, the CTO, and
+Work-tab CLI launches, the CTO, and
 mobile-started work that runs through ADE's runtime.
 
 The guidance tells the agent that `ade` *should* be available, and
@@ -324,7 +324,7 @@ ends a command at its first line feed, so `ade.cmd` cut every multi-line
 of `ade-cli-launcher.exe` (`apps/desktop/native/ADECliLauncherWin`) at
 `<shim>\launcher\ade.exe`, beside an `ade.launch` file naming the runtime, the
 entry and the env (`apps/desktop/src/main/services/cli/windowsCliLauncher.ts`);
-the launcher passes the rest of its command line on verbatim. It keeps what `ade.cmd` did: the Node compile cache under `<ADE_HOME>\cache\node-compile` (unless the caller set or disabled one), and real Node (`ADE_CLI_NODE`, or a Node 22+ on PATH) for `ade code`, since Electron run as Node has no TTY on Windows. Ctrl+C reaches the CLI. The desktop
+the launcher passes the rest of its command line on verbatim. It keeps what `ade.cmd` did: the Node compile cache under `<ADE_HOME>\cache\node-compile` (unless the caller set or disabled one). Ctrl+C reaches the CLI. The desktop
 writes the same launcher under userData for the agents it starts. For a
 standalone `ade.exe` brain it is that exe, with its folder on `PATH`. `ade.cmd`
 stays on `PATH` for people typing `ade` in cmd or PowerShell; it sets

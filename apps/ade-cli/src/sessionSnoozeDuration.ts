@@ -1,16 +1,11 @@
 /**
- * Snooze duration parsing, shared by the `ade session snooze` planner in
- * `cli.ts` and the `ade code` TUI's `/session snooze` command.
+ * Snooze duration parsing for the `ade session snooze` planner in `cli.ts`.
+ * There is exactly one cap on how far out a snooze may be parked. Snooze
+ * expiry is DERIVED everywhere (compare `snoozedUntil` to now) — nothing in
+ * here schedules anything.
  *
- * Extracted rather than duplicated: there must be exactly one answer to "what
- * does `1.5h` mean" across the CLI and the terminal client, and exactly one cap
- * on how far out a snooze may be parked. Snooze expiry is DERIVED everywhere
- * (compare `snoozedUntil` to now) — nothing in here schedules anything.
- *
- * The functions return a result union instead of throwing so each surface can
- * dress the failure in its own voice: `cli.ts` re-throws `CliUsageError` with
- * the flag-worded `message`, the TUI switches on `code` to write terminal copy
- * that never mentions a flag the user did not type.
+ * The functions return a result union instead of throwing; `cli.ts` re-throws
+ * `CliUsageError` with the flag-worded `message`.
  */
 
 import { snoozeDeadlineIso } from "../../desktop/src/renderer/lib/sessionSnooze";
@@ -54,7 +49,7 @@ export function isIndefiniteSnooze(
 }
 
 /**
- * The open-ended deadline, delegated to the desktop preset so the CLI, the TUI,
+ * The open-ended deadline, delegated to the desktop preset so the CLI,
  * the desktop menu, and iOS all park an "until asked" row on the exact same
  * instant. Nothing here schedules anything — expiry is still derived by
  * comparing the deadline to now.

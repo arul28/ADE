@@ -318,8 +318,7 @@ export class ChatEventStream {
 
 /**
  * Chat envelopes ride the buffer as `category: "runtime"` with the envelope
- * spread directly into `payload` (not nested under an `event` key) — same shape
- * the project-scoped path uses in `apps/ade-cli/src/tuiClient/connection.ts`.
+ * spread directly into `payload` (not nested under an `event` key).
  */
 export function chatEnvelopeFromBufferedEvent(
   event: BufferedEvent,

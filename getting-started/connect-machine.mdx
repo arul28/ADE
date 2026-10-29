@@ -4,7 +4,7 @@ description: "Run ade connect to put a machine on your ADE account — then reac
 icon: "server"
 ---
 
-ADE's engine is the **brain** — an always-on, machine-owned process that holds your projects, lanes, agent chats, and Git state. The desktop app, `ade code`, the web client, and the iOS app are all *clients* of a brain.
+ADE's engine is the **brain** — an always-on, machine-owned process that holds your projects, lanes, agent chats, and Git state. The desktop app, the web client, and the iOS app are all *clients* of a brain.
 
 That split is what makes this possible: install the brain on a machine, connect it to your account, and drive it from anywhere. A Linux build server with 64 cores can be the machine that runs your agents while you review diffs from your phone.
 
@@ -81,12 +81,6 @@ Linux runs the brain, not a desktop app — and that is the point. There is no A
   </Step>
 </Steps>
 
-You can also stay on the box and use the terminal UI directly:
-
-```bash
-ade code
-```
-
 ## Non-interactive hosts
 
 For CI and unattended agents, do the interactive sign-in once on a machine that has a browser, mint a durable credential, and hand it to the headless host:
@@ -106,7 +100,7 @@ ade logout                      # sign out — undoes the account half of connec
 ade runtime uninstall-service   # remove the login service
 ```
 
-The desktop app, the web client, and the iOS app need an account. The brain does not: local `ade code`, project, and lane workflows keep working on the machine while it is signed out, and `ade connect --no-login` installs the service with no account.
+The desktop app, the web client, and the iOS app need an account. The brain does not: local `ade` CLI, project, and lane workflows keep working on the machine while it is signed out, and `ade connect --no-login` installs the service with no account.
 
 ## Remote machines over SSH, instead
 

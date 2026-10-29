@@ -98,7 +98,7 @@ export function mergeReasoningFragment(existing: string, incoming: string): stri
 /**
  * Collapse a list of reasoning blocks into the blocks that actually differ.
  *
- * Used when a whole list is folded at once (activity-phase merge, the TUI's
+ * Used when a whole list is folded at once (activity-phase merge, an
  * aggregate) rather than appended pairwise like {@link mergeReasoningFragment}.
  * Identical blocks drop, a cumulative re-emit replaces the block it extends, and
  * blocks already contained in another drop — including every earlier block a

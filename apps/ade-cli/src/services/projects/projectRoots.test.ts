@@ -4,7 +4,6 @@ import path from "node:path";
 import { createRequire } from "node:module";
 import { afterEach, describe, expect, it } from "vitest";
 import { findLinkedLaneWorktreeRoot, isRegisteredLinkedLanePath } from "./projectRoots";
-import { detectProjectLaunchContext } from "../../tuiClient/project";
 
 const require = createRequire(import.meta.url);
 const { DatabaseSync } = require("node:sqlite") as {
@@ -65,11 +64,6 @@ describe("linked lane project roots", () => {
       workspaceRoot: fs.realpathSync.native(fixture.worktree),
     });
     expect(isRegisteredLinkedLanePath(fixture.nested)).toBe(true);
-    expect(detectProjectLaunchContext({ cwd: fixture.nested })).toMatchObject({
-      projectRoot: fs.realpathSync.native(fixture.parent),
-      workspaceRoot: fs.realpathSync.native(fixture.worktree),
-      laneHint: null,
-    });
   });
 
   it("uses the parent for a linked checkout without its own ADE database", () => {

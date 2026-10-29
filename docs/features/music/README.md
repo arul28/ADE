@@ -22,7 +22,7 @@ default every time the tab opens**; the **Playing on** menu can send playback
 to the Spotify app, a phone or a speaker instead, and back. Pause, resume,
 seek and volume go straight to ADE's player when it is the one playing; the
 rest goes through the Web API. Spotify Premium is required. This is
-desktop-local, like Apple Music: hosted web, iOS, TUI and CLI have no Music
+desktop-local, like Apple Music: hosted web, iOS and CLI have no Music
 account/control surface, and choosing a remote project never moves music to
 that machine.
 

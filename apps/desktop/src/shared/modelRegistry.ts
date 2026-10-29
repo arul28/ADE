@@ -1685,7 +1685,7 @@ export function getActiveModelManifest(): { manifest: ModelManifest; adeVersion:
 
 /**
  * Adopt the manifest a host sent with its model catalog, if it is newer than
- * the one already applied. Clients (renderer, TUI) talk to hosts that may be a
+ * the one already applied. Clients (renderer) talk to hosts that may be a
  * few minutes apart on the same GitHub file; newest wins so a picker never
  * steps backwards.
  */
@@ -3711,7 +3711,7 @@ export function listModelDescriptorsForProvider(
 ): ModelDescriptor[] {
   const models = listProviderModelsInternal(provider);
   // Claude and Codex have a curated registry order that IS the picker order on
-  // every surface (Settings, the desktop picker catalog, ADE Code). Do not hoist
+  // every surface (Settings, the desktop picker catalog). Do not hoist
   // the provider default here: the two CLI providers already agree with each
   // other, and promoting the default split the picker from Settings. Every other
   // provider still leads with its default, which for most of them is the first

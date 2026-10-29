@@ -168,7 +168,7 @@ export function isCiProducerCheck(appSlug: string | null | undefined): boolean {
   // Unlike the payload-level predicate, an ABSENT slug counts as CI here.
   // These rows come from `PrCheck` lists, and `appSlug` only started being
   // populated in this change — every persisted row, every older host, and the
-  // TUI's own action payloads carry checks with no slug at all. Failing those
+  // some action payloads carry checks with no slug at all. Failing those
   // closed would report "CI has not run" for every legacy payload whose CI
   // genuinely passed, which is the original bug pointing the other way.
   // A named bot is still caught, because the denylist matches on the slug it
@@ -384,7 +384,7 @@ export type PrChecksRowRollup = {
 
 /**
  * Row-level rollup for surfaces that only ever have the merged check list and
- * no required-context knowledge — the `ade` RPC server, the TUI right pane, the
+ * no required-context knowledge — the `ade` RPC server and the
  * chat toolbars.
  *
  * ADE-135: each of those had grown its own pass/fail rule, and each got it

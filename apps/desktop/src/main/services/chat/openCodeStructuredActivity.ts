@@ -56,7 +56,7 @@ function readOpenCodeImageFile(
  *
  * They share the `file` wire shape, so the origin has to come from the caller.
  * Both reuse existing presentation events (whose `codex_` names predate
- * provider parity) so desktop and TUI get the same compact image output.
+ * provider parity) so desktop gets the same compact image output.
  */
 export function mapOpenCodeImagePart(args: {
   part: unknown;

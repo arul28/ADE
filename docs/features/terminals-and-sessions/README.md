@@ -58,7 +58,7 @@ and in tests.
   session-id based write/resize entry points used by mobile sync
   terminal control, `readTranscriptTail({ sessionId, ... })` which
   merges the on-disk transcript tail with the live PTY output tail so
-  Work/TUI terminal hydration can replay output that is still buffered
+  Work terminal hydration can replay output that is still buffered
   in the transcript write stream, `getTranscriptWindow` /
   `readTranscriptSnapshot` for authoritative logical-offset hydration, and
   `readTranscriptRange({ sessionId, startOffset, endOffset })` for mobile
@@ -208,7 +208,7 @@ and in tests.
 - `apps/desktop/src/main/services/runtime/processRegistryService.ts` — per-
   process heartbeat registrar against the machine-local `runtime_processes`
   table, which is excluded from CRR replication because PIDs are OS-local.
-  Every ADE process (desktop main, TUI runtime, `ade serve` daemon) inserts a
+  Every ADE process (desktop main, chat-only runtime, `ade serve` daemon) inserts a
   row on boot keyed by the process incarnation (`pid`, `started_at`),
   refreshes `last_seen` on a 5 s heartbeat, and
   reports live and known owners through `isPidLive(candidatePid)`,
@@ -289,11 +289,6 @@ and in tests.
   meaningful terminal lines). `agentChatService` subscribes to `ptyService.onExit`
   and closes the parent's card through the same delivery path chat children use;
   `ade chat status` / `ade chat read` / `ade chat list` answer for these ids.
-- `apps/ade-cli/src/tuiClient/closedCliSessions.ts`,
-  `apps/ade-cli/src/tuiClient/components/Drawer.tsx` — ADE Code projects spawn
-  lineage from closed tracked CLI resume metadata and shows compact `sub` /
-  `peer` markers for chat and CLI children in the session drawer; missing
-  legacy lineage metadata stays visually quiet.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
@@ -473,7 +468,7 @@ Shared types and IPC:
   `canonicalSessionState()`: it is a synced *visibility overlay*
   (`snoozed_until` / `snoozed_at`), not a lifecycle phase. `isSessionSnoozed`,
   `isSessionSnoozeExpired`, `isWakingSessionError`, and
-  `resolveSessionWakeReason` are the pure helpers desktop, `ade code`, and iOS
+  `resolveSessionWakeReason` are the pure helpers desktop and iOS
   all derive it from. Timer expiry is derived by comparing `snoozed_until` to
   now — there is no scheduler or watchdog. Early wake ("hand-raising") fires on
   a pending approval/input request, a session error **strictly newer than
@@ -520,7 +515,7 @@ Shared types and IPC:
   The activity refines a card's single status slot without moving its parent phase;
   `sessionActivity.test.ts` pins normalization and malformed-input handling.
 - `apps/desktop/src/shared/sessionSpawnNesting.ts` — the one by-lane filing
-  rule desktop, ADE Code, and the iOS Swift mirror consult. Same-lane
+  rule desktop and the iOS Swift mirror consult. Same-lane
   `spawnKind: "subagent"` chats (and tracked CLI `--type subagent` sessions)
   of a parent chat are filed under it and leave the list; peers, and children
   of a tracked CLI or shell parent, stay top-level. Demote
@@ -536,7 +531,7 @@ Shared types and IPC:
   Tested in `sessionSpawnNesting.test.ts`.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
-  and are shared with `ade code` and iOS; this module owns the re-export plus the
+  and are shared with iOS; this module owns the re-export plus the
   client-side deadline math behind the duration menu.
   `SNOOZE_DURATION_OPTIONS` is the fixed-order static superset, shortest window
   first: `In 1 hour`, `This evening` (local 18:00), `Tomorrow` (local 09:00),
@@ -628,34 +623,14 @@ Shared types and IPC:
   snooze expires. The same strip also hosts the lane branch-drift chip
   (`LaneBranchComposerChip`).
 - `apps/ade-cli/src/sessionSnoozeDuration.ts` — snooze duration grammar shared
-  by the `ade session snooze` planner in `cli.ts` and `ade code`'s
-  `/session snooze`, extracted so there is exactly one answer to "what does
+  by the `ade session snooze` planner in `cli.ts`, extracted so there is exactly one answer to "what does
   `1.5h` mean" and exactly one cap (`MAX_SNOOZE_MS`, 30 days — beyond that it is
   almost certainly a typo, and no scheduler exists that could walk the deadline
   back). It accepts an integer or one-decimal amount plus a unit suffix
   (`30m`, `1h`, `1.5h`, `4h`, `1d`, `1w`); a bare number reads as minutes. It
   returns a result union (`{ ok: true, ms }` or
   `{ ok: false, code: "invalid" | "too-short" | "too-long", message }`) instead
-  of throwing, so `cli.ts` can re-throw a flag-worded `CliUsageError` while the
-  TUI switches on `code` to write copy that never mentions a flag the user did
-  not type.
-- `apps/ade-cli/src/tuiClient/sessionLifecycle.ts` — `ade code`'s half of the
-  lifecycle surface: argument parsing for the `/session snooze | wake | settle |
-  unsettle | keep-active` slash commands and the text-only row markers the
-  drawer and right-pane chat list render. Everything semantic is imported rather
-  than re-derived — `isSessionSnoozed` / `isSessionFiledAsSnoozed` from
-  `sessionCanonicalState.ts`, wake and woke-reason copy from `sessionSnooze.ts`,
-  duration grammar from `sessionSnoozeDuration.ts`. `/chat settle` and
-  `/chat unsettle` keep their own active-only dispatch in `app.tsx`.
-- `apps/ade-cli/src/tuiClient/workListModel.ts`, `workListLayout.ts`, and
-  `components/WorkSessionsPane.tsx` — ADE Code sessions pane. Same-lane
-  subagent chats are not rows. The parent card's third line carries `⊚N` and
-  the worst child state's glyph (`✕` failed, `●` needs you, `◐` running), and
-  the chat info pane lists the children (`withRosterSubagentSnapshots`, the
-  same rules as the desktop pane). Filing imports `indexNestedSubagents` from
-  `sessionSpawnNesting.ts`. Every card is three lines. The add-to-grid picker
-  passes `nestSubagents: false`, so a filed subagent can still be tiled. See
-  [ADE Code](../ade-code/README.md).
+  of throwing, so `cli.ts` can re-throw a flag-worded `CliUsageError`.
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts`,
   `adapter/sessionLifecycleSupport.ts`, and `shell/sessionLifecycleChrome.ts` —
   the hosted-web halves. ADE Web has no local database, so every lifecycle
@@ -679,7 +654,7 @@ Shared types and IPC:
   `ExternalSessionSummary`, `ExternalSessionListArgs`,
   `ExternalSessionImportArgs`, and `ExternalSessionImportResult`. This is
   the canonical DTO surface shared by desktop IPC, the ADE action domain,
-  `ade code`, sync remote commands, and iOS.
+  sync remote commands, and iOS.
 - `apps/desktop/src/main/services/probeLocalhostPort.ts` — tiny shared
   helper (`probeLocalhostPort(port, timeoutMs)`) that performs a single
   127.0.0.1 TCP probe with a default 150 ms timeout. Used by the
@@ -727,7 +702,7 @@ Shared types and IPC:
   provider continuation internally — and `ade.pty.resumeSession`, which
   relaunches an ended tracked CLI session without sending a prompt),
   the session-owned `ade.terminal.*` family (`list`, `read`, `preview` —
-  serialized xterm snapshot for the TUI / mobile renderers, `write`,
+  serialized xterm snapshot for the mobile renderer, `write`,
   `signal`, `activeForChat`), and the localhost-probe helper
   `ade.localhost.probePort`, plus `ade.externalSessions.list`,
   `.import`, `.getDetail`, `.watchDetail`, `.unwatchDetail`, and the
@@ -760,7 +735,7 @@ IPC registration:
   handlers, plus `externalSessionsList` / `externalSessionsImport` /
   `externalSessionsGetDetail` and the detail watch handlers.
   `terminalRead` delegates transcript-tail reads to
-  `ptyService` so attached terminal panels and `ade code` get the
+  `ptyService` so attached terminal panels get the
   same live-tail merge as the Work tab.
 
 Renderer surfaces:
@@ -840,9 +815,9 @@ Renderer surfaces:
   from prompt previews.
 - `apps/desktop/src/shared/externalSessionPolicy.ts` — the one import policy
   (`PROVIDER_IMPORT_RULES`, `effectiveImportRules`, `planImport`,
-  `importRejectionReason`), used by desktop, `ade code`, and the host import
+  `importRejectionReason`), used by desktop and the host import
   guard, and ported to Swift for iOS. `importProviderLabel` there is the
-  provider label every desktop and TUI surface uses.
+  provider label every desktop surface uses.
   `shared/externalSessionAffordances.ts` holds the row display helpers:
   `shortenExternalSessionCwd` and `formatExternalSessionSize`.
 - `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` —
@@ -1572,7 +1547,7 @@ Renderer surfaces:
   toast. Hydration, snapshots, replay and output buffered while hidden are
   written through `writeTerminalHistory`, which brackets those bytes with
   ordered write callbacks so an old copy is never acted on again. The brain's
-  headless mirror and the `ade code` TUI ignore OSC 52; the iOS terminal
+  headless mirror ignores OSC 52; the iOS terminal
   (SwiftTerm) copies live output only and skips history feeds. Shift+drag remains available for local text
   selection when a full-screen CLI enables terminal mouse tracking; on macOS,
   ADE translates that gesture to xterm's Option-based force-selection path so
@@ -2030,20 +2005,13 @@ Renderer surfaces:
   to disk via a transient anchor + Object URL. The utility is retained,
   but the current session-list footer does not expose an export action.
 
-ADE CLI / TUI runtime surfaces:
+ADE CLI runtime surfaces:
 
 - `apps/ade-cli/src/bootstrap.ts` — constructs the shared
   `externalSessionsService` inside the daemon/runtime alongside
   `ptyService`, `sessionService`, and `agentChatService`, making the
-  `external-sessions` ADE action domain available to desktop, `ade code`,
+  `external-sessions` ADE action domain available to desktop,
   sync remote commands, and headless runtimes.
-- `apps/ade-cli/src/tuiClient/externalSessionBrowser.ts` and
-  `apps/ade-cli/src/tuiClient/app.tsx` — `ade code` import browser.
-  It reuses the same shared DTOs and `planImport` as desktop (rows show the
-  home lane; actions default to that lane; a refresh that moves a different
-  session under the cursor clears the row's picks), then
-  calls `external-sessions.list` / `external-sessions.import` through the
-  TUI action connection.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` —
   registers `work.listExternalSessions`,
   `work.getExternalSessionDetail`, and `work.importExternalSession` for
@@ -2181,7 +2149,7 @@ lane's worktree root), or `none`:
 | Kimi, Copilot | `none` | `any` | `home` | `none` |
 
 The host's per-row capability flags can only narrow this table (for example
-when the source folder is missing). The desktop dialog, `ade code`, and iOS
+when the source folder is missing). The desktop dialog and iOS
 render the same `planImport` result, and the host refuses any import the plan
 would not offer (`importRejectionReason`).
 
@@ -2610,8 +2578,7 @@ not affect canonical session state; iOS stores them for sync compatibility.
    under an "Until I'm asked" (~100 year) deadline. The desktop flat list and
    `buildWorkTabGroupModel` consume that rule through
    `effectiveSessionFilingBuckets` (whose base rule is `sessionFilingBucket`);
-   the `ade code` row marker
-   (`tuiClient/sessionLifecycle.ts`), and the iOS `workSessionGroups` snoozed
+   the iOS `workSessionGroups` snoozed
    tail all use it; `isSessionSnoozed` stays the raw read for row chrome.
 
    Agent- and operator-reachable entry points:
@@ -2622,14 +2589,12 @@ not affect canonical session state; iOS stores them for sync compatibility.
      raw action list. Each takes the id as a positional, accepts
      `--session <id>`, and falls back to `$ADE_CHAT_SESSION_ID`, so a bound
      agent can file itself. Duration grammar and the 30-day cap come from
-     `sessionSnoozeDuration.ts`, shared verbatim with `ade code`'s
-     `/session …` commands. `ade session settle | unsettle | keep-active` and
+     `sessionSnoozeDuration.ts`, shared with the `ade session` commands. `ade session settle | unsettle | keep-active` and
      `ade chat settle | unsettle` are **retired**: they exit 2 with a message
      naming the two remaining paths (the user, and the PR-merge policy).
    - Action registry (`session` domain) — agent-reachable: `snoozeSession`,
      `snoozeSessions`, `wakeSession`, `wakeSessions`, `clearWokeMarker`.
-     CTO-only (i.e. reachable from the desktop renderer's remote-runtime client
-     and `ade code`, both of which authenticate at cto role, but refused for a
+     CTO-only (i.e. reachable from the desktop renderer's remote-runtime client, which authenticates at cto role, but refused for a
      session-bound agent): `settleSession`, `unsettleSession`, `settleSessions`,
      `unsettleSessions`, `setSettleOverride`. The caller-scoped
      `settleSelfSession` / `unsettleSelfSession` pair no longer exists.
@@ -2662,7 +2627,7 @@ not affect canonical session state; iOS stores them for sync compatibility.
    orphaned `running` rows as `detached`. Ownership is gated through the
    process registry's live and known local owner sets: a row whose owner is
    live belongs to a sibling process (another desktop window, the `ade serve`
-   daemon, an attached `ade code` TUI) and is left alone; a row whose owner is
+   daemon, an attached CLI runtime) and is left alone; a row whose owner is
    known on this machine but no longer live can be swept; a row whose owner is
    unknown is preserved because it may belong to another synced machine.
    Freshly started or recently-outputting rows get a short grace window before
@@ -2747,7 +2712,7 @@ in-memory reset stays separate.
   `effectiveSessionFilingBuckets` (whose base rule is `sessionFilingBucket`,
   canonical lifecycle plus
   `isSessionFiledAsSnoozed`), and rendered as two separate tails; every
-  surface — desktop, iOS, `ade code`, hosted web, `ade` CLI, CTO tools — has
+  surface — desktop, iOS, hosted web, `ade` CLI, CTO tools — has
   both. Nothing about session lifecycle is desktop-only.
 - **Two-tier attention** — the Your move bucket contains loud `needs_you` rows
   and quiet resting chats/idle CLIs. Only canonical `needs_you` increments the
@@ -2829,13 +2794,13 @@ PTY:
 | `ade.pty.data` (event) | stream stdout/stderr to the renderer |
 | `ade.pty.exit` (event) | final exit code |
 
-Attached terminals (`ade.terminal.*` — used by the chat/CLI terminal panel, the App Control panel, the TUI `TerminalPane`, and the headless `ade terminal` / `ade app-control` CLI commands):
+Attached terminals (`ade.terminal.*` — used by the chat/CLI terminal panel, the App Control panel, and the headless `ade terminal` / `ade app-control` CLI commands):
 
 | Channel | Purpose |
 |---|---|
 | `ade.terminal.list` | list `ChatTerminalSession[]` (filterable by owner `chatSessionId` and/or `laneId`). Rich rows: `toolType`, `goal`, `resumeCommand`, `resumeMetadata`, `lastOutputPreview`, `summary`, status / runtime state. Chat-toolType sessions are filtered out so the surface only lists shells and tracked agent CLI terminals. |
 | `ade.terminal.read` | tail scrollback by explicit `terminalId` *or* by owner `chatSessionId`. Returns `{ terminalId, data, nextSince }` for incremental polling. |
-| `ade.terminal.preview` | serialized buffer snapshot for the TUI/mobile renderers. Each live PTY mirrors output into an `@xterm/headless` Terminal + `SerializeAddon` and debounce-writes a JSON file under `.ade/cache/terminal-snapshots/`. The preview call flushes the in-flight write, reads the snapshot (`TerminalSerializedSnapshot` with serialized scrollback, visible-row cells, cursor / viewport / buffer-type metadata), and falls back to a transcript tail when no snapshot exists yet. |
+| `ade.terminal.preview` | serialized buffer snapshot for the mobile renderer. Each live PTY mirrors output into an `@xterm/headless` Terminal + `SerializeAddon` and debounce-writes a JSON file under `.ade/cache/terminal-snapshots/`. The preview call flushes the in-flight write, reads the snapshot (`TerminalSerializedSnapshot` with serialized scrollback, visible-row cells, cursor / viewport / buffer-type metadata), and falls back to a transcript tail when no snapshot exists yet. |
 | `ade.terminal.write` | write bytes to a terminal (by `terminalId`, `ptyId`, or owner `chatSessionId`). |
 | `ade.terminal.resize` | resize the live PTY (cols, rows) by `terminalId`, `ptyId`, or owner `chatSessionId`. Clamps dims and rebroadcasts the new size to the snapshot mirror. |
 | `ade.terminal.signal` | deliver `SIGINT` / `SIGTERM` / `SIGKILL` to the resolved terminal. |
@@ -3068,7 +3033,7 @@ sliding window, not an absolute offset).
   from a tracked CLI subagent.
 - **Spawn nesting is one shared rule.** Same-lane `spawnKind: "subagent"`
   filing lives in `sessionSpawnNesting.ts`, with a Swift mirror in
-  `WorkSpawnNesting.swift`. Desktop, ADE Code, and iOS consult that index. Do
+  `WorkSpawnNesting.swift`. Desktop and iOS consult that index. Do
   not re-derive nest / quiet-parent pull-up / grandchild flatten in a list
   renderer — a demote, a quiet parent, or a grandchild will disagree across
   surfaces. `ade chat list` stays a flat table on purpose.

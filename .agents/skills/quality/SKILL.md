@@ -22,7 +22,7 @@ The loop's quality gate: find the bugs, clean up the code. Run after the work is
 implemented (`/context → work → /quality`), before `/test`. It opens the PR as
 its first step so CI and the review bots run while it reviews, and it acts on
 their results before it finishes. This skill is correctness + maintainability
-only — docs, CLI, TUI, and mobile **parity** are
+only — docs, CLI, and mobile **parity** are
 owned by `/test`'s parity passes, so it does not touch them.
 
 Print a one-line phase status as you go (no banner). Update it after each phase:

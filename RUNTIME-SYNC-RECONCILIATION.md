@@ -434,7 +434,7 @@ and "socket" as user-facing terms everywhere; standardize on `brain` + `runtime`
    source of truth other docs link to.
 2. **Internal docs (`docs/`):** rewrite to the new model and fix EVERY grievance in
    §11 — `ARCHITECTURE.md`, `PRD.md`, `README.md`, `features/sync-and-multi-device/*`,
-   `features/remote-runtime/*`, `features/ade-code/*`, `apps/ade-cli/README.md`.
+   `features/remote-runtime/*`, `apps/ade-cli/README.md`.
    "daemon"→"brain"/"runtime"; remove "project-specific sync host" overstatement
    (G2); fix "one daemon per machine" hard claim (G5); document per-project-port
    mobile reality (G7) + channel-aware service identity (G8); brain==host==cluster

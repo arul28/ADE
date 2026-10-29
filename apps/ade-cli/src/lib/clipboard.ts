@@ -1,5 +1,5 @@
 // ---------------------------------------------------------------------------
-// Cross-platform clipboard helper used by CLI commands and the TUI.
+// Cross-platform clipboard helper used by CLI commands.
 //
 // Picks the right system clipboard binary for darwin (pbcopy), win32 (clip),
 // or Linux (wl-copy / xclip). Returns `false` when no usable binary is found
@@ -9,7 +9,7 @@
 // Wayland caveat: `wl-copy` forks a daemon that owns the selection until the
 // clipboard is overwritten. If that daemon inherits our stdout/stderr pipes,
 // `spawnSync` waits for those pipes to close and blocks for as long as the
-// selection lives — `ade report-issue --open` and the TUI `/report-issue`
+// selection lives — `ade report-issue --open`
 // keybinds would hang forever. Discarding stdout/stderr (so the daemon holds
 // no pipe of ours) plus a bounded timeout keeps the call finite on every
 // platform. `xclip`, the one X11 fallback we try, daemonizes the same way.

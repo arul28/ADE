@@ -6,7 +6,7 @@ import { syntheticCallerId } from "./syntheticCallerId";
  *
  * The brain keeps user-only verbs (deleting an installed simulator) for these
  * names. The name is the client's own claim, so this separates the desktop from
- * the `ade` CLI and TUI; it is not authentication.
+ * the `ade` CLI; it is not authentication.
  */
 export const DESKTOP_CLIENT_NAMES = {
   local: "ade-desktop-local",

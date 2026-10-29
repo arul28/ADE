@@ -14736,7 +14736,7 @@ final class SyncService: ObservableObject {
       guard let self else { throw CancellationError() }
       // Cursor/droid model lists are discovered dynamically on the host;
       // activate the runtime so a fresh key surfaces models on first fetch
-      // instead of returning an empty passive cache (mirrors the TUI). Mobile
+      // instead of returning an empty passive cache (mirrors the desktop). Mobile
       // chats run cursor models through the SDK, so only that source is
       // probed synchronously — the CLI flavor revalidates in the background.
       var args: [String: Any] = ["provider": normalizedProvider]
@@ -14894,8 +14894,8 @@ final class SyncService: ObservableObject {
   // MARK: - Cross-surface model picker (favorites + recents)
   //
   // Mirrors the desktop `useModelFavorites` / `useModelRecents` hooks and the
-  // TUI implementation. Backed by the per-project cr-sqlite DB on the ade-cli
-  // host so favorites and recents converge across desktop, TUI, and iOS via
+  // desktop implementation. Backed by the per-project cr-sqlite DB on the ade-cli
+  // host so favorites and recents converge across desktop and iOS via
   // sync. Recents are capped at 10 server-side — the client should not pre-trim.
 
   func getModelFavorites() async throws -> [String] {

@@ -1,6 +1,6 @@
 // Human-facing provider name for a pending-input `source`
 // ("claude" -> "Claude", "codex" -> "Codex", ...). Shared by the desktop chat
-// card, the iOS companion, and the `ade code` TUI so the question/plan header
+// card and the iOS companion so the question/plan header
 // reads the same on every surface.
 import { PROVIDER_DISPLAY_NAME } from "./providers";
 

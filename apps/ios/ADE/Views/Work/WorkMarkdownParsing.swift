@@ -1515,7 +1515,7 @@ let workSceneFenceLanguage = "scene"
 /// The FIRST whitespace-delimited token, not the whole info string. A fence
 /// opened ```` ```scene generated ```` is a scene everywhere else — desktop
 /// reads the language out of rehype's `language-scene` class, which is the
-/// first word, and the TUI splits on whitespace — so comparing the whole
+/// first word, and desktop splits on whitespace — so comparing the whole
 /// string made the phone the one surface that dumped the raw HTML into the
 /// transcript.
 func workIsSceneFenceLanguage(_ language: String?) -> Bool {
@@ -1547,7 +1547,7 @@ func workSceneFenceTitle(_ source: String) -> String? {
 }
 
 /// One line standing in for a scene on a surface that cannot run one. Mirrors
-/// desktop `summarizeSceneFence` so the TUI, the CLI and the phone all collapse
+/// desktop `summarizeSceneFence` so the CLI and the phone all collapse
 /// a scene the same way.
 func workSummarizeSceneFence(_ source: String) -> String {
   "[scene: \(workSceneFenceTitle(source) ?? "generated view")]"

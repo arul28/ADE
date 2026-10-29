@@ -186,7 +186,7 @@ export const compactRunningCommandOutput = (
  * Recognize this module's own wrapper by its shape.
  *
  * Deliberately not a marker key: every surface that shows an object-shaped tool
- * result renders it as a JSON dump (desktop card and collapsed preview, the TUI
+ * result renders it as a JSON dump (desktop card and collapsed preview
  * one-liner, the iOS Result block), so an added key becomes the first line the
  * user reads. Shape detection also recognizes wrappers already written to disk
  * by builds that predate this check, which a marker never could.
@@ -396,7 +396,7 @@ export const compactChatEventForStorage = (event: AgentChatEvent): AgentChatEven
  * shrinking on reconnect is a bug users could see.
  *
  * Then drop the fields no client reads. `structured` is not a coding key in the
- * iOS decoder at all and has no renderer, TUI, or web consumer; `toolResultMeta`
+ * iOS decoder at all and has no renderer or web consumer; `toolResultMeta`
  * is written once and never read anywhere. Sending them costs the phone a
  * download and a JSON parse to produce something it immediately discards.
  *

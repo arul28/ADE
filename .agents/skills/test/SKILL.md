@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI/TUI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts or close a real coverage gap (no tautological, change-detector, or duplicate regression tests; the default is zero new tests), then run only the touched test files and harvest the early PR. Also keeps docs/mobile/CLI parity in lockstep, and syncs the published @ade-dev SDK packages when a mirrored ADE surface changes (mirror-sync only, never scope expansion).'
 ---
 
 # /test — Test Suite Steward
@@ -114,7 +114,7 @@ claims, token refresh ordering) that an E2E run cannot reach reliably.
 `docs/logging.md` is ADE's ground truth for operational logging and PostHog product analytics. Before Pass 1:
 
 1. Verify `docs/logging.md` exists and read it in full. A missing file is a failed `/test` run, not an optional docs gap.
-2. Review the entire branch diff for meaningful new user decisions, successful mutations, coarse workflow outcomes, screens, or product-level failure categories on desktop, runtime/API, hosted web, TUI, native iOS, and the public site.
+2. Review the entire branch diff for meaningful new user decisions, successful mutations, coarse workflow outcomes, screens, or product-level failure categories on desktop, runtime/API, hosted web, native iOS, and the public site.
 3. For applicable behavior, verify it is captured at the durable owner boundary using the existing closed taxonomy, sanitizers, consent path, deduplication, and hard local budgets. Prefer `ade_feature_used` plus coarse properties over a new top-level event. High-frequency reads, renders, polling, streaming, terminal bytes, progress, and retries must be aggregated locally or left untracked.
 4. If the change is not analytics-applicable, record the concrete reason in the summary. "No analytics changes" without inspecting the behavior is not sufficient.
 5. When the analytics contract changes, update `docs/logging.md`, the relevant allowlists and boundary tests, and `scripts/posthog/dashboard-spec.mjs` when a dashboard depends on the change. Validate the provisioner spec and tests.
@@ -362,9 +362,9 @@ Fix until passing before moving to the next.
 
 ---
 
-## Parity Passes (4–9)
+## Parity Passes (4–8)
 
-After the test-suite work above, the parity passes keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
+After the test-suite work above, the parity passes keep docs, iOS, the CLI, the published SDK packages, and ADE MCP in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
 
 **Triage first. The number of agents is not fixed.** Map the changed paths (`git diff "$TEST_REVIEW_BASE" --name-only` plus untracked files) to the surfaces each pass owns, using the trigger paths in each pass below:
 
@@ -453,7 +453,6 @@ Step 2: Map changed source to internal docs
 | apps/desktop/src/shared/                           | docs/ARCHITECTURE.md + touching feature's doc      |
 | apps/desktop/src/renderer/components/<area>/       | docs/features/<same-area>/                         |
 | apps/desktop/src/renderer/state/                   | docs/ARCHITECTURE.md (UI framework)                |
-| apps/ade-cli/src/tuiClient/                        | docs/features/ade-code/README.md + docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) |
 | apps/ade-cli/                                      | docs/ARCHITECTURE.md (ADE CLI / Build/Test/Deploy) + docs/features/agents/ |
 | .github/workflows/                                 | docs/ARCHITECTURE.md (Build/Test/Deploy)           |
 | apps/ios/                                          | docs/features/sync-and-multi-device/ios-companion.md |
@@ -630,66 +629,7 @@ Report:
 
 ---
 
-## Pass 7: TUI parity
-
-`apps/ade-cli/src/tuiClient/` is the terminal client for `ade code`. It surfaces lanes, chats, git state, and slash commands in a 28-col Drawer + 38-col RightPane Ink UI. When desktop or ade-cli changes, the TUI must stay in lockstep — most commonly because a new git/lane/PR action becomes available, a slash command is renamed, or a lane summary field is added.
-
-Spawn a general-purpose agent with this prompt:
-
-```
-You are the ADE TUI parity reviewer.
-
-`apps/ade-cli/src/tuiClient/` is the terminal client for `ade code`. It surfaces lanes, chats, git
-state, and slash commands in a 28-col Drawer + 38-col RightPane Ink UI.
-When desktop or ade-cli changes, the TUI must stay in lockstep — most
-commonly because a new git/lane/PR action becomes available, a slash
-command is renamed, or a lane summary field is added.
-
-Step 1: Get branch context
-  git diff "$TEST_REVIEW_BASE" --name-only
-  git diff "$TEST_REVIEW_BASE" --stat | tail -30
-
-Step 2: Identify TUI-relevant changes. Treat as candidates:
-- apps/desktop/src/shared/types/lanes.ts, /chat, /sync — TUI imports these directly.
-- apps/ade-cli/src/adeRpcServer.ts new actions — should appear in BUILTIN_COMMANDS or via /ade.
-- New IPC handlers in window.ade.git/.lanes/.app/.prs — TUI may want a slash command + right-pane action wrapper.
-
-Step 3: Map to the TUI surface
-- Slash commands: apps/ade-cli/src/tuiClient/commands.ts BUILTIN_COMMANDS.
-- Slash dispatch: apps/ade-cli/src/tuiClient/app.tsx (search by name pattern, e.g. `if (name === "/push")`).
-- Sidebar rendering: apps/ade-cli/src/tuiClient/components/Drawer.tsx.
-- Right pane content kinds: apps/ade-cli/src/tuiClient/components/RightPane.tsx + types.ts (RightPaneContent union).
-- ADE API calls: apps/ade-cli/src/tuiClient/adeApi.ts.
-
-Step 4: Apply auto-fix edits — scoped to apps/ade-cli/src/tuiClient/ only.
-- New action: add a BUILTIN_COMMANDS entry + dispatch case. Mirror existing
-  shape (placement, argumentHint).
-- Renamed action: rename in commands.ts and the dispatch handler. Keep the
-  user-facing slash name stable when possible — flag breaking renames.
-- Removed action: delete the BUILTIN_COMMANDS entry and its dispatch case.
-- New LaneSummary or AgentChatSessionSummary fields: surface in Drawer.tsx
-  if relevant to lane/chat list rendering, or in lane-details RightPane
-  block if relevant to status.
-
-Step 5: Validate
-  cd apps/ade-cli && npm run typecheck
-  cd apps/ade-cli && npx vitest run src/tuiClient
-
-Out of scope:
-- Do NOT edit apps/desktop/ or apps/ios/.
-- Do NOT edit unrelated apps/ade-cli code unless the `ade code` launcher in apps/ade-cli/src/cli.ts must change with the TUI.
-- Do NOT touch docs/ — the docs agent owns that.
-
-Report:
-- apps/ade-cli/src/tuiClient/ files changed (or "no TUI changes required")
-- For each branch change: source change → TUI change, or why not applicable
-- Any breaking slash-command renames
-- typecheck and test results
-```
-
----
-
-## Pass 8: SDK parity (mirror-sync only — never scope expansion)
+## Pass 7: SDK parity (mirror-sync only — never scope expansion)
 
 `packages/sdk` (`@ade-dev/sdk`) and `packages/chat-ui` (`@ade-dev/chat-ui`) are
 published npm packages that MIRROR a deliberately small subset of real ADE.
@@ -774,7 +714,7 @@ Report:
 - typecheck/test/preflight/validate-docs results
 ```
 
-## Pass 9: ADE MCP parity
+## Pass 8: ADE MCP parity
 
 ADE MCP lets outside agents (claude.ai, Claude desktop, ChatGPT, Grok, Cursor,
 VS Code, scripts) use ADE on every computer of the account
@@ -965,7 +905,6 @@ Parity:
 - Docs: <files updated, or "none required"> — validation PASS / blocked
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
 - CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
-- TUI: <apps/ade-cli/src/tuiClient files changed, or "none required"> — typecheck + tests PASS / blocked
 - ADE MCP: <typed tools / views / routing / budget changes, or "nothing needed — <reason>"> — PASS / listed for user
 - SDK: <packages/sdk + packages/chat-ui files changed + version bump, or "no mirrored surface touched", with any "not mirrored — out of SDK scope" items listed> — typecheck + tests + preflight PASS / blocked
 - Breaking flag/command/slash renames: <list, or "none">

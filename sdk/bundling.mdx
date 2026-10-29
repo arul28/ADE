@@ -30,10 +30,9 @@ Install a specific platform package directly when you cross-build: `npm install 
 Install with a version that matches the ADE release you tested against. The npm version of a runtime package is the ADE release version.
 </Note>
 
-These packages use the runtime's `embedded` profile. They omit the TUI bundle
-and UI-only packages, `@linear/sdk`, and cr-sqlite, which the embedded profile
+These packages use the runtime's `embedded` profile. They omit UI-only packages, `@linear/sdk`, and cr-sqlite, which the embedded profile
 does not load. The full ADE CLI runtime archive keeps those pieces for
-`ade code`, Linear, and sync. Both retain `node-pty` for personal-chat terminal
+Linear and sync. Both retain `node-pty` for personal-chat terminal
 mentions and tracked CLI sessions. Provider CLIs are resolved from ADE's pinned
 tools cache; the runtime archive does not carry a duplicate OpenCode executable.
 The Droid SDK is bundled into the CLI, so its package directory is omitted while

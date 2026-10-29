@@ -1995,7 +1995,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         // Resolved through the shared reader, not `event.requestKind` alone:
         // the CLI talks to whatever host is installed, and one that predates
         // the top-level field still carries the kind in `detail.request`. The
-        // TUI transcript reads it the same way. Neither present is an approval,
+        // the transcript reads it the same way. Neither present is an approval,
         // which is what a host with no question support meant.
         const isQuestion = isQuestionKind(approvalRequestKind(event));
         setRunPhase(run, isQuestion ? "waiting_for_input" : "waiting_for_approval");

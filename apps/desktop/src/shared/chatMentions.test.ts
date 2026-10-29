@@ -26,7 +26,7 @@ describe("parseChatMentionKindFilter", () => {
     ["lane", "lane", ""],
     ["term", "terminal", ""],
     ["terminal", "terminal", ""],
-    // iOS and the TUI send `mcp <query>` for an `@mcp:` prefix.
+    // iOS sends `mcp <query>` for an `@mcp:` prefix.
     ["mcp", "mcp", ""],
     ["mcp github", "mcp", "github"],
     ["server", "mcp", ""],

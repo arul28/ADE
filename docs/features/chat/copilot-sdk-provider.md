@@ -9,7 +9,7 @@ the same name.
 
 Read this before changing the Copilot branch of `agentChatService.ts`, anything
 under `apps/desktop/src/main/services/chat/copilotSdk*`, or the Copilot
-permission and model mappings in the renderer, the TUI, or iOS.
+permission and model mappings in the renderer or iOS.
 
 The other ACP providers (Qwen Code, Kimi Code, Grok, Devin) still run over the
 shared ACP host. Their spec is `acp-providers-spec.md`.
@@ -395,7 +395,7 @@ Titles and summaries run on a utility session, not on a chat:
   belongs to the source machine's Copilot CLI and cannot be resumed by another
   machine's install. Same-machine handoff fork is offered.
 
-## CLI and TUI
+## CLI
 
 `ade chat create` and `ade new chat` take three Copilot flags. Passing one with
 another provider is an error.
@@ -403,9 +403,6 @@ another provider is an error.
 - `--copilot-permission-mode`: `plan`, `ask`, `assisted`, `auto-edit` or `full-auto`.
 - `--copilot-context-tier`: `default` or `long_context`.
 - `--copilot-auto-tier`: `efficiency`, `balance` or `intelligence`.
-
-The TUI setup pane shows the same five permission modes, the context-tier toggle
-and the Auto profile row.
 
 ## Legacy chats
 

@@ -270,7 +270,7 @@ export function isMeaningfulUsageAction(action: string): boolean {
 export function usageClientSurfaceFromRpcName(clientName: string | null | undefined): AdeUsageClientSurface {
   const normalized = clientName?.trim().toLowerCase() ?? "";
   if (normalized.includes("ade-desktop")) return "desktop";
-  if (normalized.includes("ade-code") || normalized === "ade-cli") return "tui";
+  if (normalized === "ade-cli") return "cli";
   if (normalized.includes("web")) return "web";
   return "api";
 }

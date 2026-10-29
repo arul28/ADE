@@ -828,7 +828,7 @@ export type ChatTerminalWriteArgs = {
   chatSessionId?: string | null;
   data: string;
   /**
-   * The person typed this (ADE Code), not an agent. Claims an agent-started
+   * The person typed this, not an agent. Claims an agent-started
    * shell for the user so the dead-shell cleanup leaves it alone.
    */
   fromUser?: boolean;

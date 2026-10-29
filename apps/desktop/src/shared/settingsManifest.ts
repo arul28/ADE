@@ -406,7 +406,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   {
     id: "general.ade-cli",
     label: "ADE command line",
-    keywords: ["cli", "terminal", "ade code", "install", "path", "shell"],
+    keywords: ["cli", "terminal", "install", "path", "shell"],
     tab: "service",
     anchor: "ade-cli",
     scope: "machine",

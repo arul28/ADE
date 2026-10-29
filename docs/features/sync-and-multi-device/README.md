@@ -4,7 +4,7 @@ ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other computers, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
-desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
+desktop-to-runtime and iOS connections. The account-gated cloud
 tunnel relay is eligible whenever the machine is signed in to an ADE account,
 unless its owner turned **ADE Relay** off for that computer in Settings ›
 Account (see *Per-computer relay switch* below). Two
@@ -34,7 +34,7 @@ does and does not travel, and the layers that implement it. Deep-dives:
   capsule, destination setup, and idempotent recovery.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
-  consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
+  consolidation relay, desktop/web/iOS reads, native Mac presentation,
   per-device policy, exact routing, acknowledgments, and ownership fences.
 
 Web client: the browser client is another controller of the same machine
@@ -52,7 +52,7 @@ that path is not a guest account and never becomes an account-wide view.
 
 Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
-the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
+the account relay, while signed-in desktop, hosted web, and iOS read
 the consolidated account stream through an account-scoped path. Navigation and
 actions still carry the owning machine/project/session so the client can adopt
 or select the correct destination. Without an account, a client may show only a
@@ -67,7 +67,7 @@ The brain rejects iOS builds older than `MIN_SUPPORTED_MOBILE_APP_BUILD` with `p
 The sync authority is the machine-owned `ade serve` runtime in
 `apps/ade-cli/`. The desktop renderer is just another client of that
 runtime — it attaches through the local runtime connection pool, exactly
-the same way `ade code` and the iOS app do.
+the same way the iOS app does.
 
 This is the inversion to internalise: the desktop is no longer the
 sync authority. A desktop window that is bound to a remote runtime is therefore
@@ -343,8 +343,8 @@ Every native paired controller ranks routes the same way:
 3. ADE Relay, only with a fresh matching account proof.
 
 Within the LAN and tailnet tiers, current discovery outranks stale saved
-metadata and recent successful endpoints break ties. ADE Code and the desktop
-paired-runtime pool walk that ranking as sequential phases through
+metadata and recent successful endpoints break ties. The desktop
+paired-runtime pool walks that ranking as sequential phases through
 `buildPairedEndpointCandidates`. iOS races the whole ranked plan at once
 instead: the same preference decides who is dialed first, but a Relay candidate
 joins the race a few hundred milliseconds behind the leading direct candidate
@@ -729,7 +729,7 @@ Runtime support files outside `services/sync/`:
   desktop rotation from the brain and the CLI, which is exactly the process pair
   it exists to coordinate.
 - `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
-  account-machine list/delete/rename/adoption for ADE Code and the runtime.
+  account-machine list/delete/rename/adoption for the runtime.
   Rename writes the account-owned `customName` field without changing the
   hostname reported by publisher heartbeats; clearing the custom name restores
   the reported hostname as the display fallback. Directory 401 responses
@@ -982,8 +982,7 @@ Runtime support files outside `services/sync/`:
 - `apps/desktop/src/shared/reconnectOutcome.ts` — what a reconnect did, in one
   sentence: `describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
   `readReconnectResult`, and the `ReconnectOutcome` type. The desktop's
-  Reconnect surfaces, `ade machines reconnect --text`, and the `ade code`
-  `/reconnect` notice all read it, so they cannot disagree. A result that needs
+  Reconnect surfaces, and `ade machines reconnect --text` all read it, so they cannot disagree. A result that needs
   a fresh sign-in says "Confirm it's you", never "Sign in again".
 - `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
   the single decoder for "why did the directory refuse to register this
@@ -1231,7 +1230,7 @@ Runtime support files outside `services/sync/`:
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
   `pendingKeys`) — how
-  desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
+  desktop, the CLI, and iOS reach the stores through the brain.
   The domains remain separate: settings are non-secret account preferences,
   while vault reads/writes are host/CTO policy-gated credential operations.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
@@ -1343,7 +1342,7 @@ Runtime support files outside `services/sync/`:
   dialable endpoint is `offline`/`unreachable`.
 
 - `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
-  used by multi-project RPC and desktop/TUI event streams. Retains up to
+  used by multi-project RPC and desktop event streams. Retains up to
   10,000 events / 16 MB total / 1 MB per event by default, emits live
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
@@ -2517,7 +2516,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   history scans or sends provider credentials to the controller.
   Lane snapshots support lightweight refreshes; lane detail uses the scoped lane-summary path.
   Model-picker commands read/write the same per-project CRR-backed
-  favorites/recents store as desktop and the TUI; the sync service falls
+  favorites/recents store as desktop; the sync service falls
   back to the DB-wired shared store when no explicit accessor is
   injected, so iOS never reads an empty process stub in production.
   The `personalChats.*` family is registered from the shared
@@ -2934,8 +2933,8 @@ Account Activity and push:
   brain writes the column on each agent item as `boardColumn`; see
   [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  conformance fixture for the older six-group table. Desktop, the web client and
-  ADE Code no longer group by it; the relay still fills the Live Activity's
+  conformance fixture for the older six-group table. Desktop and the web client
+  no longer group by it; the relay still fills the Live Activity's
   legacy `groups` field from it for old iOS builds, so the relay (and the iOS
   mirror, until it moves) run these cases.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
@@ -3008,10 +3007,6 @@ Account Activity and push:
 - `apps/desktop/src/renderer/webclient/adapter/attention.ts` — direct browser
   account-relay reader plus signed-out paired-host fallback through
   `attention.getMachineSnapshot` / `attention.acknowledgeMachine`.
-- `apps/ade-cli/src/tuiClient/activityPane.ts` and
-  `components/ActivityPaneView.tsx` — ADE Code's machine-global `/activity`
-  pane and exact-destination acknowledgment flow. The hidden `/attention`
-  alias and `attention.call` RPC remain for compatibility.
 - `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
   Clerk verification, acknowledgments, presence/preferences, APNs fan-out,
   machine removal/revocation and pairing restore, and the cron-only expiry and

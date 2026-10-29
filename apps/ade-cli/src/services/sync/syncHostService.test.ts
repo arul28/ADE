@@ -12927,7 +12927,7 @@ describe("mobile chat wire (mobileChatSlimV1)", () => {
     expect(sharedBytes).toBeGreaterThan(8_000);
     expect(mobileBytes).toBeLessThan(3_000);
     expect((mobile.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBe(true);
-    // The shared wire — desktop, hosted web, the TUI — is untouched.
+    // The shared wire — desktop and hosted web — is untouched.
     expect((shared.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBeUndefined();
   });
 

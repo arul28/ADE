@@ -9,7 +9,6 @@ const SUBCOMMANDS = [
   "auth",
   "doctor",
   "triage",
-  "code",
   "skill",
   "lanes",
   "git",

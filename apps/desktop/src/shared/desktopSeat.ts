@@ -4,7 +4,7 @@
  *
  * Logic only; the types stay in `types/macDesktop.ts`, which re-exports
  * everything here so existing imports keep working. Every text surface (the
- * status JSON's `seat`, the CLI, the TUI, the RPC refusals) reads this one
+ * status JSON's `seat`, the CLI and the RPC refusals) reads this one
  * module, so they cannot say different things.
  */
 

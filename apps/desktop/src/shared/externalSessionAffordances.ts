@@ -1,6 +1,6 @@
 /**
  * Display helpers for external-session rows, shared by the desktop dialog and
- * the TUI. The import actions themselves live in `externalSessionPolicy.ts`.
+ * the CLI. The import actions themselves live in `externalSessionPolicy.ts`.
  */
 
 /**

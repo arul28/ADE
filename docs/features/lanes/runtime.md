@@ -304,7 +304,7 @@ the way the desktop dialog does: `templateId`, else the default template, else
 the project's lane environment config, and they wait for it (`skipSetup: true`
 leaves a plain worktree). So `ade lanes create`,
 `create-from-linear`, `batch-create-from-linear`, `ade chat create` with a new
-lane, and the TUI all get it; `ade lanes create` takes `--template <id>` and
+lane all get it; `ade lanes create` takes `--template <id>` and
 `--no-template`. A failed setup is returned in `setup.error` or the progress,
 not thrown: the lane exists.
 

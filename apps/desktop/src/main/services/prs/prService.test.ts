@@ -935,7 +935,7 @@ describe("prService.getForLane", () => {
   });
 
   it("carries the canonical checks rollup onto every lane PR summary", async () => {
-    // ADE-135: consumers (the ade code drawer, the lane rail) used to infer a
+    // ADE-135: consumers (the lane rail) used to infer a
     // pass from `checksPassed === checksTotal`, which is producer-blind. They
     // read `checksStatus` now, so it has to survive the trip through
     // `listPrsByLane`. This fixture seeds no snapshot rows, so it pins the

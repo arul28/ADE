@@ -21,7 +21,7 @@ export function readChatLaunchDefaults(adeHome: string): AgentChatLaunchDefaults
     if (typeof parsed.provider !== "string" || typeof parsed.updatedAt !== "string") return null;
     // Fast is opted into per chat, never carried into the next one. Files
     // written before that rule still hold `fastMode: true`, so strip it on the
-    // way out: every client (desktop, iOS, TUI, web) reads through here, and
+    // way out: every client (desktop, iOS, web) reads through here, and
     // none of them may seed a new chat with Fast because a previous chat used
     // it. The field stays on the shape for older clients that still parse it.
     return { ...parsed, fastMode: false } as AgentChatLaunchDefaults;

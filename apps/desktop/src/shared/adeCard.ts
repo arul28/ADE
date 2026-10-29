@@ -1,7 +1,7 @@
 /**
  * `ade_card` — the generic emittable chat card primitive.
  *
- * One payload contract, three surfaces (desktop renderer, ADE Code TUI, iOS).
+ * One payload contract, two surfaces (desktop renderer, iOS).
  * This module is the all-client shared half: pure types + pure helpers, no React,
  * no Electron, no Node built-ins — mirroring `./chatActivityPhase.ts`, which is
  * likewise imported by the desktop renderer AND by `apps/ade-cli`.
@@ -175,7 +175,7 @@ export function isKnownAdeCardVariant(variant: string | null | undefined): boole
 
 /**
  * A successful Claude rebind dismisses the quota card instead of leaving a
- * "resumed" chip. Desktop, TUI, and iOS all hide that terminal no-action row.
+ * "resumed" chip. Desktop and iOS both hide that terminal no-action row.
  */
 export function adeCardIsHiddenAfterDismiss(card: {
   variant?: string | null;
@@ -227,7 +227,7 @@ export function adeCardProgressTotal(progress: AdeCardProgress | null | undefine
 /**
  * `ade://` URL for the card's `navTarget`, or null when the target has no
  * addressable deeplink form. Used by the surfaces that cannot dispatch an
- * in-process navigation object (TUI, iOS fallback rendering) and by
+ * in-process navigation object (iOS fallback rendering) and by
  * {@link describeAdeCard}.
  */
 export function adeCardDeeplink(target: AppNavigationTarget | null | undefined): string | null {

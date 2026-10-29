@@ -15,7 +15,7 @@
  * summary or a transcript replay is not offered: at that point the user can
  * just ask the main chat.
  *
- * Imported by the brain, the desktop renderer and the `ade code` TUI; iOS
+ * Imported by the brain and the desktop renderer; iOS
  * mirrors the parsing in Swift (`WorkSideChat.swift`).
  */
 

@@ -3137,7 +3137,7 @@ func workScheduledWorkActiveCount(_ snapshots: [WorkScheduledWorkSnapshot]) -> I
 }
 
 /// Unified Chat Info sheet: three ordered sections — Subagents, Background,
-/// Schedule. Mirrors the desktop chat-info pane (`buildSubagentPaneRows` +
+/// Schedule. Mirrors the desktop chat-info pane (`groupPaneSectionItems` +
 /// `deriveScheduleItems` / `deriveBackgroundItems`). Empty sections are hidden;
 /// a shared empty state renders only when all three are empty.
 /// Which parts of Chat Info a surface shows. The sheet shows all of it; the

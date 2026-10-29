@@ -3234,7 +3234,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
 
   // Machine-local process liveness registry. Every ADE process (desktop main,
-  // TUI runtime, ade-serve daemon) writes its process incarnation here on boot
+  // ade-serve daemon) writes its process incarnation here on boot
   // and refreshes last_seen on a timer. The composite key preserves stale
   // local incarnations when the OS reuses a pid, so reconcile can detach the
   // old owner without treating synced remote-machine rows as local.
@@ -3516,6 +3516,8 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     // explicitly local-only contract. Never retroactively upload them.
     db.run("update usage_events set analytics_exported_at = 'pre_analytics' where analytics_exported_at is null");
   }
+  // `tui` was the command-line surface's name before ADE Code was removed.
+  db.run("update usage_events set client_surface = 'cli' where client_surface = 'tui'");
   db.run("create index if not exists idx_usage_events_occurred on usage_events(occurred_at)");
   db.run("create index if not exists idx_usage_events_client_occurred on usage_events(client_surface, occurred_at)");
   db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
@@ -4828,8 +4830,8 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   }
 
   // Model-picker favorites + recents. Per-project (the DB instance is the
-  // scope, so no project_id column is needed) and CRR-replicated so desktop,
-  // TUI, and iOS converge on the same set for a project. PK-only by design:
+  // scope, so no project_id column is needed) and CRR-replicated so desktop
+  // and iOS converge on the same set for a project. PK-only by design:
   // CRR-converted tables cannot carry any UNIQUE index besides the primary key
   // (`crsql_as_crr` rejects them with "Table … has unique indices besides the
   // primary key. This is not allowed for CRRs"), so the model_id PK is the

@@ -5,7 +5,7 @@ import type { SessionActivityReport } from "./types/sessions";
 
 /**
  * `sessionElapsedAnchor` is the shared answer to "how long", read by the
- * desktop status slot, `ade code`'s work list, and `ade session show`. The
+ * desktop status slot and `ade session show`. The
  * cases below are the three anchors it has to keep apart — mixing any two of
  * them produced a duration the row could not be judged by.
  */
@@ -44,7 +44,7 @@ describe("sessionElapsedAnchor", () => {
   });
 
   it("formats the elapsed only when the presentation asks for one", () => {
-    // The label is what `ade code` and `ade session show` render, so its two
+    // The label is what `ade session show` renders, so its two
     // "say nothing" branches decide whether a row shows a bare word or a lie.
     const working = { label: "Background work", tone: "blue", glyph: "working", showsElapsed: true, prominent: false } as const;
     const quiet = { label: "Done", tone: "emerald", glyph: "done", showsElapsed: false, prominent: true } as const;

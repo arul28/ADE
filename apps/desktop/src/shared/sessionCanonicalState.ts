@@ -9,7 +9,7 @@ import type {
 
 /**
  * The ONE vocabulary for "what state is this session in", shared by the Work
- * tab (desktop + iOS mirror), the TUI, and — by documented mapping — the push
+ * tab (desktop + iOS mirror) and — by documented mapping — the push
  * pipeline, so a session's badge, its Live Activity phase, and any
  * notification always tell the same story.
  *
@@ -195,7 +195,7 @@ export type CanonicalSessionInputs = {
   exitCode?: number | null;
   /**
    * Declared settle. Only two writers exist: the user (desktop row/bulk
-   * actions, `ade code`) and the deterministic PR-merge policy — agents lost
+   * actions) and the deterministic PR-merge policy — agents lost
    * `ade chat settle` in 2026-07 because "is this done" is not their call.
    * Presence alone settles — new activity clears the column at the write site
    * (turn start / PTY output), so no timestamp comparison happens here.
@@ -489,7 +489,7 @@ export type CanonicalStatusBucket = "running" | "awaiting-input" | "ended" | "se
  * Snooze never alters a session's canonical phase. `canonicalSessionState()`
  * does not read these fields at all: a snoozed row is still running/failed/
  * needs_you exactly as before, snooze only decides where the UI files it.
- * Keeping the two orthogonal is what lets desktop, `ade code`, and iOS derive
+ * Keeping the two orthogonal is what lets desktop and iOS derive
  * "is this hidden right now" from the same two columns without re-deriving the
  * lifecycle.
  */

@@ -4,7 +4,7 @@ import type { Logger } from "../logging/logger";
 export type RuntimeProcessRole =
   | "desktop-main"
   | "ade-serve-daemon"
-  | "tui-runtime";
+  | "chat-runtime";
 
 export type RuntimeProcessRow = {
   pid: number;

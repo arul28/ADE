@@ -2558,7 +2558,7 @@ describe("createPushPublisherService flush", () => {
 
   it("treats an embedded question kind as waiting_for_input", async () => {
     // A host that predates the top-level `requestKind` still carries the kind
-    // in `detail.request` — the same place the TUI transcript reads it from.
+    // in `detail.request` — the same place the transcript reads it from.
     // Reading only the top-level field published those questions as approvals,
     // so the phone offered Approve/Deny for prose.
     const { publisher, publish, emit } = makeHarness(device, undefined, { activityProtocol: 2 });

@@ -415,7 +415,7 @@ lists it. The RPC server refuses it to agent callers, and allows it only to a
 user client whose connect name is a desktop client name
 (`isDesktopClientName` in `shared/runtimeClientNames.ts`). The name is the
 client's own claim, not authentication. It separates the desktop from the
-`ade` CLI and TUI, and from an agent shell that has no chat identity.
+`ade` CLI, and from an agent shell that has no chat identity.
 Automations cannot run it. The phone and the web client reach it through the
 `apple.invoke` remote command, which is controller-only. The registry refuses
 a device that any lane holds. Before the delete, ADE stops each stream and hub

@@ -162,7 +162,7 @@ for a reviewer. Only an explicit proof call writes a record:
 - **Browser use is visible to the human, automatically.** Every
   `ade browser …` command from a chat marks the calling chat as using
   the browser, so a globe appears on its session card and chat header, the
-  Browser tool's tab gets a live dot, and the phone and TUI say the same thing.
+  Browser tool's tab gets a live dot, and the phone says the same thing.
   Nothing is asked of the agent — there is no "announce it" instruction to
   follow or forget — and the mark expires about twenty seconds after the last
   command (held while a tab is recording, cleared when the tab closes or a login

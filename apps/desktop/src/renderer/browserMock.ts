@@ -4977,7 +4977,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           ? {}
           : {
               desktop: Math.round(interactions * 0.81),
-              tui: Math.round(interactions * 0.11),
+              cli: Math.round(interactions * 0.11),
               mobile: Math.round(interactions * 0.06),
               web: Math.round(interactions * 0.02),
             },
@@ -5067,7 +5067,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       providers,
       models,
-      clients: ["desktop", "tui", "mobile", "web"].map((client) => ({
+      clients: ["desktop", "cli", "mobile", "web"].map((client) => ({
         client,
         interactions: clientTotal(client),
         activeDays: Math.round(activeDays * (client === "desktop" ? 1 : 0.4)),

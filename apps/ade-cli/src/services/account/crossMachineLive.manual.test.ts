@@ -75,7 +75,7 @@ vi.mock("./accountMachineDirectoryService", async (importActual) => ({
   },
 }));
 
-vi.mock("../../tuiClient/pairedRemoteConnector", () => ({
+vi.mock("./pairedRemoteConnector", () => ({
   openPairedCandidate: async (args: {
     target: { pairedMachine: { machineKey: string } };
     acceptTransport: (transport: unknown) => Promise<unknown>;

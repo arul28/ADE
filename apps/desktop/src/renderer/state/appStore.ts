@@ -107,7 +107,7 @@ export const DEFAULT_TERMINAL_PREFERENCES: TerminalPreferences = {
   fontFamily: DEFAULT_TERMINAL_FONT_FAMILY,
   // Integer so device cell metrics stay whole — a fractional 12.5 gave the
   // xterm.js WebGL renderer fractional cell widths that crowd glyphs (spaces
-  // collapse) and dash box-drawing borders for TUI clients (e.g. `ade code`).
+  // collapse) and dash box-drawing borders for terminal clients.
   fontSize: 13,
   lineHeight: 1.25,
   scrollback: 10_000,

@@ -49,14 +49,9 @@ export const MARKETING_FEATURES = {
   DEMO_SUBAGENTS: "demo_subagents",
   DEMO_AUTO_CREATE_WORKTREES: "demo_auto_create_worktrees",
   DEMO_PR_FROM_CHAT: "demo_pr_from_chat",
-  DEMO_ADE_CODE: "demo_ade_code",
   DEMO_BROWSER: "demo_browser",
   DEMO_REMOTE_RUNTIMES: "demo_remote_runtimes",
   DEMO_LINEAR: "demo_linear",
-  SHOWCASE_WORKTREES: "showcase_worktrees",
-  SHOWCASE_AGENT_CHAT: "showcase_agent_chat",
-  SHOWCASE_PULL_REQUESTS: "showcase_pull_requests",
-  SHOWCASE_WORK_TOOLS: "showcase_work_tools",
 } as const;
 
 export type MarketingFeature = (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];

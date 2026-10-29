@@ -6,7 +6,7 @@
 // repo path. The composer and the transcript disagreed about the same message.
 //
 // This component closes that gap using the shared chip model, so the composer,
-// the transcript, the TUI, and iOS all read one description of what a chip is.
+// the transcript and iOS all read one description of what a chip is.
 // The raw text is never destroyed — it is still `event.text`, the copy button
 // still yields canonical tokens, and a chip's `title` shows the token it stands
 // for.

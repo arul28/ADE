@@ -1388,8 +1388,8 @@ export function loadLaunchAgent(
  *
  * Every path that could otherwise reach `spawnDaemon` has to see this and
  * stop: an unmanaged brain on a supervised socket is a second brain, and the
- * user's actual problem is only that the first one is still starting. The TUI
- * client and the machine-daemon path had a class each for exactly this, which
+ * user's actual problem is only that the first one is still starting. A former
+ * terminal client and the machine-daemon path had a class each for exactly this, which
  * meant two places to keep the "do not spawn a rival" rule.
  */
 export type RuntimeServiceStillStartingReason =

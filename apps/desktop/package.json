@@ -318,10 +318,6 @@
         "to": "ade-cli/adeRpcServer.cjs"
       },
       {
-        "from": "../ade-cli/dist/tuiClient/cli.mjs",
-        "to": "ade-cli/tuiClient/cli.mjs"
-      },
-      {
         "from": "scripts/ade-cli-macos-wrapper.sh",
         "to": "ade-cli/bin/ade"
       },

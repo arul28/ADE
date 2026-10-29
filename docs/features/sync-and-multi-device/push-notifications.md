@@ -86,7 +86,7 @@ The older six-group table (needs-you, failed, planning, working, idle, done) now
 lives only in the relay, which still fills the Live Activity's `groups` field
 from it for app builds that predate the four-column Live Activity.
 `activityStateGroup.cases.json` pins that relay mapping (and the iOS mirror
-until it moves); desktop, the hosted web client and ADE Code no longer read it.
+until it moves); desktop and the hosted web client no longer read it.
 
 ## Topology
 
@@ -100,13 +100,13 @@ prPollingService ─┘          │
                     │                       │
                     │ account snapshots     │ APNs alert / Live Activity
                     ▼                       ▼
- Desktop + web + ADE Code + iOS        iPhone system surfaces
+ Desktop + web + iOS                   iPhone system surfaces
 ```
 
 Each brain publishes a bounded full snapshot for its machine, covering every
 project currently hosted by that brain rather than the project selected in any
 one client. The relay merges machine snapshots into an account revision stream.
-Signed-in desktop, hosted web, ADE Code, and iOS clients read that stream
+Signed-in desktop, hosted web, and iOS clients read that stream
 incrementally through an account-scoped path independent of navigation
 selection. They acknowledge items, report presence where supported, and update
 account/device preferences. Exact destinations still identify the owning
@@ -1015,29 +1015,6 @@ lacks those actions produces an Update host state;
 the adapter never converts an unsupported call into an empty list. If the
 browser account changes after a snapshot loads, opening or acknowledging that
 snapshot is rejected until Activity refreshes under the new owner.
-
-## ADE Code Activity
-
-`/activity` opens an account-wide right pane with the same four columns as
-desktop: `NEEDS YOU`, `WORKING`, `WAITING`, `DONE`, then the `NOTIFICATIONS`
-tail. A chip line under the status message (`All 12 · Needs you 2 · Working 5 ·
-Waiting 1 · Done 4`) is the summary and the filter: keys 0–4 pick All or one
-column, and the choice survives `R` refresh. Under All, Done folds into one
-`✓ N done · 4 to show` line. A failed agent sits under `NEEDS YOU` with a red
-`×` instead of the `!`; a waiting row names its reason first in its context
-line. The TUI calls machine-global `attention.call`, not the selected project's
-action scope, so changing lanes or projects does not change the account source.
-Enter opens the exact ADE destination first and only then sends the
-owner-fenced seen mutation. `/attention` remains an unadvertised compatibility
-alias.
-
-The grouping is `activitySections` from the desktop tree, so the pane cannot
-disagree with the desktop about which column a row is in.
-
-When signed out, ADE Code asks the connected host for its real machine snapshot
-and labels the subset. Account failure may degrade to that same connected-host
-view. A host without the Attention capability remains connected but shows its
-name with update-and-restart guidance instead of a blank pane.
 
 ## iOS Activity drawer
 

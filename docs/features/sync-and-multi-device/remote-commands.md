@@ -276,7 +276,7 @@ the hosted web client both consume them; see `ios-companion.md` and
   work.
 - `refreshQuota` — viewer-allowed project refresh of Claude/Codex quota only.
   The host disables interactive auth for this remote path, so it never opens a
-  Keychain prompt or a bare CLI/TUI login flow on behalf of the controller.
+  Keychain prompt or a bare CLI login flow on behalf of the controller.
   Local history scanners remain behind the separate desktop/CLI Activity path.
 
 **Lanes** (`lanes.*`)
@@ -335,9 +335,9 @@ namespace — matching the ADE action registry's domain name — rather than a
 corner of `work.*`, because mobile and the hosted web client feature-detect it
 independently of the `work.*` read surface. It is also the **only** path to
 session lifecycle for those two controllers: neither has a local database, so
-unlike desktop and `ade code` they cannot write a settle or a snooze locally and
+unlike desktop they cannot write a settle or a snooze locally and
 let replication carry it. Session lifecycle is therefore reachable on all six
-surfaces (desktop, iOS, the `ade code` TUI, hosted web, the `ade` CLI, and CTO
+surfaces (desktop, iOS, hosted web, the `ade` CLI, and CTO
 tools) — it is not a desktop-only capability.
 
 `session.settleSession` routes through the shared `settleTerminalSession`
@@ -497,7 +497,7 @@ where `mode` is `"cached" | "refresh-stale" | "force"` (default
 synchronously — chat-style surfaces pass `"sdk"` so the refresh stays off
 the slower `cursor-agent` CLI spawn while the CLI flavor revalidates in
 the background. The brain returns the full provider-grouped catalog used
-by the desktop and TUI ModelPickers and the iOS Work model sheet; only
+by the desktop ModelPicker and the iOS Work model sheet; only
 explicit `force` / `refresh-stale` calls trigger a runtime probe.
 
 `chat.dispatchSteer` takes `{ sessionId, steerId, mode: "inline" | "interrupt" }`
@@ -520,8 +520,7 @@ as delivery. An inline dispatch the run refuses — a Cursor Cloud session, a ro
 carrying attachments or per-message overrides, a turn that declined, a build
 with no steer channel — answers `{ dispatchedAt: null }` **without** throwing
 and leaves the row staged, and a durably queued command answers with an ack
-envelope that carries no `dispatchedAt` key at all. The `ade code` TUI and the
-iOS staged strip both keep their queued display in either case.
+envelope that carries no `dispatchedAt` key at all. The iOS staged strip keeps their queued display in either case.
 `chat.cancelDispatchedSteer` returns `{ ok, cancelled }`; the current public
 SDK cannot cancel an already pushed priority message, so `cancelled` is false.
 The iOS companion uses

@@ -385,7 +385,6 @@ Shared desktop/runtime boundary:
 Attached clients and native surfaces:
 
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` binds paired-client consent, surface, and project identity at the host boundary. `syncHostService.ts` keeps consent peer-scoped, and `syncRemoteCommandService.ts` exposes only the runtime-scoped analytics commands.
-- `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's browser-local opt-out. Hosted web is default-on; an explicit "false" preference in browser storage disables capture and is reasserted on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
 - `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, default-on behavior, and direct transport. There is no native analytics preference or consent prompt. `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
@@ -399,9 +398,9 @@ Build and operations:
 
 ## Architecture by surface
 
-### Desktop, runtime, TUI, and hosted web client
+### Desktop, runtime, and hosted web client
 
-The canonical service is `apps/desktop/src/main/services/analytics/productAnalyticsService.ts`. The desktop main process and the ADE runtime use the same machine-scoped service and durable state file. `ade code` and the hosted web client send allowlisted capture requests through the runtime action registry; they do not own independent PostHog clients.
+The canonical service is `apps/desktop/src/main/services/analytics/productAnalyticsService.ts`. The desktop main process and the ADE runtime use the same machine-scoped service and durable state file. The hosted web client sends allowlisted capture requests through the runtime action registry; they do not own independent PostHog clients.
 
 Machine analytics state lives under the active channel home at `secrets/product-analytics.json`, with a sibling `.disabled` marker for fail-closed opt-out during lock contention. It is not project state and never enters cr-sqlite replication. The project-local `usage_events` mutation ledger is also excluded from CRR sync; its analytics export marker prevents pre-analytics, opted-out, expired, or already-handled rows from being uploaded later.
 
@@ -897,8 +896,7 @@ raised.
 The external sessions service (`externalSessions/externalSessionsService.ts`)
 records one `work/session_<continue|copy>_<chat|cli>` per import attempt that
 passed its argument checks, through its `onImportOutcome` hook: `desktop` from
-the desktop main process, `api` from the brain (which also serves the TUI and
-the phone). It carries no session id, title, folder, lane, or model. Imports are
+the desktop main process, `api` from the brain (which also serves the phone). It carries no session id, title, folder, lane, or model. Imports are
 user-initiated and rare; the hourly per-key deduplication bounds the worst case
 to 4 actions × 2 outcomes × the provider families per hour, well inside the
 existing `ade_feature_used` daily and per-minute limits, so no ceiling changes.
@@ -1392,7 +1390,7 @@ deduplication key turns an error loop into one accepted event an hour, and the
 event's own 20-per-day / 3-per-minute caps bound the rest without touching
 `ade_error`'s budget.
 
-The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
+The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
 

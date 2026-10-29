@@ -714,7 +714,7 @@ export type AgentChatNoticeDetail = {
   /**
    * Deep-link to a child chat session spawned from this one (the
    * "Subagent spawned" chip on `status: "subagent_spawned"` notices).
-   * Desktop navigates to the session; the TUI switches to it; iOS renders
+   * Desktop navigates to the session; iOS renders
    * the notice message (extra fields are ignored by its decoder).
    */
   spawnedSession?: {
@@ -1845,7 +1845,7 @@ export type AgentChatEvent =
     }
   /**
    * Generic ADE-emitted chat card. One wire contract, three renderers
-   * (desktop / TUI / iOS); `variant` selects the rich rendering and every
+   * (desktop / iOS); `variant` selects the rich rendering and every
    * surface degrades to `fallbackText` + deeplink for a variant it does not
    * know. `cardId` is identity — a repeat emit MERGES into the row already in
    * the transcript rather than appending a duplicate, so a card can track a
@@ -2841,7 +2841,7 @@ export type SpawnLineageSessionFields = {
   crossMachineArrival?: AgentChatCrossMachineArrival | null;
   /**
    * When the takeover banner was dismissed or Take over was chosen. Brain-side
-   * so desktop, iOS, and ADE Code do not re-show it. Absent means not shown yet.
+   * so desktop and iOS do not re-show it. Absent means not shown yet.
    */
   subagentTakeoverPromptShownAt?: string | null;
   /**
@@ -5477,8 +5477,8 @@ export type ActiveTurnSendMode = "queue" | AgentChatDispatchSteerMode;
  * THE canonical per-provider active-turn delivery matrix, in menu order (the
  * first entry is the provider's default). Every surface reads this rather than
  * restating the rules: the composer's split send button, the chat pane's
- * dispatch wiring, the main service's steer/dispatch guards, and the `ade code`
- * TUI. iOS mirrors it by hand (it cannot import TS) — keep the two in step.
+ * dispatch wiring, the main service's steer/dispatch guards.
+ * iOS mirrors it by hand (it cannot import TS) — keep the two in step.
  *
  * Claude folds a message into the live query, so it has all three. Codex takes
  * the app-server's `turn/steer` request into the running turn, so it has
@@ -5967,8 +5967,8 @@ export type AgentChatEditSteerArgs = {
 
 /**
  * The model and settings this machine last launched or switched a chat to.
- * Kept by the brain, one per machine, so every client (desktop, web, phone,
- * TUI) opens a new chat on the same defaults instead of its own local memory.
+ * Kept by the brain, one per machine, so every client (desktop, web, phone)
+ * opens a new chat on the same defaults instead of its own local memory.
  */
 export type AgentChatLaunchDefaults = {
   version: 1;

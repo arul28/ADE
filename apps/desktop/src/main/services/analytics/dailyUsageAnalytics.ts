@@ -1,4 +1,4 @@
-import type { AdeUsageStats } from "../../../shared/types";
+import type { AdeUsageClientSurface, AdeUsageStats } from "../../../shared/types";
 import { JEV_FEATURES, type JevDayTally } from "../../../shared/types/jev";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
@@ -92,7 +92,7 @@ export function captureDailyUsageAnalytics(args: {
   let accepted = 0;
   const capture = (
     dimension: string,
-    surface: "desktop" | "mobile" | "tui" | "web" | "api",
+    surface: AdeUsageClientSurface,
     properties: Record<string, string | number | boolean | null>,
   ) => {
     const result = args.analytics.captureInternal({

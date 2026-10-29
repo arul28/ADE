@@ -1486,7 +1486,7 @@ export function createFileService({
       const workspace = resolveWorkspace(args.workspaceId);
       // An empty query is a browse request, not a no-op: it returns the
       // workspace's shallowest paths (see `scorePath`) so a bare `@` in any
-      // composer — desktop, TUI, iOS, web — opens a navigable list instead of
+      // composer — desktop, iOS, web — opens a navigable list instead of
       // "No files found". Callers that genuinely want nothing back on an empty
       // query still guard on their own side (global search, chat.fileSearch).
       const query = args.query.trim();

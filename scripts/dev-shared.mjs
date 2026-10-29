@@ -123,7 +123,6 @@ export function isRuntimeCliBuildFresh() {
     cliPath(),
     path.join(packageRoot, "dist", "bootstrap.cjs"),
     path.join(packageRoot, "dist", "adeRpcServer.cjs"),
-    path.join(packageRoot, "dist", "tuiClient", "cli.mjs"),
   ]);
   if (distMtime <= 0) return false;
   const sourceMtime = Math.max(

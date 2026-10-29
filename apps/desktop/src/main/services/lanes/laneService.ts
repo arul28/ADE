@@ -7768,7 +7768,7 @@ export function createLaneService({
     },
 
     // Takes the `lane.getReclaimRisk` action's `{ laneId }`, like `unarchive`
-    // and `archiveAndReclaim`: the CLI, the TUI and a paired desktop call it
+    // and `archiveAndReclaim`: the CLI and a paired desktop call it
     // through the action, not only through IPC.
     async getReclaimRisk({ laneId }: { laneId: string }): Promise<LaneReclaimRisk> {
       const row = getLaneRow(laneId);

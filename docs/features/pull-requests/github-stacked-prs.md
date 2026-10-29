@@ -161,8 +161,7 @@ GitHub stacked PR integration                     3 of 5 ready
 Blocked at #842 · one required check failed
 ```
 
-Desktop renders a graphical rail, iOS reuses the native stack diagram, and the
-TUI uses Unicode nodes and lines. The coordinator thread owns the complete card;
+Desktop renders a graphical rail, and iOS reuses the native stack diagram. The coordinator thread owns the complete card;
 member sessions receive a compact layer card. External stacks do not create
 chat cards until a user adopts them into an ADE work session.
 
@@ -218,7 +217,7 @@ The implementation is itself delivered as stacked pull requests:
    reconciliation.
 2. Stack mutations, ADE actions, typed CLI commands, and bundled agent skills.
 3. Desktop and hosted-web PR list, grouping, routing, and inspector.
-4. Work card protocol plus desktop and `ade code` rendering.
+4. Work card protocol plus desktop rendering.
 5. iOS PR and Work parity.
 6. Remove superseded ADE-owned landing machinery and finish analytics and
    documentation.
@@ -242,5 +241,5 @@ packages, and the normal PR ship loop before the stack is merged.
   stacks.
 - Completed and remotely unstacked stacks.
 - Agent or lane removal while the GitHub member remains active.
-- Older desktop, web, TUI, and iOS clients receiving additive card/snapshot
+- Older desktop, web, and iOS clients receiving additive card/snapshot
   fields.

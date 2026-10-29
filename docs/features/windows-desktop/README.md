@@ -37,7 +37,6 @@ streaming and proof files are in the [Mac Desktop map](../mac-desktop/README.md#
 | `apps/desktop/src/shared/desktopSeat.ts` | `desktopSeatKind`, `describeDesktopSeat` (the status JSON's `seat`) and `WINDOWS_DESKTOP_NEXT_STEP`; every text surface reads it. Re-exported from `shared/types/macDesktop.ts`, which also holds `isUserOnlyConsentCard`. |
 | `apps/desktop/src/main/services/demoVideo/demoMp4Source.ts` | Reads the driver's MP4 for the desktop app's Chromium demo engine. |
 | `apps/ade-cli/src/cliMacDesktop.ts`, `cliMacDesktopFormat.ts` | The `ade screen` plan builder (`start --shared`, `focus`/`minimize`/`close`, `setup`, `takeover`) and the host-aware text formatters and error hints. |
-| `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` | The `ade code` right pane's host-aware screen block. |
 | `apps/desktop/src/renderer/components/chat/WindowsDesktopStateCard.tsx` | The pane's no-picture states: setup, password, sign-in progress, a failed step, held, locked, unavailable, ready. |
 | `apps/desktop/src/renderer/components/terminals/LaneMacDesktopMarker.tsx` | The lane mark: the Windows logo on a Windows host, with the seat in the tooltip. |
 | `apps/desktop/src/renderer/components/app/AppShell.tsx` | The elevated-app warning banner (`ade.app.getElevatedDesktop` / `elevatedDesktopChanged`). |

@@ -5,7 +5,7 @@
 // PR identity is `(repo, number)`, not the lane's head branch, so one lane
 // legitimately owns SEVERAL rows: a follow-up PR cut from the same chat, or a
 // colleague's PR referenced from this lane. Anything that has room for exactly
-// one PR — the TUI lane-details pane, the `/pr` pane, the deeplink envelope the
+// one PR — the `/pr` pane, the deeplink envelope the
 // CLI stamps onto `ade://` links — therefore has to CHOOSE, and taking the
 // first row the runtime happened to return let a long-merged PR out-rank the
 // open work the user is looking at.
@@ -86,20 +86,3 @@ export function pickPrimaryPrRecord(prs: readonly PrRecord[]): PrRecord | null {
   return best;
 }
 
-/**
- * The OTHER PRs a surface with room for one should name: every row except the
- * primary, rendered as `#N state`.
- *
- * Lives here, next to `pickPrimaryPrRecord`, because it has to apply the very
- * same detached rule — `detached` is a record, so the `!== true` test this
- * replaced kept every detached row and printed PRs whose lane is gone as
- * current lane work.
- */
-export function secondaryPrRecordLabels(
-  prs: readonly PrRecord[],
-  primary: PrRecord | null,
-): string[] {
-  return prs
-    .filter((pr) => pr.detached == null && pr !== primary)
-    .map((pr) => `#${prRecordNumber(pr) || "?"} ${prRecordState(pr.state)}`);
-}

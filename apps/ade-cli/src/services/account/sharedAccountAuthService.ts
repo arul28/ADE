@@ -271,8 +271,7 @@ function readMachineKey(secretsDir: string): string | null {
  *     `registerIpc.ts`;
  *   - every `ade …` command, via `installMachineBrainRefreshBroker` in `runCli`
  *     (cliRefreshBroker.ts) — except the `serve`/`runtime`/`brain` plans and
- *     `--headless`, which host the runtime rather than defer to it;
- *   - the `ade code` TUI, via the same installer in `tuiClient/cli.tsx`.
+ *     `--headless`, which host the runtime rather than defer to it.
  * The installer puts a broker here even when no brain is listening. Its token
  * request probes the socket each time, so a brain started later is used while
  * a machine with no brain still safely keeps its local exchange.

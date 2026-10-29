@@ -20,7 +20,7 @@ export type ClassifiableSlashCommand = {
   name: string;
   description?: string;
   argumentHint?: string;
-  /** Provenance label; desktop uses "sdk" | "local", the TUI "ade" | "user". */
+  /** Provenance label; desktop uses "sdk" | "local". */
   source?: string;
   kind?: SlashCommandKind;
   origin?: SlashCommandOrigin;
@@ -60,11 +60,6 @@ function defaultOrigin(kind: SlashCommandKind): SlashCommandOrigin {
   return kind === "skill" ? "project" : "provider";
 }
 
-export type ScoredSlashCommand<T extends ClassifiableSlashCommand> = {
-  command: T;
-  score: number;
-};
-
 /** Word-prefix hit: any `-`/`:`/`/`-separated word in the name starts with the query. */
 function wordPrefixHit(name: string, loweredQuery: string): boolean {
   if (!loweredQuery.length) return false;
@@ -90,34 +85,6 @@ export function scoreSlashCommand(command: ClassifiableSlashCommand, rawQuery: s
   return null;
 }
 
-/**
- * Rank `/` rows. Exact beats prefix/word-prefix beats substring; scattered
- * letters are only offered when no row matched better, so `/test` never loses to
- * a long name that merely contains `t…e…s…t`.
- */
-export function rankSlashCommands<T extends ClassifiableSlashCommand>(
-  commands: T[],
-  rawQuery: string,
-): T[] {
-  if (!rawQuery.trim().length) {
-    return [...commands].sort((a, b) => compareSlashCommands(a, b));
-  }
-  const scored: ScoredSlashCommand<T>[] = [];
-  for (const command of commands) {
-    const score = scoreSlashCommand(command, rawQuery);
-    if (score === null) continue;
-    scored.push({ command, score });
-  }
-  const best = scored.reduce<number | null>((min, row) => (min === null || row.score < min ? row.score : min), null);
-  const keepScattered = best !== null && best >= 3;
-  const kept = scored.filter((row) => keepScattered || row.score < 3);
-  kept.sort((a, b) => {
-    if (a.score !== b.score) return a.score - b.score;
-    return compareSlashCommands(a.command, b.command);
-  });
-  return kept.map((row) => row.command);
-}
-
 function subsequenceHit(target: string, loweredQuery: string): boolean {
   let cursor = 0;
   for (const char of loweredQuery) {
@@ -126,19 +93,6 @@ function subsequenceHit(target: string, loweredQuery: string): boolean {
     cursor = found + 1;
   }
   return true;
-}
-
-/** Stable order: commands, then skills, then MCP; alphabetical within a kind. */
-export function compareSlashCommands(a: ClassifiableSlashCommand, b: ClassifiableSlashCommand): number {
-  const rank = (command: ClassifiableSlashCommand): number => {
-    const kind = classifySlashCommand(command).kind;
-    return kind === "command" ? 0 : kind === "skill" ? 1 : 2;
-  };
-  const rankDiff = rank(a) - rank(b);
-  if (rankDiff !== 0) return rankDiff;
-  const aName = slashCommandBaseName(a.name).toLowerCase();
-  const bName = slashCommandBaseName(b.name).toLowerCase();
-  return aName < bName ? -1 : aName > bName ? 1 : 0;
 }
 
 export type SlashCommandSectionKey = "commands" | "skills" | "mcp";

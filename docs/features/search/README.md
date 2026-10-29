@@ -14,8 +14,8 @@ The index is a **machine-local, disposable cache** at
 `.ade/cache/search-index.db` (SQLite + FTS5). It never lives inside `ade.db`,
 never syncs, and a rebuild is as cheap as deleting the file. Heavy text is
 ingested on a **debounced background queue** off the PTY/chat hot paths; the
-same `searchService` backs the desktop ⌘K command palette, the `ade code` TUI
-palette, and the `ade search` CLI through one `search` ADE action domain.
+same `searchService` backs the desktop ⌘K command palette
+and the `ade search` CLI through one `search` ADE action domain.
 
 ## Source file map
 
@@ -171,15 +171,6 @@ Desktop ⌘K command palette:
 - `apps/desktop/resources/agent-skills/ade-search/SKILL.md` — the bundled
   `ade-search` agent skill (registered in
   `apps/desktop/src/shared/adeCliGuidance.ts` and referenced in `AGENTS.md`).
-
-TUI palette:
-
-- `apps/ade-cli/src/tuiClient/app.tsx` — the `ade code` command palette merges
-  universal-search chat/terminal hits **below** the local command/lane/chat
-  matches (debounced ~200 ms, generation-guarded against stale responses,
-  deduped by owning session). Selecting a search hit resolves the session
-  against the local list first, then a fresh listing, so a jump to an archived
-  or not-yet-listed session still lands.
 
 ## Key concepts
 

@@ -52,20 +52,7 @@ Grid view keeps every tile mounted, so multiple agent CLIs or shells run side by
 
 A right-edge sidebar follows the active lane and Work session, with tabs for **Git**, **Files**, the **iOS Simulator**, **App Control**, and the **Browser**. Pick an element in the browser or simulator and it's inserted as context into the active chat, draft, or agent CLI — so the agent works against exactly what you're looking at.
 
-## The same sessions in the terminal
-
-Work sessions aren't desktop-only. `ade code` attaches to the same machine and renders the same lanes, chats, and PRs as a fast TUI — start a session on the desktop and pick it up in the shell, or the other way around.
-
-<Frame caption="ade code brings the same sessions to your terminal.">
-  <img src="/assets/readme/terminal.webp" alt="ADE sessions in the terminal via ade code" />
-</Frame>
-
 ## Recovery
 
 If ADE restarts, it reconciles each session against the process that owns it: live sessions owned by another window or the daemon are left alone, while genuinely orphaned ones are marked detached. The durable row and transcript always remain, so even a session whose process is gone stays readable in [History](/tools/history).
 
-<CardGroup cols={1}>
-  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
-    The same lanes, chats, and sessions in a fast TUI.
-  </Card>
-</CardGroup>

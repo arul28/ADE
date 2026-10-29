@@ -10,7 +10,7 @@ import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remote
  * around the switch that grants the access (managing remote access itself,
  * minting account tokens, signing the machine in or out), or that cannot work
  * without a terminal and would cut the connection (the brain's own lifecycle,
- * interactive setup, `ade code`, a hard reset).
+ * interactive setup, a hard reset).
  *
  * Both scopes fail closed. Every top-level command is either in
  * FULL_ACCESS_COMMANDS or in BLOCKED_COMMANDS; a command in neither is refused,
@@ -37,7 +37,6 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["serve", "Starting or stopping ADE's brain would cut this connection."],
   ["runtime", "Running another ADE runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
-  ["code", "`ade code` needs a terminal."],
   ["desktop", "Opening the desktop app is done on the computer itself."],
   ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
 ]);

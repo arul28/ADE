@@ -93,16 +93,6 @@ case "$(uname -s 2>/dev/null || echo unknown)" in
       command -v node >/dev/null 2>&1 || return 1
       [ "$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)" -ge 22 ]
     }
-    # The bundled Electron gives no TTY on Windows, so the full-screen TUI
-    # needs a real Node (the same rule as the .cmd).
-    if [ "${1:-}" = "code" ]; then
-      if node_is_22; then
-        NODE_PATH="$NODE_PATH_VALUE" exec node "$CLI_JS" "$@"
-      fi
-      echo "ade: 'code' needs an interactive terminal, which the bundled ADE runtime cannot provide on Windows." >&2
-      echo "Install Node.js 22 or newer and run this command again, or set ADE_CLI_NODE to a Node 22+ executable." >&2
-      exit 127
-    fi
     if [ -f "$APP_EXE" ]; then
       ELECTRON_RUN_AS_NODE=1 NODE_PATH="$NODE_PATH_VALUE" exec "$APP_EXE" "$CLI_JS" "$@"
     fi

@@ -3,7 +3,7 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { JsonRpcClient } from "../../../../../ade-cli/src/tuiClient/jsonRpcClient";
+import { JsonRpcClient } from "../../../../../ade-cli/src/lib/jsonRpcClient";
 import { SCENE_PREVIEW_MAX_SOURCE_BYTES, type ScenePreviewResult } from "../../../shared/scenePreview";
 import {
   BUILT_IN_BROWSER_REMOTE_CALL_MAX_FILES,

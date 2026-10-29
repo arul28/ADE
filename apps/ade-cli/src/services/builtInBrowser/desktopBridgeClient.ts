@@ -1,5 +1,5 @@
 import path from "node:path";
-import { JsonRpcClient, JsonRpcResponseError } from "../../tuiClient/jsonRpcClient";
+import { JsonRpcClient, JsonRpcResponseError } from "../../lib/jsonRpcClient";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { MAX_HANDOFF_TIMEOUT_MS } from "../../../../desktop/src/main/services/builtInBrowser/builtInBrowserHandoff";
 import { DEMO_RECORDING_STOP_TIMEOUT_MS } from "../../../../desktop/src/shared/demoVideo/demoContract";

@@ -1820,8 +1820,8 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
     // unreliable at making it. A chat that settles itself vanishes from the
     // user's active list on the agent's say-so, which is exactly the wrong
     // default. Settlement now has only two writers:
-    //   1. a human, through the desktop rows/bulk actions or the `ade code`
-    //      TUI (both connect at cto role, hence the CTO-only gate above), and
+    //   1. a human, through the desktop rows/bulk actions (which connect at cto
+    //      role, hence the CTO-only gate above), and
     //   2. the deterministic PR-merge policy in
     //      services/prs/prMergeAutoSettlementService.ts, which calls
     //      sessionService directly and never touches this bridge.
@@ -1852,8 +1852,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       return { ok: true, sessionId };
     },
     // Single-row unsettle for the same user-driven surfaces as `settleSession`
-    // (desktop row menu on a remote-bound project, `ade code`'s
-    // `/session unsettle`). It is the undo for a user's own settle, so it is
+    // (desktop row menu on a remote-bound project). It is the undo for a user's own settle, so it is
     // gated identically — an agent lifting a settle the user deliberately took
     // is the same category of problem as an agent taking one.
     unsettleSession: (args?: unknown) => {

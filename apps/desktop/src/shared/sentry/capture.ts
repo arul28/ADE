@@ -5,7 +5,7 @@
  * the renderer, the brain, the web client) hands its SDK to `connectSentry`
  * right after `init`; until then, and in every process that never starts
  * Sentry, each call here is a cheap no-op. So callers never check first, and
- * a bundle that only reports (the renderer's entry chunk, the TUI) carries no
+ * a bundle that only reports (the renderer's entry chunk) carries no
  * Sentry code.
  *
  * What may go in: error objects, messages, ids, names, counts, durations,

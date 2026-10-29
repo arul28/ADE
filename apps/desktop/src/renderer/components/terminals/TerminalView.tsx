@@ -3049,8 +3049,8 @@ function createRuntime(args: {
     // Round to an integer so device cell metrics aren't fractional. Fractional
     // font sizes give the WebGL renderer fractional cell widths, which crowds
     // glyphs (inter-word spaces visually collapse) and breaks pixel alignment of
-    // box-drawing strokes (│ ─ render "dashed"). This is what makes TUI clients
-    // like `ade code` look low-res / jammed inside the terminal pane.
+    // box-drawing strokes (│ ─ render "dashed"). This is what makes full-screen TUI apps
+    // look low-res / jammed inside the terminal pane.
     fontSize: Math.round(args.preferences.fontSize),
     lineHeight: args.preferences.lineHeight,
     // Lift only near-invisible glyphs to a visible contrast floor so the dim

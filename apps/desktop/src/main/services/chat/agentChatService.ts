@@ -11617,8 +11617,8 @@ export function createAgentChatService(args: {
   getAccountUsage: () => ChatAccountUsage | null;
   /**
    * Domain coverage for the CTO's operator tools. Every one is optional and
-   * lazily resolved: the desktop wires all of them, `ade code` and the headless
-   * brain wire a subset, and an unwired service leaves its tools answering
+   * lazily resolved: the desktop wires all of them and the headless
+   * brain wires a subset, and an unwired service leaves its tools answering
    * "not available on this runtime" instead of throwing (runtime-backed null
    * services). None of them are used by any non-CTO session.
    */
@@ -11633,7 +11633,7 @@ export function createAgentChatService(args: {
    *
    * Synchronous on purpose — the answer costs one line of system prompt, so it
    * must not make the send path wait on a service call — and an unwired runtime
-   * (`ade code`, the headless brain, any non-Mac host) leaves it undefined and
+   * (the headless brain, any non-Mac host) leaves it undefined and
    * emits nothing.
    */
   macDesktopRuntime?: Pick<
@@ -57107,7 +57107,7 @@ export function createAgentChatService(args: {
       return "declined";
     }
     // Gated here, not only in the renderer: a cloud run refuses every steer, and
-    // the CLI, the TUI, iOS and `messageSession` auto-routing all reach this
+    // the CLI, iOS and `messageSession` auto-routing all reach this
     // path without the renderer's check.
     //
     // NOT covered by a unit test: reaching it needs a promoted cloud session
@@ -61470,7 +61470,7 @@ export function createAgentChatService(args: {
     assertChatNotMovedAway(args.sessionId, "send_message");
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
-    // it first; `ade code`, `ade chat send` and SDK hosts reach here) opens the
+    // it first; `ade chat send` and SDK hosts reach here) opens the
     // chat's side chat instead of reaching the main chat as text. A chat that
     // cannot have one (a side chat, CTO, a provider with no fork) gets the
     // text as typed, as before side chats.
@@ -63929,7 +63929,7 @@ export function createAgentChatService(args: {
         // would ever pick this row up.
         const flushed = await drainCursorQueueHeadIfIdle(managed, runtime);
         // Reported as dispatched when the flush sent THIS row: telling the
-        // caller otherwise would have the TUI and iOS show a queued status for a
+        // caller otherwise would have iOS show a queued status for a
         // message already on its way.
         //
         // Reaching the non-null branch needs the turn boundary to fire while
@@ -71800,7 +71800,7 @@ export function createAgentChatService(args: {
       }
     }
     // Only an update that names the tier changes it. Clients that know Fast
-    // alone (the TUI, the phone, older desktops) resend `fastMode: true` with
+    // alone (the phone, older desktops) resend `fastMode: true` with
     // every model or effort change; reading that as "plain Fast" would drop an
     // Ultrafast choice the user made elsewhere. Fast off already cleared it.
     if (requestedFastTier !== undefined) {
@@ -73245,7 +73245,7 @@ export function createAgentChatService(args: {
    *
    * Dispatch by runtime kind:
    *
-   * - **Claude / ade-code**: SDK `getSubagentMessages` reads the per-subagent
+   * - **Claude**: SDK `getSubagentMessages` reads the per-subagent
    *   JSONL at `~/.claude/projects/<projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl`.
    * - **OpenCode**: child session id is the agentId; we call
    *   `runtime.handle.client.session.messages({ path: { id }, query: { directory }})`

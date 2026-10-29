@@ -410,7 +410,7 @@ enum WorkSmartLinkDetector {
 ///
 /// A mention is a POINTER, never an attachment: the token is the canonical text
 /// and the label is display only, so the same draft round-trips through the
-/// desktop composer, the `ade code` TUI, and this app without changing meaning.
+/// desktop composer and this app without changing meaning.
 struct WorkChatMention: Equatable {
   enum Kind: Equatable, CaseIterable {
     case chat
@@ -892,7 +892,7 @@ final class WorkModelMentionDirectory: @unchecked Sendable {
     return recentsRevision
   }
 
-  /// The picker's synced recents (desktop, TUI and iOS share them), newest
+  /// The picker's synced recents (desktop and iOS share them), newest
   /// first. The `@` menu ranks recent models first among equal matches.
   var recentModelIds: [String] {
     lock.lock()
@@ -1474,7 +1474,7 @@ enum WorkBrowserTabMentionDetector {
 
 // MARK: - Trigger detection
 
-/// The typed triggers the composer recognizes, matching the shared desktop/TUI
+/// The typed triggers the composer recognizes, matching the shared desktop
 /// semantics: `/` opens the slash-command list, `@` opens file quick-open, and
 /// `#` opens the pull-request menu. Detection runs on the text *before* the
 /// cursor so a trigger can live anywhere in the draft ("fix @src/foo.ts then
@@ -1499,7 +1499,7 @@ struct WorkComposerTriggerMatch: Equatable {
 /// Pure, cursor-relative trigger detection shared by the composer text view.
 /// Applied to the substring before the cursor. When both match (rare), the one
 /// whose trigger char sits closest to the cursor wins.
-/// Mirrors the desktop/TUI regexes exactly:
+/// Mirrors the desktop regexes exactly:
 ///   slash — `(?:^|\s)/([^\s/]*)$`
 ///   at    — `(?:^|[ \t\r\n])@([^@\r\n]*)$`
 ///   hash  — `(?:^|[ \t\r\n])#([^\s#]*)$`

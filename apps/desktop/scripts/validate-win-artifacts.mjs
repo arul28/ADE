@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn } from "node:child_process";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import runtimeResourceTargets from "./runtime-resource-targets.cjs";
@@ -61,7 +61,6 @@ const {
   assertBundledAgentSkills,
   assertNoRuntimeFetchedToolPackages,
   assertPackagedTreeSizeBudget,
-  assertPackagedTuiEsmShims,
   assertPathExists,
   assertPathMissing,
   assertRuntimeToolJsEntryPointsPresent,
@@ -520,9 +519,6 @@ async function assertRemoteRuntimeBundle(resourcesPath) {
     if (!stdout.split(/\r?\n/).some((entry) => entry.startsWith("./node_modules/"))) {
       fail(`Remote runtime native archive for ${target} does not contain ./node_modules/: ${nativeArchivePath}`);
     }
-    if (!stdout.split(/\r?\n/).includes("./tuiClient/cli.mjs")) {
-      fail(`Remote runtime native archive for ${target} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
-    }
   }
   for (const target of EXCLUDED_REMOTE_RUNTIME_TARGETS) {
     await assertPathMissing(
@@ -623,7 +619,6 @@ async function validatePackagedRuntime(appDir) {
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
   const uninstallCleanupPath = path.join(resourcesPath, "ade-cli", "windows-uninstall-cleanup.ps1");
-  const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   // `ade triage` hands this file to a coding agent as its instructions, and
   // electron-builder only warns when an extraResources source goes missing, so
@@ -694,7 +689,6 @@ async function validatePackagedRuntime(appDir) {
       }
     }
   }
-  assertPackagedTuiEsmShims(await fsp.readFile(adeCliTuiPath, "utf8"));
   if (isLocalWindowsTestBuild) {
     console.warn(
       "[validate-win-artifacts] Local test build: skipping the remote runtime sidecar assertion.",
@@ -813,30 +807,6 @@ async function validatePackagedRuntime(appDir) {
   // The CLI exits 2 for an unknown command; a timeout or spawn error is not that.
   if (!/Command failed \(2\)/.test(String(unknownCommand.message ?? unknownCommand))) {
     fail(`Bundled ADE CLI wrapper did not return the CLI's exit code 2 for an unknown command: ${unknownCommand.message ?? unknownCommand}`);
-  }
-
-  const tuiSmokeDir = await fsp.mkdtemp(path.join(os.tmpdir(), "ade-win-tui-smoke-"));
-  try {
-    const tuiRunnerPath = path.join(tuiSmokeDir, "run-tui-help.mjs");
-    await fsp.writeFile(
-      tuiRunnerPath,
-      `const tui = await import(${JSON.stringify(pathToFileURL(adeCliTuiPath).href)});\n` +
-        "process.exitCode = await tui.runAdeCodeCli(['--help']);\n",
-      "utf8",
-    );
-    const tuiHelp = await runCommand(appExe, [tuiRunnerPath], {
-      cwd: resourcesPath,
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1",
-        NODE_PATH: "",
-      },
-    });
-    if (!tuiHelp.stdout.includes("Terminal-native ADE Work chat.")) {
-      fail("Bundled ADE code TUI did not print help");
-    }
-  } finally {
-    await fsp.rm(tuiSmokeDir, { recursive: true, force: true });
   }
 
   const nodeOverrideHelp = await runCommand(adeCliBinPath, ["--help"], {

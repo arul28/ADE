@@ -81,8 +81,8 @@ read fails, never an empty state, and reads again once the switch ends.
 change that treats them uniformly silently drops tiers for some providers.
 
 **Check:** Codex always queries the app-server for tiers (its `activateRuntime`
-is a no-op); Cursor/Droid gate tiers on `activateRuntime`; the TUI fast toggle
-reads from the `models` surface via the `adeApi` wrapper. A change that routes
+is a no-op); Cursor/Droid gate tiers on `activateRuntime`; the CLI fast toggle
+reads from the `models` surface. A change that routes
 all providers through one path, or that reads tiers before `activateRuntime` for
 a gating provider, is a correctness bug for the affected providers.
 
@@ -177,10 +177,10 @@ multi-provider repos. This is the review-side enforcement of the AGENTS.md
 demand an answer per entry — present, deliberately excluded (where is that
 recorded?), or missed:
 
-- **Entry points:** desktop UI, `ade` CLI, `ade code` TUI, deeplinks, command
+- **Entry points:** desktop UI, `ade` CLI, deeplinks, command
   palette, keybindings. A behavior wired into one entry point but reachable
   from others is a finding.
-- **Clients:** desktop, hosted web, iOS, TUI. Logic duplicated into one client
+- **Clients:** desktop, hosted web, iOS. Logic duplicated into one client
   instead of the shared service/type layer is a finding.
 - **Providers:** Claude / Codex / Cursor / OpenCode / Droid. A provider-shaped
   feature needs a per-adapter decision; silence for an adapter is a finding,

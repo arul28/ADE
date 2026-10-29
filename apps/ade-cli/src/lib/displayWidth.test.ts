@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splitByDisplayCells, terminalDisplayWidth, truncateDisplayEnd, padDisplayEnd, padDisplayStart } from "../displayWidth";
+import { splitByDisplayCells, terminalDisplayWidth, truncateDisplayEnd, padDisplayEnd, padDisplayStart } from "./displayWidth";
 
 describe("splitByDisplayCells", () => {
   it("assigns a wide cluster that crosses a split boundary to one segment", () => {

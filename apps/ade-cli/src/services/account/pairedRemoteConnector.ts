@@ -3,7 +3,7 @@ import {
   PairedRuntimeCompatibilityError,
   PairedRuntimeRelayAuthRequiredError,
   type PairedRuntimeRouteDiagnostic,
-} from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
+} from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeErrors";
 import {
   buildPairedEndpointCandidates,
   classifyPairedRuntimeFailure,
@@ -14,21 +14,21 @@ import {
   pairedRuntimeFailureMessage,
   pairedRuntimeRouteHost,
   type PairedRuntimeEndpointCandidate,
-} from "../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
-import { DesktopPairedMachineStore } from "../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
+} from "../../../../desktop/src/main/services/remoteRuntime/pairedRuntimeRoutes";
+import { DesktopPairedMachineStore } from "../../../../desktop/src/main/services/remoteRuntime/syncPairedMachineStore";
 import {
   openSyncRuntimeTransport,
   type SyncRuntimeTransport,
-} from "../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
+} from "../../../../desktop/src/main/services/remoteRuntime/syncRuntimeTransport";
 import type {
   RemoteRuntimeConnectionAttempt,
   RemoteRuntimeTarget,
-} from "../../../desktop/src/shared/types/remoteRuntime";
-import type { DesktopPairedMachineCredentials } from "../../../desktop/src/shared/types/pairedRuntime";
+} from "../../../../desktop/src/shared/types/remoteRuntime";
+import type { DesktopPairedMachineCredentials } from "../../../../desktop/src/shared/types/pairedRuntime";
 import {
   withBoundedAttempt,
   type RemoteLaunchBudget,
-} from "./remoteLaunchBudget";
+} from "../../lib/remoteLaunchBudget";
 
 export type RemoteRoutePreference = "auto" | "lan" | "tailnet" | "relay";
 
