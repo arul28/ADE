@@ -1,0 +1,38 @@
+---
+title: "v1.2.126"
+description: "Release notes for ADE v1.2.126 - October 29, 2026"
+---
+
+ADE 1.2.126 gives lanes one clear way to start, makes ADE MCP one server for your whole account, and shows what each provider sends before your first message. It also fixes the blank gap in long chats and keeps menus on screen.
+
+## New
+
+- Every new lane is a new branch or an existing branch; a new branch starts from the default branch, the primary lane's branch or one you pick, and lane defaults belong to your account. Child lanes are gone (#1962).
+- ADE MCP is one server for your whole account, with one URL that reaches every computer you include; apps that support MCP Apps show ADE views and answer cards in their chat (#1945).
+- Each provider page in Settings opens with a branded banner, your last 30 days of usage, and the initial context window a new chat sends (#1960).
+- A What's new page and new tips point to provider accounts, usage and startup context (#1963, #1957).
+- A liquid glass logo plays while ADE starts, and the light theme uses a logo with purple letters (#1952).
+- When the page can't take clicks, you can still install an update from the ADE menu on macOS or the taskbar menu on Windows (#1943).
+
+## Improved
+
+- An effort change reaches a running Claude turn at once, and the chip says which effort runs now and which runs next (#1946).
+- Every error banner and toast has a close button, a Report button and a color for its kind, so a typo or an offline machine no longer looks like a crash (#1951).
+- Menus, hover cards and tooltips stay on screen, and launch dialogs use the shared permission picker (#1959).
+- What's new videos play at 60 fps with their whole frame (#1954).
+- Agents get each ADE skill once, find `ade lanes rename`, and use drafts to send a message later (#1958).
+- ADE MCP import finds servers that you configured in your chat providers, such as Copilot (#1950).
+- The brain logs the slow commands that freeze it, so those freezes can be fixed (#1961).
+
+## Fixed
+
+- Long chats with subagents no longer hide the latest messages behind a blank gap, and the manual "Clean up merged lanes" run works (#1955).
+- Agent commands stay connected to the running brain instead of an empty one (#1956).
+- A coordinator's reply to its chat subagent clears Needs you (#1949).
+- The app and a standalone brain update together, and many simulator, Mac desktop and Windows fixes from a long agent run (#1953).
+- The web app fixes drops, image previews, CSV exports and the Connect menu in narrow windows (#1947).
+
+## iOS
+
+- The iPhone Duo front screen puts its header beside the clock, and typing no longer makes the keyboard or menus flash (#1948).
+- New lanes use the same new-branch or existing-branch choice, and the effort chip shows the running effort (#1962, #1946). This is in TestFlight build 118.
