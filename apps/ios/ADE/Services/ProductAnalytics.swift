@@ -19,6 +19,21 @@ enum ADEAnalyticsAppEntryPoint: String, CaseIterable {
   case foreground = "foreground"
 }
 
+/// How this build reached the phone, read from the App Store receipt name.
+enum ADEAnalyticsDistribution: String, CaseIterable {
+  case testFlight = "testflight"
+  case appStore = "app_store"
+  case development
+
+  static var current: ADEAnalyticsDistribution {
+    #if DEBUG
+    return .development
+    #else
+    return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" ? .testFlight : .appStore
+    #endif
+  }
+}
+
 enum ADEAnalyticsScreen: String, CaseIterable {
   case hub
   case work
@@ -110,7 +125,9 @@ protocol ProductAnalyticsSink: AnyObject {
   var isConfigured: Bool { get }
   var canCapture: Bool { get }
   func capture(event: String, properties: [String: Any])
-  func identify(userHash: String)
+  /// `accountId` is the Clerk user id, set on the person so a profile can be
+  /// found in Clerk. The distinct id stays the hash every ADE client uses.
+  func identify(userHash: String, accountId: String)
   func resetIdentity()
   func setEnabled(_ enabled: Bool)
   func flush()
@@ -253,6 +270,8 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
       privateProperties["surface"] = "mobile"
       privateProperties["platform"] = "ios"
+      privateProperties["client"] = "ios"
+      privateProperties["interactive"] = event != ADEAnalyticsEventName.analyticsBudget.rawValue
       privateProperties["$process_person_profile"] = false
       privateProperties["$geoip_disable"] = true
 
@@ -282,7 +301,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
     }
   }
 
-  func identify(userHash: String) {
+  func identify(userHash: String, accountId: String) {
     lock.withLock {
       guard requestedEnabled,
             Self.isValidUserHash(userHash),
@@ -299,6 +318,7 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
             "plan": "free",
             "platform": "ios",
             "app_version": Self.appVersion(),
+            "clerk_user_id": accountId,
           ],
           "$geoip_disable": true,
         ],
@@ -393,7 +413,14 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       guard let entryPoint = enumString("entry_point", as: ADEAnalyticsAppEntryPoint.self) else {
         return nil
       }
-      return ["entry_point": entryPoint]
+      var sanitized: [String: Any] = ["entry_point": entryPoint]
+      if let distribution = enumString("distribution", as: ADEAnalyticsDistribution.self) {
+        sanitized["distribution"] = distribution
+      }
+      if properties["first_open"] as? Bool == true {
+        sanitized["first_open"] = true
+      }
+      return sanitized
 
     case .screenViewed:
       guard let screen = enumString("screen", as: ADEAnalyticsScreen.self) else { return nil }
@@ -527,6 +554,8 @@ final class ProductAnalytics {
 
   static let enabledDefaultsKey = "ade.analytics.enabled"
   static let identifiedAccountHashDefaultsKey = "ade.analytics.identified-account-hash.v1"
+  static let firstOpenSentDefaultsKey = "ade.analytics.first-open-sent.v1"
+  static let clerkIdSetForHashDefaultsKey = "ade.analytics.clerk-id-set-for-hash.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
 
@@ -624,23 +653,50 @@ final class ProductAnalytics {
     }
   }
 
-  func captureAppOpened(_ entryPoint: ADEAnalyticsAppEntryPoint) {
+  func captureAppOpened(
+    _ entryPoint: ADEAnalyticsAppEntryPoint,
+    distribution: ADEAnalyticsDistribution = .current
+  ) {
+    captureAppOpened(entryPoint, distribution: distribution, isNewInstall: !hasAnalyticsState())
+  }
+
+  /// An install that already counted events (an upgrade) is not new.
+  private func hasAnalyticsState() -> Bool {
+    defaults.data(forKey: Self.budgetDefaultsKey) != nil
+  }
+
+  private func captureAppOpened(
+    _ entryPoint: ADEAnalyticsAppEntryPoint,
+    distribution: ADEAnalyticsDistribution,
+    isNewInstall: Bool
+  ) {
     lock.withLock {
       foregroundDeduplicationKeys.removeAll(keepingCapacity: true)
     }
-    capture(
-      .appOpened,
-      properties: ["entry_point": entryPoint.rawValue]
-    )
+    var properties: [String: Any] = [
+      "entry_point": entryPoint.rawValue,
+      "distribution": distribution.rawValue,
+    ]
+    // The first open of this install (a TestFlight or App Store download)
+    // rides on the app-open event once, instead of being an event of its own.
+    if sink.canCapture, !defaults.bool(forKey: Self.firstOpenSentDefaultsKey) {
+      defaults.set(true, forKey: Self.firstOpenSentDefaultsKey)
+      if isNewInstall {
+        properties["first_open"] = true
+      }
+    }
+    capture(.appOpened, properties: properties)
   }
 
   func captureColdStart(afterReconcilingAccount userId: String?) {
+    // Identifying writes the budget, so decide whether this install is new first.
+    let isNewInstall = !hasAnalyticsState()
     if let userId {
       identifyAccount(userId)
     } else {
       resetAccountIdentity()
     }
-    captureAppOpened(.coldStart)
+    captureAppOpened(.coldStart, distribution: .current, isNewInstall: isNewInstall)
   }
 
   func captureScreen(_ screen: ADEAnalyticsScreen) {
@@ -726,13 +782,18 @@ final class ProductAnalytics {
     let userHash = Self.accountHash(normalizedUserId)
     let transition = lock.withLock { () -> IdentityTransition in
       let previousHash = defaults.string(forKey: Self.identifiedAccountHashDefaultsKey)
-      guard previousHash != userHash else { return IdentityTransition() }
+      // An account identified by a build before `clerk_user_id` existed is
+      // identified once more, so its person gets the id.
+      guard previousHash != userHash
+        || defaults.string(forKey: Self.clerkIdSetForHashDefaultsKey) != userHash else {
+        return IdentityTransition()
+      }
 
       var transition = IdentityTransition()
       var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
       // A quota rejection must still detach the prior account so subsequent
       // events cannot remain assigned to the account that just signed out.
-      transition.shouldReset = previousHash != nil
+      transition.shouldReset = previousHash != nil && previousHash != userHash
       guard reserve(
         name: Self.identifyEventName,
         limit: Self.identifyDailyLimit,
@@ -769,8 +830,9 @@ final class ProductAnalytics {
     if let userHash = transition.userHash {
       lock.withLock {
         defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
+        defaults.set(userHash, forKey: Self.clerkIdSetForHashDefaultsKey)
       }
-      sink.identify(userHash: userHash)
+      sink.identify(userHash: userHash, accountId: normalizedUserId)
     }
   }
 

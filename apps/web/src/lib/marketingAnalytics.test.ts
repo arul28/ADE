@@ -8,7 +8,10 @@ import {
   MARKETING_CTA_LABELS,
   MARKETING_CTA_POSITIONS,
   MARKETING_SCREENS,
+  marketingCurrentUrl,
+  marketingLandingProperties,
   normalizeMarketingScreen,
+  readMarketingLanding,
   routeMarketingAnalyticsClick,
   type PostHogCapturePayload,
   type StorageLike,
@@ -44,7 +47,7 @@ class BlockedStorage implements StorageLike {
   }
 }
 
-function createHarness(options: { enabled?: boolean; now?: Date } = {}) {
+function createHarness(options: { enabled?: boolean; now?: Date; context?: () => Record<string, string> } = {}) {
   const storage = new MemoryStorage();
   const payloads: PostHogCapturePayload[] = [];
   let enabled = options.enabled ?? true;
@@ -55,6 +58,7 @@ function createHarness(options: { enabled?: boolean; now?: Date } = {}) {
     isEnabled: () => enabled,
     now: () => now,
     idFactory: () => "stable_analytics_identifier_123",
+    ...(options.context ? { context: options.context } : {}),
     transport: (payload) => {
       payloads.push(payload);
     },
@@ -142,7 +146,43 @@ test("manual payload contains only anonymous allowlisted properties", () => {
     },
   });
   const serialized = JSON.stringify(payloads[0]);
-  assert.doesNotMatch(serialized, /url|query|hash|referrer|prompt|path|branch|message|stack/i);
+  assert.doesNotMatch(serialized, /prompt|branch|message|stack/i);
+});
+
+test("attribution carries the landing and page but never other query parameters or fragments", () => {
+  const landing = readMarketingLanding(
+    "https://ade-app.dev/?utm_source=hn&utm_campaign=launch&code=PAIR-SECRET#token",
+    "https://news.ycombinator.com/item?id=123",
+  );
+  const page = marketingCurrentUrl("https://ade-app.dev/pair?code=PAIR-SECRET&utm_medium=social#token");
+  const { analytics, payloads } = createHarness({
+    context: () => ({ ...marketingLandingProperties(landing), $current_url: page?.url ?? "" }),
+  });
+  assert.equal(analytics.captureScreen(MARKETING_SCREENS.PAIR), "sent");
+  assert.deepEqual(
+    {
+      referrer: payloads[0]?.properties.$referrer,
+      domain: payloads[0]?.properties.$referring_domain,
+      source: payloads[0]?.properties.utm_source,
+      campaign: payloads[0]?.properties.utm_campaign,
+      url: payloads[0]?.properties.$current_url,
+    },
+    {
+      referrer: "https://news.ycombinator.com/item",
+      domain: "news.ycombinator.com",
+      source: "hn",
+      campaign: "launch",
+      url: "https://ade-app.dev/pair?utm_medium=social",
+    },
+  );
+  assert.equal(payloads[0]?.properties.surface, "web");
+  assert.doesNotMatch(JSON.stringify(payloads[0]), /PAIR-SECRET|#token|id=123/);
+
+  // A visitor moving between pages of this site is not referred by it.
+  assert.deepEqual(
+    marketingLandingProperties(readMarketingLanding("https://ade-app.dev/download", "https://ade-app.dev/")),
+    { $referrer: "$direct", $referring_domain: "$direct" },
+  );
 });
 
 test("captures a dedicated CTA event without duplicating feature semantics", () => {

@@ -579,8 +579,8 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
     RENDERER_GONE_UNKNOWN_REASON,
   ]),
   escalation_reason: new Set(["hard_deadline", "post_staging"]),
-  install_source: new Set(["direct_download", "homebrew", "development", "unknown"]),
-  trigger: new Set(["work_session_completed"]),
+  install_source: new Set(["direct_download", "homebrew", "install_script", "development", "unknown"]),
+  trigger: new Set(["work_session_completed", "cli_session_started"]),
   user_action: new Set(["accepted", "deferred", "dismissed"]),
   // A closed, code-authored vocabulary with no user data in it, which is why it
   // gets an exact allowlist instead of going through `error_kind`'s coarsening
@@ -642,6 +642,45 @@ function safeStringProperty(key: string, value: ProductAnalyticsPropertyValue): 
   if (!safe) return null;
   const allowlist = SAFE_STRING_VALUES[key];
   return !allowlist || allowlist.has(safe) ? safe : null;
+}
+
+/**
+ * Events no person caused: rollups, budget accounting, and reliability facts
+ * the app or brain records on its own. They carry `interactive: false` so an
+ * active-user count can leave them out.
+ */
+const BACKGROUND_EVENTS = new Set<ProductAnalyticsEventName>([
+  "ade_daily_usage_summary", "ade_analytics_budget",
+  "ade_update_install_aborted", "ade_update_quit_escalated", "ade_update_install_did_not_land",
+  "ade_update_auto_applied", "ade_update_auto_apply_cancelled", "ade_update_prompted",
+  "ade_brain_recovered", "ade_renderer_recovered", "ade_publish_failing", "ade_relay_suppressed",
+  "ade_account_session_unreadable", "ade_tool_fetched", "ade_brain_action_failed",
+]);
+
+/** The app a person used. `api` is the brain or CLI, which cannot see one. */
+const CLIENT_BY_SURFACE: Record<ProductAnalyticsCapture["surface"], string> = {
+  desktop: "desktop",
+  web: "web",
+  cli: "cli",
+  mobile: "ios",
+  api: "runtime",
+};
+
+/**
+ * `client` and `interactive`, added to every event the service sends.
+ * An automation's work session is a run nobody started by hand.
+ */
+export function productAnalyticsEventContext(
+  event: ProductAnalyticsEventName,
+  surface: ProductAnalyticsCapture["surface"],
+  feature: unknown,
+): { client: string; interactive: boolean } {
+  const automationRun = feature === "automations"
+    && (event === "ade_work_session_started" || event === "ade_work_session_completed");
+  return {
+    client: CLIENT_BY_SURFACE[surface],
+    interactive: !BACKGROUND_EVENTS.has(event) && !automationRun,
+  };
 }
 
 export function sanitizeProductAnalyticsProperties(

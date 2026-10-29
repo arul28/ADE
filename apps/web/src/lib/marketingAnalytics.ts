@@ -197,6 +197,97 @@ export function routeMarketingAnalyticsClick(
 
 export type StorageLike = Pick<Storage, "getItem" | "setItem" | "removeItem">;
 
+const UTM_KEYS = ["utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content"] as const;
+const ATTRIBUTION_VALUE_MAX = 200;
+
+export type MarketingLanding = {
+  referrer: string | null;
+  referringDomain: string | null;
+  utm: Partial<Record<(typeof UTM_KEYS)[number], string>>;
+};
+
+function boundedValue(value: string | null | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed.slice(0, ATTRIBUTION_VALUE_MAX) : null;
+}
+
+/**
+ * Where a visit came from, read once when the visitor lands. A referrer from
+ * this site itself is no referrer. Only the referrer's origin and path are
+ * kept, never its query or fragment.
+ */
+export function readMarketingLanding(href: string, referrer: string): MarketingLanding {
+  const utm: MarketingLanding["utm"] = {};
+  let host = "";
+  try {
+    const url = new URL(href);
+    host = url.hostname;
+    for (const key of UTM_KEYS) {
+      const value = boundedValue(url.searchParams.get(key));
+      if (value) utm[key] = value;
+    }
+  } catch {
+    // A malformed location carries no campaign.
+  }
+  let external: URL | null = null;
+  try {
+    const parsed = referrer ? new URL(referrer) : null;
+    if (parsed && /^https?:$/.test(parsed.protocol) && parsed.hostname !== host) external = parsed;
+  } catch {
+    external = null;
+  }
+  return {
+    referrer: external ? boundedValue(`${external.origin}${external.pathname}`) : null,
+    referringDomain: external ? boundedValue(external.hostname) : null,
+    utm,
+  };
+}
+
+/**
+ * The page as PostHog should see it: origin and path, plus only the utm_*
+ * parameters. Other query parameters and the fragment can hold pairing codes
+ * or links a visitor opened, so they never leave the browser.
+ */
+export function marketingCurrentUrl(href: string): { url: string; host: string; pathname: string } | null {
+  try {
+    const url = new URL(href);
+    const kept = new URLSearchParams();
+    for (const key of UTM_KEYS) {
+      const value = boundedValue(url.searchParams.get(key));
+      if (value) kept.set(key, value);
+    }
+    const query = kept.toString();
+    return {
+      url: `${url.origin}${url.pathname}${query ? `?${query}` : ""}`.slice(0, 2 * ATTRIBUTION_VALUE_MAX),
+      host: url.hostname,
+      pathname: url.pathname.slice(0, ATTRIBUTION_VALUE_MAX),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** The landing as PostHog properties: `$referrer`, `$referring_domain`, `utm_*`. */
+export function marketingLandingProperties(landing: MarketingLanding): Record<string, string> {
+  return {
+    $referrer: landing.referrer ?? "$direct",
+    $referring_domain: landing.referringDomain ?? "$direct",
+    ...landing.utm,
+  };
+}
+
+/** The first landing this browser ever had, kept so a later visit's click still names it. */
+export function firstTouchProperties(landing: MarketingLanding): Record<string, string> {
+  const properties: Record<string, string> = {
+    first_referring_domain: landing.referringDomain ?? "$direct",
+  };
+  for (const key of ["utm_source", "utm_medium", "utm_campaign"] as const) {
+    const value = landing.utm[key];
+    if (value) properties[`first_${key}`] = value;
+  }
+  return properties;
+}
+
 type DropReason = "daily_cap" | "event_cap" | "key_cap" | "duplicate" | "transport";
 
 type DayState = {
@@ -236,12 +327,15 @@ type MarketingAnalyticsOptions = {
   storage: StorageLike;
   transport: MarketingAnalyticsTransport;
   isEnabled: () => boolean;
+  /** Attribution for each event: the current page and the visit's landing. */
+  context?: () => Record<string, string>;
   now?: () => Date;
   idFactory?: () => string;
 };
 
 const STATE_STORAGE_KEY = "ade.analytics.marketing.budget.v1";
 const DISTINCT_ID_STORAGE_KEY = "ade.analytics.marketing.id.v1";
+export const FIRST_TOUCH_STORAGE_KEY = "ade.analytics.marketing.first-touch.v1";
 const VALID_DISTINCT_ID = /^[A-Za-z0-9_-]{16,128}$/;
 
 function utcDay(date: Date): string {
@@ -319,6 +413,7 @@ export class MarketingAnalytics {
   private readonly isEnabled: () => boolean;
   private readonly now: () => Date;
   private readonly idFactory: () => string;
+  private readonly context: () => Record<string, string>;
   private storageHealthy = true;
 
   constructor(options: MarketingAnalyticsOptions) {
@@ -328,6 +423,7 @@ export class MarketingAnalytics {
     this.isEnabled = options.isEnabled;
     this.now = options.now ?? (() => new Date());
     this.idFactory = options.idFactory ?? (() => crypto.randomUUID());
+    this.context = options.context ?? (() => ({}));
   }
 
   captureAppOpened(): CaptureDisposition {
@@ -378,6 +474,7 @@ export class MarketingAnalytics {
     // Opting out rotates the anonymous identity without resetting quota state;
     // repeated off/on cycles therefore cannot bypass the daily event ceiling.
     this.safeRemove(DISTINCT_ID_STORAGE_KEY);
+    this.safeRemove(FIRST_TOUCH_STORAGE_KEY);
   }
 
   private capture(
@@ -467,6 +564,7 @@ export class MarketingAnalytics {
       distinct_id: distinctId,
       event,
       properties: {
+        ...this.safeContext(),
         surface: "web",
         route_kind: "marketing",
         $process_person_profile: false,
@@ -504,6 +602,14 @@ export class MarketingAnalytics {
     const value = VALID_DISTINCT_ID.test(created) ? created : `adeweb_${Math.random().toString(36).slice(2)}_${Date.now()}`;
     this.safeSet(DISTINCT_ID_STORAGE_KEY, value);
     return this.storageHealthy ? value : null;
+  }
+
+  private safeContext(): Record<string, string> {
+    try {
+      return this.context();
+    } catch {
+      return {};
+    }
   }
 
   private writeState(state: PersistedState): void {
