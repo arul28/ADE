@@ -169,7 +169,7 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
         if (started.feature === "cli") {
           args.analytics.captureInternal({
             event: "ade_activated",
-            surface: row.client_surface,
+            surface,
             projectId: row.project_id,
             sessionId: row.session_id,
             properties: { trigger: "cli_session_started" },

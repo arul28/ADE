@@ -438,7 +438,7 @@ The service adds three properties to every event it sends, so active-user
 counts can be cut by app and stripped of activity no person caused. None
 adds an event.
 
-- `client` — the app a person used: `desktop`, `web`, `tui`, `ios` (a
+- `client` — the app a person used: `desktop`, `web`, `cli` (the `ade` command line), `ios` (a
   host-recorded mutation from the phone, surface `mobile`), or `runtime` (the
   brain or CLI, surface `api`, which cannot see a client). `platform` stays
   the OS of the machine that sent the event, so a phone action recorded by a

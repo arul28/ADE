@@ -661,7 +661,7 @@ const BACKGROUND_EVENTS = new Set<ProductAnalyticsEventName>([
 const CLIENT_BY_SURFACE: Record<ProductAnalyticsCapture["surface"], string> = {
   desktop: "desktop",
   web: "web",
-  tui: "tui",
+  cli: "cli",
   mobile: "ios",
   api: "runtime",
 };

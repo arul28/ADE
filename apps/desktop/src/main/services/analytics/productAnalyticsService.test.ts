@@ -1449,14 +1449,14 @@ describe("productAnalyticsService", () => {
   it("marks the first app open once per client, and none for an install that predates the marker", () => {
     let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
     const harness = makeHarness({ now: () => nowMs });
-    const open = (surface: "desktop" | "tui" | "web") => {
+    const open = (surface: "desktop" | "cli" | "web") => {
       nowMs += 60_000;
       harness.service.capture({ event: "ade_app_opened", surface });
       return harness.messages.at(-1)?.properties as Record<string, unknown>;
     };
     expect(open("desktop").first_open).toBe(true);
     expect(open("desktop")).not.toHaveProperty("first_open");
-    expect(open("tui")).toMatchObject({ first_open: true, client: "tui" });
+    expect(open("cli")).toMatchObject({ first_open: true, client: "cli" });
     expect(open("web")).toMatchObject({ first_open: true, client: "web" });
 
     const statePath = path.join(harness.root, "analytics.json");
@@ -2582,7 +2582,7 @@ describe("usage product analytics exporter", () => {
       // An agent CLI has no turns ADE sees, so its start is the activation.
       expect(captures[3]).toMatchObject({
         event: "ade_activated",
-        surface: "tui",
+        surface: "cli",
         properties: { trigger: "cli_session_started" },
       });
       expect(analytics.flush).toHaveBeenCalledTimes(1);

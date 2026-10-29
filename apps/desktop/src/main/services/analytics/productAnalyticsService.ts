@@ -46,7 +46,7 @@ const MILESTONE_RETRY_AFTER_MS = 2 * 60_000;
 const MILESTONE_CONFIRM_ATTEMPTS = 5;
 
 type MilestoneEvent = "ade_app_installed" | "ade_activated";
-const PRODUCT_ANALYTICS_SURFACE_LIST: ProductAnalyticsSurface[] = ["desktop", "mobile", "tui", "web", "api"];
+const PRODUCT_ANALYTICS_SURFACE_LIST: ProductAnalyticsSurface[] = ["desktop", "mobile", "cli", "web", "api"];
 type PendingMilestone = { uuid: string; atMs: number };
 
 function isMilestoneEvent(event: ProductAnalyticsEventName): event is MilestoneEvent {
@@ -333,7 +333,7 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
     // A state written before first opens were tracked belongs to an install
     // that has opened before; it reports no first open on any client.
     openedSurfaces: Array.isArray(parsed.openedSurfaces)
-      ? PRODUCT_ANALYTICS_SURFACE_LIST.filter((surface) => parsed.openedSurfaces?.includes(surface))
+      ? PRODUCT_ANALYTICS_SURFACE_LIST.filter((surface) => parsed.openedSurfaces?.some((opened) => normalizeAdeUsageClientSurface(opened) === surface))
       : [...PRODUCT_ANALYTICS_SURFACE_LIST],
     enabled,
     enabledSinceMs: enabled
