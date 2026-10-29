@@ -62,6 +62,33 @@ export function selectGitExecutable(
   return selected?.path ?? null;
 }
 
+/** Where Git for Windows keeps its real git.exe, newest layout first (2.56 moved x64 to ucrt64). */
+const GIT_FOR_WINDOWS_BUILDS = ["ucrt64", "clangarm64", "mingw64", "mingw32"] as const;
+
+/**
+ * Git for Windows puts only its launcher on PATH: `<Git>\cmd\git.exe`, or
+ * `<Git>\bin\git.exe` in the portable build. The launcher sets PATH, HOME and
+ * MSYSTEM, then starts the real `<Git>\<build>\bin\git.exe` as a second
+ * process, so each git run costs two process starts (about 25 ms each on a
+ * Windows PC). The real binary does the same setup itself when MSYSTEM is
+ * unset, which is how Git for Windows tells heavy callers to run it. With
+ * MSYSTEM set (a brain started from Git Bash) it skips that setup and a
+ * `#!/bin/sh` hook cannot start, so the launcher stays. Any other git (Scoop,
+ * Chocolatey, a plain git.exe) comes back unchanged.
+ */
+function preferGitForWindowsBinary(selected: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MSYSTEM) return selected;
+  const dir = path.win32.dirname(selected);
+  const leaf = path.win32.basename(dir).toLowerCase();
+  if (path.win32.basename(selected).toLowerCase() !== "git.exe" || (leaf !== "cmd" && leaf !== "bin")) return selected;
+  const root = path.win32.dirname(dir);
+  for (const build of GIT_FOR_WINDOWS_BUILDS) {
+    const real = path.win32.join(root, build, "bin", "git.exe");
+    if (real.toLowerCase() !== selected.toLowerCase() && fs.existsSync(real)) return real;
+  }
+  return selected;
+}
+
 export function shouldProbeLoginShellForGit(
   selectedExecutable: string | null,
   platform: NodeJS.Platform = process.platform,
@@ -112,9 +139,13 @@ async function resolveGitExecutableUncached(): Promise<string> {
     }
   }
   if (resolvedCandidate) {
-    cachedGitExecutable = process.platform === "darwin" && resolvedCandidate === "/usr/bin/git"
-      ? await resolveAppleGitBehindShim() ?? resolvedCandidate
-      : resolvedCandidate;
+    if (process.platform === "darwin" && resolvedCandidate === "/usr/bin/git") {
+      cachedGitExecutable = await resolveAppleGitBehindShim() ?? resolvedCandidate;
+    } else if (process.platform === "win32") {
+      cachedGitExecutable = preferGitForWindowsBinary(resolvedCandidate);
+    } else {
+      cachedGitExecutable = resolvedCandidate;
+    }
     return cachedGitExecutable;
   }
   // Fall back to bare "git" — spawn will surface the original ENOENT with a
