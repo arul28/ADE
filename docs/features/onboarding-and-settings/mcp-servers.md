@@ -361,18 +361,44 @@ Which servers it applies to, per provider:
 | Droid, Muse, Qwen, Kimi, Grok, Devin, Antigravity | Unchanged. These cannot be shown to replace their own copy of a same-named server, and passing one would start a second. | Re-pointed (ADE hands these over itself) |
 | Pi | Unchanged. Pi starts the servers in its own `mcp.json` itself, and stops a stdio server's whole process group, `npx` wrappers included. | Re-pointed (ADE hands these over itself) |
 
-Cursor one-shots (titles and other background utilities) run in strict MCP
-mode, which drops the project and plugin layers' servers; user-level ones
-still load, because ADE's tool-gate hook lives in that layer.
+Background jobs (titles, summaries and other one-shots) start none of the
+user's servers on any provider. Claude (`--strict-mcp-config`), Codex (by
+name, below), Copilot (config discovery off and every configured name
+disabled), Qwen (`--safe-mode`), Pi (`pi -p --no-extensions`, which also turns
+off Pi's built-in MCP support) and OpenCode (reuses the one shared server)
+have a switch for it.
 
-Background jobs that still start the user's own servers, because the
-provider has no switch for it: Cursor (user layer, above), Droid
-(`droid exec`), Kimi, Grok, Devin (which also imports other tools' MCP
-configs by default) and Muse (a fresh `muse serve` loads its global
-servers). Claude (`--strict-mcp-config`), Codex (by name), Copilot (config
-discovery off and every configured name disabled), Qwen (`--safe-mode`), Pi
-(`pi -p --no-extensions`, which also turns off Pi's built-in MCP support) and
-OpenCode (reuses the one shared server) start none.
+Droid, Kimi, Grok, Muse and Devin have none: each starts every server in its
+config at launch, even for a job that calls none (measured with a stdio
+marker server on the pinned 0.244, 2.3.1, 1.0.46, 1.4.7 and 3000.11.3;
+Droid's `--settings` with `mcpPolicy.enabled: false` and Muse's
+`-c mcpServers...` do not stop it). Their jobs run on a private copy of the
+config folder, built per job under `<ADE home>/provider-task-homes/` and
+removed after it (`providerTaskMcpOff.ts`):
+
+| Provider | Points at the copy with | Left out or rewritten |
+|---|---|---|
+| Droid | `FACTORY_HOME_OVERRIDE` | `.factory/mcp.json` |
+| Kimi | `KIMI_CODE_HOME` | `mcp.json` |
+| Grok | `GROK_HOME` | `config.toml` without `[mcp_servers.*]`, plus `mcps = false` in `[compat.claude]`, `[compat.cursor]` and `[compat.codex]`: Grok also imports the servers in `~/.claude.json`, `.mcp.json` and `.cursor/mcp.json` |
+| Muse | `XDG_CONFIG_HOME` | `muse/settings.json` without `mcpServers` |
+| Devin | `XDG_CONFIG_HOME` (`APPDATA` on Windows) | `devin/mcp_config.json` and `mcp_config.local.json`; `devin/config.json` without `mcpServers` and with every `read_config_from` import off (Devin imports Claude's, Cursor's and other tools' servers by default) |
+
+Every other entry of the real folder is linked in (a symlink; on Windows a
+junction for a folder and a hard link for a file), so the sign-in, history
+and session files are the real ones. A CLI that saves a linked file by
+writing a new one and renaming it (Grok does) replaces only the link, so when
+the job ends ADE copies such a file back over the real one, unless the real
+one changed during the job. A refreshed token is kept. Droid, Kimi and Muse
+get no copy when their file lists no server. When a link cannot be made, the
+job runs on the real folder as before. Servers a plugin adds (a Grok or Droid
+plugin, a Claude plugin Grok imports) are not in these files and still start.
+
+Cursor one-shots run on a home of their own,
+`<ADE home>/provider-task-homes/cursor-home`, instead of the user's:
+they sign in with an API key, and the worker writes ADE's tool-gate hook into
+the home it runs on, so the user layer there holds the gate and no servers.
+Strict MCP mode drops the project and plugin layers.
 
 Codex runs that need none of the user's servers start none of the
 config.toml ones: background utilities (`codex exec`, chat titles and the
@@ -397,4 +423,5 @@ nothing. Servers a Codex plugin adds are not in the file and still start.
 | `apps/desktop/src/main/services/mcp/mcpUserServersForLaunch.ts` | The user's own servers for one Claude or Codex launch: the machine login's servers on an ADE account, and `npx` servers re-pointed. |
 | `apps/desktop/src/main/services/mcp/trackedCliUserMcp.ts` | The same servers for a tracked Claude or Codex CLI, without secret-bearing ones; `trackedCliUserMcpFlags` in `shared/cliLaunch.ts` renders them. |
 | `apps/desktop/src/main/services/mcp/codexMcpOff.ts` | Switches every config.toml server off by name for Codex runs that need none. |
+| `apps/desktop/src/main/services/mcp/providerTaskMcpOff.ts` | The private config-folder copy a Droid, Kimi, Grok, Muse or Devin background job runs on, its write-back, and the Cursor one-shot home. |
 | `apps/desktop/src/renderer/components/settings/mcp/` | The page, the add and edit dialog, the hook and the layout CSS. |

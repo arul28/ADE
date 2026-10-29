@@ -39,6 +39,7 @@ import { runCursorSdkLocalPrompt } from "../chat/cursorSdkPool";
 import { resolveCursorSdkModelSelectionParams } from "../chat/cursorModelSelection";
 import { claudeBackgroundUtilityFlags, codexStandardSpeedFlags } from "../../../shared/backgroundUtilityModel";
 import { codexDisableConfiguredMcpArgs } from "../mcp/codexMcpOff";
+import { openProviderTaskMcpOff } from "../mcp/providerTaskMcpOff";
 import {
   claudeRuntimeEffortFlags,
   codexReasoningEffortFlags,
@@ -588,12 +589,18 @@ async function runCursorTask(args: ProviderTaskRunnerArgs): Promise<ProviderTask
 async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRunnerResult> {
   const prompt = appendStructuredOutputInstruction(args.prompt, args.jsonSchema);
   const combinedPrompt = args.system?.trim() ? `${args.system.trim()}\n\n${prompt}` : prompt;
+  const baseEnv = { ...userProcessEnv(), ...(args.accountEnv ?? {}) };
+  // Muse starts its settings' MCP servers with every session; this job uses none.
+  const mcpOff = openProviderTaskMcpOff("muse", baseEnv);
   const host = await startPinnedMuseHost({
-    baseEnv: { ...userProcessEnv(), ...(args.accountEnv ?? {}) },
+    baseEnv: { ...baseEnv, ...mcpOff.env },
     noSessionLog: true,
     cwd: args.cwd,
     clientVersion: "ade",
     userInputDialogs: false,
+  }).catch((error: unknown) => {
+    mcpOff.close();
+    throw error;
   });
   try {
     // Nobody watches a one-shot task, so it can never answer an approval or a
@@ -664,6 +671,7 @@ async function runMuseTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskRu
     };
   } finally {
     await host.close();
+    mcpOff.close();
   }
 }
 
@@ -678,6 +686,11 @@ async function runAcpOneShotTask(
     stdinText?: string;
   },
 ): Promise<ProviderTaskRunnerResult> {
+  const env = providerSelfUpdateEnv(config.provider);
+  // Kimi and Grok start their config's MCP servers at launch; Qwen's safe mode starts none.
+  const mcpOff = config.provider === "qwen"
+    ? null
+    : openProviderTaskMcpOff(config.provider, { ...userProcessEnv(), ...env });
   const result = await runCommand({
     command: config.resolved.path,
     // Qwen's pin is a Node plus its script; the script comes first.
@@ -685,8 +698,8 @@ async function runAcpOneShotTask(
     cwd: args.cwd,
     timeoutMs: args.timeoutMs,
     stdinText: config.stdinText,
-    env: providerSelfUpdateEnv(config.provider),
-  });
+    env: { ...env, ...mcpOff?.env },
+  }).finally(() => mcpOff?.close());
   if (result.exitCode !== 0) {
     throw new Error(describeCliFailure(config.providerLabel, result));
   }
@@ -864,13 +877,14 @@ async function runDroidTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     const effort = resolveTaskReasoningEffort(args);
     if (effort) cliArgs.push("-r", effort);
     cliArgs.push("-f", promptPath);
+    const mcpOff = openProviderTaskMcpOff("droid", { ...userProcessEnv(), ...cli.env });
     const result = await runCommand({
       command: cli.command,
       argv: cliArgs,
       cwd: oneShotScratchCwd(),
       timeoutMs: args.timeoutMs,
-      env: cli.env,
-    });
+      env: { ...cli.env, ...mcpOff.env },
+    }).finally(mcpOff.close);
     if (result.exitCode !== 0) throw new Error(describeCliFailure("Droid", result));
     return textTaskResult(args, result.stdout.trim());
   });
@@ -893,13 +907,15 @@ async function runDevinTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     if (model) cliArgs.push("--model", model);
     // The scratch cwd is not a trusted workspace, and print mode cannot ask.
     cliArgs.push("--respect-workspace-trust", "false");
+    // Devin's own servers, and the ones it imports from Claude, Cursor and others.
+    const mcpOff = openProviderTaskMcpOff("devin", { ...userProcessEnv(), ...cli.env });
     const result = await runCommand({
       command: cli.command,
       argv: cliArgs,
       cwd: oneShotScratchCwd(),
       timeoutMs: args.timeoutMs,
-      env: cli.env,
-    });
+      env: { ...cli.env, ...mcpOff.env },
+    }).finally(mcpOff.close);
     if (result.exitCode !== 0) throw new Error(describeCliFailure("Devin", result));
     return textTaskResult(args, result.stdout.trim());
   });
