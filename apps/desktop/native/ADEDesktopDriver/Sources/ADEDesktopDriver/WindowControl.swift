@@ -45,28 +45,33 @@ struct DesktopWindow {
 
     /// `MacDesktopWindow`, field for field.
     func asJSON() -> [String: JSONValue] {
-        [
+        // Built in steps with explicit types: one chained literal timed out
+        // the type checker on the release runners.
+        let frameJSON: [String: JSONValue] = [
+            "x": .double(Double(frame.origin.x)),
+            "y": .double(Double(frame.origin.y)),
+            "width": .double(Double(frame.width)),
+            "height": .double(Double(frame.height)),
+        ]
+        var json: [String: JSONValue] = [
             "id": .int(Int(id)),
             "pid": .int(Int(pid)),
             "appName": .string(appName),
             "bundleId": bundleId.map(JSONValue.string) ?? .null,
             "title": title.map(JSONValue.string) ?? .null,
-            "frame": .object([
-                "x": .double(Double(frame.origin.x)),
-                "y": .double(Double(frame.origin.y)),
-                "width": .double(Double(frame.width)),
-                "height": .double(Double(frame.height)),
-            ]),
+            "frame": .object(frameJSON),
             "laneId": laneId.map(JSONValue.string) ?? .null,
             "origin": .string(origin),
             "onDisplayId": onDisplayId.map { JSONValue.int(Int($0)) } ?? .null,
             "minimized": .bool(minimized),
             "singleInstance": .bool(singleInstance),
             "layer": .int(layer),
-            // Omitted rather than sent as null on every row that does not carry
-            // one: a listing is mostly rows without an icon.
-        ].merging(iconPng.map { ["iconPng": JSONValue.string($0)] } ?? [:]) { _, new in new }
-            .merging(sheetOf.map { ["sheetOf": JSONValue.int(Int($0))] } ?? [:]) { _, new in new }
+        ]
+        // Omitted rather than sent as null on every row that does not carry
+        // one: a listing is mostly rows without an icon.
+        if let iconPng { json["iconPng"] = .string(iconPng) }
+        if let sheetOf { json["sheetOf"] = .int(Int(sheetOf)) }
+        return json
     }
 }
 
