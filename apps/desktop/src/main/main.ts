@@ -2410,6 +2410,7 @@ app.whenReady().then(async () => {
         execPath: process.execPath,
         resourcesPath: process.resourcesPath,
         configuredSource: process.env.ADE_INSTALL_SOURCE,
+        appImagePath: process.env.APPIMAGE,
       }),
     },
   });

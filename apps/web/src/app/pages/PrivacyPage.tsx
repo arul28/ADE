@@ -87,7 +87,7 @@ const sections: Section[] = [
           "Vercel — this website is hosted on Vercel; standard request logs apply.",
           "Cloudflare — ADE's connectivity relay can route sync traffic between already-paired clients.",
           "Freebuff — an advertising-measurement pixel on this website only. Unless you have turned website analytics off, it records visits, keeps the click identifier from a Freebuff ad link, and reports when you press a download or copy-install button, so ADE can tell which ads lead to downloads.",
-          "PostHog — receives manually selected product events when analytics is enabled. ADE creates a person profile, keyed by a hash of your account ID and carrying that ID, only after account sign-in; autocapture, replay, surveys, and feature flags are disabled.",
+          "PostHog — receives manually selected product events when analytics is enabled. ADE creates a person profile, keyed by a hash of your account ID and carrying that ID, when you create an ADE account or sign in to an ADE app; autocapture, replay, surveys, and feature flags are disabled.",
           "Sentry — receives error and crash reports as described under Error and crash reporting, in Sentry's United States region. On iOS, a short, fully masked screen recording may accompany an error.",
           "Mintlify — documentation is served at /docs through Mintlify.",
           "AI providers you enable — Anthropic, OpenAI, and similar, only when you turn on a model that uses them.",

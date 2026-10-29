@@ -77,6 +77,8 @@ type ProductAnalyticsState = {
   installationId: string;
   anonymousId: string;
   identifiedUserHash: string | null;
+  /** The identified person has `clerk_user_id`; false for an identify sent by an older build. */
+  clerkIdOnPerson: boolean;
   hashSalt: string;
   installedAtMs: number;
   installCapturedAtMs: number | null;
@@ -252,6 +254,7 @@ function createInitialState(nowMs: number): ProductAnalyticsState {
     installationId,
     anonymousId: installationId,
     identifiedUserHash: null,
+    clerkIdOnPerson: false,
     hashSalt: randomBytes(32).toString("hex"),
     installedAtMs: nowMs,
     installCapturedAtMs: null,
@@ -321,6 +324,7 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
     installationId: parsed.installationId,
     anonymousId,
     identifiedUserHash,
+    clerkIdOnPerson: parsed.clerkIdOnPerson === true,
     hashSalt: typeof parsed.hashSalt === "string" && /^[0-9a-f]{64}$/i.test(parsed.hashSalt)
       ? parsed.hashSalt
       : randomBytes(32).toString("hex"),
@@ -789,7 +793,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       if (!release) return { accepted: false, reason: "rate_limited" };
       state = rollQuotaDay(readState(args.stateFilePath, now()), now());
       if (!state.enabled) return { accepted: false, reason: "disabled" };
-      if (state.identifiedUserHash === userHash) return { accepted: false, reason: "duplicate" };
+      // An account identified by a build before `clerk_user_id` existed is
+      // identified once more, so its person gets the id.
+      const sameAccount = state.identifiedUserHash === userHash;
+      if (sameAccount && state.clerkIdOnPerson) return { accepted: false, reason: "duplicate" };
       const posthog = ensureClient(state);
       if (!posthog) return { accepted: false, reason: "disabled" };
       // A rollover summary belongs to the identity that accumulated it. Emit
@@ -799,7 +806,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       // Detach the prior account before attempting the new identify. If the
       // identify is then suppressed by a quota or transport failure, later
       // events remain anonymous instead of leaking into the prior account.
-      if (state.identifiedUserHash) {
+      if (state.identifiedUserHash && !sameAccount) {
         state.anonymousId = `ade_${randomBytes(16).toString("hex")}`;
         state.identifiedUserHash = null;
         writeState(args.stateFilePath, state);
@@ -827,6 +834,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const previousIdentifiedUserHash = state.identifiedUserHash;
       const anonymousId = state.anonymousId;
       state.identifiedUserHash = userHash;
+      state.clerkIdOnPerson = true;
       state.quota.accepted += 1;
       state.quota.identifyAccepted += 1;
       recent.push(nowMs);
@@ -855,6 +863,7 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       } catch (error) {
         state.anonymousId = previousAnonymousId;
         state.identifiedUserHash = previousIdentifiedUserHash;
+        state.clerkIdOnPerson = false;
         state.quota.accepted = Math.max(0, state.quota.accepted - 1);
         state.quota.identifyAccepted = Math.max(0, state.quota.identifyAccepted - 1);
         recent.pop();

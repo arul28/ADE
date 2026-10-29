@@ -127,6 +127,8 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
     if (rows.length === 0) return 0;
     const accepted: string[] = [];
     const suppressed: Array<{ id: string; reason: string }> = [];
+    // One activation attempt per pass, so rows after it keep their ingress budget.
+    let activationAttempted = false;
     for (const row of rows) {
       const surface = normalizeAdeUsageClientSurface(row.client_surface);
       if (!surface) {
@@ -166,7 +168,8 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
         // Chat activation comes from a completed turn. An agent CLI has no
         // turns ADE can see, so starting one is its activation; the service
         // keeps ade_activated to one per installation either way.
-        if (started.feature === "cli") {
+        if (started.feature === "cli" && !activationAttempted) {
+          activationAttempted = true;
           args.analytics.captureInternal({
             event: "ade_activated",
             surface,

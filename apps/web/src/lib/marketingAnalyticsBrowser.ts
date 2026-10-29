@@ -113,16 +113,20 @@ function landingContext(): (() => Record<string, string>) | undefined {
     }
   }
   const sessionLanding = landing;
+  // This page load's arrival can be the first touch once. After an opt-out
+  // clears it, a later opt-in on the same page does not bring it back.
+  let arrivalSeen = false;
   return () => {
     let firstTouch: Record<string, string> | null = null;
     try {
       const stored = window.localStorage.getItem(FIRST_TOUCH_STORAGE_KEY);
       if (stored) {
         firstTouch = JSON.parse(stored) as Record<string, string>;
-      } else {
+      } else if (!arrivalSeen) {
         firstTouch = firstTouchProperties(arrival);
         window.localStorage.setItem(FIRST_TOUCH_STORAGE_KEY, JSON.stringify(firstTouch));
       }
+      arrivalSeen = true;
     } catch {
       firstTouch = null;
     }

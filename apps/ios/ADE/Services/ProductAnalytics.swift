@@ -555,6 +555,7 @@ final class ProductAnalytics {
   static let enabledDefaultsKey = "ade.analytics.enabled"
   static let identifiedAccountHashDefaultsKey = "ade.analytics.identified-account-hash.v1"
   static let firstOpenSentDefaultsKey = "ade.analytics.first-open-sent.v1"
+  static let clerkIdSetForHashDefaultsKey = "ade.analytics.clerk-id-set-for-hash.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
 
@@ -656,6 +657,19 @@ final class ProductAnalytics {
     _ entryPoint: ADEAnalyticsAppEntryPoint,
     distribution: ADEAnalyticsDistribution = .current
   ) {
+    captureAppOpened(entryPoint, distribution: distribution, isNewInstall: !hasAnalyticsState())
+  }
+
+  /// An install that already counted events (an upgrade) is not new.
+  private func hasAnalyticsState() -> Bool {
+    defaults.data(forKey: Self.budgetDefaultsKey) != nil
+  }
+
+  private func captureAppOpened(
+    _ entryPoint: ADEAnalyticsAppEntryPoint,
+    distribution: ADEAnalyticsDistribution,
+    isNewInstall: Bool
+  ) {
     lock.withLock {
       foregroundDeduplicationKeys.removeAll(keepingCapacity: true)
     }
@@ -665,10 +679,9 @@ final class ProductAnalytics {
     ]
     // The first open of this install (a TestFlight or App Store download)
     // rides on the app-open event once, instead of being an event of its own.
-    // An install that already counted events before this build is not new.
     if sink.canCapture, !defaults.bool(forKey: Self.firstOpenSentDefaultsKey) {
       defaults.set(true, forKey: Self.firstOpenSentDefaultsKey)
-      if defaults.data(forKey: Self.budgetDefaultsKey) == nil {
+      if isNewInstall {
         properties["first_open"] = true
       }
     }
@@ -676,12 +689,14 @@ final class ProductAnalytics {
   }
 
   func captureColdStart(afterReconcilingAccount userId: String?) {
+    // Identifying writes the budget, so decide whether this install is new first.
+    let isNewInstall = !hasAnalyticsState()
     if let userId {
       identifyAccount(userId)
     } else {
       resetAccountIdentity()
     }
-    captureAppOpened(.coldStart)
+    captureAppOpened(.coldStart, distribution: .current, isNewInstall: isNewInstall)
   }
 
   func captureScreen(_ screen: ADEAnalyticsScreen) {
@@ -767,13 +782,18 @@ final class ProductAnalytics {
     let userHash = Self.accountHash(normalizedUserId)
     let transition = lock.withLock { () -> IdentityTransition in
       let previousHash = defaults.string(forKey: Self.identifiedAccountHashDefaultsKey)
-      guard previousHash != userHash else { return IdentityTransition() }
+      // An account identified by a build before `clerk_user_id` existed is
+      // identified once more, so its person gets the id.
+      guard previousHash != userHash
+        || defaults.string(forKey: Self.clerkIdSetForHashDefaultsKey) != userHash else {
+        return IdentityTransition()
+      }
 
       var transition = IdentityTransition()
       var currentBudget = currentDailyBudget(pendingEvents: &transition.pendingEvents)
       // A quota rejection must still detach the prior account so subsequent
       // events cannot remain assigned to the account that just signed out.
-      transition.shouldReset = previousHash != nil
+      transition.shouldReset = previousHash != nil && previousHash != userHash
       guard reserve(
         name: Self.identifyEventName,
         limit: Self.identifyDailyLimit,
@@ -810,6 +830,7 @@ final class ProductAnalytics {
     if let userHash = transition.userHash {
       lock.withLock {
         defaults.set(userHash, forKey: Self.identifiedAccountHashDefaultsKey)
+        defaults.set(userHash, forKey: Self.clerkIdSetForHashDefaultsKey)
       }
       sink.identify(userHash: userHash, accountId: normalizedUserId)
     }

@@ -123,6 +123,33 @@ export function signupMethod(data: ClerkUserCreated["data"]): string {
   return "email";
 }
 
+/** The body as text, or null past `MAX_BODY_BYTES`; stops reading once it is over. */
+async function readBoundedBody(request: Request): Promise<string | null> {
+  const declared = Number(request.headers.get("content-length") ?? "");
+  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) return null;
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > MAX_BODY_BYTES) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return new TextDecoder().decode(bytes);
+}
+
 function json(status: number, body: Record<string, unknown>): Response {
   return new Response(JSON.stringify(body), { status, headers: { "Content-Type": "application/json" } });
 }
@@ -140,8 +167,8 @@ export async function handleSignupAnalyticsRequest(
   const timestamp = request.headers.get("svix-timestamp") ?? "";
   const signatureHeader = request.headers.get("svix-signature") ?? "";
   if (!id || !timestamp || !signatureHeader) return json(400, { error: "missing_signature" });
-  const body = await request.text();
-  if (body.length > MAX_BODY_BYTES) return json(413, { error: "too_large" });
+  const body = await readBoundedBody(request);
+  if (body === null) return json(413, { error: "too_large" });
   const verified = await verifySvixSignature({
     secret,
     id,
@@ -185,5 +212,11 @@ export async function handleSignupAnalyticsRequest(
   });
   // A failed capture asks Clerk to deliver again; the uuid keeps it one event.
   if (!response.ok) return json(502, { error: "capture_failed" });
+  // Over its quota PostHog answers 200 and drops the event; Clerk retries for
+  // about three days, which usually outlasts it.
+  const result = (await response.json().catch(() => null)) as { quota_limited?: unknown } | null;
+  if (Array.isArray(result?.quota_limited) && result.quota_limited.length > 0) {
+    return json(503, { error: "capture_quota_limited" });
+  }
   return json(200, { captured: true });
 }

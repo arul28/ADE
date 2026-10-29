@@ -13,6 +13,8 @@ type DetectInstallSourceArgs = {
   execPath: string;
   resourcesPath?: string | null;
   configuredSource?: string | null;
+  /** `$APPIMAGE`: an AppImage runs from a temporary mount, so its own path is only here. */
+  appImagePath?: string | null;
   realpath?: (candidate: string) => string;
   /** Homebrew casks copy the app to /Applications; their Caskroom entry is the only trace. */
   caskroomExists?: () => boolean;
@@ -65,7 +67,7 @@ export function detectInstallSource(args: DetectInstallSourceArgs): ProductAnaly
   if (/^node(?:\.exe)?$/i.test(path.basename(args.execPath))) return "unknown";
 
   const realpath = args.realpath ?? fs.realpathSync.native;
-  const candidates = [args.execPath, args.resourcesPath]
+  const candidates = [args.execPath, args.resourcesPath, args.appImagePath]
     .flatMap((candidate) => [candidate, canonicalPath(candidate, realpath)])
     .filter((candidate): candidate is string => Boolean(candidate));
   if (candidates.some((candidate) => /(?:^|[/\\])(?:homebrew|caskroom)(?:[/\\]|$)/i.test(candidate))) {

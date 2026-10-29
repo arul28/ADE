@@ -91,9 +91,10 @@ const eventNode = (event, customName, options = {}) => ({
 });
 
 /** Every button that starts a download: the Mac/Windows dialog openers, the dialog's own buttons, and iPhone. */
+// Buttons that start a download (or open TestFlight). download_for_mac and
+// download_for_windows only open the install dialog, so they are left out.
 const DOWNLOAD_CTA_LABELS = Object.freeze([
-  "download_for_mac", "download_for_windows", "download_for_ios",
-  "download_mac_arm64", "download_mac_x64", "download_windows_x64",
+  "download_for_ios", "download_mac_arm64", "download_mac_x64", "download_windows_x64",
 ]);
 
 const eventProperty = (key, value, operator = "exact") => ({
@@ -468,7 +469,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "download-clicks-by-referrer",
           "Download clickers by referring site",
-          "Unique visitors pressing any download button each week, by the site that sent their visit ($direct when none). Installs cannot be tied to one visit, so compare these per source with the installs card below.",
+          "Unique visitors pressing a button that starts a download or opens TestFlight each week, by the site that sent their visit ($direct when none). Installs cannot be tied to one visit, so compare these per source with the installs card below.",
           trends({
             series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
               math: "dau",
@@ -481,7 +482,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "download-clicks-by-campaign",
           "Download clickers by campaign source",
-          "Unique visitors pressing any download button each week, by the utm_source of the link they arrived on. Untagged visits show as none.",
+          "Unique visitors pressing a button that starts a download or opens TestFlight each week, by the utm_source of the link they arrived on. Untagged visits show as none.",
           trends({
             series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
               math: "dau",
