@@ -18,7 +18,6 @@ import {
   checkLinearReadiness,
   detectAccountLoginMode,
   describeLastFailureForStartupLog,
-  detectUnmergedLaneCreateNudge,
   findProjectRoots,
   formatChatResumeNow,
   formatChatContinueOnAccount,
@@ -4083,31 +4082,6 @@ describe("ADE CLI", () => {
     ])).toThrow(/--type must be subagent or peer/);
   });
 
-  it("builds the unmerged-work child-lane nudge when the current lane is ahead", () => {
-    const notice = detectUnmergedLaneCreateNudge(
-      { newLaneName: "next-task", cwd: "/tmp/worktree", currentLaneId: "lane-current" },
-      (gitArgs) => {
-        const command = gitArgs.join(" ");
-        if (command === "symbolic-ref --quiet --short refs/remotes/origin/HEAD") {
-          return { status: 0, stdout: "origin/main\n" };
-        }
-        if (command === "rev-list --count origin/main..HEAD") {
-          return { status: 0, stdout: "3\n" };
-        }
-        if (command === "branch --show-current") {
-          return { status: 0, stdout: "feature/current\n" };
-        }
-        return { status: 1, stdout: "" };
-      },
-    );
-
-    expect(notice).toBe([
-      '⚠ Lane "feature/current" has 3 commit(s) not on main.',
-      "  To carry them into the new lane instead:",
-      "    ade lanes child --lane lane-current --name next-task",
-      "  Continuing off remote main (origin/main).",
-    ].join("\n"));
-  });
 
   it("rejects unknown providers for new chat before launching", () => {
     expect(() =>

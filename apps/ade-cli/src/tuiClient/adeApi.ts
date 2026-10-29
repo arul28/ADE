@@ -136,7 +136,6 @@ export function mergeLaneStatusSnapshots(
     return {
       ...lane,
       status: statusSource.status,
-      parentStatus: statusSource.parentStatus,
       worktreeAvailable: statusSource.worktreeAvailable,
       branchDrift: statusSource.branchDrift,
     };
@@ -155,7 +154,7 @@ export async function runDefaultLaneSetup(
 ): Promise<DefaultLaneSetupResult> {
   const [templates, defaultTemplateId] = await Promise.all([
     connection.action<LaneTemplate[]>("lane", "listTemplates").catch(() => []),
-    connection.action<string | null>("lane", "getDefaultTemplate").catch(() => null),
+    connection.action<{ defaults: { templateId: string | null } }>("lane", "getNewLaneDefaults").then(value => value.defaults.templateId).catch(() => null),
   ]);
   const explicitTemplateId = typeof options.templateId === "string" ? options.templateId.trim() : "";
   const trimmedTemplateId = explicitTemplateId || (typeof defaultTemplateId === "string" ? defaultTemplateId.trim() : "");

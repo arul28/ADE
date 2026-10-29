@@ -91,7 +91,8 @@ import {
   PROOF_LISTING_ARTIFACT_FILTER,
   type ComputerUseProofProvenanceInput,
 } from "../../desktop/src/shared/types/computerUseArtifacts";
-import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
+import { normalizeLaneStart } from "../../desktop/src/shared/laneStart";
+import { resolveLaneCompareBase } from "../../desktop/src/shared/laneBaseResolution";
 import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ACTION_NOT_CALLABLE_CODE,
@@ -152,7 +153,6 @@ import { JsonRpcError, JsonRpcErrorCode, type JsonRpcHandler, type JsonRpcReques
 import { captureError } from "../../desktop/src/shared/sentry/capture";
 import { callerIdentityIsAgent, normalizeAdeRuntimeRole, resolveSessionBoundRole } from "./runtimeRoles";
 import { getSharedModelPickerStore } from "./services/modelPickerStore";
-import { resolveLaneCreateRemoteBase } from "./services/laneCreateRemoteBase";
 import {
   BUILT_IN_BROWSER_ACKNOWLEDGE_REMOTE_REQUEST_METHOD,
   BUILT_IN_BROWSER_REPLY_REMOTE_CALL_METHOD,
@@ -413,8 +413,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         name: { type: "string", minLength: 1 },
         description: { type: "string" },
-        parentLaneId: { type: "string" },
-        baseBranch: { type: "string" },
+        start: { type: "object", required: ["from", "bring"], additionalProperties: false, properties: { from: { type: "string", enum: ["default", "primary", "branch"] }, branch: { type: "string" }, bring: { type: "string", enum: ["pushed", "local", "uncommitted"] } } },
         branchName: { type: "string" },
         linearIssue: LINEAR_ISSUE_TOOL_SCHEMA,
         ...NEW_LANE_SETUP_TOOL_PROPERTIES
@@ -547,13 +546,14 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "merge_lane",
-    description: "Merge a source lane into its parent lane with conflict-aware status reporting.",
+    description: "Merge a source lane into a target lane with conflict-aware status reporting.",
     inputSchema: {
       type: "object",
-      required: ["laneId"],
+      required: ["laneId", "targetLaneId"],
       additionalProperties: false,
       properties: {
         laneId: { type: "string", minLength: 1 },
+        targetLaneId: { type: "string", minLength: 1 },
         message: { type: "string" },
         deleteSourceLane: { type: "boolean", default: false }
       }
@@ -1591,7 +1591,7 @@ async function runNewLaneSetup(
   toolArgs: Record<string, unknown>,
 ): Promise<{ templateId: string | null; progress: LaneEnvInitProgress | null; error?: string } | null> {
   if (toolArgs.skipSetup === true) return null;
-  const templateId = asOptionalTrimmedString(toolArgs.templateId) ?? runtime.laneTemplateService?.getDefaultTemplateId() ?? null;
+  const templateId = asOptionalTrimmedString(toolArgs.templateId) ?? runtime.laneService.getNewLaneDefaults().defaults.templateId ?? null;
   try {
     if (!runtime.laneEnvironmentService) throw new Error("Lane environment service not available.");
     const progress = await runLaneEnvironmentSetup(
@@ -3031,17 +3031,9 @@ async function defaultPrTitleForLane(runtime: AdeRuntime, laneId: string, baseBr
     }
   })();
   const sourceName = asOptionalTrimmedString(sourceLane?.name) || laneId;
-  const parentLane = sourceLane?.parentLaneId
-    ? lanes.find((lane) => lane.id === sourceLane.parentLaneId) ?? null
-    : null;
-  const primaryLane = lanes.find((lane) => lane.laneType === "primary") ?? null;
-  const stableBaseBranch = sourceLane
-    ? resolveStableLaneBaseBranch({
-        lane: sourceLane,
-        parent: parentLane,
-        primaryBranchRef: primaryLane?.branchRef ?? runtime.project?.baseRef ?? "main",
-      })
-    : laneInfo?.baseRef || runtime.project?.baseRef || "main";
+  const openPr = (runtime.prService?.listAll?.({ laneId }) ?? []).find(pr =>
+    (pr.state === "open" || pr.state === "draft") && branchNameForPrTitle(pr.headBranch) === branchNameForPrTitle(sourceLane?.branchRef));
+  const stableBaseBranch = resolveLaneCompareBase({ prBaseBranch: openPr?.baseBranch, defaultBranch: runtime.project?.baseRef || "main" });
   const targetBranch = branchNameForPrTitle(baseBranch || stableBaseBranch || laneInfo?.baseRef || runtime.project?.baseRef || "main");
   const targetLane = targetBranch
     ? lanes.find((lane) => lane.id !== laneId && branchNameForPrTitle(lane.branchRef) === targetBranch)
@@ -5032,8 +5024,6 @@ async function runCtoOperatorBridgeTool(
 function extractLaneId(args: Record<string, unknown>): string | null {
   const fromPrimary = asOptionalTrimmedString(args.laneId);
   if (fromPrimary) return fromPrimary;
-  const fromParent = asOptionalTrimmedString(args.parentLaneId);
-  if (fromParent) return fromParent;
   return null;
 }
 
@@ -5247,15 +5237,14 @@ function mapLaneSummary(lane: Record<string, unknown>): Record<string, unknown> 
     id: lane.id,
     name: lane.name,
     laneType: lane.laneType,
-    parentLaneId: lane.parentLaneId,
     baseRef: lane.baseRef,
     branchRef: lane.branchRef,
     worktreePath: lane.worktreePath,
     archivedAt: lane.archivedAt,
-    stackDepth: lane.stackDepth,
     linearIssue: projectLaneLinearIssue(lane.linearIssue),
     linearIssueLinks,
-    status: lane.status
+    status: lane.status,
+    createdFrom: lane.createdFrom
   };
 }
 
@@ -6547,25 +6536,6 @@ async function runTool(args: {
         }
       }
     }
-    if (domain === "lane" && action === "create" && !argsList && !hasScalarArg) {
-      // Same remote-first default as the `create_lane` tool and the sync
-      // layer's `lanes.create`: a base-less `ade actions run lane.create`
-      // must branch from the configured new-lane base, not the local tip.
-      const hasExplicitBase = Boolean(
-        asOptionalTrimmedString(scopedObjectArgs.baseBranch) ||
-          asOptionalTrimmedString(scopedObjectArgs.startPoint) ||
-          asOptionalTrimmedString(scopedObjectArgs.parentLaneId),
-      );
-      if (!hasExplicitBase) {
-        const remoteBase = await resolveLaneCreateRemoteBase({
-          laneService: runtime.laneService,
-          gitService: runtime.gitService,
-          projectConfigService: runtime.projectConfigService,
-          onWarning: (warning) => console.warn(warning),
-        });
-        if (remoteBase) scopedObjectArgs = { ...scopedObjectArgs, baseBranch: remoteBase };
-      }
-    }
     try {
       if (!scopedResultHandled) {
         // Keep in step with `firstDispatchedAdeActionArg`, which guards read.
@@ -7036,24 +7006,9 @@ async function runTool(args: {
     const nameArg = assertNonEmptyString(toolArgs.name, "name");
     assertNewLaneTemplateExists(runtime, toolArgs);
     const description = asOptionalTrimmedString(toolArgs.description);
-    const parentLaneId = asOptionalTrimmedString(toolArgs.parentLaneId);
-    let baseBranch = asOptionalTrimmedString(toolArgs.baseBranch);
-    let baseWarning: string | null = null;
     const branchName = asOptionalTrimmedString(toolArgs.branchName);
-    if (!baseBranch && !parentLaneId) {
-      // Base-less creates (`ade lanes create`, agent tool calls) must branch
-      // from the project's configured new-lane base — remote-first, matching
-      // desktop's create-lane dialog and the sync layer's `lanes.create` —
-      // not from the possibly-stale LOCAL primary tip.
-      baseBranch = await resolveLaneCreateRemoteBase({
-        laneService: runtime.laneService,
-        gitService: runtime.gitService,
-        projectConfigService: runtime.projectConfigService,
-        onWarning: (warning) => {
-          baseWarning = warning;
-        },
-      });
-    }
+    const start = toolArgs.start == null ? null : normalizeLaneStart(toolArgs.start);
+    if (toolArgs.start != null && !start) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Invalid lane start.");
     let linearIssue: LaneLinearIssue | null = null;
     if (toolArgs.linearIssue !== undefined && toolArgs.linearIssue !== null) {
       if (typeof toolArgs.linearIssue !== "object" || Array.isArray(toolArgs.linearIssue)) {
@@ -7068,8 +7023,7 @@ async function runTool(args: {
     const lane = await runtime.laneService.create({
       name: nameArg,
       ...(description ? { description } : {}),
-      ...(parentLaneId ? { parentLaneId } : {}),
-      ...(baseBranch ? { baseBranch } : {}),
+      ...(start ? { start } : {}),
       ...(branchName ? { branchName } : {}),
       ...(linearIssue ? { linearIssue } : {})
     });
@@ -7077,7 +7031,6 @@ async function runTool(args: {
     const setup = await runNewLaneSetup(runtime, lane.id, toolArgs);
     return {
       lane: mapLaneSummary(lane as unknown as Record<string, unknown>),
-      ...(baseWarning ? { warning: baseWarning } : {}),
       ...(setup ? { setup } : {}),
     };
   }
@@ -7125,13 +7078,7 @@ async function runTool(args: {
     if (!source) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Lane not found: ${laneId}`);
     }
-    if (!source.parentLaneId) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Source lane has no parent lane to merge into.");
-    }
-
-    const parentLaneId = source.parentLaneId;
-
-
+    const parentLaneId = assertNonEmptyString(toolArgs.targetLaneId, "targetLaneId");
     const parent = runtime.laneService.getLaneBaseAndBranch(parentLaneId);
     const preHead = (await runGit(["rev-parse", "HEAD"], { cwd: parent.worktreePath, timeoutMs: 8_000 })).stdout.trim() || null;
 
@@ -7157,7 +7104,7 @@ async function runTool(args: {
         merged: false,
         status: "conflict",
         laneId,
-        parentLaneId,
+        targetLaneId: parentLaneId,
         conflictedFiles,
         error: mergeResult.stderr.trim() || mergeResult.stdout.trim() || "Merge failed"
       };
@@ -7177,7 +7124,7 @@ async function runTool(args: {
       merged: true,
       status: "clean",
       laneId,
-      parentLaneId,
+      targetLaneId: parentLaneId,
       preHeadSha: preHead,
       postHeadSha: postHead,
       deleteSourceLane

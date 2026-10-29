@@ -690,10 +690,7 @@ describe("lane worktree availability", () => {
       baseRef: "main",
       branchRef: "feature/lane-one",
       worktreePath,
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,
@@ -732,10 +729,7 @@ describe("PR title defaults", () => {
       baseRef: "main",
       branchRef: "feature",
       worktreePath: "/tmp/feature",
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,
@@ -757,7 +751,7 @@ describe("PR title defaults", () => {
       id: "lane-child",
       name: "Child",
       branchRef: "feature/child",
-      parentLaneId: parent.id,
+
       baseRef: "main",
       worktreePath: "/tmp/child",
     });
@@ -794,10 +788,7 @@ describe("right pane context defaults", () => {
       baseRef: "main",
       branchRef: "feature/lane-one",
       worktreePath: "/tmp/lane-one",
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,

@@ -53,7 +53,7 @@ describe("newLaneFormFields", () => {
     const primary = newLaneFormFields("primary").map((field) => field.name);
     expect(primary).toEqual(["name", "color", "start", "baseBranch", "linearIssue", "templateId", "create"]);
 
-    const child = newLaneFormFields("child", { activeLaneName: "Current" }).map((field) => field.name);
+    const child = newLaneFormFields("primary", { activeLaneName: "Current" }).map((field) => field.name);
     expect(child).toEqual(["name", "color", "start", "parent", "baseBranch", "linearIssue", "templateId", "create"]);
 
     const imported = newLaneFormFields("import").map((field) => field.name);
@@ -61,13 +61,13 @@ describe("newLaneFormFields", () => {
   });
 
   it("keeps the start row at the same index across modes so focus stays put", () => {
-    for (const mode of ["primary", "child", "import"] as const) {
+    for (const mode of ["primary", "import"] as const) {
       expect(newLaneFormFields(mode).findIndex((field) => field.name === "start")).toBe(2);
     }
   });
 
   it("uses the active lane name as the parent placeholder", () => {
-    const fields = newLaneFormFields("child", { activeLaneName: "Auth lane" });
+    const fields = newLaneFormFields("primary", { activeLaneName: "Auth lane" });
     expect(fields.find((field) => field.name === "parent")?.placeholder).toBe("Auth lane");
   });
 
@@ -115,7 +115,7 @@ describe("branch typeahead", () => {
   it("targets the branch field in import mode, the base branch in primary mode, nothing for child", () => {
     expect(newLaneTypeaheadField(newLaneFormFields("import"))).toBe("branch");
     expect(newLaneTypeaheadField(newLaneFormFields("primary"))).toBe("baseBranch");
-    expect(newLaneTypeaheadField(newLaneFormFields("child"))).toBeNull();
+    expect(newLaneTypeaheadField(newLaneFormFields("primary"))).toBeNull();
   });
 
   it("filters by remote/local and ranks prefix matches first (ignoring the remote prefix)", () => {
@@ -272,7 +272,7 @@ describe("buildNewLaneSubmission", () => {
       kind: "createChild",
       payload: {
         name: "stacked",
-        parentLaneId: "lane-2",
+
         branchName: "ade-123-fix-setup-parity",
         linearIssue: issue,
       },

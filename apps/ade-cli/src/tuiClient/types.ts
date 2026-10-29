@@ -428,7 +428,7 @@ export type RightPaneContent =
   | {
       kind: "form";
       title: string;
-      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "lane-delete" | "new-lane-from-unstaged" | "chat-delete";
+      command: "new-lane" | "rename" | "lane-rename" | "pr-open" | "lane-delete" | "chat-delete";
       description?: string;
       laneId?: string;
       sessionId?: string;

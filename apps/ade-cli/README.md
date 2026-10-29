@@ -560,24 +560,14 @@ ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
 ade lanes list --text                             # every git worktree of the project is a lane: this reconciles against git on each call, adopting worktrees made outside ADE and dropping lanes whose worktree is gone from git and disk. There is no attach/adopt step
-ade lanes import --branch feature/login --text    # lane for an existing branch, checked out in a new managed worktree; refuses when that branch is already checked out (that worktree is already a lane)
-ade lanes create "fix-checkout-flow" --parent main
-ade lanes create "fix-login" --base origin/main   # omit --base to branch from the configured new-lane base (remote-first by default)
-ade lanes child --lane lane-parent --name fix-followup            # child lane carries the parent's unmerged work; a base-less `ade lanes create`/`--auto-create-lane` from a lane with commits not yet on main prints a non-blocking stderr nudge to use this instead
-ade lanes create "lin-123" --linear-issue-json '{"id":"...","identifier":"LIN-123","title":"...","projectId":"...","projectSlug":"...","teamId":"...","teamKey":"...","stateId":"...","stateName":"Todo","stateType":"unstarted","priority":2,"priorityLabel":"high","labels":[],"assigneeId":null,"assigneeName":null,"createdAt":"...","updatedAt":"..."}'
-ade lane drift --lane lane-id --text              # did someone `git checkout` inside the worktree? compares live HEAD to the lane's recorded branch
-ade lane drift resolve --lane lane-id --switch-back        # put the worktree back on the lane's branch (refuses on a dirty tree)
-ade lane drift resolve --lane lane-id --keep-head          # re-point the lane (and its name) at the live HEAD branch
-ade lane drift resolve --lane lane-id --keep-head --expected-head hotfix-auth --force   # --expected-head guards a stale read; --force acknowledges active work
-ade lanes reparent lane-child --parent lane-parent --stack-base-branch main
-ade lanes reclaim-preview lane-id --text                   # show reclaimable space and anything that needs review
-ade lanes archive lane-id                                  # archive, and bring down the Docker services the lane's env init started (best-effort; a failed teardown still archives)
-ade lanes archive-and-reclaim lane-id --confirm RECLAIM    # preserve lane history/branch/chat; remove ADE-managed local files
-ade lanes unarchive lane-id                                # restore the lane; recreate its managed worktree when needed. A recreated worktree re-runs the whole env init before returning; a plain unarchive returns immediately and restarts Docker in the background, so don't assume services are up when the command exits
-ade lanes action initEnv --arg laneId=lane-id              # re-run the full env init (env files, copies, deps, mounts, setup script, docker)
-ade lanes delete lane-id --force --delete-branch
-ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <model> --no-parent
-ade lanes batch-create-from-linear --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
+ade lanes create --name fix-login --text
+ade lanes create --name followup --from feature/login --bring local
+ade lanes create --name followup --from feature/login --bring uncommitted # copies changes
+ade lanes create --name login --existing-branch feature/login
+ade lanes defaults --text
+ade lanes defaults set --from primary --bring local
+ade lanes create --linear-issue-json '{"id":"...","identifier":"ENG-431"}' --start-chat --provider codex --model <model> --no-parent
+ade lanes create --linear-issues-json '[{"id":"...","identifier":"ENG-431"},{"id":"...","identifier":"ENG-440"}]'
 ade chat update [<session>] --title "Fix login" --tag review-ready   # also --model, --effort, --permissions, --fast/--ultrafast; defaults to $ADE_CHAT_SESSION_ID
 ade chat attach-linear-issue <session> --issue-id ENG-431
 ade chat create --from-linear-issue ENG-431 --no-parent

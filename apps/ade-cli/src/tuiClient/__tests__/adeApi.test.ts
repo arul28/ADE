@@ -43,10 +43,7 @@ function laneSummary(id: string, dirty: boolean): LaneSummary {
     baseRef: "main",
     branchRef: id,
     worktreePath: `/repo/${id}`,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
+
     isEditProtected: false,
     status: { dirty, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     color: null,

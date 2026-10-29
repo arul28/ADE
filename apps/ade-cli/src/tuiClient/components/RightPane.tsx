@@ -143,7 +143,6 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message", glyph: "✓", glyphColorKind: "additive" },
   { k: "p", label: "push", slashCommand: "/push", glyph: "↑", glyphColorKind: "additive" },
   { k: "d", label: "diff", slashCommand: "/diff", glyph: "≡", glyphColorKind: "navigation" },
-  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref", glyph: "⎇", glyphColorKind: "navigation" },
   { k: "x", label: "delete lane", slashCommand: "/lane delete", detail: "requires name", glyph: "✗", glyphColorKind: "destructive" },
 ];
 
@@ -2097,7 +2096,8 @@ function NewLaneFormPane({
   const renderField = (field: NewLaneFormContent["fields"][number]) => {
     switch (field.name) {
       case "name":
-      case "parent":
+      case "from":
+      case "bring":
       case "branch":
       case "baseBranch":
       case "linearIssue":
@@ -2139,7 +2139,7 @@ function NewLaneFormPane({
       case "start":
         return (
           <Box key="start" flexDirection="column" marginTop={1}>
-            {labelRow("start", "Start from")}
+            {labelRow("start", "Mode")}
             {NEW_LANE_START_ORDER.map((mode) => {
               const chosen = start === mode;
               return (

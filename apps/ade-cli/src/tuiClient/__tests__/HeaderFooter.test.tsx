@@ -17,10 +17,7 @@ function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     baseRef: "main",
     branchRef: "feature/tui-polish",
     worktreePath: "/tmp/lane",
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
+
     isEditProtected: false,
     status: {
       dirty: false,
