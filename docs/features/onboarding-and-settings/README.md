@@ -248,6 +248,24 @@ Main process:
   usage popover's `UsageAccountRow`, the ⋯ menu, the copy and replaced-login
   states, the three-step Add-account sheet driven by the host's login runner,
   and `useProviderInstances`.
+- `apps/desktop/src/renderer/components/settings/providers/ProviderDetailPage.tsx`,
+  `ProviderHero.tsx`, `providerBrand.tsx`, `providerPage.css`, `banners/` — one
+  provider's page: the branded banner (the provider's art or gradient, its logo
+  in 3D, status, version, and this machine's 30-day usage from
+  `usage.getAdeStats`), the Accounts panel under it, then two columns.
+  `providerBrand.tsx` is the one table of each provider's accent, banner and
+  logo (`solid` for a shaped mark, `tile` for a square one).
+- `apps/desktop/src/renderer/components/settings/providers/ProviderContextPanel.tsx`
+  — the **Initial context window** card (see below).
+- `apps/desktop/src/main/services/ai/providerContextInventory.ts` and
+  `ai/providerContext/` — the read-only `ai.getProviderContextInventory`
+  action: one table of providers (`PROVIDER_CONTEXT_SPECS`), the generic
+  scanners (`items.ts`, `fsScan.ts`), one file per provider under
+  `providers/`, ADE's own parts (`adeItems.ts`, from
+  `agentChatService.previewNewChatAdeContext` and
+  `chat/adeChatContextPreview.ts`), and the measured first turn
+  (`firstTurnMeasurement.ts`). `ai/providerContextReveal.ts` is the allowlist
+  of its "Show in Finder" button.
 - `apps/desktop/src/renderer/components/settings/providers/keys/` — the stored
   API keys panel, the add-key sheet (only the fields a harness actually has),
   the OpenCode custom-provider panel, and `useApiCredentials`.
@@ -2675,8 +2693,9 @@ file, so they have exactly one identity per machine.
 ### Accounts panel
 
 Settings → Agents & Models → Claude Code (or Codex CLI) opens the provider page,
-and the first panel of its right column is **Accounts**, above Models. It is the
-only surface that shows the whole set of local logins for that provider. No
+and **Accounts** sits directly under the banner, across the full width, so the
+account cards stand side by side. It is the only surface that shows the whole
+set of local logins for that provider. No
 other provider page has the panel, because no other provider can hold more than
 one identity per machine. Sign-in for Claude and Codex lives on each account
 row and on **Add account**. The left column does not repeat a Sign in section.
@@ -2804,9 +2823,42 @@ read-only credential. Account-vault mirrors use the provider name for the
 default and `provider#credentialId` for additional entries, so legacy callers
 continue to read only default credentials.
 
+### Initial context window
+
+Every provider page has an **Initial context window** card: what a new chat on
+that provider receives before the user's first message, on the page's machine.
+It is read-only. ADE lists the items so a person can see them and change their
+own setup; it does not switch them off.
+
+- **Four parts**, one color each: the provider itself (its own prompt and
+  tools, in the provider's color), ADE (teal), the user's setup (pink) and this
+  project (amber). A bar shows each part's share, and each part lists its items
+  with a size, the file they come from, and, for config entries, where they are
+  set (`Set in ~/.codex/config.toml`).
+- **Sizes.** ADE's items are counted from the exact text a real launch builds
+  (the same builders, dry-run). The user's and the project's items are counted
+  from their files, by the provider's documented discovery rules. Both are
+  token estimates (about 4 characters each) and show `≈`. The total is the
+  median first request of real chats that made one request (the turn ledger),
+  from at least 3 chats, this project's when it has enough, else the machine's;
+  with fewer chats the card shows the listed sum instead. The provider's own
+  part is that median minus the listed items.
+- **Row buttons.** A gear opens the ADE settings page that manages the item
+  (MCP servers, Agent notes). A folder button shows the file in Finder (Explorer
+  on Windows). It appears only when the page shows This computer and not in the
+  hosted web client, and it goes through its own IPC channel
+  (`ai.revealProviderContextPath`), whose allowlist holds the providers' config
+  homes, the project, the instruction files in the folders above it, and ADE's
+  own folders. A symlinked skill whose target is outside those is shown as the
+  link.
+- **Machines.** The list is built on the machine the Settings page shows; both
+  renderer calls take that machine's pin. A failed read shows an error with
+  **Try again**; a failed **Check again** keeps the last list and says so. An
+  older ADE without the action hides the card.
+
 ### API keys panel
 
-Every provider page carries an **API keys** panel, between Accounts and Models.
+Every provider page carries an **API keys** panel, last in the right column.
 It lists one row per key ADE can see for that provider: the label, the variable
 the key is exported as, the masked tail, a source badge (Local store,
 Environment, Project config), the endpoint host when one is set, and how many
