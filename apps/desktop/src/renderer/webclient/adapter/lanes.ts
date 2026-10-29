@@ -3,6 +3,7 @@ import {
   type ArchiveAndReclaimLaneResult,
   type LaneLifecycleEvent,
   type LaneListSnapshot,
+  type NewLaneDefaultsSnapshot,
   type ResolveLaneBranchDriftResult,
   type RestoreLaneResult,
 } from "../../../shared/types";
@@ -70,18 +71,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
       return result;
     },
-    createChild: async (args: unknown, pin?: RuntimePinArg) => {
-      guardPin("createChild", pin);
-      const result = await call("lanes.createChild", args, null, false);
-      if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
-      return result;
-    },
-    createFromUnstaged: async (args: unknown, pin?: RuntimePinArg) => {
-      guardPin("createFromUnstaged", pin);
-      const result = await call("lanes.createFromUnstaged", args, null, false);
-      if (result && typeof result === "object") emitLifecycle(lifecycleFromLane("lane-created", result));
-      return result;
-    },
     importBranch: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("importBranch", pin);
       const result = await call("lanes.importBranch", args, null, false);
@@ -104,10 +93,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     rename: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("rename", pin);
       await call("lanes.rename", args, undefined, false);
-    },
-    reparent: async (args: unknown, pin?: RuntimePinArg) => {
-      guardPin("reparent", pin);
-      return await call("lanes.reparent", args, { ok: false, error: "unsupported" }, false);
     },
     updateAppearance: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("updateAppearance", pin);
@@ -194,8 +179,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         retryCount: 0,
       });
     },
-    getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
-    getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),
     attachGitHubIssueToSession: (args: unknown) => call("lanes.attachGitHubIssueToSession", args, [], false),
     detachGitHubIssueFromSession: async (args: unknown, pin?: RuntimePinArg) => {
       guardPin("detachGitHubIssueFromSession", pin);
@@ -226,20 +209,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     rebasePush: (args: unknown) => call("lanes.rebasePush", args, null, false),
     rebaseRollback: (args: unknown) => call("lanes.rebaseRollback", args, null, false),
     rebaseAbort: (args: unknown) => call("lanes.rebaseAbort", args, null, false),
-    listRebaseSuggestions: () => call("lanes.listRebaseSuggestions", {}, []),
-    dismissRebaseSuggestion: async (args: unknown) => {
-      await call("lanes.dismissRebaseSuggestion", args, undefined, false);
-    },
-    deferRebaseSuggestion: async (args: unknown) => {
-      await call("lanes.deferRebaseSuggestion", args, undefined, false);
-    },
-    listAutoRebaseStatuses: async (pin?: RuntimePinArg) => {
-      guardPin("listAutoRebaseStatuses", pin);
-      return call("lanes.listAutoRebaseStatuses", {}, []);
-    },
-    dismissAutoRebaseStatus: async (args: unknown) => {
-      await call("lanes.dismissAutoRebaseStatus", args, undefined, false);
-    },
     openFolder: async () => undefined,
     revealWorktree: async () => {
       throw new Error("Reveal in Finder is available in the desktop app.");
@@ -260,6 +229,21 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       throw new Error("Package status is available in the desktop app.");
     },
     getDefaultTemplate: () => call("lanes.getDefaultTemplate", {}, null),
+    // The host's own answer or a rejection: a made-up default would open the
+    // New lane dialog on a start the project never chose.
+    getNewLaneDefaults: async (pin?: RuntimePinArg) => {
+      guardPin("getNewLaneDefaults", pin);
+      return await commands.call<NewLaneDefaultsSnapshot>("lanes.getNewLaneDefaults", {}, {
+        authoritative: true,
+        fallback: () => {
+          throw new Error("New-lane defaults are unavailable on the connected ADE host.");
+        },
+      });
+    },
+    setNewLaneDefaults: async (args: unknown, pin?: RuntimePinArg) => {
+      guardPin("setNewLaneDefaults", pin);
+      return await commands.call<NewLaneDefaultsSnapshot>("lanes.setNewLaneDefaults", asRecord(args), mutation);
+    },
     setDefaultTemplate: async (args: unknown) => {
       await call("lanes.setDefaultTemplate", args, undefined, false);
     },
@@ -280,8 +264,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     },
     onLifecycleEvent: (listener: (event: unknown) => void) => events.on("lanesLifecycle", listener as never),
     rebaseSubscribe: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
-    onRebaseSuggestionsEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
-    onAutoRebaseEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
     onEnvEvent: () => () => {},
     onPortEvent: () => () => {},
     onProxyEvent: () => () => {},

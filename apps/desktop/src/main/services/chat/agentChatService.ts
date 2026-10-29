@@ -50897,10 +50897,6 @@ export function createAgentChatService(args: {
     if (capsule.sourceLane !== undefined) {
       assertPortableText(capsule.sourceLane.laneId, 200, "source lane id");
       assertPortableText(capsule.sourceLane.name, 200, "source lane name");
-      if (capsule.sourceLane.parentLaneId != null) assertPortableText(capsule.sourceLane.parentLaneId, 200, "source parent lane id");
-    }
-    if (capsule.destinationParentLaneId !== undefined) {
-      assertPortableText(capsule.destinationParentLaneId, 200, "destination parent lane id");
     }
     if (capsule.parentLink !== undefined) {
       assertPortableText(capsule.parentLink.destinationParentSessionId, 200, "destination parent chat id");
@@ -51688,10 +51684,9 @@ export function createAgentChatService(args: {
           }
           : {}),
       },
-      // A batch item names its lane and parents from the batch; a single move
-      // names its own lane.
-      sourceLane: batchMove?.sourceLane ?? { laneId: lane.id, parentLaneId: lane.parentLaneId ?? null, name: sourceLaneName },
-      ...(batchMove?.destinationParentLaneId ? { destinationParentLaneId: batchMove.destinationParentLaneId } : {}),
+      // A batch item names its lane and parent chat from the batch; a single
+      // move names its own lane. Older destinations read `parentLaneId`.
+      sourceLane: batchMove?.sourceLane ?? { laneId: lane.id, parentLaneId: null, name: sourceLaneName },
       ...(batchMove?.parentLink ? { parentLink: batchMove.parentLink } : {}),
       ...(scheduledWork ? { scheduledWork } : {}),
       ...(currentOrigin ? { origin: currentOrigin } : {}),

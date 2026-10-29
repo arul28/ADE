@@ -843,12 +843,10 @@ function normalizeDraft(args: {
     if (type === "create-lane") {
       const laneNameTemplate = safeTrim(action?.laneNameTemplate) || "{{trigger.issue.title}}";
       const laneDescriptionTemplate = safeTrim(action?.laneDescriptionTemplate);
-      const parentLaneId = safeTrim(action?.parentLaneId);
       normalizedActions.push({
         ...(base as AutomationAction),
         laneNameTemplate,
         ...(laneDescriptionTemplate ? { laneDescriptionTemplate } : {}),
-        ...(parentLaneId ? { parentLaneId } : {}),
       });
       continue;
     }

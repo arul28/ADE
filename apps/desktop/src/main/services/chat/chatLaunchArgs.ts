@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types";
 import { normalizeHarnessPreset } from "../../../shared/harnessPresets";
 import { parseLaneLinearIssueValue } from "../../../shared/laneLinearIssue";
+import { normalizeLaneStart } from "../../../shared/laneStart";
 import { isRecord } from "../shared/utils";
 
 /**
@@ -217,14 +218,15 @@ function parseRemoteMcpTurnLabel(value: unknown): { connectionId: string; label:
 
 /**
  * The optional lane recipe a client may attach to a new-lane launch. Unknown
- * modes are dropped (a launch that only carried the mode is a default root
- * lane); every other field is optional and trimmed.
+ * modes are dropped (the launch then uses the project's new-lane defaults); a
+ * malformed `start` is dropped the same way. Every other field is optional
+ * and trimmed.
  */
 export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig | undefined {
   if (!isRecord(value)) return undefined;
-  const mode = value.mode === "child" ? "child" : value.mode === "import" ? "import" : value.mode === "root" ? "root" : null;
+  const mode = value.mode === "new" ? "new" : value.mode === "existing" ? "existing" : null;
   if (!mode) return undefined;
-  const parentLaneId = asTrimmedString(value.parentLaneId);
+  const start = mode === "new" ? normalizeLaneStart(value.start) : null;
   const branchRef = asTrimmedString(value.branchRef);
   const templateId = asTrimmedString(value.templateId);
   const color = asTrimmedString(value.color);
@@ -233,7 +235,7 @@ export function parseChatLaunchLaneConfig(value: unknown): ChatLaunchLaneConfig 
   const linearIssue = parseLaneLinearIssueValue(value.linearIssue);
   return {
     mode,
-    ...(parentLaneId ? { parentLaneId } : {}),
+    ...(start ? { start } : {}),
     ...(branchRef ? { branchRef } : {}),
     ...(templateId ? { templateId } : {}),
     ...(color ? { color } : {}),
@@ -262,7 +264,6 @@ export function parseChatLaunchArgs(value: unknown): ChatLaunchArgs {
     prompt: typeof record.prompt === "string" ? record.prompt : "",
     ...(asTrimmedString(record.displayPrompt) ? { displayPrompt: asTrimmedString(record.displayPrompt) } : {}),
     ...(attachments?.length ? { attachments } : {}),
-    ...(asTrimmedString(record.baseBranch) ? { baseBranch: asTrimmedString(record.baseBranch) } : {}),
     ...(laneConfig ? { laneConfig } : {}),
     ...(asTrimmedString(record.modelId) ? { modelId: asTrimmedString(record.modelId) } : {}),
     ...(asTrimmedString(record.provider) ? { provider: asTrimmedString(record.provider) } : {}),

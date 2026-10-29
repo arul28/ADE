@@ -609,7 +609,6 @@ export function createCrossMachineBatchSource(deps: {
       const origin = deps.readLaneOrigin(lane.id);
       return {
         laneId: lane.id,
-        parentLaneId: lane.parentLaneId ?? null,
         name: lane.name,
         branchRef: lane.branchRef ?? "",
         ...(origin ? { originMachineKey: origin.sourceMachineKey, originLaneId: origin.sourceLaneId } : {}),
@@ -623,7 +622,7 @@ export function createCrossMachineBatchSource(deps: {
   };
 
   const prepareBatchLane: CrossMachineBatchMoveDeps["prepareBatchLane"] = async (
-    { importId, lane, returnToLaneId, destinationParentLaneId, includeChanges },
+    { importId, lane, returnToLaneId, includeChanges },
   ) => {
     const summary = await laneService.getSummary(lane.laneId, { includeStatus: true });
     if (!summary) throw new Error(`The source lane '${lane.name}' could not be loaded.`);
@@ -655,9 +654,9 @@ export function createCrossMachineBatchSource(deps: {
       importId,
       sourceMachineName: localMachineName(),
       ...(sourceMachineKey ? { sourceMachineKey } : {}),
-      sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
+      // Older destinations read the key.
+      sourceLane: { laneId: lane.laneId, parentLaneId: null, name: lane.name },
       ...(returnToLaneId ? { returnToLaneId } : {}),
-      ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
       branchRef: branchRef,
       headSha: headSha,
       originUrl: rawOriginUrl,

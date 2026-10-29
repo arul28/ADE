@@ -144,11 +144,9 @@ import type {
   ClosePrArgs,
   CleanupPrBranchArgs,
   CtoIdentity,
-  CreateChildLaneArgs,
   CommitIntegrationArgs,
   CreateLaneArgs,
   CreateLaneFromPrBranchArgs,
-  CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   CreateIntegrationLaneForProposalArgs,
   CreateGitHubPrStackArgs,
@@ -222,7 +220,6 @@ import type {
   RecheckIntegrationStepArgs,
   ReactToPrCommentArgs,
   ReplyToPrReviewThreadArgs,
-  ReparentLaneArgs,
   RequestPrReviewersArgs,
   RerunPrChecksArgs,
   SetPrLabelsArgs,
@@ -338,7 +335,8 @@ import {
 } from "./appleRemoteCommands";
 import { createProviderAccountRemoteCommandHandlers } from "./providerAccountRemoteCommands";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
-import { resolveLaneCreateRemoteBase } from "../laneCreateRemoteBase";
+import type { LaneSummary } from "../../../../desktop/src/shared/types";
+import { normalizeLaneStart, normalizeNewLaneDefaults } from "../../../../desktop/src/shared/laneStart";
 import { normalizePrCreationStrategy } from "../../../../desktop/src/shared/prStrategy";
 import { readImageFileAsDataUrl, saveImageTempAttachment } from "../imageAttachment";
 import {
@@ -380,7 +378,6 @@ import type { createGitOperationsService } from "../../../../desktop/src/main/se
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
 import type { createJiraService } from "../../../../desktop/src/main/services/jira/jiraService";
 import type { createOperationService } from "../../../../desktop/src/main/services/history/operationService";
-import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import {
   buildLaneEnvTeardown,
@@ -406,7 +403,6 @@ import {
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
-import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import { buildProviderInstancesDomainService, createSessionBoardMoveActions } from "../../../../desktop/src/main/services/adeActions/registry";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
@@ -644,8 +640,6 @@ type SyncRemoteCommandServiceArgs = {
   portAllocationService?: ReturnType<typeof createPortAllocationService> | null;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService> | null;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService> | null;
-  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService> | null;
-  autoRebaseService?: ReturnType<typeof createAutoRebaseService> | null;
   externalSessionsService?: ExternalSessionsRemoteService | null;
   getExternalSessionsService?: () => ExternalSessionsRemoteService | null;
   /**
@@ -2027,26 +2021,33 @@ function parseListLanesArgs(value: Record<string, unknown>): ListLanesArgs {
     includeArchived: asOptionalBoolean(value.includeArchived),
     includeStatus: asOptionalBoolean(value.includeStatus),
     includeConflictStatus: asOptionalBoolean(value.includeConflictStatus),
-    includeRebaseSuggestions: asOptionalBoolean(value.includeRebaseSuggestions),
-    includeAutoRebaseStatus: asOptionalBoolean(value.includeAutoRebaseStatus),
   };
 }
 
 /** 10 MB of bytes as base64 (4 characters per 3 bytes). */
 const LINEAR_REMOTE_UPLOAD_MAX_BASE64 = Math.ceil((10 * 1024 * 1024) / 3) * 4;
 
+/** `start` omitted (or malformed): the lane service applies the project's new-lane defaults. */
 function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
+  const start = normalizeLaneStart(value.start);
   return {
     name: requireString(value.name, "lanes.create requires name."),
     ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
-    ...(asTrimmedString(value.parentLaneId) ? { parentLaneId: asTrimmedString(value.parentLaneId)! } : {}),
-    ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
+    ...(start ? { start } : {}),
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
     ...(isRecord(value.githubIssue) ? { githubIssue: value.githubIssue as CreateLaneArgs["githubIssue"] } : {}),
+    ...(isRecord(value.jiraIssue) ? { jiraIssue: value.jiraIssue as CreateLaneArgs["jiraIssue"] } : {}),
   };
+}
+
+/** Older phone builds decode these as required. */
+type PhoneLaneSummary = LaneSummary & { childCount: 0; stackDepth: 0 };
+
+function phoneLaneSummary(lane: LaneSummary): PhoneLaneSummary {
+  return { ...lane, childCount: 0, stackDepth: 0 };
 }
 
 /**
@@ -2098,26 +2099,6 @@ function parseSuggestLaneNameArgs(value: Record<string, unknown>): AgentChatSugg
   };
 }
 
-function parseCreateChildLaneArgs(value: Record<string, unknown>): CreateChildLaneArgs {
-  return {
-    name: requireString(value.name, "lanes.createChild requires name."),
-    parentLaneId: requireString(value.parentLaneId, "lanes.createChild requires parentLaneId."),
-    ...(asTrimmedString(value.operationId) ? { operationId: asTrimmedString(value.operationId)! } : {}),
-    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
-    ...(asTrimmedString(value.folder) ? { folder: asTrimmedString(value.folder)! } : {}),
-    ...(asTrimmedString(value.baseBranchRef) ? { baseBranchRef: asTrimmedString(value.baseBranchRef)! } : {}),
-    ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
-    ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateChildLaneArgs["linearIssue"] } : {}),
-  };
-}
-
-function parseCreateLaneFromUnstagedArgs(value: Record<string, unknown>): CreateLaneFromUnstagedArgs {
-  return {
-    name: requireString(value.name, "lanes.createFromUnstaged requires name."),
-    sourceLaneId: requireString(value.sourceLaneId, "lanes.createFromUnstaged requires sourceLaneId."),
-  };
-}
-
 function parseImportBranchArgs(value: Record<string, unknown>): ImportBranchLaneArgs {
   return {
     branchRef: requireString(value.branchRef, "lanes.importBranch requires branchRef."),
@@ -2151,15 +2132,6 @@ function parseRenameLaneArgs(value: Record<string, unknown>): RenameLaneArgs {
   };
 }
 
-function parseReparentLaneArgs(value: Record<string, unknown>): ReparentLaneArgs {
-  const stackBaseBranchRef = asTrimmedString(value.stackBaseBranchRef);
-  return {
-    laneId: requireString(value.laneId, "lanes.reparent requires laneId."),
-    newParentLaneId: requireString(value.newParentLaneId, "lanes.reparent requires newParentLaneId."),
-    ...(stackBaseBranchRef ? { stackBaseBranchRef } : {}),
-  };
-}
-
 function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLaneAppearanceArgs {
   const parsed: UpdateLaneAppearanceArgs = {
     laneId: requireString(value.laneId, "lanes.updateAppearance requires laneId."),
@@ -2182,7 +2154,6 @@ function parseUpdateLaneAppearanceArgs(value: Record<string, unknown>): UpdateLa
 function parseRebaseStartArgs(value: Record<string, unknown>): RebaseStartArgs {
   return {
     laneId: requireString(value.laneId, "lanes.rebaseStart requires laneId."),
-    ...(asTrimmedString(value.scope) ? { scope: value.scope as RebaseStartArgs["scope"] } : {}),
     ...(asTrimmedString(value.pushMode) ? { pushMode: value.pushMode as RebaseStartArgs["pushMode"] } : {}),
     ...(asTrimmedString(value.actor) ? { actor: asTrimmedString(value.actor)! } : {}),
     ...(asTrimmedString(value.reason) ? { reason: asTrimmedString(value.reason)! } : {}),
@@ -4521,16 +4492,10 @@ async function buildLaneListSnapshots(
   lanes: Awaited<ReturnType<ReturnType<typeof createLaneService>["list"]>>,
   options: ListLanesArgs = {},
 ): Promise<LaneListSnapshot[]> {
-  const [rawSessions, chatSessions, rebaseSuggestions, autoRebaseStatuses, stateSnapshots, batchAssessment] = await Promise.all([
+  const [rawSessions, chatSessions, stateSnapshots, batchAssessment] = await Promise.all([
     Promise.resolve(args.sessionService.list({ limit: 500 })),
     args.agentChatService?.listSessions(undefined, { includeAutomation: true }).catch(() => [])
       ?? Promise.resolve([]),
-    options.includeRebaseSuggestions === false
-      ? Promise.resolve([])
-      : Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes }) ?? []),
-    options.includeAutoRebaseStatus === false
-      ? Promise.resolve([])
-      : Promise.resolve(args.autoRebaseService?.listStatuses({ lanes }) ?? []),
     Promise.resolve(args.laneService.listStateSnapshots()),
     options.includeConflictStatus === false
       ? Promise.resolve(null)
@@ -4545,16 +4510,12 @@ async function buildLaneListSnapshots(
     return session.lastTurnFailedAt ? fallbackUnprojectedChatSession(session) : session;
   });
 
-  const rebaseByLaneId = new Map(rebaseSuggestions.map((entry) => [entry.laneId, entry] as const));
-  const autoRebaseByLaneId = new Map(autoRebaseStatuses.map((entry) => [entry.laneId, entry] as const));
   const stateByLaneId = new Map(stateSnapshots.map((entry) => [entry.laneId, entry] as const));
   const conflictByLaneId = new Map((batchAssessment?.lanes ?? []).map((entry) => [entry.laneId, entry] as const));
 
   return lanes.map((lane) => ({
-    lane,
+    lane: phoneLaneSummary(lane),
     runtime: summarizeLaneRuntime(lane.id, sessions),
-    rebaseSuggestion: rebaseByLaneId.get(lane.id) ?? null,
-    autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
     conflictStatus: conflictByLaneId.get(lane.id) ?? null,
     stateSnapshot: stateByLaneId.get(lane.id) ?? null,
     // Deprecated, always false. Shipped iOS builds decode this as a
@@ -4576,22 +4537,16 @@ function parseLaneDetailRequestArgs(value: Record<string, unknown>): LaneDetailR
   };
 }
 
-async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId: string): Promise<LaneDetailPayload> {
+async function buildLaneDetailPayload(
+  args: SyncRemoteCommandServiceArgs,
+  laneId: string,
+): Promise<LaneDetailPayload & { stackChain: []; children: [] }> {
   const lane = await args.laneService.getSummary(laneId, { includeStatus: true });
   if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
-  const stackChain = await args.laneService.getStackChain(laneId);
-  const parentLane = lane.parentLaneId
-    ? await args.laneService.getSummary(lane.parentLaneId, { includeStatus: true })
-    : null;
-  const suggestionLanes = parentLane ? [lane, parentLane] : [lane];
-
   const [
-    children,
     sessions,
     chatSessions,
-    rebaseSuggestions,
-    autoRebaseStatuses,
     stateSnapshot,
     recentCommits,
     diffChanges,
@@ -4602,11 +4557,8 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
     overlaps,
     envInitProgress,
   ] = await Promise.all([
-    args.laneService.getChildren(laneId),
     Promise.resolve(args.sessionService.list({ laneId, limit: 200 })),
     args.agentChatService?.listSessions(laneId, { includeAutomation: true }).catch(() => []) ?? Promise.resolve([]),
-    Promise.resolve(args.rebaseSuggestionService?.listSuggestions({ lanes: suggestionLanes }) ?? []),
-    Promise.resolve(args.autoRebaseService?.listStatuses({ lanes: [lane] }) ?? []),
     Promise.resolve(args.laneService.getStateSnapshot(laneId)),
     args.gitService?.listRecentCommits({ laneId, limit: 20 }) ?? Promise.resolve([]),
     args.diffService?.getChanges(laneId).catch(() => null) ?? Promise.resolve(null),
@@ -4619,7 +4571,7 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
   ]);
 
   return {
-    lane,
+    lane: phoneLaneSummary(lane),
     runtime: summarizeLaneRuntime(
       laneId,
       sessions.map((session) => {
@@ -4628,11 +4580,10 @@ async function buildLaneDetailPayload(args: SyncRemoteCommandServiceArgs, laneId
         return session.lastTurnFailedAt ? fallbackUnprojectedChatSession(session) : session;
       }),
     ),
-    stackChain,
-    children,
+    // Older phone builds decode these as required.
+    stackChain: [],
+    children: [],
     stateSnapshot: stateSnapshot as LaneStateSnapshotSummary | null,
-    rebaseSuggestion: rebaseSuggestions.find((entry) => entry.laneId === laneId) ?? null,
-    autoRebaseStatus: autoRebaseStatuses.find((entry) => entry.laneId === laneId) ?? null,
     conflictStatus,
     overlaps,
     syncStatus,
@@ -4704,7 +4655,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   // transport (this command, run_ade_action) gets the same import.
   register("chat.importCrossMachineHandoffLane", { viewerAllowed: true, queueable: false }, async (payload) =>
     requireService(args.agentChatService, "Agent chat service not available.").importCrossMachineHandoffLane(payload));
-  register("lanes.list", { viewerAllowed: true }, async (payload) => args.laneService.list(parseListLanesArgs(payload)));
+  register("lanes.list", { viewerAllowed: true }, async (payload) =>
+    (await args.laneService.list(parseListLanesArgs(payload))).map(phoneLaneSummary));
   register("lanes.listDeleteProgress", { viewerAllowed: true }, async () => args.laneService.listDeleteProgress());
   register("lanes.getBranchDrift", { viewerAllowed: true }, async (payload) =>
     args.laneService.getBranchDrift({
@@ -4738,6 +4690,7 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     const { statusAsOf, revalidating, ...exact } = refreshed;
     const response = {
       ...exact,
+      lanes: refreshed.lanes.map(phoneLaneSummary),
       snapshots: await buildLaneListSnapshots(args, refreshed.lanes, listArgs),
     };
     const ifNoneMatch = asTrimmedString(payload.ifNoneMatch);
@@ -4768,23 +4721,14 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     return respondWithSignature(response, detailArgs.ifNoneMatch, {}, args.getLanePresenceStamp?.() ?? "");
   });
   register("lanes.create", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const parsed = parseCreateLaneArgs(payload);
-    // Mobile/CLI callers that don't pick a base (hub composer auto-create, the
-    // create sheet's default) must branch from the project's configured
-    // new-lane base — remote-first, matching desktop's create-lane dialog —
-    // not from the possibly-stale LOCAL primary tip.
-    let lane: Awaited<ReturnType<typeof args.laneService.create>>;
-    if (!parsed.baseBranch && !parsed.startPoint && !parsed.parentLaneId) {
-      const remoteBase = await resolveLaneCreateRemoteBase(args);
-      lane = await args.laneService.create(remoteBase ? { ...parsed, baseBranch: remoteBase } : parsed);
-    } else {
-      lane = await args.laneService.create(parsed);
-    }
+    // No `start`: the lane service uses the project's new-lane defaults, the
+    // same ones the desktop dialog and `ade lanes create` start from.
+    const lane = await args.laneService.create(parseCreateLaneArgs(payload));
     // `setup: "default"`: a phone path with no setup step of its own (a chat
     // in a new lane) asks the host to set the lane up the way the desktop's
     // Work tab does, in the background. New lanes get packages only this way.
     if (payload.setup === "default") startDefaultLaneSetup(lane.id);
-    return lane;
+    return phoneLaneSummary(lane);
   });
   // Background lane naming for mobile auto-create. Deliberately NOT queueable:
   // when the phone is offline we want the call to fail fast so the client uses
@@ -4850,11 +4794,8 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
       return { name: fallbackName };
     }
   });
-  register("lanes.createChild", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.createChild(parseCreateChildLaneArgs(payload)));
-  register("lanes.createFromUnstaged", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.laneService.createFromUnstaged(parseCreateLaneFromUnstagedArgs(payload)));
   register("lanes.importBranch", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.laneService.importBranch(parseImportBranchArgs(payload)));
+    phoneLaneSummary(await args.laneService.importBranch(parseImportBranchArgs(payload))));
   register("lanes.previewBranchSwitch", { viewerAllowed: true }, async (payload) =>
     args.laneService.previewBranchSwitch(parseGitCheckoutBranchArgs(payload)));
   // Every git worktree is now a lane the moment it exists, so there is nothing
@@ -4876,8 +4817,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.rename(parseRenameLaneArgs(payload));
     return { ok: true };
   });
-  register("lanes.reparent", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.laneService.reparent(parseReparentLaneArgs(payload)));
   register("lanes.updateAppearance", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.laneService.updateAppearance(parseUpdateLaneAppearanceArgs(payload));
     return { ok: true };
@@ -4903,10 +4842,6 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.deleteLeftoverWorktree(
       requireString(payload.laneId, "lanes.deleteLeftoverWorktree requires laneId."),
     ));
-  register("lanes.getStackChain", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getStackChain(requireString(payload.laneId, "lanes.getStackChain requires laneId.")));
-  register("lanes.getChildren", { viewerAllowed: true }, async (payload) =>
-    args.laneService.getChildren(requireString(payload.laneId, "lanes.getChildren requires laneId.")));
   register("lanes.attachGitHubIssueToSession", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.laneService.attachGitHubIssueToSession(parseAttachGitHubIssueToSessionArgs(payload)));
   register("lanes.detachGitHubIssueFromSession", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -4941,35 +4876,19 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   register("lanes.rebasePush", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebasePush(parseRebasePushArgs(payload)));
   register("lanes.rebaseRollback", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseRollback(parseRunIdArgs(payload, "lanes.rebaseRollback")));
   register("lanes.rebaseAbort", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.rebaseAbort(parseRunIdArgs(payload, "lanes.rebaseAbort")));
-  register("lanes.listRebaseSuggestions", { viewerAllowed: true }, async () => args.rebaseSuggestionService?.listSuggestions() ?? []);
-  register("lanes.dismissRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const laneId = requireString(payload.laneId, "lanes.dismissRebaseSuggestion requires laneId.");
-    if (args.rebaseSuggestionService) {
-      await args.rebaseSuggestionService.dismiss({ laneId });
-    }
-    return { ok: true };
-  });
-  register("lanes.deferRebaseSuggestion", { viewerAllowed: true, queueable: true }, async (payload) => {
-    const laneId = requireString(payload.laneId, "lanes.deferRebaseSuggestion requires laneId.");
-    const minutes = Math.max(5, Math.min(7 * 24 * 60, Math.floor(asOptionalNumber(payload.minutes) ?? 60)));
-    if (args.rebaseSuggestionService) {
-      await args.rebaseSuggestionService.defer({
-        laneId,
-        minutes,
-      });
-    }
-    return { ok: true };
-  });
-  register("lanes.listAutoRebaseStatuses", { viewerAllowed: true }, async () => args.autoRebaseService?.listStatuses() ?? []);
-  register("lanes.dismissAutoRebaseStatus", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.autoRebaseService) return { ok: true };
-    await args.autoRebaseService.dismissStatus({
-      laneId: requireString(payload.laneId, "lanes.dismissAutoRebaseStatus requires laneId."),
-    });
-    return { ok: true };
-  });
   register("lanes.listTemplates", { viewerAllowed: true }, async () => args.laneTemplateService?.listTemplates() ?? []);
   register("lanes.getDefaultTemplate", { viewerAllowed: true }, async () => args.laneTemplateService?.getDefaultTemplateId() ?? null);
+  // How new lanes start in this project (an account setting for the repo), so
+  // the phone's New lane sheet opens on the same choice as the desktop dialog.
+  register("lanes.getNewLaneDefaults", { viewerAllowed: true }, async () => args.laneService.getNewLaneDefaults());
+  // A phone write like `cto.setHomeMachine`: paired devices may call it.
+  register("lanes.setNewLaneDefaults", { viewerAllowed: true }, async (payload) => {
+    const raw = isRecord(payload.defaults) ? payload.defaults : null;
+    if (!raw || !normalizeLaneStart(raw.start)) {
+      throw new Error("lanes.setNewLaneDefaults requires defaults.start with from and bring.");
+    }
+    return args.laneService.setNewLaneDefaults({ defaults: normalizeNewLaneDefaults(raw) });
+  });
   // The template reads above shipped without their writes, so a remote client
   // could list templates and "save" one into nothing.
   register("lanes.saveTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {

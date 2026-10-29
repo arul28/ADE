@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { ChatLaunchChatArgs, ChatLaunchLaneConfig, ChatLaunchSnapshot } from "../../../shared/types";
+import { normalizeLaneStart, type LaneStart } from "../../../shared/laneStart";
 import { isChatLaunchTerminal } from "../../../shared/chatLaunch";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
@@ -14,8 +15,12 @@ import { getErrorMessage } from "../shared/utils";
 export type ChatLaunchRecord = {
   snapshot: ChatLaunchSnapshot;
   chat: ChatLaunchChatArgs | null;
-  baseBranch: string | null;
-  /** Explicit lane recipe (child/import/template/color), or null for the default root lane. */
+  /**
+   * Where the new lane starts, fixed when the launch began (the config's own
+   * start, else the project's default then). Null for an existing branch.
+   */
+  start: LaneStart | null;
+  /** Explicit lane recipe (start/existing branch/template/color), or null for the project's defaults. */
   laneConfig: ChatLaunchLaneConfig | null;
   provider: string | null;
   templateId: string | null;
@@ -57,6 +62,14 @@ function reviveChatLaunchRecord(record: ChatLaunchRecord, nowIso: string): ChatL
   }
   snapshot.sequence += RELOAD_SEQUENCE_JUMP;
   record.checkoutAttempted = record.checkoutAttempted === true;
+  // Records written by an earlier ADE named the modes root/import and carried
+  // no start. An adopted branch must stay "existing": its cleanup keeps the
+  // user's branch.
+  const mode: string | undefined = record.laneConfig?.mode;
+  if (record.laneConfig && mode !== "new" && mode !== "existing") {
+    record.laneConfig = { ...record.laneConfig, mode: mode === "import" ? "existing" : "new" };
+  }
+  record.start = record.laneConfig?.mode === "existing" ? null : normalizeLaneStart(record.start);
   return record;
 }
 

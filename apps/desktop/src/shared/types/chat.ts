@@ -4739,11 +4739,10 @@ export type AgentChatCrossMachineHandoffCapsule = {
   /** Original source lane identity. Optional for compatibility with v1 peers. */
   sourceLane?: {
     laneId: string;
-    parentLaneId: string | null;
+    /** Always null. Older peers read the key, so it stays on the wire. */
+    parentLaneId?: string | null;
     name: string;
   };
-  /** Destination id resolved from an earlier lane item in this batch. */
-  destinationParentLaneId?: string;
   /** Set only when this chat's parent is also moved by the same batch. */
   parentLink?: {
     destinationParentSessionId: string;
@@ -4823,11 +4822,10 @@ export type AgentChatCrossMachineCapsuleBatchMove = {
 /**
  * Everything the orchestrator tells prepare about a batch item's move: the
  * capsule's `batchMove`, plus the capsule-level lane and parent fields the
- * destination reads (`sourceLane`, `destinationParentLaneId`, `parentLink`).
+ * destination reads (`sourceLane`, `parentLink`).
  */
 export type AgentChatCrossMachineBatchMoveContext = AgentChatCrossMachineCapsuleBatchMove & {
   sourceLane: NonNullable<AgentChatCrossMachineHandoffCapsule["sourceLane"]>;
-  destinationParentLaneId?: string;
   parentLink?: NonNullable<AgentChatCrossMachineHandoffCapsule["parentLink"]>;
 };
 
@@ -4962,8 +4960,12 @@ export type AgentChatCrossMachineLaneImportArgs = {
   importId: string;
   sourceMachineName: string;
   sourceMachineKey?: string;
-  sourceLane: { laneId: string; parentLaneId: string | null; name: string };
-  destinationParentLaneId?: string;
+  sourceLane: {
+    laneId: string;
+    /** Always null. Older peers read the key, so it stays on the wire. */
+    parentLaneId?: string | null;
+    name: string;
+  };
   /** Existing origin lane for a return; do not create or select another lane. */
   returnToLaneId?: string;
   branchRef: string;

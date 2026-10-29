@@ -80,10 +80,12 @@ import {
   parseSyncEnvelopeChunkPayload,
   parseSyncEnvelopeFrame,
   PEER_BACKPRESSURE_BYTES,
+  mobileAppTooOldHelloError,
   sendSyncProtocolVersionMismatchAndClose,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
   SyncProtocolVersionMismatchError,
 } from "./syncProtocol";
+import { isMobileAppBuildTooOld } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import {
   createBrainChatSubscriptions,
   type BrainChatSubscription,
@@ -1452,6 +1454,20 @@ export function createBrainProjectActionsSyncHandler(
             } catch {
               // ignore close failures
             }
+            return;
+          }
+          if (isMobileAppBuildTooOld(hello.peer)) {
+            sendSyncProtocolVersionMismatchAndClose(
+              ws,
+              { requestId: envelope.requestId, payload: mobileAppTooOldHelloError(Number(hello.peer.appBuild)) },
+              () => clearAuthTimeout(),
+            );
+            args.logger.warn("sync.hello.mobile_too_old", {
+              appVersion: hello.peer.appVersion ?? null,
+              appBuild: hello.peer.appBuild ?? null,
+              peerDeviceId: hello.peer.deviceId,
+              remoteAddress: remoteAddress ?? null,
+            });
             return;
           }
           const auth = hello.auth;

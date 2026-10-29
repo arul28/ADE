@@ -71,7 +71,7 @@ import {
 } from "../../desktop/src/main/services/lanes/laneEnvironmentSetup";
 import { createChatLaunchService, type ChatLaunchService } from "../../desktop/src/main/services/chat/chatLaunchService";
 import { resolveChatCreateModel } from "../../desktop/src/main/services/chat/chatCreateModelResolution";
-import { resolveLaneCreateRemoteBaseDetailed } from "./services/laneCreateRemoteBase";
+import { fetchLaneStartBranch } from "../../desktop/src/main/services/chat/chatLaunchStartFetch";
 import { resolveGitCommit, runGit } from "../../desktop/src/main/services/git/git";
 import { createLaneTemplateService } from "../../desktop/src/main/services/lanes/laneTemplateService";
 import { createFileNewLaneAccountStore, createNewLaneSettingsStore, legacyNewLaneSettingsFromConfig } from "../../desktop/src/main/services/lanes/newLaneSettingsStore";
@@ -2804,37 +2804,7 @@ export async function createAdeRuntime(args: {
         logger,
         laneService,
         agentChatService,
-        usesLocalLaneBase: () => {
-          try {
-            return projectConfigService.getEffective().git?.newLaneBaseSource === "local";
-          } catch {
-            return false;
-          }
-        },
-        resolveBase: async (progress) => {
-          const resolution = await resolveLaneCreateRemoteBaseDetailed({
-            laneService,
-            gitService,
-            projectConfigService,
-            ...(progress?.signal ? { signal: progress.signal } : {}),
-            ...(progress?.onWaitingForStaleFetch ? { onWaitingForStaleFetch: progress.onWaitingForStaleFetch } : {}),
-          });
-          const { baseRef, fetchSucceeded, fetchOutcome, fetchError, freshness, stale } = resolution;
-          const fetch = !baseRef
-            ? "skipped"
-            : fetchSucceeded === false
-              ? (fetchOutcome === "timeout" ? "timeout" : "failed")
-              : "ok";
-          return {
-            baseRef,
-            fetch,
-            fetchError: fetchError ?? null,
-            lastFetchedAtMs: freshness?.lastFetchedAtMs ?? null,
-            baseCommittedAtMs: freshness?.committedAtMs ?? null,
-            behindLocal: freshness?.behindLocal ?? null,
-            stale: stale === true,
-          };
-        },
+        fetchStartBranch: (fetchArgs) => fetchLaneStartBranch({ ...fetchArgs, laneService, gitService }),
         resolveCommit: (ref) => resolveGitCommit(ref, projectRoot),
         resolveChatCreate: (create) => resolveChatCreateModel(agentChatService, create),
         planEnvironment: (requestedTemplateId) => {
@@ -3673,8 +3643,6 @@ export async function createAdeRuntime(args: {
         portAllocationService,
         laneEnvironmentService,
         laneTemplateService,
-        rebaseSuggestionService,
-        autoRebaseService,
         computerUseArtifactBrokerService,
         agentChatService,
         chatLaunchService,

@@ -131,7 +131,6 @@ export const CROSS_MACHINE_CALLER_FIELDS = [
   "batchMove",
   "parentLink",
   "sourceLane",
-  "destinationParentLaneId",
   "approvedByPerson",
   "handoffId",
   "sourceChatTitle",
@@ -492,18 +491,10 @@ export function decodeCrossMachineLaneImportArgs(value: unknown): AgentChatCross
   if (!isArgsRecord(sourceLane) || typeof sourceLane.name !== "string" || !sourceLane.name.trim()) {
     throw new Error("The batch lane import is missing its source lane details.");
   }
-  const parentLaneId = sourceLane.parentLaneId ?? null;
-  if (parentLaneId !== null && (typeof parentLaneId !== "string" || !parentLaneId.trim())) {
-    throw new Error("The batch lane import has an invalid source parent lane id.");
-  }
   if (value.gitBundle != null && !isArgsRecord(value.gitBundle)) {
     throw new Error("The batch lane import has an invalid git bundle.");
   }
   const sourceMachineKey = optionalArgString(value.sourceMachineKey, "The batch lane import has an invalid source machine key.");
-  const destinationParentLaneId = optionalArgString(
-    value.destinationParentLaneId,
-    "The batch lane import has an invalid destination parent lane id.",
-  );
   const returnToLaneId = optionalArgString(value.returnToLaneId, "The batch lane return has an invalid origin lane id.");
   return {
     importId: requireArgString(value.importId, "The batch lane import is missing its import id."),
@@ -511,10 +502,9 @@ export function decodeCrossMachineLaneImportArgs(value: unknown): AgentChatCross
     ...(sourceMachineKey ? { sourceMachineKey } : {}),
     sourceLane: {
       laneId: requireArgString(sourceLane.laneId, "The batch lane import is missing its source lane id."),
-      parentLaneId,
+      parentLaneId: null,
       name: sourceLane.name,
     },
-    ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
     ...(returnToLaneId ? { returnToLaneId } : {}),
     branchRef: requireArgString(value.branchRef, "The batch lane import is missing its branch."),
     headSha: requireArgString(value.headSha, "The batch lane import is missing its source commit."),

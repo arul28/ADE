@@ -2365,7 +2365,7 @@ describe("createAdeWebAdapter", () => {
 
   it("unwraps refreshed lane and PR envelopes to preserve renderer array contracts", async () => {
     fake.descriptors = descriptors(["lanes.refreshSnapshots", "prs.refresh"]);
-    const laneSnapshot = { lane: { id: "lane-1" }, runtime: {}, rebaseSuggestion: null };
+    const laneSnapshot = { lane: { id: "lane-1" }, runtime: {} };
     const pr = { id: "pr-1", title: "Ship web client" };
     fake.commandResults.set("lanes.refreshSnapshots", {
       refreshedCount: 1,

@@ -72,8 +72,6 @@ function createHarness(options: {
   const laneCreate = deferred<LaneSummary>();
   let laneCreateOptions: LaneCreateRuntimeOptions | undefined;
   let laneCreateArgs: Record<string, unknown> | null = null;
-  let childCreateArgs: Record<string, unknown> | null = null;
-  let childCreateOptions: LaneCreateRuntimeOptions | undefined;
   let importBranchArgs: { branchRef: string; name: string } | null = null;
   let importBranchOptions: { laneId?: string } | undefined;
   let laneDeleteArgs: Record<string, unknown> | null = null;
@@ -96,11 +94,14 @@ function createHarness(options: {
         importBranchOptions = opts;
         return laneSummary({ branchRef: args.branchRef });
       }),
-      createChild: vi.fn(async (args, opts) => {
-        calls.push("lane.createChild");
-        childCreateArgs = args as Record<string, unknown>;
-        childCreateOptions = opts;
-        return laneSummary({ name: args.name });
+      getNewLaneDefaults: () => ({
+        defaults: {
+          start: { from: "default" as const, bring: options.localBase === true ? "local" as const : "pushed" as const },
+          templateId: null,
+        },
+        scope: { kind: "this-computer" as const, repo: null },
+        defaultBranch: "main",
+        primaryBranch: "main",
       }),
       updateAppearance: vi.fn((args: { laneId: string; color: string | null }) => {
         calls.push(`lane.updateAppearance:${args.color}`);
@@ -143,8 +144,7 @@ function createHarness(options: {
         branchRef: "ade/fix-flaky-login-test",
       })),
     },
-    usesLocalLaneBase: () => options.localBase === true,
-    resolveBase: vi.fn(async () => ({ baseRef: "origin/main", fetch: "ok" as const })),
+    fetchStartBranch: vi.fn(async () => ({ baseRef: "origin/main", fetch: "ok" as const })),
     resolveCommit: vi.fn(async () => "807fb2cac0ffee"),
     planEnvironment: vi.fn((templateId?: string | null) => ({
       hasEnvironment: options.hasEnvironment === true,
@@ -196,12 +196,6 @@ function createHarness(options: {
     get laneCreateArgs() {
       return laneCreateArgs;
     },
-    get childCreateArgs() {
-      return childCreateArgs;
-    },
-    get childCreateOptions() {
-      return childCreateOptions;
-    },
     get importBranchArgs() {
       return importBranchArgs;
     },
@@ -243,7 +237,7 @@ describe("chatLaunchService", () => {
     expect(snapshot.prompt.text).toBe("fix the flaky test");
   });
 
-  it("omits the fetch stage when the project branches from the local base", async () => {
+  it("omits the fetch stage when the project's new lanes start from local commits", async () => {
     const h = harness({ localBase: true, hasEnvironment: true, templateName: "Web app" });
     const snapshot = await h.service.start(chatArgs());
     expect(snapshot.stages.map((stage) => stage.id)).toEqual(["checkout", "environment", "agent"]);
@@ -843,7 +837,7 @@ describe("chatLaunchService", () => {
 describe("chatLaunchService configured lane (the composer's deferred recipe)", () => {
   it("imports an existing branch under the launch's reserved lane id", async () => {
     const h = harness();
-    await h.service.start(chatArgs({ laneConfig: { mode: "import", branchRef: "origin/feature/payments" } }));
+    await h.service.start(chatArgs({ laneConfig: { mode: "existing", branchRef: "origin/feature/payments" } }));
     await vi.waitFor(() => expect(h.calls).toContain("lane.importBranch"));
     expect(h.importBranchArgs).toEqual({ branchRef: "origin/feature/payments", name: "fix-flaky-test" });
     // The client already opened this lane id; the import must adopt it.
@@ -854,7 +848,7 @@ describe("chatLaunchService configured lane (the composer's deferred recipe)", (
 
   it("cancelling an import keeps the adopted branch, local and remote", async () => {
     const h = harness({ hasEnvironment: true, templateName: "Web app" });
-    await h.service.start(chatArgs({ laneConfig: { mode: "import", branchRef: "origin/feature/payments" } }));
+    await h.service.start(chatArgs({ laneConfig: { mode: "existing", branchRef: "origin/feature/payments" } }));
     await h.waitFor((snapshot) => snapshot.laneCreated);
     await h.service.cancel({ launchId: LAUNCH_ID });
     expect(h.laneDeleteArgs).toMatchObject({
@@ -864,30 +858,9 @@ describe("chatLaunchService configured lane (the composer's deferred recipe)", (
     });
   });
 
-  it("creates a child through createChild (resolved remote base) and never AI-renames the configured name", async () => {
-    const h = harness();
-    await h.service.start(chatArgs({
-      laneName: "My child lane",
-      baseBranch: "origin/release",
-      laneConfig: { mode: "child", parentLaneId: "parent-lane" },
-    }));
-    await vi.waitFor(() => expect(h.childCreateArgs).toBeTruthy());
-    expect(h.childCreateArgs).toMatchObject({
-      parentLaneId: "parent-lane",
-      name: "My child lane",
-      baseBranchRef: "origin/release",
-    });
-    // The launch's reserved lane id is honored so the open chat matches the lane.
-    expect(h.childCreateOptions).toMatchObject({ laneId: LANE_ID });
-
-    await h.waitFor((snapshot) => snapshot.phase === "completed");
-    expect(h.latest().laneName).toBe("My child lane");
-    expect(h.deps.agentChatService.generateAutoLaneIdentity).not.toHaveBeenCalled();
-  });
-
   it("applies the configured template and accent color", async () => {
     const h = harness();
-    await h.service.start(chatArgs({ laneConfig: { mode: "root", templateId: "tpl-custom", color: "#abcdef" } }));
+    await h.service.start(chatArgs({ laneConfig: { mode: "new", templateId: "tpl-custom", color: "#abcdef" } }));
     await vi.waitFor(() => expect(h.laneCreateArgs).toBeTruthy());
     expect(h.deps.planEnvironment).toHaveBeenCalledWith("tpl-custom");
     h.laneCreate.resolve(laneSummary());

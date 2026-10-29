@@ -6,6 +6,7 @@
 import { runGitWithGithubAuthFallback } from "../../git/gitTransportAuth";
 import { runGit } from "../../git/git";
 import type { LaneSummary } from "../../../../shared/types/lanes";
+import type { LaneStart } from "../../../../shared/laneStart";
 import type { AgentChatSessionSummary } from "../../../../shared/types/chat";
 import type {
   CloudAgentLaunchArgs,
@@ -33,7 +34,7 @@ const PUSH_TIMEOUT_MS = 90_000;
 type LaneDeps = {
   list: (args: { includeArchived?: boolean; includeStatus?: boolean }) => Promise<LaneSummary[]>;
   importBranch: (args: { branchRef: string; name?: string; description?: string; baseBranch?: string }) => Promise<LaneSummary>;
-  create: (args: { name: string; baseBranch?: string; branchName?: string; description?: string }) => Promise<LaneSummary>;
+  create: (args: { name: string; start?: LaneStart | null; branchName?: string; description?: string }) => Promise<LaneSummary>;
   updateAppearance: (args: { laneId: string; tags?: string[] | null }) => void;
 };
 
@@ -213,8 +214,9 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
   };
 
   /**
-   * A cloud lane for new work: a fresh lane on a new branch off the default
-   * branch, tagged with its cloud and pushed so the VM can check it out.
+   * A cloud lane for new work: a fresh lane on a new branch off the pushed
+   * default branch (the VM can only check out what is on the remote), tagged
+   * with its cloud and pushed so the VM can check it out.
    */
   const createCloudLane = async (
     provider: CloudLaneProvider,
@@ -224,7 +226,9 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
     const lane = await deps.lanes.create({
       name: args.name,
       branchName: args.branchName,
-      ...(defaultBranch ? { baseBranch: defaultBranch } : {}),
+      start: defaultBranch
+        ? { from: "branch", branch: defaultBranch, bring: "pushed" }
+        : { from: "default", bring: "pushed" },
     });
     tagCloudLane(lane, provider);
     await pushLaneBranch(lane, { onFailure: args.onPushFailure });
