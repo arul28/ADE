@@ -323,6 +323,38 @@ export const RESTART_RESUME_PROMPT =
 
 export const RESTART_RESUME_REASON = "Resume after ADE restarted";
 
+/**
+ * Automatic resumes in a row before a chat waits for the user. A chat whose
+ * resumed turn is cut off by another restart, again and again, is likely what
+ * keeps stopping ADE (T3 #18461).
+ */
+export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
+
+/**
+ * The streak the next restart-resume of a chat would have, from its previous
+ * resume row (same deterministic id) and when the chat last finished a turn.
+ * The streak starts again when the user stepped in (the row was cancelled), a
+ * resumed turn finished normally after the row fired, or the row came from an
+ * update the user accepted (streak 0).
+ */
+export function nextRestartResumeStreak(
+  previous: {
+    source?: string | null;
+    status?: string | null;
+    lastFiredAt?: number | null;
+    terminalAt?: number | null;
+    restartResumeStreak?: number | null;
+  } | null | undefined,
+  idleSinceAt: string | null | undefined,
+): number {
+  if (!previous || previous.source !== UPDATE_RESUME_SCHEDULED_WORK_SOURCE) return 1;
+  if (previous.status === "cancelled") return 1;
+  const firedAt = previous.lastFiredAt ?? previous.terminalAt ?? null;
+  const finishedAt = idleSinceAt ? Date.parse(idleSinceAt) : Number.NaN;
+  if (firedAt != null && Number.isFinite(finishedAt) && finishedAt > firedAt) return 1;
+  return (previous.restartResumeStreak ?? 0) + 1;
+}
+
 /** One piece of background work a restart cancelled. */
 export type RestartCancelledWork = {
   kind: "command" | "monitor" | "subagent" | "workflow" | "task";

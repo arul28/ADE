@@ -1142,6 +1142,8 @@ import {
   buildRestartNote,
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
+  MAX_CONSECUTIVE_RESTART_RESUMES,
+  nextRestartResumeStreak,
   RESTART_RESUME_REASON,
   BACKGROUND_WORK_LOST_RESUME_PROMPT,
   BACKGROUND_WORK_LOST_RESUME_REASON,
@@ -21864,6 +21866,20 @@ export function createAgentChatService(args: {
     return !Number.isFinite(endedMs) || Date.now() - endedMs <= RESTART_RESUME_MAX_AGE_MS;
   };
 
+  /**
+   * The streak this chat's next automatic resume would have (see
+   * `nextRestartResumeStreak`). Before the scheduler is ready nothing can be
+   * armed yet, so it reads as a first resume.
+   */
+  const restartResumeStreakFor = (managed: ManagedChatSession): number => {
+    if (!scheduledWorkScheduler) return 1;
+    const sessionId = managed.session.id;
+    const previous = (scheduledWorkScheduler.list(sessionId) ?? [])
+      .find((schedule) => schedule.id === updateResumeScheduleId(sessionId));
+    return nextRestartResumeStreak(previous, managed.session.idleSinceAt);
+  };
+  const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
+    restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
   const armRestartResume = (
     managed: ManagedChatSession,
     resume: { prompt: string; reason: string } = { prompt: RESTART_RESUME_PROMPT, reason: RESTART_RESUME_REASON },
@@ -21876,6 +21892,15 @@ export function createAgentChatService(args: {
       const row = sessionService.get(sessionId);
       if (!row || !isSchedulableAgentSession(row) || row.settledAt || row.archivedAt) return;
       if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
+      const restartResumeStreak = restartResumeStreakFor(managed);
+      if (restartResumeStreak > MAX_CONSECUTIVE_RESTART_RESUMES) {
+        logger.warn("agent_chat.restart_resume_capped", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak - 1,
+        });
+        return;
+      }
       const createdAt = Date.now();
       try {
         await scheduledWorkScheduler.upsert({
@@ -21890,8 +21915,13 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          restartResumeStreak,
         });
-        logger.info("agent_chat.restart_resume_armed", { sessionId, provider: managed.session.provider });
+        logger.info("agent_chat.restart_resume_armed", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak,
+        });
       } catch (error) {
         logger.warn("agent_chat.restart_resume_arm_failed", {
           sessionId,
@@ -21952,8 +21982,10 @@ export function createAgentChatService(args: {
     managed.backgroundLossWakePending = false;
     if (unsettled) {
       const row = sessionService.get(managed.session.id);
+      const resumeCapped = restartResumeCapReached(managed);
       const willContinue = continueAfterRestartEnabled()
         && recent
+        && !resumeCapped
         && !row?.settledAt
         && !row?.archivedAt;
       const cancelledLine = cancelled.length
@@ -21966,7 +21998,9 @@ export function createAgentChatService(args: {
           ? `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`
           : willContinue
             ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
-            : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
+            : resumeCapped && continueAfterRestartEnabled()
+              ? `ADE restarted while this response was running, again. It already continued this chat ${MAX_CONSECUTIVE_RESTART_RESUMES} times in a row, so it waits for you now. Send a message to continue.${cancelledLine}`
+              : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
         turnId: unsettled.turnId,
       });
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
@@ -21984,7 +22018,11 @@ export function createAgentChatService(args: {
     let wakeForLostWork = false;
     if (lostAwaitedWork) {
       const row = sessionService.get(managed.session.id);
-      wakeForLostWork = continueAfterRestartEnabled() && recent && !row?.settledAt && !row?.archivedAt;
+      wakeForLostWork = continueAfterRestartEnabled()
+        && recent
+        && !restartResumeCapReached(managed)
+        && !row?.settledAt
+        && !row?.archivedAt;
       // A shutdown that recorded the loss already named it in its own notice;
       // only work the transcript shows (a crash, or rows the stale-run sweep
       // closed) needs naming here.
@@ -67019,6 +67057,8 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          // The user accepted this update: a fresh start for the resume cap.
+          restartResumeStreak: 0,
         });
         if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
       } catch (error) {
