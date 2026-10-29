@@ -315,6 +315,19 @@ export function GitHubSection() {
   const authFailurePresentation = githubStatus ? describeGithubAuthFailure(githubStatus) : null;
   const credentialFallback = githubStatus?.credentialFallback ?? null;
   const credentialStates = githubStatus?.credentialStates ?? [];
+  // An older remote runtime reports no credential chain. The token row still
+  // has to be there, since it is where a token is added, replaced or removed.
+  const signInRows: GitHubCredentialState[] = githubStatus && !credentialStates.some((credential) => credential.source === "pat")
+    ? [...credentialStates, {
+      source: "pat",
+      available: githubStatus.tokenStored === true,
+      capabilities: ["read", "write"],
+      activeFor: [],
+      state: githubStatus.tokenStored ? "ready" : "unavailable",
+      failure: null,
+      rateLimit: null,
+    }]
+    : credentialStates;
   const activeReadCredential = credentialStates.find((credential) => credential.activeFor.includes("read")) ?? null;
   const effectiveWriteAuthSource = githubStatus?.writeAuthSource
     ?? (githubStatus?.authSource && githubStatus.authSource !== "app" ? githubStatus.authSource : "none");
@@ -696,9 +709,9 @@ export function GitHubSection() {
             </div>
           ) : null}
           <div className="ade-ig-rows" style={{ marginBottom: -18 }}>
-            {credentialStates.length === 0 ? (
-              <div className="ade-ig-row"><span className="ade-ig-note">{githubStatus ? "No sign-ins reported by this machine." : "Checking sign-ins…"}</span></div>
-            ) : credentialStates.map((credential) => {
+            {signInRows.length === 0 ? (
+              <div className="ade-ig-row"><span className="ade-ig-note">Checking sign-ins…</span></div>
+            ) : signInRows.map((credential) => {
               const badge = credentialStateBadge(credential, outage != null, appAccount);
               const isPat = credential.source === "pat";
               const active = credential.activeFor.length > 0;

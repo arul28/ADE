@@ -10,6 +10,7 @@ import {
 } from "@phosphor-icons/react";
 import type { CtoLinearProject, GitHubAutolink, LinearConnectionStatus } from "../../../shared/types";
 import { ADE_DEEPLINK_HTTPS_BASE_URL } from "../../../shared/deeplinks";
+import { captureError } from "../../../shared/sentry/capture";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import {
   IntegrationCard,
@@ -92,6 +93,8 @@ export function LinearSection() {
   const [oauthStarting, setOauthStarting] = useState(false);
   const [oauthSessionId, setOauthSessionId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The status read itself failed, so the page cannot say connected or not.
+  const [statusReadFailed, setStatusReadFailed] = useState(false);
   const validatingRef = useRef(false);
   const oauthStartingRef = useRef(false);
   const oauthSessionIdRef = useRef<string | null>(null);
@@ -227,11 +230,15 @@ export function LinearSection() {
   }, [pin]);
 
   const loadStatus = useCallback(async () => {
-    if (!window.ade?.cto) return;
+    if (!window.ade?.cto) {
+      setStatusReadFailed(true);
+      return;
+    }
     const requestId = invalidateLoadRequests();
     try {
       const status = await window.ade.cto.getLinearConnectionStatus(pin);
       if (!isCurrentLoadRequest(requestId)) return;
+      setStatusReadFailed(false);
       setConnection(status);
       if (status.connected) {
         if (isCurrentLoadRequest(requestId)) {
@@ -240,8 +247,14 @@ export function LinearSection() {
       } else {
         setProjects([]);
       }
-    } catch {
+    } catch (err) {
+      captureError(err, {
+        tags: { feature: "linear_settings", action: "read_status" },
+        fingerprint: ["linear_settings", "read_status"],
+        handled: true,
+      });
       if (!isCurrentLoadRequest(requestId)) return;
+      setStatusReadFailed(true);
       setConnection(null);
       setProjects([]);
     }
@@ -601,11 +614,14 @@ export function LinearSection() {
       <IntegrationHero
         id="linear"
         anchor={isConnected ? "linear-connection" : undefined}
-        status={connection == null && !error
+        status={statusReadFailed && !connection
+          ? { tone: "warn", label: "Couldn't check" }
+          : connection == null && !error
           ? { tone: "checking", label: "Checking…" }
           : isConnected
             ? { tone: "ok", label: "Connected" }
             : { tone: "neutral", label: "Not connected" }}
+        accountNote={statusReadFailed && !connection ? "ADE couldn't read this machine's Linear connection." : undefined}
         account={isConnected ? {
           avatar: <LinearWorkspaceAvatar organizationName={connection?.organizationName} logoUrl={connection?.organizationLogoUrl} />,
           title: workspaceLabel ?? "Linear",
@@ -630,6 +646,10 @@ export function LinearSection() {
               Disconnect
             </button>
           </>
+        ) : statusReadFailed && !connection ? (
+          <button type="button" className="ade-modern-btn" data-size="sm" onClick={() => void loadStatus()}>
+            Check again
+          </button>
         ) : null}
         facts={facts}
         topBar={{

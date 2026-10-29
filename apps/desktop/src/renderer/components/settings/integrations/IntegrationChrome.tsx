@@ -50,6 +50,7 @@ export function IntegrationHero({
   anchor,
   status,
   account,
+  accountNote,
   actions,
   facts,
   topBar,
@@ -60,6 +61,8 @@ export function IntegrationHero({
   status: { tone: IntegrationTone; label: string };
   /** Null while not connected: the panel then says so. */
   account: IntegrationAccount | null;
+  /** What the panel says with no account, when "not connected yet" would be wrong. */
+  accountNote?: string;
   /** Under the account (Check again, Disconnect). */
   actions?: ReactNode;
   facts?: IntegrationFact[];
@@ -107,7 +110,7 @@ export function IntegrationHero({
             </div>
           ) : (
             <p className="ade-ig-hero-panel-empty">
-              {status.tone === "checking" ? "Checking this machine's sign-in…" : `This machine isn't connected to ${brand.label} yet.`}
+              {accountNote ?? (status.tone === "checking" ? "Checking this machine's sign-in…" : `This machine isn't connected to ${brand.label} yet.`)}
             </p>
           )}
           {actions ? <div className="ade-ig-hero-panel-actions">{actions}</div> : null}

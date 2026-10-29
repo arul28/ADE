@@ -182,11 +182,13 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
     if (confirmed) await run("uninstall", () => ctoApi().uninstallLinearAgent(pin));
   }, [overview?.status?.orgName, pin, run]);
 
-  const status = overview?.status ?? null;
+  // The last overview outlives a disconnect; while disconnected it says nothing.
+  const live = connected ? overview : null;
+  const status = live?.status ?? null;
   const installed = status?.installed === true;
-  const rules = overview?.rules ?? [];
+  const rules = live?.rules ?? [];
   const otherMembers = status ? status.members.filter((member) => !member.isMe) : [];
-  const unreachable = overview != null && !overview.available;
+  const unreachable = live != null && !live.available;
   const checking = connected && loading && !overview;
   const rulesDone = installed && rules.length > 0;
 
