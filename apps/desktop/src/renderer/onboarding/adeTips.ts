@@ -303,9 +303,14 @@ const TIP_LIST = [
     action: draft(spot("composer", "Ask the agent to watch a terminal, like your dev server. It wakes up when something new prints.")),
   },
   {
-    id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "wide",
+    id: "another-account", group: "agents", icon: UserSwitch, title: "Continue on another account", size: "small",
     sentence: "When one account hits its limit, continue the same chat on another.",
     action: setting("agents.providers", "Open a provider and add a second account. A chat that hits its limit can continue on it."),
+  },
+  {
+    id: "startup-context", group: "agents", icon: Brain, title: "Understand startup context", size: "small",
+    sentence: "See what goes into your agent's context when a new chat starts, and where to change it.",
+    action: setting("agents.providers", "Open a provider to see its initial context and where each item is configured."),
   },
   {
     id: "ios-simulator", group: "agents", icon: AppleLogo, title: "iOS simulator", size: "wide",
@@ -335,7 +340,7 @@ const TIP_LIST = [
   {
     id: "automations", group: "brain", icon: Lightning, title: "Automations",
     size: "screen", shot: { src: automationsShot, alt: "The automation builder: an issue opens a lane and runs an agent" },
-    sentence: "Run an agent on a schedule, or when a PR, an issue or a webhook fires.",
+    sentence: "Run an agent on a schedule or when a PR, issue or webhook fires. Start with a template.",
     action: page("/automations", at('[data-tour="automations.createTrigger"]', "Create one: a schedule, a PR, an issue or a webhook starts an agent.")),
   },
   {
@@ -401,7 +406,7 @@ const TIP_LIST = [
   },
   {
     id: "ade-mcp", group: "integrations", icon: Plug, title: "ADE MCP", size: "small",
-    sentence: "Give ChatGPT, claude.ai and other AI apps one address that reaches ADE on all your computers.",
+    sentence: "Connect AI apps to ADE across your computers, with interactive views in supported apps.",
     action: setting("ade-mcp.server", "Let other AI apps use ADE on your computers."),
   },
 
