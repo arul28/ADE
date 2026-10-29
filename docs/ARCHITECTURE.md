@@ -174,7 +174,13 @@ requests are tracked as commands as well as remote sync commands. Heartbeat dela
 that recover before the kill threshold log `brain.event_loop_near_miss` with the
 same diagnostics, unless the worker thread was late across nearly all of the delay too:
 then the whole process was suspended, and it is logged as `brain.suspend_gap`
-instead of a near-miss.
+instead of a near-miss. A near-miss that used little CPU was usually spent
+waiting on a synchronous child process, which the watchdog cannot name after
+the fact. `slowSyncSpawnMonitor.ts` wraps `execFileSync`, `spawnSync` and
+`execSync` at brain start and logs warn `brain.slow_sync_spawn` for any call of
+1 s or more, with the program's name (never its arguments), whether it timed
+out, and the caller's frames: one line per program and caller every ten
+minutes, carrying a count of the slow calls in between.
 On the next boot the watchdog promotes the breadcrumb, any report and any
 sample to `last-wedge.json` / `last-wedge-report.json` / `last-wedge-sample.txt`, logs
 `brain.recovered_from_wedge`, and emits a
