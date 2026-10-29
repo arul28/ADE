@@ -180,7 +180,7 @@ export type AccountVaultRelay = {
     scope: string,
     kind: string,
     key: string,
-    options?: { writtenAt?: string | null },
+    options?: { writtenAt?: string | null; deviceId?: string | null },
   ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null>;
 };
 
@@ -316,6 +316,7 @@ export function createAccountVaultStore(args: {
         ),
         del: (entry) => relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key, {
           writtenAt: entry.queuedAt ?? null,
+          deviceId,
         }),
       });
     },

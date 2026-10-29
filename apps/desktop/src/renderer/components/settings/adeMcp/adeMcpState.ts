@@ -55,8 +55,29 @@ const REASON: Record<RemoteMcpNotServingReason, (machine: RemoteMcpMachine) => M
   offline: () => ({ tone: "neutral", label: "Offline", detail: "Apps reach it again when it's back online." }),
 };
 
+/**
+ * Another computer counted as serving only because it never reported its
+ * state (its ADE may not report it yet). The status leaves `reportedAt` null
+ * exactly then; calls are still tried there, but it isn't known to answer.
+ */
+function servingIsAGuess(machine: RemoteMcpMachine): boolean {
+  return !machine.isThisMachine && machine.serving && machine.reportedAt === null;
+}
+
+/** A computer known to answer calls: this one when it serves, another when it reported so. */
+export function isAnswering(machine: RemoteMcpMachine): boolean {
+  return machine.serving && !servingIsAGuess(machine);
+}
+
 /** The true state of one computer, from what it last reported. */
 export function machineState(machine: RemoteMcpMachine): MachineState {
+  if (servingIsAGuess(machine)) {
+    return {
+      tone: "neutral",
+      label: "Not checked yet",
+      detail: "Its ADE hasn't reported whether it answers. Apps still try it; updating ADE on it shows its true state.",
+    };
+  }
   if (machine.serving) {
     return {
       tone: "ok",
@@ -81,7 +102,7 @@ export function overallState(status: RemoteMcpStatus | null, loading: boolean): 
   if (!status.enabled) return { tone: "off", label: "Off" };
   if (!status.serverUrl) return { tone: "warn", label: "Setting up your address…" };
   const included = status.machines.filter((machine) => machine.included);
-  const answering = included.filter((machine) => machine.serving).length;
+  const answering = included.filter(isAnswering).length;
   if (!included.length) return { tone: "warn", label: "No computers included" };
   if (answering === 0) return { tone: "crit", label: included.length === 1 ? "Your computer isn't answering" : `None of ${included.length} computers answering` };
   if (answering === included.length) {

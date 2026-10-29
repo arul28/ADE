@@ -1899,6 +1899,28 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("prunes only projects whose folder is gone when the prune runs", async () => {
+    const { projectRoot, registry } = createRegistry();
+    const handler = createMultiProjectRpcRequestHandler({ serverVersion: "test", projectRegistry: registry });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { protocolVersion: "test" } });
+    const added = await handler({ jsonrpc: "2.0", id: 2, method: "projects.add", params: { rootPath: projectRoot } }) as { projectId: string };
+
+    // The list sees the folder gone, then it comes back (a re-clone) before the prune.
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    const listed = await handler({ jsonrpc: "2.0", id: 3, method: "projects.list", params: {} }) as Array<{ exists?: boolean }>;
+    expect(listed[0]?.exists).toBe(false);
+    fs.mkdirSync(projectRoot, { recursive: true });
+
+    expect(await handler({ jsonrpc: "2.0", id: 4, method: "projects.pruneMissing", params: {} }))
+      .toMatchObject({ removed: [], kept: 1 });
+    expect(registry.list().map((project) => project.projectId)).toEqual([added.projectId]);
+
+    fs.rmSync(projectRoot, { recursive: true, force: true });
+    expect(await handler({ jsonrpc: "2.0", id: 5, method: "projects.pruneMissing", params: {} }))
+      .toMatchObject({ removed: [{ projectId: added.projectId }], kept: 0 });
+    expect(registry.list()).toEqual([]);
+  });
+
   it("exposes runtime-scoped project registry methods", async () => {
     const { projectRoot, expectedProjectRoot, registry } = createRegistry();
     const handler = createMultiProjectRpcRequestHandler({

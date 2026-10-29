@@ -27,8 +27,9 @@ export type RemoteMcpConnectionSummary = {
   /** The redirect host an app signed in from, shown next to its name. */
   redirectHost: string | null;
   /**
-   * A connection made for one computer before ADE MCP covered the account
-   * keeps reaching only that computer; null reaches every included one.
+   * The one computer a connection reaches: one made before ADE MCP covered
+   * the account, or an app that signed in on that computer's own address.
+   * Null reaches every included one.
    */
   onlyMachine: { machineKey: string; name: string } | null;
   /**

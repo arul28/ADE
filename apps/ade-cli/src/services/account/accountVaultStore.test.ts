@@ -199,7 +199,7 @@ describe("account vault store", () => {
     await store.sync();
 
     expect(relay.putAccountVault).not.toHaveBeenCalled();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai", { writtenAt: expect.any(String) });
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   it("queues a revocation and clears it locally at once", async () => {
@@ -211,7 +211,7 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "anthropic")).toBeNull();
 
     await store.sync();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic", { writtenAt: expect.any(String) });
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   // Settings survive a sign-out; the vault does not. Leaving synced keys

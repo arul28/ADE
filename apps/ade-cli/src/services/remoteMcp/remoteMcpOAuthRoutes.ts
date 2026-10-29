@@ -10,6 +10,7 @@ import type { AccountAttestationConfig } from "../account/sharedAccountAuthServi
 import {
   createRemoteMcpReplayGuard,
   describeNetworkError,
+  fetchOnFreshConnection,
   fetchThroughRelayWithRetry,
   header,
   json,
@@ -104,6 +105,8 @@ export function createRemoteMcpOAuthRoutes(deps: {
     app: RemoteMcpKnownApp | null;
     clientKey: string;
     legacyClientKey: string;
+    /** Reaches only this computer: the sign-in began on its own address. */
+    thisMachineOnly: boolean;
   }) => { token: string; connection: RemoteMcpConnectionSummary };
   logger?: { warn?: (event: string, data?: Record<string, unknown>) => void };
   fetchImpl?: typeof fetch;
@@ -302,6 +305,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
     const taken = authorization.takeConsent(nonce, params.get("csrf") ?? "");
     if (!taken) return expiredSignIn();
     const issuer = issuerFor(nonce, serverBase);
+    // What the allow page said it grants: the account, or this computer only
+    // (the same default the page used when the sign-in's address is unknown).
+    const accountMount = signInIssuers.get(nonce)?.accountMount ?? false;
     signInIssuers.delete(nonce);
     const { request: authRequest } = taken;
     if (params.get("decision") !== "allow") return denyToApp(authRequest, issuer);
@@ -313,6 +319,7 @@ export function createRemoteMcpOAuthRoutes(deps: {
       scope,
       clientName: authorizeAppName(authRequest),
       app: authRequest.app,
+      thisMachineOnly: !accountMount,
     });
     // The code names this computer, which holds it: if the relay sends the
     // app's token request to another computer, that one hands it back here.
@@ -333,7 +340,9 @@ export function createRemoteMcpOAuthRoutes(deps: {
       return json(400, { error: "invalid_grant", error_description: "The authorization code is unknown, used, or expired." });
     }
     try {
-      const response = await fetchThroughRelayWithRetry(deps.fetchImpl ?? fetch, `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpointKey}/oauth/token`, {
+      // A fresh connection: the exchange is never retried after it may have
+      // been sent, so it must not go out on a socket the relay closed while idle.
+      const response = await fetchThroughRelayWithRetry(deps.fetchImpl ?? fetchOnFreshConnection, `${withoutTrailingSlash(endpoint.relayUrl)}/m/${endpointKey}/oauth/token`, {
         method: "POST",
         headers: {
           "content-type": header(request, "content-type") || "application/x-www-form-urlencoded",
@@ -392,14 +401,20 @@ export function createRemoteMcpOAuthRoutes(deps: {
     if (!decodeClientId(pending.clientId)) return fail("invalid_client", "Unknown client.");
     let created: ReturnType<typeof deps.connectApp>;
     try {
+      // A sign-in on this computer's own address replaces only an earlier one
+      // there, and an account sign-in only an account one: an app can hold
+      // both addresses, each with its own token.
+      const machineKey = deps.relayEndpoint()?.machineKey ?? "";
+      const where = pending.thisMachineOnly ? `\nmachine:${machineKey}` : "";
       created = deps.connectApp({
         label: pending.clientName,
         scope: pending.scope,
         redirectHost: redirectDisplayHost(pending.redirectUri),
         app: pending.app?.app ?? null,
         // The registration and the return address: one registration can serve several apps.
-        clientKey: createHash("sha256").update(`${pending.clientId}\n${pending.redirectUri}`, "utf8").digest("hex"),
+        clientKey: createHash("sha256").update(`${pending.clientId}\n${pending.redirectUri}${where}`, "utf8").digest("hex"),
         legacyClientKey: createHash("sha256").update(pending.clientId, "utf8").digest("hex"),
+        thisMachineOnly: pending.thisMachineOnly,
       });
     } catch (error) {
       return fail("invalid_request", getErrorMessage(error));

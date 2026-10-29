@@ -28,12 +28,14 @@ import { inferRemoteMcpAppFromRecord } from "./remoteMcpKnownApps";
  * `readLegacyRemoteMcpFile` reads it once for the migration into the vault;
  * a connection copied from it keeps the computer it was made on
  * (`machineKey`), so it does not start reaching every computer of the account.
+ * An app that signs in on one computer's own address (`/m/<endpointKey>`)
+ * gets a connection kept to that computer the same way.
  */
 
 /**
  * The stored record: what Settings and the CLI see, plus the token's hash, for
  * an app which registration it signed in with, and for a connection made
- * before accounts the one computer it may reach.
+ * before accounts or on one computer's own address the one computer it may reach.
  */
 type RemoteMcpConnection = Omit<RemoteMcpConnectionSummary, "onlyMachine"> & {
   tokenHash: string;
@@ -223,6 +225,8 @@ export function createRemoteMcpStore(args: {
        * by Cursor, its cloud agents, Grok Bot and grok.com) differ by host.
        */
       legacyClientKey?: string;
+      /** The one computer the connection reaches (a sign-in on that computer's own address); absent for the account. */
+      machineKey?: string;
     }): { token: string; connection: RemoteMcpConnectionSummary } {
       const current = read();
       const replaced = input.clientKey
@@ -248,7 +252,9 @@ export function createRemoteMcpStore(args: {
         redirectHost: input.redirectHost ?? null,
         app: input.app ?? null,
         ...(input.clientKey ? { clientKey: input.clientKey } : {}),
+        ...(input.machineKey && isRemoteMcpMachineKey(input.machineKey) ? { machineKey: input.machineKey } : {}),
       };
+      if (input.machineKey && !connection.machineKey) throw new Error("ADE couldn't tell which computer this connection is for.");
       save(connection);
       for (const old of replaced) drop(old.id);
       return { token, connection: summarize(connection) };

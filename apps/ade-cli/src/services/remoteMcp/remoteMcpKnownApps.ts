@@ -103,7 +103,7 @@ export function recogniseRemoteMcpApp(redirectUri: string, clientName: string): 
 /**
  * The app of a connection stored before sign-ins recorded it, from what the
  * record kept: the redirect host (`redirectDisplayHost`: `host[:port]` for
- * web addresses, `scheme://host` for app schemes) and the label.
+ * web addresses, `scheme://host` or `scheme:` for app schemes) and the label.
  * `www.cursor.com` is left unknown, because Cursor's cloud agents and Grok
  * Bot both return there; another web host is never named by its label.
  */
@@ -112,7 +112,9 @@ export function inferRemoteMcpAppFromRecord(redirectHost: string | null, label: 
   if (host === "www.cursor.com" || host === "cursor.com") return null;
   const hosted = BY_REDIRECT.find((entry) => !entry.path && entry.host === host);
   if (hosted) return hosted.recognised.app;
-  const scheme = /^([a-z][a-z0-9+.-]*:)\/\//.exec(host)?.[1];
+  // `scheme://host`, or a bare `scheme:` for a host-less app address
+  // (`myapp:/callback`); never `localhost:3000`, whose colon is a port's.
+  const scheme = /^([a-z][a-z0-9+.-]*:)(?:\/\/|$)/.exec(host)?.[1];
   if (scheme) return BY_SCHEME[scheme] ?? byName(label)?.app ?? null;
   // `localhost:3000`, `[::1]:3000`: a local app, named by its label.
   const hostname = host.replace(/:\d+$/, "");

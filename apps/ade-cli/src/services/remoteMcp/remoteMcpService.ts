@@ -253,12 +253,28 @@ export function createRemoteMcpService(args: {
   const serving = (): boolean => servingBlocker() === null;
 
   // Since when the relay connection has been down (null while it is up).
-  // Updated only by `observeRelayConnection`, so reading the state never changes it.
+  // Started only by `observeRelayConnection` (the tunnel's connect and drop,
+  // and every refresh), so reading the state never starts or moves it; a
+  // read that finds the connection back up clears it.
   let relayDownSince: number | null = null;
+  // Refreshes once the drop is long enough to report, so the account hears it
+  // then and not on the next periodic refresh.
+  let relayDownReportTimer: ReturnType<typeof setTimeout> | null = null;
   const observeRelayConnection = (): void => {
     const endpoint = relayEndpoint();
-    if (!endpoint || endpoint.connected) relayDownSince = null;
-    else relayDownSince ??= now();
+    if (!endpoint || endpoint.connected) {
+      relayDownSince = null;
+      if (relayDownReportTimer) clearTimeout(relayDownReportTimer);
+      relayDownReportTimer = null;
+      return;
+    }
+    if (relayDownSince !== null) return;
+    relayDownSince = now();
+    relayDownReportTimer = setTimeout(() => {
+      relayDownReportTimer = null;
+      refresh();
+    }, RELAY_DOWN_REPORT_AFTER_MS);
+    relayDownReportTimer.unref?.();
   };
 
   /**
@@ -273,6 +289,7 @@ export function createRemoteMcpService(args: {
   const notServingReasonHere = (): RemoteMcpNotServingReason | null => {
     const blocker = servingBlocker();
     if (blocker) return blocker;
+    if (relayDownSince !== null && relayEndpoint()?.connected) relayDownSince = null;
     return relayDownSince !== null && now() - relayDownSince >= RELAY_DOWN_REPORT_AFTER_MS ? "relay_disconnected" : null;
   };
 
@@ -692,8 +709,12 @@ export function createRemoteMcpService(args: {
     account: args.account,
     relayEndpoint: () => relayEndpoint(),
     machineBase: base,
-    connectApp: (input) => {
-      const created = store.create({ kind: "app", ...input });
+    connectApp: ({ thisMachineOnly, ...input }) => {
+      // A sign-in on this computer's own address was shown as "use ADE on
+      // <this computer>": its token reaches only this computer.
+      const machineKey = thisMachineOnly ? relayEndpoint()?.machineKey ?? null : null;
+      if (thisMachineOnly && !machineKey) throw new Error("This computer has no relay identity yet. Try again in a moment.");
+      const created = store.create({ kind: "app", ...input, ...(machineKey ? { machineKey } : {}) });
       captureAdeMcpAnalytics({ analytics, surface: "api", action: "app_connected", outcome: "completed" });
       args.logger?.info?.("remote_mcp.app_connected", {
         connectionId: created.connection.id,
@@ -804,6 +825,10 @@ export function createRemoteMcpService(args: {
       relayEndpoint = resolve;
       startRefreshing();
       refresh();
+    },
+    /** The tunnel's control socket opened or closed: start or clear the relay-down clock now. */
+    relayConnectionChanged(): void {
+      observeRelayConnection();
     },
     /** The machine's product analytics sink, attached with the relay tunnel. */
     attachAnalytics(sink: FeatureAnalytics | null): void {

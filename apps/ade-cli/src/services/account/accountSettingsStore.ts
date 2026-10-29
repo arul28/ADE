@@ -154,7 +154,7 @@ export type AccountSettingsRelay = {
   deleteAccountSetting(
     scope: string,
     key: string,
-    options?: { writtenAt?: string | null },
+    options?: { writtenAt?: string | null; deviceId?: string | null },
   ): Promise<boolean | AccountStaleDelete<AccountSettingRecord> | null>;
 };
 
@@ -231,6 +231,7 @@ export function createAccountSettingsStore(args: {
         ),
         del: (entry) => relay.deleteAccountSetting(entry.scope, entry.key, {
           writtenAt: entry.queuedAt ?? entry.changedAt,
+          deviceId: args.getDeviceId?.() ?? null,
         }),
       });
     },

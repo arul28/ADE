@@ -261,7 +261,7 @@ describe("account settings store", () => {
     expect(store.get("all", "appearance.theme")).toBeUndefined();
 
     await store.sync();
-    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "appearance.theme", { writtenAt: expect.any(String) });
+    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "appearance.theme", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   it("keeps pulling truncated pages until the relay says the view is complete", async () => {
@@ -314,7 +314,7 @@ describe("account settings store", () => {
     await store.sync();
 
     expect(relay.putAccountSettings).not.toHaveBeenCalled();
-    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "editor.minimap", { writtenAt: expect.any(String) });
+    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "editor.minimap", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   // One user's theme appearing after another signs in is a leak, not a

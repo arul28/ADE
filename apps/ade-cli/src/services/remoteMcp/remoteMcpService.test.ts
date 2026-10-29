@@ -191,8 +191,8 @@ function formValue(html: string, name: string): string {
   return match![1]!;
 }
 
-/** Registers an app and walks it to the ADE sign-in callback. */
-async function signIn(service: Awaited<ReturnType<typeof makeService>>, app = { redirect: REDIRECT, name: "Test app" }) {
+/** Registers an app and walks it to the ADE sign-in callback, starting on this computer's address or (with `accountKey`) the account's. */
+async function signIn(service: Awaited<ReturnType<typeof makeService>>, app = { redirect: REDIRECT, name: "Test app" }, accountKey?: string) {
   const registered = await service.handleHttp(request("POST", "/oauth/register", {
     redirect_uris: [app.redirect],
     client_name: app.name,
@@ -201,15 +201,18 @@ async function signIn(service: Awaited<ReturnType<typeof makeService>>, app = { 
   const clientId = (JSON.parse(registered.body) as { client_id: string }).client_id;
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const start = await service.handleHttp(request("POST", "/oauth/authorize", {
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: app.redirect,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state: "app-state",
-    decision: "signin",
-  }));
+  const start = await service.handleHttp({
+    ...request("POST", "/oauth/authorize", {
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: app.redirect,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "app-state",
+      decision: "signin",
+    }),
+    ...(accountKey ? { mount: { kind: "account" as const, key: accountKey } } : {}),
+  });
   expect(start.status).toBe(302);
   const toAde = new URL(start.headers.location!);
   expect(`${toAde.origin}${toAde.pathname}`).toBe(`${issuer}/oauth/authorize`);
@@ -281,6 +284,32 @@ describe("ADE MCP sign-in", () => {
     expect((await service.getStatus()).connections).toEqual([
       expect.objectContaining({ label: shown, app, redirectHost: new URL(redirect).host }),
     ]);
+  });
+
+  it.each([
+    // The pages say "use ADE on Test Mac": the token must reach only it.
+    { address: "this computer's own", onAccount: false, onlyMachine: { machineKey: MACHINE_KEY, name: "Test Mac" } },
+    { address: "the account", onAccount: true, onlyMachine: null },
+  ])("grants a sign-in on $address address what its pages said", async ({ onAccount, onlyMachine }) => {
+    const account = fakeAccountRelay();
+    const studio = await makeService(account);
+    const mini = await makeService(account, SECOND);
+    const { clientId, verifier, callback } = await signIn(studio, undefined, onAccount ? await accountKeyOf(studio) : undefined);
+    const consent = { nonce: formValue(callback.body, "nonce"), csrf: formValue(callback.body, "csrf") };
+    const allowed = await studio.handleHttp(request("POST", "/oauth/consent", { ...consent, decision: "allow", access: "read" }));
+    const code = new URL(allowed.headers.location!).searchParams.get("code")!;
+    const exchanged = await studio.handleHttp(request("POST", "/oauth/token", {
+      grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier,
+    }));
+    const token = (JSON.parse(exchanged.body) as { access_token: string }).access_token;
+    await studio.vault.sync();
+    await mini.vault.sync();
+    expect((await mini.getStatus()).connections).toEqual([expect.objectContaining({ onlyMachine })]);
+
+    const call = { method: "tools/call", params: { name: "machines_list", arguments: {} } };
+    expect((await mcp(studio, token, call)).body?.result.isError).not.toBe(true);
+    // The other computer knows the token; it answers only an account-wide one.
+    expect((await mcp(mini, token, call)).body?.result.isError === true).toBe(onlyMachine !== null);
   });
 
   it("refuses an ADE sign-in as another account, and the sign-in cannot be finished afterwards", async () => {
@@ -394,9 +423,9 @@ describe("ADE MCP across the account's computers", () => {
     // On the other computer the token is known, and refused for everything.
     const there = await mcp(mini, token, call);
     expect(there.body?.result.isError).toBe(true);
-    expect(JSON.stringify(there.body?.result.content)).toContain("Reconnect the app");
+    expect(JSON.stringify(there.body?.result.content)).toContain("reaches only Test Mac");
     const catalog = await mcp(mini, token, { method: "resources/read", params: { uri: "ade://commands" } });
-    expect(catalog.body?.error?.message).toContain("Reconnect the app");
+    expect(catalog.body?.error?.message).toContain("reaches only Test Mac");
     expect((await mcp(mini, token, { method: "prompts/list" })).body?.result.prompts).toEqual([]);
   });
 });

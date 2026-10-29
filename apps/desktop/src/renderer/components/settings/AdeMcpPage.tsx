@@ -33,7 +33,7 @@ import {
   type GalleryAppId,
   type TokenSnippetId,
 } from "./adeMcp/adeMcpApps";
-import { agoText, connectionHow, heroPanelNote, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
+import { agoText, connectionHow, heroPanelNote, isAnswering, machineState, overallState, vaultFact } from "./adeMcp/adeMcpState";
 import { CopyButton } from "./adeMcp/adeMcpParts";
 import { AppSetupSheet } from "./adeMcp/AppSetupSheet";
 import { TokenDialog } from "./adeMcp/TokenDialog";
@@ -241,7 +241,7 @@ export function AdeMcpPage() {
   }
 
   const included = machines.filter((machine) => machine.included);
-  const answering = included.filter((machine) => machine.serving).length;
+  const answering = included.filter(isAnswering).length;
   const sheetApp = setupApp ? galleryApp(setupApp) : null;
   const heroFacts: IntegrationFact[] | undefined = enabled && status ? [
     {
@@ -478,10 +478,10 @@ export function AdeMcpPage() {
                         <span>{connectionHow(connection)}</span>
                         <span>{used ? `Used ${used}` : "Not used yet"}</span>
                       </div>
-                      {/* Made for one computer before ADE MCP covered the account. */}
+                      {/* Kept to one computer: made before ADE MCP covered the account, or signed in on that computer's own address. */}
                       {connection.onlyMachine ? (
                         <span className="ade-amcp-row-meta" data-tone="warn">
-                          Reaches only {connection.onlyMachine.name}. Connect it again to reach every computer.
+                          Reaches only {connection.onlyMachine.name}. Connect it with your account's address to reach every computer.
                         </span>
                       ) : null}
                     </div>

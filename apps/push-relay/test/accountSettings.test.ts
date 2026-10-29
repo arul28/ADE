@@ -255,6 +255,21 @@ describe("account settings store", () => {
     );
     expect(stale.status).toBe(409);
     expect(stale.body).toMatchObject({ code: "stale", current: { value: "light" } });
+
+    // The device that wrote the stored row is never refused by it: its own
+    // earlier write may have been in flight when this one was made.
+    const own = await call("PUT", "/attention/account/settings", {
+      itemResults: true,
+      sentAt: new Date().toISOString(),
+      deviceId: "device-1",
+      settings: [{ scope: "all", key: "appearance.theme", value: "dark", writtenAt: longAgo }],
+    });
+    expect(own.body).toMatchObject({ results: [{ status: "written" }] });
+    const ownDelete = await call(
+      "DELETE",
+      `/attention/account/settings/all/appearance.theme?writtenAt=${encodeURIComponent(longAgo)}&deviceId=device-1`,
+    );
+    expect(ownDelete.body).toMatchObject({ ok: true, deleted: true });
   });
 
   it("rejects a key that carries structure and a value that is too large", async () => {

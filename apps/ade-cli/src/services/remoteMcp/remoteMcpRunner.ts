@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { withTimeout } from "../../../../desktop/src/main/services/shared/withTimeout";
 import { isEmbeddedAdeRuntime } from "../../../../desktop/src/main/services/shared/processExecution";
 import { signalChildProcessTree, terminateChildProcessTree } from "../../../../desktop/src/main/services/shared/utils";
 import {
@@ -49,6 +50,18 @@ function isFile(candidate: string): boolean {
   }
 }
 
+/** How long the start folder's check may take; a hung mount is left to the spawn, as before. */
+const CWD_CHECK_BUDGET_MS = 1_000;
+
+/** Whether `cwd` is confirmed not there (missing, or not a folder). Unknown counts as there. */
+async function isMissingFolder(cwd: string): Promise<boolean> {
+  const check = fs.promises.stat(cwd).then(
+    (stat) => !stat.isDirectory(),
+    (error: NodeJS.ErrnoException) => error?.code === "ENOENT" || error?.code === "ENOTDIR",
+  );
+  return (await withTimeout(check, CWD_CHECK_BUDGET_MS)) === true;
+}
+
 /** A launcher that needs a shell (`ade.cmd`, `.bat`, `.ps1`): never run. */
 const SCRIPT_WRAPPER = /\.(?:cmd|bat|ps1)$/i;
 
@@ -70,9 +83,12 @@ function resolveCliEntry(env: NodeJS.ProcessEnv, isEmbedded: boolean, adeDir: st
     env.ADE_CLI_PATH?.trim() ?? "",
     /\.(?:cjs|mjs|js)$/i.test(script) ? script : "",
     adeDir ? path.join(adeDir, "bin", process.platform === "win32" ? "ade.exe" : "ade") : "",
-  ].filter((candidate, index, all) => candidate && !SCRIPT_WRAPPER.test(candidate) && all.indexOf(candidate) === index);
-  const entry = candidates.find((candidate) => path.isAbsolute(candidate) && isFile(candidate)) ?? null;
-  return { entry, tried: candidates };
+  ].filter((candidate, index, all) => candidate && all.indexOf(candidate) === index);
+  const runnable = candidates.filter((candidate) => !SCRIPT_WRAPPER.test(candidate));
+  const entry = runnable.find((candidate) => path.isAbsolute(candidate) && isFile(candidate)) ?? null;
+  // A skipped wrapper is still named, so "could not find" says what was there.
+  const tried = candidates.map((candidate) => (SCRIPT_WRAPPER.test(candidate) ? `${candidate} (skipped: script wrapper)` : candidate));
+  return { entry, tried };
 }
 
 async function resolveLaunch(): Promise<Launch> {
@@ -159,8 +175,22 @@ export async function runAdeForRemote(args: {
   stdin?: string | null;
   /** Per-stream cap. Typed tools raise it, then trim the parsed JSON themselves. */
   maxOutputBytes?: number;
+  /** The answer when `cwd` is not there (a drive unplugged since the project was picked). */
+  missingCwdMessage?: string;
 }): Promise<RemoteRunResult> {
   const launchStarted = Date.now();
+  // Never start in a folder that is not there: the spawn would fail with a
+  // misleading "spawn … ENOENT" that names the CLI, not the folder.
+  if (await isMissingFolder(args.cwd)) {
+    return {
+      exitCode: null,
+      stdout: "",
+      stderr: args.missingCwdMessage ?? `The folder ${args.cwd} isn't on this computer.`,
+      timedOut: false,
+      truncated: false,
+      durationMs: Date.now() - launchStarted,
+    };
+  }
   const launch = await resolveLaunch();
   const launchMs = Date.now() - launchStarted;
   const started = Date.now();

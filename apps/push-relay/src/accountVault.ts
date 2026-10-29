@@ -383,6 +383,9 @@ async function handleWrite(
   // The conflict check is the upsert's own `where`: atomic per row, so a write
   // racing another machine's newer one cannot slip between a read and a write.
   // Without `itemResults` (or `writtenAt`) the threshold is never reached.
+  // A row this same device wrote last is never "newer" than its own write:
+  // its earlier write may still have been in flight when this one was made.
+  // (No `deviceId`: SQL's `= null` is never true, so the full check holds.)
   const outcomes = await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
     insert into account_vault_items(
       user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
@@ -394,7 +397,7 @@ async function handleWrite(
       writer_device_id = excluded.writer_device_id,
       refresh_owner = excluded.refresh_owner,
       deleted = 0
-    where account_vault_items.updated_at <= ?
+    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
   `).bind(
     userId,
     write.scope,
@@ -405,6 +408,7 @@ async function handleWrite(
     writerDeviceId,
     write.refreshOwner,
     itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
+    writerDeviceId,
   )));
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
@@ -423,7 +427,8 @@ async function handleWrite(
  * With `?writtenAt=` (and `sentAt`), a delete made before the stored row was
  * last written is refused with `409 stale` and the stored row, the same rule as
  * a write: a machine back after days offline must not delete a value another
- * machine set since.
+ * machine set since. A row the deleting device (`?deviceId=`) wrote last is
+ * not refused: its own earlier write may have landed after this delete was made.
  */
 async function handleDelete(
   env: VaultEnv,
@@ -441,13 +446,14 @@ async function handleDelete(
   }
   const clock = writeClock(url.searchParams.get("sentAt"));
   const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
+  const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
   const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_vault_items
     set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = null, refresh_owner = null
     where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
-      and updated_at <= ?
-  `).bind(updatedAt, userId, scope, kind, key, threshold).run();
+      and (updated_at <= ? or writer_device_id = ?)
+  `).bind(updatedAt, userId, scope, kind, key, threshold, deviceId).run();
   const deleted = (result.meta?.changes ?? 0) > 0;
   if (!deleted && url.searchParams.has("writtenAt")) {
     const row = await readVaultRow(env, userId, { scope, kind, key });

@@ -54,7 +54,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
-import { readProjectFolderPresence } from "./services/projects/projectFolderPresence";
+import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import {
   decodeProjectIconUpload,
   importProjectIconBytes,
@@ -661,13 +661,13 @@ function readCreateProjectInput(
   return { name, parentDir };
 }
 
-function readCloneProjectInput(
+async function readCloneProjectInput(
   params: Record<string, unknown>,
-  fallbackParentDir: () => string,
-): CloneProjectInput {
+  fallbackParentDir: () => Promise<string>,
+): Promise<CloneProjectInput> {
   const url = readOptionalString(params.url);
   // No folder named (`ade projects clone`, ADE MCP's projects_clone): beside the other projects.
-  const parentDir = readOptionalString(params.parentDir) ?? fallbackParentDir();
+  const parentDir = readOptionalString(params.parentDir) ?? await fallbackParentDir();
   const name = readOptionalString(params.name);
   const githubAuthHeader = readOptionalString(params.githubAuthHeader);
   if (!url)
@@ -1004,24 +1004,21 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
  * project whose folder still exists, outside the temp folder (a registry
  * keeps deleted test projects there), else `~/Projects`.
  */
-function defaultParentDir(projectRegistry: ProjectRegistry): string {
+async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<string> {
   const temps = [
     os.tmpdir(),
     ...(process.platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
   ];
-  const beside = [...projectRegistry.list()]
-    .sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)
+  const recent = [...projectRegistry.list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  // Only a project whose own folder is there (so its parent is too): a
+  // deleted project's parent may be a folder nobody uses any more. Checked
+  // off the event loop, under the same budget as the project list.
+  const states = await readProjectFolderStates(recent);
+  const beside = recent
+    .filter((_record, index) => states[index] === "present")
     .map((record) => path.dirname(record.rootPath))
-    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)) && isExistingDirectory(parent));
+    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)));
   return beside ?? path.join(os.homedir(), "Projects");
-}
-
-function isExistingDirectory(candidate: string): boolean {
-  try {
-    return fs.statSync(candidate).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 async function inspectHandoffStorage(params: Record<string, unknown>) {
@@ -1199,7 +1196,7 @@ async function cloneRepositoryForRemoteAgent(
     .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
   if (existing) return existing;
   const repoName = match[2]!;
-  const parentDir = defaultParentDir(projectRegistry);
+  const parentDir = await defaultParentDir(projectRegistry);
   fs.mkdirSync(parentDir, { recursive: true });
   const preflight = await inspectHandoffStorage({ parentDir, repoName });
   if (preflight.blockingErrors.length) {
@@ -3131,17 +3128,26 @@ export function createMultiProjectRpcRequestHandler(
       // Removes registry entries whose folder is confirmed gone. Never a
       // folder: a folder that could not be checked (no permission, a slow
       // drive, a drive that is not plugged in) is kept.
+      // Never from the cached answer: a folder that came back since the last
+      // list must not lose its project (and its identity) to a stale "gone".
       const dryRun = params.dryRun === true;
       const records = projectRegistry.list();
-      const presence = await readProjectFolderPresence(records);
+      const presence = await readProjectFolderPresence(records, { fresh: true });
       const missing = records.filter((_record, index) => presence[index] === false);
-      if (!dryRun) {
-        for (const record of missing) await removeProject(record.projectId);
+      const removed: typeof missing = [];
+      for (const record of missing) {
+        if (!dryRun) {
+          // Checked again right before it goes: the sweep above may be seconds old.
+          const [stillGone] = await readProjectFolderPresence([record], { fresh: true });
+          if (stillGone !== false) continue;
+          await removeProject(record.projectId);
+        }
+        removed.push(record);
       }
       return {
         dryRun,
-        removed: missing.map((record) => ({ projectId: record.projectId, displayName: record.displayName, rootPath: record.rootPath })),
-        kept: records.length - missing.length,
+        removed: removed.map((record) => ({ projectId: record.projectId, displayName: record.displayName, rootPath: record.rootPath })),
+        kept: records.length - removed.length,
       };
     }
 
@@ -3233,7 +3239,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.getDefaultParentDir") {
-      return defaultParentDir(projectRegistry);
+      return await defaultParentDir(projectRegistry);
     }
 
     if (method === "projects.getHandoffStoragePreflight") {
@@ -3256,7 +3262,7 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.clone") {
       const result =
         await createMachineProjectScaffoldService().cloneRepository(
-          readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
+          await readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
         );
       return await decorateProjectWithIcon(
         projectRegistry.add(

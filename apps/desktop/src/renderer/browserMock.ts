@@ -1524,6 +1524,8 @@ const browserMockRemoteMcp = (() => {
       machine("m-wait", "New MacBook Air", "waiting_for_account_secret", { reportedAt: minutesAgo(0) }),
       machine("m-pc", "Studio PC", "older_ade", { reportedAt: null }),
       machine("m-off", "Linux box", "offline", { reportedAt: minutesAgo(4_000) }),
+      // Counted as serving only because it never reported: "Not checked yet".
+      machine("m-unchecked", "Garage server", null, { reportedAt: null }),
     ]
     : [
       thisMachine,

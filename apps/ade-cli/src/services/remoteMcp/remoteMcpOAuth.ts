@@ -280,6 +280,12 @@ type PendingAuthCode = {
   /** The connection's label: the recognised app's name, else the registered one. */
   clientName: string;
   app: RecognisedRemoteMcpApp | null;
+  /**
+   * The sign-in began on this computer's own address (`/m/<endpointKey>`),
+   * whose pages say it uses ADE on this computer: the connection reaches
+   * only this computer. False on the account address.
+   */
+  thisMachineOnly: boolean;
   expiresAt: number;
 };
 

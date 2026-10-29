@@ -10,6 +10,7 @@ import {
 } from "./remoteMcpAccount";
 import {
   describeNetworkError,
+  fetchOnFreshConnection,
   fetchThroughRelayWithRetry,
   isTimeoutError,
   REMOTE_MCP_CALL_ID_HEADER,
@@ -313,13 +314,17 @@ export function createRemoteMcpMachineRouter(deps: {
     if (!context.bearer) return toolError(`This call has no token to send on to ${machine.name}.`);
     if (!machine.endpointKey) return toolError(unavailableReason(machine) ?? `${machine.name} can't take calls.`);
     // A read-only typed tool may be sent twice; anything else is tried again
-    // only when the first try never left this computer.
+    // only when the first try never left this computer, and goes out on a
+    // connection of its own.
     const typed = findTypedTool(call.name);
     const retryAfterSend = typed !== null && !typed.write;
     let response: Response;
     let body: string;
     try {
-      response = await fetchThroughRelayWithRetry(deps.fetchImpl ?? fetch, `${relay}/m/${machine.endpointKey}/mcp`, {
+      // A read may reuse a pooled connection (and is retried); a write gets a
+      // fresh one, so a socket the relay closed while idle can't fail it.
+      const fetchImpl = deps.fetchImpl ?? (retryAfterSend ? fetch : fetchOnFreshConnection);
+      response = await fetchThroughRelayWithRetry(fetchImpl, `${relay}/m/${machine.endpointKey}/mcp`, {
         method: "POST",
         headers: {
           authorization: `Bearer ${context.bearer}`,

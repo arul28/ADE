@@ -272,7 +272,9 @@ async function handleWrite(
   // Last-writer-wins therefore means "last to reach the server", which is
   // well-defined and cannot be moved by a machine with a wrong date. The one
   // exception is a write made before the stored row was (`staleWriteThreshold`,
-  // corrected by the request's own `sentAt`), refused per item.
+  // corrected by the request's own `sentAt`), refused per item, unless this
+  // same device wrote the stored row: its own earlier write may still have
+  // been in flight. (No `deviceId`: `= null` is never true, so the full check holds.)
   const updatedAt = new Date(clock.nowMs).toISOString();
   const outcomes = await env.DB.batch(parsed.map((write) => env.DB.prepare(`
     insert into account_settings(
@@ -285,7 +287,7 @@ async function handleWrite(
       changed_at = excluded.changed_at,
       writer_device_id = excluded.writer_device_id,
       deleted = 0
-    where account_settings.updated_at <= ?
+    where account_settings.updated_at <= ? or account_settings.writer_device_id = ?
   `).bind(
     userId,
     write.scope,
@@ -295,6 +297,7 @@ async function handleWrite(
     write.changedAt,
     writerDeviceId,
     staleWriteThreshold(clock, itemResults ? write.writtenAt : null),
+    writerDeviceId,
   )));
 
   if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
@@ -311,7 +314,8 @@ async function handleWrite(
  * reset controls on every preference page need this to mean something.
  *
  * With `?writtenAt=` (and `sentAt`), a delete made before the stored row was
- * last written is refused with `409 stale` and the stored row.
+ * last written is refused with `409 stale` and the stored row, unless the
+ * deleting device (`?deviceId=`) wrote that row itself.
  */
 async function handleDelete(
   env: AttentionRelayEnv,
@@ -327,13 +331,14 @@ async function handleDelete(
   }
   const clock = writeClock(url.searchParams.get("sentAt"));
   const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
+  const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
   const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_settings
     set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = null
     where user_id = ? and scope_key = ? and setting_key = ? and deleted = 0
-      and updated_at <= ?
-  `).bind(updatedAt, userId, scope, key, threshold).run();
+      and (updated_at <= ? or writer_device_id = ?)
+  `).bind(updatedAt, userId, scope, key, threshold, deviceId).run();
   const deleted = (result.meta?.changes ?? 0) > 0;
   if (!deleted && url.searchParams.has("writtenAt")) {
     const row = await readSettingRow(env, userId, scope, key);

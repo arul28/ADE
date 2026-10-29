@@ -1,3 +1,6 @@
+import http from "node:http";
+import https from "node:https";
+
 /**
  * The HTTP that ADE MCP answers: one request the relay forwarded over the
  * brain's control socket, and the answer that goes back. Shared by the
@@ -119,10 +122,14 @@ const NOTHING_SENT_CODES: ReadonlySet<string> = new Set([
  * retried. Any other one (Cloudflare closing an idle keep-alive connection
  * shows up as a reset or "other side closed") may have reached the other
  * computer, so it is retried only with `retryAfterSend`: a read that is safe
- * to run twice. A write or a token exchange is never sent twice, because the
- * call id that lets the receiving brain answer a repeat once only helps when
- * that brain and the relay in between know it (an older ADE, or a relay that
- * drops the header, would run it again). The call id is still sent.
+ * to run twice, sent over the shared connection pool. A write or a token
+ * exchange is never sent twice, because the call id that lets the receiving
+ * brain answer a repeat once only helps when that brain and the relay in
+ * between know it (an older ADE, or a relay that drops the header, would run
+ * it again). The call id is still sent. Those go through
+ * `fetchOnFreshConnection` instead, so they are never written to an idle
+ * keep-alive socket the relay has already closed: the failure a retry would
+ * have covered can't happen to them.
  */
 export async function fetchThroughRelayWithRetry(
   fetchImpl: typeof fetch,
@@ -143,6 +150,76 @@ export async function fetchThroughRelayWithRetry(
     return await fetchImpl(url, { ...init, signal: AbortSignal.timeout(left) });
   }
 }
+
+/** Statuses whose response has no body; `new Response` refuses one. */
+const NULL_BODY_STATUSES: ReadonlySet<number> = new Set([101, 204, 205, 304]);
+
+/**
+ * `fetch` for one request on a connection of its own, closed after it: never
+ * a socket from a keep-alive pool. For brain-to-relay writes, which must not
+ * be retried (see fetchThroughRelayWithRetry). Built on `node:http(s)` with
+ * no agent, so it behaves the same under Electron's Node, standalone Node and
+ * on Windows (the bundled undici's own `Agent` is not reachable from either).
+ * Covers what those calls use: a string body, headers, a signal. Redirects
+ * are returned, not followed, and the body is asked for uncompressed.
+ */
+export const fetchOnFreshConnection: typeof fetch = (input, init) => new Promise<Response>((resolve, reject) => {
+  const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.href : input.url);
+  const signal = init?.signal ?? null;
+  if (signal?.aborted) {
+    reject(signal.reason);
+    return;
+  }
+  const body = init?.body;
+  if (body !== undefined && body !== null && typeof body !== "string" && !(body instanceof URLSearchParams)) {
+    reject(new TypeError("fetchOnFreshConnection sends only a string body."));
+    return;
+  }
+  const payload = body === undefined || body === null ? null : Buffer.from(body.toString(), "utf8");
+  const headers: Record<string, string> = { "accept-encoding": "identity" };
+  new Headers(init?.headers).forEach((value, key) => { headers[key] = value; });
+  if (payload) headers["content-length"] = String(payload.length);
+  const transport = url.protocol === "https:" ? https : url.protocol === "http:" ? http : null;
+  if (!transport) {
+    reject(new TypeError(`fetchOnFreshConnection can't fetch ${url.protocol} URLs.`));
+    return;
+  }
+  // No agent: a new connection for this request alone, closed when it ends.
+  const request = transport.request(url, { method: init?.method ?? "GET", headers, agent: false });
+  const onAbort = (): void => {
+    request.destroy();
+    reject(signal?.reason);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  const done = (): void => signal?.removeEventListener("abort", onAbort);
+  request.on("error", (error) => {
+    done();
+    reject(error);
+  });
+  request.on("response", (response) => {
+    const chunks: Buffer[] = [];
+    response.on("data", (chunk: Buffer) => chunks.push(chunk));
+    response.on("error", (error) => {
+      done();
+      reject(error);
+    });
+    response.on("end", () => {
+      done();
+      const responseHeaders = new Headers();
+      for (const [key, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) for (const item of value) responseHeaders.append(key, item);
+        else if (value !== undefined) responseHeaders.set(key, value);
+      }
+      const status = response.statusCode ?? 502;
+      resolve(new Response(NULL_BODY_STATUSES.has(status) ? null : Buffer.concat(chunks), {
+        status,
+        statusText: response.statusMessage ?? "",
+        headers: responseHeaders,
+      }));
+    });
+  });
+  request.end(payload ?? undefined);
+});
 
 /**
  * Answers a repeated request once. A request whose key is in flight waits for

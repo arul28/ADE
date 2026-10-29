@@ -21925,7 +21925,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -22111,7 +22111,7 @@ function buildCliPlan(
     return { kind: "init", targetPath: firstPositional(args) };
   }
   if (primary === "projects" || primary === "project") {
-    return buildProjectsPlan(args);
+    return buildProjectsPlan(args, { remote: Boolean(options.machine?.trim()) });
   }
   if (primary === "machines" || primary === "machine") {
     return buildMachinesPlan(args);
@@ -24581,7 +24581,7 @@ function hiddenMissingProjects(result: unknown): number {
   return typeof hidden === "number" ? hidden : 0;
 }
 
-function buildProjectsPlan(args: string[]): CliPlan {
+function buildProjectsPlan(args: string[], target: { remote: boolean } = { remote: false }): CliPlan {
   const sub = firstPositional(args) ?? "list";
   // The registry lives only in the machine brain, so these never fall back to
   // a headless single-project runtime.
@@ -24613,7 +24613,9 @@ function buildProjectsPlan(args: string[]): CliPlan {
   if (sub === "clone") {
     // Clones with this computer's own GitHub sign-in (the brain's), then
     // registers the folder as a project. `--path` is the folder to clone
-    // into; without it, beside the other projects.
+    // into; without it, beside the other projects. On another machine
+    // (`--machine`) the path is that machine's, sent as typed: it resolves
+    // and checks it, in its own OS's format (`C:\work` from a Mac).
     const parentDir = readValue(args, ["--path", "--parent", "--parent-dir", "--into"]);
     const name = readValue(args, ["--name"]);
     const repo = requireValue(readValue(args, ["--repo", "--url"]) ?? firstPositional(args), "repository (GitHub URL or owner/name)");
@@ -24628,7 +24630,7 @@ function buildProjectsPlan(args: string[]): CliPlan {
         method: "projects.clone",
         params: {
           url: githubCloneUrl(repo),
-          ...(parentDir ? { parentDir: path.resolve(parentDir) } : {}),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
           ...(name ? { name } : {}),
           catalogVisibility: "recent",
           registrationSource: "cli-explicit",

@@ -370,6 +370,22 @@ describe("account vault", () => {
       );
       expect(fresh.body).toMatchObject({ ok: true, deleted: true });
     });
+
+    // Its own earlier write was still in flight when it made this one: the
+    // stored row is not newer than anything this device knew.
+    it("is not refused when the same device wrote the stored row", async () => {
+      await put([sealed({ value: "first" })]);
+      const own = await call("PUT", "/attention/account/vault", {
+        itemResults: true, sentAt: at(0), deviceId: "device-1", items: [sealed({ value: "second", writtenAt: at(-DAY) })],
+      });
+      expect(own.body).toMatchObject({ results: [{ status: "written" }] });
+      expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ value: "second" }]);
+      const deleted = await call(
+        "DELETE",
+        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(-DAY))}&sentAt=${encodeURIComponent(at(0))}&deviceId=device-1`,
+      );
+      expect(deleted.body).toMatchObject({ ok: true, deleted: true });
+    });
   });
 
   it("bounds the value", async () => {

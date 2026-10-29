@@ -395,8 +395,13 @@ the others (see **Account server**).
    - **What it gets.** On the account URL the start and allow pages say the
      app wants to use your ADE account, on every computer you include, and
      name them (from the account entries). On a per-machine URL they name
-     that computer. The allow page is served by the computer holding the
-     sign-in, which remembers which address it began on.
+     that computer, and the grant matches: the connection reaches only that
+     computer (`onlyMachine`), on whichever address the app later calls. The
+     allow page is served by the computer holding the sign-in, which
+     remembers which address it began on and so which grant it gives. Signing
+     in again replaces the earlier connection from the same app and return
+     address on the same kind of address (the account, or that computer), so
+     an app that holds both keeps both tokens.
    - **Continue with ADE** sends the person to ADE's own sign-in (Clerk, the
      public "ADE CLI" client, PKCE). Clerk returns to the relay's one fixed
      callback, `https://<relay>/oauth/callback`; the relay routes it to the
@@ -642,8 +647,9 @@ machine's server has.
   connections stay on the computer that made them); every other credential
   keeps syncing.
 - Connections imported from a computer's own ADE MCP (before it covered the
-  account) keep reaching only that computer (`onlyMachine`); reconnecting the
-  app makes an account-wide one.
+  account), and apps that sign in on one computer's own address, reach only
+  that computer (`onlyMachine`); connecting the app with the account address
+  makes an account-wide one.
 - The `ade_mcp` vault kind and the `ade_mcp.*` account settings are written
   only by the ADE MCP service, in process. The `account_vault` and
   `account_settings` actions refuse them for every caller, so no agent or

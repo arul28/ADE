@@ -237,10 +237,13 @@ export class PushRelayRequestError extends Error {
   }
 }
 
-/** `writtenAt`/`sentAt` for a delete the relay may refuse as older than its row. */
-function staleCheckQuery(writtenAt: string | null | undefined): Record<string, string> | undefined {
+/**
+ * `writtenAt`/`sentAt` for a delete the relay may refuse as older than its
+ * row, and `deviceId` so a row this device wrote itself is never refused.
+ */
+function staleCheckQuery(writtenAt: string | null | undefined, deviceId?: string | null): Record<string, string> | undefined {
   if (!writtenAt) return undefined;
-  return { writtenAt, sentAt: new Date().toISOString() };
+  return { writtenAt, sentAt: new Date().toISOString(), ...(deviceId ? { deviceId } : {}) };
 }
 
 /** A 409 from a delete: `stale` with the newer row, or a refusal to throw. */
@@ -1098,13 +1101,13 @@ export function createPushRelayClient(args: {
     async deleteAccountSetting(
       scope: string,
       key: string,
-      options?: { writtenAt?: string | null },
+      options?: { writtenAt?: string | null; deviceId?: string | null },
     ): Promise<boolean | AccountStaleDelete<AccountSettingRecord> | null> {
       const result = await accountRequest(
         "deleteAccountSetting",
         "DELETE",
         `/attention/account/settings/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`,
-        { allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt) },
+        { allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
       );
       if (!result.asked) return null;
       // Already gone is the desired end state, not a failure.
@@ -1169,13 +1172,13 @@ export function createPushRelayClient(args: {
       scope: string,
       kind: string,
       key: string,
-      options?: { writtenAt?: string | null },
+      options?: { writtenAt?: string | null; deviceId?: string | null },
     ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null> {
       const result = await accountRequest(
         "deleteAccountVaultItem",
         "DELETE",
         `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
-        { couldNotAsk: [503], allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt) },
+        { couldNotAsk: [503], allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
       );
       if (!result.asked) return null;
       if (result.status === 404) return false;
