@@ -209,6 +209,12 @@ export type GitRunOptions = {
   timeoutMessage?: string;
   /** What `runGitOrThrow` says when `signal` stops git, instead of git's output. */
   cancelMessage?: string;
+  /**
+   * Called just before git is started (after any wait for the executable).
+   * Until then git has read nothing, so a caller can let a later ask share
+   * this run's answer.
+   */
+  onStart?: () => void;
 };
 
 export type GitRunResult = {
@@ -375,6 +381,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     return { exitCode: 130, stdout: "", stderr: "git was cancelled", cancelled: true };
   }
   const executable = await resolveGitExecutable();
+  opts.onStart?.();
   return await new Promise<GitRunResult>((resolve) => {
     // A caller's env wins over GIT_READ_ENV and GIT_NO_PROMPT_ENV.
     const envPatch = { ...GIT_READ_ENV, ...GIT_NO_PROMPT_ENV, ...(opts.env ?? {}) };

@@ -3690,6 +3690,30 @@ export function createLaneService({
     invalidateLanePathCaches();
   };
 
+  /**
+   * The primary checkout's HEAD file as of the last branch read. Every lane
+   * list asks which branch the primary is on; while HEAD is the same file,
+   * unchanged, and the lane row still names the branch read then, the answer
+   * cannot have changed, and the list skips a git process (about 25 ms on
+   * Windows). A checkout, branch rename or detach rewrites HEAD.
+   */
+  let primaryHeadSeenKey: string | null = null;
+  const primaryHeadFileKey = (worktreePath: string): string | null => {
+    try {
+      const dotGit = path.join(worktreePath, ".git");
+      let gitDir = dotGit;
+      if (!fs.statSync(dotGit).isDirectory()) {
+        const pointer = /^gitdir:\s*(.+)$/m.exec(fs.readFileSync(dotGit, "utf8"))?.[1]?.trim();
+        if (!pointer) return null;
+        gitDir = path.resolve(worktreePath, pointer);
+      }
+      const head = fs.statSync(path.join(gitDir, "HEAD"), { bigint: true });
+      return `${head.ino}:${head.size}:${head.mtimeNs}`;
+    } catch {
+      return null;
+    }
+  };
+
   const syncPrimaryLaneBranchRef = async (): Promise<void> => {
     const primary = db.get<{
       id: string;
@@ -3707,11 +3731,17 @@ export function createLaneService({
     );
     if (!primary) return;
 
+    // Taken before git runs: a HEAD written during the read changes the key,
+    // so the next list reads again.
+    const headKey = primaryHeadFileKey(primary.worktree_path);
+    const seenKey = headKey ? `${primary.worktree_path}|${primary.branch_ref}|${headKey}` : null;
+    if (seenKey && seenKey === primaryHeadSeenKey) return;
     const branchRes = await runGit(["rev-parse", "--symbolic-full-name", "HEAD"], {
       cwd: primary.worktree_path,
       timeoutMs: 8_000
     });
     if (branchRes.exitCode !== 0) return;
+    primaryHeadSeenKey = seenKey;
     const detectedBranchRef = branchNameFromHeadRef(branchRes.stdout);
     if (!detectedBranchRef || detectedBranchRef === "HEAD" || detectedBranchRef === primary.branch_ref) return;
 
