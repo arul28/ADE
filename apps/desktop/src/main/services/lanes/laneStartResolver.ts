@@ -68,7 +68,7 @@ export async function resolveLaneStart(args: {
   const notes: string[] = [];
   const remoteRef = `origin/${sourceBranch}`;
 
-  if (start.bring === "pushed") {
+  if (start.on === "remote") {
     if (!args.skipFetch) {
       const fetched = await fetchRemoteTrackingBranch({ projectRoot, targetBranch: sourceBranch }).catch(() => false);
       if (!fetched) notes.push(`Couldn't fetch ${remoteRef}; used the last fetched copy.`);
@@ -95,7 +95,7 @@ export async function resolveLaneStart(args: {
   }
 
   let copyFrom: LaneStartFolder | null = null;
-  if (start.bring === "uncommitted") {
+  if (start.on === "uncommitted") {
     copyFrom = args.folders.find((folder) => plainLaneStartBranch(folder.branchRef) === sourceBranch) ?? null;
     if (!copyFrom) {
       notes.push(`${sourceBranch} isn't open in any lane, so there were no uncommitted changes to copy.`);

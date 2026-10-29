@@ -490,7 +490,7 @@ struct LaneDetailScreen: View {
       initialStart: LaneStart(
         from: .branch,
         branch: plainLaneStartBranch(currentSnapshot.lane.branchRef),
-        bring: .uncommitted
+        on: .uncommitted
       ),
       showsModePicker: true,
       target: newLaneTarget,

@@ -96,7 +96,7 @@ function createHarness(options: {
       }),
       getNewLaneDefaults: () => ({
         defaults: {
-          start: { from: "default" as const, bring: options.localBase === true ? "local" as const : "pushed" as const },
+          start: { from: "default" as const, on: options.localBase === true ? "local" as const : "remote" as const },
           templateId: null,
         },
         scope: { kind: "this-computer" as const, repo: null },

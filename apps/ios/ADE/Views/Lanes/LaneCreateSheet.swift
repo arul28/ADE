@@ -50,21 +50,12 @@ func laneHolderLabel(_ lane: LaneSummary) -> String {
   lane.laneType == "primary" ? "Primary" : lane.name
 }
 
-/// What each "Bring" choice means for the branch the lane starts from.
-func laneStartBringHint(_ bring: LaneStart.Bring, refLabel: String, holder: LaneSummary?) -> String {
-  switch bring {
-  case .pushed:
-    return refLabel.isEmpty
-      ? "Fetches first, then branches from the remote copy."
-      : "Fetches first, then branches from \(refLabel)."
-  case .local:
-    return refLabel.isEmpty
-      ? "Branches from your local copy, including commits you haven't pushed."
-      : "Branches from your local \(refLabel), including commits you haven't pushed."
-  case .uncommitted:
-    guard let holder else { return "Copies uncommitted changes from the lane that has this branch open." }
-    let place = laneHolderLabel(holder)
-    return "Branches from your local \(refLabel) and copies the uncommitted changes in \(place). \(place) keeps them too."
+/// Match the lane start sentence shown on desktop.
+func laneStartSentence(_ on: LaneStart.On, sourceBranch: String) -> String {
+  switch on {
+  case .remote: return "Lane will be created from the latest \(sourceBranch) on the remote."
+  case .local: return "Lane will be created from local \(sourceBranch), including commits you haven't pushed."
+  case .uncommitted: return "Lane will be created from local \(sourceBranch), and uncommitted work will be copied over."
   }
 }
 
@@ -198,7 +189,7 @@ struct LaneCreateSheet: View {
         switch createMode {
         case .newBranch:
           startFromSection
-          bringSection
+          onSection
         case .existingBranch:
           existingBranchSection
         }
@@ -284,13 +275,6 @@ struct LaneCreateSheet: View {
     }
   }
 
-  /// `origin/main` or `main`: where the new branch begins.
-  private var startRefLabel: String {
-    let source = startSourceBranch
-    guard !source.isEmpty else { return "" }
-    return start.bring == .pushed ? "origin/\(source)" : source
-  }
-
   /// The lane whose uncommitted changes "Local + uncommitted" copies.
   private var startHolder: LaneSummary? {
     laneHoldingBranch(startSourceBranch, lanes: lanes)
@@ -332,7 +316,7 @@ struct LaneCreateSheet: View {
         ) {
           showsBranchList = true
           if start.from != .branch {
-            start = LaneStart(from: .branch, branch: start.branch, bring: start.bring)
+            start = LaneStart(from: .branch, branch: start.branch, on: start.on)
           }
         }
         if showsBranchList && start.from == .branch {
@@ -342,7 +326,7 @@ struct LaneCreateSheet: View {
             emptyText: branches.isEmpty ? "No branches found." : "No branches match.",
             selected: plainLaneStartBranch(start.branch)
           ) { item in
-            start = LaneStart(from: .branch, branch: item.id, bring: start.bring)
+            start = LaneStart(from: .branch, branch: item.id, on: start.on)
           }
         }
       }
@@ -361,30 +345,30 @@ struct LaneCreateSheet: View {
 
   private func chooseStart(_ from: LaneStart.From) {
     showsBranchList = false
-    start = LaneStart(from: from, bring: start.bring)
+    start = LaneStart(from: from, on: start.on)
   }
 
-  private var bringSection: some View {
-    LaneFormSection(title: "Bring") {
+  private var onSection: some View {
+    LaneFormSection(title: "On") {
       VStack(alignment: .leading, spacing: 8) {
         ADEKitSegmented(
           selection: Binding(
-            get: { start.bring },
-            set: { bring in
+            get: { start.on },
+            set: { on in
               // "Local + uncommitted" needs a lane with this branch open.
-              if bring == .uncommitted && uncommittedBlocked {
+              if on == .uncommitted && uncommittedBlocked {
                 ADEHaptics.warning()
                 return
               }
-              start.bring = bring
+              start.on = on
             }
           ),
-          options: LaneStart.Bring.allCases.map { (value: $0, title: $0.title) }
+          options: LaneStart.On.allCases.map { (value: $0, title: $0.title) }
         )
-        if start.bring == .uncommitted && uncommittedBlocked {
+        if start.on == .uncommitted && uncommittedBlocked {
           hintText(uncommittedBlockedReason, warn: true)
         } else {
-          hintText(laneStartBringHint(start.bring, refLabel: startRefLabel, holder: startHolder), warn: false)
+          hintText(laneStartSentence(start.on, sourceBranch: startSourceBranch), warn: false)
           if uncommittedBlocked {
             hintText("Local + uncommitted is off: \(uncommittedBlockedReason)", warn: false)
           }
@@ -651,7 +635,7 @@ struct LaneCreateSheet: View {
     switch createMode {
     case .newBranch:
       if start.from == .branch && plainLaneStartBranch(start.branch).isEmpty { return false }
-      if start.bring == .uncommitted && uncommittedBlocked { return false }
+      if start.on == .uncommitted && uncommittedBlocked { return false }
       return true
     case .existingBranch:
       return !selectedImportBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && importHolder == nil

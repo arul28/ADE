@@ -192,7 +192,7 @@ stops one. A watch ends after 2h by default (max 24h), after 20 wakes in an
 hour, or if ADE restarts; re-arm it then.
 
 When the new work must carry the current lane's unmerged commits, use
-`ade lanes create --name <n> --from <your branch> --bring local` to continue unmerged work. Use `--bring uncommitted` to copy uncommitted changes too.
+`ade lanes create --name <n> --from <your branch> --on local` to continue unmerged work. Use `--on uncommitted` to copy uncommitted changes too.
 
 Transcript reads are silent and available for any project-backed chat in any
 registered project on this machine. Personal/no-project chats remain on the

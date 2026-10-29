@@ -163,7 +163,7 @@ export function createNewLaneSettingsStore(args: {
   const legacyDefaults = (): NewLaneDefaults => {
     const legacy = args.legacy();
     return {
-      start: { ...DEFAULT_LANE_START, bring: legacy.baseSource === "local" ? "local" : "pushed" },
+      start: { ...DEFAULT_LANE_START, on: legacy.baseSource === "local" ? "local" : "remote" },
       templateId: legacy.defaultTemplateId?.trim() || null,
     };
   };

@@ -204,8 +204,8 @@ enum LaneCreateMode: String, CaseIterable, Identifiable {
 
   var title: String {
     switch self {
-    case .newBranch: return "New branch"
-    case .existingBranch: return "Existing branch"
+    case .newBranch: return "Create new branch"
+    case .existingBranch: return "Use existing branch"
     }
   }
 

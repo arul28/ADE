@@ -3028,7 +3028,7 @@ export function createConflictService({
       description: `Auto-created integration lane for conflict resolution into ${args.targetLaneId}.`,
       ...(targetHead
         ? { startPoint: targetHead }
-        : { start: { from: "branch" as const, branch: branchNameFromLaneRef(target.branchRef), bring: "local" as const } }),
+        : { start: { from: "branch" as const, branch: branchNameFromLaneRef(target.branchRef), on: "local" as const } }),
     });
   };
 

@@ -643,7 +643,7 @@ struct LaneSummary: Codable, Identifiable, Equatable {
 /// Where a new lane's branch starts and how much work it brings along
 /// (`LaneStart` in `apps/desktop/src/shared/laneStart.ts`).
 /// - `from`: the project's default branch, the primary lane's branch, or a named `branch`.
-/// - `bring`: `pushed` fetches and starts from `origin/<branch>`; `local` starts from the
+/// - `on`: `remote` fetches and starts from `origin/<branch>`; `local` starts from the
 ///   local tip; `uncommitted` also copies the uncommitted changes of the lane that has the
 ///   branch checked out (that lane keeps them).
 struct LaneStart: Codable, Equatable {
@@ -653,8 +653,8 @@ struct LaneStart: Codable, Equatable {
     case branch
   }
 
-  enum Bring: String, Codable, CaseIterable, Identifiable {
-    case pushed
+  enum On: String, Codable, CaseIterable, Identifiable {
+    case remote
     case local
     case uncommitted
 
@@ -662,8 +662,8 @@ struct LaneStart: Codable, Equatable {
 
     var title: String {
       switch self {
-      case .pushed: return "Pushed work"
-      case .local: return "Local commits"
+      case .remote: return "Remote"
+      case .local: return "Local"
       case .uncommitted: return "Local + uncommitted"
       }
     }
@@ -671,13 +671,13 @@ struct LaneStart: Codable, Equatable {
 
   var from: From
   var branch: String? = nil
-  var bring: Bring
+  var on: On
 
-  static let builtInDefault = LaneStart(from: .default, bring: .pushed)
+  static let builtInDefault = LaneStart(from: .default, on: .remote)
 
   /// The JSON object `lanes.create` takes as `start`.
   var commandPayload: [String: Any] {
-    var payload: [String: Any] = ["from": from.rawValue, "bring": bring.rawValue]
+    var payload: [String: Any] = ["from": from.rawValue, "on": on.rawValue]
     if from == .branch, let branch, !branch.isEmpty {
       payload["branch"] = branch
     }

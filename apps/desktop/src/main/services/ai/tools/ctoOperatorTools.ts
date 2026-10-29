@@ -799,10 +799,10 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       start: z.object({
         from: z.enum(["default", "primary", "branch"]),
         branch: z.string().optional().describe("Required when from is \"branch\": a plain branch name such as develop."),
-        bring: z.enum(["pushed", "local", "uncommitted"]),
+        on: z.enum(["remote", "local", "uncommitted"]),
       }).optional().describe(
         "Where the new branch starts. from: default (the project's default branch), primary (the primary lane's branch) or branch. "
-        + "bring: pushed (fetch, then start from origin), local (the local tip, unpushed commits included) or uncommitted (the local tip plus a copy of its uncommitted changes). "
+        + "on: remote (fetch, then start from origin), local (the local tip, unpushed commits included) or uncommitted (the local tip plus a copy of its uncommitted changes). "
         + "Omit to use the project's new-lane defaults.",
       ),
       machine: machineArgSchema,

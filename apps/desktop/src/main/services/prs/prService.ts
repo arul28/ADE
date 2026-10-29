@@ -7511,7 +7511,7 @@ export function createPrService({
       description,
       ...(headSha
         ? { startPoint: headSha }
-        : { start: { from: "branch" as const, branch: branchNameFromRef(baseLane.branchRef), bring: "local" as const } }),
+        : { start: { from: "branch" as const, branch: branchNameFromRef(baseLane.branchRef), on: "local" as const } }),
     });
   };
 

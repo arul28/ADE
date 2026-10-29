@@ -6735,7 +6735,7 @@ describe("ADE CLI", () => {
     const plan = buildCliPlan([
       "chat", "launch", "fix", "the", "flaky", "test",
       "--provider", "claude", "--model", "anthropic/claude-opus-5", "--effort", "high",
-      "--permissions", "full-auto", "--fast", "--from", "origin/main", "--bring", "local", "--lane-name", "flaky-test",
+      "--permissions", "full-auto", "--fast", "--from", "origin/main", "--on", "local", "--lane-name", "flaky-test",
       "--launch-id", launchId, "--wait", "--timeout-ms", "5000",
     ]);
     expect(plan.kind).toBe("chat-launch");
@@ -6748,7 +6748,7 @@ describe("ADE CLI", () => {
       launchId: launchId.toLowerCase(),
       prompt: "fix the flaky test",
       laneName: "flaky-test",
-      laneConfig: { mode: "new", start: { from: "branch", branch: "main", bring: "local" } },
+      laneConfig: { mode: "new", start: { from: "branch", branch: "main", on: "local" } },
       chat: {
         create: {
           provider: "claude",
@@ -6764,7 +6764,7 @@ describe("ADE CLI", () => {
     const parsed = parseChatLaunchArgs(plan.launchArgs);
     expect(parsed.launchId).toBe(launchId.toLowerCase());
     expect(parsed.laneId).toBe(plan.launchArgs.laneId);
-    expect(parsed.laneConfig).toEqual({ mode: "new", start: { from: "branch", branch: "main", bring: "local" } });
+    expect(parsed.laneConfig).toEqual({ mode: "new", start: { from: "branch", branch: "main", on: "local" } });
     expect(parsed.chat?.create).toMatchObject({ provider: "claude", reasoningEffort: "high", fastMode: true });
     expect(parsed.chat?.message.text).toBe("fix the flaky test");
   });
@@ -6777,9 +6777,9 @@ describe("ADE CLI", () => {
     const existing = buildCliPlan(["chat", "launch", "hello", "--existing-branch", "origin/topic"]);
     if (existing.kind !== "chat-launch") throw new Error("expected chat-launch");
     expect(existing.launchArgs.laneConfig).toEqual({ mode: "existing", branchRef: "origin/topic" });
-    const partial = buildCliPlan(["chat", "launch", "hello", "--bring", "local"]);
+    const partial = buildCliPlan(["chat", "launch", "hello", "--on", "local"]);
     if (partial.kind !== "chat-launch") throw new Error("expected chat-launch");
-    expect(partial.startOverrides).toEqual({ bring: "local" });
+    expect(partial.startOverrides).toEqual({ on: "local" });
     expect(partial.launchArgs.laneConfig).toEqual({ mode: "new" });
     expect(() => buildCliPlan(["chat", "launch", "hello", "--existing-branch", "topic", "--from", "main"])).toThrow(/cannot be combined/);
     expect(() => buildCliPlan(["chat", "launch", "hello", "--base", "main"])).toThrow(/Unsupported/);

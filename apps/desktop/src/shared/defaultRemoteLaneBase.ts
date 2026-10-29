@@ -1,5 +1,5 @@
 // Timing and freshness rules for fetching the branch a new lane starts from
-// (`LaneStart.bring === "pushed"`): the chat launch's fetch stage
+// (`LaneStart.on === "remote"`): the chat launch's fetch stage
 // (`chatLaunchStartFetch.ts`) waits briefly on a fresh `origin/<branch>` and
 // for the whole fetch on a stale one, and its stage row reports the age.
 

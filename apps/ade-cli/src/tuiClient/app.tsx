@@ -300,7 +300,7 @@ import {
   buildNewLaneSubmission,
   cycleNewLaneColor,
   cycleNewLaneFrom,
-  cycleNewLaneBring,
+  cycleNewLaneOn,
   cycleNewLaneStart,
   filterNewLaneBranchMatches,
   newLaneFormFieldRowOffsets,
@@ -3104,7 +3104,7 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
-    && (fieldName === "start" || fieldName === "from" || fieldName === "bring" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
+    && (fieldName === "start" || fieldName === "from" || fieldName === "on" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
   ) return false;
   return true;
 }
@@ -7862,7 +7862,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     setPaneFocus("details");
   }, [setFormConfirmArmed, setPaneFocus, stashActiveInput]);
 
-  const openNewLaneForm = useCallback((initialStart?: { from: string; branch: string; bring: string }) => {
+  const openNewLaneForm = useCallback((initialStart?: { from: string; branch: string; on: string }) => {
     const revision = ++newLaneChoiceRevisionRef.current;
     openForm({
       kind: "form",
@@ -7877,9 +7877,9 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     const laneId = activeLaneIdRef.current;
     if (initialStart) setFormValues(previous => ({ ...previous, ...initialStart }));
     if (conn && !initialStart) {
-      void conn.action<{ defaults: { start: { from: string; branch?: string; bring: string } } }>("lane", "getNewLaneDefaults").then(snapshot => {
+      void conn.action<{ defaults: { start: { from: string; branch?: string; on: string } } }>("lane", "getNewLaneDefaults").then(snapshot => {
         if (newLaneChoiceRevisionRef.current !== revision || rightPaneRef.current.kind !== "form" || rightPaneRef.current.command !== "new-lane") return;
-        setFormValues(previous => ({ ...previous, from: snapshot.defaults.start.from, branch: snapshot.defaults.start.branch ?? "", bring: snapshot.defaults.start.bring }));
+        setFormValues(previous => ({ ...previous, from: snapshot.defaults.start.from, branch: snapshot.defaults.start.branch ?? "", on: snapshot.defaults.start.on }));
         setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
           ? { ...previous, fields: newLaneFormFields("new", { from: snapshot.defaults.start.from }) } : previous);
       }).catch(() => {
@@ -7904,7 +7904,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       addNotice("The active lane has no branch.", "error");
       return;
     }
-    openNewLaneForm({ from: "branch", branch: plainLaneStartBranch(lane.branchRef), bring: "uncommitted" });
+    openNewLaneForm({ from: "branch", branch: plainLaneStartBranch(lane.branchRef), on: "uncommitted" });
   }, [activeLane, addNotice, lanes, openNewLaneForm]);
 
   const openLaneDeleteForm = useCallback((laneIdArg?: string) => {
@@ -16624,7 +16624,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const top = filterNewLaneBranchMatches({
           branches: rightPane.branches,
           query: values[field.name] ?? "",
-          remote: normalizeNewLaneStart(values.start) === "existing" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.bring || "pushed") === "pushed",
+          remote: normalizeNewLaneStart(values.start) === "existing" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.on || "remote") === "remote",
           limit: 1,
         })[0];
         if (top) {
@@ -17081,10 +17081,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         }
         if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
       }
-      if (field?.name === "from" || field?.name === "bring") {
+      if (field?.name === "from" || field?.name === "on") {
         if (key.leftArrow || key.rightArrow) {
           const delta = key.leftArrow ? -1 : 1;
-          const next = field.name === "from" ? cycleNewLaneFrom(nextValues.from, delta) : cycleNewLaneBring(nextValues.bring, delta);
+          const next = field.name === "from" ? cycleNewLaneFrom(nextValues.from, delta) : cycleNewLaneOn(nextValues.on, delta);
           newLaneChoiceRevisionRef.current++;
           setFormValues({ ...nextValues, [field.name]: next });
           if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
@@ -18356,8 +18356,8 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                 setPrompt("");
                 return;
               }
-              if (rightPane.command === "new-lane" && (field.name === "from" || field.name === "bring")) {
-                const next = field.name === "from" ? cycleNewLaneFrom(formValues.from, 1) : cycleNewLaneBring(formValues.bring, 1);
+              if (rightPane.command === "new-lane" && (field.name === "from" || field.name === "on")) {
+                const next = field.name === "from" ? cycleNewLaneFrom(formValues.from, 1) : cycleNewLaneOn(formValues.on, 1);
                 newLaneChoiceRevisionRef.current++;
                 setFormValues(prev => ({ ...prev, [field.name]: next }));
                 if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"

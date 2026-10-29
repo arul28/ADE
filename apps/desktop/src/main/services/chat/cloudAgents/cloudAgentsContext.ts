@@ -227,8 +227,8 @@ export function createCloudAgentsContext(deps: CloudAgentsServiceDeps) {
       name: args.name,
       branchName: args.branchName,
       start: defaultBranch
-        ? { from: "branch", branch: defaultBranch, bring: "pushed" }
-        : { from: "default", bring: "pushed" },
+        ? { from: "branch", branch: defaultBranch, on: "remote" }
+        : { from: "default", on: "remote" },
     });
     tagCloudLane(lane, provider);
     await pushLaneBranch(lane, { onFailure: args.onPushFailure });

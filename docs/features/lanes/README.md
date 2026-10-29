@@ -15,15 +15,15 @@ redirect service that makes multi-lane auth practical.
 
 The **Primary lane** is the folder you opened the project from. Every other lane is a separate worktree folder. Git allows a branch to be open in only one folder at a time.
 
-In **New branch** mode, choose **Start from**: the project default branch, the primary lane's branch, or another branch. Choose what to **Bring**:
+In **Create new branch** mode, choose **Start from**: the project default branch, the primary lane's branch, or another branch. Choose where to start **On**:
 
-- **Pushed** fetches and starts from the remote branch.
+- **Remote** fetches and starts from the remote branch.
 - **Local** starts from the local tip, including unpushed commits.
-- **Uncommitted** starts from the local tip and copies staged, unstaged, and untracked changes from the folder holding that branch. Ignored files are excluded; the source is never moved or modified.
+- **Local + uncommitted** starts from the local tip and copies staged, unstaged, and untracked changes from the folder holding that branch. Ignored files are excluded; the source is never moved or modified.
 
-**Existing branch** opens the chosen branch directly without creating a branch. A branch already open in another folder cannot be selected.
+**Use existing branch** opens the chosen branch directly without creating a branch. A branch already open in another folder cannot be selected.
 
-Settings → Lanes → New lanes saves the start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, phone, and `ade code` use these defaults. Run `ade lanes defaults --text` to inspect them.
+Settings → Lanes → New lanes saves the default or primary branch start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, phone, and `ade code` use these defaults. Run `ade lanes defaults --text` to inspect them.
 
 A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab and PRs → Rebase show a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
 
@@ -1204,7 +1204,7 @@ Lane management (selected):
 | Channel | Signature |
 |---------|-----------|
 | `ade.lanes.list` | `(args: ListLanesArgs) => LaneSummary[]` |
-| `ade.lanes.create` | `(args: CreateLaneArgs, pin?) => LaneSummary` — `start` omitted uses the project's new-lane defaults. To carry a lane's uncommitted changes into a new lane, pass `start: { from: "branch", branch: <that lane's branch>, bring: "uncommitted" }`: the new lane starts at that branch's local tip and gets a copy of the changes; the source folder is left as it is. The result's `createdFrom` says where the lane started and how many files were copied. |
+| `ade.lanes.create` | `(args: CreateLaneArgs, pin?) => LaneSummary` — `start` omitted uses the project's new-lane defaults. To carry a lane's uncommitted changes into a new lane, pass `start: { from: "branch", branch: <that lane's branch>, on: "uncommitted" }`: the new lane starts at that branch's local tip and gets a copy of the changes; the source folder is left as it is. The result's `createdFrom` says where the lane started and how many files were copied. |
 | `ade.lanes.importBranch` | `(args: { branchRef: string }) => LaneSummary` |
 | `ade.lanes.rename` / `.updateAppearance` / `.archive` / `.delete` | lane edit operations; `.delete` is also surfaced as `lane.delete` through the generic ADE action registry |
 | `ade.lanes.reclaim.risk` | `(args: { laneId }) => LaneReclaimRisk` — exact ownership/safety preflight with estimated worktree and generated-data bytes, active/dirty/unmerged warnings, hard blockers, and retry state. Also surfaced as `lane.getReclaimRisk`. |

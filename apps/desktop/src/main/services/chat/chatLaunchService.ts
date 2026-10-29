@@ -129,7 +129,7 @@ export type ChatLaunchServiceDeps = {
   laneService: LaneServiceLike;
   agentChatService: AgentChatServiceLike;
   /**
-   * Fetch the branch a new lane starts from (`bring: "pushed"` only) and
+   * Fetch the branch a new lane starts from (`on: "remote"` only) and
    * report `origin/<branch>` and how fresh it is (`fetchLaneStartBranch`).
    */
   fetchStartBranch: (args: ChatLaunchBaseProgress & { branch: string }) => Promise<ChatLaunchBaseResolution>;
@@ -478,7 +478,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
     const branch = start
       ? laneStartSourceBranch(start, { defaultBranch: defaults?.defaultBranch, primaryBranch: defaults?.primaryBranch })
       : "";
-    if (!start || start.bring !== "pushed" || !branch) {
+    if (!start || start.on !== "remote" || !branch) {
       // Nothing to fetch here; the lane create resolves (or explains) the start itself.
       setStage(record, "fetch", "skipped");
       publish(record);
@@ -927,7 +927,7 @@ export function createChatLaunchService(deps: ChatLaunchServiceDeps) {
       launch: { ...args, launchId, kind, ...(chat ? { chat } : {}) },
       laneId,
       laneName,
-      includeFetch: start?.bring === "pushed",
+      includeFetch: start?.on === "remote",
       includeEnvironment: environment.hasEnvironment,
       templateName: environment.templateName,
       nowIso: nowIso(),

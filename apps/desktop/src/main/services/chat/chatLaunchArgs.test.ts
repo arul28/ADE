@@ -67,13 +67,13 @@ describe("parseChatLaunchLaneConfig (composer's configured new lane)", () => {
   it("keeps a valid recipe, trimming strings and dropping empty ones", () => {
     expect(parseChatLaunchLaneConfig({
       mode: "new",
-      start: { from: "branch", branch: " origin/develop ", bring: "local" },
+      start: { from: "branch", branch: " origin/develop ", on: "local" },
       templateId: " tpl-1 ",
       color: "#abcdef",
       branchRef: "   ",
     })).toEqual({
       mode: "new",
-      start: { from: "branch", branch: "develop", bring: "local" },
+      start: { from: "branch", branch: "develop", on: "local" },
       templateId: "tpl-1",
       color: "#abcdef",
     });

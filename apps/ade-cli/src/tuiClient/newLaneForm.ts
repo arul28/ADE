@@ -3,12 +3,12 @@ import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette
 import { linearIssueBranchName } from "../../../desktop/src/shared/linearIssueBranch";
 
 import {
-  LANE_START_BRING_VALUES,
+  LANE_START_ON_VALUES,
   LANE_START_FROM_VALUES,
   normalizeLaneStart,
   plainLaneStartBranch,
   type LaneStart,
-  type LaneStartBring,
+  type LaneStartOn,
   type LaneStartFrom,
 } from "../../../desktop/src/shared/laneStart";
 
@@ -38,8 +38,8 @@ export function toggleNewLaneBranchSource(value: string | null | undefined): New
 }
 
 export const NEW_LANE_START_LABEL: Record<NewLaneStart, string> = {
-  new: "new branch",
-  existing: "existing branch",
+  new: "Create new branch",
+  existing: "Use existing branch",
 };
 
 /** One-line option descriptions; each must fit next to its label at 44 cols. */
@@ -55,8 +55,8 @@ function cycleChoice<T extends string>(values: readonly T[], value: string | nul
 export function cycleNewLaneFrom(value: string | null | undefined, delta: number): LaneStartFrom {
   return cycleChoice(LANE_START_FROM_VALUES, value, delta);
 }
-export function cycleNewLaneBring(value: string | null | undefined, delta: number): LaneStartBring {
-  return cycleChoice(LANE_START_BRING_VALUES, value, delta);
+export function cycleNewLaneOn(value: string | null | undefined, delta: number): LaneStartOn {
+  return cycleChoice(LANE_START_ON_VALUES, value, delta);
 }
 
 // ---------------------------------------------------------------------------
@@ -116,7 +116,7 @@ export function newLaneFormFields(
   } else {
     fields.push({ name: "from", label: "Start from", initialValue: "default" });
     if (options.from === "branch") fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
-    fields.push({ name: "bring", label: "Bring", initialValue: "pushed" });
+    fields.push({ name: "on", label: "On", initialValue: "remote" });
   }
   fields.push({ name: "linearIssue", label: "Linear issue", placeholder: "ADE-123 or issue id" });
   fields.push({ name: "templateId", label: "Setup template", placeholder: "default" });
@@ -289,14 +289,14 @@ export function buildNewLaneSubmission(args: {
   }
 
   const from = args.values.from?.trim() || "default";
-  const bring = args.values.bring?.trim() || "pushed";
+  const on = args.values.on?.trim() || "remote";
   if (!(LANE_START_FROM_VALUES as readonly string[]).includes(from)) {
     return { kind: "error", message: `Start from must be ${LANE_START_FROM_VALUES.join(", ")}.` };
   }
-  if (!(LANE_START_BRING_VALUES as readonly string[]).includes(bring)) {
-    return { kind: "error", message: `Bring must be ${LANE_START_BRING_VALUES.join(", ")}.` };
+  if (!(LANE_START_ON_VALUES as readonly string[]).includes(on)) {
+    return { kind: "error", message: `On must be ${LANE_START_ON_VALUES.join(", ")}.` };
   }
-  const laneStart = normalizeLaneStart({ from, branch: plainLaneStartBranch(args.values.branch), bring });
+  const laneStart = normalizeLaneStart({ from, branch: plainLaneStartBranch(args.values.branch), on });
   if (!laneStart) return { kind: "error", message: "Branch is required." };
   return {
     kind: "create",

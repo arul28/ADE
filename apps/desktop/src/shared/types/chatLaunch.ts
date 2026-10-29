@@ -42,7 +42,7 @@ export type ChatLaunchMode = "foreground" | "background";
  * The stages a launch walks through, in order. Only stages that are true for
  * this launch are present in `ChatLaunchSnapshot.stages`:
  * - `fetch` is present only when the lane starts from pushed work
- *   (`LaneStart.bring === "pushed"`); it fetches the start branch.
+ *   (`LaneStart.on === "remote"`); it fetches the start branch.
  * - `environment` is omitted when neither a default lane template nor a
  *   project lane-environment config applies.
  * - `agent` is "Start agent" for a chat and "Start CLI session" for a CLI launch.

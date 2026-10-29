@@ -3863,7 +3863,7 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
 
 // ── New lane defaults (one set per account per repo) ─────────
 const MOCK_NEW_LANE_DEFAULTS = {
-  defaults: { start: { from: "default", bring: "pushed" }, templateId: null },
+  defaults: { start: { from: "default", on: "remote" }, templateId: null },
   scope: { kind: "account-repo", repo: "github.com/acme/app" },
   defaultBranch: "main",
   primaryBranch: "main",

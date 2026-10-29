@@ -6,7 +6,7 @@ import {
   buildNewLaneSubmission,
   cycleNewLaneColor,
   cycleNewLaneFrom,
-  cycleNewLaneBring,
+  cycleNewLaneOn,
   cycleNewLaneStart,
   filterNewLaneBranchMatches,
   newLaneColorIndex,
@@ -56,7 +56,7 @@ describe("new lane choices", () => {
     expect(newLaneTypeaheadField(newLaneFormFields("new", { from: "primary" }))).toBeNull();
     expect(newLaneTypeaheadField(newLaneFormFields("new", { from: "branch" }))).toBe("branch");
     expect(newLaneTypeaheadField(newLaneFormFields("existing"))).toBe("branch");
-    expect(newLaneFormFields("existing").some(field => field.name === "bring")).toBe(false);
+    expect(newLaneFormFields("existing").some(field => field.name === "on")).toBe(false);
   });
   it("cycles choices and wraps in both directions", () => {
     expect(cycleNewLaneStart("new", 1)).toBe("existing");
@@ -64,12 +64,12 @@ describe("new lane choices", () => {
     expect(cycleNewLaneFrom("default", 1)).toBe("primary");
     expect(cycleNewLaneFrom("primary", 1)).toBe("branch");
     expect(cycleNewLaneFrom("default", -1)).toBe("branch");
-    expect(cycleNewLaneBring("pushed", 1)).toBe("local");
-    expect(cycleNewLaneBring("local", 1)).toBe("uncommitted");
-    expect(cycleNewLaneBring("pushed", -1)).toBe("uncommitted");
+    expect(cycleNewLaneOn("remote", 1)).toBe("local");
+    expect(cycleNewLaneOn("local", 1)).toBe("uncommitted");
+    expect(cycleNewLaneOn("remote", -1)).toBe("uncommitted");
     expect(toggleNewLaneBranchSource("local")).toBe("remote");
     expect(normalizeNewLaneStart("unknown")).toBe("new");
-    expect(NEW_LANE_START_LABEL.existing).toBe("existing branch");
+    expect(NEW_LANE_START_LABEL.existing).toBe("Use existing branch");
     expect(newLaneStartForClickRow(2)).toBe("existing");
     expect(newLaneStartForClickRow(3)).toBeNull();
     expect(cycleNewLaneColor("", 1)).toBe(LANE_COLOR_PALETTE[0]?.hex);
@@ -86,11 +86,11 @@ describe("new lane submission", () => {
   const lanes = [lane("lane-1", "Primary")];
   const submit = (values: Record<string, string>) => buildNewLaneSubmission({ values, lanes, activeLaneId: "lane-1" });
   it("creates from the selected source and work", () => {
-    expect(submit({ name: "feature", from: "primary", bring: "local" })).toEqual({
-      kind: "create", payload: { name: "feature", start: { from: "primary", bring: "local" } },
+    expect(submit({ name: "feature", from: "primary", on: "local" })).toEqual({
+      kind: "create", payload: { name: "feature", start: { from: "primary", on: "local" } },
     });
-    expect(submit({ name: "feature", from: "branch", branch: "origin/topic", bring: "uncommitted" })).toEqual({
-      kind: "create", payload: { name: "feature", start: { from: "branch", branch: "topic", bring: "uncommitted" } },
+    expect(submit({ name: "feature", from: "branch", branch: "origin/topic", on: "uncommitted" })).toEqual({
+      kind: "create", payload: { name: "feature", start: { from: "branch", branch: "topic", on: "uncommitted" } },
     });
     expect(submit({ name: "feature", from: "branch" })).toEqual({ kind: "error", message: "Branch is required." });
     expect(newLaneCreateAction({ values: { name: "feature", from: "branch" }, fields: [] }).enabled).toBe(false);
@@ -104,7 +104,7 @@ describe("new lane submission", () => {
   it("keeps the issue and template on new branches", () => {
     const issue = linearIssue();
     expect(buildNewLaneSubmission({ values: { name: "feature", templateId: "tpl", linearIssue: "ADE-123" }, lanes, activeLaneId: "lane-1", linearIssue: issue })).toEqual({
-      kind: "create", payload: { name: "feature", start: { from: "default", bring: "pushed" }, branchName: "ade-123-fix-setup-parity", linearIssue: issue }, templateId: "tpl",
+      kind: "create", payload: { name: "feature", start: { from: "default", on: "remote" }, branchName: "ade-123-fix-setup-parity", linearIssue: issue }, templateId: "tpl",
     });
     expect(buildNewLaneSubmission({ values: { name: "feature", start: "existing", branch: "topic", linearIssue: "ADE-123" }, lanes, activeLaneId: "lane-1", linearIssue: issue })).toEqual({
       kind: "error", message: "Linear issue attachment is not supported when importing an existing branch.",

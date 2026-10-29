@@ -126,8 +126,8 @@ import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/d
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
 import {
   DEFAULT_LANE_START,
-  LANE_START_BRING_LABEL,
-  LANE_START_BRING_VALUES,
+  LANE_START_ON_LABEL,
+  LANE_START_ON_VALUES,
   LANE_START_FROM_LABEL,
   laneStartRefLabel,
   laneStartSourceBranch,
@@ -1028,7 +1028,7 @@ export type CliPlan =
        */
       kind: "chat-launch";
       launchArgs: JsonObject;
-      startOverrides?: { from?: string; bring?: string };
+      startOverrides?: { from?: string; on?: string };
       wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
@@ -2189,7 +2189,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --auto-create-lane     Create a new lane first, then launch there.
     --lane-name <name>     Explicit name for an auto-created lane.
     --from <default|primary|branch>  Start source for an auto-created lane.
-    --bring <pushed|local|uncommitted>  Work to bring into the new lane.
+    --on <remote|local|uncommitted>  Which copy of the branch to start from.
     --existing-branch <branch>  Work directly on an existing branch.
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
@@ -2251,18 +2251,18 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   Lanes
 
   New work off the project default (usually what you want)   ade lanes create --name <n>
-  Continue work that is in another lane / branch             ade lanes create --name <n> --from <branch> --bring local
-  ...and bring its uncommitted changes too (copied)          ade lanes create --name <n> --from <branch> --bring uncommitted
+  Continue work that is in another lane / branch             ade lanes create --name <n> --from <branch> --on local
+  ...and bring its uncommitted changes too (copied)          ade lanes create --name <n> --from <branch> --on uncommitted
   Work directly on an existing branch                        ade lanes create --name <n> --existing-branch <branch>
 
   ade lanes create [--name <name>] [--description <text>]
-                   [--from default|primary|<branch>] [--bring pushed|local|uncommitted] [--branch-name <branch>]
+                   [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
                    [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
                    [--template <id>|--no-template]
                    [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
                    [--linear-issues-json '[{...},{...}]'] [--text|--json]
   ade lanes defaults [--text|--json]
-  ade lanes defaults set [--from default|primary|<branch>] [--bring pushed|local|uncommitted] [--template <id>|--no-template]
+  ade lanes defaults set [--from default|primary] [--on remote|local|uncommitted] [--template <id>|--no-template]
   ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
@@ -2617,7 +2617,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     Returns at once with the reserved launch/lane/chat ids; --wait polls
                                                     until it completes (exit 0) or fails/cancels/times out (exit 1),
                                                     printing a stage line to stderr with --text. Choose a start with
-                                                    --from default|primary|<branch> and --bring pushed|local|uncommitted,
+                                                    --from default|primary|<branch> and --on remote|local|uncommitted,
                                                     or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
@@ -6280,15 +6280,16 @@ function newLaneSetupFailed(result: unknown): boolean {
   return isRecord(setup.progress) && asString(setup.progress.overallStatus)?.toLowerCase() === "failed";
 }
 
-type LaneStartFlags = { from?: string; bring?: string };
+type LaneStartFlags = { from?: string; on?: string };
 
 function readLaneStartFlags(args: string[]): LaneStartFlags {
+  if (findFlagName(args, ["--bring"])) throw new CliUsageError("Unsupported lane creation flag: --bring. Use --on.");
   const from = readValue(args, ["--from"]);
-  const bring = readValue(args, ["--bring"]);
-  if (bring && !(LANE_START_BRING_VALUES as readonly string[]).includes(bring)) {
-    throw new CliUsageError(`--bring must be one of: ${LANE_START_BRING_VALUES.join(", ")}.`);
+  const on = readValue(args, ["--on"]);
+  if (on && !(LANE_START_ON_VALUES as readonly string[]).includes(on)) {
+    throw new CliUsageError(`--on must be one of: ${LANE_START_ON_VALUES.join(", ")}.`);
   }
-  return { ...(from ? { from } : {}), ...(bring ? { bring } : {}) };
+  return { ...(from ? { from } : {}), ...(on ? { on } : {}) };
 }
 /** An action step's result, out of its `{ domain, action, result }` envelope. */
 function unwrappedRecord(value: unknown): JsonObject {
@@ -6300,7 +6301,7 @@ function savedLaneStart(value: unknown): unknown {
   const defaults = unwrappedRecord(value).defaults;
   return isRecord(defaults) ? defaults.start ?? null : null;
 }
-/** `--from` / `--bring` laid over a saved start (or the built-in one). */
+/** `--from` / `--on` laid over a saved start (or the built-in one). */
 function mergeLaneStart(changes: LaneStartFlags, saved: unknown): LaneStart {
   const prior = normalizeLaneStart(saved) ?? DEFAULT_LANE_START;
   const from = changes.from;
@@ -6308,13 +6309,13 @@ function mergeLaneStart(changes: LaneStartFlags, saved: unknown): LaneStart {
   const start = normalizeLaneStart({
     from: from ? (branch ? "branch" : from) : prior.from,
     branch: from ? branch : prior.branch,
-    bring: changes.bring ?? prior.bring,
+    on: changes.on ?? prior.on,
   });
   if (!start) throw new CliUsageError("--from must be default, primary, or a branch name.");
   return start;
 }
 /**
- * How a lane-creating plan applies `--from` / `--bring`: with neither, no
+ * How a lane-creating plan applies `--from` / `--on`: with neither, no
  * extra step and no `start` (the brain uses the project's saved defaults);
  * otherwise a step that reads the defaults, and a `start` with the flags laid
  * over them.
@@ -6323,7 +6324,7 @@ function laneStartFromFlags(flags: LaneStartFlags | null, key = "laneDefaults"):
   steps: InvocationStep[];
   args: (values: JsonObject) => JsonObject;
 } {
-  if (!flags || (!flags.from && !flags.bring)) return { steps: [], args: () => ({}) };
+  if (!flags || (!flags.from && !flags.on)) return { steps: [], args: () => ({}) };
   return {
     steps: [actionStep(key, "lane", "getNewLaneDefaults")],
     args: (values) => ({ start: mergeLaneStart(flags, savedLaneStart(values[key])) }),
@@ -6341,7 +6342,7 @@ function formatLaneDefaultsText(value: unknown): string {
   });
   const ref = laneStartRefLabel(start, branch);
   const scope = isRecord(snapshot.scope) ? snapshot.scope : {};
-  return `New lanes start from: ${LANE_START_FROM_LABEL[start.from]}${branch ? ` (${branch})` : ""} · ${LANE_START_BRING_LABEL[start.bring]}${ref ? ` → ${ref}` : ""}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
+  return `Start from: ${LANE_START_FROM_LABEL[start.from]}${branch ? ` (${branch})` : ""} on ${LANE_START_ON_LABEL[start.on]}${ref ? ` → ${ref}` : ""}\nTemplate: ${asString(defaults.templateId) ?? "none"}\nSaved for: ${scope.kind === "this-computer" ? "this computer only" : `your account · ${asString(scope.repo) ?? "project"}`}`;
 }
 
 function formatLaneCreateResultText(value: unknown): string {
@@ -6667,16 +6668,17 @@ function buildLanePlan(args: string[]): CliPlan {
     const set = args[0] === "set";
     if (set) args.shift();
     const changes = readLaneStartFlags(args);
+    if (set && changes.from && changes.from !== "default" && changes.from !== "primary") throw new CliUsageError("Saved defaults start from the default branch or the primary lane's branch. Use --from on `ade lanes create` for one lane.");
     const template = readValue(args, ["--template"]);
     const noTemplate = readFlag(args, ["--no-template"]);
     if (template != null && noTemplate) throw new CliUsageError("Choose --template or --no-template.");
     const steps: InvocationStep[] = [actionStep("defaults", "lane", "getNewLaneDefaults")];
     // The brain merges what is sent into the saved defaults, so only the
     // changed fields go; a start change still needs the saved start to lay
-    // `--from` / `--bring` over.
+    // `--from` / `--on` over.
     if (set) steps.push({ key: "result", method: "ade/actions/call", unwrapToolResult: true, params: (values) => {
       const patch: JsonObject = {
-        ...(changes.from || changes.bring ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}),
+        ...(changes.from || changes.on ? { start: mergeLaneStart(changes, savedLaneStart(values.defaults)) } : {}),
         ...(template != null ? { templateId: template } : noTemplate ? { templateId: null } : {}),
       };
       return { name: "run_ade_action", arguments: { domain: "lane", action: "setNewLaneDefaults", args: { defaults: patch } } };
@@ -6687,15 +6689,15 @@ function buildLanePlan(args: string[]): CliPlan {
     const existing = readValue(args, ["--existing-branch"]);
     const changes = readLaneStartFlags(args);
     const branchName = readValue(args, ["--branch-name"]);
-    if (existing && (changes.from || changes.bring || branchName)) throw new CliUsageError("--existing-branch cannot be combined with --from, --bring, or --branch-name.");
+    if (existing && (changes.from || changes.on || branchName)) throw new CliUsageError("--existing-branch cannot be combined with --from, --on, or --branch-name.");
     if (findFlagName(args, ["--parent", "--parent-lane", "--parent-lane-id", "--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
     const requestedTemplateId = readValue(args, ["--template"]);
     const noTemplate = readFlag(args, ["--no-template"]);
     if (requestedTemplateId != null && noTemplate) throw new CliUsageError("Choose --template or --no-template.");
     const issuesJson = readValue(args, ["--linear-issues-json"]);
-    if (issuesJson) { const issues = parseJson(issuesJson, "--linear-issues-json"); if (!Array.isArray(issues)) throw new CliUsageError("--linear-issues-json must be an array."); return buildBatchCreateLanesFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.bring ? ["--bring", changes.bring] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issues as JsonObject[]); }
+    if (issuesJson) { const issues = parseJson(issuesJson, "--linear-issues-json"); if (!Array.isArray(issues)) throw new CliUsageError("--linear-issues-json must be an array."); return buildBatchCreateLanesFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.on ? ["--on", changes.on] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issues as JsonObject[]); }
     const issueJson = readValue(args, ["--linear-issue-json"]);
-    if (issueJson && args.includes("--start-chat")) { const issue = parseJson(issueJson, "--linear-issue-json"); if (!isRecord(issue)) throw new CliUsageError("--linear-issue-json must be an object."); return buildCreateLaneFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.bring ? ["--bring", changes.bring] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issue); }
+    if (issueJson && args.includes("--start-chat")) { const issue = parseJson(issueJson, "--linear-issue-json"); if (!isRecord(issue)) throw new CliUsageError("--linear-issue-json must be an object."); return buildCreateLaneFromLinearPlan([...args, ...(changes.from ? ["--from", changes.from] : []), ...(changes.on ? ["--on", changes.on] : []), ...(branchName ? ["--branch-name", branchName] : []), ...(requestedTemplateId ? ["--template", requestedTemplateId] : []), ...(noTemplate ? ["--no-template"] : [])], issue); }
     const parsedIssue = issueJson ? parseJson(issueJson, "--linear-issue-json") : null;
     if (issueJson && !isRecord(parsedIssue)) throw new CliUsageError("--linear-issue-json must be an object.");
     const input: JsonObject = { name: requireValue(readValue(args, ["--name"]) ?? firstPositional(args) ?? (isRecord(parsedIssue) ? asString(parsedIssue.title) ?? asString(parsedIssue.identifier) ?? asString(parsedIssue.id) : null), "name") };
@@ -7263,10 +7265,10 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
   const createLaneArgs: JsonObject = { name: laneName };
   maybePut(createLaneArgs, "description", readValue(args, ["--description", "--desc"]));
   const startFlags = readLaneStartFlags(args);
-  if (startFlags.from || startFlags.bring) createLaneArgs._startFlags = startFlags;
+  if (startFlags.from || startFlags.on) createLaneArgs._startFlags = startFlags;
   const branchName = readValue(args, ["--branch-name"]);
   const existingBranch = readValue(args, ["--existing-branch"]);
-  if (existingBranch && (startFlags.from || startFlags.bring || branchName)) throw new CliUsageError("--existing-branch cannot be combined with --from, --bring, or --branch-name.");
+  if (existingBranch && (startFlags.from || startFlags.on || branchName)) throw new CliUsageError("--existing-branch cannot be combined with --from, --on, or --branch-name.");
   if (existingBranch) createLaneArgs.branchRef = existingBranch;
   maybePut(createLaneArgs, "branchName", branchName);
   if (findFlagName(args, ["--parent-lane", "--parent-lane-id", "--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
@@ -10300,7 +10302,7 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const laneName = readValue(args, ["--lane-name", "--name"]);
   const startOverrides = readLaneStartFlags(args);
   const existingBranch = readValue(args, ["--existing-branch"]);
-  if (existingBranch && (startOverrides.from || startOverrides.bring)) throw new CliUsageError("--existing-branch cannot be combined with --from or --bring.");
+  if (existingBranch && (startOverrides.from || startOverrides.on)) throw new CliUsageError("--existing-branch cannot be combined with --from or --on.");
   if (findFlagName(args, ["--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   const launchIdFlag = readValue(args, ["--launch-id"]);
   const laneIdFlag = readValue(args, ["--lane-id"]);
@@ -10344,11 +10346,11 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     chat: { create, message: mergeRemoteMcpTurnMetadata({ text: prompt }) },
   };
   maybePut(launchArgs, "laneName", laneName);
-  const needsDefaults = Boolean(!existingBranch && (startOverrides.from || startOverrides.bring) && !(startOverrides.from && startOverrides.bring));
+  const needsDefaults = Boolean(!existingBranch && (startOverrides.from || startOverrides.on) && !(startOverrides.from && startOverrides.on));
   // The brain names the lane from the prompt unless --lane-name chose one.
   // A start given in part is completed from the project defaults at launch.
   if (existingBranch) launchArgs.laneConfig = { mode: "existing", branchRef: existingBranch };
-  else if (startOverrides.from && startOverrides.bring) {
+  else if (startOverrides.from && startOverrides.on) {
     launchArgs.laneConfig = { mode: "new", start: mergeLaneStart(startOverrides, null), ...(laneName ? {} : { autoName: true }) };
   } else if (laneName && !needsDefaults) launchArgs.laneConfig = { mode: "new" };
   maybePut(launchArgs, "modelId", modelArg);
@@ -21900,7 +21902,7 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--scale-factor",
   "--compression-quality",
   "--from",
-  "--bring",
+  "--on",
   "--existing-branch",
   "--from-file",
   // `chat create|send|message|steer`: the text's file, or `-` for stdin.

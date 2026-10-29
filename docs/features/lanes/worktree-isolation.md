@@ -313,7 +313,7 @@ worktree, but a full parallel development environment.
   falsely reap.
 - **Primary worktree == repo root**. Operations that would destroy
   the repo root (delete) are blocked by the edit-protected flag.
-  Creating a lane with `start: { from: "primary", bring: "uncommitted" }`
+  Creating a lane with `start: { from: "primary", on: "uncommitted" }`
   (or `from: "branch"` naming the primary's branch) copies the primary's
   uncommitted changes into the new lane's worktree; the primary's files and
   index are never changed.

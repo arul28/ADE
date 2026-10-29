@@ -289,7 +289,7 @@ idle/fallback message and peer-notice paths, and the navigation/pill/breadcrumb
 surfacing — live in
 [Chat › Spawn types and completion reporting](../chat/README.md#spawn-types-and-completion-reporting).
 When the spawned work must carry the current lane's unmerged commits, spawn
-from that branch with `ade lanes create --name <n> --from <branch> --bring local`. Use `--bring uncommitted` to copy uncommitted changes too.
+from that branch with `ade lanes create --name <n> --from <branch> --on local`. Use `--on uncommitted` to copy uncommitted changes too.
 
 ## Agent download / auth from chat
 

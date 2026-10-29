@@ -13,7 +13,7 @@ import type { ChatLaunchBaseProgress, ChatLaunchBaseResolution } from "./chatLau
 
 /**
  * The chat launch's "Fetch" stage: fetch the branch a new lane starts from
- * (`LaneStart.bring === "pushed"`), bounded so a slow remote does not hold
+ * (`LaneStart.on === "remote"`), bounded so a slow remote does not hold
  * the launch, and report how old `origin/<branch>` is when the fetch did not
  * finish. The launch then creates the lane with `skipStartFetch`, so the
  * fetch runs once.

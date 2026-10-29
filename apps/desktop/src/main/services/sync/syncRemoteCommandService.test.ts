@@ -624,12 +624,12 @@ describe("createSyncRemoteCommandService", () => {
       await service.execute(makePayload("lanes.create", {
         name: "my-lane",
         description: "desc",
-        start: { from: "branch", branch: "main", bring: "local" },
+        start: { from: "branch", branch: "main", on: "local" },
       }));
       expect(laneService.create).toHaveBeenCalledWith({
         name: "my-lane",
         description: "desc",
-        start: { from: "branch", branch: "main", bring: "local" },
+        start: { from: "branch", branch: "main", on: "local" },
       });
     });
 

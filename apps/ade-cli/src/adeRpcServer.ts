@@ -418,7 +418,7 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         name: { type: "string", minLength: 1 },
         description: { type: "string" },
-        start: { type: "object", required: ["from", "bring"], additionalProperties: false, properties: { from: { type: "string", enum: ["default", "primary", "branch"] }, branch: { type: "string" }, bring: { type: "string", enum: ["pushed", "local", "uncommitted"] } } },
+        start: { type: "object", required: ["from", "on"], additionalProperties: false, properties: { from: { type: "string", enum: ["default", "primary", "branch"] }, branch: { type: "string" }, on: { type: "string", enum: ["remote", "local", "uncommitted"] } } },
         branchName: { type: "string" },
         linearIssue: LINEAR_ISSUE_TOOL_SCHEMA,
         ...NEW_LANE_SETUP_TOOL_PROPERTIES

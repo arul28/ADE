@@ -12,12 +12,12 @@ Lanes are ADE-managed git worktrees and branches.
 | Situation | Command |
 |---|---|
 | New work off the project default (usually what you want) | `ade lanes create --name <n>` |
-| Continue work that is in another lane / branch | `ade lanes create --name <n> --from <branch> --bring local` |
-| ...and bring its uncommitted changes too (copied) | `ade lanes create --name <n> --from <branch> --bring uncommitted` |
+| Continue work that is in another lane / branch | `ade lanes create --name <n> --from <branch> --on local` |
+| ...and bring its uncommitted changes too (copied) | `ade lanes create --name <n> --from <branch> --on uncommitted` |
 | Work directly on an existing branch | `ade lanes create --name <n> --existing-branch <branch>` |
 | See what a bare create would do | `ade lanes defaults --text` |
 
-`ade new chat --auto-create-lane` uses the same defaults and accepts `--from` and `--bring`. Defaults and templates are saved per account and repository; repositories without a remote use this computer. Stacked PRs are GitHub's (`ade prs stacks`): each PR targets the branch below it.
+`ade new chat --auto-create-lane` uses the same defaults and accepts `--from` and `--on`. Defaults and templates are saved per account and repository; repositories without a remote use this computer. Stacked PRs are GitHub's (`ade prs stacks`): each PR targets the branch below it.
 
 ```bash
 ade lanes list --text

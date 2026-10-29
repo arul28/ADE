@@ -79,7 +79,7 @@ import {
   normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
 } from "../newLaneForm";
-import { LANE_START_BRING_LABEL, LANE_START_FROM_LABEL } from "../../../../desktop/src/shared/laneStart";
+import { LANE_START_ON_LABEL, LANE_START_FROM_LABEL } from "../../../../desktop/src/shared/laneStart";
 import { ActivityPaneView } from "./ActivityPaneView";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
@@ -2084,7 +2084,7 @@ function NewLaneFormPane({
     const matches = filterNewLaneBranchMatches({
       branches: content.branches,
       query: formValues[name]?.trim() ?? "",
-      remote: start === "existing" ? branchSource === "remote" : (formValues.bring || "pushed") === "pushed",
+      remote: start === "existing" ? branchSource === "remote" : (formValues.on || "remote") === "remote",
       limit: NEW_LANE_TYPEAHEAD_ROWS,
     });
     return Array.from({ length: NEW_LANE_TYPEAHEAD_ROWS }, (_, index) => (
@@ -2113,9 +2113,9 @@ function NewLaneFormPane({
         );
       }
       case "from":
-      case "bring": {
-        const labels = field.name === "from" ? LANE_START_FROM_LABEL : LANE_START_BRING_LABEL;
-        const value = formValues[field.name] || (field.name === "from" ? "default" : "pushed");
+      case "on": {
+        const labels = field.name === "from" ? LANE_START_FROM_LABEL : LANE_START_ON_LABEL;
+        const value = formValues[field.name] || (field.name === "from" ? "default" : "remote");
         const label = (labels as Record<string, string>)[value] ?? value;
         return (
           <Box key={field.name} flexDirection="column" marginTop={1}>

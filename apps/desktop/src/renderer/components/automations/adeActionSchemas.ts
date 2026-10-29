@@ -112,7 +112,7 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       {
         name: "start",
         type: "json",
-        description: "Where the branch starts: {\"from\": \"default\"|\"primary\"|\"branch\", \"branch\"?, \"bring\": \"pushed\"|\"local\"|\"uncommitted\"}.",
+        description: "Where the branch starts: {\"from\": \"default\"|\"primary\"|\"branch\", \"branch\"?, \"on\": \"remote\"|\"local\"|\"uncommitted\"}.",
       },
       { name: "branchName", type: "string", description: "Name for the new branch (defaults from the lane name)." },
       { name: "startPoint", type: "string", description: "An exact commit or ref to start from. Wins over start." },
