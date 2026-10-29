@@ -1,6 +1,7 @@
 import React, { useCallback } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import {
+  CaretLeft,
   Gauge,
   GithubLogo,
   Info,
@@ -55,6 +56,9 @@ import {
   type SettingsMachinePage,
 } from "./SettingsMachinesNav";
 import { WebSettingsSection } from "./WebScopePill";
+import { IntegrationsHome } from "./integrations/IntegrationsHome";
+import { isIntegrationId, type IntegrationId } from "./integrations/integrationBrand";
+import { useSettingsMachineScope } from "./SettingsMachineScope";
 import {
   SETTINGS_ENTRIES,
   SETTINGS_TAB_IDS,
@@ -78,7 +82,6 @@ import { decodeSettingsHash } from "./settingsHash";
 const SECTION_LIST_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
   "service",
   "behaviour",
-  "integrations",
 ]);
 
 /**
@@ -169,6 +172,60 @@ function AgentsTabContent() {
         <BudgetCapSettings />
       </WebSettingsSection>
     </ModernPage>
+  );
+}
+
+/**
+ * The integration a `#hash` deeplink lands in: every integrations anchor
+ * starts with its integration's id (`github-connection`, `jira-projects`, and
+ * the legacy bare `#github` / `#linear`).
+ */
+function integrationIdFromHash(hash: string): IntegrationId | null {
+  const head = decodeSettingsHash(hash).split("-")[0] ?? "";
+  return isIntegrationId(head) ? head : null;
+}
+
+/**
+ * Integrations. Like Providers, one integration's page is a sub-view of the
+ * tab, `?integration=<id>`; a `#hash` naming one of its settings opens it too.
+ * With none open, the tab is a grid of the integrations and their state.
+ */
+function IntegrationsTabContent({ machine }: { machine: SettingsMachinePage | null }) {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const { pin } = useSettingsMachineScope();
+  const param = searchParams.get("integration")?.trim();
+  const requested = isIntegrationId(param) ? param : integrationIdFromHash(location.hash);
+  const sections = (TAB_SECTIONS.integrations ?? []).filter(
+    (section) => !machine || !section.machine || machineSectionAvailable(section.machine, machine),
+  );
+  const section = requested ? sections.find((entry) => entry.group === requested) : undefined;
+
+  const open = useCallback((next: IntegrationId | null) => {
+    const nextParams = new URLSearchParams(searchParams);
+    if (next) nextParams.set("integration", next);
+    else nextParams.delete("integration");
+    navigate({ pathname: location.pathname, search: `?${nextParams.toString()}`, hash: "" }, { replace: true });
+  }, [location.pathname, navigate, searchParams]);
+
+  if (!section) {
+    return (
+      <SettingsColumn wide>
+        <IntegrationsHome pin={pin} onOpen={open} />
+      </SettingsColumn>
+    );
+  }
+  const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab("integrations") : section.entryIds;
+  return (
+    <SettingsColumn wide>
+      <div className="ade-ig-route">
+        <button type="button" className="ade-ig-back" onClick={() => open(null)}>
+          <CaretLeft size={12} weight="bold" /> All integrations
+        </button>
+        <WebSettingsSection entryIds={entryIds}>{section.render()}</WebSettingsSection>
+      </div>
+    </SettingsColumn>
   );
 }
 
@@ -421,8 +478,8 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // project and are read by its runtime. Every call takes that machine's pin.
   // Browser steps (device codes, OAuth pages) still open on This computer.
   integrations: [
-    { entryIds: ["integrations.github"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
-    { entryIds: ["integrations.linear"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
+    { entryIds: ["integrations.github", "integrations.github-issues-top-bar"], render: () => <GitHubIntegrationSection />, machine: "routed", title: "GitHub", group: "github" },
+    { entryIds: ["integrations.linear", "integrations.linear-top-bar"], render: () => <LinearIntegrationSection />, machine: "routed", title: "Linear", group: "linear" },
     { entryIds: ["integrations.jira", "integrations.jira-projects", "integrations.jira-top-bar"], render: () => <JiraSection />, machine: "routed", title: "Jira", group: "jira" },
   ],
   notifications: [{ entryIds: "tab", render: () => <NotificationsSection /> }],
@@ -482,6 +539,14 @@ export function TabContent({
 }) {
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
+  }
+  // Integrations routes between its grid and one integration's page off
+  // `?integration=`; its sections are the pages.
+  if (tab === "integrations") {
+    if (machine && !TAB_SECTIONS.integrations!.some((section) => !section.machine || machineSectionAvailable(section.machine, machine))) {
+      return <MachineUnavailableNotice machine={machine} unavailableTitles={["Integrations"]} />;
+    }
+    return <IntegrationsTabContent machine={machine} />;
   }
   // Providers is the one tab that is not a list of sections: it routes between
   // the grid and one provider's page off `?provider=`.

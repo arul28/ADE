@@ -1,21 +1,16 @@
-import { useEffect, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { issueWriteSourceLabel } from "../../../shared/githubOperationCredential";
 import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
   CheckCircle,
   Warning,
   ArrowClockwise,
-  ShieldCheck,
-  LinkBreak,
   Key,
-  Shield,
-  GitPullRequest,
-  Eye,
-  GitBranch,
   ArrowSquareOut,
   TerminalWindow,
-  GithubLogo,
-  FlowArrow,
+  CaretDown,
+  Code,
+  WebhooksLogo,
 } from "@phosphor-icons/react";
 import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../../../shared/githubScopes";
 import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
@@ -35,7 +30,14 @@ import {
 import { useGithubAppUserAuth } from "../../lib/useGithubAppUserAuth";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
-import { ModernRow, ModernRows, ModernSection, SettingsTextField, SettingsToggle } from "./primitives";
+import { SettingsTextField } from "./primitives";
+import {
+  IntegrationCard,
+  IntegrationColumns,
+  IntegrationHero,
+  IntegrationPage,
+  type IntegrationFact,
+} from "./integrations/IntegrationChrome";
 import { setIssueTopBarVisible, useIssueTopBarPreferences } from "../issues/issueTopBarPreferences";
 import { useGitHubIssueWriteAccess, useProjectGitHubRepo } from "../issues/githubIssueStore";
 import type { GitHubIssueWriteAccess } from "../../../shared/types";
@@ -45,10 +47,10 @@ function issueAccessHint(access: GitHubIssueWriteAccess): string {
   const via = issueWriteSourceLabel(access.writeSource);
   if (access.app?.needsApproval) {
     return via
-      ? `Edits use ${via}. ADE's GitHub App needs its Issues permission approved on GitHub to edit issues itself.`
-      : "ADE's GitHub App needs its Issues permission approved on GitHub before ADE can edit issues.";
+      ? `Edits go through ${via}. Approve the Issues permission for ADE for GitHub to edit with the app.`
+      : "Approve the Issues permission for ADE for GitHub on GitHub before ADE can edit issues.";
   }
-  return via ? `Edits use ${via}.` : "Connect GitHub CLI or add a token to edit issues.";
+  return via ? `Edits go through ${via}.` : "Sign in with the GitHub CLI or a token to edit issues.";
 }
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import "./IntegrationsSettings.css";
@@ -62,14 +64,7 @@ const GH_AUTH_LOGIN_WITH_GIST_COMMAND = "gh auth login -h github.com -s repo -s 
 const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo -s workflow -s gist";
 const GITHUB_CLASSIC_TOKEN_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
 const GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow,gist";
-const GITHUB_CLASSIC_TOKENS_URL = "https://github.com/settings/tokens";
 const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write";
-const GITHUB_FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens";
-
-function sentenceCase(text: string): string {
-  const lower = text.toLowerCase();
-  return lower.charAt(0).toUpperCase() + lower.slice(1);
-}
 
 const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Contents: Read and write",
@@ -81,12 +76,6 @@ const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Workflows: Write",
 ] as const;
 
-const PERMISSION_USES = [
-  { title: "Pull requests", detail: "Create PRs, request reviewers, and post review comments.", icon: <GitPullRequest size={15} weight="duotone" /> },
-  { title: "Contents", detail: "Read repository files and push branch changes.", icon: <GitBranch size={15} weight="duotone" /> },
-  { title: "Workflows", detail: "Push lane changes that edit GitHub workflow files.", icon: <FlowArrow size={15} weight="duotone" /> },
-  { title: "Actions", detail: "Inspect workflow runs and re-run failed jobs.", icon: <Eye size={15} weight="duotone" /> },
-];
 
 function detectTokenType(token: string): TokenType {
   if (token.startsWith("github_pat_")) return "fine-grained";
@@ -97,18 +86,18 @@ function detectTokenType(token: string): TokenType {
 function tokenTypeDetectionLabel(type: TokenType): string {
   switch (type) {
     case "classic":
-      return "Classic token";
+      return "Looks like a classic token";
     case "fine-grained":
-      return "Fine-grained token";
+      return "Looks like a fine-grained token";
     default:
-      return "Unknown format";
+      return "Not a format ADE recognizes; it will still try it";
   }
 }
 
 function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): string {
   switch (source) {
     case "app":
-      return "ADE GitHub App";
+      return "ADE for GitHub";
     case "gh":
       return "GitHub CLI";
     case "pat":
@@ -117,6 +106,35 @@ function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): 
       return "Environment token";
     default:
       return "Not connected";
+  }
+}
+
+/** Where a sign-in comes from, in a few words. */
+function credentialSourceDetail(source: GitHubStatus["authSource"] | undefined): string {
+  switch (source) {
+    case "app":
+      return "ADE's GitHub app";
+    case "gh":
+      return "Your gh auth login";
+    case "pat":
+      return "Saved in ADE on this machine";
+    case "environment":
+      return "GITHUB_TOKEN or GH_TOKEN variable";
+    default:
+      return "";
+  }
+}
+
+function credentialSourceIcon(source: GitHubStatus["authSource"] | undefined) {
+  switch (source) {
+    case "app":
+      return <WebhooksLogo size={15} weight="duotone" />;
+    case "gh":
+      return <TerminalWindow size={15} weight="duotone" />;
+    case "pat":
+      return <Key size={15} weight="duotone" />;
+    default:
+      return <Code size={15} weight="bold" />;
   }
 }
 
@@ -166,7 +184,7 @@ function credentialStateBadge(
 /** Colour carries status only: ok, needs attention, or nothing to say. */
 type StatusTone = "ok" | "warn" | "neutral";
 
-export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
+export function GitHubSection() {
   const issueTopBar = useIssueTopBarPreferences();
   const { repo: issueRepo } = useProjectGitHubRepo();
   const issueAccess = useGitHubIssueWriteAccess(issueRepo);
@@ -240,7 +258,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const handleSaveToken = () => {
     const token = githubTokenDraft.trim();
     if (!token) {
-      setActionError("Personal access token is empty.");
+      setActionError("Paste a token first.");
       return;
     }
     setGithubBusy(true);
@@ -272,7 +290,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
       .then((status) => {
         setGithubStatus(status);
         setShowPatSetup(false);
-        setSaveNotice(status.authSource === "gh" ? "Personal access token cleared. ADE is using gh auth." : "Personal access token cleared.");
+        setSaveNotice(status.authSource === "gh" ? "Token removed. ADE is using your GitHub CLI sign-in." : "Token removed.");
       })
       .catch((err) => setActionError(extractError(err)))
       .finally(() => setGithubBusy(false));
@@ -405,72 +423,138 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const writesWith = outage && effectiveWriteAuthSource === "none"
     ? "Unknown"
     : writeCredentialMissing
-      ? `${credentialSourceLabel(effectiveWriteAuthSource)} · not signed in`
+      ? `${credentialSourceLabel(effectiveWriteAuthSource)} · signed out`
       : credentialSourceLabel(effectiveWriteAuthSource);
   const pushesWith = gitTransportPushesWithLabel(githubStatus, credentialSourceLabel(effectiveWriteAuthSource));
   const gitTransportFailure = outage ? null : describeGitTransportFailure(githubStatus);
 
-  return (
-    <div className="ade-int-page">
-      {saveNotice ? (
-        <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
-      ) : null}
-      {actionError ? (
-        <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
-      ) : null}
+  const issueAccessLabel = !issueAccess
+    ? null
+    : issueAccess.app?.needsApproval && !issueAccess.writeSource
+      ? "Needs approval"
+      : issueAccess.writeSource ? "Can edit" : "Read-only";
+  const heroFacts: IntegrationFact[] = [
+    { label: "Repository", value: repoName ?? (githubStatus ? "None found" : "…"), mono: Boolean(repoName) },
+    { label: "Reads with", value: githubStatus ? readsWith : "…" },
+    { label: "Changes with", value: githubStatus ? writesWith : "…", tone: writeCredentialMissing ? "warn" : undefined },
+    ...(gitTransportFailure && pushesWith
+      ? [{
+          label: "Pushes with",
+          value: pushesWith,
+          tone: "warn" as const,
+          title: "Git signs in on its own for push, pull and fetch. When this computer has no git sign-in, ADE lends git its GitHub credential.",
+        }]
+      : []),
+    ...(issueAccessLabel
+      ? [{ label: "Issues", value: issueAccessLabel, tone: issueAccessLabel === "Needs approval" ? "warn" as const : undefined, title: issueAccess ? issueAccessHint(issueAccess) : undefined }]
+      : []),
+  ];
+  const login = githubStatus?.userLogin ?? null;
+  const activeWriteSource = credentialStates.find((credential) => credential.activeFor.includes("write"))?.source ?? null;
 
-      <ModernSection
-        group="GitHub"
-        anchor="github-connection"
-        title="Connection"
-        hint={
-          embedded
-            ? "Sign in with the GitHub CLI or a personal access token."
-            : "Authenticate with GitHub CLI or a personal access token, and install ADE for GitHub for webhook-backed PR updates."
-        }
-        actions={(
-          <>
-            <button type="button" className="ade-modern-btn" data-variant="ghost" disabled={githubBusy} onClick={handleRefreshStatus}>
-              <ArrowClockwise size={13} /> Check again
-            </button>
-            {githubStatus?.patTokenStored ? (
-              <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleClearToken}>
-                <LinkBreak size={12} weight="bold" /> Clear PAT
-              </button>
-            ) : null}
-            <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
-              <Key size={12} weight="bold" /> {showPatSetup ? "Hide PAT setup" : githubStatus?.patTokenStored ? "Replace PAT" : "Use PAT instead"}
-            </button>
-          </>
-        )}
-      >
-        <div className="ade-modern-rows">
-          <div className="ade-int-hero">
-            <span className="ade-int-logo" aria-hidden><GithubLogo size={20} weight="fill" /></span>
-            <div className="ade-int-hero-id">
-              <span className="ade-int-hero-name">{githubStatus?.userLogin ?? (githubStatus ? "Not signed in" : "Checking…")}</span>
-              <span className="ade-int-hero-sub">{repoName ?? "No GitHub repository detected"}</span>
-            </div>
-            {githubStatus ? tag(statusTone, statusLabel) : null}
-          </div>
-          <div className="ade-int-facts">
-            <div className="ade-int-fact">
-              <span className="ade-int-fact-label">Reads with</span>
-              <span className="ade-int-fact-value">{readsWith}</span>
-            </div>
-            <div className="ade-int-fact">
-              <span className="ade-int-fact-label">Writes with</span>
-              <span className="ade-int-fact-value" data-tone={writeCredentialMissing ? "warn" : undefined}>{writesWith}</span>
-            </div>
-            {pushesWith ? (
-              <div className="ade-int-fact" title="Git signs in on its own for push, pull and fetch. When this computer has no git sign-in, ADE lends git its GitHub credential.">
-                <span className="ade-int-fact-label">Pushes with</span>
-                <span className="ade-int-fact-value" data-tone={gitTransportFailure ? "warn" : undefined}>{pushesWith}</span>
-              </div>
-            ) : null}
-          </div>
+  const tokenForm = (
+    <div className="ade-ig-method-extra">
+      <div className="ade-ig-choice">
+        <div className="ade-ig-choice-head">
+          <b>1. Create a token on GitHub</b>
         </div>
+        <p>
+          Classic tokens need {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope, index) => (
+            <React.Fragment key={scope}>{index ? " and " : ""}<code className="ade-ig-mono">{scope}</code></React.Fragment>
+          ))}. Fine-grained tokens must include this repository; both links fill in the permissions for you.
+        </p>
+        <div className="ade-ig-step-actions" style={{ marginTop: 0 }}>
+          <button type="button" className="ade-modern-btn" data-tone="primary" onClick={() => openExternal(classicTokenUrl)}>
+            <ArrowSquareOut size={12} weight="bold" /> Classic token
+          </button>
+          <button type="button" className="ade-modern-btn" onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKEN_NEW_URL)}>
+            <ArrowSquareOut size={12} weight="bold" /> Fine-grained token
+          </button>
+        </div>
+        <details className="ade-linear-link">
+          <summary className="ade-ig-note">
+            All fine-grained permissions <CaretDown size={11} className="ade-linear-links-caret" />
+          </summary>
+          <div className="ade-ig-chips" style={{ marginTop: 8 }}>
+            {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((perm) => (
+              <span key={perm} className="kit-tag">{perm}</span>
+            ))}
+          </div>
+        </details>
+      </div>
+      <div className="ade-ig-choice">
+        <div className="ade-ig-choice-head"><b>2. Paste it here</b></div>
+        <div className="ade-ig-form-row">
+          <SettingsTextField
+            type="password"
+            value={githubTokenDraft}
+            onChange={setGithubTokenDraft}
+            placeholder="ghp_… or github_pat_…"
+            ariaLabel="GitHub personal access token"
+            mono
+          />
+          <button type="button" className="ade-modern-btn" data-tone="primary" disabled={githubBusy || !githubTokenDraft.trim()} onClick={handleSaveToken}>
+            {githubBusy ? "Saving…" : "Save"}
+          </button>
+        </div>
+        {githubTokenDraft.trim() ? (
+          <span className="ade-ig-note">{tokenTypeDetectionLabel(detectTokenType(githubTokenDraft.trim()))}</span>
+        ) : null}
+      </div>
+    </div>
+  );
 
+  // The scopes a classic token or the CLI login grants, under the row that has them.
+  const scopeChips = permissionMode === "scopes" && tokenAuthenticated ? (
+    <div className="ade-ig-method-extra">
+      <div className="ade-ig-chips">
+        {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
+          const present = accessState.requirements[scope].present;
+          return (
+            <span key={scope} className="kit-tag" data-tone={present ? "ok" : "warn"}>
+              {present ? <CheckCircle size={11} weight="fill" /> : <Warning size={11} weight="fill" />} {scope}
+            </span>
+          );
+        })}
+      </div>
+    </div>
+  ) : permissionMode === "fine-grained" && tokenAuthenticated ? (
+    <div className="ade-ig-method-extra">
+      <span className="ade-ig-note">GitHub doesn&rsquo;t list a fine-grained token&rsquo;s permissions, so ADE checks the repository directly.</span>
+    </div>
+  ) : null;
+
+  return (
+    <IntegrationPage id="github">
+      <IntegrationHero
+        id="github"
+        status={githubStatus ? { tone: statusTone, label: statusLabel } : { tone: "checking", label: "Checking…" }}
+        account={login ? {
+          avatar: login.charAt(0).toUpperCase(),
+          title: `@${login}`,
+          detail: `with ${credentialSourceLabel(effectiveWriteAuthSource === "none" ? githubStatus?.authSource : effectiveWriteAuthSource)}`,
+        } : null}
+        actions={(
+          <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={handleRefreshStatus}>
+            <ArrowClockwise size={12} className={githubBusy ? "ade-icon-spin" : undefined} /> Check again
+          </button>
+        )}
+        facts={heroFacts}
+        topBar={{
+          label: "GitHub issues",
+          checked: issueTopBar.github,
+          onChange: (next) => setIssueTopBarVisible("github", next),
+          anchor: "github-issues-top-bar",
+        }}
+      />
+
+      <div className="ade-ig-alerts">
+        {saveNotice ? (
+          <Banner layout="inline" model={{ id: "github-save-notice", tone: "success", title: saveNotice }} />
+        ) : null}
+        {actionError ? (
+          <Banner layout="inline" model={{ id: "github-action-error", tone: "error", title: actionError }} />
+        ) : null}
         {credentialStoreUnreadable ? (
           <Banner
             layout="inline"
@@ -479,16 +563,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "warning",
               title: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.title,
               detail: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.detail,
-              actions: [
-                {
-                  label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action,
-                  onClick: () => openConnectionsPanel("machines"),
-                },
-              ],
+              actions: [{ label: GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY.action, onClick: () => openConnectionsPanel("machines") }],
             }}
           />
         ) : null}
-
         {credentialFallback ? (
           <Banner
             layout="inline"
@@ -497,15 +575,14 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "warning",
               title: (
                 <span style={{ fontWeight: 500 }}>
-                  <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
-                  <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
+                  <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> isn&rsquo;t answering, so ADE is using{" "}
+                  <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> for now. It switches back on its own
                   {credentialFallbackRetryAt ? ` after ${credentialFallbackRetryAt}` : ""}.
                 </span>
               ),
             }}
           />
         ) : null}
-
         {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
           <Banner
             layout="inline"
@@ -514,13 +591,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "warning",
               title: (
                 <span style={{ fontWeight: 500 }}>
-                  Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
+                  Live updates are still on. Background refreshes are paused until {backgroundPausedUntil}, so GitHub keeps answering your own actions.
                 </span>
               ),
             }}
           />
         ) : null}
-
         {gitTransportFailure && !shouldShowGhAuthInstructions ? (
           <Banner
             layout="inline"
@@ -530,178 +606,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               icon: <TerminalWindow size={15} weight="duotone" />,
               title: gitTransportFailure.title,
               detail: gitTransportFailure.settingsDetail,
-              extra: gitTransportFailure.signInFixes
-                ? <code className="ade-int-command">{GH_AUTH_LOGIN_COMMAND}</code>
-                : undefined,
+              extra: gitTransportFailure.signInFixes ? <code className="ade-int-command">{GH_AUTH_LOGIN_COMMAND}</code> : undefined,
               actions: [{ label: "Check again", variant: "primary", onClick: handleRefreshStatus, busy: githubBusy }],
             }}
           />
         ) : null}
-
-        {shouldShowGhAuthInstructions ? (
-          <Banner
-            layout="inline"
-            model={{
-              id: "github-cli-auth-instructions",
-              tone: "warning",
-              icon: <TerminalWindow size={15} weight="duotone" />,
-              title: "GitHub CLI auth",
-              detail: githubStatus?.ghAuthError
-                ? githubStatus.ghAuthError
-                : "Run this command in Terminal, then refresh this panel.",
-              extra: <code className="ade-int-command">{ghCommand}</code>,
-            }}
-          />
-        ) : null}
-      </ModernSection>
-
-      <ModernSection group="GitHub" anchor="github-issues-top-bar" title="Issues">
-        <ModernRows>
-          {issueAccess ? (
-            <ModernRow
-              title="Editing issues in ADE"
-              hint={issueAccessHint(issueAccess)}
-              control={issueAccess.app?.needsApproval && issueAccess.app.manageUrl ? (
-                <button
-                  type="button"
-                  className="ade-modern-btn"
-                  onClick={() => {
-                    const url = issueAccess.app?.manageUrl;
-                    if (url) void window.ade?.app?.openExternal?.(url);
-                  }}
-                >
-                  Review on GitHub
-                </button>
-              ) : (
-                <span className="ade-modern-muted">{issueAccess.writeSource ? "Ready" : "Read-only"}</span>
-              )}
-            />
-          ) : null}
-          <ModernRow
-            title="Show GitHub issues in the top bar"
-            hint="Shows when this repo has open issues. On this computer."
-            control={(
-              <SettingsToggle
-                label="Show GitHub issues in the top bar"
-                checked={issueTopBar.github}
-                onChange={(next) => setIssueTopBarVisible("github", next)}
-              />
-            )}
-          />
-        </ModernRows>
-      </ModernSection>
-
-      {showPatSetup ? (
-        <ModernSection
-          group="GitHub"
-          title="Personal access token"
-          hint="Optional. Use it when you cannot or do not want to use GitHub CLI auth on this machine."
-        >
-          <div className="ade-int-token-grid">
-            <div className="ade-int-token-card">
-              <div className="ade-int-token-head">
-                <Shield size={16} weight="duotone" />
-                <span>Classic token</span>
-              </div>
-              <p className="ade-int-quiet">Generate a classic token with repo and workflow scopes.</p>
-              <div className="ade-int-chip-row">
-                {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => (
-                  <span key={scope} className="kit-tag">{scope}</span>
-                ))}
-              </div>
-              <div className="ade-int-btn-row">
-                <button type="button" className="ade-modern-btn" onClick={() => openExternal(classicTokenUrl)}>
-                  <ArrowSquareOut size={12} weight="bold" /> Create classic token
-                </button>
-                <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={() => openExternal(GITHUB_CLASSIC_TOKENS_URL)}>
-                  Manage tokens
-                </button>
-              </div>
-            </div>
-
-            <div className="ade-int-token-card">
-              <div className="ade-int-token-head">
-                <ShieldCheck size={16} weight="duotone" />
-                <span>Fine-grained token</span>
-              </div>
-              <p className="ade-int-quiet">Include this repository and grant the permissions below.</p>
-              <div className="ade-int-chip-row">
-                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((perm) => (
-                  <span key={perm} className="kit-tag">{perm}</span>
-                ))}
-              </div>
-              <div className="ade-int-btn-row">
-                <button type="button" className="ade-modern-btn" onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKEN_NEW_URL)}>
-                  <ArrowSquareOut size={12} weight="bold" /> Create fine-grained token
-                </button>
-                <button type="button" className="ade-modern-btn" data-variant="ghost" onClick={() => openExternal(GITHUB_FINE_GRAINED_TOKENS_URL)}>
-                  Manage tokens
-                </button>
-              </div>
-            </div>
-          </div>
-
-          <div className="ade-ap-rowcard" style={{ flexDirection: "column", alignItems: "stretch", gap: 10 }}>
-            <label style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-              <span className="ade-ap-rowtitle">Token</span>
-              <SettingsTextField
-                type="password"
-                value={githubTokenDraft}
-                onChange={setGithubTokenDraft}
-                placeholder="ghp_... or github_pat_..."
-                mono
-              />
-              {githubTokenDraft.trim() ? (
-                <span className="ade-int-quiet">
-                  Detected: {tokenTypeDetectionLabel(detectTokenType(githubTokenDraft.trim()))}
-                </span>
-              ) : null}
-            </label>
-            <div className="ade-int-btn-row">
-              <button type="button" className="ade-modern-btn" data-tone="primary" disabled={githubBusy} onClick={handleSaveToken}>
-                <Key size={12} weight="bold" /> {githubBusy ? "Saving..." : "Save token"}
-              </button>
-              <button type="button" className="ade-modern-btn" disabled={githubBusy} onClick={handleRefreshStatus}>
-                <ArrowClockwise size={13} /> Check status
-              </button>
-            </div>
-          </div>
-        </ModernSection>
-      ) : null}
-
-      <GitHubAppInstallPanel pin={pin} />
-
-      {credentialStates.length > 0 ? (
-        <ModernSection
-          group="GitHub"
-          title="Access order"
-          hint="ADE uses the first working connection. Reads can use the GitHub App, and so can issue edits once its Issues permission is approved; other writes skip it and use the first connection that can write."
-        >
-          <div className="ade-modern-rows">
-            {credentialStates.map((credential, index) => {
-              const badge = credentialStateBadge(credential, outage != null, appAccount);
-              return (
-                <div key={credential.source} className="ade-int-order-row">
-                  <span className="ade-int-order-num kit-num">{index + 1}</span>
-                  <span className="ade-int-order-name">{credentialSourceLabel(credential.source)}</span>
-                  <span className="ade-int-order-cap">
-                    {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
-                  </span>
-                  {tag(badge.tone, badge.label)}
-                </div>
-              );
-            })}
-          </div>
-        </ModernSection>
-      ) : null}
-
-      <ModernSection
-        group="GitHub"
-        // The model names the heading in capitals; the page reads in sentence case.
-        title={sentenceCase(credentialPresentation.permissionHeading)}
-        hint="Pull requests, reviews, CI re-runs and branch pushes all need this access. GitHub CLI and PAT auth need the same."
-      >
-        {permissionMode === "auth-failure" ? (
+        {permissionMode === "auth-failure" && authFailurePresentation ? (
           <Banner
             layout="inline"
             model={{
@@ -709,69 +619,14 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               // Neutral during an outage: a warning tone implies the user has
               // something to fix, and they don't.
               tone: outage ? "neutral" : "warning",
-              title: authFailurePresentation?.title ?? "",
-              detail: authFailurePresentation?.settingsDetail,
+              title: authFailurePresentation.title,
+              detail: authFailurePresentation.settingsDetail,
               actions: outage
-                ? [
-                    {
-                      label: "GitHub status",
-                      icon: <ArrowSquareOut size={12} />,
-                      onClick: () => openExternal(outage.actionUrl),
-                    },
-                  ]
+                ? [{ label: "GitHub status", icon: <ArrowSquareOut size={12} />, onClick: () => openExternal(outage.actionUrl) }]
                 : undefined,
             }}
           />
-        ) : permissionMode === "app" ? (
-          <div className="ade-modern-rows">
-            <div className="ade-int-perm-row">
-              <span className="ade-int-perm-icon" data-tone={githubStatus?.repoAccessOk === true ? "ok" : undefined}>
-                <ShieldCheck size={14} weight="fill" />
-              </span>
-              <span className="ade-int-perm-name">{credentialPresentation.repoAccessLabel}</span>
-            </div>
-            <p className="ade-int-note">
-              The ADE GitHub App is read-only. ADE uses it for pull request data and real-time updates, then uses GitHub CLI or a personal access token for actions that change GitHub.
-            </p>
-          </div>
-        ) : permissionMode === "fine-grained" ? (
-          <div className="ade-modern-rows">
-            <div className="ade-int-perm-list">
-              {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((permission) => (
-                <span key={permission} className="ade-int-perm-item">
-                  <ShieldCheck size={13} weight="fill" />
-                  {permission}
-                </span>
-              ))}
-            </div>
-            <p className="ade-int-note">
-              GitHub does not expose fine-grained PAT permissions through OAuth scope headers. ADE verifies repo access directly when an active GitHub remote is available.
-            </p>
-          </div>
-        ) : (
-          <div className="ade-modern-rows">
-            <div className="ade-int-perm-list">
-              {REQUIRED_GITHUB_CLASSIC_SCOPES.map((scope) => {
-                const present = accessState.requirements[scope].present;
-                return (
-                  <span key={scope} className="ade-int-perm-item" data-tone={present ? "ok" : "warn"}>
-                    {present ? <CheckCircle size={13} weight="fill" /> : <Warning size={13} weight="fill" />}
-                    <span className="ade-int-mono">{scope}</span>
-                  </span>
-                );
-              })}
-            </div>
-            <div className="ade-int-scope-row">
-              <span className="ade-int-fact-label">Granted</span>
-              {accessState.normalizedScopes.length > 0 ? accessState.normalizedScopes.map((scope) => (
-                <span key={scope} className="kit-tag">{scope}</span>
-              )) : (
-                <span className="ade-int-quiet">No OAuth scopes detected yet.</span>
-              )}
-            </div>
-          </div>
-        )}
-
+        ) : null}
         {hasMissingScopes ? (
           <Banner
             layout="inline"
@@ -780,15 +635,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "error",
               // The token's scopes are the person's to fix, not a failure to report.
               report: false,
-              title: (
-                <>
-                  Missing required {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.
-                </>
-              ),
+              title: <>Missing {accessState.usesFineGrainedPermissions ? "permissions" : "scopes"}: {accessState.missingDescriptions.join(", ")}.</>,
             }}
           />
         ) : null}
-
         {repoProbeFailed ? (
           <Banner
             layout="inline"
@@ -797,33 +647,93 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               tone: "error",
               title: (
                 <span style={{ fontWeight: 500 }}>
-                  Token authenticated as <strong>{githubStatus?.userLogin}</strong>, but cannot access{" "}
-                  <strong>{repoName ?? "this repo"}</strong>
+                  Signed in as <strong>{githubStatus?.userLogin}</strong>, but that account can&rsquo;t reach{" "}
+                  <strong>{repoName ?? "this repository"}</strong>
                   {githubStatus?.repoAccessError ? ` (${githubStatus.repoAccessError})` : ""}.
-                  {isFineGrainedToken ? (
-                    <> Add this repository to the fine-grained token and grant Contents, Pull requests, Metadata, Actions, and Workflows permissions.</>
-                  ) : (
-                    <> Make sure the token has access to this repository.</>
-                  )}
+                  {isFineGrainedToken ? <> Add the repository to the token.</> : <> Check that the token can see this repository.</>}
                 </span>
               ),
             }}
           />
         ) : null}
+        {issueAccess?.app?.needsApproval && issueAccess.app.manageUrl ? (
+          <Banner
+            layout="inline"
+            model={{
+              id: "github-issues-approval",
+              tone: "neutral",
+              title: "Approve the Issues permission for ADE for GitHub",
+              detail: issueAccessHint(issueAccess),
+              actions: [{
+                label: "Approve on GitHub",
+                icon: <ArrowSquareOut size={12} />,
+                onClick: () => {
+                  const url = issueAccess.app?.manageUrl;
+                  if (url) void window.ade?.app?.openExternal?.(url);
+                },
+              }],
+            }}
+          />
+        ) : null}
+      </div>
 
-        <div className="ade-int-uses">
-          {PERMISSION_USES.map((use) => (
-            <div key={use.title} className="ade-int-use-row">
-              <span className="ade-modern-glyph" aria-hidden>{use.icon}</span>
-              <div style={{ minWidth: 0 }}>
-                <div className="ade-ap-rowtitle">{use.title}</div>
-                <div className="ade-ap-rowhint">{use.detail}</div>
+      <IntegrationColumns>
+        <IntegrationCard
+          anchor="github-connection"
+          icon={<Key size={16} weight="duotone" />}
+          title="Your sign-in"
+          hint="ADE uses the first of these that works. Changes to GitHub go through one that can write."
+        >
+          {shouldShowGhAuthInstructions ? (
+            <div className="ade-ig-choice" data-primary="true">
+              <div className="ade-ig-choice-head">
+                <TerminalWindow size={16} weight="duotone" />
+                <b>Sign in with the GitHub CLI</b>
+                <span className="kit-tag">Recommended</span>
               </div>
+              <p>{githubStatus?.ghAuthError ? githubStatus.ghAuthError : "Run this in a terminal, then press Check again."}</p>
+              <code className="ade-int-command" style={{ marginTop: 0 }}>{ghCommand}</code>
             </div>
-          ))}
-        </div>
-      </ModernSection>
+          ) : null}
+          <div className="ade-ig-rows" style={{ marginBottom: -18 }}>
+            {credentialStates.length === 0 ? (
+              <div className="ade-ig-row"><span className="ade-ig-note">{githubStatus ? "No sign-ins reported by this machine." : "Checking sign-ins…"}</span></div>
+            ) : credentialStates.map((credential) => {
+              const badge = credentialStateBadge(credential, outage != null, appAccount);
+              const isPat = credential.source === "pat";
+              const active = credential.activeFor.length > 0;
+              return (
+                <div key={credential.source} className="ade-ig-method" data-active={active ? "true" : undefined}>
+                  <span className="ade-ig-method-icon" aria-hidden>{credentialSourceIcon(credential.source)}</span>
+                  <span className="ade-ig-method-name">
+                    <b>{credentialSourceLabel(credential.source)}</b>
+                    <small>
+                      {credential.source === "app" ? "Reads only · set up on the right" : credentialSourceDetail(credential.source)}
+                    </small>
+                  </span>
+                  <span className="ade-ig-method-side">
+                    {isPat && githubStatus?.patTokenStored ? (
+                      <button type="button" className="ade-modern-btn" data-variant="ghost" data-size="sm" disabled={githubBusy} onClick={handleClearToken}>
+                        Remove
+                      </button>
+                    ) : null}
+                    {isPat ? (
+                      <button type="button" className="ade-modern-btn" data-size="sm" disabled={githubBusy} onClick={() => setShowPatSetup((value) => !value)}>
+                        {showPatSetup ? "Cancel" : githubStatus?.patTokenStored ? "Replace" : "Add token"}
+                      </button>
+                    ) : null}
+                    {tag(badge.tone, badge.label)}
+                  </span>
+                  {isPat && showPatSetup ? tokenForm : null}
+                  {credential.source === activeWriteSource && !(isPat && showPatSetup) ? scopeChips : null}
+                </div>
+              );
+            })}
+          </div>
+        </IntegrationCard>
 
-    </div>
+        <GitHubAppInstallPanel pin={pin} />
+      </IntegrationColumns>
+    </IntegrationPage>
   );
 }

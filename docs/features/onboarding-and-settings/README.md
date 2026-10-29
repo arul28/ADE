@@ -864,6 +864,16 @@ Renderer — settings:
   automatic 3). `web: "hidden"` in the manifest, because the report is built on
   this machine by the desktop app. See
   [storage and recovery → Auto-send](../storage-and-recovery/README.md#auto-send).
+- `apps/desktop/src/renderer/components/settings/integrations/` — the
+  Integrations tab's frame, built like the provider pages. With nothing open
+  the tab is a grid of GitHub, Linear and Jira (`IntegrationsHome.tsx`: the
+  maker's banner, what it does, and this machine's connection state, each read
+  with the Settings machine's pin). `?integration=<id>` opens one page, and a
+  `#hash` naming any of its settings (`#github-connection`, `#jira-projects`)
+  opens it too. Each page (`IntegrationChrome.tsx`) is a banner in the maker's
+  colors with the logo standing in 3D (`SolidLogo` from the provider hero),
+  a strip of what is connected, then cards in two columns.
+  `integrationBrand.tsx` holds each brand's accent, banner art and logo.
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
   auth, credential-specific permission diagnostics, structured validation

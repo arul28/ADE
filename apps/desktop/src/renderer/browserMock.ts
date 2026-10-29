@@ -9077,6 +9077,30 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           userDisplayName: "Riley Chen",
         },
       ]),
+      // The ADE agent, installed with no rules yet: the settings card shows step 2.
+      getLinearAgentOverview: resolvedArg({
+        available: true,
+        message: null,
+        status: {
+          ok: true as const,
+          orgId: "mock-org",
+          orgName: MOCK_LINEAR_CONNECTION.organizationName,
+          installed: !browserMockFlag("mockLinearAgentOff"),
+          appUserId: "mock-agent",
+          installedAt: null,
+          installedByMe: true,
+          fallbackMode: "reply" as const,
+          runnerIsMe: false,
+          runnerConfigured: false,
+          me: { linearUserId: "mock-linear-user", registered: true },
+          members: [
+            { linearUserId: "mock-linear-user", displayName: "Mock Linear User", isMe: true, registeredAt: null, lastSeenAt: null },
+            { linearUserId: "mock-linear-riley", displayName: "Riley Chen", isMe: false, registeredAt: null, lastSeenAt: null },
+          ],
+        },
+        rules: [],
+        activeSessions: [],
+      }),
       getLinearConnectionStatus: resolvedArg(
         browserMockFlag("mockLinearOff")
           ? { ...MOCK_LINEAR_CONNECTION, tokenStored: false, connected: false }
