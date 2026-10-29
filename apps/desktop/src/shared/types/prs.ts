@@ -1268,14 +1268,26 @@ export type RecheckIntegrationStepResult = {
 // Rebase Types (shared with conflicts)
 // --------------------------------
 
+/**
+ * A lane that should be rebased onto its compare base: its open PR's base
+ * branch, else the project's default branch.
+ *
+ * - `behind`: the base has commits the lane does not (`behindBy` is exact).
+ * - `built_on_merged`: the lane's history contains the head commit of a PR
+ *   that has since merged (typically squash-merged), so its own PR would
+ *   repeat that work until it is rebased onto the base.
+ */
 export type RebaseNeed = {
   laneId: string;
   laneName: string;
-  kind: "lane_base" | "pr_target";
+  kind: "behind" | "built_on_merged";
   baseBranch: string;
   behindBy: number;
+  /** The merged PR the lane was built on; set when `kind` is `built_on_merged`. */
+  mergedPr: { number: number; title: string | null; headBranch: string } | null;
   conflictPredicted: boolean;
   conflictingFiles: string[];
+  /** The lane's own open PR, when it has one. */
   prId: string | null;
   groupContext: string | null;
   dismissedAt: string | null;
