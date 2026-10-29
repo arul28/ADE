@@ -10,9 +10,11 @@ type, and (with the same proxy) a remote desktop. Results and ceilings live in
 | `phone-sync.bench.mts` | Headless phone. Speaks the sync protocol as the iOS app does and times each connect step through the proxy. |
 | `make-synthetic-project.mts` | Seeded 1,000-chat project (20 lanes, a 1,000-turn chat, an icon). Same seed, same bytes. |
 | `rig.sh`, `rig-pair.mts`, `rig-scenarios.mjs` | Three-machine rig: a dev desktop paired (through its own pairing call) with two measurement brains behind slow proxies (`wan30` = 30 ms RTT), and the scenarios run on it: reload → rows from every machine, cross-machine chat switches and project tab switches, each with proxy bytes. Sources are make-real-load-copy copies; run up → measure → down in one heavy slot. See the header of `rig.sh`. |
-| `make-real-load-copy.mts` | Runnable copy of a real project for real-load runs: database by SQLite backup, transcripts as APFS clones, `git clone --local`, one worktree per active lane, every path rewritten to the copy, the copied sync cluster record cleared, origin pointed nowhere. Read-only on the source. Numbers only; never commit or show a copy. |
+| `make-real-load-copy.mts` | Runnable copy of a real project for real-load runs (macOS and Windows): database by SQLite backup, transcripts as APFS clones (plain copies on Windows), `git clone --local`, one worktree per active lane, every path rewritten to the copy, the copied sync cluster record cleared, origin pointed nowhere. Read-only on the source. Numbers only; never commit or show a copy. |
 | `measure-brain.mjs` | Starts and stops an isolated sync-ON brain. |
 | `guard-sync-port.cjs` | Preload that keeps a measurement brain from touching the machine (below). |
+| `sql-trace.cjs` | Preload that times every SQLite statement and transaction in a measurement brain, with its thread (`brain-db-steps.bench.mts`). |
+| `brain-rpc.mts` | Start and stop a measurement brain and talk JSON-RPC to it from a bench (`git-status-burst`, `brain-db-steps`). |
 | `run-phone-matrix.sh` | One bench run per heavy lock, for a long matrix. |
 
 ## Run it

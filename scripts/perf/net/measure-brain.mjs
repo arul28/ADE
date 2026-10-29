@@ -22,7 +22,9 @@ import { fileURLToPath } from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const repo = path.resolve(here, "../../..");
 const guard = path.join(here, "guard-sync-port.cjs");
-// ADE_PERF_LOOP_DELAY_FILE=<file.jsonl> also preloads the event-loop stall probe.
+// ADE_PERF_LOOP_DELAY_FILE=<file.jsonl> also preloads the event-loop stall probe, and
+// ADE_PERF_EXTRA_REQUIRE=<file.cjs>[<path delimiter><file.cjs>...] any other preloads (spawn-trace.cjs,
+// a statement timer).
 const loopProbe = path.join(here, "loop-delay-preload.cjs");
 
 const [command, ...rest] = process.argv.slice(2);
@@ -68,6 +70,7 @@ function brainEnv() {
     for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP"]) if (process.env[key]) env[key] = process.env[key];
   }
   for (const key of Object.keys(process.env)) if (key.startsWith("ADE_PERF_")) env[key] = process.env[key];
+  if (process.env.ADE_SPAWN_TRACE_DIR) env.ADE_SPAWN_TRACE_DIR = process.env.ADE_SPAWN_TRACE_DIR;
   return env;
 }
 
@@ -105,7 +108,8 @@ async function start() {
   fs.mkdirSync(adeHome, { recursive: true });
   if (process.platform !== "win32") fs.rmSync(socket, { force: true });
   const log = fs.openSync(logPath, "a");
-  const preloads = ["--require", guard, ...(process.env.ADE_PERF_LOOP_DELAY_FILE ? ["--require", loopProbe] : [])];
+  const extra = (process.env.ADE_PERF_EXTRA_REQUIRE ?? "").split(path.delimiter).filter(Boolean).map((file) => path.resolve(file));
+  const preloads = ["--require", guard, ...(process.env.ADE_PERF_LOOP_DELAY_FILE ? ["--require", loopProbe] : []), ...extra.flatMap((file) => ["--require", file])];
   const child = spawn(process.execPath, [...preloads, cli, "--role", "cto", "serve", "--socket", socket], {
     cwd: root,
     env: brainEnv(),

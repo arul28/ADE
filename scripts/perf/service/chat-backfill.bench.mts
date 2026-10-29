@@ -11,13 +11,12 @@
 // Per page it reports the pipeline cost, so a term that grows with the
 // transcript (rather than with the page) shows up as a rising ms/page.
 //
-// With no argument: the five largest files in <project>/.ade/transcripts, where
+// With no argument: the five largest chats in <project>/.ade/transcripts (transcript-files.mts), where
 // <project> is $ADE_PROJECT_ROOT or the checkout this script is in. `--synthetic N`
 // builds an N-turn transcript instead (the shape used when no real transcript
 // may be read). Transcripts are only read.
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { largestTranscripts, loadTranscript } from "./transcript-files.mts";
 import type { AgentChatEventEnvelope } from "../../../apps/desktop/src/shared/types/chat";
 import {
   CHAT_HISTORY_PAGE_MAX_BYTES,
@@ -39,33 +38,8 @@ import { foldTurnFailureRows } from "../../../apps/desktop/src/renderer/componen
 
 const PAGE_BYTES = CHAT_HISTORY_PAGE_MAX_BYTES;
 
-function defaultTranscripts(): string[] {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const checkout = path.resolve(here, "../../..");
-  // A lane worktree lives under <project>/.ade/worktrees/<lane>.
-  const marker = `${path.sep}.ade${path.sep}worktrees${path.sep}`;
-  const project = process.env.ADE_PROJECT_ROOT
-    ?? (checkout.includes(marker) ? checkout.slice(0, checkout.indexOf(marker)) : checkout);
-  const dir = path.join(project, ".ade", "transcripts");
-  return readdirSync(dir)
-    .filter((name) => name.endsWith(".chat.jsonl"))
-    .map((name) => path.join(dir, name))
-    .map((file) => ({ file, size: statSync(file).size }))
-    .sort((a, b) => b.size - a.size)
-    .slice(0, 5)
-    .map((entry) => entry.file);
-}
-
-function load(file: string): AgentChatEventEnvelope[] {
-  return readFileSync(file, "utf8").split("\n").flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed?.event?.type ? [parsed as AgentChatEventEnvelope] : [];
-    } catch {
-      return [];
-    }
-  });
-}
+const defaultTranscripts = () => largestTranscripts(5);
+const load = loadTranscript;
 
 /** A long chat of the shape a real one has, for a run that may not read one. */
 function synthetic(turns: number): AgentChatEventEnvelope[] {
@@ -115,6 +89,9 @@ function pageAt(envelopes: AgentChatEventEnvelope[], offsets: number[], end: num
   for (let index = 0; index < offsets.length; index += 1) {
     if (offsets[index]! >= windowStart) { from = index; break; }
   }
+  // One event larger than a page (a big tool output) has no line start inside the window; the page is
+  // then that event alone, so the cursor always moves back.
+  while (from > 0 && offsets[from]! >= end) from -= 1;
   let to = from;
   while (to < envelopes.length && offsets[to]! < end) to += 1;
   return {

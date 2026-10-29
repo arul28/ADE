@@ -17,7 +17,8 @@
 //      call answers empty here, so a measurement brain never reads or changes the tailnet config.
 //   5. It talks to ADE's cloud (relay tunnel, push relay, analytics, crash reports). Name lookups for
 //      ade-app.dev, posthog and sentry fail here (ENOTFOUND), so a scratch home never publishes itself.
-// Each blocked call runs /usr/bin/true instead, so callers see a normal empty result. Nothing else changes.
+// Each blocked call runs /usr/bin/true instead (on Windows `cmd.exe /d /c exit 0`), so callers see a normal
+// empty result. Nothing else changes.
 "use strict";
 const net = require("node:net");
 const childProcess = require("node:child_process");
@@ -79,11 +80,14 @@ net.Server.prototype.listen = function guardedListen(...args) {
   return originalListen.apply(this, args);
 };
 
-const TRUE_BIN = "/usr/bin/true";
+const TRUE_CALL = process.platform === "win32"
+  ? [process.env.ComSpec || "C:\\Windows\\System32\\cmd.exe", ["/d", "/c", "exit 0"]]
+  : ["/usr/bin/true", []];
 let blockedCalls = 0;
 
 function isBlocked(file, args) {
-  const name = String(file ?? "").split("/").pop();
+  // Windows callers pass full paths with backslashes (C:\Windows\System32\...\powershell.exe).
+  const name = String(file ?? "").split(/[\\/]/).pop();
   const list = Array.isArray(args) ? args.map(String) : [];
   // Machine-wide listener scans of the sync port range.
   if (name === "lsof" && list.some((arg) => /^-iTCP:8[7-9]\d\d/.test(arg))) return true;
@@ -91,6 +95,8 @@ function isBlocked(file, args) {
   if (/^tailscale(\.exe)?$/i.test(name) || /Tailscale\.app/.test(String(file ?? ""))) return true;
   // Windows: the singleton's listener scan and the process listings run through PowerShell.
   if (/^(powershell|pwsh)(\.exe)?$/i.test(name) && list.some((arg) => /Get-NetTCPConnection|Win32_Process|Get-Process/i.test(arg))) return true;
+  // Windows: the orphan reapers try `wmic process` before PowerShell.
+  if (/^wmic(\.exe)?$/i.test(name) && list.some((arg) => /^process$/i.test(arg))) return true;
   // Machine-wide process listings (reapers for orphaned dns-sd and stale brains).
   if (name === "ps" && list.some((arg) => /^-[a-z]*a[a-z]*x|^-ax|^-e$|^-A$/.test(arg))) return true;
   return false;
@@ -102,7 +108,7 @@ function rewrite(file, args) {
   if (process.env.ADE_PERF_GUARD_LOG === "1") {
     process.stderr.write(`[guard-sync-port] blocked ${file} ${(args ?? []).join(" ")}\n`);
   }
-  return [TRUE_BIN, []];
+  return TRUE_CALL;
 }
 
 function wrapFileArgs(original) {
