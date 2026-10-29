@@ -387,11 +387,10 @@ import {
   CreateLaneDialogHost,
   type NewLaneDraftConfig,
 } from "../lanes/CreateLaneDialogHost";
-import {
-  effectiveNewLaneBaseSource,
-  fetchNewLaneBaseBranches,
-  selectDefaultNewLaneBaseRef,
-} from "../lanes/newLaneBaseSource";
+import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
+import { describeAutoCreateStart } from "../lanes/laneStartOptions";
+import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
+import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import {
   LaneCombobox,
   isAutoCreateLaneOptionId,
@@ -460,7 +459,7 @@ import {
   type AiStatusCacheInvalidatedEventDetail,
   type AiStatusCacheUpdatedEventDetail,
 } from "../../lib/aiDiscoveryCache";
-import { getProjectConfigCached, peekProjectConfigCached } from "../../lib/projectConfigCache";
+import { getProjectConfigCached } from "../../lib/projectConfigCache";
 import {
   buildOptimisticChatLaunchSnapshot,
   chatLaunchStore,
@@ -1331,12 +1330,12 @@ function createDeterministicAutoLaneName(prompt: string, options: { genericSuffi
 
 /**
  * The launch recipe carried by a composer "configure for chat" draft. The lane
- * name and base travel as the launch's own `laneName`/`baseBranch`, so strip
- * them and pass the rest of the (shared) recipe through unchanged — a new recipe
- * field cannot be dropped here.
+ * name travels as the launch's own `laneName`, so strip it and pass the rest of
+ * the (shared) recipe through unchanged — a new recipe field cannot be dropped
+ * here.
  */
 function chatLaunchLaneConfigFromDraft(config: NewLaneDraftConfig): ChatLaunchLaneConfig {
-  const { name: _name, baseBranch: _baseBranch, ...recipe } = config;
+  const { name: _name, ...recipe } = config;
   return recipe;
 }
 
@@ -12589,53 +12588,20 @@ export function AgentChatPane({
       onAutoCreateNameResolved?.();
       assertActive?.();
       let createdLane: LaneSummary;
-      if (configured?.mode === "import") {
+      if (configured?.mode === "existing") {
         const branchRef = configured.branchRef?.trim() ?? "";
-        if (!branchRef) throw new Error("Choose a branch to import.");
+        if (!branchRef) throw new Error("Choose a branch for the lane to work on.");
         createdLane = pin
           ? await window.ade.lanes.importBranch({ branchRef, name: laneName }, pin)
           : await window.ade.lanes.importBranch({ branchRef, name: laneName });
-      } else if (configured?.mode === "child") {
-        const parentLaneId = configured.parentLaneId?.trim() ?? "";
-        if (!parentLaneId) throw new Error("Choose a parent lane for the child lane.");
-        const childBaseRef = configured.baseBranch.trim();
-        const childArgs = {
-          parentLaneId,
-          name: laneName,
-          ...(childBaseRef ? { baseBranchRef: childBaseRef } : {}),
-          ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
-        };
-        createdLane = pin
-          ? await window.ade.lanes.createChild(childArgs, pin)
-          : await window.ade.lanes.createChild(childArgs);
       } else {
-        let baseBranch = configured?.baseBranch.trim() ?? "";
-        if (!baseBranch) {
-          const projectConfigSnapshot = await getProjectConfigCached({ projectRoot, pin, force: true }).catch(() => null);
-          const baseSource = effectiveNewLaneBaseSource(projectConfigSnapshot);
-          const branches = await fetchNewLaneBaseBranches({
-            source: baseSource,
-            fetchRemoteBranches: () => pin
-              ? window.ade.git.fetch({ laneId: primaryLane.id }, pin)
-              : window.ade.git.fetch({ laneId: primaryLane.id }),
-            listBranches: () => pin
-              ? window.ade.git.listBranches({ laneId: primaryLane.id }, pin)
-              : window.ade.git.listBranches({ laneId: primaryLane.id }),
-          });
-          const primaryBaseRef = primaryLane.baseRef
-            ?? (branchNameFromRef(primaryLane.branchRef) || "main");
-          baseBranch = selectDefaultNewLaneBaseRef({
-            branches,
-            source: baseSource,
-            primaryBaseRef,
-          }) ?? "";
-        }
+        // No start: the host applies the project's new-lane defaults.
         assertActive?.();
         const createArgs = {
           name: laneName,
           // A configured lane derives its branch from the user's name.
           ...(configured ? {} : { branchName: createTemporaryAutoLaneBranch() }),
-          ...(baseBranch ? { baseBranch } : {}),
+          ...(configured?.start ? { start: configured.start } : {}),
           ...(configured?.linearIssue ? { linearIssue: configured.linearIssue } : {}),
         };
         createdLane = pin
@@ -13015,11 +12981,6 @@ export function AgentChatPane({
       || createDeterministicAutoLaneName(buildDraftLaunchNamingSeed(snapshot), {
         genericSuffix: autoLaneGenericSuffix(),
       });
-    // root and child both accept a base override (child: branch off the parent
-    // from this ref); an import adopts a branch and ignores it.
-    const baseBranch = configuredLane && configuredLane.mode !== "import"
-      ? configuredLane.baseBranch.trim() || null
-      : null;
     const args = buildNewLaneLaunchArgs({
       kind,
       mode,
@@ -13030,19 +12991,19 @@ export function AgentChatPane({
       provider,
       cliTitle: cli?.title ?? null,
       chat,
-      ...(baseBranch ? { baseBranch } : {}),
       ...(configuredLane ? { laneConfig: chatLaunchLaneConfigFromDraft(configuredLane) } : {}),
       originClientId: getChatLaunchOriginClientId(),
     });
     // Predict the stages the host will report so the card has its shape from
-    // the first frame. Only `fetch` depends on project config; an unread
-    // config assumes the default (fetch from the remote).
-    const knownConfig = peekProjectConfigCached({ projectRoot, pin: launchBinding });
-    // Only child/import skip the fetch; a configured root still branches from a
-    // remote base when the project is configured that way.
-    const includeFetch = !baseBranch
-      && !(configuredLane && configuredLane.mode !== "root")
-      && effectiveNewLaneBaseSource(knownConfig) !== "local";
+    // the first frame. Only `fetch` depends on the start: a lane that brings
+    // pushed work fetches first. Unread defaults assume the built-in default
+    // (pushed work).
+    const knownDefaults = peekNewLaneDefaultsCached({ projectRoot, pin: launchBinding });
+    const launchStart = chatLaunchLaneStart(
+      configuredLane ? chatLaunchLaneConfigFromDraft(configuredLane) : null,
+      knownDefaults?.defaults.start ?? DEFAULT_LANE_START,
+    );
+    const includeFetch = launchStart?.bring === "pushed";
     registerChatLaunchLocalRecord(launchId, { args, pin: launchBinding, draftSnapshot: snapshot, cli });
     insertOptimisticChatLaunch(
       launchBinding,
@@ -16124,6 +16085,12 @@ export function AgentChatPane({
     && !lockSessionId
     && !initialSessionId
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
+  // The auto-create row says where a new lane would start ("from origin/main"),
+  // read from the project's saved new-lane defaults.
+  const newLaneDefaultsSnapshot = useNewLaneDefaults({ projectRoot, enabled: showDraftLaunchControls });
+  const autoCreateStartDetail = newLaneDefaultsSnapshot
+    ? describeAutoCreateStart(newLaneDefaultsSnapshot)
+    : null;
   const {
     machineOptions: laneMachineOptions,
     selectorLanes: draftLaneSelectorLanes,
@@ -16139,6 +16106,7 @@ export function AgentChatPane({
     handleMachineChange: handleDraftMachineChange,
     handleLaneSelectionChange: handleDraftLaneSelectionChange,
   } = useDraftMachineRouting({
+    autoCreateDetail: autoCreateStartDetail,
     enabled: showDraftLaunchControls,
     projectBinding,
     openProjectTabRoots,
