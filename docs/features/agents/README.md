@@ -28,7 +28,6 @@ The former worker/hiring agents were removed. There is one persistent identity �
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | Provider-runtime prompt assembly, including one shared timezone-safe scheduled-work contract for Claude, Codex, Cursor, Droid, OpenCode, and Pi, plus runtime-specific native-subagent versus ADE-child routing guidance. |
 | `apps/desktop/src/main/services/cli/adeCliService.ts` | Desktop-side install / status / uninstall surface for the `ade` launcher. |
 | `apps/desktop/src/shared/adeCliGuidance.ts` | Canonical agent-prompt guidance builder for finding and using `ade`, reading Agent Skills on demand, using socket-backed live surfaces, reporting session activity when a provider has trusted session-scoped CLI access, registering proof, and cleaning up processes. Injected into Work chats, CLI launches, ADE Code/TUI sessions, the CTO, and mobile-started runtime work. |
-| `apps/desktop/src/main/services/projectNotes/projectNotesService.ts`, `apps/desktop/src/shared/types/projectNotes.ts` | Project notes: the `project_agent_notes` CRR table's service, its hard caps, and the prompt block every new agent session on the project gets. Backs the `project_notes` action domain and `ade notes`. |
 | `apps/desktop/src/shared/agentSkillRoots.ts` | Resolves and formats Agent Skill roots injected into prompts and CLI environments. |
 | `apps/desktop/src/shared/types/cto.ts` | CTO identity, capability mode, onboarding, memory, and prompt-preview types. |
 
@@ -392,41 +391,6 @@ from scratch and drops every inherited `OPENCODE_*` variable — that server
 therefore sets `OPENCODE_DISABLE_AUTOUPDATE=1` itself rather than inheriting it,
 so it cannot self-update the binary ADE pinned. See
 [Provider config ownership](../chat/agent-routing.md#provider-config-ownership).
-
-## Project notes
-
-Project notes are short facts earlier agents learned about working on one
-project in ADE: how to build or launch its app, a dev-server port, an ADE quirk
-there. They are not CTO memory and not provider memory; every ADE agent on the
-project gets the same list, whatever harness runs it.
-
-- **Storage.** One CRR table in the project database, `project_agent_notes`
-  (id, scope, machine_id, section, body, timestamps, updated_by), so a note
-  saved on one machine reaches every machine with the project. A `machine`
-  note carries the saving machine's account machine key and is shown only
-  there; a `project` note holds everywhere.
-- **Writing.** Agents use `ade notes list | add | edit | rm` (`--section`,
-  `--scope project|machine`), which calls the `project_notes` action domain on
-  the runtime that owns the lane. Ids accept a unique prefix. Agent writes are
-  allowed without prompts.
-- **Caps, enforced by the service.** One line of at most 200 characters per
-  note, at most 8 notes per section (as one machine sees them), and a rendered
-  block of at most 3072 bytes, rule text included. A write past a cap is
-  refused with the current count or size and what to merge or remove. Rows
-  that arrive by sync are bounded at render time instead: notes past the byte
-  cap are left out with a pointer to `ade notes list`.
-- **Prompt.** The block opens `## Project notes (ADE)`, carries five lines of
-  rules (always present, so agents start saving), then each section. It is
-  read once per session when the session starts and kept for its life, so a
-  running session's system prompt never changes and new notes reach the next
-  session. Chats add it at the end of the harness prompt (Claude, Codex,
-  OpenCode, Cursor, Droid, Copilot, Pi, ACP); tracked CLIs get it with the ADE
-  session guidance (`buildAdeCliSessionGuidance`), OpenCode terminals through
-  their session instructions, and `spawn_agent` in its prompt. Personal chats
-  get none.
-- **Visibility.** Settings → Project → Agents → Agent notes lists every note an agent on
-  that machine sees (section, scope, text, last updated), read-only. There is
-  no editing UI; users and agents change notes with `ade notes`.
 
 ## Smart memory and reconstruction
 

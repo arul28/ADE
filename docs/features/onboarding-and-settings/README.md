@@ -98,7 +98,7 @@ Main process:
   Storage & cleanup (Space, Archive, Rules), one view at a time; the web client
   shows only the Rules and Archive views, and a page left with one view drops
   its tab strip. Hash links and Settings search switch to the view containing
-  a card. Project → Agents (Agent notes, PR chat transcripts) is a plain
+  a card. Project → Agents (PR chat transcripts) is a plain
   section list in `settingsTabContent.tsx`.
 - `apps/desktop/src/main/services/ipc/registerIpc.ts` — project-move start
   forwards `copyDependencies`; disk pressure falls back to this computer's ADE
@@ -1085,9 +1085,6 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
   — toggles `prTranscriptGists.enabled` in project local config under Project
   → Agents.
-- `apps/desktop/src/renderer/components/settings/AgentNotesSection.tsx` — the
-  read-only Project → Agents list of project notes visible to agents on the
-  project machine. Notes are written with `ade notes`.
 - `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
   — About (version, runtime); rendered in General.
 - `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
@@ -2386,7 +2383,7 @@ nothing needs attention. It gathers problems in the renderer
 |---|---|---|
 | **Overview** | — | Needs attention, At a glance |
 | **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
-| **Project** | The open project (routed to the machine that owns it) | Lanes (Your lanes, Rules), Agents (Agent notes, PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
+| **Project** | The open project (routed to the machine that owns it) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
 | **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
 
 General and the old Diagnostics/Health page are gone; every entry kept its
@@ -2419,7 +2416,7 @@ tiles, and **New lanes** holds start defaults and lane templates.
 Project → Storage & cleanup has three: **Space** shows lane and ADE storage and
 the cleanup history, **Archive** manages archived lanes, chats and shells, and
 **Rules** holds archiving idle lanes, session lifecycle and project files.
-Project → Agents lists agent notes and PR chat transcripts. The hosted web
+Project → Agents holds PR chat transcripts. The hosted web
 client shows only the Rules and Archive views. Links and Settings search
 switch to the page and view containing the destination; legacy `?tab=storage`,
 `?tab=archive`, `?tab=disk` and `?tab=session-lifecycle` open Storage &
@@ -2473,7 +2470,7 @@ The pages themselves:
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `NewLaneSettingsSection.tsx` | **Your lanes** manages lanes; **New lanes** contains Where new lanes start and Lane templates. |
-| Agents (Project) | `AgentNotesSection.tsx`, `PrChatTranscriptsSection.tsx` | What agents keep about the project: the read-only list of project notes (`ade notes`) and PR transcript gists. Legacy `?tab=agent-notes` and `?tab=notes` land here; the PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
+| Agents (Project) | `PrChatTranscriptsSection.tsx` | What agents keep about the project: PR transcript gists. The PR transcripts entry keeps its `lanes-git.pr-chat-transcripts` id. |
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
@@ -2890,7 +2887,7 @@ own setup; it does not switch them off.
   with fewer chats the card shows the listed sum instead. The provider's own
   part is that median minus the listed items.
 - **Row buttons.** A gear opens the ADE settings page that manages the item
-  (MCP servers, Agent notes). A folder button shows the file in Finder (Explorer
+  (MCP servers). A folder button shows the file in Finder (Explorer
   on Windows). It appears only when the page shows This computer and not in the
   hosted web client, and it goes through its own IPC channel
   (`ai.revealProviderContextPath`), whose allowlist holds the providers' config

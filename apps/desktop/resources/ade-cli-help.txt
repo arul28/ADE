@@ -61,7 +61,6 @@ Agent-focused command-line interface for ADE.
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -226,7 +225,6 @@ Agent-focused command-line interface for ADE.
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -1046,7 +1044,6 @@ Agent-focused command-line interface for ADE.
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -1315,7 +1312,6 @@ Agent-focused command-line interface for ADE.
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -2075,7 +2071,6 @@ Agent-focused command-line interface for ADE.
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql

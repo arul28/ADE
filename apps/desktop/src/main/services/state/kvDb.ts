@@ -86,6 +86,12 @@ const RETIRED_PR_WORKFLOW_TABLES = [
   "rebase_deferred",
 ] as const;
 
+/**
+ * The retired project notes table. It was a CRR, so an older peer can still
+ * send changes for it; those are ignored like the other retired tables.
+ */
+const RETIRED_PROJECT_NOTES_TABLES = ["project_agent_notes"] as const;
+
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set([
   "unified_memories",
@@ -95,6 +101,7 @@ const SYNC_RETIRED_TABLES = new Set([
   ...RETIRED_REVIEW_TABLES,
   ...RETIRED_PR_AI_SUMMARY_TABLES,
   ...RETIRED_PR_WORKFLOW_TABLES,
+  ...RETIRED_PROJECT_NOTES_TABLES,
 ]);
 
 function isRetiredIncomingSyncTable(tableName: string): boolean {
@@ -1823,28 +1830,21 @@ function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void
 }
 
 /**
- * Remove the retired AI review schema from upgraded databases. The previous
- * release created these CRR tables, so a database upgraded across this change
- * still holds them (and their changesets) until this pass runs.
+ * Retired CRR schemas with no data of their own to clean up first: each is
+ * dropped whole from upgraded databases. The release that created them left
+ * the tables (and their changesets) behind until this pass runs.
  */
-function dropRetiredReviewSchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_REVIEW_TABLES, "retired-review-schema", logger);
-  if (presentTables.length === 0) return;
-  logger?.info("db.retired_review_schema_cleaned", { tables: presentTables });
-}
+const RETIRED_TABLE_DROPS = [
+  { tables: RETIRED_REVIEW_TABLES, tag: "retired-review-schema", event: "db.retired_review_schema_cleaned" },
+  { tables: RETIRED_PR_AI_SUMMARY_TABLES, tag: "retired-pr-ai-summary-schema", event: "db.retired_pr_ai_summary_schema_cleaned" },
+  { tables: RETIRED_PR_WORKFLOW_TABLES, tag: "retired-pr-workflow-schema", event: "db.retired_pr_workflow_schema_cleaned" },
+  { tables: RETIRED_PROJECT_NOTES_TABLES, tag: "retired-project-notes-schema", event: "db.retired_project_notes_schema_cleaned" },
+] as const;
 
-/** Remove the retired AI PR summary cache from upgraded databases. */
-function dropRetiredPrAiSummarySchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_PR_AI_SUMMARY_TABLES, "retired-pr-ai-summary-schema", logger);
+function dropRetiredSchema(db: DatabaseSyncType, drop: (typeof RETIRED_TABLE_DROPS)[number], logger?: Logger): void {
+  const presentTables = dropRetiredTables(db, drop.tables, drop.tag, logger);
   if (presentTables.length === 0) return;
-  logger?.info("db.retired_pr_ai_summary_schema_cleaned", { tables: presentTables });
-}
-
-/** Remove the retired PR workflow tables (integration, rebase dismiss/defer) from upgraded databases. */
-function dropRetiredPrWorkflowSchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_PR_WORKFLOW_TABLES, "retired-pr-workflow-schema", logger);
-  if (presentTables.length === 0) return;
-  logger?.info("db.retired_pr_workflow_schema_cleaned", { tables: presentTables });
+  logger?.info(drop.event, { tables: presentTables });
 }
 
 function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
@@ -1866,6 +1866,11 @@ function dropRetiredTables(
   const presentTables = existingRetiredTables(db, tableNames);
   if (presentTables.length === 0) return presentTables;
 
+  // cr-sqlite derives db_version from the clock tables that remain, so dropping
+  // the clock that held the newest change rewinds it, and peers whose watermark
+  // is past the rewound value would never be sent the next local writes.
+  const dbVersionFloor = readCrsqlDbVersion(db);
+
   for (const tableName of tableNames) {
     if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
       runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
@@ -1886,7 +1891,22 @@ function dropRetiredTables(
     runStatement(db, `drop table if exists ${quoteIdentifier(tableName)}`);
   }
 
+  // The bundled cr-sqlite (0.16.3) reads this key as a floor, as it does after
+  // its own compaction.
+  if (dbVersionFloor != null && (readCrsqlDbVersion(db) ?? 0) < dbVersionFloor && rawHasTable(db, "crsql_master")) {
+    runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
+  }
+
   return presentTables;
+}
+
+function readCrsqlDbVersion(db: DatabaseSyncType): number | null {
+  try {
+    const value = Number(getRow<{ db_version: unknown }>(db, "select crsql_db_version() as db_version")?.db_version);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {
@@ -4889,28 +4909,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // matches the `create table` above.
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column content_digest text not null default ''");
   safeAddColumn(db, "alter table usage_machine_rollup_meta add column source_window text not null default ''");
-
-  // Project notes: short facts agents learned about working on this project in
-  // ADE, injected into every new agent session (projectNotesService.ts).
-  // Per-project (the DB instance is the scope) and CRR-replicated on purpose,
-  // so a fact saved on one machine reaches every machine with the project; the
-  // repo cannot carry them because main is never pushed from a lane.
-  // `scope = 'machine'` rows hold for one machine only: `machine_id` is that
-  // machine's account machine key, and other machines keep but never show them.
-  // PK-only (a CRR may not carry another UNIQUE index); deletes are ordinary
-  // CRR tombstones. Caps are enforced in the service, not here.
-  db.run(`
-    create table if not exists project_agent_notes (
-      id text primary key,
-      scope text not null default 'project',
-      machine_id text,
-      section text not null default '',
-      body text not null default '',
-      created_at text not null default '',
-      updated_at text not null default '',
-      updated_by text
-    )
-  `);
 }
 
 function loadCrsqlite(db: DatabaseSyncType, extensionPath: string): void {
@@ -5028,20 +5026,12 @@ export async function openKvDb(
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
-    try {
-      dropRetiredReviewSchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
-    }
-    try {
-      dropRetiredPrAiSummarySchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
-    }
-    try {
-      dropRetiredPrWorkflowSchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
+    for (const drop of RETIRED_TABLE_DROPS) {
+      try {
+        dropRetiredSchema(db, drop, logger);
+      } catch (error) {
+        if (!isReadonlyDatabaseError(error)) throw error;
+      }
     }
 
     // Clear any orphaned rebuild staging table before the retrofit passes issue

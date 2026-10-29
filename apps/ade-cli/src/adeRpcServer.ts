@@ -6767,7 +6767,6 @@ async function runTool(args: {
         provider,
         permissionMode,
         sessionActivityReportingEnabled: runtime.sessionActivityReportingEnabled,
-        projectNotes: runtime.projectNotesService?.renderPromptBlock() ?? null,
         ...(droidPermissionMode ? { droidPermissionMode } : {}),
         ...(musePermissionMode ? { musePermissionMode } : {}),
         sessionId: preassignedSessionId,
@@ -8336,8 +8335,6 @@ async function runTool(args: {
 
     const promptSegments: string[] = [];
     promptSegments.push(buildAdeInlineGuidanceForLane(laneWorktreePath));
-    const projectNotes = runtime.projectNotesService?.renderPromptBlock();
-    if (projectNotes) promptSegments.push(projectNotes);
     if (promptRunId || promptStepId || promptAttemptId) {
       promptSegments.push(
         `Run context: run=${promptRunId ?? "n/a"} step=${promptStepId ?? "n/a"} attempt=${promptAttemptId ?? "n/a"}.`

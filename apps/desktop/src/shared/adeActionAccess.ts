@@ -663,10 +663,6 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "loginSubmitCode", "loginCancel", "setSettings", "loginCommand", "refresh",
     ],
   },
-  project_notes: {
-    read: ["list", "renderPromptBlock"],
-    write: ["add", "edit", "remove"],
-  },
 };
 
 const accessByAction = new Map<string, AdeActionAccess>();

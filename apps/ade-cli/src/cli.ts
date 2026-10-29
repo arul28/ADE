@@ -1347,7 +1347,6 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Work with ADE agent chats
     $ ade drafts list | create | schedule | update | delete | now | show
                                                     Drafts and scheduled sends
-    $ ade notes list | add | edit | rm               Project notes every ADE agent here gets in its prompt
     $ ade session show | move | snooze | wake | clear-woke
                                                     Manage a session's lifecycle (file it on the board, snooze until a deadline)
     $ ade linear create | edit | comment | set-state | assign | issue | graphql
@@ -3008,30 +3007,6 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   The target is always explicit: name --target or --new-chat --lane, or the command fails.
   Output is a readable table by default; --text is one line per row; --json is structured.
-`,
-  notes: `${ADE_BANNER}
-  Project notes
-
-  Short facts earlier agents learned about working on this project in ADE: how
-  to build or launch its app, a dev-server port, an ADE quirk here. Every new
-  agent session on this project gets them in its prompt. They live in the
-  project's ADE database and reach every machine with the project.
-
-    $ ade notes list --text                         Project notes plus this machine's
-    $ ade notes list --section iOS --text           One section
-    $ ade notes add --section iOS --scope machine "Build with the ADE scheme on the iPhone 17 Pro simulator"
-                                                    Save one fact (--scope defaults to project)
-    $ ade notes edit <id> "New text"                Rewrite a note; --section and --scope move it
-    $ ade notes rm <id>                             Remove a stale or wrong note
-
-  Scopes:
-    project   True on any machine with this project.
-    machine   True only on this computer. Pick it when unsure.
-
-  Limits (enforced; a write past one is refused with what to merge or remove):
-    one line of at most 200 characters per note, 8 notes per section, and a
-    prompt block of at most 3072 bytes. Ids may be shortened to a unique prefix.
-  Users can read every note in Settings > Agents > Agent notes.
 `,
   agent: `${ADE_BANNER}
   Agent sessions
@@ -12844,147 +12819,6 @@ function buildDraftsPlan(args: string[]): CliPlan {
   }
 }
 
-/**
- * `ade notes`: Project notes, the short facts every ADE agent on this project
- * gets in its prompt. The runtime that owns the lane holds them (the
- * `project_notes` action domain); the caps are enforced there, so a refused
- * write comes back as the action's error, with what to merge or remove.
- */
-function buildNotesPlan(args: string[]): CliPlan {
-  const sub = firstStandalonePositional(args) ?? "list";
-  const notesStep = (action: string, input: JsonObject = {}): InvocationStep =>
-    actionStep("result", "project_notes", action, input);
-  const readScope = (): "project" | "machine" | null => {
-    const raw = readValue(args, ["--scope"]);
-    if (raw == null) return null;
-    const scope = raw.trim().toLowerCase();
-    if (scope !== "project" && scope !== "machine") {
-      throw new CliUsageError(`--scope must be project or machine, not '${raw}'.`);
-    }
-    return scope;
-  };
-  // The chat or CLI session this ran inside, recorded as the note's author.
-  const sessionId = process.env.ADE_CHAT_SESSION_ID?.trim() || null;
-  const confirm = (verb: string) => (result: unknown): string => {
-    const note = unwrapActionEnvelope(result);
-    const record: JsonObject = isRecord(note) ? note : {};
-    const scope = asString(record.scope) === "machine" ? " (this machine)" : "";
-    return `${verb} note ${asString(record.id) ?? ""} [${asString(record.section) ?? ""}${scope}]: ${asString(record.body) ?? ""}`;
-  };
-  switch (sub) {
-    case "list":
-    case "ls": {
-      const section = readValue(args, ["--section"]);
-      const scope = readScope();
-      return {
-        kind: "execute",
-        label: "notes list",
-        steps: [notesStep("list", { ...(section ? { section } : {}), ...(scope ? { scope } : {}) })],
-        shapeResult: (values) => unwrapActionEnvelope(values.result),
-        formatText: (result) => formatProjectNotesLines(result),
-        tableText: (result) => formatProjectNotesTable(result),
-      };
-    }
-    case "add": {
-      const section = requireValue(readValue(args, ["--section"]), "--section <area>");
-      const scope = readScope();
-      const body = requireValue(
-        readValue(args, ["--body", "--note"]) ?? (standalonePositionals(args).join(" ").trim() || null),
-        "the note text",
-      );
-      return {
-        kind: "execute",
-        label: "notes add",
-        steps: [notesStep("add", { section, body, ...(scope ? { scope } : {}), ...(sessionId ? { sessionId } : {}) })],
-        shapeResult: (values) => unwrapActionEnvelope(values.result),
-        formatText: confirm("Saved"),
-        tableText: confirm("Saved"),
-      };
-    }
-    case "edit": {
-      // Flags first, so `edit --section iOS <id>` cannot take the flag's value as the id.
-      const section = readValue(args, ["--section"]);
-      const scope = readScope();
-      const bodyFlag = readValue(args, ["--body", "--note"]);
-      const id = requireValue(firstStandalonePositional(args), "a note id");
-      const body = bodyFlag ?? (standalonePositionals(args).join(" ").trim() || null);
-      if (!section && !scope && !body) {
-        throw new CliUsageError("ade notes edit <id> needs new text, --section or --scope.");
-      }
-      return {
-        kind: "execute",
-        label: "notes edit",
-        steps: [notesStep("edit", {
-          id,
-          ...(body ? { body } : {}),
-          ...(section ? { section } : {}),
-          ...(scope ? { scope } : {}),
-          ...(sessionId ? { sessionId } : {}),
-        })],
-        shapeResult: (values) => unwrapActionEnvelope(values.result),
-        formatText: confirm("Updated"),
-        tableText: confirm("Updated"),
-      };
-    }
-    case "rm":
-    case "remove":
-    case "delete": {
-      const id = requireValue(firstStandalonePositional(args), "a note id");
-      return {
-        kind: "execute",
-        label: "notes rm",
-        steps: [notesStep("remove", { id })],
-        shapeResult: (values) => unwrapActionEnvelope(values.result),
-        formatText: confirm("Removed"),
-        tableText: confirm("Removed"),
-      };
-    }
-    default:
-      throw new CliUsageError(`Unknown notes subcommand '${sub}'. Run 'ade help notes'.`);
-  }
-}
-
-function projectNoteRows(result: unknown): JsonObject[] {
-  const record = isRecord(result) ? result : {};
-  return Array.isArray(record.notes) ? record.notes.filter(isRecord) : [];
-}
-
-function projectNotesFooter(result: unknown): string {
-  const record = isRecord(result) ? result : {};
-  const limits = isRecord(record.limits) ? record.limits : {};
-  const bytes = typeof record.renderedBytes === "number" ? record.renderedBytes : null;
-  const cap = typeof limits.maxRenderedBytes === "number" ? limits.maxRenderedBytes : null;
-  return bytes != null && cap != null ? `Prompt block: ${bytes} of ${cap} bytes.` : "";
-}
-
-function formatProjectNotesLines(result: unknown): string {
-  const rows = projectNoteRows(result);
-  if (rows.length === 0) return ["Project notes\n(no notes)", projectNotesFooter(result)].filter(Boolean).join("\n");
-  return [
-    ...rows.map((note) => {
-      const scope = asString(note.scope) === "machine" ? " (this machine)" : "";
-      return `${asString(note.id) ?? ""}  [${asString(note.section) ?? ""}${scope}] ${asString(note.body) ?? ""}`;
-    }),
-    projectNotesFooter(result),
-  ].filter(Boolean).join("\n");
-}
-
-function formatProjectNotesTable(result: unknown): string {
-  const table = renderTable(
-    ["id", "section", "scope", "note", "updated"],
-    projectNoteRows(result).map((note) => [
-      asString(note.id) ?? "",
-      asString(note.section) ?? "",
-      asString(note.scope) ?? "",
-      asString(note.body) ?? "",
-      (asString(note.updatedAt) ?? "").slice(0, 10),
-    ]),
-    "Project notes\n(no notes)",
-    { fullColumns: ["id", "note"] },
-  );
-  return [table, projectNotesFooter(result)].filter(Boolean).join("\n");
-}
-
 function personalChatStep(action: string, args: JsonObject = {}): InvocationStep {
   return {
     key: "result",
@@ -22438,8 +22272,6 @@ function buildCliPlan(
   // is deliberately no `ade sends`.
   if (primary === "drafts")
     return buildDraftsPlan(args);
-  if (primary === "notes" || primary === "note")
-    return buildNotesPlan(args);
   if (primary === "agent" || primary === "agents") return buildAgentPlan(args);
   if (primary === "linear") return buildLinearPlan(args);
   if (primary === "automations" || primary === "automation") {

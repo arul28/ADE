@@ -8768,45 +8768,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       signOut: async () => ({ ok: true as const }),
       setDisabled: async () => ({ ok: true as const }),
     },
-    projectNotes: {
-      list: async () => ({
-        notes: [
-          {
-            id: "note-ios-1",
-            scope: "project" as const,
-            machineId: null,
-            section: "iOS",
-            body: "Build the ADE scheme from apps/ios/ADE.xcodeproj; the simulator needs iOS 26 or newer.",
-            createdAt: now,
-            updatedAt: now,
-            updatedBy: null,
-          },
-          {
-            id: "note-electron-1",
-            scope: "project" as const,
-            machineId: null,
-            section: "Electron",
-            body: "Record the dev app with ade app-control launch --entry apps/desktop; the packaged app needs a signed build.",
-            createdAt: now,
-            updatedAt: now,
-            updatedBy: null,
-          },
-          {
-            id: "note-electron-2",
-            scope: "machine" as const,
-            machineId: "machine-mock",
-            section: "Electron",
-            body: "Node 22 is at /opt/homebrew/opt/node@22/bin; the default node here is 20.",
-            createdAt: now,
-            updatedAt: now,
-            updatedBy: null,
-          },
-        ],
-        machineId: "machine-mock",
-        renderedBytes: 1184,
-        limits: { maxNoteChars: 200, maxSectionChars: 32, maxNotesPerSection: 8, maxRenderedBytes: 3072 } as const,
-      }),
-    },
     providerInstances: {
       list: async (args?: { provider?: "claude" | "codex" }) =>
         mockProviderInstances.filter((instance) => !args?.provider || instance.provider === args.provider),

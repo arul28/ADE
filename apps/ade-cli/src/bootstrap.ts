@@ -109,10 +109,6 @@ import { createPrShellLinkWatcher } from "../../desktop/src/main/services/prs/pr
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
-import {
-  createProjectNotesService,
-  type ProjectNotesService,
-} from "../../desktop/src/main/services/projectNotes/projectNotesService";
 import { projectContextAccountPort } from "../../desktop/src/main/services/cto/projectContextStore";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
 import { createLinearOAuthService } from "../../desktop/src/main/services/cto/linearOAuthService";
@@ -497,8 +493,6 @@ export type AdeRuntime = {
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
-  /** Facts agents saved about this project; read once per new agent session. */
-  projectNotesService?: ProjectNotesService | null;
   linearCredentialService?: ReturnType<typeof createLinearCredentialService> | null;
   linearOAuthService?: ReturnType<typeof createLinearOAuthService> | null;
   linearAgentRuntime?: LinearAgentRuntime | null;
@@ -1583,10 +1577,8 @@ export async function createAdeRuntime(args: {
         });
     };
 
-    const projectNotesService = createProjectNotesService({ db, logger });
     const ptyService = createPtyService({
       projectRoot,
-      projectNotesService,
       runtimeSocketPath,
       sessionActivityReportingEnabled,
       transcriptsDir: paths.transcriptsDir,
@@ -2446,7 +2438,6 @@ export async function createAdeRuntime(args: {
         machineAdeHome: resolveMachineAdeLayout().adeDir,
         embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
-        projectNotesService,
         // The MCP registry's secret values: the generic vault kind, account-wide.
         readAccountSecret: (vaultKey) => accountVaultStore?.get("all", MCP_SECRET_VAULT_KIND, vaultKey) ?? null,
         adoptHarnessPreset: (preset) => {
@@ -3782,7 +3773,6 @@ export async function createAdeRuntime(args: {
       cloudAgentsService,
       ctoStateService,
       ctoMemoryService,
-      projectNotesService,
       adeProjectService,
       githubService: headlessLinearServices.githubService,
       jiraService: jiraServiceRef,

@@ -115,8 +115,6 @@ Use these directly; you do not need `--help` for them. `A="$ADE_CLI_PATH"`.
 
 ## "Start the app on a simulator" is one command
 
-Before you launch, check the **Project notes** block in your prompt for this project's iOS app (scheme, simulator, runtime); when you had to work something out to get it running, save it with `ade notes add` (see `ade help notes`).
-
 ```bash
 "$ADE_CLI_PATH" apple launch --follow --open-drawer --text
 ```

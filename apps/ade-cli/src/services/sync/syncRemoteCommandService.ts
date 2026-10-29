@@ -1,6 +1,5 @@
 import type { ChatLaunchService } from "../../../../desktop/src/main/services/chat/chatLaunchService";
 import { fallbackUnprojectedChatSession } from "../../../../desktop/src/main/services/sessions/chatSessionProjection";
-import { createProjectNotesService } from "../../../../desktop/src/main/services/projectNotes/projectNotesService";
 import { readGithubContributionCalendar } from "../../../../desktop/src/main/services/usage/githubActivityStats";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../../desktop/src/shared/laneGitHubIssue";
 import { parseGitHubIssueListState } from "../../../../desktop/src/shared/githubIssueList";
@@ -4658,8 +4657,6 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
         provider,
         permissionMode,
         sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
-        // A phone-started CLI gets the same Project notes as a desktop one.
-        projectNotes: args.db ? createProjectNotesService({ db: args.db, logger: args.logger }).renderPromptBlock() : null,
         ...(parsed.droidPermissionMode !== undefined ? { droidPermissionMode: parsed.droidPermissionMode } : {}),
         sessionId: preassignedSessionId,
         model: parsed.modelId ?? parsed.model ?? undefined,
@@ -5169,7 +5166,6 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
       laneService: args.laneService,
       ptyService: args.ptyService,
       sessionActivityReportingEnabled: args.sessionActivityReportingEnabled,
-      projectNotesService: args.db ? createProjectNotesService({ db: args.db, logger: args.logger }) : null,
       logger: args.logger,
     }));
   // Auto-lane naming. It degrades to a deterministic name on the client, so an

@@ -176,7 +176,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
-  { id: "project-agents", label: "Agents", description: "What agents keep about this project: their notes, and PR chat transcripts.", group: "project" },
+  { id: "project-agents", label: "Agents", description: "What agents keep about this project: PR chat transcripts.", group: "project" },
   { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },
   { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
@@ -1250,16 +1250,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "New lanes",
   },
   {
-    id: "project-agents.agent-notes",
-    label: "Agent notes",
-    keywords: ["notes", "agent", "memory", "knowledge", "prompt", "facts", "ade notes"],
-    tab: "project-agents",
-    anchor: "agent-notes",
-    scope: "account-repo",
-    web: "hidden",
-    group: "Agent notes",
-  },
-  {
     id: "lanes-git.pr-chat-transcripts",
     label: "PR chat transcripts",
     keywords: ["pull request", "transcript", "attach", "review"],
@@ -1528,8 +1518,6 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "background-jobs": "agents",
   automations: "agents",
   "lane-templates": "lanes-git",
-  "agent-notes": "project-agents",
-  notes: "project-agents",
   "ade-usage": "stats",
   usage: "stats",
   secret: "secrets",

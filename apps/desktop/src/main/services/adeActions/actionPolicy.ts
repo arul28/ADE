@@ -1402,13 +1402,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "loginCommand",
     "refresh",
   ],
-  /*
-   * Project notes are written by agents, on purpose and without prompts: the
-   * whole point is that an agent saves what it had to work out. The caps live
-   * in the service, and the user sees every note read-only in Settings, which
-   * is the check on agent-written text that reaches future prompts.
-   */
-  project_notes: ["list", "add", "edit", "remove", "renderPromptBlock"],
 };
 
 /* ──────────────────────────────────────────────────────────────────────────

@@ -103,7 +103,6 @@ enum WorkSettingsCatalog {
     "storage.project-files": Setting(path: "Project › Storage & cleanup › Project files", locked: true),
     "lanes-git.new-lane-start": Setting(path: "Project › Lanes › New lanes start from", locked: false),
     "lanes-git.lane-templates": Setting(path: "Project › Lanes › Lane templates", locked: false),
-    "project-agents.agent-notes": Setting(path: "Project › Agents › Agent notes", locked: false),
     "lanes-git.pr-chat-transcripts": Setting(path: "Project › Agents › PR chat transcripts", locked: true),
     "integrations.github": Setting(path: "Project › Integrations › GitHub", locked: true),
     "integrations.linear": Setting(path: "Project › Integrations › Linear", locked: true),

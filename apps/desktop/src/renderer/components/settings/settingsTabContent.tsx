@@ -46,7 +46,6 @@ import { SecretsSection } from "./SecretsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { SettingsOverview } from "./overview/SettingsOverview";
 import { LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
-import { AgentNotesSection } from "./AgentNotesSection";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
 import {
@@ -474,7 +473,6 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
     { entryIds: "tab", render: () => <SettingsColumn wide><StorageSettingsPage /></SettingsColumn>, machine: "routed", title: "Storage & cleanup" },
   ],
   "project-agents": [
-    { entryIds: ["project-agents.agent-notes"], render: () => <AgentNotesSection />, machine: "routed", title: "Agent notes" },
     { entryIds: ["lanes-git.pr-chat-transcripts"], render: () => <PrChatTranscriptsSection />, machine: "routed", title: "PR chat transcripts" },
   ],
   // Project → Location: where the project lives (the move runs in this

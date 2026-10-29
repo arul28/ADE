@@ -62,7 +62,7 @@ const SETTINGS_PALETTE_CAPTIONS: Record<string, string> = {
   chat: "Transcript and composer",
   agents: "Models and provider setup",
   "lanes-git": "Your lanes and how they start",
-  "project-agents": "Agent notes and PR transcripts",
+  "project-agents": "PR chat transcripts",
   storage: "Space, archive, and cleanup",
   notifications: "What ADE interrupts you for",
   activity: "What's running everywhere",
