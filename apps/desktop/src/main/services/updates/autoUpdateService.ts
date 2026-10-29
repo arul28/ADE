@@ -50,6 +50,13 @@ import {
   switchUpdaterToNodeTransport,
 } from "./updaterNetRecovery";
 import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
+import {
+  BETA_FEED_BASE_URL,
+  isOrdinaryUpdateOffer,
+  updateTrackOfVersion,
+  type UpdateTrack,
+} from "../../../shared/updateTrack";
+import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -108,6 +115,10 @@ type AutoUpdaterLike = {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
   disableDifferentialDownload?: boolean;
+  /** electron-updater: take prereleases from the GitHub feed. */
+  allowPrerelease?: boolean;
+  /** electron-updater: accept an older version from the feed. */
+  allowDowngrade?: boolean;
   setFeedURL?: (
     options:
       | { provider: "github"; owner: string; repo: string }
@@ -206,6 +217,14 @@ type CreateAutoUpdateServiceArgs = {
   activityCheckMs?: number;
   autoCheckEnabled?: boolean;
   autoApplyEnabled?: boolean;
+  /**
+   * The machine's chosen update track (`~/.ade/update-track.json`). Read again
+   * before every check, because the CLI can change it. Absent: the track of
+   * the running build.
+   */
+  readSelectedTrack?: () => UpdateTrack | null;
+  /** Saves the machine's chosen track. Absent: a switch cannot be started. */
+  writeSelectedTrack?: (track: UpdateTrack) => void;
 };
 
 type UpdateCheckResultLike = {
@@ -386,6 +405,18 @@ function cleanupUpdaterCacheDir(args: {
   }
 }
 
+/**
+ * Whether a launch on `currentVersion` means the install of `targetVersion`
+ * landed: the target or newer, on the target's own track. The track matters
+ * for a switch from Beta to Stable, which installs an OLDER version: a launch
+ * that came back on the beta is newer than the target and would otherwise
+ * read as a landed install.
+ */
+function installLanded(currentVersion: string, targetVersion: string): boolean {
+  return updateTrackOfVersion(currentVersion) === updateTrackOfVersion(targetVersion)
+    && compareUpdateVersions(currentVersion, targetVersion) >= 0;
+}
+
 function reconcilePersistedUpdateState(args: {
   state: GlobalState;
   currentVersion: string;
@@ -421,7 +452,7 @@ function reconcilePersistedUpdateState(args: {
   // named, and counted toward evicting the next download.
   if (
     nextState.failedInstallAttempts
-    && compareUpdateVersions(args.currentVersion, nextState.failedInstallAttempts.targetVersion) >= 0
+    && installLanded(args.currentVersion, nextState.failedInstallAttempts.targetVersion)
   ) {
     nextState.failedInstallAttempts = undefined;
     changed = true;
@@ -443,7 +474,7 @@ function reconcilePersistedUpdateState(args: {
 
   const pendingInstall = nextState.pendingInstallUpdate;
   if (pendingInstall) {
-    const installedTargetOrNewer = compareUpdateVersions(args.currentVersion, pendingInstall.targetVersion) >= 0;
+    const installedTargetOrNewer = installLanded(args.currentVersion, pendingInstall.targetVersion);
     if (installedTargetOrNewer) {
       nextState.recentlyInstalledUpdate = {
         version: args.currentVersion,
@@ -567,6 +598,8 @@ export function createAutoUpdateService({
   activityCheckMs = DEFAULT_ACTIVITY_CHECK_MS,
   autoCheckEnabled = true,
   autoApplyEnabled = autoCheckEnabled && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
+  readSelectedTrack,
+  writeSelectedTrack,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -638,11 +671,89 @@ export function createAutoUpdateService({
   let autoUpdatePreferences = normalizeAutoUpdatePreferences(
     initialState.state.autoUpdatePreferences,
   );
+  // ---------------------------------------------------------------------
+  // Update tracks (docs/plans/beta-track.md). An ordinary check only moves
+  // forward inside the selected track. Crossing to the other track happens
+  // only through `startTrackSwitch`, which the caller runs after the database
+  // guard allowed it; during that switch the target track's builds, older
+  // ones included, are accepted.
+  // ---------------------------------------------------------------------
+  const runningTrack = updateTrackOfVersion(currentVersion);
+  const readSavedTrack = (): UpdateTrack => {
+    try {
+      return readSelectedTrack?.() ?? runningTrack;
+    } catch (error) {
+      logger.warn("autoUpdate.track_read_failed", { message: formatErrorMessage(error) });
+      return runningTrack;
+    }
+  };
+  let selectedTrack: UpdateTrack = readSavedTrack();
+  let switchingTo: UpdateTrack | null = null;
+  // The track the updater's feed is set up for; null until the first setup.
+  let feedTrack: UpdateTrack | null = null;
+  // An offer the track filter turned down during the current check.
+  let rejectedOfferVersion: string | null = null;
+  const [releaseOwner = "arul28", releaseRepo = "ADE"] = releaseRepository.split("/");
+
+  /** The track whose builds this launch takes: a switch's target, else the choice. */
+  const feedTargetTrack = (): UpdateTrack => switchingTo ?? selectedTrack;
+
+  function configureFeedForTrack(track: UpdateTrack): void {
+    // The dev feed override wins: it exists to test the install flow itself.
+    if (overrideFeedUrl || feedTrack === track) return;
+    try {
+      if (track === "beta") {
+        updater.setFeedURL?.({ provider: "generic", url: BETA_FEED_BASE_URL });
+      } else if (feedTrack === "beta" || runningTrack === "beta") {
+        // A Stable build never got here before tracks existed, so its packaged
+        // feed is left exactly as it was; only a build that was pointed at the
+        // Beta feed, or a Beta build moving to Stable, is pointed back.
+        updater.setFeedURL?.({ provider: "github", owner: releaseOwner, repo: releaseRepo });
+      }
+      // On the GitHub feed a `-beta.` build would otherwise take the newest
+      // release of any kind. Stable reads only `releases/latest`.
+      updater.allowPrerelease = false;
+      // Older builds are accepted only while a switch moves this machine to
+      // the other track; the switch already checked the databases.
+      updater.allowDowngrade = switchingTo !== null && switchingTo !== runningTrack;
+      feedTrack = track;
+      logger.info("autoUpdate.track_feed_configured", { track, runningTrack, switching: switchingTo });
+    } catch (error) {
+      logger.warn("autoUpdate.track_feed_config_failed", { track, message: formatErrorMessage(error) });
+    }
+  }
+
+  function acceptsOffer(version: string): boolean {
+    if (overrideFeedUrl) return true;
+    if (switchingTo && updateTrackOfVersion(version) === switchingTo) {
+      // The switch target itself, or a newer build on that track.
+      return version !== currentVersion;
+    }
+    return isOrdinaryUpdateOffer({ selectedTrack, currentVersion, offeredVersion: version });
+  }
+
+  /**
+   * The Beta feed answers 404 between betas being cut, or before the first
+   * one exists. That means "no Beta build right now", not a failure to show.
+   */
+  function isMissingBetaFeed(error: unknown): boolean {
+    if (feedTargetTrack() !== "beta" || overrideFeedUrl) return false;
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND") return true;
+    return /\b404\b/.test(formatErrorMessage(error));
+  }
+
+  function trackState(): AutoUpdateSnapshot["track"] {
+    return { selected: selectedTrack, running: runningTrack, switching: switchingTo };
+  }
+
   let snapshot: AutoUpdateSnapshot = {
     ...createEmptyAutoUpdateSnapshot(currentVersion),
     recentlyInstalled: initialState.recentlyInstalled,
     lastInstallFailed: initialState.failedInstall,
+    track: trackState(),
   };
+  configureFeedForTrack(feedTargetTrack());
   let checkPromise: Promise<unknown> | null = null;
   // In-flight guard for quitAndInstall. Two IPC callers (e.g. AutoUpdateControl
   // double-click, or a renderer click that races a menu trigger) can both
@@ -1011,6 +1122,20 @@ export function createAutoUpdateService({
 
   const onUpdateAvailable = (info: UpdateInfo) => {
     logger.info("autoUpdate.update_available", { version: info.version });
+    if (!acceptsOffer(info.version)) {
+      // A build from the wrong track (or an older one) answered. That is "no
+      // update" for this machine, never an offer (T3 #2049).
+      rejectedOfferVersion = info.version;
+      logger.info("autoUpdate.update_available_ignored", {
+        version: info.version,
+        reason: "track",
+        selectedTrack,
+        runningTrack,
+        switching: switchingTo,
+      });
+      if (snapshot.status === "checking") patchSnapshot(preservedOrIdlePatch("idle"));
+      return;
+    }
     if (snapshot.status === "ready" && snapshot.version) {
       const comparison = compareUpdateVersions(info.version, snapshot.version);
       if (comparison <= 0) {
@@ -1182,6 +1307,11 @@ export function createAutoUpdateService({
       return;
     }
     ignoredDownloadVersion = null;
+    if (currentPhase === "check" && isMissingBetaFeed(err)) {
+      logger.info("autoUpdate.beta_feed_missing", { message });
+      if (snapshot.status === "checking") patchSnapshot(preservedOrIdlePatch("idle"));
+      return;
+    }
     if (staleHandoffRecoveryInProgress && isStaleHandoffError(err)) return;
     // A Chromium net failure of the feed request belongs to runUpdateCheck: it
     // may still recover and retry, so nothing is surfaced from here. Its catch
@@ -1423,6 +1553,14 @@ export function createAutoUpdateService({
       : null;
     readyCheckInProgress = isReadyCheck;
     checkFailureKind = null;
+    // The CLI can change the choice between checks.
+    const savedTrack = readSavedTrack();
+    if (savedTrack !== selectedTrack) {
+      selectedTrack = savedTrack;
+      patchSnapshot({ track: trackState() });
+    }
+    configureFeedForTrack(feedTargetTrack());
+    rejectedOfferVersion = null;
     checkPromise = checkFeedRecoveringNetSession(userInitiated)
       .then(async (result) => {
         // The feed answered, so the updater's session works again and anything
@@ -1430,7 +1568,12 @@ export function createAutoUpdateService({
         netRecoveryExhausted = false;
         currentPhase = "download";
         patchSnapshot({ lastCheckedAt: nowMs(), checkFailure: null });
-        const updateInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
+        const offeredInfo = isUpdateCheckResultLike(result) ? result.updateInfo : undefined;
+        const offerRejected = rejectedOfferVersion !== null
+          || (offeredInfo?.version != null && !acceptsOffer(offeredInfo.version));
+        rejectedOfferVersion = null;
+        // A turned-down offer is not this machine's latest version either.
+        const updateInfo = offerRejected ? undefined : offeredInfo;
         const checkToken = isUpdateCheckResultLike(result) && isCancellationTokenLike(result.cancellationToken)
           ? result.cancellationToken
           : null;
@@ -1450,6 +1593,7 @@ export function createAutoUpdateService({
           ignoredDownloadVersion = null;
           return;
         }
+        if (offerRejected) return;
         if (snapshot.version) {
           const downloadTarget = updaterCacheDir ?? path.dirname(globalStatePath);
           const reusesPreservedDownload = reusableDownloadedVersion === snapshot.version;
@@ -1474,6 +1618,10 @@ export function createAutoUpdateService({
         }
       })
       .catch((error) => {
+        if (currentPhase === "check" && isMissingBetaFeed(error)) {
+          if (snapshot.status === "checking") patchSnapshot(preservedOrIdlePatch("idle"));
+          return;
+        }
         const stalled = takeDownloadStalled();
         // Same ordering as onError: the pre-install refresh owns the failure
         // first, then the guard that keeps a staged update intact.
@@ -2345,8 +2493,59 @@ export function createAutoUpdateService({
   const periodicTimer = autoCheckEnabled ? setInterval(checkForUpdates, periodicCheckMs) : null;
   let disposed = false;
 
+  /**
+   * Moves this machine to `target`. The caller runs the database guard first
+   * (it needs the brain) and calls this only for an allowed switch.
+   *
+   * The choice is saved before anything downloads, so a switch that is
+   * interrupted is still the machine's intent: Settings shows that it did not
+   * finish and offers to finish it (T3 does the same). Choosing the running
+   * build's track again cancels a switch that has not installed yet.
+   */
+  function startTrackSwitch(target: UpdateTrack): UpdateTrackSwitchResult {
+    if (!writeSelectedTrack) {
+      return { ok: false, target, reason: "This build can't change its update track." };
+    }
+    if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
+      return { ok: false, target, reason: "An update is installing. Try again when ADE has restarted." };
+    }
+    if (snapshot.status === "downloading" || snapshot.status === "checking") {
+      return { ok: false, target, reason: "ADE is checking for or downloading an update. Try again in a moment." };
+    }
+    try {
+      writeSelectedTrack(target);
+    } catch (error) {
+      return { ok: false, target, reason: `ADE couldn't save the choice: ${formatErrorMessage(error)}` };
+    }
+    const previousSelected = selectedTrack;
+    selectedTrack = target;
+    switchingTo = target === runningTrack ? null : target;
+    feedTrack = null;
+    // A staged update from the other track must never install after the
+    // choice changed (for example a beta download, then "Stable" again).
+    if (snapshot.status === "ready" && snapshot.version && updateTrackOfVersion(snapshot.version) !== target) {
+      logger.info("autoUpdate.track_switch_discarded_staged_update", { version: snapshot.version, target });
+      downloadedFilePath = null;
+      compressedUpdateBytes = null;
+      compressedUpdateVersion = null;
+      cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "track_switch" });
+      patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
+    }
+    configureFeedForTrack(feedTargetTrack());
+    patchSnapshot({ track: trackState() });
+    logger.info("autoUpdate.track_switch_started", { from: previousSelected, target, runningTrack });
+    productAnalyticsService?.captureInternal({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "updates", action: "track_switch", mode: target },
+    });
+    if (switchingTo) void runUpdateCheck(true);
+    return { ok: true, target };
+  }
+
   return {
     checkForUpdates,
+    startTrackSwitch,
     getSnapshot(): AutoUpdateSnapshot {
       return cloneSnapshot(snapshot);
     },

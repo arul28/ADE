@@ -16,6 +16,9 @@ import {
   type createAutoUpdateService,
 } from "../updates/autoUpdateService";
 import { DEFAULT_AUTO_UPDATE_PREFERENCES, EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import type { UpdateTrackSwitchResult } from "../../../shared/types";
+import { normalizeUpdateTrack } from "../../../shared/updateTrack";
+import { checkTrackSwitch, type TrackSwitchCheck } from "../updates/trackSwitchGuard";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
 import type { BuiltInBrowserEventPayload } from "../../../shared/types";
 import type { ProjectTabDragService } from "../projects/projectTabDragService";
@@ -13586,6 +13589,27 @@ export function registerIpc({
     // outcome; it never rejects. `userInitiated` lets a check that hits a
     // wedged updater session try a fresh one again.
     await getCtx().autoUpdateService?.checkForUpdates({ userInitiated: true });
+  });
+
+  // Update tracks act on this computer's own app only: a track switch installs
+  // a build, and T3's lesson is that a machine switches on itself. Settings for
+  // another machine does not offer it.
+  ipcMain.handle(IPC.updateCheckTrackSwitch, async (_event, target: unknown): Promise<TrackSwitchCheck> => {
+    const track = normalizeUpdateTrack(target);
+    if (!track) throw new Error("Choose Stable or Beta.");
+    return await checkTrackSwitch({ target: track, runningVersion: app.getVersion() });
+  });
+
+  ipcMain.handle(IPC.updateSwitchTrack, async (_event, target: unknown): Promise<UpdateTrackSwitchResult> => {
+    const track = normalizeUpdateTrack(target);
+    if (!track) throw new Error("Choose Stable or Beta.");
+    const service = getCtx().autoUpdateService;
+    if (!service) return { ok: false, target: track, reason: "This build of ADE can't change its update track." };
+    // Checked again here, not trusted from the dialog: the databases may have
+    // changed since the dialog opened.
+    const check = await checkTrackSwitch({ target: track, runningVersion: app.getVersion() });
+    if (!check.allowed) return { ok: false, target: track, reason: check.reason };
+    return service.startTrackSwitch(track);
   });
 
   ipcMain.handle(IPC.updateGetState, () => {

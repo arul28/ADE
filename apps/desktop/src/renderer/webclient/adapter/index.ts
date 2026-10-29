@@ -1,4 +1,5 @@
 import type { ProjectInfo } from "../../../shared/types";
+import type { UpdateTrack } from "../../../shared/updateTrack";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
@@ -164,6 +165,17 @@ export function createAdeWebAdapter(
     providerInstances: misc.providerInstances,
     automations: misc.automations,
     updateCheckForUpdates: async () => undefined,
+    // The web app has no install of its own to move between tracks.
+    updateCheckTrackSwitch: async (target: UpdateTrack) => ({
+      allowed: false as const,
+      target,
+      reason: "Switch update tracks in the ADE desktop app on that computer.",
+    }),
+    updateSwitchTrack: async (target: UpdateTrack) => ({
+      ok: false as const,
+      target,
+      reason: "Switch update tracks in the ADE desktop app on that computer.",
+    }),
     // ADE MCP belongs to a physical machine; the manifest hides it on web.
     remoteMcpCall: async () => {
       throw new Error("Manage ADE MCP on the computer itself.");

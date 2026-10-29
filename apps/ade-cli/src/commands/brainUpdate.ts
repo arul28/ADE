@@ -17,6 +17,12 @@ import {
   sha256File,
 } from "../lib/releaseAssets";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import {
+  BETA_FEED_MANIFEST_URL,
+  parseReleaseManifest,
+  type UpdateTrack,
+} from "../../../desktop/src/shared/updateTrack";
+import { resolveSelectedUpdateTrack } from "../services/runtime/updateTrackStore";
 import { applyWindowsDesktopUpdate } from "./windowsDesktopRescue";
 import { resolveMachineAdeLayout, resolveReachableMachineDesktopBridgeSocketPath } from "../services/projects/machineLayout";
 
@@ -96,7 +102,49 @@ export type BrainUpdateDeps = {
   runCommand?: typeof runCommand;
   /** Where macOS looks for the installed ADE app. */
   applicationsDirs?: readonly string[];
+  /** Reads the Beta feed's `beta.json`. Injected in tests. */
+  fetchBetaManifest?: () => Promise<unknown>;
 };
+
+const BETA_FEED_FETCH_TIMEOUT_MS = 15_000;
+
+async function defaultFetchBetaManifest(): Promise<unknown> {
+  const response = await fetch(BETA_FEED_MANIFEST_URL, {
+    redirect: "follow",
+    signal: AbortSignal.timeout(BETA_FEED_FETCH_TIMEOUT_MS),
+  });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return await response.json();
+}
+
+/**
+ * "latest" on the Beta track is the build the Beta feed names. It never falls
+ * back to the stable release: a machine that chose Beta must not be moved to
+ * Stable because a feed read failed, and the reverse holds too. A pinned
+ * `--version` is used as given.
+ */
+async function resolveRequestedBrainVersion(
+  options: BrainUpdateOptions,
+  deps: BrainUpdateDeps,
+  env: NodeJS.ProcessEnv,
+): Promise<{ version: string; track: UpdateTrack }> {
+  const track = resolveSelectedUpdateTrack(deps.currentVersion ?? null, env);
+  if (options.version !== "latest" || track !== "beta" || options.repo !== DEFAULT_RELEASE_REPO) {
+    return { version: options.version, track };
+  }
+  let manifest: ReturnType<typeof parseReleaseManifest> = null;
+  try {
+    manifest = parseReleaseManifest(await (deps.fetchBetaManifest ?? defaultFetchBetaManifest)());
+  } catch (error) {
+    throw new Error(
+      `Could not read the Beta feed (${error instanceof Error ? error.message : String(error)}). This machine follows Beta, so nothing was changed. Try again later.`,
+    );
+  }
+  if (!manifest || manifest.track !== "beta") {
+    throw new Error("The Beta feed has no usable build right now. This machine follows Beta, so nothing was changed.");
+  }
+  return { version: manifest.tag, track };
+}
 
 function nowIso(deps: BrainUpdateDeps): string {
   return (deps.now?.() ?? new Date()).toISOString();
@@ -931,6 +979,9 @@ export async function runBrainUpdateCommand(
     return applyStagedBrainUpdate(options.manifestPath, deps);
   }
 
+  const resolvedVersion = await resolveRequestedBrainVersion(options, deps, env);
+  options.version = resolvedVersion.version;
+
   const layout = resolveMachineAdeLayout(env, deps.platform ?? process.platform);
   const target = detectRuntimeTarget(deps.platform ?? process.platform, deps.arch ?? os.arch());
   if (target === "win32-x64" && !options.restartService) {
@@ -956,6 +1007,7 @@ export async function runBrainUpdateCommand(
     dryRun: options.dryRun,
     repo: options.repo,
     requestedVersion: options.version,
+    track: resolvedVersion.track,
     currentVersion,
     target,
     binaryUrl,

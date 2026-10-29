@@ -1,4 +1,5 @@
 import type { NewLaneDefaults } from "../shared/laneStart";
+import type { UpdateTrack } from "../shared/updateTrack";
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
@@ -214,6 +215,8 @@ import type {
   KeepAwakeSnapshot,
   RemoteMcpAction,
   AutoUpdateSnapshot,
+  TrackSwitchCheckResult,
+  UpdateTrackSwitchResult,
   UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -4970,6 +4973,10 @@ declare global {
       keepAwakeFixSystemSleep: (pin?: OpenProjectBinding | null) => Promise<KeepAwakeFixResult>;
       keepAwakeApplyLidClosed: (disabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ ok: boolean; error: string | null }>;
       updateCheckForUpdates: () => Promise<void>;
+      /** Can this computer move to `target`? Reads the target build and the local databases. */
+      updateCheckTrackSwitch: (target: UpdateTrack) => Promise<TrackSwitchCheckResult>;
+      /** Saves the choice and starts the download. Checks again before it does. */
+      updateSwitchTrack: (target: UpdateTrack) => Promise<UpdateTrackSwitchResult>;
       updateGetState: () => Promise<AutoUpdateSnapshot>;
       updateGetPreferences: () => Promise<AutoUpdatePreferences>;
       updateSetPreferences: (preferences: AutoUpdatePreferences) => Promise<AutoUpdatePreferences>;

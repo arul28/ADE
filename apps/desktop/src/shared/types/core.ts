@@ -4,6 +4,7 @@
 
 import type { DeeplinkEnvelope, DeeplinkOwnership } from "../deeplinks";
 import type { AppPackageChannel } from "../packageChannel";
+import type { UpdateTrack } from "../updateTrack";
 import type { ExternalSessionProvider } from "./externalSessions";
 import type {
   SyncAccountDirectoryLegDurations,
@@ -448,7 +449,30 @@ export type AutoUpdateSnapshot = {
    * next check the feed answers.
    */
   checkFailure?: { kind: AutoUpdateErrorKind; message: string; at: number } | null;
+  /**
+   * Update track state. `selected` is the machine's choice
+   * (`~/.ade/update-track.json`); `running` is the track of this build. They
+   * differ while a switch has not finished. `switching` is the target of a
+   * switch started in this launch. Optional so existing literals compile.
+   */
+  track?: AutoUpdateTrackState;
 };
+
+export type AutoUpdateTrackState = {
+  selected: UpdateTrack;
+  running: UpdateTrack;
+  switching: UpdateTrack | null;
+};
+
+/** Whether this computer may move to `target`, and if not, why (one sentence). */
+export type TrackSwitchCheckResult =
+  | { allowed: true; target: UpdateTrack; targetVersion: string | null }
+  | { allowed: false; target: UpdateTrack; reason: string };
+
+/** What a track switch request answered. `blocked` carries the reason to show. */
+export type UpdateTrackSwitchResult =
+  | { ok: true; target: UpdateTrack }
+  | { ok: false; target: UpdateTrack; reason: string };
 
 export type RuntimeActivityCounts = {
   activeAgentTurns: number;

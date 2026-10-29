@@ -9838,6 +9838,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onCommand: () => () => {},
     },
     updateCheckForUpdates: resolved(undefined),
+    updateCheckTrackSwitch: async (target: "stable" | "beta") => ({ allowed: true as const, target, targetVersion: null }),
+    updateSwitchTrack: async (target: "stable" | "beta") => ({ ok: true as const, target }),
     updateGetState: resolved({
       status: "idle",
       currentVersion: "0.0.0",

@@ -346,6 +346,8 @@ import {
 } from "../../../ade-cli/src/services/projects/machineLayout";
 import { takeMachineResetReceipt } from "./services/runtime/machineResetLauncher";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
+import { readSavedUpdateTrack, writeSavedUpdateTrack } from "../../../ade-cli/src/services/runtime/updateTrackStore";
+import type { UpdateTrack } from "../shared/updateTrack";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import {
   ACCOUNT_SESSION_CREDENTIAL_KEY,
@@ -3396,6 +3398,18 @@ app.whenReady().then(async () => {
     // itself. Rebuild a channel to move it forward until a real per-channel
     // feed exists.
     autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
+    // Stable and Beta are tracks of this same install, not channels: the
+    // machine's choice lives in ~/.ade/update-track.json so the brain and the
+    // CLI read the same one (docs/plans/beta-track.md). A channel build (Alpha)
+    // has no feed and no track.
+    ...(app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL)
+      ? {
+          readSelectedTrack: () => readSavedUpdateTrack()?.track ?? null,
+          writeSelectedTrack: (track: UpdateTrack) => {
+            writeSavedUpdateTrack(track);
+          },
+        }
+      : {}),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
@@ -3911,6 +3925,7 @@ app.whenReady().then(async () => {
     const db = await measureProjectInitStep("db_open", () =>
       openKvDb(adePaths.dbPath, logger, {
         hasSyncPeers,
+        appVersion: app.isPackaged ? app.getVersion() : null,
       }),
     );
     recordLocalProjectDatabaseIdentity(projectRoot, logger);
