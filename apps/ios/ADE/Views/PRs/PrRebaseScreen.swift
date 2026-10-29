@@ -312,17 +312,17 @@ struct PrRebaseScreen: View {
         switch action {
         case .rebaseAi:
           try await syncService.startLaneRebase(
-            laneId: laneId, scope: "lane_only", pushMode: "none", aiAssisted: true
+            laneId: laneId, pushMode: "none", aiAssisted: true
           )
           dismiss()
         case .rebaseLocal:
           try await syncService.startLaneRebase(
-            laneId: laneId, scope: "lane_only", pushMode: "none", aiAssisted: false
+            laneId: laneId, pushMode: "none", aiAssisted: false
           )
           dismiss()
         case .rebasePush:
           try await syncService.startLaneRebase(
-            laneId: laneId, scope: "lane_only", pushMode: "review_then_push", aiAssisted: false
+            laneId: laneId, pushMode: "review_then_push", aiAssisted: false
           )
           dismiss()
         }
