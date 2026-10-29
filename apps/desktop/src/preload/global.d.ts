@@ -1,3 +1,4 @@
+import type { NewLaneDefaults } from "../shared/laneStart";
 import type { MuseBinaryStatus } from "../shared/museBinary";
 import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../shared/types/jev";
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
@@ -879,6 +880,7 @@ import type {
   LaneListSnapshot,
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
+  NewLaneDefaultsSnapshot,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
   GetLaneDependencyStatusArgs,
@@ -2371,6 +2373,11 @@ declare global {
         getTemplate: (
           args: GetLaneTemplateArgs,
         ) => Promise<LaneTemplate | null>;
+        getNewLaneDefaults: (pin?: OpenProjectBinding | null) => Promise<NewLaneDefaultsSnapshot>;
+        setNewLaneDefaults: (
+          args: { defaults: NewLaneDefaults },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<NewLaneDefaultsSnapshot>;
         getDefaultTemplate: (pin?: OpenProjectBinding | null) => Promise<string | null>;
         setDefaultTemplate: (args: SetDefaultLaneTemplateArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         applyTemplate: (

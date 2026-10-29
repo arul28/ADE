@@ -1,3 +1,4 @@
+import type { NewLaneDefaults } from "../../../shared/laneStart";
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, shell, systemPreferences, webContents } from "electron";
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
@@ -7655,11 +7656,12 @@ export function registerIpc({
     const lane = await ctx.laneService.create({
       name: arg.name,
       description: arg.description,
-      parentLaneId: arg.parentLaneId,
-      baseBranch: arg.baseBranch,
+      start: arg.start ?? null,
       branchName: arg.branchName,
+      ...(arg.startPoint ? { startPoint: arg.startPoint } : {}),
       linearIssue: arg.linearIssue ?? null,
       githubIssue: arg.githubIssue ?? null,
+      jiraIssue: arg.jiraIssue ?? null,
       ...(arg.operationId ? { operationId: arg.operationId } : {}),
     });
     await ensureActiveLanePortLease(ctx, lane.id);
@@ -8103,6 +8105,11 @@ export function registerIpc({
     const ctx = getCtx();
     return ctx.laneTemplateService?.getDefaultTemplateId() ?? null;
   });
+
+  ipcMain.handle(IPC.lanesGetNewLaneDefaults, async () => ensureLaneContext().laneService.getNewLaneDefaults());
+
+  ipcMain.handle(IPC.lanesSetNewLaneDefaults, async (_event, args: { defaults: NewLaneDefaults }) =>
+    ensureLaneContext().laneService.setNewLaneDefaults(args));
 
   ipcMain.handle(IPC.lanesSetDefaultTemplate, async (_event, args: { templateId: string | null }) => {
     const ctx = getCtx();

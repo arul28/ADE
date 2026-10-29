@@ -99,6 +99,7 @@ import type {
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
+  NewLaneDefaultsSnapshot,
   LaneType,
   ListLanesArgs,
   ReparentLaneArgs,
@@ -133,6 +134,9 @@ import {
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
 import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
+import { copyUncommittedChanges, resolveLaneStart, type LaneStartFolder } from "./laneStartResolver";
+import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
+import { DEFAULT_NEW_LANE_DEFAULTS, normalizeLaneStart, plainLaneStartBranch, type NewLaneDefaults } from "../../../shared/laneStart";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -1767,6 +1771,8 @@ export type LaneCreateRuntimeOptions = {
   laneId?: string | null;
   onCheckoutProgress?: (progress: GitCheckoutProgress) => void;
   signal?: AbortSignal;
+  /** The caller already fetched the start branch (the chat launch's fetch stage). */
+  skipStartFetch?: boolean;
 };
 
 export type LaneDeleteTeardownDeps = {
@@ -1878,6 +1884,17 @@ export function createLaneService({
   // `setOnWorktreeLaneCreated` because the PR service is constructed after the
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
+
+  // Late-bound: the host wires the account-backed store once account settings
+  // exist. Without one, new lanes use the built-in defaults.
+  let newLaneSettings: NewLaneSettingsStore | null = null;
+  const getNewLaneDefaultsForCreate = (): NewLaneDefaults => {
+    try {
+      return newLaneSettings?.getDefaults() ?? DEFAULT_NEW_LANE_DEFAULTS;
+    } catch {
+      return DEFAULT_NEW_LANE_DEFAULTS;
+    }
+  };
 
   // Late-bound hook that tears down a lane's environment (Docker Compose stack)
   // when the lane is archived. Set via `setOnLaneArchivedEnvTeardown` because
@@ -6544,8 +6561,7 @@ export function createLaneService({
       {
         name,
         description,
-        parentLaneId,
-        baseBranch,
+        start,
         branchName,
         startPoint,
         linearIssue,
@@ -6558,100 +6574,92 @@ export function createLaneService({
       const gitWrite = beginLaneGitWrite(operationId, runtimeOptions.signal);
       runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
       try {
+        const issues = { linearIssue, githubIssue, jiraIssue };
         const requestedStartPoint = startPoint?.trim() ?? "";
-        if (parentLaneId) {
-          const parent = getLaneRow(parentLaneId);
-          if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-          if (parent.status === "archived") throw new Error("Parent lane is archived");
-
-          const trimmedBaseBranch = baseBranch?.trim() ?? "";
-          const requestedBaseRef = parent.lane_type === "primary"
-            ? (trimmedBaseBranch.length > 0 ? trimmedBaseBranch : defaultBaseRef)
-            : parent.branch_ref;
-
-          // If we are branching directly from the current primary checkout, ensure
-          // it is in sync with remote before using it as the base.
-          if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-            await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
-              cwd: parent.worktree_path,
-              timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
-              signal: gitWrite.signal,
-              cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
-            });
-            const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-            if (upstreamRes.exitCode === 0) {
-              const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
-                cwd: parent.worktree_path,
-                timeoutMs: 10_000
-              });
-              if (behindRes.exitCode === 0) {
-                const behindCount = parseInt(behindRes.stdout.trim(), 10);
-                if (behindCount > 0) {
-                  throw new Error(
-                    `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
-                  );
-                }
-              }
-            }
-          }
-          let parentHeadSha: string | null;
-          if (requestedStartPoint) {
-            const result = await runGit(["rev-parse", "--verify", requestedStartPoint], {
-              cwd: parent.worktree_path,
-              timeoutMs: 10_000,
-            });
-            if (result.exitCode !== 0 || !result.stdout.trim().length) {
-              throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
-            }
-            parentHeadSha = result.stdout.trim();
-          } else if (parent.lane_type === "primary") {
-            const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-            if (result.exitCode !== 0 || !result.stdout.trim().length) {
-              throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
-            }
-            parentHeadSha = result.stdout.trim();
-          } else {
-            parentHeadSha = await getHeadSha(parent.worktree_path);
-          }
-          if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
-          return await createWorktreeLane({
+        if (requestedStartPoint) {
+          // An exact commit (History's "create a lane here"): no start resolution.
+          const headRes = await runGit(["rev-parse", "--verify", `${requestedStartPoint}^{commit}`], { cwd: projectRoot, timeoutMs: 10_000 });
+          const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+          if (!resolvedHead) throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+          const lane = await createWorktreeLane({
             name,
             description,
-            baseRef: requestedBaseRef,
-            startPoint: parentHeadSha,
-            parentLaneId: parent.lane_type === "primary" ? null : parent.id,
+            baseRef: defaultBaseRef,
+            startPoint: resolvedHead,
+            parentLaneId: null,
             branchName,
-            linearIssue,
-            githubIssue,
-            jiraIssue,
+            ...issues,
           }, runtimeOptions);
+          return {
+            ...lane,
+            createdFrom: {
+              start: { from: "branch", branch: requestedStartPoint, bring: "local" },
+              sourceBranch: requestedStartPoint,
+              startRef: requestedStartPoint,
+              startSha: resolvedHead,
+              copiedFiles: 0,
+              copiedFromLaneName: null,
+              notes: [],
+            },
+          };
         }
 
-        // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
-        const trimmedBase = baseBranch?.trim() ?? "";
-        const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
-        const startRef = requestedStartPoint || requestedBaseRef;
-        const headRes = await runGit(
-          requestedStartPoint ? ["rev-parse", "--verify", requestedStartPoint] : ["rev-parse", requestedBaseRef],
-          { cwd: projectRoot, timeoutMs: 10_000 },
-        );
-        const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
-        if (requestedStartPoint && !resolvedHead) {
-          throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
-        }
-        const resolvedStartPoint = resolvedHead || startRef;
+        const effectiveStart = normalizeLaneStart(start) ?? getNewLaneDefaultsForCreate().start;
+        const rows = getAllLaneRows(false);
+        const folders: LaneStartFolder[] = rows
+          .filter((row) => row.worktree_path && row.branch_ref)
+          .map((row) => ({ name: row.name, branchRef: row.branch_ref, worktreePath: row.worktree_path }));
+        const primaryRow = rows.find((row) => row.lane_type === "primary") ?? null;
+        const resolved = await resolveLaneStart({
+          start: effectiveStart,
+          projectRoot,
+          defaultBranch: defaultBaseRef,
+          primary: primaryRow
+            ? { name: primaryRow.name, branchRef: primaryRow.branch_ref, worktreePath: primaryRow.worktree_path }
+            : null,
+          folders,
+          skipFetch: runtimeOptions.skipStartFetch === true,
+        });
 
-        return await createWorktreeLane({
+        const lane = await createWorktreeLane({
           name,
           description,
-          baseRef: requestedBaseRef,
-          startPoint: resolvedStartPoint,
+          baseRef: defaultBaseRef,
+          startPoint: resolved.startSha,
           parentLaneId: null,
           branchName,
-          linearIssue,
-          githubIssue,
-          jiraIssue,
+          ...issues,
         }, runtimeOptions);
+
+        const notes = [...resolved.notes];
+        let copiedFiles = 0;
+        if (resolved.copyFrom && lane.worktreePath) {
+          try {
+            copiedFiles = await copyUncommittedChanges({ fromPath: resolved.copyFrom.worktreePath, toPath: lane.worktreePath });
+            if (copiedFiles === 0) notes.push(`${resolved.copyFrom.name} had no uncommitted changes to copy.`);
+          } catch (error) {
+            // The lane is real and usable; only the copy failed. Say so rather
+            // than throwing away a worktree the user can still work in.
+            notes.push(error instanceof Error ? error.message : String(error));
+            logger.warn("lanes.create.copy_uncommitted_failed", {
+              laneId: lane.id,
+              from: resolved.copyFrom.worktreePath,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return {
+          ...lane,
+          createdFrom: {
+            start: effectiveStart,
+            sourceBranch: resolved.sourceBranch,
+            startRef: resolved.startRef,
+            startSha: resolved.startSha,
+            copiedFiles,
+            copiedFromLaneName: copiedFiles > 0 ? resolved.copyFrom?.name ?? null : null,
+            notes,
+          },
+        };
       } finally {
         gitWrite.end();
       }
@@ -10175,6 +10183,32 @@ export function createLaneService({
      */
     setOnWorktreeLaneCreated(hook: ((lane: LaneSummary) => void | Promise<void>) | null): void {
       onWorktreeLaneCreated = hook ?? null;
+    },
+
+    /** Late-bind the account-backed new-lane settings (defaults and templates). */
+    setNewLaneSettingsStore(store: NewLaneSettingsStore | null): void {
+      newLaneSettings = store;
+    },
+
+    /**
+     * How new lanes start in this project when the caller picks nothing:
+     * Auto-create lane, `ade lanes create` with no flags, and the New lane
+     * dialog's first choice all read this.
+     */
+    getNewLaneDefaults(): NewLaneDefaultsSnapshot {
+      const primary = getAllLaneRows(false).find((row) => row.lane_type === "primary") ?? null;
+      return {
+        defaults: getNewLaneDefaultsForCreate(),
+        scope: newLaneSettings?.scope() ?? { kind: "this-computer", repo: null },
+        defaultBranch: plainLaneStartBranch(defaultBaseRef),
+        primaryBranch: primary?.branch_ref ? plainLaneStartBranch(primary.branch_ref) : null,
+      };
+    },
+
+    setNewLaneDefaults(args: { defaults: NewLaneDefaults }): NewLaneDefaultsSnapshot {
+      if (!newLaneSettings) throw new Error("New-lane settings aren't available on this computer.");
+      newLaneSettings.setDefaults(args.defaults);
+      return laneServiceApi.getNewLaneDefaults();
     },
 
     /**

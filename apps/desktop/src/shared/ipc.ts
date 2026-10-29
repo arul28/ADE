@@ -335,6 +335,8 @@ export const IPC = {
   lanesGetTemplate: "ade.lanes.templates.get",
   lanesGetDefaultTemplate: "ade.lanes.templates.getDefault",
   lanesSetDefaultTemplate: "ade.lanes.templates.setDefault",
+  lanesGetNewLaneDefaults: "ade.lanes.newLaneDefaults.get",
+  lanesSetNewLaneDefaults: "ade.lanes.newLaneDefaults.set",
   lanesApplyTemplate: "ade.lanes.templates.apply",
   lanesSaveTemplate: "ade.lanes.templates.save",
   lanesDeleteTemplate: "ade.lanes.templates.delete",

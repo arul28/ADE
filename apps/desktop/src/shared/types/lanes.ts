@@ -11,6 +11,7 @@ import type {
   GitUpstreamSyncStatus,
 } from "./git";
 import type { TerminalSessionSummary } from "./sessions";
+import type { LaneStart, NewLaneDefaults } from "../laneStart";
 
 // ---------------------------------------------------------------------------
 // Lane types
@@ -134,6 +135,8 @@ export type LaneSummary = {
   worktreePath: string;
   worktreeAvailable?: boolean;
   attachedRootPath?: string | null;
+  /** Set only on the summary `create` returns: how the lane started. */
+  createdFrom?: LaneCreatedFrom | null;
   parentLaneId: string | null;
   childCount: number;
   stackDepth: number;
@@ -434,9 +437,16 @@ export type ListLanesArgs = {
 export type CreateLaneArgs = {
   name: string;
   description?: string;
-  parentLaneId?: string;
-  baseBranch?: string;
+  /**
+   * Where the new branch starts and what it brings along. Omitted: the
+   * project's saved new-lane defaults (`getNewLaneDefaults`).
+   */
+  start?: LaneStart | null;
   branchName?: string;
+  /**
+   * An exact commit or ref to start from (e.g. "create a lane at this commit"
+   * in History). Wins over `start`.
+   */
   startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
   /** A GitHub issue the lane is for: linked to the lane itself, so its PR says "Closes #N". */
@@ -976,4 +986,41 @@ export type GetLaneDependencyStatusArgs = {
 export type AcknowledgeLaneDependencyStatusArgs = {
   /** Lockfiles (relative paths) to mark as current; omit for every lockfile. */
   lockfiles?: string[];
+};
+
+/** Who a project's new-lane settings follow. */
+export type NewLaneSettingsScope = {
+  /**
+   * `account-repo`: your ADE account, for this repository, on every computer.
+   * `this-computer`: the project has no remote, so the settings stay here.
+   */
+  kind: "account-repo" | "this-computer";
+  /** `github.com/owner/name` when `kind` is `account-repo`. */
+  repo: string | null;
+};
+
+/** The project's new-lane defaults plus what they resolve to right now. */
+export type NewLaneDefaultsSnapshot = {
+  defaults: NewLaneDefaults;
+  scope: NewLaneSettingsScope;
+  /** The project's default branch, e.g. `main`. */
+  defaultBranch: string;
+  /** The branch the primary lane has checked out, or null when detached. */
+  primaryBranch: string | null;
+};
+
+/** How a lane that was just created started; returned by `create` only. */
+export type LaneCreatedFrom = {
+  start: LaneStart;
+  /** The branch the start pointed at, e.g. `main`. */
+  sourceBranch: string;
+  /** The ref the lane branched from: `origin/main`, `main`, or a commit. */
+  startRef: string;
+  startSha: string;
+  /** Files copied from another folder's uncommitted changes. */
+  copiedFiles: number;
+  /** The lane whose uncommitted changes were copied. */
+  copiedFromLaneName: string | null;
+  /** Plain-language notes about fallbacks (a failed fetch, a missing branch). */
+  notes: string[];
 };

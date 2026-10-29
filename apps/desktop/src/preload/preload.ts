@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
+import type { NewLaneDefaults } from "../shared/laneStart";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -917,6 +918,7 @@ import type {
   LaneTemplate,
   GetLaneTemplateArgs,
   SetDefaultLaneTemplateArgs,
+  NewLaneDefaultsSnapshot,
   ApplyLaneTemplateArgs,
   SaveLaneTemplateArgs,
   GetLaneDependencyStatusArgs,
@@ -7398,6 +7400,18 @@ const adeBridge = {
     ): Promise<LaneTemplate | null> =>
       callProjectRuntimeActionOr("lane", "getTemplate", { args }, () =>
         ipcRenderer.invoke(IPC.lanesGetTemplate, args),
+      ),
+    /** How new lanes start in this project, on the machine `pin` names. */
+    getNewLaneDefaults: async (pin?: OpenProjectBinding | null): Promise<NewLaneDefaultsSnapshot> =>
+      callPinnedOrBoundRuntimeActionOr<NewLaneDefaultsSnapshot>(pin, "lane", "getNewLaneDefaults", {}, () =>
+        ipcRenderer.invoke(IPC.lanesGetNewLaneDefaults),
+      ),
+    setNewLaneDefaults: async (
+      args: { defaults: NewLaneDefaults },
+      pin?: OpenProjectBinding | null,
+    ): Promise<NewLaneDefaultsSnapshot> =>
+      callPinnedOrBoundRuntimeActionOr<NewLaneDefaultsSnapshot>(pin, "lane", "setNewLaneDefaults", { args }, () =>
+        ipcRenderer.invoke(IPC.lanesSetNewLaneDefaults, args),
       ),
     getDefaultTemplate: async (pin?: OpenProjectBinding | null): Promise<string | null> =>
       callPinnedOrBoundRuntimeActionOr(pin, "lane", "getDefaultTemplate", {}, () =>

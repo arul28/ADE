@@ -140,6 +140,7 @@ import {
 import { createLaneService, type LaneDeleteTeardownDeps } from "./services/lanes/laneService";
 import { createLaneEnvironmentService } from "./services/lanes/laneEnvironmentService";
 import { createLaneTemplateService } from "./services/lanes/laneTemplateService";
+import { createFileNewLaneAccountStore, createNewLaneSettingsStore, legacyNewLaneSettingsFromConfig } from "./services/lanes/newLaneSettingsStore";
 import { runDefaultLaneEnvironmentSetup } from "./services/lanes/laneEnvironmentSetup";
 import { createLaneWorktreeLockService } from "./services/lanes/laneWorktreeLockService";
 import { createPortAllocationService } from "./services/lanes/portAllocationService";
@@ -4135,9 +4136,22 @@ app.whenReady().then(async () => {
       // shared config, so the executor gets the same trust gate test suites use.
     });
 
+    // The in-process host has no account store: new-lane settings stay in a
+    // file in this project's `.ade` folder (the brain files them under the
+    // account).
+    const newLaneSettings = createNewLaneSettingsStore({
+      projectRoot,
+      store: createFileNewLaneAccountStore(path.join(projectRoot, ".ade", "new-lane-settings.json")),
+      accountBacked: false,
+      readOriginUrl: () => readGitOriginUrl(projectRoot),
+      legacy: () => legacyNewLaneSettingsFromConfig(projectConfigService.get()),
+    });
+    laneService.setNewLaneSettingsStore(newLaneSettings);
+
     const laneTemplateService = createLaneTemplateService({
       projectConfigService,
       logger,
+      getNewLaneSettings: () => newLaneSettings,
     });
 
     // Archiving a lane brings down the Docker services its env init started —
