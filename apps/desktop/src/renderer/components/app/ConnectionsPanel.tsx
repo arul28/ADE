@@ -309,7 +309,10 @@ export function ConnectionsPanel({
   const routesReadable = routesAvailable();
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)" }}>
+    // Clip to the sheet's own corners, whatever radius the theme gives it, so
+    // the coloured header never pokes past the curve. Menus portal out, so
+    // nothing that should overflow is cut.
+    <div style={{ display: "flex", flexDirection: "column", maxHeight: "calc(100vh / var(--ade-web-zoom-factor, 1) - 96px)", borderRadius: "inherit", overflow: "hidden" }}>
       <AccountHeader githubStatus={githubStatus} onNavigate={goToAccount} onClose={onClose} />
 
       <div style={{ padding: "12px 12px 0" }}>
