@@ -68,6 +68,8 @@ import type { MissionSnapshot } from "../types";
 import type { HelpRow } from "../helpIndex";
 import {
   NEW_LANE_COLOR_OPTIONS,
+  NEW_LANE_FROM_LABEL,
+  NEW_LANE_BRING_LABEL,
   NEW_LANE_START_HINT,
   NEW_LANE_START_LABEL,
   NEW_LANE_START_ORDER,
@@ -2083,7 +2085,7 @@ function NewLaneFormPane({
     const matches = filterNewLaneBranchMatches({
       branches: content.branches,
       query: formValues[name]?.trim() ?? "",
-      remote: name === "baseBranch" ? true : branchSource === "remote",
+      remote: start === "import" ? branchSource === "remote" : (formValues.bring || "pushed") === "pushed",
       limit: NEW_LANE_TYPEAHEAD_ROWS,
     });
     return Array.from({ length: NEW_LANE_TYPEAHEAD_ROWS }, (_, index) => (
@@ -2096,8 +2098,6 @@ function NewLaneFormPane({
   const renderField = (field: NewLaneFormContent["fields"][number]) => {
     switch (field.name) {
       case "name":
-      case "from":
-      case "bring":
       case "branch":
       case "baseBranch":
       case "linearIssue":
@@ -2110,6 +2110,20 @@ function NewLaneFormPane({
               {"  "}{endTruncate(value || field.placeholder || "", inner - 2)}
             </Text>
             {field.name === typeahead ? typeaheadRows(field.name) : null}
+          </Box>
+        );
+      }
+      case "from":
+      case "bring": {
+        const labels = field.name === "from" ? NEW_LANE_FROM_LABEL : NEW_LANE_BRING_LABEL;
+        const value = formValues[field.name] || (field.name === "from" ? "default" : "pushed");
+        const label = (labels as Record<string, string>)[value] ?? value;
+        return (
+          <Box key={field.name} flexDirection="column" marginTop={1}>
+            {labelRow(field.name, field.label)}
+            <Text color={active(field.name) ? theme.color.violet : theme.color.t3} wrap="truncate-end">
+              {"  "}‹ {endTruncate(label, inner - 6)} ›
+            </Text>
           </Box>
         );
       }

@@ -2,23 +2,11 @@ import type { LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/t
 import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette";
 import { linearIssueBranchName } from "../../../desktop/src/shared/linearIssueBranch";
 
-/**
- * Pure model for the /new lane form — mirrors the desktop CreateLaneDialog's
- * "Start from" modes (primary base branch / start from an existing branch /
- * child of an existing lane) plus the color picker, adapted to the TUI's
- * right-pane form system. The form's field list
- * is rebuilt when the start mode cycles so each mode only shows the inputs it
- * actually uses.
- */
+import { LANE_START_FROM_LABEL, LANE_START_BRING_LABEL, type LaneStartFrom, type LaneStartBring } from "../../../desktop/src/shared/laneStart";
 
 export type NewLaneStart = "primary" | "import";
 export type NewLaneBranchSource = "remote" | "local";
 
-/**
- * Display + cycle order of the vertical "Start from" option list. The
- * internal "import" mode value is kept for payload stability but renders as
- * "branch" (desktop calls this mode "Branch").
- */
 export const NEW_LANE_START_ORDER: readonly NewLaneStart[] = ["primary", "import"];
 
 export function normalizeNewLaneStart(value: string | null | undefined): NewLaneStart {
@@ -50,6 +38,22 @@ export const NEW_LANE_START_HINT: Record<NewLaneStart, string> = {
   primary: "new lane off the base branch",
   import: "start from existing branch",
 };
+
+export const NEW_LANE_FROM_ORDER: readonly LaneStartFrom[] = ["default", "primary", "branch"];
+export const NEW_LANE_BRING_ORDER: readonly LaneStartBring[] = ["pushed", "local", "uncommitted"];
+export const NEW_LANE_FROM_LABEL = LANE_START_FROM_LABEL;
+export const NEW_LANE_BRING_LABEL = LANE_START_BRING_LABEL;
+
+function cycleChoice<T extends string>(values: readonly T[], value: string | null | undefined, delta: number): T {
+  const index = Math.max(0, values.findIndex(item => item === value));
+  return values[((index + delta) % values.length + values.length) % values.length]!;
+}
+export function cycleNewLaneFrom(value: string | null | undefined, delta: number): LaneStartFrom {
+  return cycleChoice(NEW_LANE_FROM_ORDER, value, delta);
+}
+export function cycleNewLaneBring(value: string | null | undefined, delta: number): LaneStartBring {
+  return cycleChoice(NEW_LANE_BRING_ORDER, value, delta);
+}
 
 // ---------------------------------------------------------------------------
 // Color picker (desktop parity)
@@ -95,20 +99,20 @@ export type NewLaneFormField = {
 
 export function newLaneFormFields(
   start: NewLaneStart,
-  options: { activeLaneName?: string | null } = {},
+  options: { from?: string | null } = {},
 ): NewLaneFormField[] {
   const fields: NewLaneFormField[] = [
     { name: "name", label: "Name", required: true, placeholder: "feature-name" },
     { name: "color", label: "Color", initialValue: "" },
-    { name: "start", label: "Start from", initialValue: start },
+    { name: "start", label: "Mode", initialValue: start },
   ];
   if (start === "import") {
     fields.push({ name: "branchSource", label: "Source", initialValue: "local" });
     fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
   } else {
-    fields.push({ name: "from", label: "Start from (default, primary, or branch)", initialValue: "default" });
-    fields.push({ name: "branch", label: "Specific branch", placeholder: "branch when Start from is branch" });
-    fields.push({ name: "bring", label: "Bring (pushed, local, uncommitted)", initialValue: "pushed" });
+    fields.push({ name: "from", label: "Start from", initialValue: "default" });
+    if (options.from === "branch") fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
+    fields.push({ name: "bring", label: "Bring", initialValue: "pushed" });
   }
   fields.push({ name: "linearIssue", label: "Linear issue", placeholder: "ADE-123 or issue id" });
   fields.push({ name: "templateId", label: "Setup template", placeholder: "default" });
@@ -123,14 +127,9 @@ export function newLaneFormFields(
 /** Fixed number of reserved typeahead rows under the typeahead field. */
 export const NEW_LANE_TYPEAHEAD_ROWS = 4;
 
-/**
- * Which field (if any) shows the branch typeahead for the given mode:
- * the branch field in branch/import mode, the base-branch field in primary
- * mode (remote branches). Child mode has none.
- */
 export function newLaneTypeaheadField(fields: ReadonlyArray<{ name: string }>): "branch" | "baseBranch" | null {
   if (fields.some((field) => field.name === "branch")) return "branch";
-  return fields.some((field) => field.name === "baseBranch") ? "baseBranch" : null;
+  return null;
 }
 
 /**
@@ -186,7 +185,7 @@ export function newLaneFormFieldRowOffsets(fields: ReadonlyArray<{ name: string 
 }
 
 /**
- * Map a click row offset inside the start block (0 = label, 1..3 = options in
+ * Map a click row offset inside the mode block (0 = label, 1..2 = options in
  * NEW_LANE_START_ORDER) onto the chosen start mode; null = no option hit.
  */
 export function newLaneStartForClickRow(relY: number): NewLaneStart | null {
@@ -219,6 +218,7 @@ export function newLaneCreateAction(args: {
     if (!branch) return { label: "import branch", enabled: false, reason: "branch required" };
     return { label: `import ${branch}`, enabled: true, reason: null };
   }
+  if (args.values.from === "branch" && !args.values.branch?.trim()) return { label: "create lane", enabled: false, reason: "branch required" };
   return { label: "create lane", enabled: true, reason: null };
 }
 

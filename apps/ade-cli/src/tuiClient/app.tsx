@@ -299,6 +299,8 @@ import {
 import {
   buildNewLaneSubmission,
   cycleNewLaneColor,
+  cycleNewLaneFrom,
+  cycleNewLaneBring,
   cycleNewLaneStart,
   filterNewLaneBranchMatches,
   newLaneFormFieldRowOffsets,
@@ -3101,7 +3103,7 @@ export function formFieldUsesPromptInput(command: string, fieldName: string): bo
   if (command === "lane-delete" && (fieldName === "scope" || fieldName === "force")) return false;
   if (
     command === "new-lane"
-    && (fieldName === "start" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
+    && (fieldName === "start" || fieldName === "from" || fieldName === "bring" || fieldName === "color" || fieldName === "branchSource" || fieldName === "create")
   ) return false;
   return true;
 }
@@ -3808,6 +3810,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     );
   }, []);
   const [formValues, setFormValues] = useState<Record<string, string>>({});
+  const newLaneChoiceRevisionRef = useRef(0);
   const [formFieldIndex, setFormFieldIndex] = useState(0);
   const [rightSelectionIndex, setRightSelectionIndex] = useState(0);
   // The Activity chip survives a refresh, so R does not drop the filter.
@@ -7859,12 +7862,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
   }, [setFormConfirmArmed, setPaneFocus, stashActiveInput]);
 
   const openNewLaneForm = useCallback((initialStart?: { from: string; branch: string; bring: string }) => {
-    const activeLaneName = lanes.find((lane) => lane.id === activeLaneIdRef.current)?.name ?? null;
+    const revision = ++newLaneChoiceRevisionRef.current;
     openForm({
       kind: "form",
       title: "New lane",
       command: "new-lane",
-      fields: newLaneFormFields("primary", { activeLaneName }),
+      fields: newLaneFormFields("primary", { from: initialStart?.from }),
     });
     // Fetch branch names once for the typeahead (async — the form opens
     // immediately and the matches appear when the result lands). Stashed on
@@ -7874,8 +7877,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (initialStart) setFormValues(previous => ({ ...previous, ...initialStart }));
     if (conn && !initialStart) {
       void conn.action<{ defaults: { start: { from: string; branch?: string; bring: string } } }>("lane", "getNewLaneDefaults").then(snapshot => {
+        if (newLaneChoiceRevisionRef.current !== revision || rightPaneRef.current.kind !== "form" || rightPaneRef.current.command !== "new-lane") return;
         setFormValues(previous => ({ ...previous, from: snapshot.defaults.start.from, branch: snapshot.defaults.start.branch ?? "", bring: snapshot.defaults.start.bring }));
-      }).catch(() => {});
+        setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+          ? { ...previous, fields: newLaneFormFields("primary", { from: snapshot.defaults.start.from }) } : previous);
+      }).catch(() => {
+        if (newLaneChoiceRevisionRef.current === revision) addNotice("Could not load new-lane defaults. Reopen the form to retry.", "error");
+      });
     }
     if (conn && laneId) {
       void listGitBranches(conn, laneId)
@@ -7887,7 +7895,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         })
         .catch(() => {});
     }
-  }, [lanes, openForm]);
+  }, [addNotice, openForm]);
 
   const openMoveUnstagedForm = useCallback(() => {
     const lane = lanes.find(entry => entry.id === activeLaneIdRef.current) ?? activeLane;
@@ -16615,7 +16623,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         const top = filterNewLaneBranchMatches({
           branches: rightPane.branches,
           query: values[field.name] ?? "",
-          remote: field.name === "baseBranch" ? true : normalizeNewLaneBranchSource(values.branchSource) === "remote",
+          remote: normalizeNewLaneStart(values.start) === "import" ? normalizeNewLaneBranchSource(values.branchSource) === "remote" : (values.bring || "pushed") === "pushed",
           limit: 1,
         })[0];
         if (top) {
@@ -17049,24 +17057,37 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const field = fields[formFieldIndex] ?? fields[0] ?? null;
       const nextValues = currentFormValues();
       if (field?.name === "start") {
-        // 1-3 follow the vertical option order (primary / branch / child).
+        // Number keys follow the mode order.
         const startByKey: Record<string, string> = { "1": "primary", "2": "import" };
         const cycled = key.leftArrow || key.rightArrow
           ? cycleNewLaneStart(nextValues.start, key.leftArrow ? -1 : 1)
           : startByKey[input];
         if (cycled && cycled !== normalizeNewLaneStart(nextValues.start)) {
-          const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+          newLaneChoiceRevisionRef.current++;
           setFormValues({ ...nextValues, start: cycled });
           // Rebuild the visible fields for the chosen mode (desktop dialog
           // parity: each "Start from" mode shows its own inputs). The start
           // row keeps the same index across modes so focus stays put.
           setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
-            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(cycled), { activeLaneName }) }
+            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(cycled), { from: nextValues.from }) }
             : previous);
           setPrompt("");
           return;
         }
         if (cycled) {
+          setPrompt("");
+          return;
+        }
+        if (printableInput(input) && !key.ctrl && !key.meta && !key.return) return;
+      }
+      if (field?.name === "from" || field?.name === "bring") {
+        if (key.leftArrow || key.rightArrow) {
+          const delta = key.leftArrow ? -1 : 1;
+          const next = field.name === "from" ? cycleNewLaneFrom(nextValues.from, delta) : cycleNewLaneBring(nextValues.bring, delta);
+          newLaneChoiceRevisionRef.current++;
+          setFormValues({ ...nextValues, [field.name]: next });
+          if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+            ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(nextValues.start), { from: next }) } : previous);
           setPrompt("");
           return;
         }
@@ -18326,11 +18347,20 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   setPrompt("");
                   return;
                 }
-                const activeLaneName = lanes.find((entry) => entry.id === activeLaneIdRef.current)?.name ?? null;
+                newLaneChoiceRevisionRef.current++;
                 setFormValues((prev) => ({ ...prev, start: nextStart }));
                 setRightPane((previous) => previous.kind === "form" && previous.command === "new-lane"
-                  ? { ...previous, fields: newLaneFormFields(nextStart, { activeLaneName }) }
+                  ? { ...previous, fields: newLaneFormFields(nextStart, { from: formValues.from }) }
                   : previous);
+                setPrompt("");
+                return;
+              }
+              if (rightPane.command === "new-lane" && (field.name === "from" || field.name === "bring")) {
+                const next = field.name === "from" ? cycleNewLaneFrom(formValues.from, 1) : cycleNewLaneBring(formValues.bring, 1);
+                newLaneChoiceRevisionRef.current++;
+                setFormValues(prev => ({ ...prev, [field.name]: next }));
+                if (field.name === "from") setRightPane(previous => previous.kind === "form" && previous.command === "new-lane"
+                  ? { ...previous, fields: newLaneFormFields(normalizeNewLaneStart(formValues.start), { from: next }) } : previous);
                 setPrompt("");
                 return;
               }
