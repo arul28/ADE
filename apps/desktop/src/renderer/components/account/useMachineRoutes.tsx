@@ -273,14 +273,6 @@ export function useMachineRoutesControl(args: {
     />
   ) : null;
 
-  // How many computers offer ADE Relay right now: each one's own answer when
-  // it gave one, else what the directory last published.
-  const relayOnCount = rows.filter((row) => {
-    if (!row.accountMachine) return false;
-    const routes = stateFor(row)?.routes;
-    return routes ? routes.relay.enabled : row.accountMachine.reachableEndpoints.some((endpoint) => endpoint.kind === "relay");
-  }).length;
-
   return {
     privateNetwork,
     relayDialog,
@@ -288,6 +280,5 @@ export function useMachineRoutesControl(args: {
     routesPanelFor,
     onExpand,
     localRoutes: enabled ? byKey[LOCAL_ROUTES_KEY]?.routes ?? null : null,
-    relayOnCount,
   };
 }

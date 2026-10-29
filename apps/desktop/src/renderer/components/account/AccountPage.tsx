@@ -9,7 +9,6 @@ import {
   Copy,
   GithubLogo,
   IdentificationCard,
-  Laptop,
   Question,
   SignOut,
   UserCircle,
@@ -44,8 +43,8 @@ import { BrainRepairButton } from "../settings/BrainRepairButton";
 import { ConfirmSheet, YourMacsCard } from "./YourMacsCard";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { settingsRouteFor } from "../settings/settingsManifest";
-import { ModernPage, ModernRow, ModernRows, ModernSection } from "../settings/primitives";
-import { AccountHero, type AccountNetworkSummary } from "./AccountHero";
+import { ModernPage, ModernSection } from "../settings/primitives";
+import { AccountHero, type AccountThisComputer } from "./AccountHero";
 import { OtherMachinesUpdateSection } from "../settings/OtherMachinesUpdateSection";
 import "./accountPage.css";
 import { AnotherDeviceSignInPanel } from "./AnotherDeviceSignInPanel";
@@ -343,7 +342,10 @@ function CopyIdButton({ value }: { value: string }) {
   return (
     <button
       type="button"
-      className="ade-acct-btn"
+      className="ade-acct-btn ade-acct-icon-btn"
+      data-variant="ghost"
+      aria-label={copied ? "Copied" : "Copy account ID"}
+      title={copied ? "Copied" : "Copy account ID"}
       onClick={() => {
         void write(value).then(() => {
           setCopied(true);
@@ -351,8 +353,7 @@ function CopyIdButton({ value }: { value: string }) {
         }).catch(() => {});
       }}
     >
-      {copied ? <Check size={12} weight="bold" /> : <Copy size={12} weight="bold" />}
-      {copied ? "Copied" : "Copy"}
+      {copied ? <Check size={13} weight="bold" /> : <Copy size={13} weight="bold" />}
     </button>
   );
 }
@@ -382,61 +383,52 @@ function AccountDetailsSection({
       title="Account"
       icon={<UserCircle size={15} weight="bold" />}
       tone="violet"
-      hint="How you sign in to ADE, and this computer's session."
     >
-      <ModernRows>
-        <ModernRow
-          icon={<At size={15} weight="bold" />}
-          tone="slate"
-          title={status.email ?? "Your ADE account"}
-          hint={providerCaption ?? "ADE account"}
-        />
+      <dl className="ade-acct-facts">
+        <div className="ade-acct-fact">
+          <dt><At size={13} weight="bold" />Email</dt>
+          <dd>
+            <span className="ade-acct-fact-value">{status.email ?? "Your ADE account"}</span>
+            {providerCaption ? <span className="ade-acct-fact-note">{providerCaption}</span> : null}
+          </dd>
+        </div>
         {status.userId ? (
-          <ModernRow
-            icon={<IdentificationCard size={15} weight="bold" />}
-            tone="slate"
-            title="Account ID"
-            hint={<span className="ade-net-mono">{status.userId}</span>}
-            control={<CopyIdButton value={status.userId} />}
-          />
+          <div className="ade-acct-fact">
+            <dt><IdentificationCard size={13} weight="bold" />Account ID</dt>
+            <dd>
+              <span className="ade-acct-fact-value ade-net-mono" title={status.userId}>{status.userId}</span>
+              <CopyIdButton value={status.userId} />
+            </dd>
+          </div>
         ) : null}
         {showRepoBridge ? (
-          <ModernRow
-            icon={<GithubLogo size={15} weight="fill" />}
-            tone="slate"
-            title="Connect GitHub for repos and PRs"
-            hint="Your ADE account and your GitHub access stay separate. Lanes, pull requests and checks need GitHub."
-            control={(
-              <>
-                <button type="button" className="ade-acct-btn" onClick={onConnectGithub}>Connect GitHub</button>
-                <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion." }}>
-                  <button type="button" onClick={onDismissRepoBridge} aria-label="Dismiss" className="ade-acct-btn ade-acct-icon-btn" data-variant="ghost">
-                    <X size={13} weight="bold" />
-                  </button>
-                </SmartTooltip>
-              </>
-            )}
-          />
+          <div className="ade-acct-fact">
+            <dt><GithubLogo size={13} weight="fill" />GitHub</dt>
+            <dd>
+              <span className="ade-acct-fact-note">Not connected. Lanes, pull requests and checks need it.</span>
+              <button type="button" className="ade-acct-btn" onClick={onConnectGithub}>Connect GitHub</button>
+              <SmartTooltip content={{ label: "Dismiss", description: "Hide this suggestion." }}>
+                <button type="button" onClick={onDismissRepoBridge} aria-label="Dismiss" className="ade-acct-btn ade-acct-icon-btn" data-variant="ghost">
+                  <X size={13} weight="bold" />
+                </button>
+              </SmartTooltip>
+            </dd>
+          </div>
         ) : null}
-        <ModernRow
-          icon={<Laptop size={15} weight="bold" />}
-          tone="slate"
-          title="Signed in on this computer"
-          hint="Signing out only affects this computer. Your other computers and phones stay signed in."
-          control={(
-            <button
-              type="button"
-              className="ade-acct-btn"
-              data-tone="danger"
-              disabled={signingOut}
-              onClick={() => setConfirming(true)}
-            >
-              {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
-              Sign out
-            </button>
-          )}
-        />
-      </ModernRows>
+      </dl>
+      <div className="ade-acct-signout">
+        <span className="ade-acct-fact-note">Signing out only affects this computer. Your other computers and phones stay signed in.</span>
+        <button
+          type="button"
+          className="ade-acct-btn"
+          data-tone="danger"
+          disabled={signingOut}
+          onClick={() => setConfirming(true)}
+        >
+          {signingOut ? <CircleNotch size={13} weight="bold" className="animate-spin" /> : <SignOut size={13} weight="bold" />}
+          Sign out of this computer
+        </button>
+      </div>
       {confirming ? (
         <ConfirmSheet
           title="Sign out of ADE?"
@@ -473,7 +465,7 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
   const [signingOut, setSigningOut] = useState(false);
   const [signOutError, setSignOutError] = useState<string | null>(null);
   const [avatarBroken, setAvatarBroken] = useState(false);
-  const [networkSummary, setNetworkSummary] = useState<AccountNetworkSummary | null>(null);
+  const [thisComputer, setThisComputer] = useState<AccountThisComputer | null>(null);
   const [repoBridgeDismissed, setRepoBridgeDismissed] = useState(() => readDismissed(REPO_BRIDGE_DISMISS_KEY));
   const backRef = useRef<HTMLButtonElement>(null);
 
@@ -562,9 +554,9 @@ export function AccountPage({ embedded = false }: { embedded?: boolean } = {}) {
         onAvatarError={() => setAvatarBroken(true)}
         tint={ringTint}
         providerCaption={providerCaption}
-        summary={networkSummary}
+        thisComputer={thisComputer}
       />
-      <YourMacsCard onSummary={setNetworkSummary} between={<OtherMachinesUpdateSection group="Account" compact />} />
+      <YourMacsCard onThisComputer={setThisComputer} between={<OtherMachinesUpdateSection group="Account" compact />} />
       <AccountDetailsSection
         status={status}
         providerCaption={providerCaption}

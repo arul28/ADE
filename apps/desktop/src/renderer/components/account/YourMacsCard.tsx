@@ -60,12 +60,13 @@ import { isWebClientMode } from "../../lib/webClientMode";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { CustomToolMark } from "../shared/CustomToolMark";
 import { ProviderLogo } from "../shared/ProviderLogos";
-import { providerColor } from "../usage/providerColors";
+import { providerGroupLabel, type ProviderGroupKey } from "../../../shared/modelCatalog";
 import { Banner } from "../ui/notice/Banner";
 import { ModernRows, ModernSection } from "../settings/primitives";
 import { RoutePills } from "./MachineRoutes";
 import { routesAvailable, useMachineRoutesControl } from "./useMachineRoutes";
-import type { AccountNetworkSummary } from "./AccountHero";
+import type { AccountThisComputer } from "./AccountHero";
+import { machineRouteItems } from "./machineRouteModel";
 import "./accountPage.css";
 
 /** The quiet heading over one column of a machine's expanded inventory. */
@@ -75,6 +76,70 @@ function InventoryGroupLabel({ children }: { children: React.ReactNode }) {
 
 function InventoryEmpty({ children }: { children: React.ReactNode }) {
   return <div className="ade-acct-inventory-empty">{children}</div>;
+}
+
+/** "Droid", "GitHub Copilot"; a provider this build has no group for keeps its id, capitalised. */
+function providerLabel(provider: string): string {
+  const label = providerGroupLabel(provider as ProviderGroupKey) as string | undefined;
+  if (label) return label;
+  return provider.length > 0 ? provider[0].toUpperCase() + provider.slice(1) : provider;
+}
+
+function modelCountLabel(count: number): string | null {
+  return count > 0 ? `${count} ${count === 1 ? "model" : "models"}` : null;
+}
+
+/**
+ * Everything signed in on one computer, as one list: each provider with the
+ * accounts it holds, then the Custom presets saved on the account. A provider
+ * signed in through its own CLI or OpenCode is listed too, not only the ones
+ * with an account saved in ADE.
+ */
+function SignedInList({ detail }: { detail: MachineInventoryDetail }) {
+  if (detail.providers.length === 0 && detail.presets.length === 0) {
+    return <InventoryEmpty>Nothing signed in on this computer yet.</InventoryEmpty>;
+  }
+  return (
+    <ul className="ade-acct-signed">
+      {detail.providers.map((provider) => {
+        const accounts = provider.accounts.map((account) => ({
+          key: account.instanceId,
+          who: account.email || account.label,
+          meta: [account.plan, account.isDefault && provider.accounts.length > 1 ? "Default" : null].filter(Boolean).join(" · "),
+        }));
+        return (
+          <li key={provider.provider} className="ade-acct-signed-row" data-machine-inventory-provider={provider.provider}>
+            <span className="ade-acct-signed-mark"><ProviderLogo family={provider.provider} size={15} /></span>
+            <span className="ade-acct-signed-name">{providerLabel(provider.provider)}</span>
+            <span className="ade-acct-signed-who">
+              {accounts.length === 0 ? <span className="ade-acct-signed-dim">Signed in</span> : accounts.map((account) => (
+                <span key={account.key} className="ade-acct-signed-account">
+                  {account.who}
+                  {account.meta ? <span className="ade-acct-signed-dim"> · {account.meta}</span> : null}
+                </span>
+              ))}
+            </span>
+            <span className="ade-acct-signed-count kit-num">{modelCountLabel(provider.modelCount)}</span>
+          </li>
+        );
+      })}
+      {detail.presets.map((preset) => (
+        <li key={preset.id} className="ade-acct-signed-row" data-custom>
+          <span className="ade-acct-signed-mark"><CustomToolMark size={15} /></span>
+          <span className="ade-acct-signed-name">{preset.name}</span>
+          <span className="ade-acct-signed-who">
+            <span className="ade-acct-signed-account">
+              <ProviderLogo family={preset.harness} size={11} />
+              {providerLabel(preset.harness)} · {preset.model}
+            </span>
+          </span>
+          <span className="ade-acct-signed-count">
+            {preset.bound ? <span className="kit-tag">Custom</span> : <span className="kit-tag" data-tone="warn">Not set up here</span>}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
 }
 import { useBrainRepair } from "../../hooks/useBrainRepair";
 import { BrainRepairButton } from "../settings/BrainRepairButton";
@@ -256,10 +321,6 @@ type MachineInventoryViewState =
   | { status: "ready"; detail: MachineInventoryDetail }
   | { status: "error"; message: string };
 
-function providerInventoryLabel(provider: string): string {
-  return provider.length > 0 ? provider[0].toUpperCase() + provider.slice(1) : provider;
-}
-
 /**
  * The row's second line, and the ONE place this list decides it.
  *
@@ -367,11 +428,11 @@ function SignInLinkFallback({ url }: { url: string }) {
 }
 
 export function YourMacsCard({
-  onSummary,
+  onThisComputer,
   between,
 }: {
-  /** The banner's counts: computers, online, relay, and this computer's routes. */
-  onSummary?: (summary: AccountNetworkSummary | null) => void;
+  /** The banner's card: this computer's name, version and routes. */
+  onThisComputer?: (computer: AccountThisComputer | null) => void;
   /** Placed between Your computers and Connections (the update section). */
   between?: ReactNode;
 } = {}) {
@@ -783,7 +844,7 @@ export function YourMacsCard({
     summary =
       machines.length === 0
         ? "No computers connected yet"
-        : `${onlineCount} online · ${machines.length} connected`;
+        : `${onlineCount} of ${machines.length} online.`;
   } else if (result?.state === "not_configured") {
     summary = "The account directory isn't set up yet";
   } else if (result?.state === "signed_out") {
@@ -853,14 +914,26 @@ export function YourMacsCard({
     return `Reachable over ${list}`;
   };
 
-  const summaryReady = !usingWorkspaceRoster && result?.state === "ok";
-  const { localRoutes, relayOnCount } = routes;
+  const { localRoutes } = routes;
+  const thisRow = rows.find((row) => row.thisMac) ?? null;
+  const thisRowMachine = thisRow?.accountMachine ?? null;
+  const thisComputerName = thisRow?.name ?? THIS_MACHINE_NAME;
+  const thisComputerListed = !thisMachineMissing;
+  const versionText = thisComputerVersion?.text ?? null;
   useEffect(() => {
-    if (!onSummary) return;
-    onSummary(summaryReady
-      ? { total: rows.length, online: onlineCount, relayOn: relayOnCount, localRoutes }
-      : null);
-  }, [localRoutes, onSummary, onlineCount, relayOnCount, rows.length, summaryReady]);
+    if (!onThisComputer) return;
+    // The hosted web client is a browser, not a computer on the account.
+    if (webMode) {
+      onThisComputer(null);
+      return;
+    }
+    onThisComputer({
+      name: thisComputerName,
+      version: versionText,
+      listed: thisComputerListed,
+      routes: machineRouteItems(thisRowMachine, localRoutes),
+    });
+  }, [localRoutes, onThisComputer, thisComputerListed, thisComputerName, thisRowMachine, versionText, webMode]);
 
   const directoryOffline =
     (!usingWorkspaceRoster && (result?.state === "unavailable" || result?.state === "not_configured"))
@@ -876,10 +949,7 @@ export function YourMacsCard({
       tone="blue"
       hint={(
         <>
-          Every computer signed in to this account. Open one to see how it connects. {summary}
-          {thisComputerVersion ? (
-            <span className="ade-acct-version">This machine: {thisComputerVersion.text}</span>
-          ) : null}
+          Every computer signed in to this account. Open one to see how it connects and what's signed in on it. {summary}
         </>
       )}
       actions={!webMode ? (
@@ -1135,7 +1205,6 @@ export function YourMacsCard({
                       <>
                         <InventoryGroupLabel>Connection</InventoryGroupLabel>
                         {routesPanel}
-                        <div className="ade-acct-inventory-split" aria-hidden />
                       </>
                     ) : null}
                     {inventoryState?.status === "loading" ? (
@@ -1147,85 +1216,10 @@ export function YourMacsCard({
                         {inventoryState.message}
                       </div>
                     ) : inventoryState?.status === "ready" ? (
-                      <div className="ade-acct-inventory-grid">
-                        {/* One tile per provider, with its mark and its model
-                            count on the header, so two providers never read as
-                            one undifferentiated list. Colour stays on the mark. */}
-                        <div className="ade-acct-inventory-col">
-                          <InventoryGroupLabel>Accounts</InventoryGroupLabel>
-                          {inventoryState.detail.providers.length === 0 ? (
-                            <InventoryEmpty>No provider accounts here.</InventoryEmpty>
-                          ) : inventoryState.detail.providers.map((provider) => {
-                            const tone = providerColor(provider.provider);
-                            return (
-                              <div
-                                key={provider.provider}
-                                data-machine-inventory-provider={provider.provider}
-                                className="ade-acct-provider"
-                                style={{ borderColor: `color-mix(in srgb, ${tone} 22%, color-mix(in srgb, var(--color-fg) 8%, transparent))` }}
-                              >
-                                <div className="ade-acct-provider-head">
-                                  <span className="ade-acct-provider-name">
-                                    <ProviderLogo family={provider.provider} size={13} />
-                                    {providerInventoryLabel(provider.provider)}
-                                  </span>
-                                  <span className="kit-num" style={{ fontSize: 10.5, color: "var(--kit-text-3)", whiteSpace: "nowrap" }}>
-                                    {provider.modelCount} {provider.modelCount === 1 ? "model" : "models"}
-                                  </span>
-                                </div>
-                                <div className="ade-acct-provider-body">
-                                  {provider.accounts.map((account) => {
-                                    // An account is its login: the email (an older machine
-                                    // may still send a typed name), then its id.
-                                    const accountMeta = [account.plan, account.isDefault ? "default" : null].filter(Boolean).join(" · ");
-                                    return (
-                                      <div key={account.instanceId} className="ade-acct-line">
-                                        <div className="ade-acct-line-main">
-                                          {account.email || account.label}
-                                          <span style={{ color: "var(--kit-text-3)" }}> · {account.instanceId}</span>
-                                        </div>
-                                        {accountMeta ? (
-                                          <div style={{ color: "var(--kit-text-3)" }}>{accountMeta}</div>
-                                        ) : null}
-                                      </div>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                        <div className="ade-acct-inventory-col">
-                          <InventoryGroupLabel>
-                            <CustomToolMark size={13} />
-                            Custom
-                          </InventoryGroupLabel>
-                          {inventoryState.detail.presets.length === 0 ? (
-                            <InventoryEmpty>Nothing custom here.</InventoryEmpty>
-                          ) : (
-                            <div className="ade-acct-provider">
-                              <div className="ade-acct-provider-body">
-                                {inventoryState.detail.presets.map((preset) => (
-                                  <div key={preset.id} className="ade-acct-line">
-                                    <div className="ade-acct-line-main">{preset.name}</div>
-                                    <div className="ade-acct-line-sub">
-                                      <ProviderLogo family={preset.harness} size={11} />
-                                      <span>
-                                        {providerInventoryLabel(preset.harness)} · {preset.model}
-                                      </span>
-                                      {!preset.bound ? (
-                                        <span className="kit-tag" data-tone="warn" style={{ height: 16, flexShrink: 0 }}>
-                                          Not here
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                  </div>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
+                      <>
+                        <InventoryGroupLabel>Signed in here</InventoryGroupLabel>
+                        <SignedInList detail={inventoryState.detail} />
+                      </>
                     ) : null}
                   </div>
                 ) : null}

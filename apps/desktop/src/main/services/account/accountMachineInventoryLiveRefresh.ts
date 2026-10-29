@@ -10,7 +10,6 @@ import { isPresetSourceAvailableLocally } from "../chat/harnessRouteCatalog";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
-  MachineInventoryModelCounts,
   MachineInventoryPresetInput,
   MachineInventoryProviderInput,
   MachineInventoryDetail,
@@ -18,6 +17,7 @@ import type {
 import { normalizeHarnessPresetList } from "../../../shared/harnessPresets";
 import {
   buildMachineInventoryDetail,
+  machineInventoryFromAiStatus,
   normalizeMachineInventoryAccent,
   normalizeMachineInventoryPresetLogo,
 } from "../../../shared/types/machineInventory";
@@ -47,12 +47,14 @@ export async function readLocalMachineInventoryDetail(args: {
   providerInstanceStore: Pick<ProviderInstanceStore, "list" | "get">
     & Partial<Pick<ProviderInstanceStore, "getPresetBindings" | "hasPresetBinding">>;
   readPresetValue: () => Promise<unknown>;
-  readModelCounts: () => Promise<MachineInventoryModelCounts>;
+  /** The brain's `ai.getStatus` answer: model counts and CLI sign-ins. */
+  readAiStatus: () => Promise<unknown>;
 }): Promise<MachineInventoryDetail> {
-  const [rawPresetValue, modelCounts] = await Promise.all([
+  const [rawPresetValue, aiStatus] = await Promise.all([
     args.readPresetValue().catch(() => undefined),
-    args.readModelCounts().catch(() => ({})),
+    args.readAiStatus().catch(() => undefined),
   ]);
+  const { modelCounts, signedIn } = machineInventoryFromAiStatus(aiStatus);
   const normalizedPresets = normalizeHarnessPresetList(rawPresetValue);
   const providerInstances: MachineInventoryProviderInput[] = args.providerInstanceStore
     .list()
@@ -95,6 +97,7 @@ export async function readLocalMachineInventoryDetail(args: {
     machineKey: args.machineKey,
     providerInstances,
     modelCounts,
+    signedIn,
     presets,
     boundPresetIds,
   });

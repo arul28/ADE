@@ -31,8 +31,10 @@ import { normalizeHarnessPresetList } from "../../../../desktop/src/shared/harne
 import {
   buildMachineInventoryDetail,
   buildMachineInventorySummary,
+  machineInventoryFromAiStatus,
   type MachineInventoryDetail,
   type MachineInventoryModelCounts,
+  type MachineInventorySignedInInput,
   type MachineInventoryPresetInput,
   type MachineInventoryProviderInput,
   type MachineInventorySummary,
@@ -186,9 +188,7 @@ type MachineInventorySettingsStore = {
 };
 
 type MachineInventoryAiService = {
-  getStatus(args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<{
-    models?: Record<string, unknown>;
-  }>;
+  getStatus(args?: { force?: boolean; refreshOpenCodeInventory?: boolean }): Promise<unknown>;
 };
 
 type MachineInventorySourceArgs = {
@@ -201,6 +201,7 @@ type MachineInventorySourceArgs = {
 type MachineInventoryInputs = {
   providerInstances: MachineInventoryProviderInput[];
   modelCounts: MachineInventoryModelCounts;
+  signedIn: MachineInventorySignedInInput[];
   presets: MachineInventoryPresetInput[];
   boundPresetIds: Set<string>;
 };
@@ -234,15 +235,13 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     accentColor: preset.accentColor,
   }));
 
-  const modelCounts: Record<string, number> = {};
+  let fromStatus: ReturnType<typeof machineInventoryFromAiStatus> = { modelCounts: {}, signedIn: [] };
   try {
-    const status = await args.aiIntegrationService?.getStatus();
-    for (const [provider, models] of Object.entries(status?.models ?? {})) {
-      modelCounts[provider] = Array.isArray(models) ? models.length : 0;
-    }
+    fromStatus = machineInventoryFromAiStatus(await args.aiIntegrationService?.getStatus());
   } catch {
     // A model probe is decoration on the heartbeat; account counts still ship.
   }
+  const { modelCounts, signedIn } = fromStatus;
 
   const boundPresetIds = new Set(args.providerInstanceStore.getPresetBindings?.() ?? []);
   for (const preset of normalizedPresets) {
@@ -261,7 +260,7 @@ async function readMachineInventoryInputs(args: MachineInventorySourceArgs): Pro
     }
   }
 
-  return { providerInstances, modelCounts, presets, boundPresetIds };
+  return { providerInstances, modelCounts, signedIn, presets, boundPresetIds };
 }
 
 /** Read the sanitized detail served by `account.getMachineInventory`. */

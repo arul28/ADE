@@ -12488,23 +12488,13 @@ export function registerIpc({
           });
           return response.result;
         },
-        readModelCounts: async () => {
+        readAiStatus: async () => {
           const response = await localRuntimeConnectionPool.callActionForRoot(rootPath, {
             domain: "ai",
             action: "getStatus",
             args: {},
           });
-          const result = response.result;
-          const models = result && typeof result === "object" && !Array.isArray(result)
-            ? (result as { models?: unknown }).models
-            : null;
-          if (!models || typeof models !== "object" || Array.isArray(models)) return {};
-          return Object.fromEntries(
-            Object.entries(models).map(([provider, entries]) => [
-              provider,
-              Array.isArray(entries) ? entries.length : 0,
-            ]),
-          );
+          return response.result;
         },
       });
     },
