@@ -57,7 +57,7 @@ const BRING_ICON: Record<LaneStartBring, Icon> = {
 export function NewLaneSettingsSection() {
   const { pin } = useSettingsMachineScope();
   const projectRoot = useAppStore(selectActiveProjectRoot);
-  const { snapshot, failed, retry } = useNewLaneDefaultsState({ projectRoot, pin });
+  const { snapshot, failed, retry } = useNewLaneDefaultsState({ projectRoot, pin, revalidate: true });
   const { state: saveState, flash, fail } = useSavedFlash();
   const [pending, setPending] = useState<LaneStart | null>(null);
   const start = pending ?? snapshot?.defaults.start ?? null;
@@ -261,11 +261,11 @@ function StartSummary({ start, sourceBranch, holder }: { start: LaneStart; sourc
       />
     );
   }
-  const holderName = holder ? (holder.laneType === "primary" ? "Primary" : holder.name) : "";
+  const holderName = holder ? (holder.laneType === "primary" ? "Primary" : `the ${holder.name} lane`) : "";
   let tail: string;
   if (start.bring === "pushed") tail = ", after fetching the latest from the remote.";
   else if (start.bring === "local") tail = ", your local copy, including commits you haven't pushed.";
-  else tail = `, plus a copy of the uncommitted changes in ${holderName}. ${holderName} keeps its own.`;
+  else tail = `, plus a copy of the uncommitted changes in ${holderName}. ${holder?.laneType === "primary" ? "Primary" : "That lane"} keeps its own.`;
   return (
     <div className="ade-nl-summary">
       <GitBranch size={14} />

@@ -346,7 +346,11 @@
   padding: 6px;
   border: 1px solid color-mix(in srgb, var(--color-fg) 10%, transparent);
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%);
+  /* The card tint over the theme's solid background: a theme whose card colour
+     is translucent must not let the dialog behind show through. */
+  background:
+    linear-gradient(color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%), color-mix(in srgb, var(--color-card) 93%, var(--color-fg) 7%)),
+    var(--color-bg);
   box-shadow: 0 18px 44px rgba(0, 0, 0, 0.5), 0 2px 6px rgba(0, 0, 0, 0.25);
   color: var(--color-fg);
   outline: none;

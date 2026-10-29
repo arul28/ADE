@@ -151,6 +151,8 @@ export function useNewLaneDefaultsState(args: {
   projectRoot?: string | null;
   pin?: OpenProjectBinding | null;
   enabled?: boolean;
+  /** Read again on mount even when cached (the CLI or a phone may have changed them). */
+  revalidate?: boolean;
 }): { snapshot: NewLaneDefaultsSnapshot | null; failed: boolean; retry: () => void } {
   const enabled = args.enabled !== false;
   const key = cacheKey(args.projectRoot, args.pin);
@@ -164,7 +166,7 @@ export function useNewLaneDefaultsState(args: {
     const sync = () => setState(read());
     const stop = addListener(key, sync);
     sync();
-    void getNewLaneDefaultsCached(args);
+    void getNewLaneDefaultsCached({ ...args, force: args.revalidate === true });
     return stop;
     // Keyed on the cache key (project root + `pin?.key`), not the pin object.
     // eslint-disable-next-line react-hooks/exhaustive-deps

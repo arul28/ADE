@@ -95,8 +95,8 @@ function bringHint(bring: LaneStartBring, refLabel: string, holder: LaneSummary 
       : "Branches from your local copy, including commits you haven't pushed.";
   }
   if (!holder) return "Copies uncommitted changes from the lane that has this branch open.";
-  const where = holder.laneType === "primary" ? "Primary" : holder.name;
-  return `Branches from your local ${refLabel} and copies the uncommitted changes in ${where}. ${where} keeps them too.`;
+  const primary = holder.laneType === "primary";
+  return `Branches from your local ${refLabel} and copies the uncommitted changes in ${primary ? "Primary" : `the ${holder.name} lane`}. ${primary ? "Primary" : "That lane"} keeps them too.`;
 }
 
 function defaultLaneNameForImportBranch(branchName: string, branches: LaneBranchOption[]): string {

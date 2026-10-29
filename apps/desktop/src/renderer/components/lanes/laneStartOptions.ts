@@ -45,6 +45,11 @@ export function laneHoldingBranch(branch: string, lanes: LaneSummary[]): LaneSum
   return lanes.find((lane) => !lane.archivedAt && plainLaneStartBranch(lane.branchRef) === branch) ?? null;
 }
 
+/** A pinned row names a choice, not a checkout: it never reads "current". */
+function pinnedBranch(branch: LaneBranchOption | undefined): LaneBranchOption | null {
+  return branch ? { ...branch, isCurrent: false } : null;
+}
+
 /**
  * Every branch a lane can start from, once each: local branches, plus remote
  * branches with no local copy. Keyed by the plain name the start stores.
@@ -71,14 +76,14 @@ export function startBranchItems(args: {
       ref: START_DEFAULT_REF,
       label: "Default branch",
       tag: defaultBranch || undefined,
-      branch: byName.get(defaultBranch) ?? null,
+      branch: pinnedBranch(byName.get(defaultBranch)),
       pinned: true,
     },
     {
       ref: START_PRIMARY_REF,
       label: "Primary lane's branch",
       tag: primaryBranch || "detached",
-      branch: byName.get(primaryBranch) ?? null,
+      branch: pinnedBranch(byName.get(primaryBranch)),
       pinned: true,
     },
   ];
