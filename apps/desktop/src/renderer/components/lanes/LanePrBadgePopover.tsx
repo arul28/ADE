@@ -16,8 +16,7 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 import { lanePrAggregateAttention, lanePrAttention, lanePrAttentionColor, pickPrimaryPr } from "../../lib/lanePrBadge";
-import { LanePrHoverCard } from "./LanePrHoverCard";
-import { Z_LAYERS } from "../ui/zLayers";
+import { HoverCard } from "../ui/HoverCard";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -103,7 +102,7 @@ export function LanePrBadgePopover({
       onActivate(event, candidate);
     };
     return (
-      <LanePrHoverCard
+      <HoverCard
         className="inline-flex shrink-0 items-center gap-1"
         label={`Pull requests (${allPrs.length})`}
         width={300}
@@ -178,7 +177,7 @@ export function LanePrBadgePopover({
           <GitHubStackBadge stack={primaryPr.stack} compact bare />
           <CaretDown size={8} weight="bold" className="shrink-0 opacity-70" aria-hidden />
         </button>
-      </LanePrHoverCard>
+      </HoverCard>
     );
   }
   const pr = primaryPr;
@@ -191,39 +190,14 @@ export function LanePrBadgePopover({
   const conflicts = pr.mergeConflicts === true;
   const behind = typeof pr.behindBaseBy === "number" && pr.behindBaseBy > 0 ? pr.behindBaseBy : 0;
 
-  // The `group` wrapper is scoped to ONLY the badge so hovering the popover
-  // trigger never highlights or selects the surrounding lane row. Clicks are
-  // swallowed here too (stopPropagation) so the row's onClick never fires.
+  // HoverCard swallows clicks on the badge and the card, so the surrounding
+  // lane row's onClick never fires.
   return (
-    <span
-      className="group relative inline-flex shrink-0"
-      onClick={(event) => event.stopPropagation()}
-      onMouseDown={(event) => event.stopPropagation()}
-    >
-      <button
-        type="button"
-        className="shrink-0"
-        style={{
-          ...inlineBadge(lanePrTagColor(pr.state), { fontSize: 9 }),
-          gap: 4,
-          cursor: "pointer",
-          borderRadius: 6,
-        }}
-        title={`${formatPrBadgeLabel(pr)}: ${pr.title}`}
-        onClick={(event) => {
-          event.stopPropagation();
-          onActivate(event);
-        }}
-        onMouseDown={(event) => event.stopPropagation()}
-      >
-        <GitPullRequest size={10} weight="bold" />
-        {formatPrBadgeLabel(pr)}
-        <GitHubStackBadge stack={pr.stack} compact bare />
-      </button>
-
-      {/* Hover popover — pure-CSS group-hover, positioned below the badge. No JS
-          positioning library, mirroring LinearIssueBadge's approach. */}
-      <span style={{ zIndex: Z_LAYERS.popover }} className="pointer-events-none invisible absolute left-0 top-full w-[280px] pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100">
+    <HoverCard
+      className="inline-flex shrink-0"
+      label={`${formatPrBadgeLabel(pr)}: ${pr.title}`}
+      width={280}
+      content={(
         <span
           className="block overflow-hidden"
           style={{
@@ -363,7 +337,28 @@ export function LanePrBadgePopover({
             </span>
           ) : null}
         </span>
-      </span>
-    </span>
+      )}
+    >
+      <button
+        type="button"
+        className="shrink-0"
+        style={{
+          ...inlineBadge(lanePrTagColor(pr.state), { fontSize: 9 }),
+          gap: 4,
+          cursor: "pointer",
+          borderRadius: 6,
+        }}
+        title={`${formatPrBadgeLabel(pr)}: ${pr.title}`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onActivate(event);
+        }}
+        onMouseDown={(event) => event.stopPropagation()}
+      >
+        <GitPullRequest size={10} weight="bold" />
+        {formatPrBadgeLabel(pr)}
+        <GitHubStackBadge stack={pr.stack} compact bare />
+      </button>
+    </HoverCard>
   );
 }

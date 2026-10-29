@@ -374,56 +374,6 @@ describe("ProviderAccountsPanel", () => {
     expect(text).not.toBe("Smart balance");
   });
 
-  it("hangs a hint from the right edge when the left edge would push it off screen", async () => {
-    installBridge();
-    renderPanel();
-
-    const hint = await screen.findByRole("button", { name: "About Smart balance" });
-    // The switches live in a right-aligned header, so the anchor sits close to
-    // the window edge on a normal window.
-    const anchor = hint.parentElement as HTMLElement;
-    vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({
-      left: window.innerWidth - 40,
-      right: window.innerWidth - 26,
-      top: 0,
-      bottom: 14,
-      width: 14,
-      height: 14,
-      x: window.innerWidth - 40,
-      y: 0,
-      toJSON: () => ({}),
-    } as DOMRect);
-
-    fireEvent.mouseEnter(hint);
-    const tooltip = screen.getByRole("tooltip") as HTMLElement;
-    expect(tooltip.style.right).toBe("0px");
-    expect(tooltip.style.left).toBe("");
-  });
-
-  it("hangs a hint from the left edge when there is room for it", async () => {
-    installBridge();
-    renderPanel();
-
-    const hint = await screen.findByRole("button", { name: "About Smart balance" });
-    const anchor = hint.parentElement as HTMLElement;
-    vi.spyOn(anchor, "getBoundingClientRect").mockReturnValue({
-      left: 10,
-      right: 24,
-      top: 0,
-      bottom: 14,
-      width: 14,
-      height: 14,
-      x: 10,
-      y: 0,
-      toJSON: () => ({}),
-    } as DOMRect);
-
-    fireEvent.mouseEnter(hint);
-    const tooltip = screen.getByRole("tooltip") as HTMLElement;
-    expect(tooltip.style.left).toBe("0px");
-    expect(tooltip.style.right).toBe("");
-  });
-
   it("selects an account when its row is clicked, turning smart balance off first", async () => {
     const harness = installBridge({ smartBalance: true });
     renderPanel();

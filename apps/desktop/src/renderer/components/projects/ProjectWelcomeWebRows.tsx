@@ -14,6 +14,8 @@ import {
   type WebMachineStatus,
 } from "../../webclient/workspace/webWorkspaceModel";
 import { WorktreeBadge } from "./WorktreeBadge";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { Z_LAYERS } from "../ui/zLayers";
 import { subscribeProjectIcon } from "../../lib/projectIconCache";
 import { deriveIconAccentColor } from "../../lib/iconAccent";
 import { abbreviateHome } from "../../lib/pathUtils";
@@ -255,22 +257,7 @@ function ProjectMachineStack({
   onSelectMachine?: (location: RecentProjectLocation) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
-  useEffect(() => {
-    if (!open) return undefined;
-    const close = (event: MouseEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("mousedown", close);
-    window.addEventListener("keydown", onKey);
-    return () => {
-      window.removeEventListener("mousedown", close);
-      window.removeEventListener("keydown", onKey);
-    };
-  }, [open]);
+  const chipRef = useRef<HTMLButtonElement | null>(null);
   if (locations.length === 0) return null;
   if (locations.length === 1 && locations[0]!.summary.kind !== "remote") return null;
   const ordered = [
@@ -285,8 +272,9 @@ function ProjectMachineStack({
   const online = entries.filter((entry) => entry.dot === "online").length;
   const summary = entries.map((entry) => `${entry.name} · ${DOT_LABEL[entry.dot]}`).join("\n");
   return (
-    <div ref={rootRef} className="ade-welcome-machines" data-ade-project-machines="true">
+    <div className="ade-welcome-machines" data-ade-project-machines="true">
       <button
+        ref={chipRef}
         type="button"
         className="ade-welcome-machines-chip"
         aria-haspopup="menu"
@@ -301,33 +289,43 @@ function ProjectMachineStack({
         <span className="kit-dot" data-state={online > 0 ? "ok" : undefined} aria-hidden />
         {entries.length} {entries.length === 1 ? "machine" : "machines"}
       </button>
-      {open ? (
-        <div className="ade-welcome-machines-menu" role="menu" aria-label="Open on machine">
-          {entries.map(({ location, name, dot }) => {
-            const isPrimary = location === primary;
-            const missing = location.summary.exists === false;
-            const canSelect = !isPrimary && !missing && Boolean(onSelectMachine) && !busy;
-            return (
-              <button
-                key={machineLocationKey(location)}
-                type="button"
-                role="menuitem"
-                className="ade-welcome-machines-item"
-                disabled={!canSelect}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  setOpen(false);
-                  onSelectMachine?.(location);
-                }}
-              >
-                <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
-                <span className="ade-welcome-machines-name">{name}</span>
-                <span className="ade-welcome-machines-state">{isPrimary ? "this row" : missing ? "folder missing" : DOT_LABEL[dot]}</span>
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      {/* Portalled so the recents list's scroll area cannot clip it; closes on
+          an outside press or Escape. */}
+      <AnchoredMenu
+        open={open}
+        anchorRef={chipRef}
+        onClose={() => setOpen(false)}
+        placement="bottom-end"
+        offset={6}
+        zIndex={Z_LAYERS.popover}
+        className="ade-welcome-machines-menu"
+        role="menu"
+        aria-label="Open on machine"
+      >
+        {entries.map(({ location, name, dot }) => {
+          const isPrimary = location === primary;
+          const missing = location.summary.exists === false;
+          const canSelect = !isPrimary && !missing && Boolean(onSelectMachine) && !busy;
+          return (
+            <button
+              key={machineLocationKey(location)}
+              type="button"
+              role="menuitem"
+              className="ade-welcome-machines-item"
+              disabled={!canSelect}
+              onClick={(event) => {
+                event.stopPropagation();
+                setOpen(false);
+                onSelectMachine?.(location);
+              }}
+            >
+              <span className="kit-dot" data-state={dot === "online" ? "ok" : dot === "busy" ? "warn" : undefined} aria-hidden />
+              <span className="ade-welcome-machines-name">{name}</span>
+              <span className="ade-welcome-machines-state">{isPrimary ? "this row" : missing ? "folder missing" : DOT_LABEL[dot]}</span>
+            </button>
+          );
+        })}
+      </AnchoredMenu>
     </div>
   );
 }

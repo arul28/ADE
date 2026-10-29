@@ -1,5 +1,6 @@
-import React, { useId, useState } from "react";
+import React, { useId, useRef, useState } from "react";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { AnchoredTooltip } from "../../ui/AnchoredTooltip";
 
 /**
  * A "?" beside a title, with one short sentence behind it.
@@ -10,15 +11,18 @@ import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
  * page grows one. The explanation still exists; it just waits to be asked for.
  *
  * Hover and focus both open it, so it is reachable without a mouse, and it
- * closes on Escape.
+ * closes on Escape. It portals to the body so a scrolling settings pane cannot
+ * clip it, and flips above the "?" near the bottom of the window.
  */
 export function HelpHint({ text, label = "What is this?" }: { text: string; label?: string }) {
   const id = useId();
   const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
 
   return (
-    <span style={{ position: "relative", display: "inline-flex" }}>
+    <span style={{ display: "inline-flex" }}>
       <button
+        ref={triggerRef}
         type="button"
         aria-label={label}
         aria-describedby={open ? id : undefined}
@@ -52,14 +56,15 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
         ?
       </button>
       {open ? (
-        <span
+        <AnchoredTooltip
+          open
+          triggerRef={triggerRef}
+          side="bottom"
+          remeasureKey={text}
+          onDismiss={() => setOpen(false)}
           id={id}
-          role="tooltip"
           style={{
-            position: "absolute",
-            top: "calc(100% + 6px)",
-            left: -4,
-            zIndex: 40,
+            pointerEvents: "none",
             width: 248,
             padding: "7px 9px",
             borderRadius: 8,
@@ -73,7 +78,7 @@ export function HelpHint({ text, label = "What is this?" }: { text: string; labe
           }}
         >
           {text}
-        </span>
+        </AnchoredTooltip>
       ) : null}
     </span>
   );

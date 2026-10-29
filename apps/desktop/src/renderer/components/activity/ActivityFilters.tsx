@@ -1,8 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useMemo, useRef, useState } from "react";
 import { CaretDown, Check } from "@phosphor-icons/react";
 
 import type { AttentionItem } from "../../../shared/types";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 
 /**
  * The expanded view's filters — machine, project, chat type and model. The
@@ -104,17 +106,7 @@ function FilterChip({
   onChange: (next: string[]) => void;
 }) {
   const [open, setOpen] = useState(false);
-  const rootRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    return () => document.removeEventListener("pointerdown", onPointerDown);
-  }, [open]);
 
   const toggle = (value: string) => {
     onChange(
@@ -136,7 +128,7 @@ function FilterChip({
   if (options.length === 0) return null;
 
   return (
-    <div ref={rootRef} className="activity-filter">
+    <div className="activity-filter">
       <button
         ref={triggerRef}
         type="button"
@@ -151,26 +143,36 @@ function FilterChip({
         <span className="truncate">{summary}</span>
         <CaretDown size={10} weight="bold" className={cn(open && "rotate-180")} />
       </button>
-      {open ? (
-        <div className="activity-filter-menu" role="menu" aria-label={label}>
-          {options.map((option) => {
-            const checked = selected.includes(option.value);
-            return (
-              <button
-                key={option.value}
-                type="button"
-                role="menuitemcheckbox"
-                aria-checked={checked}
-                className="activity-filter-option"
-                onClick={() => toggle(option.value)}
-              >
-                <span>{option.label}</span>
-                {checked ? <Check size={12} weight="bold" /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
+      {/* Portalled, so the pane's scroll body cannot clip it; it sits in the
+          Activity dialog, hence the dialog's popover layer. */}
+      <AnchoredMenu
+        open={open}
+        anchorRef={triggerRef}
+        onClose={() => setOpen(false)}
+        placement="bottom-start"
+        offset={5}
+        zIndex={Z_LAYERS.dialogPopover}
+        className="activity-filter-menu"
+        role="menu"
+        aria-label={label}
+      >
+        {options.map((option) => {
+          const checked = selected.includes(option.value);
+          return (
+            <button
+              key={option.value}
+              type="button"
+              role="menuitemcheckbox"
+              aria-checked={checked}
+              className="activity-filter-option"
+              onClick={() => toggle(option.value)}
+            >
+              <span>{option.label}</span>
+              {checked ? <Check size={12} weight="bold" /> : null}
+            </button>
+          );
+        })}
+      </AnchoredMenu>
     </div>
   );
 }

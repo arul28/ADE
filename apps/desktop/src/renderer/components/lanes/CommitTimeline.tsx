@@ -5,7 +5,7 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { COLORS, LABEL_STYLE, MONO_FONT, inlineBadge } from "./laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { isSameListResult, laneGitListEpoch, readLaneGitListCache, writeLaneGitListCache } from "./laneGitListCache";
-import { cssZoomOf } from "../../lib/webZoom";
+import { AnchoredTooltip } from "../ui/AnchoredTooltip";
 import { extractError } from "../../lib/format";
 
 function formatTs(ts: string): string {
@@ -103,9 +103,9 @@ export function CommitTimeline({
   const metaByShaRef = React.useRef<Map<string, CommitMeta>>(new Map());
   const inFlightMetaRef = React.useRef<Set<string>>(new Set());
   const [hoveredSha, setHoveredSha] = React.useState<string | null>(null);
-  const [tooltipPos, setTooltipPos] = React.useState<{ x: number; y: number } | null>(null);
+  // The hovered row; the card is placed against it.
+  const hoveredRowRef = React.useRef<HTMLElement | null>(null);
   const scrollRef = React.useRef<HTMLDivElement | null>(null);
-  const containerRef = React.useRef<HTMLDivElement | null>(null);
   const didInitialScrollRef = React.useRef(false);
 
   const load = React.useCallback(async () => {
@@ -130,7 +130,6 @@ export function CommitTimeline({
     metaByShaRef.current = new Map();
     inFlightMetaRef.current = new Set();
     setHoveredSha(null);
-    setTooltipPos(null);
     setLimit(40);
     didInitialScrollRef.current = false;
   }, [laneId, pin]);
@@ -196,8 +195,9 @@ export function CommitTimeline({
   const hovered = hoveredSha ? commits.find((c) => c.sha === hoveredSha) ?? null : null;
   const hoveredMeta = hovered ? metaByShaRef.current.get(hovered.sha) ?? null : null;
 
+
   return (
-    <div ref={containerRef} className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
+    <div className="relative flex h-full min-h-0 flex-col" style={{ background: COLORS.pageBg }}>
       {/* Header */}
       <div
         className="flex items-center justify-between shrink-0"
@@ -285,21 +285,11 @@ export function CommitTimeline({
                   onMouseEnter={(e) => {
                     setHoveredSha(commit.sha);
                     void ensureMeta(commit.sha);
-                    const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
-                    const containerRect = containerRef.current?.getBoundingClientRect();
-                    if (containerRect && containerRef.current) {
-                      // Screen rect differences, written as layout px in the relative container.
-                      const zoom = cssZoomOf(containerRef.current);
-                      setTooltipPos({
-                        x: (rect.left - containerRect.left + rect.width / 2) / zoom,
-                        y: (rect.top - containerRect.top) / zoom
-                      });
-                    }
+                    hoveredRowRef.current = e.currentTarget as HTMLElement;
                     if (!isSelected) e.currentTarget.style.background = COLORS.hoverBg;
                   }}
                   onMouseLeave={(e) => {
                     setHoveredSha((prev) => (prev === commit.sha ? null : prev));
-                    setTooltipPos(null);
                     if (!isSelected) e.currentTarget.style.background = "transparent";
                   }}
                 >
@@ -358,10 +348,18 @@ export function CommitTimeline({
         </div>
       </div>
 
-      {/* Tooltip */}
-      {hovered && tooltipPos ? (
-        <div
-          className="pointer-events-none absolute z-50"
+      {/* Above the row when it fits, below it near the top of the window, never
+          past an edge. The card used to sit in this panel and grow upward from the
+          row, so on the first rows it ran out of the panel and was clipped under
+          the toolbar. */}
+      {hovered ? (
+        <AnchoredTooltip
+          open
+          triggerRef={hoveredRowRef}
+          side="top"
+          remeasureKey={`${hovered.sha}:${hoveredMeta?.fileCount ?? ""}:${hoveredMeta?.message ?? ""}`}
+          onDismiss={() => setHoveredSha(null)}
+          className="pointer-events-none"
           style={{
             width: 280,
             background: COLORS.cardBgSolid,
@@ -369,9 +367,6 @@ export function CommitTimeline({
             borderRadius: 8,
             padding: 12,
             fontSize: 12,
-            left: Math.min(tooltipPos.x, (containerRef.current?.clientWidth ?? 300) - 290),
-            top: Math.max(0, tooltipPos.y - 8),
-            transform: "translateY(-100%)",
           }}
         >
           {/* SHA + timestamp */}
@@ -425,7 +420,7 @@ export function CommitTimeline({
               </div>
             </>
           ) : null}
-        </div>
+        </AnchoredTooltip>
       ) : null}
     </div>
   );

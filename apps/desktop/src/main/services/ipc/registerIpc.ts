@@ -5707,6 +5707,41 @@ export function registerIpc({
     return getPinnedProviderToolStatus(arg.provider);
   });
 
+  // The unpinned route for a provider page's Initial context window when this window has
+  // no runtime; a pinned call goes to the owning machine's
+  // `ai.getProviderContextInventory`.
+  ipcMain.handle(IPC.aiGetProviderContextInventory, async (_event, arg: unknown) => {
+    const ctx = getCtx();
+    const { getProviderContextInventory } = await import("../ai/providerContextInventory");
+    return getProviderContextInventory(
+      {
+        projectRoot: ctx.project.rootPath,
+        agentChatService: ctx.agentChatService ?? null,
+        logger: ctx.logger,
+      },
+      arg,
+    );
+  });
+
+  /**
+   * "Show in Finder" for a row of a provider page's Initial context window.
+   * Deliberately NOT `appRevealPath`: the card's files live in provider config
+   * homes (`~/.claude`, `~/.codex`, …), which that handler's allowlist leaves
+   * out on purpose. This one accepts only those homes, the project and ADE's
+   * own folders (see providerContextReveal.ts).
+   */
+  ipcMain.handle(IPC.aiRevealProviderContextPath, async (_event, arg: { path?: string } | undefined): Promise<void> => {
+    const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
+    if (!raw) return;
+    const { providerContextRevealRoots, resolveProviderContextRevealTarget } = await import("../ai/providerContextReveal");
+    const roots = providerContextRevealRoots({
+      projectRoot: getCtx().project?.rootPath ?? null,
+      adeDir: resolveMachineAdeLayout().adeDir,
+      appDirs: [app.getAppPath(), process.resourcesPath].filter((dir): dir is string => typeof dir === "string" && dir.length > 0),
+    });
+    shell.showItemInFolder(resolveProviderContextRevealTarget(roots, raw));
+  });
+
   ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {
     const { startPinnedProviderToolDownload } = await import("../ai/pinnedProviderTools");
     return startPinnedProviderToolDownload(arg.provider);

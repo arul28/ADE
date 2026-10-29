@@ -1,7 +1,10 @@
+import { useRef, type RefObject } from "react";
 import { CursorClick, Plus } from "@phosphor-icons/react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import type { AppControlElementSnapshot } from "../../../shared/types";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
+import { Z_LAYERS } from "../ui/zLayers";
 import { elementSummary, observeBadgeGlyph } from "./appControlTrace";
 
 const OVERSHOOT = [0.34, 1.56, 0.64, 1] as const;
@@ -30,6 +33,7 @@ export function AppControlObserveOverlay({
   activeHandle,
   copiedHandle,
   onSelectHandle,
+  onDismissHandle,
   onAddToChat,
 }: {
   elements: AppControlElementSnapshot[];
@@ -37,10 +41,14 @@ export function AppControlObserveOverlay({
   activeHandle: string | null;
   copiedHandle: string | null;
   onSelectHandle: (handle: string, element: AppControlElementSnapshot) => void;
+  /** Closes the active handle's card (a press outside it, Escape, a scroll). */
+  onDismissHandle: () => void;
   onAddToChat: ((element: AppControlElementSnapshot) => void) | null;
 }) {
   const reduceMotion = useReducedMotion() ?? false;
+  const activeBoxRef = useRef<HTMLDivElement | null>(null);
   if (elements.length === 0) return null;
+  const activeElement = activeHandle ? elements.find((element) => element.handle === activeHandle) ?? null : null;
 
   return (
     <div
@@ -63,6 +71,7 @@ export function AppControlObserveOverlay({
         return (
           <div
             key={handle}
+            ref={isActive ? activeBoxRef : undefined}
             className="pointer-events-none absolute"
             style={{ left: `${left}%`, top: `${top}%`, width: `${width}%`, height: `${height}%` }}
           >
@@ -103,57 +112,97 @@ export function AppControlObserveOverlay({
             >
               {glyph}
             </motion.button>
-
-            {isActive ? (
-              <div
-                className={cn(
-                  "pointer-events-auto absolute left-0 top-[calc(100%+4px)] z-20 w-[190px]",
-                  "rounded-[var(--radius-md)] border border-fg/[0.1] bg-card/95 p-1.5",
-                  "shadow-[var(--shadow-popup)] backdrop-blur-[var(--blur-popup)]",
-                )}
-                role="group"
-                aria-label={`Element ${element.index} handle`}
-              >
-                <div className="truncate font-mono text-[9.5px] text-muted-fg" title={handle}>
-                  {handle}
-                </div>
-                {summary ? (
-                  <div className="mt-0.5 truncate text-[10.5px] text-fg/85" title={summary}>
-                    {summary}
-                  </div>
-                ) : null}
-                <div className="mt-1.5 flex items-center gap-1.5">
-                  <span
-                    role="status"
-                    className={cn(
-                      "text-[9.5px] transition-opacity duration-[120ms]",
-                      copiedHandle === handle ? "text-emerald-200/85 opacity-100" : "opacity-0",
-                    )}
-                  >
-                    Copied
-                  </span>
-                  {onAddToChat ? (
-                    <button
-                      type="button"
-                      onClick={() => onAddToChat(element)}
-                      className={cn(
-                        "ml-auto inline-flex h-[22px] items-center gap-1 rounded-[var(--radius-sm)]",
-                        "border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10.5px] font-medium text-fg/85",
-                        "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.08]",
-                        "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
-                      )}
-                    >
-                      <Plus size={9} weight="bold" />
-                      Add to chat
-                    </button>
-                  ) : null}
-                </div>
-              </div>
-            ) : null}
           </div>
         );
       })}
+      {/* After the boxes, so the active box's ref is set before the card is placed. */}
+      {activeElement && activeHandle ? (
+        <ObservedHandleCard
+          element={activeElement}
+          handle={activeHandle}
+          anchorRef={activeBoxRef}
+          copied={copiedHandle === activeHandle}
+          onClose={onDismissHandle}
+          onAddToChat={onAddToChat}
+          // The box moves with each new observation; place the card again.
+          remeasureKey={`${activeElement.frame.x},${activeElement.frame.y},${activeElement.frame.width},${activeElement.frame.height}`}
+        />
+      ) : null}
     </div>
+  );
+}
+
+/** The active handle's card, portalled so the frame's clipping parents cannot cut it off. */
+function ObservedHandleCard({
+  element,
+  handle,
+  anchorRef,
+  copied,
+  onClose,
+  onAddToChat,
+  remeasureKey,
+}: {
+  element: AppControlElementSnapshot;
+  handle: string;
+  anchorRef: RefObject<HTMLDivElement | null>;
+  copied: boolean;
+  onClose: () => void;
+  onAddToChat: ((element: AppControlElementSnapshot) => void) | null;
+  remeasureKey: string;
+}) {
+  const summary = elementSummary(element);
+  return (
+    <AnchoredMenu
+      open
+      anchorRef={anchorRef}
+      onClose={onClose}
+      placement="bottom-start"
+      offset={4}
+      zIndex={Z_LAYERS.popover}
+      remeasureKey={remeasureKey}
+      className={cn(
+        "w-[190px]",
+        "rounded-[var(--radius-md)] border border-fg/[0.1] bg-card/95 p-1.5",
+        "shadow-[var(--shadow-popup)] backdrop-blur-[var(--blur-popup)]",
+      )}
+      role="group"
+      aria-label={`Element ${element.index} handle`}
+    >
+      <div className="truncate font-mono text-[9.5px] text-muted-fg" title={handle}>
+        {handle}
+      </div>
+      {summary ? (
+        <div className="mt-0.5 truncate text-[10.5px] text-fg/85" title={summary}>
+          {summary}
+        </div>
+      ) : null}
+      <div className="mt-1.5 flex items-center gap-1.5">
+        <span
+          role="status"
+          className={cn(
+            "text-[9.5px] transition-opacity duration-[120ms]",
+            copied ? "text-emerald-200/85 opacity-100" : "opacity-0",
+          )}
+        >
+          Copied
+        </span>
+        {onAddToChat ? (
+          <button
+            type="button"
+            onClick={() => onAddToChat(element)}
+            className={cn(
+              "ml-auto inline-flex h-[22px] items-center gap-1 rounded-[var(--radius-sm)]",
+              "border border-fg/[0.1] bg-fg/[0.04] px-2 text-[10.5px] font-medium text-fg/85",
+              "transition-colors duration-[120ms] ease-out hover:bg-fg/[0.08]",
+              "focus-visible:outline-none focus-visible:shadow-[inset_0_0_0_1px_var(--color-accent)]",
+            )}
+          >
+            <Plus size={9} weight="bold" />
+            Add to chat
+          </button>
+        ) : null}
+      </div>
+    </AnchoredMenu>
   );
 }
 

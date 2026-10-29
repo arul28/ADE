@@ -18,6 +18,7 @@ import { formatCompact, formatDayShort, formatTokens } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
 import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
 import { cn } from "../ui/cn";
+import { AnchoredTooltip } from "../ui/AnchoredTooltip";
 import {
   type ActivityInsight,
   dayHasActivity,
@@ -203,50 +204,52 @@ const CLIENT_LABELS: Record<AdeUsageClientSurface, string> = {
 // Day tooltip
 // ---------------------------------------------------------------------------
 
-type TooltipState = { point: AdeUsageDailyPoint; left: number; top: number };
+type TooltipState = { point: AdeUsageDailyPoint };
 
-function useDayTooltip(containerRef: React.RefObject<HTMLElement | null>) {
+function useDayTooltip() {
   const [tip, setTip] = useState<TooltipState | null>(null);
-
-  const locate = useCallback((point: AdeUsageDailyPoint, target: HTMLElement): TooltipState | null => {
-    const container = containerRef.current;
-    if (!container) return null;
-    const c = container.getBoundingClientRect();
-    const t = target.getBoundingClientRect();
-    const half = 92;
-    const rawLeft = t.left - c.left + t.width / 2;
-    return {
-      point,
-      left: Math.min(Math.max(rawLeft, half), Math.max(half, c.width - half)),
-      top: t.top - c.top,
-    };
-  }, [containerRef]);
+  // The bar or cell the tooltip is placed against.
+  const targetRef = useRef<HTMLElement | null>(null);
 
   const show = useCallback((point: AdeUsageDailyPoint, target: HTMLElement) => {
-    const next = locate(point, target);
-    if (next) setTip(next);
-  }, [locate]);
+    targetRef.current = target;
+    setTip({ point });
+  }, []);
 
   const toggle = useCallback((point: AdeUsageDailyPoint, target: HTMLElement) => {
-    setTip((prev) => (prev?.point.date === point.date ? null : locate(point, target)));
-  }, [locate]);
+    targetRef.current = target;
+    setTip((prev) => (prev?.point.date === point.date ? null : { point }));
+  }, []);
 
   const hide = useCallback(() => setTip(null), []);
 
-  return { tip, show, toggle, hide };
+  return { tip, targetRef, show, toggle, hide };
 }
 
-function DayTooltip({ tip, palette }: { tip: TooltipState; palette: Record<SeriesKey, string> }) {
+function DayTooltip({
+  tip,
+  targetRef,
+  palette,
+  onDismiss,
+}: {
+  tip: TooltipState;
+  targetRef: React.RefObject<HTMLElement | null>;
+  palette: Record<SeriesKey, string>;
+  onDismiss: () => void;
+}) {
   const { point } = tip;
   const code = point.insertions + point.deletions;
+  // Placed against the window: inside the card, a tall bar's tooltip grew up
+  // past the card's top edge and was cut off.
   return (
-    <div
-      role="tooltip"
-      className={cn(
-        "pointer-events-none absolute z-30 -translate-x-1/2 -translate-y-full px-2.5 py-2 text-left",
-        USAGE_OVERLAY_CLASS,
-      )}
-      style={{ left: tip.left, top: tip.top - 8, minWidth: 150 }}
+    <AnchoredTooltip
+      open
+      triggerRef={targetRef}
+      side="top"
+      remeasureKey={point.date}
+      onDismiss={onDismiss}
+      className={cn("pointer-events-none px-2.5 py-2 text-left", USAGE_OVERLAY_CLASS)}
+      style={{ minWidth: 150 }}
     >
       <div className="kit-eyebrow">{formatDayShort(point.date)}</div>
       <div className="kit-num mt-1 flex flex-col gap-0.5 text-[11px] text-muted-fg">
@@ -265,7 +268,7 @@ function DayTooltip({ tip, palette }: { tip: TooltipState; palette: Record<Serie
           </span>
         ) : null}
       </div>
-    </div>
+    </AnchoredTooltip>
   );
 }
 
@@ -835,7 +838,7 @@ export function ActivityModule({
   }, []);
   const slotRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
-  const tooltip = useDayTooltip(cardRef);
+  const tooltip = useDayTooltip();
   const chip = useFooterChip(stats);
 
   const compactMode = variant === "compact";
@@ -973,7 +976,7 @@ export function ActivityModule({
           }`}
         >
           {chart}
-          {tooltip.tip ? <DayTooltip tip={tooltip.tip} palette={palette} /> : null}
+          {tooltip.tip ? <DayTooltip tip={tooltip.tip} targetRef={tooltip.targetRef} palette={palette} onDismiss={tooltip.hide} /> : null}
         </div>
 
         <div className="usage-activity-foot">

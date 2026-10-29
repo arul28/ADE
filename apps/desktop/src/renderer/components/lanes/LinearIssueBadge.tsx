@@ -4,6 +4,7 @@ import type { LaneLinearIssue } from "../../../shared/types";
 import { linearIssueRef } from "../../../shared/issueRefs";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { COLORS, MONO_FONT, fgTint } from "./laneDesignTokens";
+import { HoverCard } from "../ui/HoverCard";
 import { LinearMark, LinearPriorityIcon, LinearStateIcon, LINEAR_BRAND } from "./linearBrand";
 
 function priorityLabel(issue: LaneLinearIssue): string {
@@ -97,37 +98,11 @@ export function LinearIssueBadge({
   }, [issue.identifier, issue.url]);
 
   return (
-    <span className="group relative inline-flex shrink-0" onClick={(event) => event.stopPropagation()}>
-      <span
-        tabIndex={0}
-        role="button"
-        aria-label={`${issue.identifier}: ${issue.title}`}
-        onClick={openIssue}
-        onKeyDown={(event) => {
-          if (event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            openIssue();
-          }
-        }}
-        className="inline-flex cursor-pointer items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
-        style={{
-          borderColor: LINEAR_BRAND.borderSubtle,
-          background: LINEAR_BRAND.surface,
-          color: LINEAR_BRAND.text,
-          fontFamily: MONO_FONT,
-          fontSize: compact ? 9.5 : 10.5,
-          fontWeight: 600,
-          letterSpacing: "0.02em",
-          padding: compact ? "1.5px 5px" : "2px 6px",
-        }}
-        title={`${issue.identifier}: ${issue.title}`}
-      >
-        <LinearMark size={compact ? 9 : 11} />
-        {!compact ? issue.identifier : null}
-      </span>
-      <span
-        className="pointer-events-none invisible absolute left-1/2 top-full z-[80] w-[280px] -translate-x-1/2 pt-2 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:visible group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:visible group-focus-within:opacity-100"
-      >
+    <HoverCard
+      className="inline-flex shrink-0"
+      label={`${issue.identifier}: ${issue.title}`}
+      width={280}
+      content={(
         <span
           className="block overflow-hidden rounded-xl border shadow-xl"
           style={{
@@ -280,7 +255,35 @@ export function LinearIssueBadge({
           </span>
         ) : null}
         </span>
+      )}
+    >
+      <span
+        tabIndex={0}
+        role="button"
+        aria-label={`${issue.identifier}: ${issue.title}`}
+        onClick={openIssue}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            openIssue();
+          }
+        }}
+        className="inline-flex cursor-pointer items-center gap-1 rounded-md border outline-none focus-visible:ring-2 focus-visible:ring-fg/20"
+        style={{
+          borderColor: LINEAR_BRAND.borderSubtle,
+          background: LINEAR_BRAND.surface,
+          color: LINEAR_BRAND.text,
+          fontFamily: MONO_FONT,
+          fontSize: compact ? 9.5 : 10.5,
+          fontWeight: 600,
+          letterSpacing: "0.02em",
+          padding: compact ? "1.5px 5px" : "2px 6px",
+        }}
+        title={`${issue.identifier}: ${issue.title}`}
+      >
+        <LinearMark size={compact ? 9 : 11} />
+        {!compact ? issue.identifier : null}
       </span>
-    </span>
+    </HoverCard>
   );
 }

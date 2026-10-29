@@ -1,20 +1,28 @@
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useClampedFixedPosition, type FixedAnchor } from "../../hooks/useClampedFixedPosition";
-import { rowHoverSuppressProps } from "../ui/rowHoverSuppress";
-import { ViewportOverlayHost } from "../ui/ViewportOverlayHost";
+import { rowHoverSuppressProps } from "./rowHoverSuppress";
+import { ViewportOverlayHost } from "./ViewportOverlayHost";
 
 const GAP = 8;
 const CLOSE_DELAY_MS = 140;
 const VIEWPORT_PADDING = 8;
 
 /**
- * PR detail lists live outside their lane/session card so card overflow cannot
- * clip them. The anchor is measured only when the card opens; viewport
+ * The app's rich hover card: a PR preview, a Linear issue preview, any card
+ * that opens on hover or focus and can be entered to click inside it.
+ *
+ * Use this instead of an inline `absolute top-full` span revealed by CSS
+ * `group-hover`. Inline, any `overflow: hidden` or scrolling parent (a lane
+ * row, a pane, a toolbar) cuts the card off and it never moves off the window
+ * edge. This portals to the viewport overlay layer, opens below the trigger,
+ * flips above it when there is no room, and keeps inside the window.
+ *
+ * The anchor is measured only when the card opens; viewport
  * scroll/resize dismisses it instead of installing a hot-path reposition
  * listener. Internal panel scrolling remains available for long PR lists.
  */
-export function LanePrHoverCard({
+export function HoverCard({
   children,
   content,
   label,
@@ -163,7 +171,7 @@ export function LanePrHoverCard({
       ref={panelRef}
       role="dialog"
       aria-label={label}
-      data-testid="lane-pr-hover-card"
+      data-testid="hover-card"
       {...rowHoverSuppressProps}
       // React portals retain their logical parent event path. Keep clicks on
       // panel chrome from selecting the enclosing lane/session row while

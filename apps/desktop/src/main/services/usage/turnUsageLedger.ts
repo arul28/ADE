@@ -108,8 +108,9 @@ const MAX_SETTLED_KEYS = 4_096;
 /** Sessions whose recent turn starts the ledger remembers, and turns per session. */
 const MAX_TURN_START_SESSIONS = 512;
 const MAX_TURN_STARTS_PER_SESSION = 32;
-const MAX_LINE_BYTES = 16 * 1024;
-const MAX_FILE_READ_BYTES = 64 * 1024 * 1024;
+/** The longest line and the largest month file a ledger reader takes; anything larger is skipped. */
+export const MAX_LINE_BYTES = 16 * 1024;
+export const MAX_FILE_READ_BYTES = 64 * 1024 * 1024;
 const DEFAULT_RETENTION_MONTHS = 3;
 /** A quota reading moves by at least this many percent points before the ledger writes it again. */
 const MIN_QUOTA_PERCENT_DELTA = 0.5;
@@ -587,6 +588,11 @@ async function monthFiles(dir: string, prefix: string, sinceMs: number): Promise
   } catch (error) {
     return isMissingPathError(error) ? [] : null;
   }
+}
+
+/** The turn month files from `sinceMs`'s month on, oldest first; `[]` when there are none or the folder cannot be listed. */
+export async function turnLedgerMonthFiles(dir: string, sinceMs: number): Promise<string[]> {
+  return (await monthFiles(dir, TURN_FILE_PREFIX, sinceMs)) ?? [];
 }
 
 function monthFilesSync(dir: string, prefix: string, sinceMs: number): string[] {

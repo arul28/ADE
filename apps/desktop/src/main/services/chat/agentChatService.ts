@@ -169,6 +169,8 @@ import {
   formatClaudeSlashCommandEntry,
   planClaudeSlashCommandInjection,
   renderClaudeSlashCommandEntries,
+  skillListingEntry,
+  type SkillListingEntry,
 } from "./claudeSlashCommandDiscovery";
 import { buildDroidSkillListing } from "./droidSkillListing";
 import { discoverCodexSlashCommandsAsync } from "./codexSlashCommandDiscovery";
@@ -456,6 +458,8 @@ import {
 import { prepareHarnessLaunch } from "./harnessLaunchPrepare";
 import { launchRouteTransition, readPresetLaunchTarget } from "./chatLaunchRoute";
 import { mcpRegistryLaunchNotices, resolveMcpRegistryForLaunch } from "./mcpRegistryLaunch";
+import { assembleAdeChatContextParts, type AdeChatContextPart, type AdeChatContextPreview, type AdeChatMainText } from "./adeChatContextPreview";
+import { providerOwnMcpServerNames } from "../mcp/mcpProviderConfigScan";
 import {
   mcpOAuthTokenState,
   mcpOAuthVaultKey,
@@ -45824,6 +45828,89 @@ export function createAgentChatService(args: {
     restart?.();
   };
 
+  /**
+   * The `## Project slash commands and skills` section of a Claude lane
+   * chat's system prompt: the commands and skills under roots Claude Code
+   * cannot see itself. Shared by the SDK launch and the Settings context
+   * preview (`previewNewChatAdeContext`), so both show the same text.
+   */
+  const buildClaudeSdkSlashCommandsSection = (
+    session: AgentChatSession,
+    laneWorktreePath: string,
+    pluginPaths: readonly string[],
+    bundledPluginPaths: readonly string[],
+  ): {
+    injectionPlan: ReturnType<typeof planClaudeSlashCommandInjection>;
+    renderedSkills: ReturnType<typeof renderClaudeSlashCommandEntries>;
+    slashCommandsSection: string[];
+    /** The commands and skills the section lists, each with its line. */
+    listedEntries: SkillListingEntry[];
+  } => {
+    const projectSlashCommands = (() => {
+      try {
+        return discoverClaudeSlashCommands(laneWorktreePath)
+          .filter(isDispatchableClaudeSdkSlashCommand)
+          // See the twin in `buildClaudeBackgroundSystemPrompt`: a skill that
+          // declares `disable-model-invocation` must not be advertised to the
+          // model as autonomously usable. The user can still invoke it — ADE
+          // expands `/<name>` before the message reaches the model, so that
+          // path does not need this list.
+          .filter((cmd) => cmd.modelInvocable !== false)
+          // An assistant chat's catalog withholds the lane-only skills; the
+          // listing walks the same bundled roots and must withhold them too.
+          .filter((cmd) => adeSkillCatalogFor(session) !== "assistant"
+            || !isPersonalLaneOnlySkillCommand(cmd.name));
+      } catch {
+        return [];
+      }
+    })();
+    // Claude Code lists `<cwd>/.claude` and `~/.claude` for itself, and the
+    // bundled ADE skills reach it as a local plugin. Repeating either here
+    // spends system-prompt budget to tell the model something it already
+    // knows, and for the plugin skills it presents one skill under two names.
+    const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
+      cwd: laneWorktreePath,
+      pluginRoots: pluginPaths,
+      bundledSkills: {
+        pluginRoots: adeSkillCatalogFor(session) === "none" ? [] : bundledPluginPaths,
+        copyRoots: adePromptAgentSkillRoots({ cwd: laneWorktreePath }),
+      },
+    });
+    const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
+    const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
+    const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
+    const commandLines = visibleProjectCommandFiles.map(formatClaudeSlashCommandEntry);
+    const slashCommandsSection = (visibleProjectCommandFiles.length || renderedSkills.lines.length)
+      ? [
+        "",
+        "## Project slash commands and skills",
+        "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
+        "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
+        "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
+        "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
+        ...(visibleProjectCommandFiles.length ? [
+          "",
+          "Commands (file-backed prompts):",
+          ...commandLines,
+          ...(hiddenProjectCommandCount > 0 ? [`- ${hiddenProjectCommandCount} more command(s) hidden to keep startup context lean. Use slash command search or inspect project command folders if needed.`] : []),
+        ] : []),
+        ...(renderedSkills.lines.length ? [
+          "",
+          "Skills (autonomously usable when relevant):",
+          ...renderedSkills.lines,
+          ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
+        ] : []),
+      ]
+      : [];
+    const listedEntries = slashCommandsSection.length
+      ? [
+        ...visibleProjectCommandFiles.map((entry, index) => skillListingEntry(entry, commandLines[index]!)),
+        ...renderedSkills.kept.map((entry, index) => skillListingEntry(entry, renderedSkills.lines[index]!)),
+      ]
+      : [];
+    return { injectionPlan, renderedSkills, slashCommandsSection, listedEntries };
+  };
+
   const buildClaudeQueryOptions = (
     managed: ManagedChatSession,
     runtime: ClaudeRuntime,
@@ -46095,39 +46182,12 @@ export function createAgentChatService(args: {
           previewFormat: "markdown",
         },
       };
-      const projectSlashCommands = (() => {
-        try {
-          return discoverClaudeSlashCommands(managed.laneWorktreePath)
-            .filter(isDispatchableClaudeSdkSlashCommand)
-            // See the twin in `buildClaudeBackgroundSystemPrompt`: a skill that
-            // declares `disable-model-invocation` must not be advertised to the
-            // model as autonomously usable. The user can still invoke it — ADE
-            // expands `/<name>` before the message reaches the model, so that
-            // path does not need this list.
-            .filter((cmd) => cmd.modelInvocable !== false)
-            // An assistant chat's catalog withholds the lane-only skills; the
-            // listing walks the same bundled roots and must withhold them too.
-            .filter((cmd) => adeSkillCatalogFor(managed.session) !== "assistant"
-              || !isPersonalLaneOnlySkillCommand(cmd.name));
-        } catch {
-          return [];
-        }
-      })();
-      // Claude Code lists `<cwd>/.claude` and `~/.claude` for itself, and the
-      // bundled ADE skills reach it as a local plugin. Repeating either here
-      // spends system-prompt budget to tell the model something it already
-      // knows, and for the plugin skills it presents one skill under two names.
-      const injectionPlan = planClaudeSlashCommandInjection(projectSlashCommands, {
-        cwd: managed.laneWorktreePath,
-        pluginRoots: pluginPaths,
-        bundledSkills: {
-          pluginRoots: adeSkillCatalogFor(managed.session) === "none" ? [] : bundledPluginPaths,
-          copyRoots: adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
-        },
-      });
-      const visibleProjectCommandFiles = injectionPlan.commands.slice(0, MAX_INJECTED_PROJECT_COMMANDS);
-      const hiddenProjectCommandCount = injectionPlan.commands.length - visibleProjectCommandFiles.length;
-      const renderedSkills = renderClaudeSlashCommandEntries(injectionPlan.skills);
+      const { injectionPlan, renderedSkills, slashCommandsSection } = buildClaudeSdkSlashCommandsSection(
+        managed.session,
+        managed.laneWorktreePath,
+        pluginPaths,
+        bundledPluginPaths,
+      );
       logSkillDelivery(managed, {
         mechanism: "claude-plugin",
         rootCount: pluginPaths.length,
@@ -46142,28 +46202,6 @@ export function createAgentChatService(args: {
         omittedCount: renderedSkills.omitted,
         bytes: renderedSkills.lines.reduce((total, line) => total + Buffer.byteLength(line, "utf8") + 1, 0),
       });
-      const slashCommandsSection = (visibleProjectCommandFiles.length || renderedSkills.lines.length)
-        ? [
-          "",
-          "## Project slash commands and skills",
-          "ADE walks up from the lane worktree to discover `.claude/commands/*.md` plus `.claude/skills/<name>/SKILL.md`, `.agents/skills/<name>/SKILL.md`, `.ade/skills/<name>/SKILL.md`, user skill roots, and ADE bundled skills. Claude Code already lists `<cwd>/.claude/`, `~/.claude/`, and ADE's bundled `ade:*` plugin skills for you, so this section lists only the roots it cannot see — do not expect it to repeat your own listing.",
-          "**User-invoked (`/<name>`):** When the user sends a message that is exactly `/<name>` or `/<name> <args>`, ADE pre-expands the file's body (commands take precedence over same-named skills) and substitutes `$ARGUMENTS` before it reaches you. You'll see the expanded instructions, not the literal `/<name>`.",
-          "**Mid-sentence reference:** When the user mentions a command/skill mid-sentence (e.g. \"please /audit this\", \"can you do a /security-review\") the message is NOT auto-expanded. Read the file at the path below and follow it.",
-          "**Autonomous skill use:** If, while working on a task, you decide a discovered skill applies (its description matches the situation), Read its SKILL.md file and follow it as if it had been invoked. Don't ask the user — just use the skill when warranted.",
-          ...(visibleProjectCommandFiles.length ? [
-            "",
-            "Commands (file-backed prompts):",
-            ...visibleProjectCommandFiles.map(formatClaudeSlashCommandEntry),
-            ...(hiddenProjectCommandCount > 0 ? [`- ${hiddenProjectCommandCount} more command(s) hidden to keep startup context lean. Use slash command search or inspect project command folders if needed.`] : []),
-          ] : []),
-          ...(renderedSkills.lines.length ? [
-            "",
-            "Skills (autonomously usable when relevant):",
-            ...renderedSkills.lines,
-            ...(renderedSkills.omitted > 0 ? [`- ${renderedSkills.omitted} more skill(s) omitted to stay inside ADE's skill-listing budget. Run \`ade skill list --text\`, or look under the agent skill roots above, if none of the listed skills fits.`] : []),
-          ] : []),
-        ]
-        : [];
       const linearDirective = resolveSessionLinearDirective(managed.session.id);
       // A lane chat's query process is this session's alone and carries
       // ADE_CHAT_SESSION_ID, so its system prompt names the session through
@@ -54399,6 +54437,29 @@ export function createAgentChatService(args: {
     });
   };
 
+
+  /**
+   * The computer-use directive this machine gives a lane chat right now: what
+   * the artifact broker reports, plus whether this host can give the lane its
+   * own screen. Shared by the send path and the Settings context preview.
+   */
+  const currentComputerUseDirective = (): string | null => {
+    const laneScreenHostPlatform = macDesktopRuntime?.seatHostPlatform?.();
+    const laneScreenCapabilityAvailable = macDesktopRuntime?.supportsLaneDisplaySync?.() === true;
+    return buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
+      macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
+      windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
+      linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
+    });
+  };
+
+  /** The lane-screen line for `laneId` on this host, or null when the host has no lane screen. */
+  const currentLaneScreenDirective = (laneId: string | null): string | null => buildMacDesktopDirective(
+    macDesktopRuntime?.supportsLaneDisplaySync?.() === true,
+    macDesktopRuntime?.seatHostPlatform?.(),
+    macDesktopRuntime?.hasDisplaySync(laneId) === true,
+  );
+
   const prepareSendMessage = ({
     sessionId,
     text,
@@ -54578,16 +54639,7 @@ export function createAgentChatService(args: {
     // directive at all (there is nothing to say), so a capability that is lost
     // entirely is not revoked mid-session — the agent simply stops being told
     // it is available on the next turn that re-announces.
-    const laneScreenHostPlatform = macDesktopRuntime?.seatHostPlatform?.();
-    const laneScreenCapabilityAvailable = macDesktopRuntime?.supportsLaneDisplaySync?.() === true;
-    const laneScreenActive = macDesktopRuntime?.hasDisplaySync(executionContext.laneId ?? null) === true;
-    const computerUseDirective = personalSession
-      ? null
-      : buildComputerUseDirective(computerUseArtifactBrokerRef?.getBackendStatus() ?? null, {
-        macDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "darwin",
-        windowsDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "win32",
-        linuxDesktopAvailable: laneScreenCapabilityAvailable && laneScreenHostPlatform === "linux",
-      });
+    const computerUseDirective = personalSession ? null : currentComputerUseDirective();
     const computerUseDirectiveKey = computerUseDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${computerUseDirectiveFingerprint(computerUseDirective)}`
       : null;
@@ -54618,13 +54670,7 @@ export function createAgentChatService(args: {
     // screen when the host can provide one, then changes when that screen is
     // active so the epoch key re-announces the current state. Windows uses
     // `ade screen`, not a Mac command.
-    const laneScreenDirective = personalSession
-      ? null
-      : buildMacDesktopDirective(
-          laneScreenCapabilityAvailable,
-          laneScreenHostPlatform,
-          laneScreenActive,
-        );
+    const laneScreenDirective = personalSession ? null : currentLaneScreenDirective(executionContext.laneId ?? null);
     const laneScreenDirectiveKey = laneScreenDirective
       ? `${laneDirectiveKey ?? "no-lane"}::${directiveTextFingerprint(laneScreenDirective)}`
       : null;
@@ -55187,7 +55233,7 @@ export function createAgentChatService(args: {
   // sandboxOptions) plus ADE hook path guards. This injects only the ADE
   // control-protocol reminder — never advisory "you are in Ask/Plan" text.
   const buildCursorSdkModeDirective = (
-    managed: ManagedChatSession,
+    managed: Pick<ManagedChatSession, "session">,
     policy: CursorSdkPermissionPolicy,
   ): string => [
     cursorSdkAdeControlDirective(),
@@ -60115,7 +60161,7 @@ export function createAgentChatService(args: {
    * system prompt when ADE creates the session (Droid keeps it through
    * resume, fork and compaction), so no turn needs to carry it.
    */
-  const buildDroidFraming = (managed: ManagedChatSession): string => {
+  const buildDroidFraming = (managed: Pick<ManagedChatSession, "session" | "laneWorktreePath">): string => {
     const droidPermissionMode = resolveSessionDroidPermissionModeOrNull(managed.session);
     const droidInteractionMode = resolveDroidSdkInteractionMode(managed.session);
     const droidActivityGuidance = buildSessionActivityGuidance(
@@ -60142,7 +60188,7 @@ export function createAgentChatService(args: {
     // are for Claude. A personal chat has no project to list.
     const droidSkillListing = isPersonalSession(managed.session)
       ? []
-      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }));
+      : buildDroidSkillListing(managed.laneWorktreePath, adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath })).lines;
     return [
       droidHarnessPrompt,
       ...(droidSkillListing.length ? ["", ...droidSkillListing] : []),
@@ -75462,8 +75508,236 @@ export function createAgentChatService(args: {
    */
   const applyChatMentionExpansion = chatMentionService.applyChatMentionExpansion;
 
+  /**
+   * What ADE itself would send a new lane chat of `provider` on this machine,
+   * built by the same builders the launch and the first send use, for a
+   * provider page's Initial context window. A dry render: no session is created, nothing is
+   * logged as delivered, no provider or MCP server is started.
+   */
+  const previewNewChatAdeContext = async (input: {
+    provider: string;
+    laneId?: string | null;
+  }): Promise<AdeChatContextPreview> => {
+    const provider = input.provider.trim() as AgentChatProvider;
+    let laneId = input.laneId?.trim() || null;
+    if (!laneId) {
+      try {
+        const lanes = await laneService.list({ includeArchived: false, includeStatus: false });
+        laneId = lanes.find((lane) => lane.laneType === "primary")?.id ?? null;
+      } catch (error) {
+        logger.warn("agent_chat.context_preview_lanes_unavailable", { error: getErrorMessage(error) });
+      }
+    }
+    let laneWorktreePath = projectRoot;
+    if (laneId) {
+      try {
+        ({ laneWorktreePath } = resolveLaneLaunchContext({
+          laneService,
+          projectRoot,
+          laneId,
+          purpose: "list a new chat's context",
+        }));
+      } catch (error) {
+        logger.warn("agent_chat.context_preview_lane_unavailable", { laneId, error: getErrorMessage(error) });
+        // The lane's folder is unknown: preview a project-root chat, not a
+        // directive that names the lane with the wrong folder.
+        laneId = null;
+      }
+    }
+    const createdAt = nowIso();
+    // A new lane chat with the launch defaults: no parent, not personal.
+    const session: AgentChatSession = {
+      id: randomUUID(),
+      laneId: laneId ?? "",
+      provider,
+      model: "",
+      status: "idle",
+      createdAt,
+      lastActivityAt: createdAt,
+    };
+    const preview = { session, laneWorktreePath };
+    const cwd = laneWorktreePath;
+    const skillRoots = adePromptAgentSkillRoots({ cwd });
+    const cliGuidance = buildAdeCliAgentGuidance(skillRoots);
+    const projectNotes = projectNotesService?.renderPromptBlock() || null;
+    const lineage = buildAdeSessionLineageGuidance(session, spawnSelfReportOpts(session));
+    const harnessArgs = {
+      cwd,
+      projectNotes,
+      mode: "coding" as const,
+      permissionMode: toHarnessPermissionMode(session.permissionMode),
+      interactive: true,
+      adeSkillRoots: skillRoots,
+    };
+    // Set while the main text is built: they are parts of it.
+    let activity: string | null = null;
+    let listing: { text: string; entries: NonNullable<AdeChatContextPart["entries"]> } | null = null;
+    let perTurn: string | null = null;
+    const main = await (async (): Promise<AdeChatMainText> => {
+      switch (provider) {
+        case "claude": {
+          const sessionIdFromEnvironment = process.platform !== "win32";
+          activity = buildSessionActivityGuidance(session, true, { sessionIdFromEnvironment });
+          const harness = buildCodingAgentSystemPrompt({
+            ...harnessArgs,
+            runtime: "claude-agent-sdk-query",
+            sessionActivityGuidance: activity,
+          });
+          const bundledPluginPaths = claudeAgentSkillPluginRoots(agentSkillRootEnv());
+          const pluginPaths = [...new Set([...bundledPluginPaths, ...discoverClaudePluginPaths(cwd)])];
+          const { slashCommandsSection, listedEntries } = buildClaudeSdkSlashCommandsSection(session, cwd, pluginPaths, bundledPluginPaths);
+          if (slashCommandsSection.length) listing = { text: slashCommandsSection.join("\n").trim(), entries: listedEntries };
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Added after Claude Code's own prompt for every request.",
+            text: [
+              harness,
+              "",
+              ...slashCommandsSection,
+              "",
+              buildAdeSessionLineageGuidance(session, spawnSelfReportOpts(session), { sessionIdFromEnvironment }) ?? "",
+            ].join("\n"),
+          };
+        }
+        case "codex":
+          activity = buildSessionActivityGuidance(session, true);
+          return {
+            label: "ADE developer instructions",
+            timing: "every-request",
+            detail: "Sent as the thread's developer instructions.",
+            text: buildCodexDeveloperInstructions({
+              laneWorktreePath: cwd,
+              session,
+              collaborationMode: "default",
+              spawnGuidance: spawnSelfReportOpts(session),
+              sessionActivityGuidance: activity,
+              projectNotes,
+            }),
+          };
+        case "opencode":
+          activity = buildOpenCodeSessionActivityGuidance(session, true);
+          return {
+            label: "ADE session instructions",
+            timing: "every-request",
+            detail: "Sent as the session's instruction entry.",
+            text: buildOpenCodeSystemPrompt({
+              laneWorktreePath: cwd,
+              session,
+              projectNotes,
+              spawnGuidance: spawnSelfReportOpts(session),
+              sessionActivityGuidance: activity,
+            }),
+          };
+        case "copilot":
+          return {
+            label: "ADE system message",
+            timing: "every-request",
+            detail: "Added after Copilot's own instructions for every request.",
+            text: [buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "copilot-sdk" }), lineage].filter(Boolean).join("\n\n"),
+          };
+        case "pi": {
+          const piTools = piSdkToolPolicyForPermissionMode(session.permissionMode, process.platform).tools;
+          activity = sessionActivityGuidanceForRuntime(session, resolveSessionActivityRuntime(
+            session,
+            process.platform !== "win32" && piTools.includes("bash"),
+          ));
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Replaces Pi's own base prompt.",
+            text: [
+              buildCodingAgentSystemPrompt({ ...harnessArgs, runtime: "pi-sdk", sessionActivityGuidance: activity }),
+              lineage,
+            ].filter(Boolean).join("\n\n"),
+          };
+        }
+        case "droid": {
+          activity = buildSessionActivityGuidance(session, true);
+          const droidListing = buildDroidSkillListing(cwd, skillRoots);
+          if (droidListing.lines.length) listing = { text: droidListing.lines.join("\n"), entries: droidListing.entries };
+          return {
+            label: "ADE system prompt",
+            timing: "every-request",
+            detail: "Added after Droid's own prompt when the session is created.",
+            text: buildDroidFraming(preview),
+          };
+        }
+        case "cursor":
+          perTurn = buildCursorSdkModeDirective(preview, resolveCursorSdkPolicy(session));
+          return {
+            label: "ADE lane guidance",
+            timing: "chat-start",
+            detail: "Put before the first message of each Cursor agent.",
+            text: [
+              await buildCursorSdkInjectedSystemPrompt({ runtime: "local", laneWorktreePath: cwd }),
+              buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
+            ].filter((part) => part.trim().length > 0).join("\n\n"),
+          };
+        default:
+          // Muse and the ACP agents have only the user turn: the guidance rides
+          // the first message of each provider session.
+          return {
+            label: "ADE lane guidance",
+            timing: "chat-start",
+            detail: "Put before the first message of the chat.",
+            text: buildAdeGuidanceForLane(cwd, session, spawnSelfReportOpts(session), projectNotes),
+          };
+      }
+    })();
+    const parts = assembleAdeChatContextParts({
+      main,
+      cliGuidance,
+      activity,
+      listing,
+      projectNotes,
+      perTurn,
+      launchDirective: laneId ? buildLaneWorktreeDirective({ laneId, laneWorktreePath: cwd }) : null,
+      computerUse: currentComputerUseDirective(),
+      laneScreen: currentLaneScreenDirective(laneId),
+      appleDevice: resolveLaneAppleDeviceDirective({
+        laneId,
+        lookup: laneAppleDeviceLookup,
+        onLookupError: (error) => logger.warn("agent_chat.context_preview_apple_device_failed", { laneId, error: getErrorMessage(error) }),
+      })?.directive ?? null,
+    });
+
+    // The registry servers ADE hands this provider (names and transport; no
+    // secret is read), minus the names the provider loads from its own config.
+    const mcpServers: AdeChatContextPreview["mcpServers"] = [];
+    const adeHome = args.machineAdeHome?.trim();
+    if (adeHome) {
+      try {
+        const registry = resolveMcpRegistryForLaunch({ adeHome, projectRoot, provider, readSecret: () => null });
+        const own = providerOwnMcpServerNames(provider, { cwd });
+        for (const [name, server] of Object.entries(registry.servers ?? {})) {
+          if (!own.has(name)) mcpServers.push({ name, type: server.type });
+        }
+      } catch (error) {
+        logger.warn("agent_chat.context_preview_mcp_failed", { provider, error: getErrorMessage(error) });
+      }
+    }
+
+    const providerHomeEnv: Record<string, string> = {};
+    if (args.embeddedProviderLoginsIsolated === true && adeHome) {
+      for (const [key, value] of Object.entries(embeddedProviderLoginEnv(provider, adeHome) ?? {})) {
+        if (typeof value === "string") providerHomeEnv[key] = value;
+      }
+    }
+    const instanceId = currentDefaultInstanceId(provider);
+    const instance = instanceId ? resolveProviderInstanceForLaunch(provider, instanceId) : null;
+    if (instance) {
+      Object.assign(providerHomeEnv, providerInstanceEnvPatch(instance, {
+        allowDefaultConfigHome: args.embeddedProviderLoginsIsolated === true,
+      }));
+    }
+
+    return { provider, laneId, laneWorktreePath: cwd, parts, adeSkillRoots: skillRoots, mcpServers, providerHomeEnv };
+  };
+
   return {
     createSession,
+    previewNewChatAdeContext,
     /** Deliver a draft right now, whatever its fire time (the "Send now" action). */
     sendDraftNow,
     /**

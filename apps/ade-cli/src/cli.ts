@@ -27514,6 +27514,10 @@ async function runServe(
     capture: (input) => brainProductAnalytics.capture(input),
   });
   const socketPath = serveSocketPath;
+  // The watchdog below says that the brain froze; this says which synchronous
+  // child process froze it, which is most of the near misses that use no CPU.
+  const { installSlowSyncSpawnMonitor } = await import("./services/runtime/slowSyncSpawnMonitor");
+  installSlowSyncSpawnMonitor({ warn: (event, meta) => headlessProjectLogger.warn(event, meta) });
   stopBrainLoopWatchdog = startBrainLoopWatchdog({
     runtimeDir: layout.runtimeDir,
     socketPath,

@@ -5,6 +5,8 @@ import { MONO_FONT, SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
 import { ChatAttachmentTray } from "../chat/ChatAttachmentTray";
 import { ChatComposerShell } from "../chat/ChatComposerShell";
 import { isImeComposing } from "../../lib/imeComposition";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { Z_LAYERS } from "../ui/zLayers";
 
 export type MentionParticipant = {
   id: string;
@@ -62,8 +64,8 @@ export function MentionInput({
   const [dropdownFilter, setDropdownFilter] = useState("");
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [focused, setFocused] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
-  const dropdownRef = useRef<HTMLDivElement>(null);
 
   const filtered = useMemo(() => {
     if (!dropdownFilter) return participants;
@@ -170,6 +172,7 @@ export function MentionInput({
 
   return (
     <div
+      ref={rootRef}
       className="relative w-full min-w-0 max-w-full overflow-hidden"
       style={{
         background: "linear-gradient(180deg, rgba(18,14,28,0.98) 0%, rgba(12,10,18,0.98) 100%)",
@@ -181,64 +184,70 @@ export function MentionInput({
           : "0 14px 34px rgba(5, 3, 12, 0.24)",
       }}
     >
-      {showDropdown && filtered.length > 0 ? (
+      {/* Portalled above the composer (its own box clips overflow). Focus stays
+          in the textarea: rows pick on mousedown with the default prevented. */}
+      <AnchoredMenu
+        open={showDropdown && filtered.length > 0}
+        anchorRef={rootRef}
+        onClose={() => setShowDropdown(false)}
+        placement="top-start"
+        offset={8}
+        matchAnchorWidth
+        zIndex={Z_LAYERS.popover}
+        remeasureKey={filtered.length}
+        className="max-h-[220px] overflow-y-auto"
+        style={{
+          background: "rgba(20, 16, 31, 0.98)",
+          border: "1px solid #2f2940",
+          boxShadow: "0 18px 42px rgba(5, 2, 14, 0.42)",
+        }}
+      >
         <div
-          ref={dropdownRef}
-          className="absolute bottom-full left-0 right-0 mb-2 max-h-[220px] overflow-y-auto"
+          className="px-3 py-2"
           style={{
-            background: "rgba(20, 16, 31, 0.98)",
-            border: "1px solid #2f2940",
-            boxShadow: "0 18px 42px rgba(5, 2, 14, 0.42)",
-            zIndex: 50,
+            fontSize: 10,
+            fontWeight: 700,
+            fontFamily: SANS_FONT,
+            textTransform: "uppercase",
+            letterSpacing: "1px",
+            color: "var(--color-muted-fg)",
+            borderBottom: "1px solid #2a2535",
           }}
         >
-          <div
-            className="px-3 py-2"
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              fontFamily: SANS_FONT,
-              textTransform: "uppercase",
-              letterSpacing: "1px",
-              color: "var(--color-muted-fg)",
-              borderBottom: "1px solid #2a2535",
-            }}
-          >
-            Participants
-          </div>
-          {filtered.map((participant, index) => (
-            <button
-              key={participant.id}
-              className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
-              style={{
-                background: index === selectedIndex ? "#A78BFA18" : "transparent",
-                color: index === selectedIndex ? "var(--color-fg)" : "var(--color-secondary-fg)",
-              }}
-              onMouseDown={(event) => {
-                event.preventDefault();
-                insertMention(participant);
-              }}
-              onMouseEnter={() => setSelectedIndex(index)}
-            >
-              <span
-                className="inline-block h-2 w-2 shrink-0 rounded-full"
-                style={{ backgroundColor: STATUS_DOT_COLOR[participant.status] ?? "#6b7280" }}
-              />
-              <span className="truncate text-xs font-medium" style={{ fontFamily: MONO_FONT }}>
-                @{participant.label}
-              </span>
-              {participant.role ? (
-                <span
-                  className="ml-auto shrink-0 text-[9px] uppercase tracking-wider"
-                  style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", fontFamily: SANS_FONT }}
-                >
-                  {participant.role}
-                </span>
-              ) : null}
-            </button>
-          ))}
+          Participants
         </div>
-      ) : null}
+        {filtered.map((participant, index) => (
+          <button
+            key={participant.id}
+            className="flex w-full items-center gap-2 px-3 py-2 text-left transition-colors"
+            style={{
+              background: index === selectedIndex ? "#A78BFA18" : "transparent",
+              color: index === selectedIndex ? "var(--color-fg)" : "var(--color-secondary-fg)",
+            }}
+            onMouseDown={(event) => {
+              event.preventDefault();
+              insertMention(participant);
+            }}
+            onMouseEnter={() => setSelectedIndex(index)}
+          >
+            <span
+              className="inline-block h-2 w-2 shrink-0 rounded-full"
+              style={{ backgroundColor: STATUS_DOT_COLOR[participant.status] ?? "#6b7280" }}
+            />
+            <span className="truncate text-xs font-medium" style={{ fontFamily: MONO_FONT }}>
+              @{participant.label}
+            </span>
+            {participant.role ? (
+              <span
+                className="ml-auto shrink-0 text-[9px] uppercase tracking-wider"
+                style={{ color: "color-mix(in srgb, var(--color-muted-fg) 75%, var(--color-bg))", fontFamily: SANS_FONT }}
+              >
+                {participant.role}
+              </span>
+            ) : null}
+          </button>
+        ))}
+      </AnchoredMenu>
 
       <ChatComposerShell
         mode={surfaceMode}

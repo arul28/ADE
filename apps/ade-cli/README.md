@@ -914,6 +914,7 @@ ade actions run pty.resumeSession --arg sessionId=session-id
 ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode/pi/qwen/kimi/grok/copilot sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
 ade actions run external-sessions.import --input-json '{"provider":"codex","sessionId":"thread-id","laneId":"lane-1","target":"cli","mode":"resume"}' --text
 ade actions run external-sessions.getDetail --input-json '{"provider":"claude","sessionId":"session-id"}' --text   # one session's preview page; pass olderCursor back as before for the previous page
+ade actions run ai.getProviderContextInventory --input-json '{"provider":"claude"}' --json   # what a new chat on that provider gets before the first message: items, sizes, files and the measured total (a provider page's Initial context window)
 ade actions run ai.piLoginProviders --text                 # Pi providers that can be signed into, with the auth methods each accepts and whether it is already configured
 ade --role cto actions run ai.piLoginStart --input-json '{"providerId":"anthropic"}' --json   # blocks until the human finishes Pi's own OAuth/device-code flow
 ade actions call stream_events --arg category=runtime --json                                 # drain piAuthStatus prompts/notices raised by an in-flight sign-in

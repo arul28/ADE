@@ -20,7 +20,7 @@ export type FixedMenuAboveAnchorStyle = {
 };
 
 export function fixedMenuAboveAnchorStyle(
-  rect: { left: number; top: number; right: number },
+  rect: { left: number; top: number; right: number; bottom?: number },
   options: {
     width: number;
     gap?: number;
@@ -28,6 +28,11 @@ export function fixedMenuAboveAnchorStyle(
     align?: "start" | "end";
     /** The element the menu renders into, when it is not the body. */
     container?: Element | null;
+    /**
+     * Opens below the anchor instead (needs `rect.bottom`): for a caller that
+     * measured no room above, such as a pill near the top of a dialog.
+     */
+    below?: boolean;
   },
 ): FixedMenuAboveAnchorStyle {
   const gap = options.gap ?? 8;
@@ -41,6 +46,14 @@ export function fixedMenuAboveAnchorStyle(
   const minLeft = viewport.left + gutter;
   const maxLeft = Math.max(minLeft, viewport.right - options.width - gutter);
   const left = Math.min(Math.max(minLeft, rawLeft), maxLeft);
+  if (options.below && rect.bottom != null) {
+    return {
+      left,
+      top: fixedPoint(frame, rect.left, rect.bottom).top,
+      width: options.width,
+      transform: `translateY(${gap}px)`,
+    };
+  }
   return {
     left,
     top: anchorTop,

@@ -8,6 +8,8 @@ import {
 } from "@phosphor-icons/react";
 
 import { navigateToAppTarget } from "../../lib/openExternal";
+import { AnchoredMenu } from "../ui/AnchoredMenu";
+import { Z_LAYERS } from "../ui/zLayers";
 import {
   ActivitySettingsControls,
   useActivitySettings,
@@ -28,13 +30,15 @@ import "./Activity.css";
 export function ActivitySettingsPopover() {
   const model = useActivitySettings();
   const [open, setOpen] = useState(false);
+  // The portalled menu stays mounted until the exit animation has played.
+  const [present, setPresent] = useState(false);
+  if (open && !present) setPresent(true);
   const reducedMotion = useReducedMotion() ?? false;
-  const rootRef = useRef<HTMLDivElement | null>(null);
+  const dialogRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const restoreTriggerFocusRef = useRef(false);
 
-  const dialogElement = () =>
-    rootRef.current?.querySelector<HTMLElement>('[role="dialog"]') ?? null;
+  const dialogElement = () => dialogRef.current;
 
   const closePopover = (returnFocus: boolean) => {
     restoreTriggerFocusRef.current = returnFocus;
@@ -49,11 +53,9 @@ export function ActivitySettingsPopover() {
     setOpen(false);
   }, [model.accountOwnerId]);
 
+  // A press outside the popover and its trigger is AnchoredMenu's `onClose`.
   useEffect(() => {
     if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) closePopover(false);
-    };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         // Stopped here so the surrounding pane or popover does not also close:
@@ -62,16 +64,15 @@ export function ActivitySettingsPopover() {
         closePopover(true);
       }
     };
-    document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
+    return () => document.removeEventListener("keydown", onKeyDown);
   }, [open]);
 
+  // A frame later: the menu stays hidden (unfocusable) until it has been placed.
   useEffect(() => {
-    if (open) dialogElement()?.focus();
+    if (!open) return;
+    const frame = requestAnimationFrame(() => dialogElement()?.focus());
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   // Keep Tab inside the popover while it is open; Escape and the Done button
@@ -99,7 +100,7 @@ export function ActivitySettingsPopover() {
   };
 
   return (
-    <div ref={rootRef} className="activity-settings-wrap">
+    <div className="activity-settings-wrap">
       <button
         ref={triggerRef}
         type="button"
@@ -111,100 +112,115 @@ export function ActivitySettingsPopover() {
       >
         <GearSix size={14} weight={open ? "fill" : "regular"} />
       </button>
-      <AnimatePresence
-        onExitComplete={() => {
-          if (!restoreTriggerFocusRef.current) return;
-          restoreTriggerFocusRef.current = false;
-          triggerRef.current?.focus();
+      <AnchoredMenu
+        open={open || present}
+        anchorRef={triggerRef}
+        onClose={() => {
+          if (open) closePopover(false);
         }}
+        placement="bottom-end"
+        offset={9}
+        // Above the top-bar sheet, and inside the Activity dialog.
+        zIndex={Z_LAYERS.dialogPopover}
+        remeasureKey={model.loading}
       >
-        {open ? (
-          <motion.div
-            className="activity-settings-popover"
-            role="dialog"
-            aria-label="Activity settings"
-            tabIndex={-1}
-            onKeyDown={onDialogKeyDown}
-            initial={reducedMotion ? false : { opacity: 0, y: -6, scale: 0.98 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.985 }}
-            transition={{ duration: reducedMotion ? 0.1 : 0.18, ease: [0.2, 0.8, 0.2, 1] }}
-          >
-            <header>
-              <div>
-                <span className="activity-settings-heading-icon">
-                  <BellRinging size={17} weight="duotone" />
-                </span>
+        <AnimatePresence
+          onExitComplete={() => {
+            setPresent(false);
+            if (!restoreTriggerFocusRef.current) return;
+            restoreTriggerFocusRef.current = false;
+            triggerRef.current?.focus();
+          }}
+        >
+          {open ? (
+            <motion.div
+              ref={dialogRef}
+              className="activity-settings-popover"
+              role="dialog"
+              aria-label="Activity settings"
+              tabIndex={-1}
+              onKeyDown={onDialogKeyDown}
+              initial={reducedMotion ? false : { opacity: 0, y: -6, scale: 0.98 }}
+              animate={{ opacity: 1, y: 0, scale: 1 }}
+              exit={reducedMotion ? { opacity: 0 } : { opacity: 0, y: -4, scale: 0.985 }}
+              transition={{ duration: reducedMotion ? 0.1 : 0.18, ease: [0.2, 0.8, 0.2, 1] }}
+            >
+              <header>
+                <div>
+                  <span className="activity-settings-heading-icon">
+                    <BellRinging size={17} weight="duotone" />
+                  </span>
+                  <span>
+                    <strong>Activity settings</strong>
+                    <small>Account delivery preferences</small>
+                  </span>
+                </div>
+                <span className="activity-settings-account-badge">Account</span>
+              </header>
+
+              {model.loading ? (
+                <div className="activity-settings-loading">
+                  <span />
+                  Loading your preferences…
+                </div>
+              ) : (
+                <ActivitySettingsControls variant="popover" model={model} />
+              )}
+
+              {model.error ? (
+                <Banner
+                  layout="inline"
+                  model={{
+                    id: "activity-settings-error",
+                    // Signed out, the only error is "sign in first": not a failure.
+                    tone: model.signedOut ? "warning" : "error",
+                    title: model.error,
+                    actions: model.loadFailed
+                      ? [{ label: "Try again", onClick: model.retryLoad }]
+                      : undefined,
+                    report: model.signedOut ? false : { surface: "activity_settings" },
+                  }}
+                  style={{ margin: "5px 10px 8px" }}
+                />
+              ) : null}
+
+              <section>
+                {/*
+                  Routed through the app navigation bus rather than `useNavigate`:
+                  Activity mounts outside the router in tests, and must not take
+                  a Router dependency.
+                */}
+                <button
+                  type="button"
+                  className="activity-settings-open-full"
+                  onClick={() => {
+                    closePopover(true);
+                    navigateToAppTarget({ kind: "settings", tab: "notifications" });
+                  }}
+                >
+                  All Activity settings
+                  <ArrowSquareOut size={13} weight="bold" />
+                </button>
+              </section>
+
+              <footer>
                 <span>
-                  <strong>Activity settings</strong>
-                  <small>Account delivery preferences</small>
+                  {model.saved
+                    ? <><Check size={13} weight="bold" /> Saved</>
+                    : "Changes save as you make them"}
                 </span>
-              </div>
-              <span className="activity-settings-account-badge">Account</span>
-            </header>
-
-            {model.loading ? (
-              <div className="activity-settings-loading">
-                <span />
-                Loading your preferences…
-              </div>
-            ) : (
-              <ActivitySettingsControls variant="popover" model={model} />
-            )}
-
-            {model.error ? (
-              <Banner
-                layout="inline"
-                model={{
-                  id: "activity-settings-error",
-                  // Signed out, the only error is "sign in first": not a failure.
-                  tone: model.signedOut ? "warning" : "error",
-                  title: model.error,
-                  actions: model.loadFailed
-                    ? [{ label: "Try again", onClick: model.retryLoad }]
-                    : undefined,
-                  report: model.signedOut ? false : { surface: "activity_settings" },
-                }}
-                style={{ margin: "5px 10px 8px" }}
-              />
-            ) : null}
-
-            <section>
-              {/*
-                Routed through the app navigation bus rather than `useNavigate`:
-                Activity mounts outside the router in tests, and must not take
-                a Router dependency.
-              */}
-              <button
-                type="button"
-                className="activity-settings-open-full"
-                onClick={() => {
-                  closePopover(true);
-                  navigateToAppTarget({ kind: "settings", tab: "notifications" });
-                }}
-              >
-                All Activity settings
-                <ArrowSquareOut size={13} weight="bold" />
-              </button>
-            </section>
-
-            <footer>
-              <span>
-                {model.saved
-                  ? <><Check size={13} weight="bold" /> Saved</>
-                  : "Changes save as you make them"}
-              </span>
-              <button
-                type="button"
-                className="activity-filter-clear"
-                onClick={() => closePopover(true)}
-              >
-                Done
-              </button>
-            </footer>
-          </motion.div>
-        ) : null}
-      </AnimatePresence>
+                <button
+                  type="button"
+                  className="activity-filter-clear"
+                  onClick={() => closePopover(true)}
+                >
+                  Done
+                </button>
+              </footer>
+            </motion.div>
+          ) : null}
+        </AnimatePresence>
+      </AnchoredMenu>
     </div>
   );
 }

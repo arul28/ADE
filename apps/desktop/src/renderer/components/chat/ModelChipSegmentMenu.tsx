@@ -20,7 +20,7 @@ import {
   reasoningEffortTrackLabel,
 } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { toneText } from "../lanes/laneDesignTokens";
-import { permissionToneTextClass } from "../../lib/modelPermissionOptions";
+import { permissionToneTextClass } from "../shared/permissionModePickerOptions";
 import type { ModelChipOption, ModelChipSegment } from "./composerModelChip";
 
 const PERMISSION_ROW_HEIGHT = 26;

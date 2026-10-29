@@ -493,7 +493,9 @@ That is a sleep, App Nap, or a stopped process. Every other delay of 2 s or
 more is logged as warn `brain.event_loop_near_miss`. Both carry `pid`,
 `socketPath`, `workerPauseCoverage`, `workerPausedMs`, `cpuDeltaMs`, and
 `majorPageFaultsDelta`, so brains that share `brain.jsonl` can be told apart. The kill decision does
-not change.
+not change. A near-miss with little CPU is usually a synchronous child process;
+warn `brain.slow_sync_spawn` names the program and its caller for any such call
+of 1 s or more (see `docs/ARCHITECTURE.md`).
 
 On the next boot the watchdog promotes any breadcrumb, generated report and
 native sample to `last-wedge.json` / `last-wedge-report.json` /

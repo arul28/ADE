@@ -35,6 +35,7 @@ import {
   type BuiltInBrowserStatus,
 } from "../../../shared/types/builtInBrowser";
 import type { MuseBinaryStatus } from "../../../shared/museBinary";
+import type { GetProviderContextInventoryArgs, ProviderContextInventory } from "../../../shared/types/providerContext";
 import { WEB_KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import { applyHostedWebZoom } from "../../lib/webZoom";
@@ -669,6 +670,13 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       assertWebRuntimePinRoutable("ai.pinnedToolStatus", pin, infra);
       return await call<PinnedProviderToolStatus | null>("ai.pinnedToolStatus", args, null);
     },
+    // A provider page's Initial context window, built by the connected brain
+    // on its own machine. There is no "Show in Finder" here: the files are on
+    // that machine, not in this browser.
+    getProviderContextInventory: async (args: GetProviderContextInventoryArgs, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("ai.getProviderContextInventory", pin, infra);
+      return await call<ProviderContextInventory | null>("ai.getProviderContextInventory", args, null);
+    },
     pinnedToolDownload: async (args: { provider: string }, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("ai.pinnedToolDownload", pin, infra);
       return await call<PinnedProviderToolStatus | null>("ai.pinnedToolDownload", args, null, false);
@@ -1067,7 +1075,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       // reaches for; the rest of the namespace is deliberately absent so a
       // caller that needs it feature-detects instead of getting a fake.
     } as unknown as AdeNamespace<"builtInBrowser">,
-    usage: createUsageStubs(call),
+    usage: createUsageStubs(call, infra),
     providerInstances: createProviderAccountsNamespace(call),
     automations: createAutomationStubs(call, infra) as AdeNamespace<"automations">,
   };
@@ -1423,7 +1431,7 @@ function createNativeUnavailableNamespace(): Record<string, unknown> {
 const USAGE_REFRESHING_RETRY_MS = [5_000, 15_000, 45_000, 120_000] as const;
 const USAGE_STALE_ON_RETURN_MS = 10 * 60_000;
 
-function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
+function createUsageStubs(call: MiscCall, infra: AdapterInfra): Partial<Window["ade"]["usage"]> {
   const listeners = new Set<(snapshot: UsageSnapshot) => void>();
   let retryIndex = 0;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1461,7 +1469,10 @@ function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   };
 
   return {
-    getAdeStats: async (args = {}) => {
+    // The connected brain's numbers: a Settings page pinned to another
+    // machine cannot be answered here, so it refuses rather than show these.
+    getAdeStats: async (args = {}, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("usage.getAdeStats", pin, infra);
       const stats = await call<AdeUsageStats | null>("usage.getAdeStats", args, null);
       noteStats(stats);
       return stats as AdeUsageStats;
