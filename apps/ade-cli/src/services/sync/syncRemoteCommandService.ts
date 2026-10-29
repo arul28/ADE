@@ -51,9 +51,11 @@ import {
   type CtoHomeMachineRecord,
 } from "../../../../desktop/src/shared/ctoHomeMachine";
 import { runWithAbortSignal } from "./abortSignal";
-import { readMachineConnectionRoutes, setMachineRelayEnabled } from "./machineConnectionRoutes";
-import { createSyncCloudRelayStore, SYNC_CLOUD_RELAY_FILE_NAME } from "./syncCloudRelayStore";
-import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import {
+  readMachineConnectionRoutes,
+  readRelayEnabledArg,
+  setMachineRelayEnabled,
+} from "./machineConnectionRoutes";
 import {
   buildSyncResultTooLargeError,
   SYNC_REMOTE_COMMAND_RESULT_MAX_BYTES,
@@ -474,13 +476,6 @@ export class SyncRemoteCommandResultTooLargeError extends Error {
  * viewer. Bootstrap metadata is caller-controlled, so only the server-recorded
  * pairing identity can grant this authority.
  */
-/** This machine's relay identity store, for a process that runs no relay tunnel. */
-function machineRelayStore() {
-  return createSyncCloudRelayStore({
-    filePath: path.join(resolveMachineAdeLayout().secretsDir, SYNC_CLOUD_RELAY_FILE_NAME),
-  });
-}
-
 export function isInteractiveControllerPeer(
   peer: { pairingRecord: SyncPairingRecord | null },
 ): boolean {
@@ -552,6 +547,12 @@ export function evaluateRemoteCommandPolicy(args: {
     return {
       code: "forbidden_command",
       message: `Remote command ${action} is not available to paired controller devices.`,
+    };
+  }
+  if (policy.runtimeHostOnly && args.peer.pairingRecord?.runtimeHostGranted !== true) {
+    return {
+      code: "forbidden_command",
+      message: `Remote command ${action} is only available from a paired ADE computer.`,
     };
   }
   if (policy.localOnly || policy.requiresApproval) {
@@ -8796,22 +8797,13 @@ export function createSyncRemoteCommandService(args: SyncRemoteCommandServiceArg
 
   // This computer's own routes and its ADE Relay switch, for the Account page
   // on another of the owner's computers. Machine-level, so they answer the
-  // same from any project scope. Any paired device may flip the switch: every
-  // paired device is the owner's, and the Account page warns before turning
-  // the relay off.
-  register("account.getConnectionRoutes", { viewerAllowed: true }, async (payload) => {
-    return await readMachineConnectionRoutes({
-      fallbackStore: machineRelayStore(),
-      refresh: payload.refresh === true,
-    });
-  }, "runtime");
+  // same from any project scope. Any paired device may read the routes; only
+  // a paired ADE computer may flip the switch.
+  register("account.getConnectionRoutes", { viewerAllowed: true }, async (payload) =>
+    await readMachineConnectionRoutes({ refresh: payload.refresh === true }), "runtime");
 
-  register("account.setRelayEnabled", { viewerAllowed: true }, async (payload) => {
-    if (typeof payload.enabled !== "boolean") {
-      throw new Error("account.setRelayEnabled requires enabled to be true or false.");
-    }
-    return await setMachineRelayEnabled({ enabled: payload.enabled, fallbackStore: machineRelayStore() });
-  }, "runtime");
+  register("account.setRelayEnabled", { viewerAllowed: true, runtimeHostOnly: true }, async (payload) =>
+    await setMachineRelayEnabled(readRelayEnabledArg(payload.enabled)), "runtime");
 
   register("usage.getQuotaSnapshot", { viewerAllowed: true }, async () => {
     if (!args.usageTrackingService) throw new Error("Usage quota is not available in this runtime.");

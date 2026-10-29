@@ -3297,6 +3297,13 @@ export type SyncRemoteCommandPolicy = {
   viewerAllowed: boolean;
   /** Allows only an authenticated phone/browser controller, never a desktop viewer. */
   controllerAllowed?: boolean;
+  /**
+   * Narrows `viewerAllowed` to desktops paired as runtime hosts: a machine
+   * setting another of the owner's computers may change, but a phone or a
+   * browser tab may not (it could cut the computer off where only someone at
+   * it could undo that).
+   */
+  runtimeHostOnly?: boolean;
   requiresApproval?: boolean;
   localOnly?: boolean;
   queueable?: boolean;

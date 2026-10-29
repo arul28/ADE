@@ -60,6 +60,8 @@ export type RemoteMcpStatus = {
   serverUrl: string | null;
   /** This computer's relay connection is up, so it can answer the URL. */
   relayConnected: boolean;
+  /** The owner turned ADE Relay off on this computer (Settings › Account). Absent from older brains. */
+  relayTurnedOff?: boolean;
   machineName: string;
   /** This computer is included and answering. */
   thisMachineServing: boolean;

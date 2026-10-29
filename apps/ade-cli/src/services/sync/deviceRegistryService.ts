@@ -15,7 +15,7 @@ import type {
 } from "../../../../desktop/src/shared/types";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import { mapPlatform } from "./syncProtocol";
-import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
+import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { nowIso, safeJsonParse, toOptionalString, uniqueStrings } from "../../../../desktop/src/main/services/shared/utils";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
@@ -53,7 +53,6 @@ type ClusterStateRow = {
 
 const DEVICE_ID_FILE = "sync-device-id";
 export const DEFAULT_SYNC_CLUSTER_ID = "default";
-const TAILSCALE_STATUS_CACHE_MS = 30_000;
 /**
  * `os.networkInterfaces()` is a synchronous adapter enumeration — ~3.5 ms on a
  * quiet Windows PC, more with VPN and Hyper-V adapters — and the brain asks for
@@ -91,12 +90,7 @@ function readNetworkInterfaces(): ReturnType<typeof os.networkInterfaces> {
   return value;
 }
 
-let tailscaleStatusCache:
-  | {
-      expiresAt: number;
-      dnsName: string | null;
-    }
-  | null = null;
+let tailscaleDnsNameCache: string | null = null;
 let tailscaleStatusRefreshInFlight: Promise<void> | null = null;
 
 function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
@@ -258,29 +252,15 @@ function readLocalNetworkMetadata(): LocalNetworkMetadata {
   };
 }
 
-function normalizeTailscaleDnsName(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  const normalized = value.trim().replace(/\.$/, "").toLowerCase();
-  return normalized.endsWith(".ts.net") ? normalized : null;
-}
-
+/**
+ * This computer's MagicDNS name, from the shared `tailscale status` reader
+ * (which caches for a minute). Answers from the last read and refreshes in
+ * the background, so a device lookup never waits on the CLI.
+ */
 function readLocalTailscaleDnsName(): string | null {
-  const now = Date.now();
-  if (tailscaleStatusCache && tailscaleStatusCache.expiresAt > now) {
-    return tailscaleStatusCache.dnsName;
-  }
-  const staleDnsName = tailscaleStatusCache?.dnsName ?? null;
   if (!tailscaleStatusRefreshInFlight && externalIdentityProbesEnabled()) {
-    const refresh = execFileText(
-      resolveTailscaleCliPath(),
-      ["status", "--json"],
-      1_000,
-    ).then((raw) => {
-      const parsed = safeJsonParse<{ Self?: { DNSName?: unknown } }>(raw ?? "", {});
-      tailscaleStatusCache = {
-        expiresAt: Date.now() + TAILSCALE_STATUS_CACHE_MS,
-        dnsName: normalizeTailscaleDnsName(parsed.Self?.DNSName),
-      };
+    const refresh = readTailscaleLocalStatus().then((status) => {
+      tailscaleDnsNameCache = status.dnsName;
     }).finally(() => {
       if (tailscaleStatusRefreshInFlight === refresh) {
         tailscaleStatusRefreshInFlight = null;
@@ -288,7 +268,7 @@ function readLocalTailscaleDnsName(): string | null {
     });
     tailscaleStatusRefreshInFlight = refresh;
   }
-  return staleDnsName;
+  return tailscaleDnsNameCache;
 }
 
 function firstPreferredHost(ipAddresses: string[]): string {

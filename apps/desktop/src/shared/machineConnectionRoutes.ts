@@ -7,7 +7,7 @@ import type {
 /** Where to turn on MagicDNS and HTTPS certificates for a tailnet. */
 export const TAILSCALE_DNS_ADMIN_URL = "https://login.tailscale.com/admin/dns";
 export const TAILSCALE_DOWNLOAD_URL = "https://tailscale.com/download";
-export const TAILSCALE_HTTPS_DOCS_URL = "https://tailscale.com/kb/1153/enabling-https";
+export const TAILSCALE_MACHINES_ADMIN_URL = "https://login.tailscale.com/admin/machines";
 
 const TAILSCALE_STATES: readonly MachineTailscaleState[] = [
   "running",

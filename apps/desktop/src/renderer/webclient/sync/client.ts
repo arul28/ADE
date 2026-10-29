@@ -606,6 +606,39 @@ export class AdeSyncClient {
     return paired.environment;
   }
 
+  /**
+   * Keeps each saved computer's Tailscale HTTPS routes in step with the
+   * account directory. A browser learns a computer's routes when it pairs, so
+   * one paired before the computer published `wss://<name>.ts.net:<port>`
+   * would otherwise go through ADE Relay forever. Only routes the verified
+   * directory lists, only for computers this browser already paired with.
+   */
+  async adoptDirectoryTailnetRoutes(
+    machines: readonly AdeAccountMachine[],
+    relayBaseUrls: readonly string[] = [],
+  ): Promise<void> {
+    await this.drainEnvironmentPersistence();
+    for (const machine of machines) {
+      const hostDeviceId = machine.deviceId?.trim();
+      if (!hostDeviceId) continue;
+      const environment = await this.envStore.findByHostDeviceId(hostDeviceId);
+      if (!environment) continue;
+      const isTailnetWss = (url: string) => {
+        try {
+          const parsed = new URL(url);
+          return parsed.protocol === "wss:" && isTailnetHostname(parsed.hostname);
+        } catch {
+          return false;
+        }
+      };
+      const directoryRoutes = accountMachinePairedSyncEndpoints(machine, relayBaseUrls).filter(isTailnetWss);
+      const current = environment.explicitWssEndpoints ?? [];
+      const next = [...current.filter((url) => !isTailnetWss(url)), ...directoryRoutes];
+      if (next.length === current.length && next.every((url, index) => url === current[index])) continue;
+      await this.envStore.saveEnvironment({ ...environment, explicitWssEndpoints: next });
+    }
+  }
+
   async removeAccountOwnedEnvironments(ownerUserId: string): Promise<string[]> {
     await this.drainEnvironmentPersistence();
     const removedIds = await this.envStore.removeAccountOwnedEnvironments(ownerUserId);

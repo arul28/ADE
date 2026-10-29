@@ -3,6 +3,8 @@ import { parseMachineConnectionRoutes } from "../../../shared/machineConnectionR
 import { unwrapAccountActionResult } from "../../../../../ade-cli/src/services/account/accountRefreshBroker";
 
 const ROUTES_TIMEOUT_MS = 12_000;
+/** A refresh can run `tailscale status` (5 s) and then `serve --https` (15 s). */
+const ROUTES_REFRESH_TIMEOUT_MS = 25_000;
 
 export type AccountConnectionRoutesDeps = {
   /** `account.call` on THIS computer's brain. Absent when no brain answers. */
@@ -33,9 +35,10 @@ export type AccountConnectionRoutesBridge = {
 export function createAccountConnectionRoutesBridge(
   deps: AccountConnectionRoutesDeps,
 ): AccountConnectionRoutesBridge {
-  const isLocal = (machineKey: string | null | undefined): boolean => {
+  /** The other computer's key, or null for this one. */
+  const remoteKey = (machineKey: string | null | undefined): string | null => {
     const key = machineKey?.trim();
-    return !key || key === deps.localMachineKey().trim();
+    return !key || key === deps.localMachineKey().trim() ? null : key;
   };
 
   const read = (raw: unknown, who: string): MachineConnectionRoutes => {
@@ -49,20 +52,22 @@ export function createAccountConnectionRoutesBridge(
     action: "getConnectionRoutes" | "setRelayEnabled",
     args: Record<string, unknown>,
   ): Promise<MachineConnectionRoutes> => {
-    if (isLocal(machineKey)) {
+    const key = remoteKey(machineKey);
+    if (!key) {
       if (!deps.callBrainAccountAction) {
         throw new Error("ADE's background service isn't running on this computer. Reopen ADE, then try again.");
       }
       return read(await deps.callBrainAccountAction(action, args), "This computer");
     }
-    const key = machineKey!.trim();
     const targetId = deps.resolveTargetIdForMachineKey(key);
     if (!targetId || (deps.isTargetConnected && !deps.isTargetConnected(targetId))) {
       throw new Error("Connect to this computer to see and change its routes.");
     }
     try {
       return read(
-        await deps.callMachineMethod(targetId, `account.${action}`, args, { timeoutMs: ROUTES_TIMEOUT_MS }),
+        await deps.callMachineMethod(targetId, `account.${action}`, args, {
+          timeoutMs: args.refresh === true ? ROUTES_REFRESH_TIMEOUT_MS : ROUTES_TIMEOUT_MS,
+        }),
         "That computer",
       );
     } catch (error) {

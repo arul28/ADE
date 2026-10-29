@@ -318,17 +318,22 @@ export function createSyncCloudRelayStore(args: {
 }) {
   fs.mkdirSync(path.dirname(args.filePath), { recursive: true });
   const preferencePath = path.join(path.dirname(args.filePath), SYNC_RELAY_PREFERENCE_FILE_NAME);
-  /** Keyed on mtime: the preference is read on every relay eligibility check. */
-  let preferenceCache: { mtimeMs: number; value: SyncRelayPreference } | null = null;
+  /**
+   * Keyed on mtime and size: the preference is read on every relay
+   * eligibility check, and the on and off files differ in size, so a flip
+   * inside one coarse timestamp tick still reads fresh.
+   */
+  let preferenceCache: { stamp: string; value: SyncRelayPreference } | null = null;
   const readRelayPreference = (): SyncRelayPreference => {
-    let mtimeMs: number;
+    let stamp: string;
     try {
-      mtimeMs = fs.statSync(preferencePath).mtimeMs;
+      const stat = fs.statSync(preferencePath);
+      stamp = `${stat.mtimeMs}:${stat.size}`;
     } catch {
       preferenceCache = null;
       return { enabled: true, changedAt: null };
     }
-    if (preferenceCache && preferenceCache.mtimeMs === mtimeMs) return preferenceCache.value;
+    if (preferenceCache && preferenceCache.stamp === stamp) return preferenceCache.value;
     const raw = safeJsonParse<{ enabled?: unknown; changedAt?: unknown }>(
       (() => {
         try {
@@ -345,7 +350,7 @@ export function createSyncCloudRelayStore(args: {
       enabled: raw.enabled !== false,
       changedAt: typeof raw.changedAt === "string" ? raw.changedAt : null,
     };
-    preferenceCache = { mtimeMs, value };
+    preferenceCache = { stamp, value };
     return value;
   };
   const rotationLockPath = `${args.filePath}.rotate.lock`;

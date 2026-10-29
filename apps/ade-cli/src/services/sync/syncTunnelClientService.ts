@@ -121,11 +121,6 @@ type SyncTunnelClientArgs = {
   logger?: Logger;
   /** Relay is usable only while the host has a current ADE account session. */
   isAccountSignedIn?: () => boolean;
-  /**
-   * The owner's setting for this computer. Off closes the control socket and
-   * every tunnel within one lease poll, and keeps them closed.
-   */
-  isRelayEnabled?: () => boolean;
   /** Refresh-aware lease; the account token is validated upstream and never retained here. */
   getAccountLease?: () => Promise<{ userId: string; expiresAt?: string | null } | null>;
   /**
@@ -714,9 +709,12 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
   const relayHttpUrl = (): string => args.configStore.getRelayUrl() || defaultRelayUrl();
   const createWebSocket = args.createWebSocket
     ?? ((url: string, options?: { headers?: Record<string, string> }) => new WebSocket(url, options));
+  // The owner's setting for this computer, read from the identity store's
+  // sibling file. Off closes the control socket and every tunnel within one
+  // lease poll, and keeps them closed. An unreadable setting reads as on.
   const relayTurnedOff = (): boolean => {
     try {
-      return args.isRelayEnabled?.() === false;
+      return args.configStore.isRelayEnabled() === false;
     } catch {
       return false;
     }

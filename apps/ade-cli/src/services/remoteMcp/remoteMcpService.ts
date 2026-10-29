@@ -587,6 +587,7 @@ export function createRemoteMcpService(args: {
       signedIn: isSignedIn,
       serverUrl: isSignedIn ? serverUrl() : null,
       relayConnected: endpoint?.connected === true,
+      relayTurnedOff: endpoint?.turnedOff === true,
       machineName: args.machineName(),
       thisMachineServing: serving(),
       machines: roster.map(({ endpointKey: _endpointKey, version: _version, ...machine }) => machine),

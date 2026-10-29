@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import {
   Broadcast,
   Browser,
@@ -8,7 +8,9 @@ import {
   Plugs,
   WifiHigh,
 } from "@phosphor-icons/react";
+import { ModernRow, ModernRows } from "../settings/primitives";
 import { SettingsToggle } from "../settings/primitives/SettingsControls";
+import { Banner } from "../ui/notice";
 import { Dialog } from "../ui/dialog";
 import type { MachineRouteItem, MachineRouteKind } from "./machineRouteModel";
 
@@ -57,8 +59,15 @@ export function RouteIcon({ kind, size = 14 }: { kind: MachineRouteKind; size?: 
   }
 }
 
+const KIT_TONE: Record<MachineRouteItem["tone"], "ok" | "warn" | undefined> = {
+  on: "ok",
+  warn: "warn",
+  off: undefined,
+  idle: undefined,
+};
+
 /**
- * The collapsed row's route summary: one quiet pill per route, lit when it
+ * The collapsed row's route summary: one kit tag per route, lit when it
  * works. `dimmed` greys the lot for a machine that is asleep or offline, where
  * the routes are what it last offered rather than what answers now.
  */
@@ -68,12 +77,13 @@ export function RoutePills({ items, dimmed }: { items: MachineRouteItem[]; dimme
       {items.map((item) => (
         <span
           key={item.kind}
-          className="ade-route-pill"
-          data-tone={item.tone}
+          className="kit-tag ade-route-pill"
+          data-tone={KIT_TONE[item.tone]}
+          data-route-off={item.tone === "off" ? "true" : undefined}
           title={`${item.label}: ${item.word}${item.detail ? ` · ${item.detail}` : ""}`}
         >
-          <RouteIcon kind={item.kind} size={11} />
-          <span>{item.kind === "lan" ? "LAN" : item.kind === "tailscale" ? "Tailscale" : item.kind === "https" ? "HTTPS" : "Relay"}</span>
+          <RouteIcon kind={item.kind} size={10} />
+          {item.short}
         </span>
       ))}
     </div>
@@ -101,7 +111,7 @@ export function MachineRoutesPanel({
 }: {
   items: MachineRouteItem[];
   relay: RelaySwitchModel | null;
-  /** One quiet line under the tiles: where the facts came from, or an error. */
+  /** One quiet line under the tiles: where the facts came from. */
   note?: string | null;
 }) {
   return (
@@ -117,7 +127,7 @@ export function MachineRoutesPanel({
               <span className="ade-route-tile-order kit-num">{index + 1}</span>
             </div>
             <div className="ade-route-tile-state">
-              <span className="ade-route-dot" data-tone={item.tone} aria-hidden />
+              <span className="kit-dot" data-state={KIT_TONE[item.tone]} aria-hidden />
               {item.word}
             </div>
             <div className="ade-route-tile-detail" title={item.detail ?? undefined}>
@@ -128,30 +138,31 @@ export function MachineRoutesPanel({
       </div>
       {note ? <div className="ade-routes-note">{note}</div> : null}
       {relay ? (
-        <div className="ade-routes-relay">
-          <span className="ade-route-tile-icon" data-size="lg">
-            <CloudArrowUp size={16} weight="bold" />
-          </span>
-          <div className="ade-routes-relay-copy">
-            <div className="ade-ap-rowtitle">ADE Relay on {relay.machineLabel}</div>
-            <div className="ade-ap-rowhint">
-              {relay.unavailableReason
-                ?? (relay.enabled
-                  ? "Your phone, the web app and AI apps can reach it from anywhere, through ADE's servers."
-                  : "Only your local network and Tailscale reach it. ADE's servers can't.")}
-            </div>
-          </div>
-          <SettingsToggle
-            label={`ADE Relay on ${relay.machineLabel}`}
-            checked={relay.enabled}
-            disabled={relay.busy || relay.unavailableReason != null}
-            onChange={relay.onChange}
+        <ModernRows>
+          <ModernRow
+            icon={<CloudArrowUp size={15} weight="bold" />}
+            tone="slate"
+            title={`ADE Relay on ${relay.machineLabel}`}
+            hint={relay.unavailableReason
+              ?? (relay.enabled
+                ? "Your phone, the web app and AI apps can reach it from anywhere, through ADE's servers."
+                : "Only your local network and Tailscale reach it. ADE's servers can't.")}
+            control={(
+              <SettingsToggle
+                label={`ADE Relay on ${relay.machineLabel}`}
+                checked={relay.enabled}
+                disabled={relay.busy || relay.unavailableReason != null}
+                onChange={relay.onChange}
+              />
+            )}
           />
-        </div>
+        </ModernRows>
       ) : null}
     </div>
   );
 }
+
+type Effect = { icon: ReactNode; title: string; detail: string; tone: "ok" | "warn" | "crit" };
 
 /**
  * The warning before ADE Relay goes off on one computer. Names exactly what
@@ -159,6 +170,8 @@ export function MachineRoutesPanel({
  */
 export function RelayOffDialog({
   machineName,
+  isThisComputer,
+  connectedViaRelay,
   httpsReady,
   tailscaleReady,
   busy,
@@ -167,6 +180,9 @@ export function RelayOffDialog({
   onCancel,
 }: {
   machineName: string;
+  isThisComputer: boolean;
+  /** This window reaches that computer through ADE Relay right now. */
+  connectedViaRelay: boolean;
   httpsReady: boolean;
   tailscaleReady: boolean;
   busy: boolean;
@@ -175,7 +191,8 @@ export function RelayOffDialog({
   onCancel: () => void;
 }) {
   const [understood, setUnderstood] = useState(false);
-  const effects: Array<{ icon: React.ReactNode; title: string; detail: string; tone: "ok" | "warn" | "crit" }> = [
+  const where = isThisComputer ? "this computer" : machineName;
+  const effects: Effect[] = [
     {
       icon: <DeviceMobile size={15} weight="bold" />,
       tone: tailscaleReady ? "ok" : "warn",
@@ -189,8 +206,8 @@ export function RelayOffDialog({
       tone: httpsReady ? "warn" : "crit",
       title: "The ADE web app",
       detail: httpsReady
-        ? "Reaches it only from a device on your tailnet, over Tailscale HTTPS."
-        : "Can't reach it. Set up Tailscale HTTPS first to keep it.",
+        ? "Browsers that already opened it reconnect over Tailscale HTTPS from your tailnet. A new browser can't pair with it."
+        : "Can't reach it. Set up Tailscale HTTPS first to keep browsers that already opened it.",
     },
     {
       icon: <Plugs size={15} weight="bold" />,
@@ -202,9 +219,14 @@ export function RelayOffDialog({
       icon: <Broadcast size={15} weight="bold" />,
       tone: "ok",
       title: "ADE's servers",
-      detail: "Never carry this computer's traffic. Your other computers keep their own setting.",
+      detail: "Never carry its traffic. Your other computers keep their own setting.",
     },
   ];
+  const warning = connectedViaRelay
+    ? `This window reaches ${where} through ADE Relay, so it will lose the connection. Turn the relay back on from ${where} itself, or over your local network or Tailscale.`
+    : !tailscaleReady
+      ? `Tailscale isn't set up on ${where}, so away from its network nothing will reach it.`
+      : null;
   return (
     <Dialog
       open
@@ -213,7 +235,7 @@ export function RelayOffDialog({
       }}
       role="alertdialog"
       title={`Turn off ADE Relay on ${machineName}?`}
-      description="It will only be reachable over your local network and Tailscale. You can turn it back on here any time."
+      description="It will only be reachable over its local network and Tailscale. You can turn it back on here any time."
       tone="warning"
       size="md"
       hideClose
@@ -231,10 +253,8 @@ export function RelayOffDialog({
       ]}
     >
       <div className="ade-relay-off">
-        {!tailscaleReady ? (
-          <div className="ade-relay-off-alert">
-            Tailscale isn't set up on this computer, so away from home nothing will reach it.
-          </div>
+        {warning ? (
+          <Banner layout="inline" model={{ id: "relay-off-warning", tone: connectedViaRelay ? "error" : "warning", title: warning }} />
         ) : null}
         <ul className="ade-relay-off-list">
           {effects.map((effect) => (
@@ -247,7 +267,7 @@ export function RelayOffDialog({
             </li>
           ))}
         </ul>
-        <label className="ade-relay-off-confirm">
+        <label className="ade-dialog-checkbox">
           <input
             type="checkbox"
             checked={understood}
@@ -256,7 +276,12 @@ export function RelayOffDialog({
           />
           <span>I understand what stops working</span>
         </label>
-        {error ? <div className="ade-relay-off-error">{error}</div> : null}
+        {error ? (
+          <Banner
+            layout="inline"
+            model={{ id: "relay-off-error", tone: "error", title: error, report: { surface: "account_relay_switch" } }}
+          />
+        ) : null}
       </div>
     </Dialog>
   );

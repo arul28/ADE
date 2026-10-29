@@ -4,6 +4,7 @@ import type {
   MachineTailscaleState,
   MachineTailscaleStatus,
 } from "../../../../desktop/src/shared/types";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { resolveTailscaleCliPath } from "./resolveTailscaleCliPath";
 
 const execFileAsync = promisify(execFile);
@@ -18,6 +19,45 @@ const STATUS_TIMEOUT_MS = 5_000;
 
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** A MagicDNS name as ADE stores it: no trailing dot, lower case, `.ts.net` only. */
+export function normalizeTailnetDnsName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().replace(/\.$/, "").toLowerCase();
+  return normalized.endsWith(".ts.net") ? normalized : null;
+}
+
+/**
+ * One `tailscale status --json` run. Off the event loop where ADE spawns that
+ * way (a Windows spawn on the loop blocked the brain ~100 ms per probe).
+ */
+async function runTailscaleStatus(): Promise<{ stdout: string; missing: boolean }> {
+  const cli = resolveTailscaleCliPath();
+  const options = { timeoutMs: STATUS_TIMEOUT_MS, maxBuffer: 8 * 1024 * 1024 };
+  if (offThreadSpawnEnabled()) {
+    const result = await execFileOffThread(cli, ["status", "--json"], options);
+    return {
+      stdout: result.stdout,
+      missing: (result.error as NodeJS.ErrnoException | null)?.code === "ENOENT",
+    };
+  }
+  try {
+    const { stdout } = await execFileAsync(cli, ["status", "--json"], {
+      timeout: STATUS_TIMEOUT_MS,
+      windowsHide: true,
+      maxBuffer: options.maxBuffer,
+    });
+    return { stdout, missing: false };
+  } catch (error) {
+    // A signed-out or stopped Tailscale exits non-zero but still prints the
+    // JSON; the caller reads it rather than calling a working install broken.
+    const stdout = (error as { stdout?: unknown })?.stdout;
+    return {
+      stdout: typeof stdout === "string" ? stdout : "",
+      missing: (error as NodeJS.ErrnoException | null)?.code === "ENOENT",
+    };
+  }
 }
 
 function stateFromBackend(value: unknown): MachineTailscaleState {
@@ -63,9 +103,7 @@ export function parseTailscaleLocalStatus(
   const self = parsed.Self && typeof parsed.Self === "object"
     ? (parsed.Self as Record<string, unknown>)
     : null;
-  const rawDnsName = typeof self?.DNSName === "string"
-    ? self.DNSName.trim().replace(/\.$/, "").toLowerCase()
-    : "";
+  const dnsName = normalizeTailnetDnsName(self?.DNSName);
   const tailnet = parsed.CurrentTailnet && typeof parsed.CurrentTailnet === "object"
     ? (parsed.CurrentTailnet as Record<string, unknown>)
     : null;
@@ -81,7 +119,7 @@ export function parseTailscaleLocalStatus(
     : null;
   return {
     state,
-    dnsName: running && rawDnsName.endsWith(".ts.net") ? rawDnsName : null,
+    dnsName: running ? dnsName : null,
     magicDnsEnabled: running ? magicDnsEnabled : null,
     httpsCertsEnabled: running ? (certDomains?.length ?? 0) > 0 : null,
     keyExpiry: running ? keyExpiry : null,
@@ -104,32 +142,16 @@ export async function readTailscaleLocalStatus(options?: {
   if (inFlight) return await inFlight;
   const read = (async (): Promise<MachineTailscaleStatus> => {
     const checkedAt = nowIso();
-    try {
-      const { stdout } = await execFileAsync(
-        resolveTailscaleCliPath(),
-        ["status", "--json"],
-        { timeout: STATUS_TIMEOUT_MS, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-      );
-      return parseTailscaleLocalStatus(stdout, checkedAt);
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException | null | undefined)?.code ?? null;
-      // A signed-out or stopped Tailscale exits non-zero but still prints the
-      // JSON; read it rather than calling a working install broken.
-      const stdout = typeof (error as { stdout?: unknown })?.stdout === "string"
-        ? (error as { stdout: string }).stdout
-        : "";
-      if (code !== "ENOENT" && stdout.trim().startsWith("{")) {
-        return parseTailscaleLocalStatus(stdout, checkedAt);
-      }
-      return {
-        state: code === "ENOENT" ? "not_installed" : "unknown",
-        dnsName: null,
-        magicDnsEnabled: null,
-        httpsCertsEnabled: null,
-        keyExpiry: null,
-        checkedAt,
-      };
-    }
+    const { stdout, missing } = await runTailscaleStatus();
+    if (!missing && stdout.trim().startsWith("{")) return parseTailscaleLocalStatus(stdout, checkedAt);
+    return {
+      state: missing ? "not_installed" : "unknown",
+      dnsName: null,
+      magicDnsEnabled: null,
+      httpsCertsEnabled: null,
+      keyExpiry: null,
+      checkedAt,
+    };
   })();
   inFlight = read;
   try {

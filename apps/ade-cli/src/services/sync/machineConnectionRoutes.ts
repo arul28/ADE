@@ -1,8 +1,14 @@
+import path from "node:path";
 import type {
   MachineConnectionRoutes,
   MachineTailnetHttpsRoute,
 } from "../../../../desktop/src/shared/types";
-import type { SyncCloudRelayStore } from "./syncCloudRelayStore";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import {
+  createSyncCloudRelayStore,
+  SYNC_CLOUD_RELAY_FILE_NAME,
+  type SyncCloudRelayStore,
+} from "./syncCloudRelayStore";
 import type { SyncTunnelClientService } from "./syncTunnelClientService";
 import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
 
@@ -15,8 +21,10 @@ import { readTailscaleLocalStatus } from "./tailscaleLocalStatus";
  * answers the same thing whichever scope or RPC surface asks.
  */
 
+type RelayStore = Pick<SyncCloudRelayStore, "getMachineIdentity" | "getRelayPreference" | "setRelayEnabled">;
+
 type RelayRouteSource = {
-  store: Pick<SyncCloudRelayStore, "getMachineIdentity" | "getRelayPreference" | "setRelayEnabled">;
+  store: RelayStore;
   tunnel: Pick<SyncTunnelClientService, "getStatus">;
   /**
    * The tunnel runs in this process. A brain without the sync host lease
@@ -32,20 +40,54 @@ type TailnetRouteSource = {
   recheckHttps(): Promise<void>;
 };
 
-let relaySource: RelayRouteSource | null = null;
-let tailnetSource: TailnetRouteSource | null = null;
+// One per project scope (or the projectless brain); they share one tunnel
+// client, and at most one holds the sync lease that runs it.
+const relaySources = new Set<RelayRouteSource>();
+// One per sync host; at most one actually publishes Serve.
+const tailnetSources = new Set<TailnetRouteSource>();
+let lastAutoRecheckAtMs = 0;
+const AUTO_RECHECK_MIN_INTERVAL_MS = 60_000;
+let machineStore: RelayStore | null = null;
 const relayPreferenceListeners = new Set<() => void>();
 
-export function registerMachineRelayRoute(source: RelayRouteSource): void {
-  relaySource = source;
+/**
+ * The machine's relay identity store, for a process that runs no tunnel (a
+ * one-shot `account.call`, a brain without the sync lease). Same file the
+ * tunnel's store reads, so the setting is the same either way.
+ */
+function currentRelaySource(): RelayRouteSource | null {
+  const sources = [...relaySources];
+  return sources.find((source) => source.isRunning()) ?? sources.at(-1) ?? null;
 }
 
-/** Returns an unregister function; a later host replaces an earlier one. */
-export function registerMachineTailnetRoute(source: TailnetRouteSource): () => void {
-  tailnetSource = source;
+function relayStore(): RelayStore {
+  const source = currentRelaySource();
+  if (source) return source.store;
+  machineStore ??= createSyncCloudRelayStore({
+    filePath: path.join(resolveMachineAdeLayout().secretsDir, SYNC_CLOUD_RELAY_FILE_NAME),
+  });
+  return machineStore;
+}
+
+/** Returns an unregister function. */
+export function registerMachineRelayRoute(source: RelayRouteSource): () => void {
+  relaySources.add(source);
   return () => {
-    if (tailnetSource === source) tailnetSource = null;
+    relaySources.delete(source);
   };
+}
+
+/** Returns an unregister function. */
+export function registerMachineTailnetRoute(source: TailnetRouteSource): () => void {
+  tailnetSources.add(source);
+  return () => {
+    tailnetSources.delete(source);
+  };
+}
+
+function currentTailnetSource(): TailnetRouteSource | null {
+  const sources = [...tailnetSources];
+  return sources.find((source) => source.tcp().published) ?? sources.at(-1) ?? null;
 }
 
 /**
@@ -59,23 +101,42 @@ export function onMachineRelayPreferenceChanged(listener: () => void): () => voi
   };
 }
 
+/** The `enabled` argument of `setRelayEnabled`, from any caller. */
+export function readRelayEnabledArg(value: unknown): boolean {
+  if (typeof value !== "boolean") {
+    throw new Error("account.setRelayEnabled requires enabled to be true or false.");
+  }
+  return value;
+}
+
 const NO_TAILNET_HOST_ERROR = "This ADE process doesn't publish Tailscale routes.";
 
 export async function readMachineConnectionRoutes(args: {
-  /** The relay identity store to fall back on when no tunnel runs in this process. */
-  fallbackStore: Pick<SyncCloudRelayStore, "getMachineIdentity" | "getRelayPreference">;
   /** Ask Tailscale again instead of reusing the last minute's answer. */
   refresh?: boolean;
-}): Promise<MachineConnectionRoutes> {
-  const tailnet = tailnetSource;
-  if (args.refresh && tailnet) {
-    await tailnet.recheckHttps().catch(() => {});
-  }
+} = {}): Promise<MachineConnectionRoutes> {
+  const tailnet = currentTailnetSource();
+  if (args.refresh && tailnet) await tailnet.recheckHttps();
   const tailscale = await readTailscaleLocalStatus(args.refresh ? { maxAgeMs: 2_000 } : undefined);
-  const store = relaySource?.store ?? args.fallbackStore;
+  // MagicDNS and certificates are switched on in Tailscale's admin page, not
+  // here, so nothing else would notice. When Tailscale now says the route can
+  // exist and it doesn't, try again (at most once a minute).
+  if (
+    !args.refresh
+    && tailnet
+    && tailscale.state === "running"
+    && tailscale.magicDnsEnabled
+    && tailscale.httpsCertsEnabled
+    && !["published", "publishing"].includes(tailnet.https().state)
+    && Date.now() - lastAutoRecheckAtMs >= AUTO_RECHECK_MIN_INTERVAL_MS
+  ) {
+    lastAutoRecheckAtMs = Date.now();
+    void tailnet.recheckHttps();
+  }
+  const relay = currentRelaySource();
+  const store = relayStore();
   const preference = store.getRelayPreference();
-  const relayObserved = relaySource?.isRunning() === true;
-  const tunnelStatus = relayObserved ? relaySource!.tunnel.getStatus() : null;
+  const tunnelStatus = relay?.isRunning() ? relay.tunnel.getStatus() : null;
   const relayError = preference.enabled && tunnelStatus && !tunnelStatus.connected
     ? tunnelStatus.lastError ?? tunnelStatus.lastControlError ?? null
     : null;
@@ -89,7 +150,7 @@ export async function readMachineConnectionRoutes(args: {
     tailnetHttps: tailnet?.https() ?? { state: "unavailable", url: null, error: NO_TAILNET_HOST_ERROR },
     relay: {
       enabled: preference.enabled,
-      observed: relayObserved,
+      observed: tunnelStatus != null,
       connected: preference.enabled && tunnelStatus?.connected === true,
       changedAt: preference.changedAt,
       error: relayError,
@@ -97,18 +158,9 @@ export async function readMachineConnectionRoutes(args: {
   };
 }
 
-export async function setMachineRelayEnabled(args: {
-  enabled: boolean;
-  fallbackStore: Pick<SyncCloudRelayStore, "getMachineIdentity" | "getRelayPreference" | "setRelayEnabled">;
-}): Promise<MachineConnectionRoutes> {
-  const store = relaySource?.store ?? args.fallbackStore;
-  store.setRelayEnabled(args.enabled);
-  for (const listener of [...relayPreferenceListeners]) {
-    try {
-      listener();
-    } catch {
-      // A listener that throws must not undo a saved setting.
-    }
-  }
-  return await readMachineConnectionRoutes({ fallbackStore: args.fallbackStore });
+export async function setMachineRelayEnabled(enabled: boolean): Promise<MachineConnectionRoutes> {
+  relayStore().setRelayEnabled(enabled);
+  // Each listener re-publishes for its own scope and handles its own errors.
+  for (const listener of [...relayPreferenceListeners]) listener();
+  return await readMachineConnectionRoutes();
 }

@@ -518,11 +518,10 @@ describe("createSyncTunnelClientService", () => {
       getSyncPort: () => 8787,
       getRelayBridgeProof: () => "e".repeat(43),
       isAccountSignedIn: () => signedIn,
-      isRelayEnabled: () => relayEnabled,
       getAccountLease: async () => signedIn && leaseValid
         ? { userId: "relay-owner" }
         : null,
-      configStore: fakeStore(`http://127.0.0.1:${relayPort}`),
+      configStore: { ...fakeStore(`http://127.0.0.1:${relayPort}`), isRelayEnabled: () => relayEnabled },
     });
 
     try {

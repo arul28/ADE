@@ -1,14 +1,21 @@
-import type { AdeAccountMachine, MachineConnectionRoutes } from "../../../shared/types";
+import type {
+  AdeAccountMachine,
+  MachineConnectionRoutes,
+  MachineTailnetHttpsState,
+  MachineTailscaleState,
+} from "../../../shared/types";
 import { isTailnetHostname } from "../../../shared/tailnet";
 
 export type MachineRouteKind = "lan" | "tailscale" | "https" | "relay";
 
-/** `on` works now, `warn` needs a step, `off` is not there, `idle` is unknown or asleep. */
+/** `on` works now, `warn` needs a step, `off` is not there, `idle` is in between. */
 export type MachineRouteTone = "on" | "warn" | "off" | "idle";
 
 export type MachineRouteItem = {
   kind: MachineRouteKind;
   label: string;
+  /** The pill's word. */
+  short: string;
   tone: MachineRouteTone;
   /** One or two words: "Available", "Turned off", "Certificates off". */
   word: string;
@@ -16,12 +23,48 @@ export type MachineRouteItem = {
   detail: string | null;
 };
 
-export const MACHINE_ROUTE_LABELS: Record<MachineRouteKind, string> = {
-  lan: "Local network",
-  tailscale: "Tailscale",
-  https: "Tailscale HTTPS",
-  relay: "ADE Relay",
+const ROUTE_NAMES: Record<MachineRouteKind, { label: string; short: string }> = {
+  lan: { label: "Local network", short: "LAN" },
+  tailscale: { label: "Tailscale", short: "Tailscale" },
+  https: { label: "Tailscale HTTPS", short: "HTTPS" },
+  relay: { label: "ADE Relay", short: "Relay" },
 };
+
+function route(
+  kind: MachineRouteKind,
+  tone: MachineRouteTone,
+  word: string,
+  detail: string | null = null,
+): MachineRouteItem {
+  return { kind, ...ROUTE_NAMES[kind], tone, word, detail };
+}
+
+/** How a computer whose Tailscale is not running says so. */
+const TAILSCALE_DOWN: Record<Exclude<MachineTailscaleState, "running">, { tone: MachineRouteTone; word: string }> = {
+  not_installed: { tone: "off", word: "Not installed" },
+  needs_login: { tone: "warn", word: "Signed out" },
+  stopped: { tone: "warn", word: "Turned off" },
+  starting: { tone: "warn", word: "Not connected" },
+  unknown: { tone: "warn", word: "Not connected" },
+};
+
+const HTTPS_STATES: Record<MachineTailnetHttpsState, { tone: MachineRouteTone; word: string }> = {
+  published: { tone: "on", word: "Available" },
+  publishing: { tone: "idle", word: "Starting" },
+  needs_https_certs: { tone: "warn", word: "Certificates off" },
+  needs_magic_dns: { tone: "warn", word: "MagicDNS off" },
+  failed: { tone: "warn", word: "Didn't start" },
+  unavailable: { tone: "off", word: "Not set up" },
+};
+
+function isTailnetWssUrl(url: string | undefined): url is string {
+  if (!url || !/^wss:\/\//i.test(url)) return false;
+  try {
+    return isTailnetHostname(new URL(url).hostname);
+  } catch {
+    return false;
+  }
+}
 
 function hostOf(url: string): string {
   try {
@@ -35,9 +78,10 @@ function hostOf(url: string): string {
 /**
  * The four ways to reach one computer, in the order clients try them.
  *
- * `routes` is what the computer itself reported, and wins whenever it is
- * there. Without it (an offline machine, one not connected from here) the
- * account directory's published endpoints say what it last offered.
+ * `routes` is what the computer itself reported, and wins whenever it saw the
+ * route. Without it (an offline machine, one not connected from here, or an
+ * ADE process that doesn't host sync) the account directory's published
+ * endpoints say what the computer last offered.
  */
 export function machineRouteItems(
   machine: AdeAccountMachine | null,
@@ -45,107 +89,54 @@ export function machineRouteItems(
 ): MachineRouteItem[] {
   const endpoints = machine?.reachableEndpoints ?? [];
   const lanHost = endpoints.find((endpoint) => endpoint.kind === "lan")?.host ?? null;
-  const tailnetHosts = endpoints
-    .filter((endpoint) => endpoint.kind === "tailnet" && !endpoint.url && endpoint.host)
-    .map((endpoint) => endpoint.host!);
-  const tailnetName = tailnetHosts.find((host) => host.endsWith(".ts.net"))
-    ?? tailnetHosts[0]
-    ?? null;
-  const directoryHttps = endpoints.find((endpoint) =>
-    endpoint.kind === "tailnet" && endpoint.url && /^wss:\/\//i.test(endpoint.url) && (() => {
-      try {
-        return isTailnetHostname(new URL(endpoint.url!).hostname);
-      } catch {
-        return false;
-      }
-    })())?.url ?? null;
+  const tailnetHosts = endpoints.flatMap((endpoint) =>
+    endpoint.kind === "tailnet" && !endpoint.url && endpoint.host ? [endpoint.host] : []);
+  const tailnetName = tailnetHosts.find((host) => host.endsWith(".ts.net")) ?? tailnetHosts[0] ?? null;
+  const directoryHttps = endpoints.find((endpoint) => endpoint.kind === "tailnet" && isTailnetWssUrl(endpoint.url))?.url ?? null;
   const directoryRelay = endpoints.some((endpoint) => endpoint.kind === "relay");
 
-  const lan: MachineRouteItem = lanHost
-    ? { kind: "lan", label: MACHINE_ROUTE_LABELS.lan, tone: "on", word: "Available", detail: lanHost }
-    : { kind: "lan", label: MACHINE_ROUTE_LABELS.lan, tone: "off", word: "Not seen", detail: null };
+  const lan = lanHost ? route("lan", "on", "Available", lanHost) : route("lan", "off", "Not seen");
 
-  let tailscale: MachineRouteItem;
   const ts = routes?.tailscale ?? null;
+  // Only the ADE that hosts sync publishes the Tailscale routes, so an answer
+  // from any other ADE process says nothing about them.
+  const observed = routes?.tailnet.observed === true ? routes : null;
+  let tailscale: MachineRouteItem;
   if (ts && ts.state !== "running") {
-    tailscale = {
-      kind: "tailscale",
-      label: MACHINE_ROUTE_LABELS.tailscale,
-      tone: ts.state === "not_installed" ? "off" : "warn",
-      word: ts.state === "not_installed"
-        ? "Not installed"
-        : ts.state === "needs_login"
-          ? "Signed out"
-          : ts.state === "stopped"
-            ? "Turned off"
-            : "Not connected",
-      detail: null,
-    };
-  } else if (routes?.tailnet.observed ? routes.tailnet.published : tailnetHosts.length > 0) {
-    tailscale = {
-      kind: "tailscale",
-      label: MACHINE_ROUTE_LABELS.tailscale,
-      tone: "on",
-      word: "Available",
-      detail: ts?.dnsName ?? tailnetName,
-    };
+    const down = TAILSCALE_DOWN[ts.state];
+    tailscale = route("tailscale", down.tone, down.word);
+  } else if (observed ? observed.tailnet.published : tailnetHosts.length > 0) {
+    tailscale = route("tailscale", "on", "Available", ts?.dnsName ?? tailnetName);
+  } else if (observed && ts?.state === "running") {
+    tailscale = route("tailscale", "warn", "Not published", observed.tailnet.error);
   } else {
-    tailscale = {
-      kind: "tailscale",
-      label: MACHINE_ROUTE_LABELS.tailscale,
-      tone: ts?.state === "running" && routes?.tailnet.observed ? "warn" : "off",
-      word: ts?.state === "running" && routes?.tailnet.observed ? "Not published" : "Not seen",
-      detail: ts?.state === "running" && routes?.tailnet.observed ? routes.tailnet.error : null,
-    };
+    tailscale = route("tailscale", "off", "Not seen");
   }
 
   let https: MachineRouteItem;
-  // Only the ADE that hosts sync publishes the HTTPS route, so an answer from
-  // any other ADE process says nothing about it.
-  const httpsRoute = routes?.tailnet.observed ? routes.tailnetHttps : null;
-  if (httpsRoute) {
-    switch (httpsRoute.state) {
-      case "published":
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "on", word: "Available", detail: httpsRoute.url ? hostOf(httpsRoute.url) : null };
-        break;
-      case "publishing":
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "idle", word: "Starting", detail: null };
-        break;
-      case "needs_https_certs":
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "warn", word: "Certificates off", detail: null };
-        break;
-      case "needs_magic_dns":
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "warn", word: "MagicDNS off", detail: null };
-        break;
-      case "failed":
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "warn", word: "Didn't start", detail: httpsRoute.error };
-        break;
-      default:
-        https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "off", word: "Not set up", detail: null };
-    }
-  } else if (directoryHttps) {
-    https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "on", word: "Available", detail: hostOf(directoryHttps) };
+  if (observed) {
+    const state = HTTPS_STATES[observed.tailnetHttps.state];
+    const detail = observed.tailnetHttps.state === "published" && observed.tailnetHttps.url
+      ? hostOf(observed.tailnetHttps.url)
+      : observed.tailnetHttps.state === "failed" ? observed.tailnetHttps.error : null;
+    https = route("https", state.tone, state.word, detail);
   } else {
-    https = { kind: "https", label: MACHINE_ROUTE_LABELS.https, tone: "off", word: "Not set up", detail: null };
+    https = directoryHttps
+      ? route("https", "on", "Available", hostOf(directoryHttps))
+      : route("https", "off", "Not set up");
   }
 
   let relay: MachineRouteItem;
-  if (routes && (routes.relay.observed || !routes.relay.enabled)) {
-    relay = !routes.relay.enabled
-      ? { kind: "relay", label: MACHINE_ROUTE_LABELS.relay, tone: "off", word: "Turned off", detail: null }
-      : routes.relay.connected
-        ? { kind: "relay", label: MACHINE_ROUTE_LABELS.relay, tone: "on", word: "Connected", detail: null }
-        : { kind: "relay", label: MACHINE_ROUTE_LABELS.relay, tone: "warn", word: "Not connected", detail: routes.relay.error };
+  if (routes && !routes.relay.enabled) {
+    // The setting is authoritative whichever ADE process answered.
+    relay = route("relay", "off", "Turned off");
+  } else if (routes?.relay.observed) {
+    relay = routes.relay.connected
+      ? route("relay", "on", "Connected")
+      : route("relay", "warn", "Not connected", routes.relay.error);
   } else {
-    relay = directoryRelay
-      ? { kind: "relay", label: MACHINE_ROUTE_LABELS.relay, tone: "on", word: "Available", detail: null }
-      : { kind: "relay", label: MACHINE_ROUTE_LABELS.relay, tone: "off", word: "Not offered", detail: null };
+    relay = directoryRelay ? route("relay", "on", "Available") : route("relay", "off", "Not offered");
   }
 
   return [lan, tailscale, https, relay];
-}
-
-/** The route a client would use first: the earliest one that works. */
-export function preferredRoute(items: readonly MachineRouteItem[]): MachineRouteItem | null {
-  return items.find((item) => item.tone === "on") ?? null;
 }

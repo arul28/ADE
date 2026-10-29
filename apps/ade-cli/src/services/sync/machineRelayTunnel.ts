@@ -1,5 +1,6 @@
 import type { AccountAuthService } from "../account/accountAuthService";
 import type { RelayTunnelAuthorityGate } from "./relayTunnelAuthorityGate";
+import { onMachineRelayPreferenceChanged, registerMachineRelayRoute } from "./machineConnectionRoutes";
 import type { SyncTunnelClientService, TunnelHostListener } from "./syncTunnelClientService";
 
 /**
@@ -138,7 +139,6 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
       logger: args.logger,
       configStore: args.configStore,
       isAccountSignedIn: lease.isAccountSignedIn,
-      isRelayEnabled: () => args.configStore.isRelayEnabled(),
       getAccountLease: lease.getAccountLease,
       onPublicationStateChanged: args.onPublicationStateChanged,
       // The analytics sink is machine-scoped and shared, so capturing it in this
@@ -155,19 +155,6 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
   // means the gate's very first `start()` already has a bridge to validate
   // against, since no later event would re-trigger validation.
   if (args.hostListener) tunnel.attachHostListener(args.hostListener);
-  // The Account page reads this machine's relay state from here, and a
-  // setting change re-publishes at once rather than on the next heartbeat.
-  const { registerMachineRelayRoute, onMachineRelayPreferenceChanged } = await import("./machineConnectionRoutes");
-  // `gate` is assigned below; the route only reads it once someone asks.
-  let gateRef: RelayTunnelAuthorityGate | null = null;
-  registerMachineRelayRoute({
-    store: args.configStore,
-    tunnel,
-    isRunning: () => gateRef?.isRunning() === true,
-  });
-  const stopPreferenceListener = onMachineRelayPreferenceChanged(() => {
-    void Promise.resolve(args.onPublicationStateChanged("route-state-changed")).catch(() => {});
-  });
   // ADE MCP rides this same control socket. Machine-level, like the
   // tunnel, so attaching it again from a second scope is a no-op.
   const { getSharedRemoteMcpService } = await import("../remoteMcp/remoteMcpShared");
@@ -180,6 +167,7 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
         machineKey: status.machineKey,
         endpointKey: status.mcpEndpointKey,
         connected: status.connected,
+        turnedOff: status.relayTurnedOff === true,
       }
       : null;
   });
@@ -195,13 +183,27 @@ export async function createMachineRelayTunnel(args: MachineRelayTunnelArgs): Pr
     subscribe: onSyncHostSingletonAuthorityChanged,
     logger: args.logger,
   });
+  // The Account page reads this machine's relay state from here, and a
+  // setting change re-publishes at once rather than on the next heartbeat.
+  const unregisterRoute = registerMachineRelayRoute({
+    store: args.configStore,
+    tunnel,
+    isRunning: () => leaseGate.isRunning(),
+  });
+  const stopPreferenceListener = onMachineRelayPreferenceChanged(() => {
+    void Promise.resolve().then(() => args.onPublicationStateChanged("route-state-changed")).catch((error) => {
+      args.logger?.warn?.("sync_tunnel.relay_preference_republish_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  });
   const gate: RelayTunnelAuthorityGate = {
     isRunning: () => leaseGate.isRunning(),
     dispose: () => {
       stopPreferenceListener();
+      unregisterRoute();
       leaseGate.dispose();
     },
   };
-  gateRef = gate;
   return { tunnel, gate };
 }
