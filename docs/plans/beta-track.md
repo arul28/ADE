@@ -205,8 +205,9 @@ Open (updated 2026-10-29):
 - What's new on a beta build shows no notes for the beta itself (there is no
   `changelog/v<beta>.mdx`); the PR list is on the GitHub release. Follow-up.
 - Resume: a chat whose turn waited for the user's answer or approval when
-  ADE restarted: check it is not resumed past the open question (T3 #18461,
-  #20240) before the real-machine test.
+  ADE restarted is not resumed (persisted `awaitingInput`): done. Still to
+  check on the real-machine test: queued messages survive an update
+  (T3 #20240).
 - "ADE could not start" window with "go back to the previous version", and a
   Settings list of database copies: not built. The copies exist on disk.
 - Tests broken on purpose by the channel removal
