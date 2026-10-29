@@ -191,7 +191,7 @@ export function integrationIdForAnchor(anchorOrHash: string): IntegrationId | nu
  * from the page open before it must not override its target.
  */
 export function openIntegrationFromUrl(searchParams: URLSearchParams, hash: string): IntegrationId | null {
-  const param = searchParams.get("integration")?.trim();
+  const param = searchParams.get("integration")?.trim().toLowerCase();
   return integrationIdForAnchor(hash) ?? (isIntegrationId(param) ? param : null);
 }
 
