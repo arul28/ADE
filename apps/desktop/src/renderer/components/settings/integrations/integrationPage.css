@@ -499,7 +499,6 @@
   .ade-ig-hero-strip > .ade-ig-hero-toggle { grid-column: 1 / -1; margin-left: 0; justify-content: space-between; }
   .ade-ig-hero[data-light="true"] .ade-ig-hero-strip > * { border-top-color: rgba(16, 21, 28, 0.08); }
   .ade-ig-hero[data-light="true"] .ade-ig-hero-strip > .ade-ig-hero-fact:nth-child(even) { border-left-color: rgba(16, 21, 28, 0.08); }
-  .ade-ig-hero-panel > .ade-ig-hero-toggle { justify-content: space-between; }
 }
 
 /* ── The grid of integrations ── */
