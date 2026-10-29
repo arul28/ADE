@@ -101,10 +101,9 @@ current.
 These notes ship inside the app. On the first launch after a user installs
 the update on that computer, What's new shows up to 3 catalogue pages they
 have not seen, then an "And more" page with these notes for every version
-since the one they came from (sections merged, an icon per section). The
-build bundles the notes found at the beta's commit, so a notes commit pushed
-now first reaches the app in the next release (open item in
-`docs/plans/beta-track.md`). So:
+since the one they came from (sections merged, an icon per section). A
+stable build takes `changelog/` from `main` (only that folder; the code is the
+beta's), so **push the notes before step 3** or they miss this build. So:
 
 - Use `## New`, `## Improved`, `## Fixed`, then platform sections
   (`## iOS`, `## Windows`). Other names still show, with a plain mark.

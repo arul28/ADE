@@ -180,20 +180,43 @@ How the pipeline is built, and what is still open.
   replaced.
 - Sentry: a beta is its own release (`ade@1.2.128-beta.3`). Releases carry no
   environment, so the `track` tag must come from the app (work item 5).
-- `concurrency.queue: max` is used; actionlint 1.7.12 flags the key as
-  unknown.
+- `concurrency.queue: max` was left out: an unknown key would stop every
+  beta, and a replaced pending run is harmless because each run resolves the
+  newest green commit itself.
 
-Open:
+Open (updated 2026-10-29):
 
-- **In-app release notes.** A stable build now comes from the beta's commit,
-  so `bundle-release-notes.mjs` cannot see the `changelog/v<V>.mdx` written at
-  release time; those notes reach the app one release late. Options: overlay
-  `changelog/` from `main` in release-core for stable tags, or have the app
-  fetch the notes. Needs a decision.
-- `scripts/package-channel.mjs` (Alpha) takes its base from
-  `git describe --match 'v*'`, which will pick a beta tag. Add
-  `--exclude 'v*-*'` when the old Beta channel code is removed.
+- **In-app release notes: decided.** A stable build takes only `changelog/`
+  from `main` before it packages (`release-core.yml`, "Take release notes from
+  main"). The code is the promoted beta's; notes are text the app shows. The
+  release skill pushes the notes before it dispatches the release.
+- `scripts/package-channel.mjs` takes its base with `--exclude 'v*-*'`: done.
 - The packaged launch check with an old database (T3 #25928, #25840) is not
-  built yet.
+  built yet. `smoke-mac-x64` launches the packaged app; it does not yet open
+  a database from the last stable release.
 - iOS TestFlight from CI (work item 8) is not built; the skill still uses
   `ios-testflight.sh`.
+- iOS: a change for a column the phone does not have is kept in the phone's
+  own change table and not applied (`insertRow`/`updateRow` write only known
+  columns), so sync never freezes on it. After a phone update adds the
+  column, existing rows get the value only when that cell changes again.
+  Follow-up: replay stored changes for a newly added column on open.
+- iOS "Beta" chip on a machine that runs Beta: not built.
+- What's new on a beta build shows no notes for the beta itself (there is no
+  `changelog/v<beta>.mdx`); the PR list is on the GitHub release. Follow-up.
+- Resume: a chat whose turn waited for the user's answer or approval when
+  ADE restarted: check it is not resumed past the open question (T3 #18461,
+  #20240) before the real-machine test.
+- "ADE could not start" window with "go back to the previous version", and a
+  Settings list of database copies: not built. The copies exist on disk.
+- Tests broken on purpose by the channel removal
+  (`packagedSyncHostLaunchGate.test.ts` and any others that pass "beta" as a
+  channel) are left for `/test`.
+
+## Status (2026-10-29)
+
+Built on `ade/beta-track`: work items 1, 2, 3 (compat level, records,
+copies), 4 (switch + guard + remote guard), 5 (header label, About, orange
+icon via CI, Sentry `beta` environment), 6 (`brain update` follows the
+track), 7 (CI), 9 (resume cap of 3), 10 (release skill). Not built: 8 (iOS
+CI + chip), 11 (real-machine tests), and the open items above.
