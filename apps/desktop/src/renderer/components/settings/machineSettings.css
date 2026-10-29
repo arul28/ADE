@@ -119,7 +119,6 @@
 .ade-nl-step-actions { display: flex; align-items: center; gap: 8px; flex: none; }
 
 .ade-nl-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-.ade-nl-choice { gap: 4px; }
 .ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ade-nl-loading { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
 .ade-nl-loading > span { height: 72px; border-radius: var(--radius-lg); }

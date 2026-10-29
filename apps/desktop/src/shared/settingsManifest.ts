@@ -175,7 +175,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor use ADE on your computers.", group: "account" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
-  { id: "lanes-git", label: "Lanes", description: "Every lane in this project, and how new ones start.", group: "project" },
+  { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
   { id: "project-agents", label: "Agents", description: "What agents keep about this project: their notes, and PR chat transcripts.", group: "project" },
   { id: "storage", label: "Storage & cleanup", description: "The space this project takes, the archive, and what ADE cleans up.", group: "project" },
   { id: "location", label: "Location", description: "Where this project lives, and anything that needs fixing there.", group: "project" },

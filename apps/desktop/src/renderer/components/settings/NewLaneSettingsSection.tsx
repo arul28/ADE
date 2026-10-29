@@ -199,19 +199,21 @@ export function NewLaneSettingsSection() {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                className="ade-ap-choice ade-nl-choice"
+                className="ade-ap-choice"
                 data-active={active}
                 onClick={() => {
                   if (!active) void save({ from, on: start.on });
                 }}
               >
-                <span className="ade-modern-choice-title">
-                  <FromIcon size={14} />
-                  {LANE_START_FROM_LABEL[from]}
-                  {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
-                </span>
-                <span className="ade-modern-choice-hint ade-nl-mono">
-                  {branch || (from === "primary" ? "No branch checked out" : "The repository's main branch")}
+                <span className="ade-modern-choice-body">
+                  <span className="ade-modern-choice-title">
+                    <FromIcon size={14} />
+                    {LANE_START_FROM_LABEL[from]}
+                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                  </span>
+                  <span className="ade-modern-choice-hint ade-nl-mono">
+                    {branch || (from === "primary" ? "No branch checked out" : "The repository's main branch")}
+                  </span>
                 </span>
               </button>
             );
@@ -243,18 +245,20 @@ export function NewLaneSettingsSection() {
                 type="button"
                 role="radio"
                 aria-checked={active}
-                className="ade-ap-choice ade-nl-choice"
+                className="ade-ap-choice"
                 data-active={active}
                 onClick={() => {
                   if (!active) void save({ ...start, on });
                 }}
               >
-                <span className="ade-modern-choice-title">
-                  <OnIcon size={14} />
-                  {LANE_START_ON_LABEL[on]}
-                  {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                <span className="ade-modern-choice-body">
+                  <span className="ade-modern-choice-title">
+                    <OnIcon size={14} />
+                    {LANE_START_ON_LABEL[on]}
+                    {active ? <Check size={12} weight="bold" className="ade-ap-check" /> : null}
+                  </span>
+                  <span className="ade-modern-choice-hint">{ON_HINT[on]}</span>
                 </span>
-                <span className="ade-modern-choice-hint">{ON_HINT[on]}</span>
               </button>
             );
           })}

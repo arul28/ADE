@@ -15,6 +15,7 @@ import {
   type LaneBranchOption,
 } from "../laneUtils";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
+import { branchNameFromLaneRef } from "../../../../shared/laneBaseResolution";
 import { extractError } from "../../../lib/format";
 
 type PendingBranchSwitch = {
@@ -208,7 +209,7 @@ export function LaneBranchSwitcher({
       if (confirmSwitch) {
         // The menu closes first so the confirm is not drawn under it.
         setOpen(false);
-        const go = await confirmSwitch({ from: laneBranchLabel(lane.branchRef), to: stripRemotePrefix(branchName) });
+        const go = await confirmSwitch({ from: laneBranchLabel(lane.branchRef), to: branchNameFromLaneRef(branchName) });
         if (!go) return;
       }
       const operationId = crypto.randomUUID();
