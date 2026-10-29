@@ -1,6 +1,6 @@
 import React from "react";
 import { ArrowsDownUp, Clock, CheckCircle, Warning, Sparkle, Eye, XCircle, GitCommit, FileText, CaretDown, CaretRight, ArrowRight, CircleNotch } from "@phosphor-icons/react";
-import type { AutoRebaseLaneStatus, GitCommitSummary, LaneSummary, PrAgentPermissionMode, RebaseNeed, RebaseRun, RebaseScope } from "../../../../shared/types";
+import type { GitCommitSummary, LaneSummary, PrAgentPermissionMode, RebaseNeed, RebaseRun } from "../../../../shared/types";
 import { Button } from "../../ui/Button";
 import { EmptyState } from "../../ui/EmptyState";
 import { Banner } from "../../ui/notice";
@@ -9,17 +9,7 @@ import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { UrgencyGroup } from "../shared/UrgencyGroup";
 import { branchNameFromRef } from "../shared/laneBranchTargets";
-import {
-  buildUpstreamRebaseChain,
-  findMatchingRebaseNeed,
-  formatUpstreamRebaseSummary,
-  rebaseNeedItemKey,
-} from "../shared/rebaseNeedUtils";
-import {
-  buildRebaseAttentionItems,
-  findRebaseAttentionStatus,
-  formatRebaseAttentionSummary,
-} from "../shared/rebaseAttentionUtils";
+import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { StatusDot } from "../shared/StatusDot";
 import { PR_TAB_TILING_TREE } from "../shared/tilingConstants";
 import { PrResolverLaunchControls } from "../shared/PrResolverLaunchControls";
@@ -37,7 +27,6 @@ function providerForModel(modelId: string): "codex" | "claude" {
 
 type RebaseTabProps = {
   rebaseNeeds: RebaseNeed[];
-  attentionStatuses: AutoRebaseLaneStatus[];
   lanes: LaneSummary[];
   selectedItemId: string | null;
   onSelectItem: (id: string | null) => void;
@@ -62,8 +51,10 @@ type RebaseTabProps = {
   realLaneId?: (laneId: string) => string;
 };
 
-type RebaseSectionKey = "lane_base" | "pr_target" | "stack_attention";
-type NeedSectionKey = Exclude<RebaseSectionKey, "stack_attention">;
+type RebaseSectionKey = RebaseNeed["kind"];
+
+/** How long Snooze hides a lane's rebase line. */
+const SNOOZE_MS = 4 * 60 * 60 * 1000;
 
 /**
  * A run's identity for matching it to a need: its machine, its lane's real id
@@ -98,30 +89,8 @@ function ErrorBanner({ message }: { message: string }) {
   return <Banner layout="inline" model={{ id: "rebase-error", tone: "error", title: message }} />;
 }
 
-function attentionStateVisuals(state: string): { label: string; color: string } {
-  switch (state) {
-    case "rebaseConflict": return { label: "CONFLICT", color: S.error };
-    case "rebaseFailed": return { label: "FAILED", color: S.warning };
-    default: return { label: "PENDING", color: S.info };
-  }
-}
-
-function attentionStatusBadgeVisuals(state: string): { label: string; color: string; bgColor: string; borderColor: string } {
-  switch (state) {
-    case "rebaseConflict":
-      return { label: "STACK CONFLICT", color: S.error, bgColor: "#EF444418", borderColor: "1px solid #EF444430" };
-    case "rebaseFailed":
-      return { label: "STACK FAILED", color: S.warning, bgColor: "#F59E0B18", borderColor: "1px solid #F59E0B30" };
-    case "rebasePending":
-      return { label: "STACK PENDING", color: S.info, bgColor: "#3B82F618", borderColor: "1px solid #3B82F630" };
-    default:
-      return { label: "AUTO REBASED", color: S.info, bgColor: "#3B82F618", borderColor: "1px solid #3B82F630" };
-  }
-}
-
 export function RebaseTab({
   rebaseNeeds,
-  attentionStatuses,
   lanes,
   selectedItemId,
   onSelectItem,
@@ -147,7 +116,6 @@ export function RebaseTab({
   const [resolverLaunching, setResolverLaunching] = React.useState(false);
   const [resolverExpanded, setResolverExpanded] = React.useState(false);
   const [forcePushAfterRebase, setForcePushAfterRebase] = React.useState(true);
-  const [runScope, setRunScope] = React.useState<RebaseScope>("lane_only");
   const [activeRun, setActiveRun] = React.useState<RebaseRun | null>(null);
   const [runLogs, setRunLogs] = React.useState<string[]>([]);
   const [selectedPushLaneIds, setSelectedPushLaneIds] = React.useState<string[]>([]);
@@ -173,21 +141,20 @@ export function RebaseTab({
   const [expandedCommitSha, setExpandedCommitSha] = React.useState<string | null>(null);
 
   const [collapsed, setCollapsed] = React.useState<Record<RebaseSectionKey, boolean>>({
-    lane_base: false,
-    pr_target: false,
-    stack_attention: false,
+    built_on_merged: false,
+    behind: false,
   });
 
   const grouped = React.useMemo(() => {
-    const groups: Record<NeedSectionKey, RebaseNeed[]> = {
-      lane_base: [],
-      pr_target: [],
+    const groups: Record<RebaseSectionKey, RebaseNeed[]> = {
+      built_on_merged: [],
+      behind: [],
     };
     for (const need of rebaseNeeds) {
-      groups[need.kind].push(need);
+      groups[need.kind]?.push(need);
     }
-    groups.lane_base.sort((a, b) => b.behindBy - a.behindBy);
-    groups.pr_target.sort((a, b) => b.behindBy - a.behindBy);
+    groups.built_on_merged.sort((a, b) => b.behindBy - a.behindBy);
+    groups.behind.sort((a, b) => b.behindBy - a.behindBy);
     return groups;
   }, [rebaseNeeds]);
 
@@ -196,53 +163,8 @@ export function RebaseTab({
     return rebaseNeeds.find((need) => rebaseNeedItemKey(need) === selectedItemId)
       ?? findMatchingRebaseNeed({ rebaseNeeds, laneId: selectedItemId });
   }, [rebaseNeeds, selectedItemId]);
-  const attentionItems = React.useMemo(
-    () => buildRebaseAttentionItems({
-      autoRebaseStatuses: attentionStatuses,
-      lanes,
-      visibleRebaseNeeds: rebaseNeeds,
-      view: "active",
-    }),
-    [attentionStatuses, lanes, rebaseNeeds],
-  );
-  const selectedAttentionStatus = React.useMemo(
-    () => (selectedNeed ? null : findRebaseAttentionStatus(attentionStatuses, selectedItemId)),
-    [attentionStatuses, selectedItemId, selectedNeed],
-  );
-  const selectedAttentionItem = React.useMemo(
-    () => {
-      if (selectedNeed || !selectedAttentionStatus) return null;
-      return attentionItems.find((item) => item.laneId === selectedAttentionStatus.laneId) ?? null;
-    },
-    [attentionItems, selectedAttentionStatus, selectedNeed],
-  );
-  const upstreamChainByLaneId = React.useMemo(() => {
-    const next = new Map<string, ReturnType<typeof buildUpstreamRebaseChain>>();
-    for (const need of rebaseNeeds) {
-      next.set(need.laneId, buildUpstreamRebaseChain({
-        laneId: need.laneId,
-        lanes,
-        rebaseNeeds,
-      }));
-    }
-    return next;
-  }, [lanes, rebaseNeeds]);
-  const selectedNeedUpstreamChain = React.useMemo(
-    () => (selectedNeed ? upstreamChainByLaneId.get(selectedNeed.laneId) ?? [] : []),
-    [selectedNeed, upstreamChainByLaneId],
-  );
-
-  const selectedLane = React.useMemo(
-    () => {
-      if (selectedNeed) return laneById.get(selectedNeed.laneId) ?? null;
-      if (selectedAttentionItem) return laneById.get(selectedAttentionItem.laneId) ?? null;
-      return null;
-    },
-    [laneById, selectedAttentionItem, selectedNeed],
-  );
-
   // Where the selected item's calls go, and why they can't when they can't.
-  const selectedLaneId = selectedNeed?.laneId ?? selectedAttentionItem?.laneId ?? null;
+  const selectedLaneId = selectedNeed?.laneId ?? null;
   const selectedMachine = React.useMemo(
     () => machineForLane?.(selectedLaneId) ?? null,
     [machineForLane, selectedLaneId],
@@ -275,17 +197,11 @@ export function RebaseTab({
     return !selectedBlocked;
   };
 
-  const hasChildren = (selectedLane?.childCount ?? 0) > 0;
-  const selectedNeedIsPrTarget = selectedNeed?.kind === "pr_target";
+  const selectedNeedIsBuiltOnMerged = selectedNeed?.kind === "built_on_merged";
+  // A lane built on merged work needs the rebase even when no commit count shows.
+  const selectedNeedHasNothingToRebase = Boolean(selectedNeed && !selectedNeedIsBuiltOnMerged && selectedNeed.behindBy === 0);
 
   const activeRunKeyRef = React.useRef<string | null>(null);
-
-  // Auto-default scope based on children
-  React.useEffect(() => {
-    if (!hasChildren && runScope === "lane_and_descendants") {
-      setRunScope("lane_only");
-    }
-  }, [hasChildren, runScope]);
 
   React.useEffect(() => {
     if (!activeRun) {
@@ -304,15 +220,11 @@ export function RebaseTab({
 
   // Auto-select first item in highest-urgency group
   React.useEffect(() => {
-    if (rebaseNeeds.length === 0 && attentionItems.length === 0 && selectedItemId === null) return;
-    if (selectedNeed || selectedAttentionItem) return;
-    const first = grouped.lane_base[0] ?? grouped.pr_target[0];
-    if (first) {
-      onSelectItem(rebaseNeedItemKey(first));
-      return;
-    }
-    onSelectItem(attentionItems[0]?.laneId ?? null);
-  }, [attentionItems, grouped, onSelectItem, rebaseNeeds.length, selectedAttentionItem, selectedItemId, selectedNeed]);
+    if (rebaseNeeds.length === 0 && selectedItemId === null) return;
+    if (selectedNeed) return;
+    const first = grouped.built_on_merged[0] ?? grouped.behind[0];
+    onSelectItem(first ? rebaseNeedItemKey(first) : null);
+  }, [grouped, onSelectItem, rebaseNeeds.length, selectedItemId, selectedNeed]);
 
   React.useEffect(() => {
     setRebaseError(null);
@@ -390,7 +302,7 @@ export function RebaseTab({
       return;
     }
 
-    if (selectedNeedIsPrTarget && !driftSourceLaneId) {
+    if (!driftSourceLaneId) {
       setDriftCommits([]);
       setCommitFilesMap({});
       setExpandedCommitSha(null);
@@ -423,20 +335,19 @@ export function RebaseTab({
       });
 
     return () => { cancelled = true; };
-  }, [driftSourceLaneId, onPin, realLaneId, selectedBlocked, selectedNeedBehindBy, selectedNeed?.laneId, selectedNeedIsPrTarget]);
+  }, [driftSourceLaneId, onPin, realLaneId, selectedBlocked, selectedNeedBehindBy, selectedNeed?.laneId]);
 
   // Load files for expanded commit
-  const parentLaneId = driftSourceLaneId;
   React.useEffect(() => {
-    if (!expandedCommitSha || commitFilesMap[expandedCommitSha] || !parentLaneId) return;
-    window.ade.git.listCommitFiles({ laneId: realLaneId(parentLaneId), commitSha: expandedCommitSha }, ...onPin)
+    if (!expandedCommitSha || commitFilesMap[expandedCommitSha] || !driftSourceLaneId) return;
+    window.ade.git.listCommitFiles({ laneId: realLaneId(driftSourceLaneId), commitSha: expandedCommitSha }, ...onPin)
       .then((files) => {
         setCommitFilesMap((prev) => ({ ...prev, [expandedCommitSha]: files }));
       })
       .catch(() => {
         setCommitFilesMap((prev) => ({ ...prev, [expandedCommitSha]: [] }));
       });
-  }, [expandedCommitSha, commitFilesMap, onPin, parentLaneId, realLaneId]);
+  }, [expandedCommitSha, commitFilesMap, onPin, driftSourceLaneId, realLaneId]);
 
   const handleRebase = async (aiAssisted: boolean, pushMode: "none" | "review_then_push" = "none") => {
     if (!selectedNeed) return;
@@ -444,16 +355,7 @@ export function RebaseTab({
     if (!guardAction()) return;
     const requestedNeedRunKey = selectedNeedRunKey;
 
-    if (selectedNeedIsPrTarget && selectedLane?.parentLaneId) {
-      setRebaseError("PR-target rebases are only supported for lanes that are already detached from a parent lane.");
-      return;
-    }
-
     if (aiAssisted) {
-      if (selectedNeedIsPrTarget) {
-        setRebaseError("AI-assisted rebase currently only supports lane-base rebases.");
-        return;
-      }
       setResolverLaunching(true);
       try {
         const result = await window.ade.rebase.execute({
@@ -484,10 +386,8 @@ export function RebaseTab({
     try {
       const started = await window.ade.lanes.rebaseStart({
         laneId: realLaneId(selectedNeed.laneId),
-        scope: runScope,
         pushMode,
         actor: "user",
-        ...(selectedNeedIsPrTarget ? { baseBranchOverride: selectedNeed.baseBranch } : {}),
       }, ...onPin);
       setActiveRunMachine(selectedMachine);
       activeRunKeyRef.current = requestedNeedRunKey;
@@ -583,7 +483,8 @@ export function RebaseTab({
     setRebaseError(null);
     if (!guardAction()) return;
     try {
-      await window.ade.lanes.dismissRebaseSuggestion({ laneId: realLaneId(selectedNeed.laneId) }, ...onPin);
+      await window.ade.rebase.dismiss(realLaneId(selectedNeed.laneId), ...onPin);
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -595,7 +496,9 @@ export function RebaseTab({
     setRebaseError(null);
     if (!guardAction()) return;
     try {
-      await window.ade.lanes.deferRebaseSuggestion({ laneId: realLaneId(selectedNeed.laneId), minutes: 4 * 60 }, ...onPin);
+      const until = new Date(Date.now() + SNOOZE_MS).toISOString();
+      await window.ade.rebase.defer(realLaneId(selectedNeed.laneId), until, ...onPin);
+      await refreshRebaseNeeds();
       await onRefresh();
     } catch (err: unknown) {
       setRebaseError(err instanceof Error ? err.message : String(err));
@@ -606,8 +509,7 @@ export function RebaseTab({
     const itemKey = rebaseNeedItemKey(need);
     const isSelected = itemKey === selectedItemId;
     const laneName = laneById.get(need.laneId)?.name ?? need.laneId;
-    const kindLabel = need.kind === "pr_target" ? "PR TARGET" : "LANE BASE";
-    const upstreamSummary = formatUpstreamRebaseSummary(upstreamChainByLaneId.get(need.laneId) ?? []);
+    const kindLabel = need.kind === "built_on_merged" ? "BUILT ON MERGED WORK" : "BEHIND";
     return (
       <button
         key={itemKey}
@@ -639,12 +541,8 @@ export function RebaseTab({
             </div>
             <div className="font-mono truncate" style={{ fontSize: 10, color: S.textMuted }}>
               {kindLabel} · {need.baseBranch}
+              {need.kind === "built_on_merged" && need.mergedPr ? ` · #${need.mergedPr.number}` : ""}
             </div>
-            {upstreamSummary ? (
-              <div className="font-mono truncate" style={{ fontSize: 10, color: S.warning }}>
-                UPSTREAM · {upstreamSummary}
-              </div>
-            ) : null}
           </div>
         </div>
         <div className="flex items-center gap-1.5 shrink-0">
@@ -690,72 +588,10 @@ export function RebaseTab({
     );
   };
 
-  const renderAttentionItem = (item: (typeof attentionItems)[number]) => {
-    const isSelected = !selectedNeed && selectedAttentionItem?.laneId === item.laneId;
-    const lane = laneById.get(item.laneId) ?? null;
-    const { label: stateLabel, color: stateColor } = attentionStateVisuals(item.state);
-
-    return (
-      <button
-        key={item.key}
-        type="button"
-        className={cn(
-          "flex w-full items-center justify-between gap-2 px-3 py-2.5 text-left text-xs transition-colors duration-100",
-        )}
-        style={{
-          borderRadius: 0,
-          borderLeft: isSelected ? `3px solid ${stateColor}` : "3px solid transparent",
-          backgroundColor: isSelected ? `color-mix(in srgb, ${stateColor} 7%, transparent)` : "transparent",
-        }}
-        onMouseEnter={(e) => {
-          if (!isSelected) e.currentTarget.style.backgroundColor = "color-mix(in srgb, var(--color-surface) 40%, transparent)";
-        }}
-        onMouseLeave={(e) => {
-          if (!isSelected) e.currentTarget.style.backgroundColor = "transparent";
-        }}
-        onClick={() => onSelectItem(item.key)}
-      >
-        <div className="flex min-w-0 flex-1 items-center gap-2">
-          <StatusDot color={stateColor} pulse={item.state === "rebaseConflict"} />
-          <div className="min-w-0 flex-1">
-            <div className="font-mono font-bold truncate" style={{ fontSize: 11, color: S.textPrimary }}>
-              {lane?.name ?? item.laneName}
-            </div>
-            <div className="font-mono truncate" style={{ fontSize: 10, color: S.textMuted }}>
-              STACK ATTENTION · {item.chainTrail.join(" > ")}
-            </div>
-          </div>
-        </div>
-        <div className="flex items-center gap-1.5 shrink-0">
-          {(() => {
-            const chip = machineForLane?.(item.laneId)?.chip;
-            return chip ? <MachineChip machine={chip} subject="This lane" compact /> : null;
-          })()}
-          <span
-            className="font-mono font-bold uppercase"
-            style={{
-              fontSize: 10,
-              letterSpacing: "1px",
-              color: stateColor,
-              backgroundColor: `color-mix(in srgb, ${stateColor} 9%, transparent)`,
-              border: `1px solid color-mix(in srgb, ${stateColor} 19%, transparent)`,
-              padding: "2px 6px",
-              borderRadius: 0,
-            }}
-          >
-            {stateLabel}
-          </span>
-        </div>
-      </button>
-    );
-  };
-
-  const urgencyGroups: Array<{ key: NeedSectionKey; title: string; color: string; icon: typeof Warning }> = [
-    { key: "lane_base", title: "Rebase Against Lane Base", color: S.info, icon: ArrowsDownUp },
-    { key: "pr_target", title: "Rebase Against PR Target", color: S.warning, icon: Warning },
+  const urgencyGroups: Array<{ key: RebaseSectionKey; title: string; color: string; icon: typeof Warning }> = [
+    { key: "built_on_merged", title: "Built on merged work", color: S.warning, icon: Warning },
+    { key: "behind", title: "Behind their base", color: S.info, icon: ArrowsDownUp },
   ];
-
-  const shouldRenderDriftPanel = !selectedNeedIsPrTarget || Boolean(driftSourceLaneId);
 
   const paneConfigs: Record<string, PaneConfig> = React.useMemo(
     () => ({
@@ -785,13 +621,13 @@ export function RebaseTab({
               </div>
             )}
 
-            {rebaseNeeds.length === 0 && attentionItems.length === 0 && inListColumn ? (
+            {rebaseNeeds.length === 0 && inListColumn ? (
               <PrsQuietLine>All lanes up to date</PrsQuietLine>
-            ) : rebaseNeeds.length === 0 && attentionItems.length === 0 ? (
+            ) : rebaseNeeds.length === 0 ? (
               <div style={{ padding: 16 }}>
                 <EmptyState
                   title="All lanes up to date"
-                  description="No lanes need rebasing against their lane base, an open PR target, or an ancestor chain."
+                  description="No lane is behind its open PR's base or the default branch, or built on work that has since merged."
                 />
               </div>
             ) : (
@@ -812,19 +648,6 @@ export function RebaseTab({
                       </div>
                     </UrgencyGroup>
                   ))}
-                {attentionItems.length > 0 ? (
-                  <UrgencyGroup
-                    title="Stack attention"
-                    count={attentionItems.length}
-                    color={S.error}
-                    collapsed={collapsed.stack_attention}
-                    onToggle={() => setCollapsed((prev) => ({ ...prev, stack_attention: !prev.stack_attention }))}
-                  >
-                    <div style={{ marginTop: 4, display: "flex", flexDirection: "column", gap: 2 }}>
-                      {attentionItems.map(renderAttentionItem)}
-                    </div>
-                  </UrgencyGroup>
-                ) : null}
               </div>
             )}
           </div>
@@ -833,9 +656,7 @@ export function RebaseTab({
       detail: {
         title: selectedNeed
           ? `Rebase: ${laneById.get(selectedNeed.laneId)?.name ?? selectedNeed.laneId}`
-          : selectedAttentionItem
-            ? `Stack attention: ${selectedAttentionItem.laneName}`
-            : "Rebase Detail",
+          : "Rebase Detail",
         icon: Eye,
         bodyClassName: "overflow-auto",
         children: selectedNeed ? (
@@ -865,7 +686,7 @@ export function RebaseTab({
                       className="font-mono"
                       style={{ fontSize: 11, color: S.textMuted }}
                     >
-                      {selectedNeedIsPrTarget ? "PR target" : "base"}: {selectedNeed.baseBranch}
+                      {selectedNeed.prId ? "PR base" : "base"}: {selectedNeed.baseBranch}
                     </span>
                     {selectedNeed.prId && (
                       <span
@@ -882,20 +703,12 @@ export function RebaseTab({
                         PR LINKED
                       </span>
                     )}
-                    {hasChildren && (
-                      <span
-                        className="font-mono"
-                        style={{ fontSize: 10, color: S.textMuted }}
-                      >
-                        {selectedLane?.childCount} child lane{(selectedLane?.childCount ?? 0) !== 1 ? "s" : ""}
-                      </span>
-                    )}
                   </div>
                 </div>
               </div>
             </div>
 
-            {selectedNeedIsPrTarget ? (
+            {selectedNeedIsBuiltOnMerged ? (
               <div
                 style={{
                   backgroundColor: S.headerBg,
@@ -905,92 +718,13 @@ export function RebaseTab({
                   marginTop: -4,
                 }}
               >
-                Rebasing from this section will move the lane&apos;s stored base branch onto {selectedNeed.baseBranch} after the rebase succeeds.
+                {selectedNeed.mergedPr
+                  ? <>This lane still carries the commits of #{selectedNeed.mergedPr.number}{selectedNeed.mergedPr.title ? ` (${selectedNeed.mergedPr.title})` : ""}, which merged into {selectedNeed.baseBranch}. Rebasing drops them.</>
+                  : <>This lane still carries commits that merged into {selectedNeed.baseBranch}. Rebasing drops them.</>}
               </div>
             ) : null}
 
-            {shouldRenderDriftPanel ? (
-              <>
-                {selectedNeedUpstreamChain.length > 0 ? (
-                  <div
-                    style={{
-                      backgroundColor: S.cardBg,
-                      border: `1px solid ${S.borderDefault}`,
-                      padding: 20,
-                    }}
-                  >
-                    <div
-                      className="font-mono font-bold uppercase"
-                      style={{
-                        fontSize: 10,
-                        letterSpacing: "1px",
-                        color: S.textSecondary,
-                        marginBottom: 12,
-                      }}
-                    >
-                      UPSTREAM CHAIN
-                    </div>
-                    <div style={{ fontSize: 12, color: S.textSecondary, lineHeight: 1.6, marginBottom: 12 }}>
-                      This lane still rebases directly onto <span className="font-mono">{selectedNeed.baseBranch}</span>.
-                      The items below are ancestor lanes that are also still behind upstream targets.
-                    </div>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                      {selectedNeedUpstreamChain.map((entry) => (
-                        <div
-                          key={`${selectedNeed.laneId}:${entry.laneId}:${entry.baseBranch}`}
-                          className="flex items-center justify-between gap-3"
-                          style={{
-                            backgroundColor: S.headerBg,
-                            border: `1px solid ${S.borderSubtle}`,
-                            padding: "10px 12px",
-                          }}
-                        >
-                          <div className="min-w-0">
-                            <div className="font-mono font-bold truncate" style={{ fontSize: 11, color: S.textPrimary }}>
-                              {entry.laneName}
-                            </div>
-                            <div className="font-mono truncate" style={{ fontSize: 10, color: S.textMuted }}>
-                              {entry.kind === "pr_target" ? "PR TARGET" : "LANE BASE"} · {entry.baseBranch}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-1.5 shrink-0">
-                            <span
-                              className="font-mono font-bold uppercase"
-                              style={{
-                                fontSize: 10,
-                                letterSpacing: "1px",
-                                color: S.info,
-                                backgroundColor: "#3B82F618",
-                                border: "1px solid #3B82F630",
-                                padding: "2px 6px",
-                                borderRadius: 0,
-                              }}
-                            >
-                              {entry.behindBy} BEHIND
-                            </span>
-                            {entry.conflictPredicted ? (
-                              <span
-                                className="font-mono font-bold uppercase"
-                                style={{
-                                  fontSize: 10,
-                                  letterSpacing: "1px",
-                                  color: S.warning,
-                                  backgroundColor: "#F59E0B18",
-                                  border: "1px solid #F59E0B30",
-                                  padding: "2px 6px",
-                                  borderRadius: 0,
-                                }}
-                              >
-                                CONFLICTS
-                              </span>
-                            ) : null}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-
+            <>
                 {/* ── Drift Analysis Card ── */}
                 <div
                   style={{
@@ -1311,8 +1045,7 @@ export function RebaseTab({
                     </div>
                   )}
                 </div>
-              </>
-            ) : null}
+            </>
 
             {/* ── Rebase Actions ── */}
             <div
@@ -1334,49 +1067,12 @@ export function RebaseTab({
                 REBASE ACTIONS
               </div>
 
-              {/* Scope selector */}
-              <div className="flex items-center gap-2" style={{ marginBottom: 14 }}>
-                <span className="font-mono" style={{ fontSize: 10, color: S.textMuted }}>Scope:</span>
-                <button
-                  type="button"
-                  onClick={() => setRunScope("lane_only")}
-                  disabled={selectedRunIsActive}
-                  style={{
-                    fontSize: 10,
-                    padding: "4px 8px",
-                    border: `1px solid ${runScope === "lane_only" ? S.accentBorder : S.borderSubtle}`,
-                    background: runScope === "lane_only" ? S.accentSubtleBg : "transparent",
-                    color: runScope === "lane_only" ? S.accent : S.textSecondary,
-                    cursor: selectedRunIsActive ? "not-allowed" : "pointer",
-                  }}
-                >
-                  CURRENT LANE ONLY
-                </button>
-                {hasChildren && (
-                  <button
-                    type="button"
-                    onClick={() => setRunScope("lane_and_descendants")}
-                    disabled={selectedRunIsActive}
-                    style={{
-                      fontSize: 10,
-                      padding: "4px 8px",
-                      border: `1px solid ${runScope === "lane_and_descendants" ? S.accentBorder : S.borderSubtle}`,
-                      background: runScope === "lane_and_descendants" ? S.accentSubtleBg : "transparent",
-                      color: runScope === "lane_and_descendants" ? S.accent : S.textSecondary,
-                      cursor: selectedRunIsActive ? "not-allowed" : "pointer",
-                    }}
-                  >
-                    LANE + {selectedLane?.childCount} CHILD{(selectedLane?.childCount ?? 0) !== 1 ? "REN" : ""}
-                  </button>
-                )}
-              </div>
-
               {/* Action buttons */}
               <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: 14 }}>
                 <Button
                   size="sm"
                   variant="primary"
-                  disabled={selectedNeedIsPrTarget || rebaseBusy || resolverLaunching || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
+                  disabled={rebaseBusy || resolverLaunching || selectedNeedHasNothingToRebase || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => {
                     if (resolverExpanded) {
                       void handleRebase(true);
@@ -1396,7 +1092,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
+                  disabled={rebaseBusy || selectedNeedHasNothingToRebase || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => void handleRebase(false, "none")}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
@@ -1407,7 +1103,7 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={rebaseBusy || selectedNeed.behindBy === 0 || selectedRunIsActive || selectedNeedResolvedByRun}
+                  disabled={rebaseBusy || selectedNeedHasNothingToRebase || selectedRunIsActive || selectedNeedResolvedByRun}
                   onClick={() => void handleRebase(false, "review_then_push")}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
@@ -1419,25 +1115,25 @@ export function RebaseTab({
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={selectedNeedIsPrTarget || rebaseBusy}
+                  disabled={rebaseBusy}
                   onClick={() => void handleDefer()}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle }}
                 >
                   <Clock size={12} className="mr-1" />
                   <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
-                    SNOOZE BANNER 4H
+                    SNOOZE 4H
                   </span>
                 </Button>
                 <Button
                   size="sm"
                   variant="outline"
-                  disabled={selectedNeedIsPrTarget || rebaseBusy}
+                  disabled={rebaseBusy}
                   onClick={() => void handleDismiss()}
                   style={{ borderRadius: 0, borderColor: S.borderSubtle, color: S.textMuted }}
                 >
                   <XCircle size={12} className="mr-1" />
                   <span className="font-mono font-bold uppercase" style={{ fontSize: 10, letterSpacing: "1px" }}>
-                    HIDE BANNER
+                    DISMISS
                   </span>
                 </Button>
               </div>
@@ -1519,7 +1215,7 @@ export function RebaseTab({
                     <Button
                       size="sm"
                       variant="primary"
-                      disabled={resolverLaunching || selectedNeed.behindBy === 0}
+                      disabled={resolverLaunching || selectedNeedHasNothingToRebase}
                       onClick={() => void handleRebase(true)}
                       style={{ borderRadius: 0 }}
                     >
@@ -1776,94 +1472,6 @@ export function RebaseTab({
             {!rebaseError && selectedBlocked ? <ErrorBanner message={selectedBlocked} /> : null}
 
           </div>
-        ) : selectedAttentionStatus ? (
-          <div style={{ backgroundColor: S.mainBg, padding: 20, display: "flex", flexDirection: "column", gap: 16 }}>
-            <div
-              style={{
-                backgroundColor: S.cardBg,
-                border: `1px solid ${S.borderDefault}`,
-                padding: "16px 20px",
-              }}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div
-                    className="font-bold"
-                    style={{
-                      fontFamily: "var(--font-sans)",
-                      fontSize: 18,
-                      color: S.textPrimary,
-                    }}
-                  >
-                    {selectedLane?.name ?? selectedAttentionStatus.laneId}
-                  </div>
-                  <div className="flex items-center gap-3" style={{ marginTop: 6 }}>
-                    <span
-                      className="font-mono"
-                      style={{ fontSize: 11, color: S.textMuted }}
-                    >
-                      stack attention
-                    </span>
-                    {(() => {
-                      const badge = attentionStatusBadgeVisuals(selectedAttentionStatus.state);
-                      return (
-                        <span
-                          className="font-mono font-bold uppercase"
-                          style={{
-                            fontSize: 10,
-                            letterSpacing: "1px",
-                            color: badge.color,
-                            backgroundColor: badge.bgColor,
-                            border: badge.borderColor,
-                            padding: "3px 8px",
-                          }}
-                        >
-                          {badge.label}
-                        </span>
-                      );
-                    })()}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div
-              style={{
-                backgroundColor: S.cardBg,
-                border: `1px solid ${S.borderDefault}`,
-                padding: "16px 20px",
-                display: "grid",
-                gap: 12,
-              }}
-            >
-              <div style={{ fontSize: 13, color: S.textSecondary, lineHeight: 1.6 }}>
-                {selectedAttentionItem
-                  ? formatRebaseAttentionSummary(selectedAttentionItem)
-                  : selectedAttentionStatus.message ?? "This lane is waiting on another lane in the stack before it can continue rebasing cleanly."}
-              </div>
-              {selectedAttentionItem ? (
-                <div style={{ fontSize: 11, color: S.textMuted, fontFamily: "var(--font-sans)" }}>
-                  Chain: <span className="font-mono">{selectedAttentionItem.chainTrail.join(" > ")}</span>
-                </div>
-              ) : null}
-              <div style={{ fontSize: 11, color: S.textMuted, fontFamily: "var(--font-sans)" }}>
-                {selectedLane?.parentLaneId
-                  ? <>Parent lane: <span className="font-mono">{laneById.get(selectedLane.parentLaneId)?.name ?? selectedLane.parentLaneId}</span></>
-                  : "This lane does not currently track a non-primary parent lane."}
-              </div>
-              <div style={{ fontSize: 11, color: S.textMuted, fontFamily: "var(--font-sans)" }}>
-                Updated {formatTimeAgo(selectedAttentionStatus.updatedAt)}
-              </div>
-              <div style={{ fontSize: 11, color: S.textMuted, lineHeight: 1.6 }}>
-                {selectedAttentionStatus.state === "rebasePending"
-                  ? "Resolve or rebase the upstream lane in this stack first. ADE will surface a direct rebase target for this lane once its immediate parent actually moves."
-                  : "This attention state came from the stack rebase monitor. If the lane still needs a direct rebase after refresh, it will appear above as a standard rebase item with full actions."}
-              </div>
-            </div>
-
-            {rebaseError ? <ErrorBanner message={rebaseError} /> : null}
-            {!rebaseError && selectedBlocked ? <ErrorBanner message={selectedBlocked} /> : null}
-          </div>
         ) : inListColumn ? (
           <div className="flex h-full"><PrsQuietLine fill>Select a lane</PrsQuietLine></div>
         ) : (
@@ -1878,19 +1486,14 @@ export function RebaseTab({
     }),
     [
       inListColumn,
-      attentionItems,
       rebaseNeeds,
-      selectedNeedUpstreamChain,
-      selectedAttentionItem,
-      selectedAttentionStatus,
       selectedNeed,
+      selectedNeedIsBuiltOnMerged,
+      selectedNeedHasNothingToRebase,
       selectedItemId,
-      selectedLane,
-      hasChildren,
       grouped,
       collapsed,
       laneById,
-      upstreamChainByLaneId,
       resolverModel,
       resolverReasoningLevel,
       rebaseBusy,
@@ -1898,7 +1501,6 @@ export function RebaseTab({
       resolverLaunching,
       forcePushAfterRebase,
       resolverExpanded,
-      runScope,
       activeRun,
       runLogs,
       selectedPushLaneIds,

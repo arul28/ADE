@@ -1,24 +1,10 @@
-import type { LaneListSnapshot, LaneSummary, TerminalToolType } from "../../../../shared/types";
+import type { LaneListSnapshot, LaneSummary, RebaseNeed, TerminalToolType } from "../../../../shared/types";
 import { pickPrimaryPr } from "../../../../shared/primaryPr";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
 
-/** Pixels each stack level indents a row. */
-export const LANE_SIDEBAR_INDENT_PX = 12;
-/** Deep stacks stop indenting here so names never get pushed out of view. */
-export const LANE_SIDEBAR_MAX_INDENT_LEVELS = 2;
-
-export type LaneSidebarTreeRow = {
+export type LaneSidebarListRow = {
   lane: LaneSummary;
-  /** Real stack depth. Top-level lanes (based on primary) are 0. */
-  depth: number;
-  /** Depth used for layout, capped at `LANE_SIDEBAR_MAX_INDENT_LEVELS`. */
-  indentLevel: number;
-  /**
-   * Name of the stack parent when the row cannot sit under it (the parent is
-   * in another State group). The row shows "↳ parent" instead of indenting.
-   */
-  parentHint?: string | null;
 };
 
 function createdAtMs(lane: Pick<LaneSummary, "createdAt">): number {
@@ -27,64 +13,19 @@ function createdAtMs(lane: Pick<LaneSummary, "createdAt">): number {
 }
 
 /**
- * Orders lanes as a tree for the sidebar list.
- *
- * Primary comes first. Lanes based on primary are top-level rows, newest first,
- * the same order the old lane tabs used. A stacked child sits right under its
- * parent, children in the order they were stacked (oldest first). A lane whose
- * parent is missing from `lanes` (filtered out, archived) becomes top-level.
+ * Orders lanes for the sidebar list: Primary first, then newest first, the
+ * same order the old lane tabs used.
  */
-export function buildLaneSidebarRows(lanes: LaneSummary[]): LaneSidebarTreeRow[] {
-  const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-  const primaryId = lanes.find((lane) => lane.laneType === "primary")?.id ?? null;
-  const childrenByParent = new Map<string, LaneSummary[]>();
-  const roots: LaneSummary[] = [];
-
-  for (const lane of lanes) {
-    const parentId = lane.parentLaneId;
-    const isStacked = lane.laneType !== "primary"
-      && parentId != null
-      && parentId !== lane.id
-      && parentId !== primaryId
-      && laneById.has(parentId);
-    if (!isStacked) {
-      roots.push(lane);
-      continue;
-    }
-    const siblings = childrenByParent.get(parentId) ?? [];
-    siblings.push(lane);
-    childrenByParent.set(parentId, siblings);
-  }
-
-  roots.sort((a, b) => {
-    const aPrimary = a.laneType === "primary" ? 0 : 1;
-    const bPrimary = b.laneType === "primary" ? 0 : 1;
-    if (aPrimary !== bPrimary) return aPrimary - bPrimary;
-    const byCreated = createdAtMs(b) - createdAtMs(a);
-    return byCreated !== 0 ? byCreated : a.name.localeCompare(b.name);
-  });
-  for (const children of childrenByParent.values()) {
-    children.sort((a, b) => {
-      const byCreated = createdAtMs(a) - createdAtMs(b);
+export function buildLaneSidebarRows(lanes: LaneSummary[]): LaneSidebarListRow[] {
+  return [...lanes]
+    .sort((a, b) => {
+      const aPrimary = a.laneType === "primary" ? 0 : 1;
+      const bPrimary = b.laneType === "primary" ? 0 : 1;
+      if (aPrimary !== bPrimary) return aPrimary - bPrimary;
+      const byCreated = createdAtMs(b) - createdAtMs(a);
       return byCreated !== 0 ? byCreated : a.name.localeCompare(b.name);
-    });
-  }
-
-  const rows: LaneSidebarTreeRow[] = [];
-  const seen = new Set<string>();
-  const visit = (lane: LaneSummary, depth: number) => {
-    // A corrupted parent cycle must not loop forever.
-    if (seen.has(lane.id)) return;
-    seen.add(lane.id);
-    rows.push({ lane, depth, indentLevel: Math.min(depth, LANE_SIDEBAR_MAX_INDENT_LEVELS) });
-    for (const child of childrenByParent.get(lane.id) ?? []) visit(child, depth + 1);
-  };
-  for (const root of roots) visit(root, 0);
-  // Lanes stuck in a parent cycle never hang off a root; keep them visible.
-  for (const lane of lanes) {
-    if (!seen.has(lane.id)) visit(lane, 0);
-  }
-  return rows;
+    })
+    .map((lane) => ({ lane }));
 }
 
 /** Id of the next selectable row, wrapping at both ends. */
@@ -203,8 +144,8 @@ export function laneBranchLabel(branchRef: string | null | undefined): string {
 
 /* ---- Group by State ---- */
 
-/** How the sidebar list is cut: by what each lane needs, or as the stack tree. */
-export type LaneSidebarGroupBy = "state" | "stack";
+/** How the sidebar list is cut: by what each lane needs, or one flat list. */
+export type LaneSidebarGroupBy = "state" | "list";
 
 export type LaneStateGroupId = "needs-you" | "active" | "behind" | "done" | "stale" | "quiet";
 
@@ -230,8 +171,8 @@ export type LaneStateInput = {
   agents: readonly Pick<LaneAgent, "activity" | "lastActivityAt">[];
   runtime: LaneRuntime | null | undefined;
   prs: readonly Pick<LaneTabPrTag, "state" | "githubPrNumber" | "checksStatus" | "reviewStatus" | "mergeConflicts" | "laneRole" | "updatedAt">[] | undefined;
-  rebaseSuggestion: Pick<NonNullable<LaneListSnapshot["rebaseSuggestion"]>, "behindCount"> | null | undefined;
-  autoRebaseStatus: Pick<NonNullable<LaneListSnapshot["autoRebaseStatus"]>, "state"> | null | undefined;
+  /** The lane's rebase need from the scan, left out when the user dismissed or deferred it. */
+  rebaseNeed?: Pick<RebaseNeed, "kind" | "behindBy"> | null;
   nowMs: number;
 };
 
@@ -269,8 +210,7 @@ function isOpenPr(pr: Pick<LaneTabPrTag, "state">): boolean {
 
 /**
  * Why a lane needs the user, or null when it does not. Order is the order a
- * person would act on: a waiting agent first, then a broken rebase, then PR
- * trouble. Primary never needs you here; its header has its own notices.
+ * person would act on: a waiting agent first, then PR trouble. Primary never needs you here; its header has its own notices.
  */
 export function laneNeedsYouReason(input: Omit<LaneStateInput, "nowMs">): string | null {
   if (input.lane.laneType === "primary") return null;
@@ -279,9 +219,6 @@ export function laneNeedsYouReason(input: Omit<LaneStateInput, "nowMs">): string
     || Math.max(runtime?.awaitingInputCount ?? 0, runtime?.pendingInputCount ?? 0) > 0
     || runtime?.bucket === "awaiting-input";
   if (agentWaiting) return "An agent is waiting for you";
-  const rebaseState = input.autoRebaseStatus?.state;
-  if (rebaseState === "rebaseConflict") return "Rebase hit conflicts";
-  if (rebaseState === "rebaseFailed") return "Rebase failed";
   const openPrs = currentBranchPrs(input).filter(isOpenPr);
   if (openPrs.some((pr) => pr.mergeConflicts === true)) return "PR has merge conflicts";
   if (openPrs.some((pr) => pr.checksStatus === "failing")) return "PR checks are failing";
@@ -312,7 +249,8 @@ export function classifyLaneState(input: LaneStateInput): LaneStateGroupId | "pr
 
   const prs = currentBranchPrs(input);
   const merged = pickPrimaryPr(prs)?.state === "merged";
-  const behind = lane.status.behind > 0 || (input.rebaseSuggestion?.behindCount ?? 0) > 0;
+  const need = input.rebaseNeed;
+  const behind = lane.status.behind > 0 || (need?.behindBy ?? 0) > 0 || need?.kind === "built_on_merged";
   if (behind && !merged) return "behind";
   if (merged) return "done";
 
@@ -322,12 +260,12 @@ export function classifyLaneState(input: LaneStateInput): LaneStateGroupId | "pr
 
 export type LaneSidebarGroup = {
   id: LaneStateGroupId;
-  rows: LaneSidebarTreeRow[];
+  rows: LaneSidebarListRow[];
 };
 
 export type LaneSidebarLayout =
-  | { groupBy: "stack"; rows: LaneSidebarTreeRow[] }
-  | { groupBy: "state"; pinned: LaneSidebarTreeRow[]; groups: LaneSidebarGroup[] };
+  | { groupBy: "list"; rows: LaneSidebarListRow[] }
+  | { groupBy: "state"; pinned: LaneSidebarListRow[]; groups: LaneSidebarGroup[] };
 
 /** Id used to persist a State group's collapsed state. */
 export function laneStateGroupSectionId(id: LaneStateGroupId): string {
@@ -335,20 +273,16 @@ export function laneStateGroupSectionId(id: LaneStateGroupId): string {
 }
 
 /**
- * Lays out the sidebar list. Stack mode is the plain tree. State mode pins
- * Primary on top, then one group per non-empty state. Inside a group, a
- * stacked child stays indented under its parent only when the parent is in
- * the same group; otherwise it is a top-level row with a parent hint.
+ * Lays out the sidebar list. List mode is every lane, Primary first. State
+ * mode pins Primary on top, then one group per non-empty state.
  */
 export function buildLaneSidebarLayout(args: {
   lanes: LaneSummary[];
   groupBy: LaneSidebarGroupBy;
   stateByLaneId: ReadonlyMap<string, LaneStateGroupId | "primary">;
-  /** Every lane, so a hint can name a parent the filter hides. */
-  lanesById: ReadonlyMap<string, LaneSummary>;
 }): LaneSidebarLayout {
-  const { lanes, groupBy, stateByLaneId, lanesById } = args;
-  if (groupBy === "stack") return { groupBy, rows: buildLaneSidebarRows(lanes) };
+  const { lanes, groupBy, stateByLaneId } = args;
+  if (groupBy === "list") return { groupBy, rows: buildLaneSidebarRows(lanes) };
 
   const pinnedLanes: LaneSummary[] = [];
   const lanesByGroup = new Map<LaneStateGroupId, LaneSummary[]>();
@@ -367,13 +301,7 @@ export function buildLaneSidebarLayout(args: {
   for (const id of LANE_STATE_GROUP_ORDER) {
     const groupLanes = lanesByGroup.get(id);
     if (!groupLanes || groupLanes.length === 0) continue;
-    const rows = buildLaneSidebarRows(groupLanes).map((row) => {
-      if (row.depth > 0) return row;
-      const parent = row.lane.parentLaneId ? lanesById.get(row.lane.parentLaneId) : undefined;
-      if (!parent || parent.id === row.lane.id || parent.laneType === "primary") return row;
-      return { ...row, parentHint: parent.name };
-    });
-    groups.push({ id, rows });
+    groups.push({ id, rows: buildLaneSidebarRows(groupLanes) });
   }
   return { groupBy, pinned: buildLaneSidebarRows(pinnedLanes), groups };
 }
@@ -383,7 +311,7 @@ export function laneSidebarVisibleLaneIds(
   layout: LaneSidebarLayout,
   collapsed: ReadonlySet<string>,
 ): string[] {
-  if (layout.groupBy === "stack") return layout.rows.map((row) => row.lane.id);
+  if (layout.groupBy === "list") return layout.rows.map((row) => row.lane.id);
   const ids = layout.pinned.map((row) => row.lane.id);
   for (const group of layout.groups) {
     if (collapsed.has(laneStateGroupSectionId(group.id))) continue;

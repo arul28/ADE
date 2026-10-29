@@ -105,22 +105,17 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     domain: "lane",
     action: "create",
     label: "Create lane",
-    description: "Create a new worktree-backed lane from an optional base branch and parent lane.",
+    description: "Create a new worktree-backed lane. Without a start it uses the project's new-lane defaults.",
     params: [
       { name: "name", type: "string", required: true, description: "Display name for the new lane." },
       { name: "description", type: "string", description: "Optional human description." },
-      { name: "parentLaneId", type: "string", description: "Parent lane to stack on." },
-      { name: "baseBranch", type: "string", description: "Base branch to fork from when there is no parent lane." },
-    ],
-  },
-  {
-    domain: "lane",
-    action: "createFromUnstaged",
-    label: "Create lane from unstaged changes",
-    description: "Move the source lane's uncommitted changes onto a brand new sibling lane.",
-    params: [
-      { name: "sourceLaneId", type: "string", required: true, description: "Lane whose unstaged changes will move." },
-      { name: "name", type: "string", required: true, description: "Display name for the new lane." },
+      {
+        name: "start",
+        type: "json",
+        description: "Where the branch starts: {\"from\": \"default\"|\"primary\"|\"branch\", \"branch\"?, \"bring\": \"pushed\"|\"local\"|\"uncommitted\"}.",
+      },
+      { name: "branchName", type: "string", description: "Name for the new branch (defaults from the lane name)." },
+      { name: "startPoint", type: "string", description: "An exact commit or ref to start from. Wins over start." },
     ],
   },
   {
@@ -157,16 +152,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "lane",
-    action: "reparent",
-    label: "Reparent lane",
-    description: "Move a lane onto a new parent lane and rebase it onto the new parent's branch.",
-    params: [
-      LANE_ID_PARAM,
-      { name: "newParentLaneId", type: "string", required: true, description: "Lane to set as the new parent." },
-    ],
-  },
-  {
-    domain: "lane",
     action: "updateAppearance",
     label: "Update lane appearance",
     description: "Change the color, emoji, or tags shown for a lane in the UI.",
@@ -182,20 +167,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       },
       { name: "tags", type: "string-array", description: "Comma-separated tag list." },
     ],
-  },
-  {
-    domain: "lane",
-    action: "getChildren",
-    label: "Get child lanes",
-    description: "Return lanes that have the given lane as their parent.",
-    params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "lane",
-    action: "getStackChain",
-    label: "Get stack chain",
-    description: "Return the ancestor chain of the lane from root down to the lane itself.",
-    params: [LANE_ID_PARAM],
   },
   {
     domain: "lane",

@@ -879,7 +879,6 @@ function installAdeMocks(options?: {
       list: vi.fn().mockResolvedValue([]),
       listSnapshots: vi.fn().mockResolvedValue([]),
       create: createLane,
-      createChild: vi.fn(),
       delete: deleteLane,
       rename: renameLane,
     },
@@ -11286,14 +11285,13 @@ describe("AgentChatPane submit recovery", () => {
   it("launches one child lane per parallel model and opens work-focus tiling", async () => {
     const createdLanes: Array<Record<string, unknown>> = [];
     const { send, suggestLaneName, renameLane, parallelLaunchStateSet, writeClipboardText } = installAdeMocks({ sessions: [], includeClaudeModel: true });
-    const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
+    const createParallelLane = vi.fn().mockImplementation(async ({ name }: { name: string }) => {
       const lane = {
         id: `lane-child-${createdLanes.length + 1}`,
         name,
         laneType: "worktree",
         branchRef: `refs/heads/${name}`,
         worktreePath: `/tmp/project-under-test/${name}`,
-        parentLaneId,
       };
       createdLanes.push(lane);
       return lane;
@@ -11309,7 +11307,7 @@ describe("AgentChatPane submit recovery", () => {
       },
     ));
     suggestLaneName.mockResolvedValue("fix-login");
-    window.ade.lanes.createChild = createChild as any;
+    window.ade.lanes.create = createParallelLane as any;
     window.ade.lanes.list = vi.fn().mockImplementation(async () => ([
       {
         id: "lane-1",
@@ -11358,10 +11356,10 @@ describe("AgentChatPane submit recovery", () => {
         modelId: "openai/gpt-5.5",
         fallbackName: "Fix Login Bug",
       }), launchBinding);
-      expect(createChild).toHaveBeenCalledTimes(2);
+      expect(createParallelLane).toHaveBeenCalledTimes(2);
     });
-    // Child lanes are created instantly with the deterministic base name…
-    expect(createChild.mock.calls.map(([args]) => args.name)).toEqual([
+    // The lanes are created instantly with the deterministic base name…
+    expect(createParallelLane.mock.calls.map(([args]) => args.name)).toEqual([
       "Fix Login Bug-codex-gpt-5-5",
       "Fix Login Bug-claude-sonnet-5",
     ]);
@@ -11466,14 +11464,13 @@ describe("AgentChatPane submit recovery", () => {
     });
     const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     const { suggestLaneName, parallelLaunchStateSet } = installAdeMocks({ sessions: [], includeClaudeModel: true });
-    const createChild = vi.fn().mockImplementation(async ({ name, parentLaneId }: { name: string; parentLaneId: string }) => {
+    const createParallelLane = vi.fn().mockImplementation(async ({ name }: { name: string }) => {
       const lane = {
         id: `lane-child-${createdLanes.length + 1}`,
         name,
         laneType: "worktree",
         branchRef: `refs/heads/${name}`,
         worktreePath: `/tmp/project-under-test/${name}`,
-        parentLaneId,
       };
       createdLanes.push(lane);
       return lane;
@@ -11490,7 +11487,7 @@ describe("AgentChatPane submit recovery", () => {
     suggestLaneName.mockResolvedValue("fix-login");
     window.ade.agentChat.send = send as any;
     window.ade.agentChat.create = create as any;
-    window.ade.lanes.createChild = createChild as any;
+    window.ade.lanes.create = createParallelLane as any;
     window.ade.lanes.delete = deleteLane as any;
     window.ade.lanes.list = vi.fn().mockImplementation(async () => ([
       {

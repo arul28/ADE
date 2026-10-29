@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { MagnifyingGlass, Plus, Rows, TreeStructure, X } from "@phosphor-icons/react";
+import { ListBullets, MagnifyingGlass, Plus, Rows, X } from "@phosphor-icons/react";
 import type { LaneDeleteProgress, LaneListSnapshot } from "../../../../shared/types";
+import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import type { CreatingIssuePlaceholder } from "../../../lib/launchedLanesHighlight";
 import { getLaneDeleteStatusLabel, isLaneDeleteProgressActive } from "../../../lib/laneDeleteProgress";
 import { COLORS } from "../laneDesignTokens";
@@ -15,13 +16,13 @@ import {
   type LaneGroupBulkAction,
   type LaneSidebarGroupBy,
   type LaneSidebarLayout,
-  type LaneSidebarTreeRow,
+  type LaneSidebarListRow,
   type LaneStateGroupId,
 } from "./laneSidebarModel";
 
 const GROUP_BY_OPTIONS: Array<{ value: LaneSidebarGroupBy; label: string; description: string; Icon: typeof Rows }> = [
   { value: "state", label: "State", description: "Group lanes by what they need: needs you, active, behind, done, stale.", Icon: Rows },
-  { value: "stack", label: "Stack", description: "Show lanes as the stack tree, children under their parent.", Icon: TreeStructure },
+  { value: "list", label: "List", description: "Show every lane in one list, newest first.", Icon: ListBullets },
 ];
 
 const EMPTY_AGENTS: LaneAgent[] = [];
@@ -47,7 +48,10 @@ export type LaneSidebarListProps = {
   loading: boolean;
   totalLaneCount: number;
   laneRuntimeById: ReadonlyMap<string, LaneListSnapshot["runtime"]>;
-  laneSnapshotByLaneId: ReadonlyMap<string, LaneListSnapshot>;
+  /** The quiet "3 behind main" line per row key, for lanes that need a rebase. */
+  rebaseLineByLaneId: ReadonlyMap<string, LaneRebaseLine>;
+  /** Runs the rebase a row's line offers, by row key. */
+  onRebaseLane: (laneId: string) => void;
   agentsByLaneId: ReadonlyMap<string, LaneAgent[]>;
   lanePrTagsByLaneId: ReadonlyMap<string, LaneTabPrTag[]>;
   deleteProgressByLaneId: Record<string, LaneDeleteProgress>;
@@ -78,8 +82,8 @@ export type LaneSidebarListProps = {
 /**
  * The Lanes tab's sidebar body: a filter, a Group by toggle, a New lane
  * button, and every lane. By State, Primary is pinned on top and the rest sit
- * in groups (Needs you, Active, Behind main, Done, Stale, Quiet); by Stack,
- * lanes form the stack tree with children indented under their parent.
+ * in groups (Needs you, Active, Behind main, Done, Stale, Quiet); as a List,
+ * every lane sits in one list, newest first.
  */
 export function LaneSidebarList(props: LaneSidebarListProps) {
   const {
@@ -99,7 +103,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     loading,
     totalLaneCount,
     laneRuntimeById,
-    laneSnapshotByLaneId,
+    rebaseLineByLaneId,
+    onRebaseLane,
     agentsByLaneId,
     lanePrTagsByLaneId,
     deleteProgressByLaneId,
@@ -147,17 +152,14 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     }
   };
 
-  const renderRow = (row: LaneSidebarTreeRow) => {
+  const renderRow = (row: LaneSidebarListRow) => {
     const laneId = row.lane.id;
-    const snapshot = laneSnapshotByLaneId.get(laneId);
     const deleteProgress = deleteProgressByLaneId[laneId] ?? null;
     const deleting = isLaneDeleteProgressActive(deleteProgress);
     return (
       <LaneSidebarRow
         key={laneId}
         lane={row.lane}
-        depth={row.depth}
-        indentLevel={row.indentLevel}
         fallbackColorIndex={colorIndexByLaneId.get(laneId) ?? 0}
         selected={selectedLaneId === laneId}
         multiSelected={multiSelectedLaneIds.has(laneId)}
@@ -165,8 +167,8 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         runtime={laneRuntimeById.get(laneId) ?? null}
         agents={agentsByLaneId.get(laneId) ?? EMPTY_AGENTS}
         prs={lanePrTagsByLaneId.get(laneId)}
-        rebaseSuggestion={snapshot?.rebaseSuggestion ?? null}
-        autoRebaseStatus={snapshot?.autoRebaseStatus ?? null}
+        rebaseLine={rebaseLineByLaneId.get(laneId) ?? null}
+        onRebase={onRebaseLane}
         deleteStatusLabel={deleting ? getLaneDeleteStatusLabel(deleteProgress) : null}
         // Another machine's delete has no progress feed here, so its row
         // always offers Stop and that machine says whether it still can.
@@ -174,7 +176,6 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
           ? () => onStopDelete(laneId)
           : null}
         creating={!deleting && creatingLaneIds.has(laneId)}
-        parentHint={row.parentHint ?? null}
         needsYouReason={needsYouReasonByLaneId.get(laneId) ?? null}
         machineChip={machineChipByLaneId?.get(laneId) ?? null}
         disabledReason={disabledReasonByLaneId?.get(laneId) ?? null}
@@ -187,11 +188,11 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
     );
   };
   // Lanes a batch launch is still creating. By State they sit right under
-  // Primary, where a new lane is about to appear; by Stack, at the end.
+  // Primary, where a new lane is about to appear; as a List, at the end.
   const creatingRows = pendingCreatingIssues.map((placeholder) => (
     <LaneSidebarCreatingRow key={`creating:${placeholder.issueId}`} name={placeholder.name} />
   ));
-  const rowCount = layout.groupBy === "stack"
+  const rowCount = layout.groupBy === "list"
     ? layout.rows.length
     : layout.pinned.length + layout.groups.reduce((sum, group) => sum + group.rows.length, 0);
 
@@ -276,7 +277,7 @@ export function LaneSidebarList(props: LaneSidebarListProps) {
         className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-1.5 pb-2 outline-none"
         onKeyDown={onListKeyDown}
       >
-        {groupBy === "stack" ? (
+        {groupBy === "list" ? (
           <div className="flex flex-col gap-0.5">
             {layout.rows.map(renderRow)}
             {creatingRows}

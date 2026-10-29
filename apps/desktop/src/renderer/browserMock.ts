@@ -1405,8 +1405,6 @@ function browserMockFirstRun(): boolean {
  *   hold the second back. Reloads keep the state (the seed is per tab).
  * - `?mockOneMachine`: no other machine is connected (the phone suggestion).
  * - `?mockRunningChats`: Activity reports three running chats (the grid).
- * - `?mockStackedPr`: feature/i18n is built on feature/auth-flow, whose pull
- *   request is open (stacked PRs).
  * - `?mockLinearOff`: Linear is not connected (pasting a Linear issue link).
  * - `?mockUsageLow`: Codex's weekly limit is at 12% left (plan running low).
  */
@@ -1439,7 +1437,7 @@ function seedBrowserMockSuggestions(): void {
   }
 }
 
-/** Activity items for `?mockRunningChats` / `?mockStackedPr`, in the attention snapshot's shape. */
+/** Activity items for `?mockRunningChats`, in the attention snapshot's shape. */
 function browserMockActivityItems(): any[] {
   const at = new Date().toISOString();
   const base = {
@@ -1476,18 +1474,6 @@ function browserMockActivityItems(): any[] {
         destination: { kind: "session", sessionId: `mock-running-${laneId}` },
       });
     }
-  }
-  if (browserMockFlag("mockStackedPr")) {
-    items.push({
-      ...base,
-      id: "mock-pr-auth",
-      kind: "pull_request",
-      eventKind: "pr_opened",
-      phase: "open",
-      laneId: "lane-auth",
-      title: "Auth flow",
-      destination: { kind: "pull_request", number: 412, tab: "overview" },
-    });
   }
   return items;
 }
@@ -1815,10 +1801,6 @@ function makeLane(
     branchRef,
     worktreePath: `/tmp/mock/${id}`,
     attachedRootPath: null,
-    parentLaneId: id === "lane-main" ? null : "lane-main",
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: {
       dirty: false,
@@ -1873,7 +1855,6 @@ const BUILTIN_MOCK_LANES: any[] = [
     "lane-i18n",
     "feature/i18n",
     "refs/heads/feature/i18n",
-    browserMockFlag("mockStackedPr") ? { parentLaneId: "lane-auth", stackDepth: 1 } : undefined,
   ),
   makeLane(
     "lane-a11y",
@@ -1975,13 +1956,6 @@ const BUILTIN_MOCK_SESSIONS: any[] = [
 ];
 
 function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
-  const childCounts = new Map<string, number>();
-  for (const row of laneRows) {
-    const pid = row.parentLaneId;
-    if (typeof pid === "string" && pid.length > 0) {
-      childCounts.set(pid, (childCounts.get(pid) ?? 0) + 1);
-    }
-  }
   return laneRows.map((raw) => {
     const id = String(raw.id);
     let branchRef = String(raw.branchRef ?? "refs/heads/main");
@@ -2003,10 +1977,6 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
       branchRef,
       worktreePath: String(raw.worktreePath ?? "/tmp/mock"),
       attachedRootPath: raw.attachedRootPath ?? null,
-      parentLaneId: raw.parentLaneId ?? null,
-      childCount: childCounts.get(id) ?? 0,
-      stackDepth: 0,
-      parentStatus: null,
       isEditProtected: Boolean(raw.isEditProtected),
       status: {
         dirty: Boolean(st?.dirty),
@@ -2028,10 +1998,9 @@ function buildMockLanesFromAdeSnapshot(laneRows: any[]): any[] {
 /**
  * Stand-in lanes appended to the snapshot's real lanes so every Lanes sidebar
  * State group has a member: a lane whose PR merged (Done, and behind main on
- * purpose, since merged lanes usually are), an old lane with no PR (Stale) plus
- * a stacked child in the same group (indented), and a fresh child of the first
- * live-PR lane (Quiet, shown with a "↳ parent" hint because its parent sits in
- * another group). The Done lane's merged PR is added in `mockLiveLanePrs`.
+ * purpose, since merged lanes usually are), two old lanes with no PR (Stale),
+ * and a fresh lane started from the first live-PR lane's branch (Quiet). The
+ * Done lane's merged PR is added in `mockLiveLanePrs`.
  */
 /** Lanes opened from another repo's PR are named `<repo>/<ref>`; keep them out of the demo picks. */
 function isImportedPrLane(lane: any): boolean {
@@ -2044,10 +2013,8 @@ function mockSidebarGroupLanes(realLanes: any[]): any[] {
   const liveParent = realLanes.find(
     (lane: any) => lane.laneType !== "primary" && !isImportedPrLane(lane),
   );
-  const primaryId = realLanes.find((lane: any) => lane.laneType === "primary")?.id ?? null;
   const withCommit = (lane: any, lastCommitAt: string, behind = 0) => ({
     ...lane,
-    parentLaneId: lane.parentLaneId === "lane-main" ? primaryId : lane.parentLaneId,
     lastCommitAt,
     status: { ...lane.status, behind, lastCommitAt },
   });
@@ -2063,28 +2030,21 @@ function mockSidebarGroupLanes(realLanes: any[]): any[] {
     withCommit(
       makeLane("mock-sidebar-stale", "Onboarding copy spike", "refs/heads/ade/onboarding-copy-spike", {
         createdAt: hoursAgo(45 * 24),
-        childCount: 1,
       }),
       hoursAgo(31 * 24),
     ),
     withCommit(
       makeLane("mock-sidebar-stale-child", "Onboarding empty states", "refs/heads/ade/onboarding-empty-states", {
         createdAt: hoursAgo(40 * 24),
-        parentLaneId: "mock-sidebar-stale",
-        stackDepth: 1,
       }),
       hoursAgo(33 * 24),
     ),
   ];
   if (liveParent) {
-    liveParent.childCount = (liveParent.childCount ?? 0) + 1;
     lanes.push(
       withCommit(
         makeLane("mock-sidebar-child", "Timeline filters", "refs/heads/ade/timeline-filters", {
           createdAt: hoursAgo(20),
-          parentLaneId: liveParent.id,
-          baseRef: String(liveParent.branchRef ?? "main").replace(/^refs\/heads\//, ""),
-          stackDepth: 1,
         }),
         hoursAgo(5),
       ),
@@ -2858,31 +2818,6 @@ function makeLaneSnapshot(lane: LaneSummary): LaneListSnapshot {
         endedCount: runtimeBucket === "ended" ? 1 : 0,
         sessionCount: runtimeBucket === "none" ? 0 : 1,
       },
-    rebaseSuggestion:
-      lane.id === "lane-dashboard" || lane.id === "lane-onboard"
-        ? {
-            laneId: lane.id,
-            parentLaneId: "lane-main",
-            parentHeadSha: "mock",
-            behindCount: 2,
-            lastSuggestedAt: now,
-            deferredUntil: null,
-            dismissedAt: null,
-            hasPr: true,
-          }
-        : null,
-    autoRebaseStatus:
-      lane.id === "lane-perf"
-        ? {
-            laneId: lane.id,
-            parentLaneId: "lane-main",
-            parentHeadSha: "mock",
-            state: "autoRebased",
-            updatedAt: now,
-            conflictCount: 0,
-            message: "Mock auto-rebase",
-          }
-        : null,
     conflictStatus:
       lane.id === "lane-dashboard" || lane.id === "lane-search"
         ? {
@@ -3798,15 +3733,24 @@ const MOCK_LIVE_PR_FILES: Record<string, any[]> = {};
   });
 })();
 
+// ── New lane defaults (one set per account per repo) ─────────
+const MOCK_NEW_LANE_DEFAULTS = {
+  defaults: { start: { from: "default", bring: "pushed" }, templateId: null },
+  scope: { kind: "account-repo", repo: "github.com/acme/app" },
+  defaultBranch: "main",
+  primaryBranch: "main",
+};
+
 // ── Rebase Needs (all urgency categories) ─────────────────────
 const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   // Attention: behind + conflicts predicted
   {
     laneId: "lane-dashboard",
     laneName: "feature/dashboard-v2",
-    kind: "lane_base",
+    kind: "behind",
     baseBranch: "main",
     behindBy: 12,
+    mergedPr: null,
     conflictPredicted: true,
     conflictingFiles: [
       "src/components/Dashboard.tsx",
@@ -3821,9 +3765,10 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   {
     laneId: "lane-i18n",
     laneName: "feature/i18n",
-    kind: "lane_base",
+    kind: "behind",
     baseBranch: "main",
     behindBy: 8,
+    mergedPr: null,
     conflictPredicted: true,
     conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"],
     prId: "pr-i2",
@@ -3835,9 +3780,10 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   {
     laneId: "lane-api",
     laneName: "feature/api-refactor",
-    kind: "lane_base",
+    kind: "built_on_merged",
     baseBranch: "main",
     behindBy: 7,
+    mergedPr: { number: 41, title: "Shared API client", headBranch: "feature/api-client" },
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-3",
@@ -3848,9 +3794,10 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   {
     laneId: "lane-onboard",
     laneName: "feature/onboarding-wizard",
-    kind: "lane_base",
+    kind: "behind",
     baseBranch: "main",
     behindBy: 3,
+    mergedPr: null,
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-5",
@@ -3862,9 +3809,10 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   {
     laneId: "lane-auth",
     laneName: "feature/auth-flow",
-    kind: "lane_base",
+    kind: "behind",
     baseBranch: "main",
     behindBy: 0,
+    mergedPr: null,
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-1",
@@ -3876,9 +3824,10 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
   {
     laneId: "lane-search",
     laneName: "feature/search-v2",
-    kind: "lane_base",
+    kind: "behind",
     baseBranch: "main",
     behindBy: 5,
+    mergedPr: null,
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-i1",
@@ -5317,7 +5266,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
-      git: { autoRebaseOnHeadChange: false },
+      git: {},
       laneCleanup: {},
       ai: {
         permissions: {
@@ -5337,7 +5286,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       testSuites: [],
       automations: [],
       laneOverlayPolicies: [],
-      git: { autoRebaseOnHeadChange: false },
+      git: {},
       ai: {
         featureModelOverrides: { narratives: "anthropic/claude-sonnet-5" },
         permissions: {
@@ -7113,7 +7062,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       listSnapshots: async () =>
         MOCK_LANES.map((lane) => makeLaneSnapshot(lane)),
       create: resolvedArg({ id: "mock", name: "mock" }),
-      createChild: resolvedArg({ id: "mock", name: "mock" }),
       importBranch: resolvedArg({ id: "mock", name: "mock" }),
       previewBranchSwitch: resolvedArg({
         laneId: "mock",
@@ -7132,7 +7080,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         activeWork: [],
       }),
       rename: resolvedArg(undefined),
-      reparent: resolvedArg({}),
       updateAppearance: resolvedArg(undefined),
       archive: resolvedArg(undefined),
       archiveAndReclaim: resolvedArg({
@@ -7185,14 +7132,11 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
       onDeleteEvent: noop,
       onLifecycleEvent: noop,
-      getStackChain: resolvedArg([]),
-      getChildren: resolvedArg([]),
       rebaseStart: resolvedArg({
         runId: "mock-run",
         run: {
           runId: "mock-run",
           rootLaneId: "mock",
-          scope: "lane_only",
           pushMode: "none",
           state: "completed",
           startedAt: new Date().toISOString(),
@@ -7210,7 +7154,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       rebasePush: resolvedArg({
         runId: "mock-run",
         rootLaneId: "mock",
-        scope: "lane_only",
         pushMode: "none",
         state: "completed",
         startedAt: new Date().toISOString(),
@@ -7227,7 +7170,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       rebaseRollback: resolvedArg({
         runId: "mock-run",
         rootLaneId: "mock",
-        scope: "lane_only",
         pushMode: "none",
         state: "aborted",
         startedAt: new Date().toISOString(),
@@ -7244,7 +7186,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       rebaseAbort: resolvedArg({
         runId: "mock-run",
         rootLaneId: "mock",
-        scope: "lane_only",
         pushMode: "none",
         state: "aborted",
         startedAt: new Date().toISOString(),
@@ -7259,13 +7200,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         canRollback: false,
       }),
       rebaseSubscribe: noop,
-      listRebaseSuggestions: resolved([]),
-      dismissRebaseSuggestion: resolvedArg(undefined),
-      deferRebaseSuggestion: resolvedArg(undefined),
-      onRebaseSuggestionsEvent: noop,
-      listAutoRebaseStatuses: resolved([]),
-      dismissAutoRebaseStatus: resolvedArg(undefined),
-      onAutoRebaseEvent: noop,
       openFolder: resolvedArg(undefined),
       revealWorktree: resolvedArg(undefined),
       revealLeftoverWorktree: resolvedArg(undefined),
@@ -7282,6 +7216,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEnvEvent: noop,
       listTemplates: resolved([]),
       getTemplate: resolvedArg(null),
+      getNewLaneDefaults: resolvedArg(MOCK_NEW_LANE_DEFAULTS),
+      setNewLaneDefaults: async (args: { defaults: any }) => ({ ...MOCK_NEW_LANE_DEFAULTS, defaults: args.defaults }),
       getDefaultTemplate: resolvedArg(null),
       setDefaultTemplate: resolvedArg(undefined),
       applyTemplate: resolvedArg({
@@ -9678,7 +9614,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           worktreePath: `${MOCK_PROJECT.rootPath}/.ade/worktrees/mock-${preflight.githubPrNumber}`,
           attachedRootPath: null,
           isEditProtected: false,
-          parentLaneId: null,
           color: null,
           icon: null,
           tags: [],

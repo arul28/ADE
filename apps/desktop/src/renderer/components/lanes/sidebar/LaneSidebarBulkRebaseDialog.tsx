@@ -18,8 +18,8 @@ export type LaneBulkRebaseTarget = {
 
 /**
  * Confirm step for the Behind group's "Rebase all". Lists every lane it will
- * touch, then rebases them one at a time (parents before children, the order
- * the list gives) and reports failures in one toast at the end. Each lane is
+ * touch, then rebases them one at a time, in list order, and reports
+ * failures in one toast at the end. Each lane is
  * rebased on its own; pushing stays a separate, reviewed step.
  */
 export function LaneSidebarBulkRebaseDialog({

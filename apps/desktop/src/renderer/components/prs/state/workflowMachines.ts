@@ -1,7 +1,7 @@
 /**
  * The PRs workflow views (Rebase/Merge, Integration) across every machine.
  *
- * Rebase needs, auto-rebase statuses and integration proposals live in the
+ * Rebase needs and integration proposals live in the
  * `.ade` database of the machine that owns the lanes, so the tab's machine can
  * only report its own. This module reads every other machine's copy through
  * the shared foreign-read loop (timed out, each landing on its own, never
@@ -15,7 +15,6 @@
 
 import { useEffect, useMemo, useRef } from "react";
 import type {
-  AutoRebaseLaneStatus,
   IntegrationProposal,
   LaneSummary,
   RebaseNeed,
@@ -39,7 +38,6 @@ export type WorkflowItemMachine = Pick<LaneMachine, "machineId" | "machineName" 
 
 type ForeignMachineWorkflowState = {
   rebaseNeeds: RebaseNeed[];
-  autoRebaseStatuses: AutoRebaseLaneStatus[];
   proposals: IntegrationProposal[];
   workflows: IntegrationProposal[];
 };
@@ -53,7 +51,6 @@ export type WorkflowMachines = {
   lanes: LaneSummary[];
   /** Other machines' items, under view ids (lane ids for rebase items, proposal ids for proposals). */
   foreignRebaseNeeds: RebaseNeed[];
-  foreignAutoRebaseStatuses: AutoRebaseLaneStatus[];
   foreignProposals: IntegrationProposal[];
   foreignWorkflows: IntegrationProposal[];
   /**
@@ -86,15 +83,13 @@ async function readWorkflowState(
 ): Promise<ForeignMachineWorkflowState> {
   const settle = <T,>(promise: Promise<T>) =>
     withMachineTimeout(promise, machine.machineName).catch(() => null);
-  const [needs, statuses, proposals, workflows] = await Promise.all([
+  const [needs, proposals, workflows] = await Promise.all([
     settle(window.ade.rebase.scanNeeds(machine.pin)),
-    settle(window.ade.lanes.listAutoRebaseStatuses(machine.pin)),
     settle(window.ade.prs.listProposals(machine.pin)),
     settle(window.ade.prs.listIntegrationWorkflows({ view: "all" }, machine.pin)),
   ]);
   return {
     rebaseNeeds: Array.isArray(needs) ? needs : previous?.rebaseNeeds ?? [],
-    autoRebaseStatuses: Array.isArray(statuses) ? statuses : previous?.autoRebaseStatuses ?? [],
     proposals: Array.isArray(proposals) ? proposals : previous?.proposals ?? [],
     workflows: Array.isArray(workflows) ? workflows : previous?.workflows ?? [],
   };
@@ -105,7 +100,6 @@ export function useWorkflowMachines(args: {
   /** The tab machine's own lanes and rebase items; they keep their bare ids. */
   boundLanes: readonly LaneSummary[];
   boundRebaseNeeds: readonly RebaseNeed[];
-  boundAutoRebaseStatuses: readonly AutoRebaseLaneStatus[];
 }): WorkflowMachines {
   const all = useAllMachineLanes(args.active);
   const router = useMemo(() => createLaneMachineRouter(all), [all]);
@@ -188,7 +182,6 @@ export function useWorkflowMachines(args: {
     const boundIds = new Set<string>([
       ...args.boundLanes.map((lane) => lane.id),
       ...args.boundRebaseNeeds.map((need) => need.laneId),
-      ...args.boundAutoRebaseStatuses.map((status) => status.laneId),
     ]);
     const foreignLaneById = new Map<string, { machineId: string; laneId: string }>();
     const foreignProposalById = new Map<string, { machineId: string; proposalId: string }>();
@@ -210,16 +203,11 @@ export function useWorkflowMachines(args: {
       const machineLanes = all.lanesByMachineId.get(machine.machineId) ?? [];
       lanesByMachineId.set(machine.machineId, machineLanes);
       for (const lane of machineLanes) {
-        lanes.push({
-          ...lane,
-          id: laneViewId(machine.machineId, lane.id),
-          parentLaneId: lane.parentLaneId ? laneViewId(machine.machineId, lane.parentLaneId) : null,
-        });
+        lanes.push({ ...lane, id: laneViewId(machine.machineId, lane.id) });
       }
     }
 
     const foreignRebaseNeeds: RebaseNeed[] = [];
-    const foreignAutoRebaseStatuses: AutoRebaseLaneStatus[] = [];
     const foreignProposals: IntegrationProposal[] = [];
     const foreignWorkflows: IntegrationProposal[] = [];
     for (const machine of foreignMachines) {
@@ -228,9 +216,6 @@ export function useWorkflowMachines(args: {
       for (const need of state.rebaseNeeds) {
         // `prId` is a row in that machine's database; nothing here can open it.
         foreignRebaseNeeds.push({ ...need, laneId: laneViewId(machine.machineId, need.laneId), prId: null });
-      }
-      for (const status of state.autoRebaseStatuses) {
-        foreignAutoRebaseStatuses.push({ ...status, laneId: laneViewId(machine.machineId, status.laneId) });
       }
       // A proposal's contents (source lanes, integration lane) stay that
       // machine's real ids; `lanesForProposal` names them.
@@ -280,7 +265,6 @@ export function useWorkflowMachines(args: {
       machines: all.machines,
       lanes,
       foreignRebaseNeeds,
-      foreignAutoRebaseStatuses,
       foreignProposals,
       foreignWorkflows,
       machineForLane,
@@ -293,7 +277,7 @@ export function useWorkflowMachines(args: {
       refreshMachine,
     };
   }, [
-    all, args.boundAutoRebaseStatuses, args.boundLanes, args.boundRebaseNeeds,
+    all, args.boundLanes, args.boundRebaseNeeds,
     foreignMachines, refreshForeign, refreshMachine, router, stateByMachine,
   ]);
 }

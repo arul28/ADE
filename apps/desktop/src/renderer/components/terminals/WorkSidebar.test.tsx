@@ -164,10 +164,6 @@ const lane: LaneSummary = {
   baseRef: "main",
   branchRef: "feature/test",
   worktreePath: "/repo",
-  parentLaneId: null,
-  childCount: 0,
-  stackDepth: 0,
-  parentStatus: null,
   isEditProtected: false,
   status: {
     dirty: false,

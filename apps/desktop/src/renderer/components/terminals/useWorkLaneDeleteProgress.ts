@@ -88,8 +88,6 @@ export function useWorkLaneDeleteProgress({
         includeStatus: false,
         includeSnapshots: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       }),
       refreshSessions(),
     ]).then((results) => {

@@ -255,20 +255,13 @@ function buildLaneWarningSummaries(args: {
       const baseMessages = args.laneWarningItemsById[laneId] ?? [];
       const targetDiffMessage = describePrTargetDiff({
         lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
-        lanes: args.allLanes,
         targetBranch: args.targetBranch ?? null,
         primaryBranchRef: args.primaryBranchRef ?? null,
-      });
-      const parentMergedMessage = describeMergedParentIssue({
-        lane: args.allLanes.find((entry) => entry.id === laneId) ?? null,
-        lanes: args.allLanes,
         pullRequests: args.pullRequests,
-        primaryBranchRef: args.primaryBranchRef ?? null,
       });
       const messages = [
         ...baseMessages,
         ...(targetDiffMessage ? [targetDiffMessage] : []),
-        ...(parentMergedMessage ? [parentMergedMessage] : []),
       ];
       if (!lane || messages.length === 0) return null;
       return { laneId, laneName: lane.name, messages };
@@ -287,36 +280,6 @@ function getCreateActionLabel(mode: CreateMode, busy: boolean): string {
     return mode === "integration" ? "SAVING..." : "CREATING...";
   }
   return mode === "integration" ? "SAVE PROPOSAL" : "CREATE PR";
-}
-
-function resolveDefaultBaseBranchForLane(args: {
-  lane: LaneSummary | null;
-  lanes: LaneSummary[];
-  primaryBranchRef?: string | null;
-  pullRequests?: PrSummary[];
-}): string {
-  const lane = args.lane;
-  if (lane?.parentLaneId) {
-    const parentPr = args.pullRequests?.find((pr) => pr.laneId === lane.parentLaneId && pr.state === "merged");
-    if (parentPr?.baseBranch) return parentPr.baseBranch;
-  }
-  return resolveLaneBaseBranch(args);
-}
-
-function describeMergedParentIssue(args: {
-  lane: LaneSummary | null;
-  lanes: LaneSummary[];
-  pullRequests: PrSummary[];
-  primaryBranchRef?: string | null;
-}): string | null {
-  const lane = args.lane;
-  if (!lane?.parentLaneId) return null;
-  const parent = args.lanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
-  if (!parent || parent.laneType === "primary") return null;
-  const parentPr = args.pullRequests.find((pr) => pr.laneId === parent.id && pr.state === "merged");
-  if (!parentPr) return null;
-  const targetBranch = parentPr.baseBranch || branchNameFromRef(args.primaryBranchRef ?? "main") || "main";
-  return `The lane this builds on ("${parent.name}") has already merged. Update this lane from ${targetBranch} before creating its PR so the diff starts from merged code.`;
 }
 
 function LaneCheckboxList({
@@ -734,9 +697,9 @@ export function CreatePrModal({
       setNormalBaseBranch("");
       return;
     }
-    const nextDefault = resolveDefaultBaseBranchForLane({
+    // The lane's open PR base, else its base (the project's default branch).
+    const nextDefault = resolveLaneBaseBranch({
       lane: selectedNormalLane,
-      lanes,
       primaryBranchRef: primaryLane?.branchRef ?? null,
       pullRequests: knownPrs,
     });
@@ -950,24 +913,17 @@ export function CreatePrModal({
     const baseMessages = laneWarningItemsById[selectedNormalLane.id] ?? [];
     const targetDiffMessage = describePrTargetDiff({
       lane: selectedNormalLane,
-      lanes,
       targetBranch: normalBaseBranch,
       primaryBranchRef: primaryLane?.branchRef ?? null,
-    });
-    const parentMergedMessage = describeMergedParentIssue({
-      lane: selectedNormalLane,
-      lanes,
       pullRequests: knownPrs,
-      primaryBranchRef: primaryLane?.branchRef ?? null,
     });
     const messages = [
       ...baseMessages,
       ...(targetDiffMessage ? [targetDiffMessage] : []),
-      ...(parentMergedMessage ? [parentMergedMessage] : []),
     ];
     if (!messages.length) return [];
     return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
-  }, [knownPrs, laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
+  }, [knownPrs, laneWarningItemsById, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
   const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: integrationSources,

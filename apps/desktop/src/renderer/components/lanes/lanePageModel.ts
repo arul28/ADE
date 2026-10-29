@@ -8,7 +8,6 @@ import type {
   PrReviewStatus,
   PrSummary,
 } from "../../../shared/types";
-import type { CreateLaneMode } from "./CreateLaneDialog";
 import { isTerminalPrState } from "../../lib/prState";
 import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteState";
 
@@ -16,11 +15,6 @@ import { buildPrsRouteSearch, prRouteCoordinatesMatch } from "../prs/prsRouteSta
 // surfaces and their tests import them from here. The rule itself lives in
 // `shared/` so the host bridge and the CLI answer it the same way.
 export { laneIsOnBaseBranch };
-
-type CreateLaneRequest =
-  | { kind: "child"; args: { name: string; parentLaneId: string } }
-  | { kind: "root"; args: { name: string; baseBranch: string } }
-  | { kind: "import"; args: { branchRef: string; name: string; baseBranch?: string } };
 
 export type LaneDeleteBatchResult<T> =
   | { status: "fulfilled"; lane: T }
@@ -82,42 +76,6 @@ export function lanePrTagRoutePath(
 export const VISIBLE_LANE_PR_REFRESH_LIMIT = 4;
 export const VISIBLE_LANE_PR_REFRESH_STALE_MS = 15_000;
 
-export function resolveCreateLaneRequest(args: {
-  name: string;
-  createMode: CreateLaneMode;
-  createParentLaneId: string;
-  createBaseBranch: string;
-  createImportBranch: string;
-}): CreateLaneRequest {
-  if (args.createMode === "child") {
-    return {
-      kind: "child",
-      args: {
-        name: args.name,
-        parentLaneId: args.createParentLaneId,
-      },
-    };
-  }
-
-  if (args.createMode === "existing") {
-    return {
-      kind: "import",
-      args: {
-        branchRef: args.createImportBranch,
-        name: args.name,
-      },
-    };
-  }
-
-  return {
-    kind: "root",
-    args: {
-      name: args.name,
-      baseBranch: args.createBaseBranch,
-    },
-  };
-}
-
 export function parseLaneIdsParam(value: string | null): string[] {
   return (value ?? "")
     .split(",")
@@ -137,28 +95,6 @@ export function buildLaneActionClearedSearch(search: string): string {
   next.delete("manageTab");
   const query = next.toString();
   return query ? `?${query}` : "";
-}
-
-export function planLaneDeleteBatches<T extends Pick<LaneSummary, "id" | "parentLaneId">>(lanes: T[]): T[][] {
-  const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-  const remaining = new Set(lanesById.keys());
-  const batches: T[][] = [];
-
-  while (remaining.size > 0) {
-    const leafIds = Array.from(remaining).filter((laneId) => {
-      for (const candidateId of remaining) {
-        if (lanesById.get(candidateId)?.parentLaneId === laneId) return false;
-      }
-      return true;
-    });
-    const batchIds = leafIds.length > 0 ? leafIds : [remaining.values().next().value as string];
-    batches.push(batchIds.map((laneId) => lanesById.get(laneId)).filter((lane): lane is T => lane != null));
-    for (const laneId of batchIds) {
-      remaining.delete(laneId);
-    }
-  }
-
-  return batches;
 }
 
 export async function runLaneDeleteBatchWithConcurrency<T>(
@@ -190,23 +126,6 @@ export async function runLaneDeleteBatchWithConcurrency<T>(
   }));
 
   return results;
-}
-
-export function laneHasAncestor<T extends Pick<LaneSummary, "id" | "parentLaneId">>(
-  laneId: string,
-  ancestorLaneId: string,
-  lanesById: ReadonlyMap<string, T>,
-): boolean {
-  const visited = new Set<string>([laneId]);
-  let cursor = lanesById.get(laneId) ?? null;
-  while (cursor?.parentLaneId) {
-    const parentLaneId = cursor.parentLaneId;
-    if (parentLaneId === ancestorLaneId) return true;
-    if (visited.has(parentLaneId)) return false;
-    visited.add(parentLaneId);
-    cursor = lanesById.get(parentLaneId) ?? null;
-  }
-  return false;
 }
 
 export function resolveLaneIdsDeepLinkSelection(args: {

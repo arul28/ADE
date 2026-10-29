@@ -1,8 +1,7 @@
 import React, { startTransition, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { defaultRangeExtractor, useVirtualizer } from "@tanstack/react-virtual";
-import { useStableBinding } from "../../state/laneMachineRouting";
 import type { LaneDiffMode } from "../../../shared/types";
-import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, Gear, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
+import { Archive, ArrowDown, ArrowLeft, ArrowsClockwise, ArrowUp, ArrowUUpLeft, CaretDown, CaretRight, Check, DotsThree, Folder, GitBranch, GitCommit, Stack, Trash } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import {
   projectStateKeyForBinding,
@@ -11,12 +10,13 @@ import {
 import { effectiveRuntimeBinding } from "../../lib/chatMachineRouting";
 import { selectOtherMachineBranchStates, useLanesForPin } from "../../state/crossMachineLanes";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
+import { plainLaneStartBranch } from "../../../shared/laneStart";
 import { isBranchDiffUnsupported } from "../../lib/branchDiffSupport";
 
 const EMPTY_CROSS_MACHINE_LANES: Record<string, never> = {};
 import { modifierKeyLabel } from "../../lib/platform";
 import { cn } from "../ui/cn";
-import { Banner, type NoticeTone } from "../ui/notice";
+import { Banner } from "../ui/notice";
 import { showToast } from "../app/toast/toastStore";
 import { BranchIcon } from "../ui/vcsIcons";
 import { PaneTooltip } from "../ui/PaneTooltip";
@@ -59,13 +59,12 @@ import type {
   GitStashSummary,
   GitSyncMode,
   GitUpstreamSyncStatus,
-  AutoRebaseLaneStatus,
   LaneSummary,
   OpenProjectBinding
 } from "../../../shared/types";
 
 type NextActionHint = {
-  action: GitRecommendedAction | "rebase_push" | "resolve_conflicts";
+  action: GitRecommendedAction | "resolve_conflicts";
   label: string;
   detail: string;
 };
@@ -77,11 +76,6 @@ type PendingGuardedPush =
   | { kind: "push"; forceWithLease: boolean; warning: NonNullable<DivergenceWarning> }
   | { kind: "rebase-push"; confirmPublish: boolean; warning: NonNullable<DivergenceWarning> };
 
-/**
- * Lane orchestration IPC (`lanes.rebaseStart`, `lanes.createFromUnstaged`) has
- * no machine-pin parameter, so these actions cannot run against a chat on
- * another machine. Fail loudly rather than silently acting on the wrong one.
- */
 const MAX_RENDERED_CHANGE_ROWS_PER_SECTION = 300;
 /** Files list rows are virtualized; the estimate stands in until each row is measured. */
 const CHANGE_LIST_ROW_ESTIMATE_PX = 28;
@@ -103,7 +97,6 @@ type LaneGitActionsCachedState = {
   stashes: GitStashSummary[];
   syncStatus: GitUpstreamSyncStatus | null;
   forcePushSuggested: boolean;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictState: GitConflictState | null;
   stuckRebase: GitConflictState | null;
   updatedAtMs: number;
@@ -167,7 +160,6 @@ function patchLaneGitActionsCachedState(
     stashes: previous?.stashes ?? [],
     syncStatus: previous?.syncStatus ?? null,
     forcePushSuggested: previous?.forcePushSuggested ?? false,
-    autoRebaseStatus: previous?.autoRebaseStatus ?? null,
     conflictState: previous?.conflictState ?? null,
     stuckRebase: previous?.stuckRebase ?? null,
     ...patch,
@@ -380,34 +372,6 @@ function nextChangeListRowWithControls(rows: ChangeListRow[], from: number, step
     if (row && (row.kind === "folder" || row.kind === "notice" || (row.kind === "file" && row.mode !== "branch"))) return index;
   }
   return -1;
-}
-
-function getAutoRebaseBannerConfig(state: AutoRebaseLaneStatus["state"]): {
-  tone: NoticeTone;
-  label: string;
-  fallbackMessage: string;
-} {
-  if (state === "autoRebased") {
-    return {
-      tone: "success",
-      label: "Auto rebased",
-      fallbackMessage: "Lane was rebased and pushed automatically."
-    };
-  }
-  if (state === "rebaseConflict" || state === "rebaseFailed") {
-    return {
-      tone: "error",
-      label: "Auto-rebase failed",
-      fallbackMessage: state === "rebaseConflict"
-        ? "ADE predicted conflicts for this lane and stopped before rewriting or pushing it."
-        : "ADE tried to auto-rebase this lane, restored the previous state, and stopped before pushing changes."
-    };
-  }
-  return {
-    tone: "warning",
-    label: "Auto-rebase pending",
-    fallbackMessage: "ADE will auto-rebase and auto-push this lane when its parent advances."
-  };
 }
 
 function SectionCard({
@@ -628,13 +592,10 @@ function TruncatedChangesNotice({ total, noun, onShowAll }: { total: number; nou
 export function LaneGitActionsPane({
   laneId,
   active = true,
-  autoRebaseEnabled,
-  autoRebaseStatusSnapshot,
-  onOpenSettings,
   onRebaseNowLocal,
   onRebaseAndPush,
   onViewRebaseDetails,
-  onResolveRebaseConflict,
+  compareBase = null,
   onSelectFile,
   onSelectCommit,
   onClearDiffSelection,
@@ -650,13 +611,14 @@ export function LaneGitActionsPane({
 }: {
   laneId: string | null;
   active?: boolean;
-  autoRebaseEnabled: boolean;
-  autoRebaseStatusSnapshot?: AutoRebaseLaneStatus | null;
-  onOpenSettings: () => void;
   onRebaseNowLocal?: (laneId: string) => Promise<void> | void;
   onRebaseAndPush?: (laneId: string) => Promise<void> | void;
   onViewRebaseDetails?: (laneId?: string | null) => void;
-  onResolveRebaseConflict?: (laneId: string, parentLaneId: string | null) => void;
+  /**
+   * The branch this lane rebases onto: its open PR's base, else the project's
+   * default branch. Unset falls back to the lane's own base.
+   */
+  compareBase?: string | null;
   onSelectFile: (path: string, mode: LaneDiffMode) => void;
   onSelectCommit: (commit: GitCommitSummary | null) => void;
   /** Clears file + commit diff selection (back to file list in this section). */
@@ -702,9 +664,6 @@ export function LaneGitActionsPane({
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const selectLane = useAppStore((s) => s.selectLane);
   const pin = runtimePin ?? null;
-  // The auto-rebase subscription holds the pin by key: re-subscribing a pinned
-  // pump for every rebuilt pin object would drop the events in between.
-  const stablePin = useStableBinding(pin);
   // Lane ids are only unique per machine, so a pinned panel gets its own cache
   // namespace. Always key through `projectStateKeyForBinding` of the effective
   // session machine: local stays on the checkout path across a bound→pinned
@@ -724,10 +683,6 @@ export function LaneGitActionsPane({
   const pinnedLanes: LaneSummary[] = pinnedMachineLanes ?? lanes;
 
   const lane = useMemo(() => pinnedLanes.find((entry) => entry.id === laneId) ?? null, [pinnedLanes, laneId]);
-  const parentLane = useMemo(() => {
-    if (!lane?.parentLaneId) return null;
-    return pinnedLanes.find((entry) => entry.id === lane.parentLaneId) ?? null;
-  }, [pinnedLanes, lane]);
 
   const rootRef = useRef<HTMLDivElement>(null);
   const currentLaneIdRef = useRef<string | null>(laneId);
@@ -777,10 +732,6 @@ export function LaneGitActionsPane({
   const [showStashes, setShowStashes] = useState(false);
   const advancedMenuRef = useRef<HTMLDivElement>(null);
   const advancedTriggerRef = useRef<HTMLSpanElement>(null);
-  const [autoRebaseStatus, setAutoRebaseStatus] = useState<AutoRebaseLaneStatus | null>(
-    autoRebaseStatusSnapshot ?? initialCachedGitState?.autoRebaseStatus ?? null,
-  );
-  const autoRebaseStatusSnapshotRef = useRef<AutoRebaseLaneStatus | null | undefined>(autoRebaseStatusSnapshot);
   const [conflictState, setConflictState] = useState<GitConflictState | null>(initialCachedGitState?.conflictState ?? null);
   const [stuckRebase, setStuckRebase] = useState<GitConflictState | null>(initialCachedGitState?.stuckRebase ?? null);
   const [pendingPush, setPendingPush] = useState<PendingGuardedPush | null>(null);
@@ -1118,35 +1069,6 @@ export function LaneGitActionsPane({
     };
   }, [showAdvanced]);
 
-  const refreshAutoRebaseStatus = useCallback(async (targetLaneId: string | null = laneId) => {
-    if (!targetLaneId) {
-      if (isViewingLane(targetLaneId)) {
-        setAutoRebaseStatus(null);
-      }
-      return;
-    }
-    try {
-      // The pin reads the statuses of the lane's own machine.
-      const statuses = await window.ade.lanes.listAutoRebaseStatuses(pin);
-      const nextStatus = statuses.find((entry) => entry.laneId === targetLaneId) ?? null;
-      patchLaneGitActionsCachedState(projectStateKey, targetLaneId, { autoRebaseStatus: nextStatus });
-      if (isViewingLane(targetLaneId)) {
-        setAutoRebaseStatus(nextStatus);
-      }
-    } catch {
-      if (isViewingLane(targetLaneId)) {
-        setAutoRebaseStatus(null);
-      }
-    }
-  }, [isViewingLane, laneId, pin, projectStateKey]);
-
-  useEffect(() => {
-    autoRebaseStatusSnapshotRef.current = autoRebaseStatusSnapshot;
-    if (autoRebaseStatusSnapshot !== undefined) {
-      setAutoRebaseStatus(autoRebaseStatusSnapshot);
-    }
-  }, [autoRebaseStatusSnapshot]);
-
   // Only git's own `[rejected] … (non-fast-forward)` / `(fetch first)` refusal
   // means the remote history moved. Every refused push also prints "failed to
   // push some refs", including hook, branch-rule and credential refusals, where
@@ -1298,7 +1220,6 @@ export function LaneGitActionsPane({
     setForcePushSuggested(cached?.forcePushSuggested ?? false);
     setCollapsedChangeFolders(new Set());
     setAmendCommit(false);
-    setAutoRebaseStatus(autoRebaseStatusSnapshotRef.current ?? cached?.autoRebaseStatus ?? null);
     setConflictState(cached?.conflictState ?? null);
     setStuckRebase(cached?.stuckRebase ?? null);
     if (!active || !laneId) return;
@@ -1310,18 +1231,6 @@ export function LaneGitActionsPane({
       });
     });
   }, [active, laneGitActionScopeKey, laneId, listBranchRef, listScope, pin, projectStateKey]);
-
-  useEffect(() => {
-    if (!active || !laneId) return;
-    if (autoRebaseStatusSnapshotRef.current !== undefined) return;
-    const targetLaneId = laneId;
-    const timer = window.setTimeout(() => {
-      if (document.visibilityState !== "visible") return;
-      if (autoRebaseStatusSnapshotRef.current !== undefined) return;
-      void refreshAutoRebaseStatus(targetLaneId);
-    }, 3_500);
-    return () => window.clearTimeout(timer);
-  }, [active, laneId, lane?.branchRef, refreshAutoRebaseStatus]);
 
   useEffect(() => {
     if (!active || !laneId) return;
@@ -1368,21 +1277,6 @@ export function LaneGitActionsPane({
     };
   }, [active, isViewingLane, laneId, pin, projectStateKey]);
 
-  useEffect(() => {
-    if (!active) return;
-    const unsubscribe = window.ade.lanes.onAutoRebaseEvent((event) => {
-      if (event.type !== "auto-rebase-updated") return;
-      if (!laneId) {
-        setAutoRebaseStatus(null);
-        return;
-      }
-      const nextStatus = event.statuses.find((entry) => entry.laneId === laneId) ?? null;
-      patchLaneGitActionsCachedState(projectStateKey, laneId, { autoRebaseStatus: nextStatus });
-      setAutoRebaseStatus(nextStatus);
-    }, stablePin);
-    return unsubscribe;
-  }, [active, laneId, stablePin, projectStateKey]);
-
   const changedFileCount = useMemo(() => {
     const paths = new Set<string>();
     for (const file of changes.staged) paths.add(file.path);
@@ -1395,16 +1289,15 @@ export function LaneGitActionsPane({
     if (busyAction != null) return "Wait for the current git action to finish.";
     if (conflictState?.inProgress) {
       return conflictState.kind === "merge"
-        ? "Finish the current merge before moving changes to a new lane."
-        : "Finish the current rebase before moving changes to a new lane.";
+        ? "Finish the current merge before copying changes to a new lane."
+        : "Finish the current rebase before copying changes to a new lane.";
     }
-    if (hasStaged) return "Unstage all changes before moving unstaged work to a new lane.";
-    if (!hasUnstaged) return "This lane has no unstaged changes to move.";
-    return "Create a new child lane from this lane's current HEAD, then move unstaged and untracked changes into it while keeping them unstaged.";
+    if (!hasStaged && !hasUnstaged) return "This lane has no uncommitted changes to copy.";
+    return "Create a new lane from this lane's branch with a copy of its uncommitted changes. This lane keeps them.";
   }, [busyAction, conflictState, hasStaged, hasUnstaged, laneId]);
 
   const showRescueButton = Boolean(laneId) && (hasUnstaged || hasStaged);
-  const rescueButtonDisabled = !laneId || busyAction != null || hasStaged || !hasUnstaged || Boolean(conflictState?.inProgress);
+  const rescueButtonDisabled = !laneId || busyAction != null || (!hasStaged && !hasUnstaged) || Boolean(conflictState?.inProgress);
 
   const stagedPathSet = useMemo(() => new Set(changes.staged.map((file) => file.path)), [changes.staged]);
   const unstagedPathSet = useMemo(() => new Set(changes.unstaged.map((file) => file.path)), [changes.unstaged]);
@@ -1501,19 +1394,12 @@ export function LaneGitActionsPane({
     });
   };
 
-  const moveUnstagedToNewLane = useCallback(async () => {
+  const newLaneWithChanges = useCallback(async () => {
     if (!laneId || busyAction != null) return;
-    if (hasStaged) {
+    if (!hasStaged && !hasUnstaged) {
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
-        error: "This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.",
-      });
-      return;
-    }
-    if (!hasUnstaged) {
-      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
-        notice: null,
-        error: "This lane has no unstaged changes to move.",
+        error: "This lane has no uncommitted changes to copy.",
       });
       return;
     }
@@ -1521,14 +1407,30 @@ export function LaneGitActionsPane({
       const kindLabel = conflictState.kind === "merge" ? "merge" : "rebase";
       patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
         notice: null,
-        error: `Finish the current ${kindLabel} before moving changes to a new lane.`,
+        error: `Finish the current ${kindLabel} before copying changes to a new lane.`,
+      });
+      return;
+    }
+    let branch = plainLaneStartBranch(lane?.branchRef);
+    if (!branch) {
+      // A lane on another machine may not be in this window's lists yet; ask
+      // its own machine.
+      const machineLanes = await Promise.resolve()
+        .then(() => window.ade.lanes.list({ includeStatus: false }, pin))
+        .catch(() => [] as LaneSummary[]);
+      branch = plainLaneStartBranch(machineLanes.find((entry) => entry.id === laneId)?.branchRef);
+    }
+    if (!branch) {
+      patchLaneGitActionRuntimeState(laneGitActionScopeKey, {
+        notice: null,
+        error: "This lane is not on a branch, so a new lane cannot start from it.",
       });
       return;
     }
 
     const name = await requestTextInput({
-      title: "Move unstaged to new lane",
-      message: "Create a child lane from this lane's current HEAD and move unstaged plus untracked changes into it.",
+      title: "New lane with these changes",
+      message: `Start a new lane from ${branch} with a copy of the uncommitted changes (staged, unstaged and untracked). This lane keeps its changes.`,
       placeholder: "e.g. feature/rescue-work",
       confirmLabel: "Create lane",
       validate: (value) => (value.trim().length ? null : "Lane name is required."),
@@ -1538,26 +1440,24 @@ export function LaneGitActionsPane({
     const actionLaneId = laneId;
     const actionScopeKey = laneGitActionsStateKey(projectStateKey, actionLaneId);
     const actionVersion = beginLaneGitActionRuntime(actionScopeKey, {
-      busyAction: "move unstaged",
+      busyAction: "new lane with changes",
       notice: null,
       error: null,
     });
     try {
-      invalidateLaneGitCaches(projectStateKey, actionLaneId);
-      const created = await window.ade.lanes.createFromUnstaged({ sourceLaneId: actionLaneId, name }, pin)
-        .finally(() => invalidateLaneGitCaches(projectStateKey, actionLaneId));
+      // Made on this lane's machine: the copy reads this lane's folder.
+      const created = await window.ade.lanes.create(
+        { name: name.trim(), start: { from: "branch", branch, bring: "uncommitted" } },
+        pin,
+      );
       if (pin) {
         // The new lane lives on the lane's machine, not in this tab's lane
-        // list or Lanes page, so stay here: the source lane's changes moved
-        // out, and the new lane appears in that machine's lane list.
+        // list or Lanes page, so stay here; it appears in that machine's list.
         patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
           busyAction: null,
-          notice: `Moved unstaged changes to new lane ${created.name}.`,
+          notice: `Created ${created.name} with a copy of these changes.`,
           error: null,
         });
-        // Best-effort: the lane already exists, so a failed re-read must not
-        // turn the success into an error.
-        await refreshLaneGitState(actionLaneId).catch(() => undefined);
         return;
       }
       patchLaneGitActionRuntimeStateIfCurrent(actionScopeKey, actionVersion, {
@@ -1584,8 +1484,8 @@ export function LaneGitActionsPane({
     laneId,
     navigate,
     pin,
+    lane?.branchRef,
     projectStateKey,
-    refreshLaneGitState,
     refreshLanes,
     requestTextInput,
     selectLane,
@@ -1703,7 +1603,6 @@ export function LaneGitActionsPane({
       invalidateLaneGitCaches(projectStateKey, laneId);
       const start = await window.ade.lanes.rebaseStart({
         laneId,
-        scope: "lane_only",
         pushMode: "none",
         actor: "user"
       }, pin);
@@ -1810,13 +1709,6 @@ export function LaneGitActionsPane({
           : `Finish the current ${kindLabel} before doing any remote sync operations.`
       };
     }
-    if (lane?.parentLaneId && lane.status.behind > 0) {
-      return {
-        action: "rebase_push",
-        label: "Rebase and push",
-        detail: `Behind parent by ${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"}. Rebase locally, then publish the rewritten branch.`
-      };
-    }
     if (forcePushSuggested) {
       return {
         action: "force_push_lease",
@@ -1861,12 +1753,14 @@ export function LaneGitActionsPane({
       };
     }
     return null;
-  }, [conflictState, forcePushSuggested, lane, laneId, syncStatus]);
+  }, [conflictState, forcePushSuggested, laneId, syncStatus]);
 
   const divergedSync = Boolean(syncStatus?.diverged);
   const mergeConflictState = conflictState?.inProgress && conflictState.kind === "merge" ? conflictState : null;
   const pullBlockedByConflict = Boolean(conflictState?.inProgress);
-  const rebaseConflictParentLaneId = autoRebaseStatus?.parentLaneId ?? lane?.parentLaneId ?? null;
+  // The primary lane is the base; it never rebases onto it.
+  const canRebaseOntoBase = lane != null && lane.laneType !== "primary";
+  const rebaseBase = compareBase?.trim() || plainLaneStartBranch(lane?.baseRef) || "main";
   const syncButtonDisabled = !laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty;
 
   const renderFileRow = (file: FileChange, mode: LaneDiffMode) => {
@@ -2225,14 +2119,16 @@ export function LaneGitActionsPane({
         >
           <ArrowUp size={16} />
         </WorkToolChromeButton>
-        <WorkToolChromeButton
-          label="Rebase on parent and push"
-          onClick={() => runRebaseAndPushFlow(true)}
-          disabled={syncButtonDisabled || !lane?.parentLaneId}
-          testId="git-pane-rebase"
-        >
-          <Stack size={16} />
-        </WorkToolChromeButton>
+        {canRebaseOntoBase ? (
+          <WorkToolChromeButton
+            label={`Rebase onto ${rebaseBase} and push`}
+            onClick={() => runRebaseAndPushFlow(true)}
+            disabled={syncButtonDisabled}
+            testId="git-pane-rebase"
+          >
+            <Stack size={16} />
+          </WorkToolChromeButton>
+        ) : null}
         <span ref={advancedTriggerRef} className="inline-flex">
           <WorkToolChromeButton
             label="More git actions"
@@ -2316,15 +2212,15 @@ export function LaneGitActionsPane({
                     warning: "This will overwrite remote history",
                   }}
                 />
-                {lane?.parentLaneId ? (
+                {canRebaseOntoBase ? (
                   <ActionButton
-                    title="Rebase local only"
+                    title={`Rebase onto ${rebaseBase}`}
                     icon={<Stack size={14} />}
                     detail={lane?.status.behind === 0
-                      ? "Already up to date with parent."
+                      ? `Already up to date with ${rebaseBase}.`
                       : lane?.status.dirty
                         ? "Commit or stash uncommitted changes before rebasing."
-                        : "Update this lane from its parent without pushing anything yet."}
+                        : `Replay this lane's commits on top of ${rebaseBase} without pushing anything yet.`}
                     disabled={!laneId || busyAction != null || lane?.status.behind === 0 || lane?.status.dirty}
                     onClick={() => {
                       if (!laneId) return;
@@ -2338,7 +2234,6 @@ export function LaneGitActionsPane({
                         invalidateLaneGitCaches(projectStateKey, laneId);
                         const start = await window.ade.lanes.rebaseStart({
                           laneId,
-                          scope: "lane_only",
                           pushMode: "none",
                           actor: "user"
                         }, pin);
@@ -2348,19 +2243,19 @@ export function LaneGitActionsPane({
                       });
                     }}
                     smartTooltip={{
-                      label: "Rebase Local Only",
-                      description: "Replay your commits on top of the parent branch without pushing. Use this to stay current before pushing.",
-                      gitCommand: `git rebase ${parentLane?.branchRef ?? "<parent>"}`,
+                      label: `Rebase onto ${rebaseBase}`,
+                      description: `Replay your commits on top of ${rebaseBase} without pushing. Use this to stay current before pushing.`,
+                      gitCommand: `git rebase ${rebaseBase}`,
                       effect: lane?.status.behind === 0
-                        ? "Already up to date with parent"
+                        ? `Already up to date with ${rebaseBase}`
                         : lane?.status.dirty
                           ? "Cannot rebase: uncommitted changes present"
-                          : `Rebase onto parent (${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind)`,
+                          : `${lane.status.behind} commit${lane.status.behind === 1 ? "" : "s"} behind ${rebaseBase}`,
                       warning: lane?.status.dirty ? "Commit or stash changes first" : undefined,
                     }}
                   />
                 ) : null}
-                {lane?.parentLaneId ? (
+                {canRebaseOntoBase ? (
                   <ActionButton
                     title="View rebase details"
                     icon={<GitBranch size={14} />}
@@ -2435,18 +2330,6 @@ export function LaneGitActionsPane({
                     setShowStashes((prev) => !prev);
                   }}
                 />
-                {!autoRebaseEnabled && nextActionHint?.action === "rebase_push" ? (
-                  <ActionButton
-                    title="Turn on auto-rebase…"
-                    icon={<Gear size={14} />}
-                    detail="Auto-rebase is off. Turn it on in Settings > Lane Templates so child lanes follow their parent."
-                    disabled={false}
-                    onClick={() => {
-                      setShowAdvanced(false);
-                      onOpenSettings?.();
-                    }}
-                  />
-                ) : null}
               </div>
             </div>
           ) : null}
@@ -2538,54 +2421,6 @@ export function LaneGitActionsPane({
           }}
         />
       ) : null}
-
-      {autoRebaseStatus ? (() => {
-        const bannerConfig = getAutoRebaseBannerConfig(autoRebaseStatus.state);
-        const isAutoRebaseFailure = autoRebaseStatus.state === "rebaseConflict" || autoRebaseStatus.state === "rebaseFailed";
-        const bannerMessage = isAutoRebaseFailure
-          ? autoRebaseStatus.message
-            ? `Auto-rebase failed. ${autoRebaseStatus.message}`
-            : bannerConfig.fallbackMessage
-          : autoRebaseStatus.message ?? bannerConfig.fallbackMessage;
-        const openRebaseTab = () => {
-          if (!laneId) return;
-          if (autoRebaseStatus.state === "rebaseConflict" && onResolveRebaseConflict) {
-            onResolveRebaseConflict(laneId, rebaseConflictParentLaneId);
-            return;
-          }
-          const search = new URLSearchParams({ tab: "workflows", workflow: "rebase", laneId });
-          if (rebaseConflictParentLaneId) search.set("parentLaneId", rebaseConflictParentLaneId);
-          navigate(`/prs?${search.toString()}`);
-        };
-        return (
-          <Banner
-            layout="inline"
-            style={{ margin: "6px 8px", flexShrink: 0 }}
-            model={{
-              id: `lane-auto-rebase:${laneId ?? ""}`,
-              tone: bannerConfig.tone,
-              icon: <GitBranch size={13} weight="bold" />,
-              title: bannerConfig.label,
-              detail: bannerMessage,
-              actions: autoRebaseStatus.state === "autoRebased"
-                ? undefined
-                : isAutoRebaseFailure
-                  ? [{
-                      label: "Open Rebase/Merge tab",
-                      title: "View detailed rebase information and resolve issues.",
-                      disabled: !laneId || busyAction != null,
-                      onClick: openRebaseTab,
-                    }]
-                  : [{
-                      label: "Rebase and push",
-                      title: "Rebase this lane onto its parent, then push the rewritten branch to remote.",
-                      disabled: !laneId || busyAction != null,
-                      onClick: () => runRebaseAndPushFlow(true),
-                    }],
-            }}
-          />
-        );
-      })() : null}
 
       <div className="flex-1 min-h-0 overflow-hidden" style={{ display: "flex", flexDirection: "column" }}>
         {/* ─── Compact Action Toolbar ─── */}
@@ -2807,11 +2642,11 @@ export function LaneGitActionsPane({
                 ) : null}
                 {showRescueButton ? (
                   <SmartTooltip content={{
-                    label: "Create New Lane",
+                    label: "New lane with these changes",
                     description: rescueButtonTitle,
-                    effect: hasUnstaged && !hasStaged
-                      ? `Move ${changes.unstaged.length} unstaged file${changes.unstaged.length === 1 ? "" : "s"} to a new child lane`
-                      : "Unavailable",
+                    effect: rescueButtonDisabled
+                      ? "Unavailable"
+                      : `Copies ${changedFileCount} changed file${changedFileCount === 1 ? "" : "s"} to a new lane`,
                   }}>
                     <button
                       type="button"
@@ -2819,10 +2654,10 @@ export function LaneGitActionsPane({
                       disabled={rescueButtonDisabled}
                       title={rescueButtonTitle}
                       onClick={() => {
-                        void moveUnstagedToNewLane();
+                        void newLaneWithChanges();
                       }}
                     >
-                      {SKIN.actionLabel("Move changes to new lane")}
+                      {SKIN.actionLabel("New lane with these changes")}
                     </button>
                   </SmartTooltip>
                 ) : null}

@@ -12518,10 +12518,10 @@ export function AgentChatPane({
     });
   }, [runBackgroundLaneNaming]);
 
-  // Parallel-models variant: each child lane is created instantly as
+  // Parallel-models variant: each new lane is created instantly as
   // `<deterministicBase>-<modelSuffix>`. One background AI call produces the base
-  // name, then every child is renamed to `<aiBase>-<modelSuffix>` in place. A
-  // single child's rename failure must not abort the rest.
+  // name, then every new lane is renamed to `<aiBase>-<modelSuffix>` in place. A
+  // single lane's rename failure must not abort the rest.
   const startBackgroundParallelLaneNaming = useCallback((args: {
     laneId: string;
     prompt: string;
@@ -14655,19 +14655,24 @@ export function AgentChatPane({
         }).catch(() => null);
         const namingModelId = parallelModelSlots[0]!.modelId;
         const genericSuffix = autoLaneGenericSuffix();
-        // Instant: name child lanes deterministically now. If AI titles are
+        // Instant: name the new lanes deterministically now. If AI titles are
         // enabled, the real base name is generated in the background after the
-        // lanes exist and applied to each child via lanes.rename (no 10s race).
+        // lanes exist and applied to each one via lanes.rename (no 10s race).
         const baseName = createDeterministicAutoLaneName(namingSeed, { genericSuffix });
         const childLaneNamings: Array<{ laneId: string; suffix: string }> = [];
-        setParallelLaunchStatus(`Creating ${parallelModelSlots.length} child lanes…`);
+        // Every new lane starts from this lane's branch, unpushed commits
+        // included. Read on the lane's own machine: the tab's list may not hold it.
+        const sourceLanes = await window.ade.lanes.list({ includeStatus: false }, launchBinding);
+        const sourceBranch = branchNameFromRef(sourceLanes.find((candidate) => candidate.id === laneId)?.branchRef);
+        if (!sourceBranch) throw new Error("This lane is not on a branch, so parallel lanes cannot start from it.");
+        setParallelLaunchStatus(`Creating ${parallelModelSlots.length} lanes…`);
 
         for (const slot of parallelModelSlots) {
           const desc = getModelById(slot.modelId);
           const suffix = parallelLaneModelSuffix(desc);
           const laneName = `${baseName}-${suffix}`;
-          const childLane = await window.ade.lanes.createChild(
-            { parentLaneId: laneId, name: laneName },
+          const childLane = await window.ade.lanes.create(
+            { name: laneName, start: { from: "branch", branch: sourceBranch, bring: "local" } },
             launchBinding,
           );
           createdLaneIds.push(childLane.id);
@@ -14808,7 +14813,7 @@ export function AgentChatPane({
           navigate(`/lanes?${q.toString()}`);
         }
       } catch (submitError) {
-        setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up child lanes…" : null);
+        setParallelLaunchStatus(createdLaneIds.length > 0 ? "Cleaning up new lanes…" : null);
         const cleanupIssues = await cleanupTransientParallelLaunchLanes({
           laneIds: createdLaneIds,
           deleteLane: (args) => window.ade.lanes.delete(args, launchBinding),

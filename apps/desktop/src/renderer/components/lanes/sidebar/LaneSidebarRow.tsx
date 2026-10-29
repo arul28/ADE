@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowDown, CircleDashed, CircleNotch, UsersThree, Warning } from "@phosphor-icons/react";
+import { CircleDashed, CircleNotch, UsersThree } from "@phosphor-icons/react";
 import type { LaneListSnapshot, LaneSummary } from "../../../../shared/types";
 import { cn } from "../../ui/cn";
 import { relativeTimeCompact } from "../../../lib/format";
@@ -7,17 +7,17 @@ import { ToolLogo } from "../../terminals/ToolLogos";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import { LinearMark, LinearStateIcon } from "../linearBrand";
 import { getLaneAccent } from "../laneColorPalette";
-import { COLORS, toneText, fgTint } from "../laneDesignTokens";
+import { COLORS, toneText } from "../laneDesignTokens";
 import { useAppStore } from "../../../state/appStore";
 import type { LaneAgent } from "../laneAgents";
 import type { LaneTabPrTag } from "../lanePageModel";
+import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import { LaneSidebarPrChip } from "./LaneSidebarPrChip";
 import { LaneMacDesktopPeek } from "../LaneMacDesktopPeek";
 import { MachineChip } from "../../shared/MachineChip";
 import { LaneEmojiGlyph } from "../LaneEmojiGlyph";
 import type { MachineChipModel } from "../../../state/laneMachineRouting";
 import {
-  LANE_SIDEBAR_INDENT_PX,
   laneAgentToolType,
   laneBranchLabel,
   laneLastActivityAt,
@@ -32,8 +32,6 @@ type LaneRuntime = LaneListSnapshot["runtime"];
 
 export type LaneSidebarRowProps = {
   lane: LaneSummary;
-  depth: number;
-  indentLevel: number;
   fallbackColorIndex: number;
   selected: boolean;
   multiSelected: boolean;
@@ -41,16 +39,16 @@ export type LaneSidebarRowProps = {
   runtime: LaneRuntime | null;
   agents: LaneAgent[];
   prs: LaneTabPrTag[] | undefined;
-  rebaseSuggestion: LaneListSnapshot["rebaseSuggestion"];
-  autoRebaseStatus: LaneListSnapshot["autoRebaseStatus"];
+  /** The quiet "3 behind main" line, when the lane needs a rebase. */
+  rebaseLine: LaneRebaseLine | null;
+  /** Runs the rebase the line offers, by row key. */
+  onRebase: (laneId: string) => void;
   /** Set while a delete runs; the row is inert and shows the step. */
   deleteStatusLabel: string | null;
   /** Set while the running delete can still stop; shows a Stop button. */
   onStopDelete?: (() => void) | null;
   creating: boolean;
-  /** Stack parent shown as "↳ name" when the row is not indented under it. */
-  parentHint?: string | null;
-  /** Why the lane needs the user (PR failing, rebase broke…), or null. */
+  /** Why the lane needs the user (an agent waiting, a failing PR…), or null. */
   needsYouReason?: string | null;
   /**
    * The machine chip, shown when the project has lanes on more than one
@@ -73,26 +71,6 @@ export type LaneSidebarRowProps = {
   onOpenPr: (pr: LaneTabPrTag) => void;
   onOpenAgent: (agent: LaneAgent) => void;
 };
-
-/** Thin vertical guides, one per indent level, like an editor's file tree. */
-function IndentGuides({ indentLevel }: { indentLevel: number }) {
-  if (indentLevel <= 0) return null;
-  return (
-    <>
-      {Array.from({ length: indentLevel }, (_, index) => (
-        <span
-          key={index}
-          aria-hidden
-          className="pointer-events-none absolute inset-y-0 w-px"
-          style={{
-            left: ROW_PAD_X + 5 + index * LANE_SIDEBAR_INDENT_PX,
-            background: fgTint(10),
-          }}
-        />
-      ))}
-    </>
-  );
-}
 
 function AgentCluster({
   lane,
@@ -164,37 +142,45 @@ function AgentCluster({
   );
 }
 
-function RebaseHint({
+/**
+ * "3 behind main · Rebase": one quiet line, a warn dot and a small action. The
+ * action runs the rebase without selecting the row.
+ */
+function RebaseLineHint({
   lane,
-  rebaseSuggestion,
-  autoRebaseStatus,
+  line,
   foreign = false,
-}: Pick<LaneSidebarRowProps, "lane" | "rebaseSuggestion" | "autoRebaseStatus" | "foreign">) {
+  onRebase,
+}: {
+  lane: LaneSummary;
+  line: LaneRebaseLine;
+  foreign?: boolean;
+  onRebase: (laneId: string) => void;
+}) {
   // While this machine's lane status is unconfirmed (a read is out, or
-  // failed), the behind count shows quietly rather than as current.
+  // failed), the count shows quietly rather than as current.
   const statusStale = useAppStore((s) => s.laneStatusStale) && !foreign;
-  const broken = autoRebaseStatus?.state === "rebaseConflict" || autoRebaseStatus?.state === "rebaseFailed";
-  if (broken) {
-    return (
-      <span className="inline-flex shrink-0" title={autoRebaseStatus?.message ?? "Rebase needs attention"} style={{ color: COLORS.danger }}>
-        <Warning size={11} weight="bold" />
-      </span>
-    );
-  }
-  // Only a rebase ADE suggests is worth a mark in the list; the plain
-  // ahead/behind counts live in the lane header.
-  if (!rebaseSuggestion || lane.laneType === "primary") return null;
-  const behind = rebaseSuggestion.behindCount;
-  const base = rebaseSuggestion.baseLabel?.trim() || laneBranchLabel(lane.baseRef) || "base";
   return (
     <span
-      className={cn("inline-flex shrink-0 items-center text-[10.5px] tabular-nums transition-opacity duration-150", statusStale && "opacity-50")}
-      title={`Needs rebase: ${behind} commit${behind === 1 ? "" : "s"} behind ${base}`}
-      style={{ color: COLORS.warning }}
+      className={cn("inline-flex min-w-0 shrink items-center gap-1 transition-opacity duration-150", statusStale && "opacity-50")}
+      title={line.title}
+      data-testid="lane-sidebar-rebase-line"
+      data-kind={line.kind}
       data-stale={statusStale || undefined}
     >
-      <ArrowDown size={10} weight="bold" />
-      {behind}
+      <span aria-hidden className="kit-dot" data-state="warn" />
+      <span className="min-w-0 truncate tabular-nums">{line.text}</span>
+      <button
+        type="button"
+        className="shrink-0 rounded px-1 text-fg/85 hover:bg-fg/[0.08]"
+        data-testid="lane-sidebar-rebase"
+        onClick={(event) => {
+          event.stopPropagation();
+          onRebase(lane.id);
+        }}
+      >
+        {line.actionLabel}
+      </button>
     </span>
   );
 }
@@ -215,8 +201,6 @@ function devicePresenceTitle(devicesOpen: NonNullable<LaneSummary["devicesOpen"]
 export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSidebarRowProps) {
   const {
     lane,
-    depth,
-    indentLevel,
     fallbackColorIndex,
     selected,
     multiSelected,
@@ -224,12 +208,11 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
     runtime,
     agents,
     prs,
-    rebaseSuggestion,
-    autoRebaseStatus,
+    rebaseLine,
+    onRebase,
     deleteStatusLabel,
     onStopDelete = null,
     creating,
-    parentHint = null,
     needsYouReason = null,
     machineChip = null,
     disabledReason = null,
@@ -244,11 +227,8 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
   const branch = laneBranchLabel(lane.branchRef);
   // The branch is context; when it only repeats the lane name it is noise.
   const showBranch = Boolean(branch) && branch !== lane.name;
-  const hasRebaseMark = autoRebaseStatus?.state === "rebaseConflict"
-    || autoRebaseStatus?.state === "rebaseFailed"
-    || (rebaseSuggestion != null && lane.laneType !== "primary");
   // Nothing left for line two: the row is one line rather than an empty band.
-  const secondLineEmpty = !deleting && !creating && !parentHint && !showBranch && !hasRebaseMark
+  const secondLineEmpty = !deleting && !creating && !showBranch && !rebaseLine
     && !lane.linearIssue && (lane.devicesOpen ?? []).length === 0 && !machineChip;
   const lastActivityAt = laneLastActivityAt(lane, agents);
   const devicesOpen = lane.devicesOpen ?? [];
@@ -302,10 +282,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         !deleting && unreachable && "opacity-45",
         pulsing && "ade-lane-row-pulse",
       )}
-      style={{
-        paddingLeft: ROW_PAD_X + indentLevel * LANE_SIDEBAR_INDENT_PX,
-        paddingRight: ROW_PAD_X,
-      }}
+      style={{ paddingLeft: ROW_PAD_X, paddingRight: ROW_PAD_X }}
       onClick={(event) => {
         if (deleting) return;
         onSelect(lane.id, event);
@@ -316,14 +293,13 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
         onContextMenu(lane.id, event);
       }}
     >
-      <IndentGuides indentLevel={indentLevel} />
       {foreign ? null : <LaneMacDesktopPeek laneId={lane.id} />}
 
       <div className="flex h-4 min-w-0 items-center gap-1.5">
         <span
           className="flex min-w-0 flex-1 items-center gap-1.5 text-[12px] font-semibold leading-4"
           style={{ color: toneText(accent) }}
-          title={depth > indentLevel ? `${lane.name} (stack level ${depth + 1})` : lane.name}
+          title={lane.name}
         >
           <LaneEmojiGlyph
             emoji={lane.emoji}
@@ -380,15 +356,6 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
           <span className="truncate">Setting up…</span>
         ) : (
           <>
-            {parentHint ? (
-              <span
-                className="min-w-0 max-w-[45%] shrink truncate text-muted-fg/55"
-                title={`Stacked on ${parentHint}`}
-                data-testid="lane-sidebar-parent-hint"
-              >
-                ↳ {parentHint}
-              </span>
-            ) : null}
             {showBranch ? (
               <span className="flex min-w-0 shrink items-center gap-1" title={branch}>
                 <BranchIcon size={11} className="opacity-60" />
@@ -396,7 +363,7 @@ export const LaneSidebarRow = React.memo(function LaneSidebarRow(props: LaneSide
               </span>
             ) : null}
             <span className="min-w-0 flex-1" />
-            <RebaseHint lane={lane} rebaseSuggestion={rebaseSuggestion} autoRebaseStatus={autoRebaseStatus} foreign={foreign} />
+            {rebaseLine ? <RebaseLineHint lane={lane} line={rebaseLine} foreign={foreign} onRebase={onRebase} /> : null}
             {lane.linearIssue ? <LaneLinearChip issue={lane.linearIssue} /> : null}
             {devicesOpen.length > 0 ? (
               <span

@@ -20,15 +20,11 @@ describe("deferredLaneRefreshOptions", () => {
       includeStatus: true,
       includeSnapshots: false,
       includeConflictStatus: false,
-      includeRebaseSuggestions: false,
-      includeAutoRebaseStatus: false,
     });
     expect(deferredLaneRefreshOptions(true)).toEqual({
       includeStatus: true,
       includeSnapshots: true,
       includeConflictStatus: true,
-      includeRebaseSuggestions: true,
-      includeAutoRebaseStatus: true,
     });
   });
 });

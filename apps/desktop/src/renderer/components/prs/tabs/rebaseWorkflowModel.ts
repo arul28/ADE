@@ -12,8 +12,9 @@ function safeParseMetadata(raw: string | null | undefined): RebaseOperationMetad
   }
 }
 
+/** Needs worth listing: behind the base, or built on work that has since merged. */
 export function getActiveRebaseNeeds(needs: RebaseNeed[]): RebaseNeed[] {
-  return needs.filter((need) => need.behindBy > 0);
+  return needs.filter((need) => need.behindBy > 0 || need.kind === "built_on_merged");
 }
 
 export function parseRebaseOperationMetadata(operation: OperationRecord): RebaseOperationMetadata {

@@ -39,16 +39,6 @@ let mockStoreState: {
     | null;
 };
 
-let mockAutoRebaseStatuses: Array<{
-  laneId: string;
-  parentLaneId: string | null;
-  parentHeadSha: string | null;
-  state: "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
-  updatedAt: string;
-  conflictCount: number;
-  message: string | null;
-}> = [];
-
 vi.mock("../../state/appStore", () => ({
   selectActiveProjectRoot: (state: {
     projectBinding?: { kind?: string; rootPath?: string | null } | null;
@@ -86,10 +76,6 @@ function buildLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     baseRef: "main",
     branchRef: "feature/parent",
     worktreePath: "/tmp/ade/parent",
-    parentLaneId: "lane-main",
-    childCount: 0,
-    stackDepth: 1,
-    parentStatus: null,
     isEditProtected: false,
     status: {
       dirty: true,
@@ -236,7 +222,6 @@ describe("LaneGitActionsPane rescue action", () => {
       diverged: false,
       recommendedAction: "push",
     };
-    mockAutoRebaseStatuses = [];
     failDiffRefresh = false;
     commitTimelineMock.mockClear();
 
@@ -268,9 +253,8 @@ describe("LaneGitActionsPane rescue action", () => {
         getConflictState: vi.fn(async () => mockConflictState),
       },
       lanes: {
-        listAutoRebaseStatuses: vi.fn(async () => mockAutoRebaseStatuses),
-        onAutoRebaseEvent: vi.fn(() => () => undefined),
-        createFromUnstaged: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
+        list: vi.fn(async () => [buildLane()]),
+        create: vi.fn(async () => buildLane({ id: "lane-2", name: "Rescue lane", status: { dirty: true, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false } })),
       },
     } as any;
     restoreChangeListLayout = stubChangeListLayout();
@@ -292,8 +276,6 @@ describe("LaneGitActionsPane rescue action", () => {
       <MemoryRouter>
         <LaneGitActionsPane
           laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
           onSelectFile={vi.fn()}
           onSelectCommit={vi.fn()}
           selectedPath={null}
@@ -355,7 +337,6 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(window.ade.git.stashList).not.toHaveBeenCalled();
     expect(window.ade.git.getSyncStatus).not.toHaveBeenCalled();
     expect(window.ade.git.getConflictState).not.toHaveBeenCalled();
-    expect(window.ade.lanes.onAutoRebaseEvent).not.toHaveBeenCalled();
     expect(commitTimelineMock).toHaveBeenCalledWith(expect.objectContaining({ active: false }));
   });
 
@@ -368,8 +349,6 @@ describe("LaneGitActionsPane rescue action", () => {
         <LaneGitActionsPane
           laneId="lane-1"
           active
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
           onSelectFile={vi.fn()}
           onSelectCommit={vi.fn()}
           selectedPath={null}
@@ -386,7 +365,6 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(window.ade.git.stashList).toHaveBeenCalledTimes(1);
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
     expect(window.ade.git.getConflictState).toHaveBeenCalledTimes(1);
-    expect(window.ade.lanes.onAutoRebaseEvent).toHaveBeenCalledTimes(1);
     expect(commitTimelineMock).toHaveBeenLastCalledWith(expect.objectContaining({ active: true }));
   });
 
@@ -405,8 +383,6 @@ describe("LaneGitActionsPane rescue action", () => {
         <LaneGitActionsPane
           laneId="lane-2"
           active={active}
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
           onSelectFile={vi.fn()}
           onSelectCommit={vi.fn()}
           selectedPath={null}
@@ -472,8 +448,6 @@ describe("LaneGitActionsPane rescue action", () => {
         <LaneGitActionsPane
           laneId="lane-1"
           active
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
           onSelectFile={vi.fn()}
           onSelectCommit={vi.fn()}
           selectedPath={null}
@@ -501,7 +475,6 @@ describe("LaneGitActionsPane rescue action", () => {
     expect(window.ade.diff.getChanges).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" }, null);
     expect(window.ade.git.getSyncStatus).toHaveBeenCalledTimes(1);
-    expect(window.ade.lanes.listAutoRebaseStatuses).not.toHaveBeenCalled();
   });
 
   it("blocks pull and surfaces merge recovery actions when a merge is in progress", async () => {
@@ -553,11 +526,11 @@ describe("LaneGitActionsPane rescue action", () => {
         rootPath: "C:\\Users\\arul2\\ADE",
       },
     },
-  ])("moves unstaged changes to a new lane on the lane's own machine for $where", async ({ runtimePin }) => {
+  ])("copies uncommitted changes to a new lane on the lane's own machine for $where", async ({ runtimePin }) => {
     const user = userEvent.setup();
     renderPane({ runtimePin: runtimePin as any });
 
-    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
+    const rescueButton = await screen.findByRole("button", { name: "New lane with these changes" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(false);
 
     await user.click(rescueButton);
@@ -565,34 +538,21 @@ describe("LaneGitActionsPane rescue action", () => {
     await user.click(screen.getByRole("button", { name: /create lane/i }));
 
     await waitFor(() => {
-      expect(window.ade.lanes.createFromUnstaged).toHaveBeenCalledWith({
-        sourceLaneId: "lane-1",
+      expect(window.ade.lanes.create).toHaveBeenCalledWith({
         name: "Rescue lane",
+        start: { from: "branch", branch: "feature/parent", bring: "uncommitted" },
       }, runtimePin);
     });
     if (runtimePin) {
       // The new lane is on the other machine: this tab's lane list and Lanes
       // page cannot select it, so the pane stays and says where it went.
-      expect(await screen.findByText(/moved unstaged changes to new lane rescue lane/i)).toBeTruthy();
+      expect(await screen.findByText(/created rescue lane with a copy of these changes/i)).toBeTruthy();
       expect(mockStoreState.selectLane).not.toHaveBeenCalled();
       expect(screen.queryByText(/only works on the machine/i)).toBeNull();
     } else {
       expect(mockStoreState.refreshLanes).toHaveBeenCalled();
       expect(mockStoreState.selectLane).toHaveBeenCalledWith("lane-2");
     }
-  });
-
-  it("disables the rescue button when staged changes are present", async () => {
-    mockChangesByLaneId["lane-1"] = {
-      staged: [{ path: "src/file.ts", kind: "modified" }],
-      unstaged: [{ path: "src/file.ts", kind: "modified" }],
-    };
-
-    renderPane();
-
-    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
-    expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
-    expect(rescueButton.getAttribute("title")).toMatch(/unstage all changes/i);
   });
 
   it("discards a staged partial file through the staged row action", async () => {
@@ -746,7 +706,7 @@ describe("LaneGitActionsPane rescue action", () => {
 
     renderPane();
 
-    const rescueButton = await screen.findByRole("button", { name: "Move changes to new lane" });
+    const rescueButton = await screen.findByRole("button", { name: "New lane with these changes" });
     expect((rescueButton as HTMLButtonElement).disabled).toBe(true);
     expect(rescueButton.getAttribute("title")).toMatch(/finish the current merge/i);
   });
@@ -771,37 +731,8 @@ describe("LaneGitActionsPane rescue action", () => {
     renderPane();
 
     const rebaseButton = await screen.findByTestId("git-pane-rebase");
-    expect(rebaseButton.getAttribute("aria-label")).toBe("Rebase on parent and push");
+    expect(rebaseButton.getAttribute("aria-label")).toBe("Rebase onto main and push");
     expect((rebaseButton as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("treats auto-rebase conflicts as failures and links to the Rebase/Merge tab", async () => {
-    const user = userEvent.setup();
-    const resolveRebaseConflict = vi.fn();
-    mockAutoRebaseStatuses = [
-      {
-        laneId: "lane-1",
-        parentLaneId: "lane-main",
-        parentHeadSha: "parent-sha",
-        state: "rebaseConflict",
-        updatedAt: "2026-03-30T12:00:00.000Z",
-        conflictCount: 2,
-        message: "Files need follow-up before this lane can be pushed.",
-      },
-    ];
-
-    renderPane({
-      autoRebaseStatusSnapshot: mockAutoRebaseStatuses[0] ?? null,
-      onResolveRebaseConflict: resolveRebaseConflict,
-    });
-
-    const rebaseTabButton = await screen.findByRole("button", { name: /open rebase\/merge tab/i });
-    screen.getByText("Auto-rebase failed");
-    screen.getByText(/auto-rebase failed\. files need follow-up before this lane can be pushed\./i);
-
-    await user.click(rebaseTabButton);
-
-    expect(resolveRebaseConflict).toHaveBeenCalledWith("lane-1", "lane-main");
   });
 
   it("updates the stash count after deleting a stash", async () => {

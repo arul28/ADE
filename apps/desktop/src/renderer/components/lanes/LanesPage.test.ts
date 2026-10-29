@@ -3,12 +3,9 @@ import {
   buildLaneActionClearedSearch,
   githubPrMatchesCurrentBranch,
   laneIsOnBaseBranch,
-  laneHasAncestor,
   lanePrTagRoutePath,
   lanePrMatchesCurrentBranch,
   lanePrRole,
-  planLaneDeleteBatches,
-  resolveCreateLaneRequest,
   resolveLaneIdsDeepLinkSelection,
   resolveLaneSelectionAfterDelete,
   runLaneDeleteBatchWithConcurrency,
@@ -122,62 +119,6 @@ describe("lane PR badge routes", () => {
   });
 });
 
-describe("resolveCreateLaneRequest", () => {
-  it("creates an independent lane from the selected primary branch", () => {
-    expect(
-      resolveCreateLaneRequest({
-        name: "git actions fixes",
-        createMode: "primary",
-        createParentLaneId: "lane-primary",
-        createBaseBranch: "main",
-        createImportBranch: "",
-      }),
-    ).toEqual({
-      kind: "root",
-      args: {
-        name: "git actions fixes",
-        baseBranch: "main",
-      },
-    });
-  });
-
-  it("creates a stacked child lane when child mode is selected", () => {
-    expect(
-      resolveCreateLaneRequest({
-        name: "git actions fixes",
-        createMode: "child",
-        createParentLaneId: "lane-primary",
-        createBaseBranch: "main",
-        createImportBranch: "",
-      }),
-    ).toEqual({
-      kind: "child",
-      args: {
-        name: "git actions fixes",
-        parentLaneId: "lane-primary",
-      },
-    });
-  });
-
-  it("imports an existing branch as a lane when existing mode is selected", () => {
-    expect(
-      resolveCreateLaneRequest({
-        name: "git actions fixes",
-        createMode: "existing",
-        createParentLaneId: "",
-        createBaseBranch: "release-10",
-        createImportBranch: "origin/ade/git-actions-fixes-5144fe89",
-      }),
-    ).toEqual({
-      kind: "import",
-      args: {
-        branchRef: "origin/ade/git-actions-fixes-5144fe89",
-        name: "git actions fixes",
-      },
-    });
-  });
-});
-
 describe("resolveLaneIdsDeepLinkSelection", () => {
   it("returns the lane selection for a new deep link signature", () => {
     expect(resolveLaneIdsDeepLinkSelection({
@@ -230,47 +171,6 @@ describe("resolveLaneIdsDeepLinkSelection", () => {
     // must clear with the action so a back-navigation cannot reopen the dialog.
     expect(buildLaneActionClearedSearch("?action=batch&laneIds=lane-a,lane-b&manageTab=delete&inspectorTab=work"))
       .toBe("?inspectorTab=work");
-  });
-});
-
-describe("planLaneDeleteBatches", () => {
-  it("runs independent lanes in the same delete batch", () => {
-    const batches = planLaneDeleteBatches([
-      { id: "lane-a", parentLaneId: null },
-      { id: "lane-b", parentLaneId: null },
-      { id: "lane-c", parentLaneId: "lane-x" },
-    ]);
-
-    expect(batches.map((batch) => batch.map((lane) => lane.id))).toEqual([["lane-a", "lane-b", "lane-c"]]);
-  });
-
-  it("deletes selected child lanes before their selected parents", () => {
-    const batches = planLaneDeleteBatches([
-      { id: "lane-parent", parentLaneId: null },
-      { id: "lane-child", parentLaneId: "lane-parent" },
-      { id: "lane-grandchild", parentLaneId: "lane-child" },
-      { id: "lane-sibling", parentLaneId: "lane-parent" },
-    ]);
-
-    expect(batches.map((batch) => batch.map((lane) => lane.id))).toEqual([
-      ["lane-grandchild", "lane-sibling"],
-      ["lane-child"],
-      ["lane-parent"],
-    ]);
-  });
-});
-
-describe("laneHasAncestor", () => {
-  it("walks the full lane graph without hanging on corrupted cycles", () => {
-    const lanes = [
-      { id: "child", parentLaneId: "middle" },
-      { id: "middle", parentLaneId: "child" },
-      { id: "root", parentLaneId: null },
-    ];
-    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
-
-    expect(laneHasAncestor("child", "middle", lanesById)).toBe(true);
-    expect(laneHasAncestor("child", "root", lanesById)).toBe(false);
   });
 });
 
@@ -397,9 +297,9 @@ describe("selectLanePrTag", () => {
 describe("runLaneDeleteBatchWithConcurrency", () => {
   it("runs independent lane deletes two at a time and preserves failures", async () => {
     const lanes = [
-      { id: "lane-a", parentLaneId: null },
-      { id: "lane-b", parentLaneId: null },
-      { id: "lane-c", parentLaneId: null },
+      { id: "lane-a" },
+      { id: "lane-b" },
+      { id: "lane-c" },
     ];
     const starts: string[] = [];
     let active = 0;

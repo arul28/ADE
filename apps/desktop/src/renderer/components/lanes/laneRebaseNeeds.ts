@@ -1,0 +1,182 @@
+import { useEffect, useState } from "react";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
+import type { LaneSummary, RebaseNeed } from "../../../shared/types";
+import { useActiveProjectRoot } from "../../state/appStore";
+
+/** Wait this long after the Lanes tab shows before the first scan, so first paint stays local. */
+const FIRST_SCAN_DELAY_MS = 600;
+/** A finished rebase moves the lane; scan again once things settle. */
+const RESCAN_AFTER_REBASE_MS = 1_000;
+
+/** Coming back to the tab within this window reuses the last scan instead of starting one. */
+const RESCAN_AFTER_MS = 30_000;
+
+const EMPTY_NEEDS: ReadonlyMap<string, RebaseNeed> = new Map();
+
+const scanInFlight = new Map<string, Promise<RebaseNeed[]>>();
+/** The last needs each project reported (scan or pushed event), so a revisit paints at once. */
+const lastNeedsByProject = new Map<string, { needs: ReadonlyMap<string, RebaseNeed>; atMs: number }>();
+
+/** One scan per project at a time; the Lanes and PRs tabs share it. */
+function scanRebaseNeedsCoalesced(projectKey: string): Promise<RebaseNeed[]> {
+  const existing = scanInFlight.get(projectKey);
+  if (existing) return existing;
+  const promise = window.ade.rebase.scanNeeds().finally(() => {
+    if (scanInFlight.get(projectKey) === promise) scanInFlight.delete(projectKey);
+  });
+  scanInFlight.set(projectKey, promise);
+  return promise;
+}
+
+function needsByLaneId(needs: readonly RebaseNeed[]): ReadonlyMap<string, RebaseNeed> {
+  const map = new Map<string, RebaseNeed>();
+  for (const need of needs) {
+    // A lane built on merged work says so even when it is also behind.
+    const existing = map.get(need.laneId);
+    if (!existing || (need.kind === "built_on_merged" && existing.kind !== "built_on_merged")) {
+      map.set(need.laneId, need);
+    }
+  }
+  return map;
+}
+
+/**
+ * Rebase needs for the lanes on the tab's machine, keyed by lane id.
+ *
+ * One scan shortly after the tab shows (skipped when the last one is under
+ * 30 s old), then whatever the brain pushes in `rebase-needs-updated`, plus
+ * one rescan after a rebase finishes. No timer polls it. Lanes on other machines are not in this map; their rows fall back
+ * to the lane's own behind count.
+ */
+export function useLaneRebaseNeeds(active: boolean): ReadonlyMap<string, RebaseNeed> {
+  const projectRoot = useActiveProjectRoot();
+  const [needs, setNeeds] = useState<ReadonlyMap<string, RebaseNeed>>(
+    () => (projectRoot ? lastNeedsByProject.get(projectRoot)?.needs : null) ?? EMPTY_NEEDS,
+  );
+
+  useEffect(() => {
+    setNeeds((projectRoot ? lastNeedsByProject.get(projectRoot)?.needs : null) ?? EMPTY_NEEDS);
+  }, [projectRoot]);
+
+  useEffect(() => {
+    if (!active || !projectRoot || !window.ade?.rebase) return;
+    let cancelled = false;
+    let rescanTimer: number | null = null;
+    const apply = (next: readonly RebaseNeed[]) => {
+      const map = needsByLaneId(next);
+      lastNeedsByProject.set(projectRoot, { needs: map, atMs: Date.now() });
+      if (!cancelled) setNeeds(map);
+    };
+    const scan = () => {
+      void scanRebaseNeedsCoalesced(projectRoot)
+        .then(apply)
+        .catch(() => {
+          // The rows fall back to each lane's behind count.
+        });
+    };
+    const last = lastNeedsByProject.get(projectRoot);
+    const firstScan = last && Date.now() - last.atMs < RESCAN_AFTER_MS
+      ? null
+      : window.setTimeout(scan, FIRST_SCAN_DELAY_MS);
+    const unsubscribe = window.ade.rebase.onEvent((event) => {
+      if (event.type === "rebase-needs-updated") {
+        apply(event.needs);
+        return;
+      }
+      if (event.type === "rebase-completed") {
+        if (rescanTimer != null) window.clearTimeout(rescanTimer);
+        rescanTimer = window.setTimeout(() => {
+          rescanTimer = null;
+          scan();
+        }, RESCAN_AFTER_REBASE_MS);
+      }
+    });
+    return () => {
+      cancelled = true;
+      if (firstScan != null) window.clearTimeout(firstScan);
+      if (rescanTimer != null) window.clearTimeout(rescanTimer);
+      unsubscribe();
+    };
+  }, [active, projectRoot]);
+
+  return needs;
+}
+
+/** What the lane's quiet rebase line says, and the label of its action. */
+export type LaneRebaseLine = {
+  kind: RebaseNeed["kind"];
+  behindBy: number;
+  baseBranch: string;
+  text: string;
+  actionLabel: string;
+  title: string;
+};
+
+function hiddenByUser(need: RebaseNeed | null | undefined, nowMs: number): boolean {
+  if (!need) return false;
+  if (need.dismissedAt) return true;
+  if (need.deferredUntil) {
+    const until = Date.parse(need.deferredUntil);
+    if (Number.isFinite(until) && until > nowMs) return true;
+  }
+  return false;
+}
+
+/**
+ * The lane's compare base: its open PR's base branch when it has one, else the
+ * lane's base (the project's default branch).
+ */
+export function laneCompareBaseBranch(
+  lane: Pick<LaneSummary, "baseRef">,
+  openPrBaseBranch?: string | null,
+): string {
+  return branchNameFromLaneRef(openPrBaseBranch) || branchNameFromLaneRef(lane.baseRef) || "main";
+}
+
+/**
+ * The one quiet line a lane shows when it needs a rebase: "3 behind main" or
+ * "Built on work now in main". Null when it needs none, when the user
+ * dismissed or deferred it, for the Primary lane, and for a lane whose PR
+ * merged (rebasing finished work is never the next step).
+ *
+ * The lane's own behind count wins over the scan's when it is set: it comes
+ * from the same compare base and is refreshed by every git action.
+ */
+export function laneRebaseLine(args: {
+  lane: Pick<LaneSummary, "laneType" | "baseRef" | "status">;
+  need: RebaseNeed | null | undefined;
+  openPrBaseBranch?: string | null;
+  merged?: boolean;
+  nowMs?: number;
+}): LaneRebaseLine | null {
+  const { lane, need } = args;
+  if (lane.laneType === "primary" || args.merged) return null;
+  if (lane.status?.rebaseInProgress) return null;
+  if (hiddenByUser(need, args.nowMs ?? Date.now())) return null;
+  const baseBranch = branchNameFromLaneRef(need?.baseBranch) || laneCompareBaseBranch(lane, args.openPrBaseBranch);
+  const statusBehind = lane.status?.behind ?? 0;
+  if (need?.kind === "built_on_merged") {
+    const prNumber = need.mergedPr?.number;
+    return {
+      kind: "built_on_merged",
+      behindBy: Math.max(statusBehind, need.behindBy),
+      baseBranch,
+      text: `Built on work now in ${baseBranch}`,
+      actionLabel: `Rebase onto ${baseBranch}`,
+      title: prNumber
+        ? `This lane still carries the commits of #${prNumber}, which merged into ${baseBranch}. Rebase to drop them.`
+        : `This lane still carries commits that merged into ${baseBranch}. Rebase to drop them.`,
+    };
+  }
+  const behindBy = statusBehind > 0 ? statusBehind : need?.kind === "behind" ? need.behindBy : 0;
+  if (behindBy <= 0) return null;
+  const conflict = need?.conflictPredicted ? " A rebase is likely to conflict." : "";
+  return {
+    kind: "behind",
+    behindBy,
+    baseBranch,
+    text: `${behindBy} behind ${baseBranch}`,
+    actionLabel: "Rebase",
+    title: `${behindBy} commit${behindBy === 1 ? "" : "s"} behind ${baseBranch}.${conflict}`,
+  };
+}

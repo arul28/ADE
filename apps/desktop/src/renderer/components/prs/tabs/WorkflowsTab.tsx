@@ -25,7 +25,6 @@ import { formatTimestampShort } from "../shared/prFormatters";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
-import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
 import { PRS_LIST_ROOT_CLASS, PrsListHostProvider, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import {
@@ -622,7 +621,6 @@ export function WorkflowsTab({
     selectedRebaseItemId,
     setSelectedRebaseItemId,
     rebaseNeeds,
-    autoRebaseStatuses,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -721,24 +719,17 @@ export function WorkflowsTab({
     });
   }, [cacheKey, integrationWorkflows, view]);
 
-  // Every machine's rebase needs, statuses and integration workflows, each
+  // Every machine's rebase needs and integration workflows, each
   // routed to the machine it was read from.
   const workflowMachines = useWorkflowMachines({
     active,
     boundLanes: lanes,
     boundRebaseNeeds: rebaseNeeds,
-    boundAutoRebaseStatuses: autoRebaseStatuses,
   });
   const allLanes = workflowMachines.lanes;
   const allRebaseNeeds = React.useMemo(
     () => (workflowMachines.foreignRebaseNeeds.length ? [...rebaseNeeds, ...workflowMachines.foreignRebaseNeeds] : rebaseNeeds),
     [rebaseNeeds, workflowMachines.foreignRebaseNeeds],
-  );
-  const allAutoRebaseStatuses = React.useMemo(
-    () => (workflowMachines.foreignAutoRebaseStatuses.length
-      ? [...autoRebaseStatuses, ...workflowMachines.foreignAutoRebaseStatuses]
-      : autoRebaseStatuses),
-    [autoRebaseStatuses, workflowMachines.foreignAutoRebaseStatuses],
   );
   const allIntegrationWorkflows = React.useMemo(
     () => (workflowMachines.foreignWorkflows.length ? [...integrationWorkflows, ...workflowMachines.foreignWorkflows] : integrationWorkflows),
@@ -762,38 +753,17 @@ export function WorkflowsTab({
     active: getActiveRebaseNeeds(allRebaseNeeds),
     history: rebaseHistoryOperations,
   }), [rebaseHistoryOperations, allRebaseNeeds]);
-  const rebaseAttentionByView = React.useMemo(() => ({
-    active: filterRebaseAttentionStatuses({
-      autoRebaseStatuses: allAutoRebaseStatuses,
-      visibleRebaseNeeds: rebaseByView.active,
-      view: "active",
-    }),
-    history: [] as typeof autoRebaseStatuses,
-  }), [allAutoRebaseStatuses, rebaseByView.active]);
-
   React.useEffect(() => {
     if (activeCategory !== "rebase" || !selectedRebaseItemId) return;
     const activeKeys = new Set(rebaseByView.active.map(rebaseNeedItemKey));
-    if (activeKeys.has(selectedRebaseItemId)) {
-      if (view !== "active") setView("active");
-      return;
-    }
-    const activeAttentionLaneIds = new Set(rebaseAttentionByView.active.map((status) => status.laneId));
-    if (activeAttentionLaneIds.has(selectedRebaseItemId)) {
-      if (view !== "active") setView("active");
-      return;
-    }
-    const historyAttentionLaneIds = new Set(rebaseAttentionByView.history.map((status) => status.laneId));
-    if (historyAttentionLaneIds.has(selectedRebaseItemId) && view !== "history") {
-      setView("history");
-    }
-  }, [activeCategory, rebaseAttentionByView.active, rebaseAttentionByView.history, rebaseByView.active, rebaseByView.history, selectedRebaseItemId, setView, view]);
+    if (activeKeys.has(selectedRebaseItemId) && view !== "active") setView("active");
+  }, [activeCategory, rebaseByView.active, selectedRebaseItemId, setView, view]);
 
   const counts = {
     integration: integrationByView[view].length,
     rebase: view === "history"
       ? rebaseHistoryOperations.length
-      : rebaseByView.active.length + rebaseAttentionByView.active.length,
+      : rebaseByView.active.length,
   };
 
   const error = workflowError ?? rebaseHistoryError;
@@ -945,7 +915,6 @@ export function WorkflowsTab({
           view === "active" ? (
             <RebaseTab
               rebaseNeeds={rebaseByView.active}
-              attentionStatuses={rebaseAttentionByView.active}
               lanes={allLanes}
               machineForLane={workflowMachines.machineForLane}
               onMachineActionDone={workflowMachines.refreshMachine}

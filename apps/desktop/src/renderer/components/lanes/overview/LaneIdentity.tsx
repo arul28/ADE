@@ -20,6 +20,7 @@ import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneBranchSwitcher } from "../detail/LaneBranchSwitcher";
 import { LinearIssueBadge } from "../LinearIssueBadge";
 import { COLORS, toneText } from "../laneDesignTokens";
+import type { LaneRebaseLine } from "../laneRebaseNeeds";
 import { providerDisplayName } from "./laneHistoryModel";
 import { laneStatusItems, type LaneStatusItem, type LaneStatusTone } from "./laneOverviewModel";
 import { cssZoomOf } from "../../../lib/webZoom";
@@ -64,6 +65,24 @@ function StatusGlyph({ item }: { item: LaneStatusItem }) {
   return <span aria-hidden className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: color }} />;
 }
 
+/** The small ghost button that runs the rebase the status line asks for. */
+function RebaseAction({ line, onRebase }: { line: LaneRebaseLine; onRebase: () => void }) {
+  return (
+    <button
+      type="button"
+      className="kit-btn kit-btn-ghost shrink-0"
+      data-size="sm"
+      // Negative block margin keeps the 26px button from growing the line.
+      style={{ marginBlock: -4 }}
+      title={line.title}
+      onClick={onRebase}
+      data-testid="lane-rebase-action"
+    >
+      {line.actionLabel}
+    </button>
+  );
+}
+
 /**
  * The top of the lane overview: the lane's name and branch, where it came
  * from, a few actions, and its git state in one line. No card: the name is
@@ -74,7 +93,9 @@ export function LaneIdentity({
   lane,
   accent,
   primaryLane,
-  parentLane,
+  compareBase,
+  rebaseLine,
+  onRebase,
   upstream,
   createdBy,
   active,
@@ -87,13 +108,16 @@ export function LaneIdentity({
   onOpenHistory,
   onReveal,
   onOpenMenu,
-  onSelectLane,
   statusStale = false,
 }: {
   lane: LaneSummary;
   accent: string;
   primaryLane: LaneSummary | null;
-  parentLane: LaneSummary | null;
+  /** The branch ahead/behind is measured against: the open PR's base, else the lane's base. */
+  compareBase: string;
+  /** The quiet rebase line, when the lane needs one; adds a small Rebase action. */
+  rebaseLine: LaneRebaseLine | null;
+  onRebase: () => void;
   upstream: GitUpstreamSyncStatus | null;
   /** The chat that started with the lane, when known. */
   createdBy: { provider: string | null; title: string | null } | null;
@@ -114,7 +138,6 @@ export function LaneIdentity({
   onOpenHistory?: () => void;
   onReveal: () => void;
   onOpenMenu: (anchor: DOMRect) => void;
-  onSelectLane: (laneId: string) => void;
   /**
    * The lane's git status was not measured within the freshness window (a read
    * is out, or failed): its facts render quietly, never as current.
@@ -122,8 +145,13 @@ export function LaneIdentity({
   statusStale?: boolean;
 }) {
   const isPrimary = lane.laneType === "primary";
-  const baseLabel = (parentLane?.branchRef ?? lane.baseRef ?? "").replace(/^refs\/heads\//, "") || "base";
-  const status = laneStatusItems({ lane, baseLabel, upstream });
+  const fromLabel = (lane.baseRef ?? "").replace(/^refs\/heads\//, "") || "base";
+  // "Up to date" would contradict a lane that still needs a rebase.
+  const status = laneStatusItems({ lane, baseLabel: compareBase, upstream })
+    .filter((item) => !(rebaseLine && item.glyph === "check"));
+  // "3 behind main" is already a status fact; the rebase line adds its action
+  // after it. "Built on work now in main" has no status fact, so it is its own.
+  const behindShown = status.some((item) => item.key === "behind");
   const menuRef = React.useRef<HTMLSpanElement>(null);
 
   return (
@@ -199,22 +227,8 @@ export function LaneIdentity({
           <Sep />
           {isPrimary ? (
             <span className="shrink-0">Primary lane</span>
-          ) : parentLane ? (
-            <span className="inline-flex min-w-0 shrink items-center">
-              <span className="min-w-0 truncate">
-                stacked on{" "}
-                <button
-                  type="button"
-                  className="text-fg/80 underline-offset-2 transition-colors hover:text-fg hover:underline"
-                  onClick={() => onSelectLane(parentLane.id)}
-                  data-testid="lane-identity-parent"
-                >
-                  {parentLane.name}
-                </button>
-              </span>
-            </span>
           ) : (
-            <span className="shrink-0">from <span className="text-fg/80">{baseLabel}</span></span>
+            <span className="shrink-0">from <span className="text-fg/80">{fromLabel}</span></span>
           )}
           {!isPrimary && lane.createdAt ? (
             <>
@@ -243,6 +257,13 @@ export function LaneIdentity({
 
       {/* One line; a narrow column clips the last facts rather than wrapping. */}
       <div className="flex min-w-0 items-center gap-x-4 overflow-hidden whitespace-nowrap text-[12.5px] text-fg/75" data-testid="lane-status-line">
+        {rebaseLine && (rebaseLine.kind === "built_on_merged" || !behindShown) ? (
+          <span className="inline-flex shrink-0 items-center gap-1.5" title={rebaseLine.title} data-status="rebase">
+            <span aria-hidden className="kit-dot" data-state="warn" />
+            {rebaseLine.text}
+            <RebaseAction line={rebaseLine} onRebase={onRebase} />
+          </span>
+        ) : null}
         {status.map((item) => (
           <span
             key={item.key}
@@ -256,6 +277,9 @@ export function LaneIdentity({
           >
             <StatusGlyph item={item} />
             {item.text}
+            {item.key === "behind" && rebaseLine?.kind === "behind" ? (
+              <RebaseAction line={rebaseLine} onRebase={onRebase} />
+            ) : null}
           </span>
         ))}
       </div>

@@ -20,7 +20,6 @@ import { Banner, noticeKindModel, type NoticeKind } from "../../ui/notice";
 import { PaneTilingLayout, type PaneConfig } from "../../ui/PaneTilingLayout";
 import { PRS_LIST_ROOT_CLASS, PrsListPortal, PrsQuietLine, usePrsListHost } from "../shared/PrsListHost";
 import { PrConflictBadge } from "../PrConflictBadge";
-import { PrRebaseBanner } from "../PrRebaseBanner";
 import { usePrs } from "../state/PrsContext";
 import { ConflictFilePreview } from "../ConflictFilePreview";
 import { PrDetailPane } from "../detail/PrDetailPane";
@@ -30,7 +29,7 @@ import { normalizeBranchName } from "../shared/prHelpers";
 import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "../shared/dirtyWorktree";
 import { deriveIntegrationPrLiveModel } from "../shared/integrationPrModel";
 import { PrAiResolverPanel } from "../shared/PrAiResolverPanel";
-import { findLaneBaseNeed, findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
+import { findMatchingRebaseNeed, rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { getActiveRebaseNeeds } from "./rebaseWorkflowModel";
 import { confirmDialog } from "../../ui/dialog/confirm";
 
@@ -540,7 +539,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
     detailLiveDataPrId,
     detailBusy,
     rebaseNeeds,
-    autoRebaseStatuses,
     setActiveTab,
     setSelectedRebaseItemId,
     resolverModel,
@@ -668,9 +666,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   );
   const rebaseNeedByLaneId = React.useMemo(
     () => new Map(
-      getActiveRebaseNeeds(rebaseNeeds)
-        .filter((need) => need.kind === "lane_base")
-        .map((need) => [need.laneId, need] as const),
+      getActiveRebaseNeeds(rebaseNeeds).map((need) => [need.laneId, need] as const),
     ),
     [rebaseNeeds],
   );
@@ -1775,26 +1771,6 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
   const detailPane = selectedPr ? (
     <div style={{ background: "var(--chat-canvas-bg)", height: "100%", overflowY: "auto" }}>
       <div style={{ padding: 20 }}>
-        {/* ---- Rebase banners for source lanes ---- */}
-        {mergeSourcesResolved.map((s) => (
-          <div key={s.laneId} style={{ marginBottom: 12 }}>
-            <PrRebaseBanner
-              laneId={s.laneId}
-              rebaseNeeds={rebaseNeeds}
-              autoRebaseStatuses={autoRebaseStatuses}
-              onRefresh={onRefresh}
-              onRebaseDone={onRefresh}
-              onTabChange={(tab) => {
-                if (tab === "rebase") {
-                  const need = findLaneBaseNeed(rebaseNeeds, s.laneId);
-                  setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
-                }
-                setActiveTab(tab as "normal" | "integration" | "rebase");
-              }}
-            />
-          </div>
-        ))}
-
         {liveIntegrationRebaseNeed ? (
           <RebaseGuidancePanel
             laneId={liveIntegrationRebaseNeed.laneId}
@@ -3316,7 +3292,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
       children: detailPane,
     },
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, autoRebaseStatuses, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId, machineForProposal, proposalPin, proposalBlocked, boundLanes, selectedProposalLaneById, apiProposalId]);
+  }), [prs, selectedPr, selectedPrId, mergeContextByPrId, laneById, mergeSourcesResolved, liveIntegrationLaneId, liveIntegrationRebaseNeed, liveSimulationLaneIds, liveSimulationKey, resolverTargetLaneId, simulateResult, simulateBusy, simulateError, resolverOpen, proposalResolverConfig, deleteConfirm, deleteBusy, deleteCloseGh, hasConflicts, rebaseNeeds, rebaseNeedByLaneId, setActiveTab, onSelectPr, onRefresh, proposals, proposalsLoaded, selectedProposal, selectedProposalId, selectedProposalRebaseLaneIds, selectedPrLiveModel, commitBusy, commitError, resimBusy, mergeIntoLaneBusy, mergeIntoLaneDraft, deleteProposalBusy, expandedPairKeys, resolutionState, activeWorkerStepId, createLaneBusy, resolvingLaneId, resolutionPanelDismissed, allStepsResolved, proposalLaneCards, proposalConflictingPairs, proposalConflictSteps, totalProposalConflictFiles, urlProposalId, conflictPairCountByLaneId, isLegacySequentialProposal, nextManualResolutionLaneId, machineForProposal, proposalPin, proposalBlocked, boundLanes, selectedProposalLaneById, apiProposalId]);
 
   // A selected proposal's resolver and menus reach the proposal's machine.
   const runtimePin = selectedProposal ? machineForProposal?.(selectedProposal.proposalId)?.pin ?? null : null;

@@ -20,8 +20,6 @@ import type {
   RebaseEventPayload,
   PrEventPayload,
   LaneSummary,
-  AutoRebaseLaneStatus,
-  AutoRebaseEventPayload,
   PrReviewThread,
   PrDeployment,
   PrSnapshotHydration,
@@ -124,7 +122,6 @@ type PrsState = {
 
   // Rebase state
   rebaseNeeds: RebaseNeed[];
-  autoRebaseStatuses: AutoRebaseLaneStatus[];
 
   // Inline terminal
   inlineTerminal: InlineTerminalState;
@@ -207,7 +204,6 @@ type PrsContextWarmCache = {
   detailDeployments: PrDeployment[];
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   rebaseNeeds: RebaseNeed[];
-  autoRebaseStatuses: AutoRebaseLaneStatus[];
   inlineTerminal: InlineTerminalState;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
   viewerLogin: string | null;
@@ -528,13 +524,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
   // Rebase state
   const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>(() => warmCache?.rebaseNeeds ?? []);
-  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>(
-    () => warmCache?.autoRebaseStatuses ?? [],
-  );
   const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
-  const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
   React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
-  React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
 
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(() => warmCache?.inlineTerminal ?? null);
@@ -765,15 +756,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
     prsRef.current = prList;
 
-    // Fire-and-forget rebase scans — these were the long pole on PRs-tab cold
-    // open. The header/list doesn't depend on them, so let them stream in.
+    // Fire-and-forget rebase scan — this was the long pole on PRs-tab cold
+    // open. The header/list doesn't depend on it, so let it stream in.
     if (shouldLoadRebaseState) {
       void window.ade.rebase.scanNeeds()
         .then((next) => setRebaseNeeds((prev) => (jsonEqual(prev, next) ? prev : next)))
         .catch((err) => console.warn("[PrsContext] Failed to refresh rebase needs:", err));
-      void window.ade.lanes.listAutoRebaseStatuses()
-        .then((next) => setAutoRebaseStatuses((prev) => (jsonEqual(prev, next) ? prev : next)))
-        .catch((err) => console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err));
     }
 
     // Clear selectedPrId if the PR no longer exists
@@ -1426,30 +1414,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     };
   }, [active, activeTab, selectedPrId]);
 
-  // Subscribe to auto-rebase events
-  useEffect(() => {
-    if (!active) return;
-    const unsub = window.ade.lanes.onAutoRebaseEvent((event: AutoRebaseEventPayload) => {
-      if (event.type === "auto-rebase-updated") {
-        setAutoRebaseStatuses(event.statuses);
-      }
-    });
-    return unsub;
-  }, [active]);
-
-  useEffect(() => {
-    if (!active || (activeTab === "normal" && selectedPrId == null)) return;
-    let cancelled = false;
-    window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
-      if (!cancelled) setAutoRebaseStatuses(statuses);
-    }).catch((err) => {
-      console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, activeTab, selectedPrId]);
-
   useEffect(() => {
     if (PRS_CONTEXT_CACHE_DISABLED) return;
     if (!initialLoadDone.current && prs.length === 0 && lanes.length === 0) return;
@@ -1470,7 +1434,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailDeployments,
       detailSnapshotsByPrId,
       rebaseNeeds,
-      autoRebaseStatuses,
       inlineTerminal,
       resolverSessionsByContextKey,
       viewerLogin,
@@ -1480,7 +1443,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
   }, [
     activeTab,
-    autoRebaseStatuses,
     cacheKey,
     detailChecks,
     detailComments,
@@ -1524,7 +1486,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
-      autoRebaseStatuses,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
@@ -1583,7 +1544,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailLiveDataPrId,
       detailBusy,
       rebaseNeeds,
-      autoRebaseStatuses,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,

@@ -3,7 +3,6 @@ import type { GitHubStatus, LaneSummary, OpenProjectBinding, UsageSnapshot } fro
 import type { AttentionItem } from "../../../../shared/types/attention";
 import { isProviderInstanceProvider } from "../../../../shared/types/providerInstances";
 import { countActivityBoardColumns } from "../../../../shared/attention/activityBoardColumn";
-import { machineIdForBinding } from "../../../../shared/machineIdentity";
 import { selectActiveProjectStateKey, useAppStore, workViewStoreForProject } from "../../../state/appStore";
 import { useActivityStore } from "../../../state/activityStore";
 import { useProjectMachines } from "../../../state/projectMachines";
@@ -79,7 +78,6 @@ export function SituationalSuggestions(props: Props): null {
   useParallelChatsSuggestion(props);
   useRepeatPromptSuggestion(props);
   usePairPhoneSuggestion(props, machinesSettled && otherMachines.length === 0);
-  useStackedPrsSuggestion(props);
   // Last: a tip only asks for the slot once these have had their chance.
   useFeatureTipCard(props.enabled);
   return null;
@@ -332,52 +330,5 @@ function usePairPhoneSuggestion({ enabled }: Props, onlyThisMachine: boolean): v
     signalKey: candidate && noPhone ? "week-one" : null,
     scopeKey: APP_SCOPE,
     start,
-  });
-}
-
-/** Lane ids with an open pull request, from Activity's PR items, as one stable string. */
-function openPrLaneKey(itemsById: Readonly<Record<string, AttentionItem>>): string {
-  const ids = new Set<string>();
-  for (const item of Object.values(itemsById)) {
-    if (item.kind !== "pull_request" || !item.laneId || item.dismissedAt) continue;
-    if (item.phase === "merged" || item.phase === "closed") continue;
-    ids.add(item.laneId);
-  }
-  return [...ids].sort().join("\u0000");
-}
-
-/**
- * A lane built on another lane (not the main checkout) whose pull request is
- * open, while the child has none yet. The PR state comes from Activity's pull
- * request items, which the shell already syncs.
- */
-function useStackedPrsSuggestion({ enabled, projectRoot, projectBinding, lanes, navigate }: Props): void {
-  const prLaneKey = useActivityStore((state) => openPrLaneKey(state.itemsById));
-  const stacked = useMemo(() => {
-    if (!enabled || !prLaneKey) return null;
-    const prLanes = new Set(prLaneKey.split("\u0000"));
-    const byId = new Map(lanes.map((lane) => [lane.id, lane]));
-    for (const lane of lanes) {
-      if (lane.archivedAt || !lane.parentLaneId || prLanes.has(lane.id)) continue;
-      const parent = byId.get(lane.parentLaneId);
-      if (parent && parent.laneType !== "primary" && !parent.archivedAt && prLanes.has(parent.id)) {
-        return { lane, parent };
-      }
-    }
-    return null;
-  }, [enabled, lanes, prLaneKey]);
-  const start = useCallback(() => navigate("/prs"), [navigate]);
-  const scopeKey = projectRoot ? `${machineIdForBinding(projectBinding)}:${projectRoot}` : null;
-  const projectName = useAppStore((state) => state.project?.displayName ?? null);
-  useSituationalSuggestion({
-    id: "stacked-prs",
-    signalKey: stacked && scopeKey ? stacked.lane.id : null,
-    detail: stacked
-      ? `${stacked.lane.name} is built on ${stacked.parent.name}, which has an open pull request. `
-        + "Its PR can target that branch, so each one is reviewed on its own."
-      : undefined,
-    scopeKey: scopeKey ?? APP_SCOPE,
-    context: projectName,
-    start: scopeKey ? start : null,
   });
 }

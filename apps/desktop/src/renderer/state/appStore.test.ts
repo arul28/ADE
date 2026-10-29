@@ -779,8 +779,6 @@ describe("appStore", () => {
             endedCount: 0,
             sessionCount: 1,
           },
-          rebaseSuggestion: null,
-          autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
         },
@@ -793,8 +791,6 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: true,
         includeConflictStatus: true,
-        includeRebaseSuggestions: true,
-        includeAutoRebaseStatus: true,
       });
       expect(useAppStore.getState().laneSnapshots).toEqual(snapshots);
       expect(useAppStore.getState().lanes).toEqual([snapshots[0].lane]);
@@ -828,8 +824,6 @@ describe("appStore", () => {
             endedCount: 0,
             sessionCount: 1,
           },
-          rebaseSuggestion: null,
-          autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
         },
@@ -868,7 +862,7 @@ describe("appStore", () => {
     it("refreshLanes can request the cheaper lane-list path while preserving prior git status", async () => {
       useAppStore.setState({
         project: { rootPath: "/p/lite", displayName: "Lite", baseRef: "main" } as any,
-        lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true }, parentStatus: { ahead: 1 } }] as any[],
+        lanes: [{ id: "lane-lite", name: "Lane lite", status: { dirty: true } }] as any[],
       });
       (window.ade.lanes.list as any).mockResolvedValueOnce([{ id: "lane-lite", name: "Lane lite", color: "#7dd3fc" }] as any[]);
 
@@ -884,7 +878,6 @@ describe("appStore", () => {
           id: "lane-lite",
           color: "#7dd3fc",
           status: { dirty: true },
-          parentStatus: { ahead: 1 },
         }),
       );
       expect(JSON.parse(mockStorage.get(laneCacheKey("/p/lite")) ?? "{}").lanes[0]).toEqual(
@@ -1093,11 +1086,11 @@ describe("appStore", () => {
 
     it("refreshLanes can update runtime snapshots without recomputing lane git status", async () => {
       useAppStore.setState({
-        lanes: [{ id: "lane-1", name: "Lane 1", status: { dirty: true }, parentStatus: { dirty: false } }] as any[],
+        lanes: [{ id: "lane-1", name: "Lane 1", status: { dirty: true } }] as any[],
       });
       const snapshots = [
         {
-          lane: { id: "lane-1", name: "Lane 1", status: { dirty: false }, parentStatus: null },
+          lane: { id: "lane-1", name: "Lane 1", status: { dirty: false } },
           runtime: {
             bucket: "running",
             runningCount: 1,
@@ -1105,8 +1098,6 @@ describe("appStore", () => {
             endedCount: 0,
             sessionCount: 1,
           },
-          rebaseSuggestion: null,
-          autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
         },
@@ -1117,16 +1108,12 @@ describe("appStore", () => {
         includeStatus: false,
         includeSnapshots: true,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       });
 
       expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
         includeArchived: false,
         includeStatus: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       });
       expect(useAppStore.getState().laneSnapshots[0].runtime.bucket).toBe("running");
       expect(useAppStore.getState().lanes[0].status).toEqual({ dirty: true });
@@ -1142,36 +1129,6 @@ describe("appStore", () => {
         includeArchived: false,
         includeStatus: true,
         includeConflictStatus: false,
-        includeRebaseSuggestions: true,
-        includeAutoRebaseStatus: true,
-      });
-    });
-
-    it("refreshLanes can skip rebase suggestions for cheaper warmup snapshots", async () => {
-      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
-
-      await useAppStore.getState().refreshLanes({ includeStatus: true, includeRebaseSuggestions: false });
-
-      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
-        includeArchived: false,
-        includeStatus: true,
-        includeConflictStatus: true,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: true,
-      });
-    });
-
-    it("refreshLanes can skip auto-rebase status for cheaper warmup snapshots", async () => {
-      (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce([]);
-
-      await useAppStore.getState().refreshLanes({ includeStatus: true, includeAutoRebaseStatus: false });
-
-      expect(window.ade.lanes.listSnapshots).toHaveBeenCalledWith({
-        includeArchived: false,
-        includeStatus: true,
-        includeConflictStatus: true,
-        includeRebaseSuggestions: true,
-        includeAutoRebaseStatus: false,
       });
     });
 
@@ -1184,7 +1141,6 @@ describe("appStore", () => {
               name: "Lane 1",
               color: "#0f172a",
               status: { dirty: true },
-              parentStatus: { ahead: 1 },
             },
             runtime: {
               bucket: "running",
@@ -1193,8 +1149,6 @@ describe("appStore", () => {
               endedCount: 0,
               sessionCount: 1,
             },
-            rebaseSuggestion: null,
-            autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
           },
@@ -1207,8 +1161,6 @@ describe("appStore", () => {
               endedCount: 0,
               sessionCount: 0,
             },
-            rebaseSuggestion: null,
-            autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
           },
@@ -1227,7 +1179,6 @@ describe("appStore", () => {
             id: "lane-1",
             color: "#7dd3fc",
             status: { dirty: true },
-            parentStatus: { ahead: 1 },
           }),
           runtime: expect.objectContaining({ bucket: "running" }),
         }),
@@ -1306,8 +1257,8 @@ describe("appStore", () => {
 
     it("overwrites a previous tab selection", () => {
       useAppStore.getState().setLaneInspectorTab("lane-1", "terminals");
-      useAppStore.getState().setLaneInspectorTab("lane-1", "stack");
-      expect(useAppStore.getState().laneInspectorTabs["lane-1"]).toBe("stack");
+      useAppStore.getState().setLaneInspectorTab("lane-1", "context");
+      expect(useAppStore.getState().laneInspectorTabs["lane-1"]).toBe("context");
     });
   });
 

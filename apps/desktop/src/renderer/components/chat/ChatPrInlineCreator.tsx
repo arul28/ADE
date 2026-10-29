@@ -98,10 +98,9 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     () =>
       resolveLaneBaseBranch({
         lane,
-        lanes,
         primaryBranchRef: primaryLane?.branchRef ?? null,
       }),
-    [lane, lanes, primaryLane?.branchRef],
+    [lane, primaryLane?.branchRef],
   );
 
   // Target options: every other live lane (one branch per lane = lane.branchRef).

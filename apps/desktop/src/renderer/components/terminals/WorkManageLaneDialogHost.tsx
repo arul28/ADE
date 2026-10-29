@@ -224,7 +224,6 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       onArchive={handleArchive}
       onDelete={handleDelete}
       onAppearanceChanged={() => refreshManagedLanes({ includeStatus: false })}
-      onStackReorganized={() => refreshManagedLanes()}
     />
   );
 });

@@ -157,7 +157,7 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
  * fallbacks ("Unpublished", "Browse") for a clean, committed repository until
  * the user happened to visit the Lanes tab.
  *
- * Only the conflict / rebase-suggestion DECORATIONS are genuinely Lanes-route
+ * Only the conflict DECORATIONS are genuinely Lanes-route
  * work, so those (and the decorated snapshot read that carries them) stay
  * gated.
  */
@@ -165,15 +165,11 @@ export function deferredLaneRefreshOptions(isLanesRoute: boolean): {
   includeStatus: boolean;
   includeSnapshots: boolean;
   includeConflictStatus: boolean;
-  includeRebaseSuggestions: boolean;
-  includeAutoRebaseStatus: boolean;
 } {
   return {
     includeStatus: true,
     includeSnapshots: isLanesRoute,
     includeConflictStatus: isLanesRoute,
-    includeRebaseSuggestions: isLanesRoute,
-    includeAutoRebaseStatus: isLanesRoute,
   };
 }
 
