@@ -5,7 +5,6 @@ import path from "node:path";
 import type { ProviderContextItem } from "../../../../../shared/types/providerContext";
 import type { AdeChatContextPreview } from "../../../chat/adeChatContextPreview";
 import { isRecord, type McpConfigSource } from "../../../mcp/mcpProviderConfigScan";
-import { pathsEqual } from "../../../shared/pathCompare";
 import { claudeConfigHome, claudeManagedInstructionsFile } from "../../../shared/providerConfigHomes";
 import { allAncestorsTopDown, dirsTopDown, exists, located, readJsonCapped, type Ctx } from "../fsScan";
 import {
@@ -93,8 +92,9 @@ export async function claudeItems(ctx: Ctx, preview: AdeChatContextPreview | nul
   if (managedItem) items.push({ ...managedItem, owner: "user" });
   const userItem = await claudeInstructionFile(ctx, path.join(configDir, "CLAUDE.md"), "User CLAUDE.md", seenFiles);
   if (userItem) items.push(userItem);
+  // Claude Code reads the home folder's CLAUDE.md too when the project is under
+  // it; `~/.claude/CLAUDE.md` is the user file above, so `seenFiles` skips it.
   for (const dir of allAncestorsTopDown(ctx.cwd)) {
-    if (pathsEqual(dir, ctx.home)) continue;
     const where = dir === ctx.cwd ? "Project" : `Parent folder ${path.basename(dir)}`;
     for (const [rel, label] of [
       ["CLAUDE.md", `${where} CLAUDE.md`],

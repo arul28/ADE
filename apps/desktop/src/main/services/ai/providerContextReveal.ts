@@ -10,8 +10,10 @@
  * that list for every caller is the wrong trade; this list is only for the
  * card's button. It shows a location; it never opens or reads a file.
  */
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveWithinAllowedDirs } from "../ipc/allowedRendererPath";
 import {
   claudeConfigHome,
   claudeManagedInstructionsFile,
@@ -86,4 +88,29 @@ export function providerContextRevealRoots(args: {
     // providers' homes.
     ...[".agents", ".agent", ".cursor", ".gemini", ".devin", ".kimi"].map((dir) => path.join(home, dir)),
   ];
+}
+
+/**
+ * The path "Show in Finder" may show for `raw`, or a throw when it is outside
+ * `roots`. A skill folder is often a symlink into a dotfiles repo, so its real
+ * path is outside every root: then the link itself is shown, where the
+ * provider sees it. Only the last part of the path may be that link. Its
+ * parent's real path must be inside a root, so a path through a symlinked
+ * folder (`<root>/linked-dir/secret`) is still refused.
+ */
+export function resolveProviderContextRevealTarget(roots: readonly string[], raw: string): string {
+  try {
+    return resolveWithinAllowedDirs(roots, raw);
+  } catch (error) {
+    if (!path.isAbsolute(raw)) throw error;
+    const named = path.resolve(raw);
+    let isLink = false;
+    try {
+      isLink = fs.lstatSync(named).isSymbolicLink();
+    } catch {
+      throw error;
+    }
+    if (!isLink) throw error;
+    return path.join(resolveWithinAllowedDirs(roots, path.dirname(named)), path.basename(named));
+  }
 }

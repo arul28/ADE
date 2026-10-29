@@ -227,8 +227,11 @@ export function ProviderContextPanel({
     setLoading(true);
     setLoadError(null);
     try {
-      const next = (await read({ provider: providerId }, pin)) ?? null;
-      if (request === requestRef.current) setInventory(next);
+      const next = await read({ provider: providerId }, pin);
+      if (request !== requestRef.current) return;
+      // No answer (ADE Web while its machine is away): say so and offer a retry.
+      if (next) setInventory(next);
+      else setLoadError("The machine did not answer.");
     } catch (error) {
       if (request !== requestRef.current) return;
       // An older ADE on that machine has no such action; the card stays away.

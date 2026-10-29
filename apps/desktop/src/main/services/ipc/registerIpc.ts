@@ -112,7 +112,7 @@ import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { collectAcpProviderDiagnostics } from "../ai/acpProviderDiagnostics";
 import { resolvePiInstallation } from "../ai/piInstallation";
-import { isPathInside, pathsEqual } from "../shared/pathCompare";
+import { pathsEqual } from "../shared/pathCompare";
 import { readClipboardImage, readClipboardItem, writeClipboardFlavors } from "../shared/electronClipboard";
 import { showRememberedOpenDialog } from "../shared/rememberedOpenDialog";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
@@ -5731,23 +5731,13 @@ export function registerIpc({
   ipcMain.handle(IPC.aiRevealProviderContextPath, async (_event, arg: { path?: string } | undefined): Promise<void> => {
     const raw = typeof arg?.path === "string" ? arg.path.trim() : "";
     if (!raw) return;
-    const { providerContextRevealRoots } = await import("../ai/providerContextReveal");
+    const { providerContextRevealRoots, resolveProviderContextRevealTarget } = await import("../ai/providerContextReveal");
     const roots = providerContextRevealRoots({
       projectRoot: getCtx().project?.rootPath ?? null,
       adeDir: resolveMachineAdeLayout().adeDir,
       appDirs: [app.getAppPath(), process.resourcesPath].filter((dir): dir is string => typeof dir === "string" && dir.length > 0),
     });
-    let target: string;
-    try {
-      target = resolveWithinAllowedDirs(roots, raw);
-    } catch (error) {
-      // A skill folder is often a symlink into a dotfiles repo, so its real
-      // path is outside every root. Show the link where the provider sees it.
-      const named = path.resolve(raw);
-      if (!path.isAbsolute(raw) || !roots.some((root) => pathsEqual(named, root) || isPathInside(named, root))) throw error;
-      target = named;
-    }
-    shell.showItemInFolder(target);
+    shell.showItemInFolder(resolveProviderContextRevealTarget(roots, raw));
   });
 
   ipcMain.handle(IPC.aiPinnedToolDownload, async (_event, arg: { provider: string }): Promise<PinnedProviderToolStatus> => {

@@ -19,8 +19,7 @@ type HeroUsage = {
 };
 
 /** This provider's slice of the machine's 30-day usage, or null when it ran nothing. */
-function usageFor(stats: AdeUsageStats | null, providerId: string, labelFor: (id: string) => string): HeroUsage | null {
-  if (!stats) return null;
+function usageFor(stats: AdeUsageStats, providerId: string, labelFor: (id: string) => string): HeroUsage | null {
   const provider = stats.providers.find((row) => row.provider === providerId);
   const models = stats.models
     .filter((row) => row.provider === providerId && row.totalTokens > 0)
@@ -52,8 +51,9 @@ function useProviderUsage(providerId: string, pin: OpenProjectBinding | null, la
     // A rebuilt pin with the same key is the same machine.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [providerId, pin?.key]);
+  // Loading or unreadable stats show no panel: "no chats ran" is only for a read that worked.
   return useMemo(
-    () => (stats === undefined ? undefined : usageFor(stats, providerId, labelFor)),
+    () => (stats ? usageFor(stats, providerId, labelFor) : undefined),
     [stats, providerId, labelFor],
   );
 }
