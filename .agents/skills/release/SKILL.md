@@ -15,6 +15,7 @@ Every hand-typed step in past releases is where the mistakes came from.
 | Script | Does |
 |---|---|
 | `bash scripts/release-tools/scope.sh` | What each tier needs to ship, and `main`'s `ci-pass` |
+| `bash scripts/release-tools/betas.sh` | The newest betas: age, commit, PRs, and the recommended one to promote |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
 | `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun |
 
@@ -29,6 +30,9 @@ only when a step goes off the happy path.
   tier to start another; run long waits in the background and keep going.
 - **Desktop bumps the patch only** (`v1.2.108 → v1.2.109`). **iOS keeps its
   marketing version**; the build number is App Store Connect's next one.
+- **Stable promotes a beta.** `beta.yml` builds `vX.Y.Z-beta.N` from `main`
+  every few hours; a stable release rebuilds the commit of a beta the owner
+  picked, as `vX.Y.Z`. Never tag `main`'s head directly.
 - **Desktop builds only in GitHub Actions.** Never build, sign or upload desktop
   assets from this machine.
 - **Never publish a draft that `verify-desktop-draft.sh` rejects.** npm versions
@@ -57,9 +61,22 @@ bash scripts/release-tools/scope.sh
 - Nothing in scope → stop. Changes only under `docs/`, `changelog/`, `sdk/` do
   not count. SDK page or README updates ride on the SDK PR, never a desktop tag.
 
-**Read `main`'s `ci-pass` line now.** The tag borrows it. If it is `failure`,
-find the failed job before writing notes (step 2): a flaky job is rerun with
-`gh run rerun <id> --failed`; a real failure stops the release.
+### 1b. Pick the beta (desktop only)
+
+```bash
+bash scripts/release-tools/betas.sh
+```
+
+Show the owner each beta's version, age, commit and PRs. For new Sentry
+issues, search `firstRelease:ade@<beta version>` in `ade-desktop` and
+`ade-brain` (sentry-cli skill) when a token is at hand; skip it otherwise.
+Recommend the `recommended:` line (the newest beta at least 3 h old that no
+stable ships yet) and **ask which to promote**. The stable version is that
+beta's `X.Y.Z` (`v1.2.127-beta.4` → `v1.2.127`), which is also scope.sh's
+`next`. Pin its commit: `BETA_SHA=<commit>`. No beta, or only one under 3 h
+old, means wait or ask; never release `main`'s head instead.
+
+If `beta.yml` is failing, the open **Beta build failed** issue names the run.
 
 ### 2. Release notes and docs drift (desktop only, ~10 min)
 
@@ -84,7 +101,10 @@ current.
 These notes ship inside the app. On the first launch after a user installs
 the update on that computer, What's new shows up to 3 catalogue pages they
 have not seen, then an "And more" page with these notes for every version
-since the one they came from (sections merged, an icon per section). So:
+since the one they came from (sections merged, an icon per section). The
+build bundles the notes found at the beta's commit, so a notes commit pushed
+now first reaches the app in the next release (open item in
+`docs/plans/beta-track.md`). So:
 
 - Use `## New`, `## Improved`, `## Fixed`, then platform sections
   (`## iOS`, `## Windows`). Other names still show, with a plain mark.
@@ -98,29 +118,31 @@ since the one they came from (sections merged, an icon per section). So:
   real captures from the dev app, cropped to the feature, GIF or WebP in
   `pages/assets/`. Pages show by themselves for 45 days.
 
+List the PRs from `git log v<previous-release>..$BETA_SHA`, not from `main`'s
+head: the release ships the beta's commit, and anything merged after it waits
+for the next one.
+
 ```bash
 node scripts/validate-docs.mjs
 git commit -m "docs(release): v<V> release notes" && git push origin main
-RELEASE_SHA=$(git rev-parse HEAD)   # pin it; later merges ship next release
 ```
 
-### 3. Tag (desktop only)
+### 3. Start the release (desktop only)
 
-A notes-only commit borrows its parent's `ci-pass`, so tag as soon as the
-parent's is green. Do not wait for the notes commit's own CI unless the parent
-was red.
+The beta's commit already has a green `ci-pass` (betas are built only from
+one). Dispatch the release on it; the workflow creates the `v<V>` tag there.
 
 ```bash
-gh api repos/arul28/ADE/commits/$RELEASE_SHA/check-runs --jq '.check_runs[]|select(.name=="ci-pass")|.conclusion'
-git tag -a v<V> $RELEASE_SHA -m "ADE v<V>" && git push origin v<V>
+gh workflow run release.yml --repo arul28/ADE -f tag_name=v<V> -f target_sha=$BETA_SHA
 ```
 
-Right after the tag (or right away on an iOS-only release), start iOS in the
-background. It does not need the desktop draft:
+Right after (or right away on an iOS-only release), start iOS in the
+background. It does not need the desktop draft. TestFlight builds will move
+to CI with the Beta track; until then this script is still the path:
 
 ```bash
-git checkout $RELEASE_SHA
-bash scripts/release-tools/ios-testflight.sh <mv> <build> $RELEASE_SHA   # run_in_background, timeout ≥ 90 min
+git checkout $BETA_SHA   # main's head on an iOS-only release
+bash scripts/release-tools/ios-testflight.sh <mv> <build> $BETA_SHA   # run_in_background, timeout ≥ 90 min
 ```
 
 ### 4. Desktop workflow (~30 min)
@@ -171,7 +193,8 @@ migrations and preflights.
 
 One short block:
 
-- desktop: tag, release URL, asset count, `DRAFT OK`, npm + brew status
+- desktop: tag, the beta it promoted, release URL, asset count, `DRAFT OK`,
+  npm + brew status
 - iOS: `<mv> (<build>)`, build id, each group with testers and the build
 - Cloudflare: one line per surface — deployed by CI / rerun / unchanged, and
   what was checked
@@ -183,7 +206,8 @@ One short block:
 | Symptom | Do |
 |---|---|
 | `main`'s `ci-pass` red before notes | Read the failed job. Flaky → rerun it. Secret-scan false positive → allowlist it in `.gitleaks.toml` in a PR. Real → stop. |
-| Tag's `verify` job fails | Leave the tag. Get `ci-pass` green on the same SHA, then `gh run rerun <id> --failed`. |
+| Release `verify` job fails | Get `ci-pass` green on the same SHA, then `gh run rerun <id> --failed`. |
+| No beta to promote | `beta.yml` failing: read the **Beta build failed** issue. Beta too new: wait, or `gh workflow run beta.yml -f force=true` only if the owner asks. |
 | Mac job: Apple network error | `gh run rerun <id> --failed`, once. |
 | Notarization stuck > 15 min | `gh run cancel <id>`, then `gh run rerun <id> --failed`. |
 | `verify-desktop-draft.sh` fails | Keep the draft private. reference.md → "Draft release verification". |

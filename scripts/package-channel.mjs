@@ -201,7 +201,8 @@ function resolveChannelVersion(repoRoot, channel, now = new Date()) {
   const fallbackVersion = readDesktopVersion(repoRoot);
   let taggedVersion = "";
   try {
-    taggedVersion = gitOutput(["describe", "--tags", "--abbrev=0", "--match", "v*"], { cwd: repoRoot });
+    // Stable tags only: a vX.Y.Z-beta.N tag must not become an Alpha base.
+    taggedVersion = gitOutput(["describe", "--tags", "--abbrev=0", "--match", "v*", "--exclude", "v*-*"], { cwd: repoRoot });
   } catch {
     // No reachable v* tag (shallow clone, or a branch before the first tag).
     taggedVersion = "";

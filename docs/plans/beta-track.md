@@ -141,3 +141,59 @@ Asset `release-manifest.json`:
 | #20240 | Pending inputs lost on restart | Check queued messages and open questions survive |
 | #19837 | One slow machine blocked the run | Per-machine progress and Retry |
 | #19291 | Silent reinstall after a failed update | Existing "install did not land" record; notice with Retry |
+
+## CI notes (work item 7 and 10)
+
+How the pipeline is built, and what is still open.
+
+- `beta.yml` runs at :17 and :47. `scripts/beta/resolve.mjs` picks the newest
+  main commit with a green `ci-pass` newer than the last **published** beta,
+  skips inside the 3 h gap or when nothing under the desktop product paths
+  changed (`force` overrides both), and names `vX.Y.Z-beta.N`. Then
+  `release-core.yml` → `release-publish.yml` (draft prerelease, assets,
+  inventory check, then public) → feed → prune → report. Fixture mode:
+  `node scripts/beta/resolve.mjs --fixture <json>` (shape in the file header).
+- Beta builds: `scripts/beta/apply-build-track.mjs` runs after the version
+  stamp in every mac and Windows packaging job. On a beta tag it sets
+  `build.detectUpdateChannel=false` and `build.mac.icon=build/icon.beta.icns`
+  in the runner's `package.json`, and overwrites `build/icon.ico` with a
+  one-entry 256 px PNG icon taken from `icon.beta.icns` (the same shape as the
+  stable `icon.ico`). `build.win.icon` stays `build/icon.ico`, which
+  `validate-win-artifacts.mjs` requires.
+- Tags: `release-publish.yml` now creates a missing tag at the vetted commit
+  before it creates the draft (a draft has no tag, and the target checks read
+  it). This also makes `release.yml` dispatches work without a pushed tag,
+  which the release skill now uses for stable. `release.yml` no longer starts
+  on `v*-*` tag pushes.
+- Previews: `preview_ref` builds `vX.Y.Z-beta.0.preview.<run>` without the
+  main and `ci-pass` gates (release-core refuses the bypass for any other tag
+  shape). Published as a prerelease, never fed, pruned after 7 days. Preview
+  failures do not touch the "Beta build failed" issue.
+- `release-manifest.json` is written for every release by
+  `scripts/release-tools/release-manifest.mjs`; `verify-desktop-draft.sh`
+  requires it. `publishedAt` is the time the publish job assembled the draft
+  (for stable, the owner undrafts later).
+- `beta-feed` is created on first use as a prerelease. Manifests are uploaded
+  before `beta.json`. A beta without a Windows build removes `latest.yml` from
+  the feed. This relies on immutable releases staying off for the repo
+  (checked 2026-10-29: off); with them on, the feed's assets cannot be
+  replaced.
+- Sentry: a beta is its own release (`ade@1.2.128-beta.3`). Releases carry no
+  environment, so the `track` tag must come from the app (work item 5).
+- `concurrency.queue: max` is used; actionlint 1.7.12 flags the key as
+  unknown.
+
+Open:
+
+- **In-app release notes.** A stable build now comes from the beta's commit,
+  so `bundle-release-notes.mjs` cannot see the `changelog/v<V>.mdx` written at
+  release time; those notes reach the app one release late. Options: overlay
+  `changelog/` from `main` in release-core for stable tags, or have the app
+  fetch the notes. Needs a decision.
+- `scripts/package-channel.mjs` (Alpha) takes its base from
+  `git describe --match 'v*'`, which will pick a beta tag. Add
+  `--exclude 'v*-*'` when the old Beta channel code is removed.
+- The packaged launch check with an old database (T3 #25928, #25840) is not
+  built yet.
+- iOS TestFlight from CI (work item 8) is not built; the skill still uses
+  `ios-testflight.sh`.
