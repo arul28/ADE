@@ -338,8 +338,16 @@ describe("account vault", () => {
       { label: "made after the stored row", writtenAt: () => at(60_000), sentAt: () => at(60_000), deviceId: "device-old" },
       { label: "made just now on a day-slow clock", writtenAt: () => at(-DAY), sentAt: () => at(-DAY), deviceId: "device-old" },
       { label: "made by the device that wrote the stored row", writtenAt: () => at(-DAY), sentAt: () => at(0), deviceId: "device-1" },
-    ])("is written when $label", async ({ writtenAt, sentAt, deviceId }) => {
+      {
+        label: "made by the device that deleted the stored row",
+        writtenAt: () => at(-DAY),
+        sentAt: () => at(0),
+        deviceId: "device-1",
+        deletedFirst: true,
+      },
+    ])("is written when $label", async ({ writtenAt, sentAt, deviceId, deletedFirst }) => {
       await put([sealed({ value: "stored" })]);
+      if (deletedFirst) await call("DELETE", "/attention/account/vault/all/provider_key/anthropic?deviceId=device-1");
       raw.exec(`update account_vault_items set updated_at = '${at(-60_000)}'`);
       const result = await call("PUT", "/attention/account/vault", {
         itemResults: true, sentAt: sentAt(), deviceId, items: [sealed({ value: "mine", writtenAt: writtenAt() })],

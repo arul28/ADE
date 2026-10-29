@@ -450,10 +450,10 @@ async function handleDelete(
   const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_vault_items
-    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = null, refresh_owner = null
+    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = ?, refresh_owner = null
     where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
       and (updated_at <= ? or writer_device_id = ?)
-  `).bind(updatedAt, userId, scope, kind, key, threshold, deviceId).run();
+  `).bind(updatedAt, deviceId, userId, scope, kind, key, threshold, deviceId).run();
   const deleted = (result.meta?.changes ?? 0) > 0;
   if (!deleted && url.searchParams.has("writtenAt")) {
     const row = await readVaultRow(env, userId, { scope, kind, key });

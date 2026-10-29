@@ -335,10 +335,10 @@ async function handleDelete(
   const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_settings
-    set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = null
+    set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = ?
     where user_id = ? and scope_key = ? and setting_key = ? and deleted = 0
       and (updated_at <= ? or writer_device_id = ?)
-  `).bind(updatedAt, userId, scope, key, threshold, deviceId).run();
+  `).bind(updatedAt, deviceId, userId, scope, key, threshold, deviceId).run();
   const deleted = (result.meta?.changes ?? 0) > 0;
   if (!deleted && url.searchParams.has("writtenAt")) {
     const row = await readSettingRow(env, userId, scope, key);

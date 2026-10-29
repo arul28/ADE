@@ -260,7 +260,7 @@ Manage the registry through typed CLI commands:
 ade projects list --text           # hides projects whose folder is gone; --include-missing shows them
 ade projects add /path/to/project
 ade projects clone owner/repo      # clone with this computer's GitHub sign-in, then register it
-ade projects clone <url> --path ~/work --machine "Mac Studio"   # on another computer of the account
+ade projects clone <url> --path '~/work' --machine "Mac Studio"   # on another computer; quote ~ so your shell leaves it for that computer
 ade projects prune --dry-run       # registry entries whose folder is gone (never folders)
 ade projects remove project_abc123…
 ade projects touch project_abc123…
