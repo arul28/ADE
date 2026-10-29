@@ -241,14 +241,14 @@ export function WebClientRoot({
     }
     await sessionManager.hydrateCatalogs(ownerUserId);
     try {
-      await client.adoptDirectoryTailnetRoutes(snapshot.machines, snapshot.relayBaseUrls);
-    } catch (error) {
-      // The saved routes stay as they were; the next directory read tries again.
-      console.warn("[ade-web] couldn't update saved Tailscale routes", error);
-    }
-    try {
       const result = await client.pruneAccountOwnedEnvironments(ownerUserId);
       setWorkspaceNotice(null);
+      try {
+        await client.adoptDirectoryTailnetRoutes(snapshot.machines, ownerUserId, snapshot.relayBaseUrls);
+      } catch (error) {
+        // The saved routes stay as they were; the next directory read tries again.
+        console.warn("[ade-web] couldn't update saved Tailscale routes", error);
+      }
       return environmentsVisibleToOwner(result.environments, ownerUserId);
     } catch {
       setWorkspaceNotice(

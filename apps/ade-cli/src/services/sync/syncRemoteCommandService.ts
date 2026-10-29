@@ -552,7 +552,7 @@ export function evaluateRemoteCommandPolicy(args: {
   if (policy.runtimeHostOnly && args.peer.pairingRecord?.runtimeHostGranted !== true) {
     return {
       code: "forbidden_command",
-      message: `Remote command ${action} is only available from a paired ADE computer.`,
+      message: `Remote command ${action} needs a computer connected through your ADE account. Reconnect it from Your computers, then try again.`,
     };
   }
   if (policy.localOnly || policy.requiresApproval) {

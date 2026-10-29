@@ -82,8 +82,20 @@ function useMachineRoutesState() {
     if (!setRelay) throw new Error("This ADE can't change ADE Relay.");
     const key = machineKey ?? LOCAL_ROUTES_KEY;
     const attempt = begin(key);
-    const routes = await setRelay({ machineKey, enabled });
-    if (isLatest(key, attempt)) setByKey((previous) => ({ ...previous, [key]: { status: "ready", routes } }));
+    try {
+      const routes = await setRelay({ machineKey, enabled });
+      if (isLatest(key, attempt)) setByKey((previous) => ({ ...previous, [key]: { status: "ready", routes } }));
+    } catch (error) {
+      // This change superseded any read in flight; put the last good answer
+      // back so the row doesn't sit on "loading".
+      if (isLatest(key, attempt)) {
+        setByKey((previous) => {
+          const routes = previous[key]?.routes;
+          return routes ? { ...previous, [key]: { status: "ready", routes } } : previous;
+        });
+      }
+      throw error;
+    }
   }, [begin]);
 
   return { byKey, load, setRelayEnabled };

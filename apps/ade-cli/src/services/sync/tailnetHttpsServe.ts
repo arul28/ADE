@@ -102,8 +102,20 @@ export function createTailnetHttpsServe(args: {
 
   const publish = async (syncPort: number, options?: { force?: boolean }): Promise<void> => {
     const attempt = ++sequence;
+    // A newer attempt that stops before `serve` must still let an older one
+    // in flight take its entry back, so only an attempt that reaches `serve`
+    // claims a port.
+    wantedPort = null;
     const isCurrent = () => !args.isDisposed() && attempt === sequence && args.currentSyncPort() === syncPort;
-    const status = await readTailscaleLocalStatus(options?.force ? { maxAgeMs: 2_000 } : undefined);
+    let status: Awaited<ReturnType<typeof readTailscaleLocalStatus>>;
+    try {
+      status = await readTailscaleLocalStatus(options?.force ? { maxAgeMs: 2_000 } : undefined);
+    } catch (error: unknown) {
+      args.logger.warn("sync_host.tailnet_https_status_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
     if (!isCurrent()) return;
     if (status.state === "not_installed") {
       setRoute({ state: "unavailable", url: null, error: "Tailscale isn't installed on this computer." });
@@ -135,7 +147,10 @@ export function createTailnetHttpsServe(args: {
       if (!isCurrent()) {
         // Unpublished (or moved to another port) while this ran: take back the
         // entry it just added, so the computer isn't left reachable on it.
-        if (wantedPort !== httpsPort) await turnOff(httpsPort);
+        if (wantedPort !== httpsPort) {
+          await turnOff(httpsPort);
+          if (servedPort === httpsPort) servedPort = null;
+        }
         return;
       }
       servedPort = httpsPort;

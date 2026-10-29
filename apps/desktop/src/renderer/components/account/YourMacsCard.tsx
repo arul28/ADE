@@ -569,15 +569,16 @@ export function YourMacsCard() {
     );
   }, [connectedIds, isThisMac, machines, usingWorkspaceRoster, webMachines]);
 
+  const reloadMachines = useCallback(() => {
+    invalidateAccountMachines();
+    void load();
+  }, [load]);
   const routes = useMachineRoutesControl({
     enabled: !webMode && routesAvailable(),
     rows,
     machines,
     relayRoutedKeys,
-    reloadMachines: () => {
-      invalidateAccountMachines();
-      void load();
-    },
+    reloadMachines,
   });
 
   const onExpandRoutes = routes.onExpand;
