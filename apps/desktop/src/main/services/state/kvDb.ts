@@ -1866,6 +1866,11 @@ function dropRetiredTables(
   const presentTables = existingRetiredTables(db, tableNames);
   if (presentTables.length === 0) return presentTables;
 
+  // cr-sqlite derives db_version from the clock tables that remain, so dropping
+  // the clock that held the newest change rewinds it, and peers whose watermark
+  // is past the rewound value would never be sent the next local writes.
+  const dbVersionFloor = readCrsqlDbVersion(db);
+
   for (const tableName of tableNames) {
     if (rawHasTable(db, "crsql_master") && rawHasColumn(db, "crsql_master", "tbl_name")) {
       runStatement(db, "delete from crsql_master where tbl_name = ?", [tableName]);
@@ -1886,7 +1891,22 @@ function dropRetiredTables(
     runStatement(db, `drop table if exists ${quoteIdentifier(tableName)}`);
   }
 
+  // The bundled cr-sqlite (0.16.3) reads this key as a floor, as it does after
+  // its own compaction.
+  if (dbVersionFloor != null && (readCrsqlDbVersion(db) ?? 0) < dbVersionFloor && rawHasTable(db, "crsql_master")) {
+    runStatement(db, "insert or replace into crsql_master (key, value) values ('pre_compact_dbversion', ?)", [dbVersionFloor]);
+  }
+
   return presentTables;
+}
+
+function readCrsqlDbVersion(db: DatabaseSyncType): number | null {
+  try {
+    const value = Number(getRow<{ db_version: unknown }>(db, "select crsql_db_version() as db_version")?.db_version);
+    return Number.isFinite(value) ? value : null;
+  } catch {
+    return null;
+  }
 }
 
 function purgeRetiredTerminalSessions(db: DatabaseSyncType): number {

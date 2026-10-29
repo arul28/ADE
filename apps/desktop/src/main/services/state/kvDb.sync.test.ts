@@ -539,7 +539,8 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
   it.each([
     ["review", ["review_runs", "review_findings"]],
     ["PR workflow", ["pr_groups", "pr_group_members", "integration_proposals", "rebase_dismissed", "rebase_deferred"]],
-  ])("drops the retired %s schema from an upgraded database", async (_label, tables) => {
+    ["project notes", ["project_agent_notes"]],
+  ])("drops the retired %s schema from an upgraded database without rewinding db_version", async (_label, tables) => {
     const dbPath = makeDbPath("ade-kvdb-sync-retired-drop-");
     const first = await openKvDb(dbPath, createLogger() as any);
     // An upgraded database still holds the tables the previous release
@@ -549,13 +550,18 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
       first.run(`create table if not exists ${table} (id text primary key not null, project_id text not null default '')`);
       first.run(`insert into ${table}(id, project_id) values ('row-1', 'project-1')`);
       first.get("select crsql_as_crr(?)", [table]);
+      // The retired table holds the newest change, so dropping its clock is
+      // what would rewind db_version below what peers have already been sent.
+      first.run(`update ${table} set project_id = 'project-2' where id = 'row-1'`);
     }
+    const versionBeforeDrop = first.sync.getDbVersion();
     first.close();
 
     const second = await openKvDb(dbPath, createLogger() as any);
     for (const table of tables) {
       expect(second.get("select name from sqlite_master where name = ? or name like ?", [table, `${table}__crsql_%`])).toBeNull();
     }
+    expect(second.sync.getDbVersion()).toBeGreaterThanOrEqual(versionBeforeDrop);
     second.close();
   });
 
