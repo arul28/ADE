@@ -870,14 +870,22 @@ Renderer — settings:
   maker's banner, what it does, and this machine's connection state, each read
   with the Settings machine's pin). `?integration=<id>` opens one page, and a
   `#hash` naming any of its settings (`#github-connection`, `#jira-projects`)
-  opens it too. Each page (`IntegrationChrome.tsx`) is a banner in the maker's
-  colors with the logo standing in 3D (`SolidLogo` from the provider hero),
-  a strip of what is connected, then cards in two columns.
-  `integrationBrand.tsx` holds each brand's accent, banner art and logo.
+  opens it too; the hash wins over the param, because a search result keeps
+  the query string (`openIntegrationFromUrl` in `settingsTabContent.tsx`).
+  Only one integration's page is mounted at a time, so Settings search lists a
+  match on another integration's page (or every match while the grid is open)
+  as an "On other pages" result that opens it. Each page (`IntegrationChrome.tsx`)
+  starts with a banner in the maker's colors: the logo standing in 3D
+  (`SolidLogo` from the provider hero), the state, a panel naming what this
+  machine is signed in to with the main actions, and a strip of facts that
+  also holds the top-bar switch. Below it sit two cards of equal size, or one
+  across. `integrationBrand.tsx` holds each brand's accent, banner art and logo.
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
   auth, credential-specific permission diagnostics, structured validation
-  failures, and automatic fallback state. Embedded inside Integrations. Classic
+  failures, and automatic fallback state. The GitHub page of Integrations: its "Your sign-in"
+  card lists every credential in the order ADE tries them, with the token form
+  (and the permissions a token needs) opening inline in the token row. Classic
   PATs and CLI OAuth tokens show their detected scopes; fine-grained PATs show
   repository-permission guidance; App user tokens show installation-backed
   repository metadata access and never report missing classic `repo` /
