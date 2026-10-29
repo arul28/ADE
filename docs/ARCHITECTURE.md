@@ -944,8 +944,7 @@ ade.github.*                 # PR list, review, merge, checks. Also exposes
                              # runtime that omits it leaves callers on their own
                              # local backoff. See
                              # features/pull-requests/README.md.
-ade.prs.*                    # stacked PR queue, integration, rebase/issue
-                             # resolver sessions, merge readiness, timeline,
+ade.prs.*                    # GitHub PRs, GitHub stacks, merge readiness, timeline,
                              # Graph detail bundle (ade.prs.getDetailBundle),
                              # comment edit (ade.prs.updateComment), and
                              # reactions (ade.prs.reactToComment)

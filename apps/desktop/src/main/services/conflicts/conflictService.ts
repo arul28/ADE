@@ -2779,6 +2779,12 @@ export function createConflictService({
       branchB: laneHead,
       timeoutMs: 60_000
     });
+    // Exit 0 is clean and 1 is conflicts; anything else (a bad object, a git
+    // too old for --write-tree) is no answer, which must not read as "clean".
+    if (merge.exitCode !== 0 && merge.exitCode !== 1) {
+      const detail = (merge.stderr || merge.stdout).trim().split(/\r?\n/)[0];
+      throw new Error(detail || "git merge-tree failed");
+    }
     const conflictingFiles = merge.conflicts.map((c) => c.path);
     const prId = db.get<{ id: string }>(
       `select id from pull_requests

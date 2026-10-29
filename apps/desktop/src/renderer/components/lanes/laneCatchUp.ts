@@ -5,6 +5,7 @@ import { machineIdForBinding } from "../../../shared/machineIdentity";
 import { extractError } from "../../lib/format";
 import { useLaneChatHandoff } from "../../lib/laneChatHandoff";
 import { newestLaneWorkChat, type LaneCatchUpPromptInput } from "../../lib/laneCatchUpPrompt";
+import { useAppStore } from "../../state/appStore";
 import { requestCrossMachineLanesForMachine } from "../../state/crossMachineLanes";
 import { showToast } from "../app/toast/toastStore";
 import type { LaneTabPrTag } from "./lanePageModel";
@@ -243,15 +244,25 @@ export function useLaneCatchUpAskAgent(pin: OpenProjectBinding | null) {
   }, [handOff, pin]);
 }
 
-/** Machines (by pin key; "" for the tab's own) whose ADE predates `git.mergeBaseIn`. */
+/** Machines (by binding key) whose ADE predates `git.mergeBaseIn`. */
 const mergeUnsupportedHosts = new Set<string>();
 
 /**
+ * The machine a call goes to: the pin's, else the machine the active project
+ * tab is bound to. Keyed by that machine, a refusal on one tab's remote host
+ * does not hide Merge in on another tab's own machine.
+ */
+function catchUpHostKey(pin: OpenProjectBinding | null): string {
+  return pin?.key ?? `tab:${useAppStore.getState().projectBinding?.key ?? "local"}`;
+}
+
+/**
  * Whether the lane's machine can run "Merge <base> in". There is no cheap
- * probe, so a machine counts as able until it refuses the action once.
+ * probe, so a machine counts as able until it refuses the action once in this
+ * window.
  */
 export function laneCatchUpMergeAvailable(pin: OpenProjectBinding | null): boolean {
-  return typeof window.ade?.git?.mergeBaseIn === "function" && !mergeUnsupportedHosts.has(pin?.key ?? "");
+  return typeof window.ade?.git?.mergeBaseIn === "function" && !mergeUnsupportedHosts.has(catchUpHostKey(pin));
 }
 
 export type LaneCatchUpOutcome =
@@ -317,7 +328,7 @@ export async function runLaneCatchUpDirect(args: {
     return { ok: true, upToDate };
   } catch (error) {
     const unsupported = action === "merge" && isUnsupportedAdeActionError(error);
-    if (unsupported) mergeUnsupportedHosts.add(pin?.key ?? "");
+    if (unsupported) mergeUnsupportedHosts.add(catchUpHostKey(pin));
     const message = unsupported
       ? "The ADE on this lane's machine is too old to merge here. Update it, or ask an agent."
       : stripElectronErrorWrapper(extractError(error));

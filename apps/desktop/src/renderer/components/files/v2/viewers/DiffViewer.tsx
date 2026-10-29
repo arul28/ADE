@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type { DiffMode, FileDiff, FilePatch, GitCommitSummary } from "../../../../../shared/types";
 import { hostSupportsBranchDiff } from "../../../../lib/branchDiffSupport";
 import { extractError } from "../../../../lib/format";
@@ -35,6 +35,9 @@ export function DiffViewer({
 }) {
   const [mode, setMode] = useState<DiffMode>("unstaged");
   const [branchSupported, setBranchSupported] = useState(false);
+  // A mode the user picked sticks across files; until then each file opens on
+  // its newest change (the viewer is reused when another file opens).
+  const userPickedModeRef = useRef(false);
 
   // Open on the file's newest change: its uncommitted edits when it has
   // some, else what the lane committed (Branch, where the host has it), so a
@@ -56,7 +59,7 @@ export function DiffViewer({
         : changes?.staged.some(matches)
           ? "staged"
           : supported ? "branch" : null;
-      if (opening) setMode((current) => (current === "unstaged" ? opening : current));
+      if (!userPickedModeRef.current) setMode(opening ?? "unstaged");
     });
     return () => {
       cancelled = true;
@@ -132,7 +135,10 @@ export function DiffViewer({
               <button
                 key={m}
                 type="button"
-                onClick={() => setMode(m)}
+                onClick={() => {
+                  userPickedModeRef.current = true;
+                  setMode(m);
+                }}
                 className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wide"
                 style={{ color: isActive ? "var(--color-accent-fg)" : COLORS.textMuted, background: isActive ? COLORS.accent : "transparent" }}
               >
