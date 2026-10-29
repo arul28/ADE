@@ -418,7 +418,7 @@ via `normalizeLaneIdArg` before dispatching.
 
 | Channel | Args | Notes |
 |---|---|---|
-| `ade.lanes.create` | `CreateLaneArgs` with `startPoint` | "Create lane here" forks the new branch from `commit.sha` instead of from the parent lane's tip. |
+| `ade.lanes.create` | `CreateLaneArgs` with `startPoint` | "Create lane here" forks the new branch from `commit.sha` at the selected commit. |
 
 ## Operation recording pattern
 

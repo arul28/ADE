@@ -173,14 +173,6 @@ export function buildSuggestedConfig(args: {
         claude: {
           command: ["claude", "--print"]
         }
-      },
-      conflictResolvers: {
-        codex: {
-          command: ["codex", "exec", "-"]
-        },
-        claude: {
-          command: ["claude", "--print"]
-        }
       }
     }
   };

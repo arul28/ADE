@@ -690,10 +690,7 @@ describe("lane worktree availability", () => {
       baseRef: "main",
       branchRef: "feature/lane-one",
       worktreePath,
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,
@@ -732,10 +729,7 @@ describe("PR title defaults", () => {
       baseRef: "main",
       branchRef: "feature",
       worktreePath: "/tmp/feature",
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,
@@ -746,23 +740,24 @@ describe("PR title defaults", () => {
     };
   }
 
-  it("uses the parent lane branch when defaulting stacked lane PR titles", () => {
-    const parent = laneForPrTitle({
-      id: "lane-parent",
-      name: "Parent",
-      branchRef: "feature/parent",
-      worktreePath: "/tmp/parent",
+  it("names the lane on the base branch, else the base branch itself", () => {
+    const primary = laneForPrTitle({
+      id: "lane-primary",
+      name: "Primary",
+      laneType: "primary",
+      branchRef: "main",
+      worktreePath: "/tmp/primary",
     });
-    const child = laneForPrTitle({
-      id: "lane-child",
-      name: "Child",
-      branchRef: "feature/child",
-      parentLaneId: parent.id,
-      baseRef: "main",
-      worktreePath: "/tmp/child",
+    const feature = laneForPrTitle({
+      id: "lane-feature",
+      name: "Feature",
+      branchRef: "feature/x",
+      baseRef: "origin/main",
+      worktreePath: "/tmp/feature",
     });
 
-    expect(defaultPrTitleForLane(child, [parent, child])).toBe("Child -> Parent");
+    expect(defaultPrTitleForLane(feature, [primary, feature])).toBe("Feature -> Primary");
+    expect(defaultPrTitleForLane(feature, [feature])).toBe("Feature -> main");
   });
 
   it("prefers the chat title over the lane -> target derivation", () => {
@@ -794,10 +789,7 @@ describe("right pane context defaults", () => {
       baseRef: "main",
       branchRef: "feature/lane-one",
       worktreePath: "/tmp/lane-one",
-      parentLaneId: null,
-      childCount: 0,
-      stackDepth: 0,
-      parentStatus: null,
+
       isEditProtected: false,
       status: { dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false },
       color: null,

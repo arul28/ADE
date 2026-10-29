@@ -5,10 +5,3 @@ export function normalizeBranchName(ref: string): string {
   return branch.startsWith("origin/") ? branch.slice("origin/".length) : branch;
 }
 
-export type BackgroundResolverSession = {
-  ptyId: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  startedAt: string;
-  exitCode: number | null;
-};

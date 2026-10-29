@@ -43,7 +43,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Project | One repo entry in the brain's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Personal chat | Machine-owned general-purpose agent conversation with no project, lane, repository, or PR binding. Stored outside the project registry and reached through runtime-scoped RPC/sync actions. | [personal-chats/README.md](./features/personal-chats/README.md) |
 | Lane | Isolated git worktree with agent and terminal sessions for one task. | [lanes/README.md](./features/lanes/README.md) |
-| Stack | Dependency chain of lanes → stacked PRs. | [lanes/stacking.md](./features/lanes/stacking.md) |
+| Stack | GitHub pull requests targeting each other’s branches. | [Pull requests](./features/pull-requests/README.md) |
 | Agent | Model-backed operator. The persistent CTO plus ephemeral lane-bound and personal chat agents. | [agents/README.md](./features/agents/README.md) |
 | Worktree | Git clone dir under `.ade/worktrees/<lane-id>/`, one per lane. | [lanes/worktree-isolation.md](./features/lanes/worktree-isolation.md) |
 | Lane runtime | Per-lane env initialization, ports, proxy, OAuth routing, and diagnostics. | [lanes/runtime.md](./features/lanes/runtime.md) |
@@ -95,9 +95,9 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 ### Work execution
 
-- [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Lane runtime covers ports, env initialization, proxy routing, and health checks.
-- [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation, integration merge plans, and merge-into-lane workflows. Backed by lanes; dependencies rebase automatically.
-- [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution, external CLI resolver flow.
+- [**Lanes**](./features/lanes/README.md) — Worktree isolation, where new lanes start, catching up with the base, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox on its own branch. Lane runtime covers ports, env initialization, proxy routing, and health checks.
+- [**Pull Requests**](./features/pull-requests/README.md) — GitHub PRs for lanes: list, detail, checks, reviews, GitHub stacks, and merging. Backed by lanes.
+- [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution proposals.
 ### Agents and chat
 
 - [**Agents**](./features/agents/README.md) — Two surfaces: lane-bound chat and the persistent CTO operator. Identity, capability modes, tool tiers, and the CTO memory system.

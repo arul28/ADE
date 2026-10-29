@@ -20,10 +20,6 @@ const lane: LaneSummary = {
   baseRef: "main",
   branchRef: "refs/heads/ade/lane-one",
   worktreePath: "/tmp/lane-one",
-  parentLaneId: null,
-  childCount: 0,
-  stackDepth: 0,
-  parentStatus: null,
   isEditProtected: false,
   status: { dirty: true, ahead: 1, behind: 2, remoteBehind: 0, rebaseInProgress: false, changedFileCount: 3 },
   color: null,
@@ -132,13 +128,8 @@ function check(name: string, status: string, conclusion: string | null) {
 
 function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboard>> = {}) {
   const handlers = {
-    onOpenRebase: vi.fn(),
-    onDismissRebaseSuggestion: vi.fn(),
-    onDismissAutoRebase: vi.fn(),
     onStartChat: vi.fn(),
     onSelectCommit: vi.fn(),
-    onSelectLane: vi.fn(),
-    onOpenPrTag: vi.fn(),
     onOpenLaneMenu: vi.fn(),
   };
   render(
@@ -151,10 +142,7 @@ function renderDashboard(props: Partial<React.ComponentProps<typeof LaneDashboar
               <LaneDashboard
                 laneId="lane-1"
                 colorIndex={0}
-                colorIndexByLaneId={new Map()}
-                prTagsByLaneId={new Map()}
-                showRebaseSuggestions
-                rebaseError={null}
+                rebaseLine={null}
                 {...handlers}
                 {...props}
               />
@@ -279,7 +267,6 @@ describe("LaneDashboard", () => {
     await waitFor(() => expect(screen.getByText("Lane created")).toBeTruthy());
     expect(screen.queryByTestId("lane-pr-section")).toBeNull();
     expect(screen.queryByTestId("lane-chats-section")).toBeNull();
-    expect(screen.queryByTestId("lane-stack-section")).toBeNull();
     expect(screen.queryByTestId("lane-changes-section")).toBeNull();
     // Nothing to read when the lane is not ahead of its base.
     expect(ade.git.listRecentCommits).not.toHaveBeenCalled();
@@ -303,55 +290,6 @@ describe("LaneDashboard", () => {
     expect(row.textContent).toContain("fix sync cursor");
     fireEvent.click(row);
     expect(handlers.onSelectCommit).toHaveBeenCalledWith(expect.objectContaining({ sha: LANE_COMMIT.sha }));
-  });
-
-  it("shows the stack around the lane and selects a lane from it", async () => {
-    const parent: LaneSummary = { ...lane, id: "lane-0", name: "Parent lane", branchRef: "refs/heads/ade/parent" };
-    const child: LaneSummary = { ...lane, id: "lane-2", name: "Child lane", branchRef: "refs/heads/ade/child", parentLaneId: "lane-1" };
-    useAppStore.setState({ lanes: [parent, { ...lane, parentLaneId: "lane-0" }, child] } as any);
-    installAde();
-    const handlers = renderDashboard();
-    const rows = screen.getAllByTestId("lane-stack-row");
-    expect(rows.map((row) => row.textContent?.split("ade/")[0])).toEqual(["Parent lane", "Lane one", "Child lane"]);
-    fireEvent.click(rows[2]!);
-    expect(handlers.onSelectLane).toHaveBeenCalledWith("lane-2");
-    // The meta line names the parent instead of the base branch.
-    fireEvent.click(screen.getByTestId("lane-identity-parent"));
-    expect(handlers.onSelectLane).toHaveBeenCalledWith("lane-0");
-  });
-
-  it("shows a rebase suggestion as one notice that can be dismissed", () => {
-    useAppStore.setState({
-      lanes: [lane],
-      laneSnapshots: [{
-        lane,
-        rebaseSuggestion: {
-          laneId: "lane-1",
-          parentLaneId: null,
-          parentHeadSha: "x",
-          behindCount: 4,
-          baseLabel: "main",
-          lastSuggestedAt: iso(5),
-          deferredUntil: null,
-          dismissedAt: null,
-          hasPr: false,
-        },
-        autoRebaseStatus: null,
-      }],
-    } as any);
-    installAde();
-    const handlers = renderDashboard();
-    const notice = screen.getByTestId("lane-rebase-notice");
-    expect(notice.textContent).toContain("4 commits behind main · rebase needed");
-    fireEvent.click(screen.getByText("Rebase…"));
-    expect(handlers.onOpenRebase).toHaveBeenCalledWith("lane-1");
-    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
-    expect(handlers.onDismissRebaseSuggestion).toHaveBeenCalledWith("lane-1");
-    cleanup();
-
-    // With suggestions turned off for the project, the notice stays away.
-    renderDashboard({ showRebaseSuggestions: false });
-    expect(screen.queryByTestId("lane-rebase-notice")).toBeNull();
   });
 
   it("shows the newest activity rows until asked for all of them", async () => {

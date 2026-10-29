@@ -15,13 +15,13 @@ import {
   type LaneBranchOption,
 } from "../laneUtils";
 import { laneBranchLabel } from "../sidebar/laneSidebarModel";
+import { branchNameFromLaneRef } from "../../../../shared/laneBaseResolution";
 import { extractError } from "../../../lib/format";
 
 type PendingBranchSwitch = {
   branchName: string;
   mode: "existing" | "create";
   startPoint?: string;
-  baseRef?: string;
   activeWork: LaneBranchActiveWorkItem[];
 };
 
@@ -52,22 +52,30 @@ const fieldLabelStyle: React.CSSProperties = {
 /**
  * Branch dropdown for the selected lane: switch the lane's worktree to another
  * local or remote branch, or create a new branch in place. Branches load only
- * while the dropdown is open.
+ * while the dropdown is open. A lane with uncommitted changes refuses the
+ * switch and says why.
  */
 export function LaneBranchSwitcher({
   lane,
-  primaryLane,
   active,
   pin = null,
   machineId = null,
+  confirmSwitch,
+  onSwitched,
 }: {
   lane: LaneSummary;
-  primaryLane: LaneSummary | null;
   active: boolean;
   /** The lane's machine when it is not the tab's. Lists, switches and stops go there. */
   pin?: OpenProjectBinding | null;
   /** That machine's id, so its lane list refreshes after a switch. */
   machineId?: string | null;
+  /**
+   * Asked once the switch is known to be possible, before git runs. False
+   * cancels it. Settings uses it to say what a primary-lane switch changes.
+   */
+  confirmSwitch?: (args: { from: string; to: string }) => Promise<boolean>;
+  /** After a switch lands. */
+  onSwitched?: (branchName: string) => void;
 }) {
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const [open, setOpen] = useState(false);
@@ -79,7 +87,6 @@ export function LaneBranchSwitcher({
   const [query, setQuery] = useState("");
   const [newBranchName, setNewBranchName] = useState("");
   const [newBranchStartPoint, setNewBranchStartPoint] = useState("");
-  const [newBranchBaseRef, setNewBranchBaseRef] = useState("");
   const [newBranchFormOpen, setNewBranchFormOpen] = useState(false);
   const [pendingSwitch, setPendingSwitch] = useState<PendingBranchSwitch | null>(null);
   /** The checkout in flight, so Stop can cancel it; null once stop is asked. */
@@ -129,7 +136,6 @@ export function LaneBranchSwitcher({
     setQuery("");
     setPendingSwitch(null);
     setNewBranchStartPoint("");
-    setNewBranchBaseRef("");
     setNewBranchName("");
     setNewBranchFormOpen(false);
     const timer = window.setTimeout(() => searchInputRef.current?.focus(), 0);
@@ -158,12 +164,6 @@ export function LaneBranchSwitcher({
     }
     return Array.from(map.values()).sort((a, b) => a.label.localeCompare(b.label));
   }, [lane.branchRef, branches]);
-  const baseRefOptions = useMemo(() => {
-    const names = new Set<string>();
-    if (primaryLane?.branchRef) names.add(primaryLane.branchRef);
-    for (const option of startPointOptions) names.add(option.value);
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  }, [startPointOptions, primaryLane?.branchRef]);
   const nameValidation = useMemo(
     () => (newBranchName.trim() ? validateBranchName(newBranchName) : { ok: false as const, reason: undefined }),
     [newBranchName],
@@ -173,7 +173,6 @@ export function LaneBranchSwitcher({
     branchName: string;
     mode?: "existing" | "create";
     startPoint?: string;
-    baseRef?: string;
     acknowledgeActiveWork?: boolean;
   }) => {
     if (lane.status.dirty) {
@@ -193,7 +192,6 @@ export function LaneBranchSwitcher({
           branchName,
           mode,
           startPoint: request.startPoint,
-          baseRef: request.baseRef,
         }, pinRef.current);
         if (preview.duplicateLaneId) {
           setError({ message: `Branch '${preview.targetBranchRef}' is already active in ${preview.duplicateLaneName ?? "another lane"}.`, kind: "status" });
@@ -204,9 +202,15 @@ export function LaneBranchSwitcher({
           return;
         }
         if (preview.activeWork.length > 0) {
-          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, baseRef: request.baseRef, activeWork: preview.activeWork });
+          setPendingSwitch({ branchName, mode, startPoint: request.startPoint, activeWork: preview.activeWork });
           return;
         }
+      }
+      if (confirmSwitch) {
+        // The menu closes first so the confirm is not drawn under it.
+        setOpen(false);
+        const go = await confirmSwitch({ from: laneBranchLabel(lane.branchRef), to: branchNameFromLaneRef(branchName) });
+        if (!go) return;
       }
       const operationId = crypto.randomUUID();
       inFlightSwitchRef.current = operationId;
@@ -217,7 +221,6 @@ export function LaneBranchSwitcher({
           branchName,
           mode,
           startPoint: request.startPoint,
-          baseRef: request.baseRef,
           acknowledgeActiveWork: request.acknowledgeActiveWork,
           operationId,
         }, pinRef.current);
@@ -232,6 +235,7 @@ export function LaneBranchSwitcher({
       setPendingSwitch(null);
       setNewBranchName("");
       succeeded = true;
+      onSwitched?.(branchName);
     } catch (err) {
       const raw = extractError(err);
       const message = formatBranchCheckoutError(raw, lane.name);
@@ -241,7 +245,7 @@ export function LaneBranchSwitcher({
       setBusy(false);
       if (succeeded) setOpen(false);
     }
-  }, [lane, machineId, refreshLanes]);
+  }, [confirmSwitch, lane, machineId, onSwitched, refreshLanes]);
 
   const stopSwitch = useCallback((operationId: string) => {
     setSwitchOperationId(null);
@@ -394,16 +398,6 @@ export function LaneBranchSwitcher({
                     {startPointOptions.map((option) => <option key={`start:${option.value}`} value={option.value}>{option.label}</option>)}
                   </select>
                 </label>
-                <label className="flex flex-col gap-1" title="ADE compares this lane against this base for rebase and merge readiness.">
-                  <span style={fieldLabelStyle}>REBASE BASE</span>
-                  <select
-                    value={newBranchBaseRef || primaryLane?.branchRef || lane.baseRef}
-                    onChange={(event) => setNewBranchBaseRef(event.target.value)}
-                    style={fieldStyle}
-                  >
-                    {baseRefOptions.map((name) => <option key={`base:${name}`} value={name}>{name}</option>)}
-                  </select>
-                </label>
                 <button
                   type="button"
                   className="flex w-full items-center justify-center gap-2"
@@ -424,7 +418,6 @@ export function LaneBranchSwitcher({
                       branchName: newBranchName,
                       mode: "create",
                       startPoint: newBranchStartPoint || lane.branchRef,
-                      baseRef: newBranchBaseRef || primaryLane?.branchRef || lane.baseRef,
                     });
                   }}
                 >

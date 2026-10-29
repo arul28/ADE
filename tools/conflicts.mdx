@@ -6,7 +6,7 @@ icon: "code-merge"
 
 ADE surfaces integration risk before it becomes a merge-time emergency. A single engine predicts conflicts, computes pairwise risk, runs pre-flight merge simulations, and drives AI-assisted resolution — so you can reorder, rebase, or fix a collision while work is still in progress.
 
-There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges and the **PRs** rebase and integration views.
+There's no standalone "Conflicts" tab; the signal is projected into the surfaces where it matters: lane status badges, the lane's catch-up menu, and PR merge readiness.
 
 ## Pre-flight detection
 
@@ -44,11 +44,11 @@ Agents can run a one-shot **merge simulation** (the CTO `simulateMerge` tool or 
 - **Conflict** — the conflicting files, each with rendered conflict-marker previews.
 - **Error** — a bad ref or corrupt index, surfaced rather than assumed clean.
 
-This is the same primitive that backs the PR merge-readiness check and integration (merge-plan) proposals, so a simulation matches what the PRs tab predicts.
+This is the same primitive that backs the PR merge-readiness check, so a simulation matches what the PRs tab predicts.
 
 ## Rebase when a lane drifts
 
-When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — a queue's tracking branch if the lane is in a merge queue, the parent branch for a stacked lane, or `origin/<base>` otherwise.
+When a lane falls behind its base, a rebase pulls it forward and is usually the cleanest way to clear a predicted conflict before it reaches a PR. ADE resolves the right comparison ref for you — the open PR's base branch, or the project default branch when there is no open PR.
 
 ## AI-assisted resolution
 
@@ -59,7 +59,7 @@ When a conflict needs more than a reorder, ADE can resolve it for you in two way
     ADE builds a bounded context for the specific conflict, asks a model for a patch, and lets you apply it unstaged, staged, or as a commit — with one-click undo. If required file context is incomplete, it refuses to guess and tells you why.
   </Card>
   <Card title="External CLI resolver" icon="terminal">
-    For bigger merges, ADE spawns a Codex or Claude CLI session in the lane's worktree (or a dedicated integration lane), captures the changes, and commits them as an explicit, reviewable step.
+    For bigger merges, ADE spawns a Codex or Claude CLI session in the lane's worktree (or a dedicated merge lane), captures the changes, and commits them as an explicit, reviewable step.
   </Card>
 </CardGroup>
 

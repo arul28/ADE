@@ -4,7 +4,6 @@ import {
   At,
   DeviceMobile,
   Gauge,
-  GitPullRequest,
   Key,
   LinkSimple,
   Repeat,
@@ -43,8 +42,7 @@ export type AdeSuggestionId =
   | "issue-tracker"
   | "parallel-chats"
   | "repeat-prompt"
-  | "pair-phone"
-  | "stacked-prs";
+  | "pair-phone";
 
 export type AdeSuggestionDefinition = {
   id: AdeSuggestionId;
@@ -129,14 +127,6 @@ export const ADE_SUGGESTIONS: Record<AdeSuggestionId, AdeSuggestionDefinition> =
       + "On your phone you can follow chats, answer them and hear when one needs you.",
     icon: DeviceMobile,
     actionLabel: "Pair your phone",
-  },
-  "stacked-prs": {
-    id: "stacked-prs",
-    title: "Stacked pull requests review a lane built on another",
-    why: "A lane here is built on a lane with an open pull request. "
-      + "Its PR can target that branch, so each one is reviewed on its own.",
-    icon: GitPullRequest,
-    actionLabel: "Open PRs",
   },
 };
 

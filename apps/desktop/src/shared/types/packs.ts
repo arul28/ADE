@@ -110,13 +110,6 @@ export type BranchStateSnapshotV1 = {
   packStaleReason?: string | null;
 };
 
-export type LaneLineageV1 = {
-  laneId: string;
-  parentLaneId: string | null;
-  baseLaneId: string | null;
-  stackDepth: number;
-};
-
 export type LaneExportManifestV1 = {
   schema: "ade.manifest.lane.v1";
   projectId: string;
@@ -130,7 +123,6 @@ export type LaneExportManifestV1 = {
   contextVersion?: number | null;
   lastDocsRefreshAt?: string | null;
   docsStaleReason?: string | null;
-  lineage: LaneLineageV1;
   mergeConstraints: {
     requiredMerges: string[];
     blockedByLanes: string[];
@@ -175,7 +167,6 @@ export type ProjectManifestLaneEntryV1 = {
   worktreePath: string;
   isEditProtected: boolean;
   status: LaneStatus;
-  lineage: LaneLineageV1;
   mergeConstraints: {
     requiredMerges: string[];
     blockedByLanes: string[];

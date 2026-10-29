@@ -3,7 +3,6 @@ import { create } from "zustand";
 import type { LaneSummary, OpenProjectBinding } from "../../../shared/types";
 import {
   createLaneMachineRouter,
-  foreignLaneKey,
   machineBlockedReason,
   machineChipFor,
   shouldShowMachineChips,
@@ -46,7 +45,7 @@ export type LaneTarget =
 export type ForeignLaneModel = {
   /** Row key (`machineId:laneId`) → the machine's lane. */
   rowByKey: ReadonlyMap<string, MachineLane>;
-  /** Foreign lanes as page rows: `id` is the row key, parents point at row keys. */
+  /** Foreign lanes as page rows: `id` is the row key. */
   viewLanes: LaneSummary[];
   /** Each other machine's own lane records, real ids. */
   realLanesByMachineId: ReadonlyMap<string, LaneSummary[]>;
@@ -59,8 +58,7 @@ export type ForeignLaneModel = {
  * through (`resolveLaneTarget`).
  *
  * Foreign lanes enter the page's lane model as copies whose `id` is the row
- * key (`machineId:laneId`) and whose parent points at the same machine's row.
- * A row key is never a lane id on any machine, so a code path that forgets to
+ * key (`machineId:laneId`). A row key is never a lane id on any machine, so a code path that forgets to
  * route one fails as "lane not found" instead of hitting a same-id lane on the
  * tab's machine. Every real call for a foreign row goes through
  * `resolveLaneTarget` → the lane's real id + its machine's pin.
@@ -97,14 +95,7 @@ export function useLanesPageMachines({
       else realLanesByMachineId.set(row.machineId, [row.lane]);
     }
     for (const row of rowByKey.values()) {
-      const parentKey = row.lane.parentLaneId ? foreignLaneKey(row.machineId, row.lane.parentLaneId) : null;
-      const parentRow = parentKey ? rowByKey.get(parentKey) ?? null : null;
-      viewLanes.push({
-        ...row.lane,
-        id: row.key,
-        // Children of that machine's Primary are top-level rows, like here.
-        parentLaneId: parentRow && parentRow.lane.laneType !== "primary" ? parentRow.key : null,
-      });
+      viewLanes.push({ ...row.lane, id: row.key });
     }
     return { rowByKey, viewLanes, realLanesByMachineId };
   }, [allMachineLanes]);

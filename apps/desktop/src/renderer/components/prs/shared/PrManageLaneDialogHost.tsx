@@ -116,10 +116,6 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       onArchive={handleArchive}
       onDelete={() => { void handleDelete(); }}
       onAppearanceChanged={refreshOwnerLanes}
-      onStackReorganized={() => {
-        if (runtimePin) refreshOwnerLanes();
-        else void refreshLanes();
-      }}
     />
   );
 });

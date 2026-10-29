@@ -4,6 +4,52 @@ import { PROVIDER_ACCOUNT_REMOTE_COMMAND_ACTIONS } from "./types/sync";
 
 export const MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION = 1;
 
+/**
+ * The oldest iPhone build this computer talks to. Hosts refuse older builds
+ * at hello with `protocol_version_mismatch` / `updateTarget: "client"`, which
+ * every shipped build shows as "Update ADE on this iPhone". The release that
+ * raises it must ship the iOS build with at least this number (for this
+ * marketing version).
+ *
+ * App Store Connect numbers builds per marketing version (`CFBundleVersion`
+ * restarts for each `CFBundleShortVersionString`), so the gate compares the
+ * pair: an older marketing version is refused, a newer one is always let in,
+ * and the same one is compared by build.
+ */
+export const MIN_SUPPORTED_MOBILE_APP_VERSION = "1.1.10";
+export const MIN_SUPPORTED_MOBILE_APP_BUILD = 5;
+
+function compareMarketingVersions(a: string, b: string): number {
+  const left = a.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  const right = b.split(".").map((part) => Number.parseInt(part, 10) || 0);
+  for (let index = 0; index < Math.max(left.length, right.length); index += 1) {
+    const diff = (left[index] ?? 0) - (right[index] ?? 0);
+    if (diff !== 0) return diff;
+  }
+  return 0;
+}
+
+/**
+ * True for an iPhone build older than the minimum. Peers that send no build
+ * (desktop machines, the web client) are never refused, and neither is a
+ * build string that is not a whole number.
+ */
+export function isMobileAppBuildTooOld(peer: {
+  platform?: string | null;
+  appVersion?: string | null;
+  appBuild?: string | null;
+}): boolean {
+  if (peer.platform !== "iOS") return false;
+  const buildText = peer.appBuild?.trim() ?? "";
+  if (!/^\d+$/.test(buildText)) return false;
+  const version = peer.appVersion?.trim() ?? "";
+  if (/^\d+(\.\d+)*$/.test(version)) {
+    const order = compareMarketingVersions(version, MIN_SUPPORTED_MOBILE_APP_VERSION);
+    if (order !== 0) return order < 0;
+  }
+  return Number.parseInt(buildText, 10) < MIN_SUPPORTED_MOBILE_APP_BUILD;
+}
+
 // Additive capabilities that newer mobile clients may feature-detect from
 // hello_ok.features.commandRouting.actions. They must not become part of the
 // required set below, because older mobile builds do not implement them.
@@ -66,6 +112,10 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   // leaves the phone on its primary machine's CTO.
   "cto.getHomeMachine",
   "cto.setHomeMachine",
+  // How new lanes start in the project (account setting `lanes.newLaneDefaults`).
+  // Optional: against an older brain the phone keeps its own default choice.
+  "lanes.getNewLaneDefaults",
+  "lanes.setNewLaneDefaults",
   // Session lifecycle. The phone gates its settle/snooze affordances on these
   // appearing in hello_ok.features.commandRouting.actions, so they must be
   // advertised — but they stay OPTIONAL: shipped builds predating the feature
@@ -292,14 +342,11 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "work.sendToSession",
   "work.stopRuntime",
   "lanes.create",
-  "lanes.createFromUnstaged",
   "lanes.importBranch",
-  "lanes.createChild",
   "lanes.attach",
   "lanes.listUnregisteredWorktrees",
   "lanes.adoptAttached",
   "lanes.rename",
-  "lanes.reparent",
   "lanes.updateAppearance",
   "lanes.archive",
   "lanes.unarchive",
@@ -313,9 +360,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "lanes.rebasePush",
   "lanes.rebaseRollback",
   "lanes.rebaseAbort",
-  "lanes.dismissRebaseSuggestion",
-  "lanes.deferRebaseSuggestion",
-  "lanes.dismissAutoRebaseStatus",
   "git.listBranches",
   "git.checkoutBranch",
   "git.getChanges",
@@ -394,16 +438,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "prs.replyToReviewThread",
   "prs.setReviewThreadResolved",
   "prs.reactToComment",
-  "prs.simulateIntegration",
-  "prs.commitIntegration",
-  "prs.listIntegrationWorkflows",
-  "prs.updateIntegrationProposal",
-  "prs.deleteIntegrationProposal",
-  "prs.dismissIntegrationCleanup",
-  "prs.cleanupIntegrationWorkflow",
-  "prs.createIntegrationLaneForProposal",
-  "prs.startIntegrationResolution",
-  "prs.recheckIntegrationStep",
   "prs.getGitHubSnapshot",
   "prs.getReviewThreads",
   "prs.getActionRuns",

@@ -37,6 +37,7 @@ import { showToast } from "../../app/toast/toastStore";
 import { useChatRuntimeScope } from "../../chat/ChatRuntimeScope";
 import type { PrChatQuote } from "../shared/prMarkdownContext";
 import {
+  buildPrChatPrompt,
   chatLabel,
   usePrChatHandoff,
   linkedPrChats,
@@ -378,7 +379,6 @@ type PrDetailPaneProps = {
   mergeMethod: MergeMethod;
   onRefresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onNavigate: (path: string) => void;
-  onOpenRebaseTab?: (laneId?: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
   /**
@@ -441,7 +441,6 @@ export function PrDetailPane({
   mergeMethod,
   onRefresh,
   onNavigate: _onNavigate,
-  onOpenRebaseTab,
   initialDetailTab,
   onDetailTabChange,
   githubCoords = null,
@@ -1270,17 +1269,26 @@ export function PrDetailPane({
         }, ...onPin);
         // Conflicts come back as `{ success: false, hasConflicts: true, error }`,
         // so check hasConflicts FIRST — otherwise the generic failure branch
-        // shadows the conflict UX (resolve-in-Rebase message + onOpenRebaseTab).
+        // shadows the conflict hand-off.
         if (result.hasConflicts) {
           setUpdateBranchNotice({
             tone: "error",
-            text: runtime
-              ? `Update hit conflicts on ${runtime.machineName} — resolve in the Rebase tab / launch resolver.`
-              : "Update hit conflicts — resolve in the Rebase tab / launch resolver.",
+            text: pr.laneId
+              ? "Update hit conflicts. A resolve prompt is in the lane's chat."
+              : "Update hit conflicts.",
           });
-          // The Rebase view lists every machine's lanes and routes this one to
-          // its owner, so a foreign lane jumps there too.
-          if (pr.laneId && onOpenRebaseTab) onOpenRebaseTab(pr.laneId);
+          // The chat hand-off keeps the lane's machine (`runtimePin`), so a
+          // foreign lane's prompt lands in a chat on its owner.
+          if (pr.laneId) {
+            const laneId = pr.laneId;
+            const session = newestWorkChat(
+              await window.ade.agentChat.list({ laneId, includeArchived: false }, ...onPin).catch((error) => {
+                console.warn("pr_detail.update_branch_chat_list_failed", error);
+                return [];
+              }),
+            );
+            chatHandoff({ laneId, sessionId: session?.sessionId ?? null, prompt: buildPrChatPrompt("resolve_conflicts", pr) });
+          }
         } else if (!result.success || result.error) {
           setUpdateBranchNotice({ tone: "error", text: result.error ?? "Update branch failed." });
         } else {
@@ -1294,7 +1302,7 @@ export function PrDetailPane({
         setUpdateBranchBusy(false);
       }
     },
-    [onOpenRebaseTab, onPin, pr.id, pr.laneId, refreshAll, runtime, status?.headSha],
+    [chatHandoff, onPin, pr, refreshAll, status?.headSha],
   );
 
   const handleDeleteBranch = () => runAction(async () => {

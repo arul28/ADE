@@ -237,10 +237,10 @@ describe("laneCreatedBy", () => {
 });
 
 describe("laneOverviewSections", () => {
-  const empty = { prs: [], chatCount: 0, hasParent: false, childCount: 0, livePrFileCount: 0, laneCommitCount: 0 };
+  const empty = { prs: [], chatCount: 0, livePrFileCount: 0, laneCommitCount: 0 };
 
   it("hides every section with nothing in it", () => {
-    expect(laneOverviewSections(empty)).toEqual({ pr: false, chats: false, stack: false, changes: null });
+    expect(laneOverviewSections(empty)).toEqual({ pr: false, chats: false, changes: null });
   });
 
   it("shows the open PR's files over the lane's commits, and commits otherwise", () => {
@@ -248,6 +248,6 @@ describe("laneOverviewSections", () => {
     expect(laneOverviewSections({ ...empty, prs: [open], livePrFileCount: 4, laneCommitCount: 2 }).changes).toBe("pr-files");
     expect(laneOverviewSections({ ...empty, prs: [open], livePrFileCount: 0, laneCommitCount: 2 }).changes).toBe("commits");
     expect(laneOverviewSections({ ...empty, prs: [pr({ state: "merged" })], livePrFileCount: 4, laneCommitCount: 2 }).changes).toBe("commits");
-    expect(laneOverviewSections({ ...empty, chatCount: 1, childCount: 1 })).toMatchObject({ chats: true, stack: true });
+    expect(laneOverviewSections({ ...empty, chatCount: 1 })).toMatchObject({ chats: true });
   });
 });

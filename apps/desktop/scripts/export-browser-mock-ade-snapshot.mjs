@@ -371,10 +371,6 @@ function normalizeBranchRef(ref) {
   return raw.startsWith("refs/") ? raw : `refs/heads/${raw.replace(/^refs\/heads\//, "")}`;
 }
 
-function branchName(ref) {
-  return String(ref ?? "").replace(/^refs\/heads\//, "");
-}
-
 function rowToPr(row) {
   return {
     id: String(row.id),
@@ -436,119 +432,6 @@ function normalizePrSnapshot(row) {
   };
 }
 
-function buildMergeContexts(prs, lanes, projectId) {
-  const contexts = Object.fromEntries(
-    prs.map((pr) => [
-      pr.id,
-      {
-        prId: pr.id,
-        groupId: null,
-        groupType: null,
-        sourceLaneIds: [pr.laneId].filter(Boolean),
-        targetLaneId: lanes.find((lane) => lane.laneType === "primary")?.id ?? null,
-        integrationLaneId: null,
-        members: [],
-      },
-    ]),
-  );
-
-  if (!hasTable("pr_groups") || !hasTable("pr_group_members")) {
-    return contexts;
-  }
-
-  const rows = allRows(
-    `
-      select
-        pg.id as group_id,
-        pg.group_type as group_type,
-        pg.target_branch as target_branch,
-        pg.name as group_name,
-        pgm.pr_id as pr_id,
-        pgm.lane_id as lane_id,
-        pgm.position as position,
-        pgm.role as role,
-        p.github_pr_number as github_pr_number,
-        l.name as lane_name
-      from pr_groups pg
-      left join pr_group_members pgm on pgm.group_id = pg.id
-      left join pull_requests p on p.id = pgm.pr_id
-      left join lanes l on l.id = pgm.lane_id
-      where pg.project_id = ?
-      order by pg.id asc, pgm.position asc
-    `,
-    [projectId],
-  );
-
-  const membersByGroup = new Map();
-  const groups = new Map();
-  for (const row of rows) {
-    const groupId = String(row.group_id);
-    groups.set(groupId, row);
-    if (!row.pr_id && !row.lane_id) continue;
-    const bucket = membersByGroup.get(groupId) ?? [];
-    bucket.push({
-      prId: row.pr_id ?? null,
-      laneId: row.lane_id ?? null,
-      laneName: row.lane_name ?? null,
-      prNumber: row.github_pr_number == null ? null : Number(row.github_pr_number),
-      position: Number(row.position ?? 0),
-      role: row.role ?? "source",
-    });
-    membersByGroup.set(groupId, bucket);
-  }
-
-  for (const [groupId, group] of groups) {
-    const members = membersByGroup.get(groupId) ?? [];
-    for (const member of members) {
-      if (!member.prId) continue;
-      contexts[member.prId] = {
-        prId: member.prId,
-        groupId,
-        groupType: group.group_type ?? null,
-        sourceLaneIds: members
-          .filter((candidate) => candidate.role !== "target" && candidate.laneId)
-          .map((candidate) => candidate.laneId),
-        targetLaneId: lanes.find((lane) => branchName(lane.branchRef) === group.target_branch)?.id ?? null,
-        integrationLaneId:
-          members.find((candidate) => candidate.role === "integration")?.laneId ?? null,
-        members,
-      };
-    }
-  }
-  return contexts;
-}
-
-function rowToIntegrationWorkflow(row) {
-  return {
-    proposalId: String(row.id),
-    sourceLaneIds: safeJson(row.source_lane_ids_json, []),
-    baseBranch: row.base_branch ?? "main",
-    pairwiseResults: safeJson(row.pairwise_results_json, []),
-    laneSummaries: safeJson(row.lane_summaries_json, []),
-    steps: safeJson(row.steps_json, []),
-    overallOutcome: row.overall_outcome ?? "clean",
-    createdAt: row.created_at,
-    title: row.title ?? null,
-    body: row.body ?? null,
-    draft: Boolean(row.draft),
-    integrationLaneName: row.integration_lane_name ?? null,
-    status: row.status ?? "simulated",
-    integrationLaneId: row.integration_lane_id ?? null,
-    linkedGroupId: row.linked_group_id ?? null,
-    linkedPrId: row.linked_pr_id ?? null,
-    workflowDisplayState: row.workflow_display_state ?? "active",
-    cleanupState: row.cleanup_state ?? "none",
-    closedAt: row.closed_at ?? null,
-    mergedAt: row.merged_at ?? null,
-    completedAt: row.completed_at ?? null,
-    cleanupDeclinedAt: row.cleanup_declined_at ?? null,
-    cleanupCompletedAt: row.cleanup_completed_at ?? null,
-    resolutionState: safeJson(row.resolution_state_json, null),
-    preferredIntegrationLaneId: row.preferred_integration_lane_id ?? null,
-    mergeIntoHeadSha: row.merge_into_head_sha ?? null,
-  };
-}
-
 function latestConflictByLane(projectId) {
   const out = new Map();
   const rows = maybeAll(
@@ -574,20 +457,6 @@ function latestConflictByLane(projectId) {
 }
 
 function buildRebaseNeeds({ lanes, prs, projectId }) {
-  const dismissed = new Map(
-    maybeAll(
-      "rebase_dismissed",
-      "select lane_id, dismissed_at from rebase_dismissed where project_id = ?",
-      [projectId],
-    ).map((row) => [row.lane_id, row.dismissed_at]),
-  );
-  const deferred = new Map(
-    maybeAll(
-      "rebase_deferred",
-      "select lane_id, deferred_until from rebase_deferred where project_id = ?",
-      [projectId],
-    ).map((row) => [row.lane_id, row.deferred_until]),
-  );
   const conflicts = latestConflictByLane(projectId);
   const prByLane = new Map(prs.map((pr) => [pr.laneId, pr]));
   return lanes
@@ -600,7 +469,7 @@ function buildRebaseNeeds({ lanes, prs, projectId }) {
         : [];
       const behindBy = Number(state.behind ?? 0);
       const conflictPredicted = conflict?.status === "conflict" || conflictFiles.length > 0;
-      if (behindBy <= 0 && !conflictPredicted && !dismissed.has(lane.id) && !deferred.has(lane.id)) {
+      if (behindBy <= 0 && !conflictPredicted) {
         return null;
       }
       return {
@@ -612,9 +481,6 @@ function buildRebaseNeeds({ lanes, prs, projectId }) {
         conflictPredicted,
         conflictingFiles: conflictFiles,
         prId: prByLane.get(lane.id)?.id ?? null,
-        groupContext: null,
-        dismissedAt: dismissed.get(lane.id) ?? null,
-        deferredUntil: deferred.get(lane.id) ?? null,
       };
     })
     .filter(Boolean);
@@ -634,13 +500,8 @@ function isBotAuthor(author) {
 function buildGithubSnapshot({
   prs,
   lanes,
-  mergeContexts,
-  integrationWorkflows,
   prSnapshots = [],
 }) {
-  const workflowByPr = new Map(
-    integrationWorkflows.filter((workflow) => workflow.linkedPrId).map((workflow) => [workflow.linkedPrId, workflow]),
-  );
   const snapshotByPrId = new Map(
     prSnapshots.map((snapshot) => [String(snapshot.prId), snapshot]),
   );
@@ -649,8 +510,6 @@ function buildGithubSnapshot({
     viewerLogin: null,
     syncedAt: new Date().toISOString(),
     repoPullRequests: prs.map((pr) => {
-      const ctx = mergeContexts[pr.id] ?? null;
-      const workflow = workflowByPr.get(pr.id) ?? null;
       const lane = lanes.find((candidate) => candidate.id === pr.laneId);
       const snapshot = snapshotByPrId.get(pr.id) ?? null;
       const detail = snapshot?.detail ?? null;
@@ -674,12 +533,9 @@ function buildGithubSnapshot({
         createdAt: pr.createdAt,
         updatedAt: pr.updatedAt,
         linkedPrId: pr.id,
-        linkedGroupId: workflow?.linkedGroupId ?? ctx?.groupId ?? null,
         linkedLaneId: pr.laneId,
         linkedLaneName: lane?.name ?? pr.laneId,
-        adeKind: workflow ? "integration" : (ctx?.groupType ?? "single"),
-        workflowDisplayState: workflow?.workflowDisplayState ?? null,
-        cleanupState: workflow?.cleanupState ?? null,
+        adeKind: "single",
         labels,
         isBot: isBotAuthor(author),
         commentCount: comments.length,
@@ -1340,19 +1196,10 @@ const prSnapshots = maybeAll(
   [projectId],
 ).map(normalizePrSnapshot);
 
-const integrationWorkflows = maybeAll(
-  "integration_proposals",
-  "select * from integration_proposals where project_id = ? order by created_at desc limit 100",
-  [projectId],
-).map(rowToIntegrationWorkflow);
-
-const mergeContexts = buildMergeContexts(prs, lanes, projectId);
 const rebaseNeeds = buildRebaseNeeds({ lanes, prs, projectId });
 const githubSnapshot = buildGithubSnapshot({
   prs,
   lanes,
-  mergeContexts,
-  integrationWorkflows,
   prSnapshots,
 });
 const operations = buildOperations(projectId);
@@ -1396,8 +1243,6 @@ const snapshot = {
   lanes,
   prs,
   prSnapshots,
-  prMergeContexts: mergeContexts,
-  integrationWorkflows,
   rebaseNeeds,
   githubSnapshot,
   operations,

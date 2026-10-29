@@ -531,7 +531,6 @@ export type AutomationDraftAction =
       type: "create-lane";
       laneNameTemplate?: string;
       laneDescriptionTemplate?: string;
-      parentLaneId?: string | null;
     })
   | (AutomationDraftActionBase & {
       type: "delete-lane";

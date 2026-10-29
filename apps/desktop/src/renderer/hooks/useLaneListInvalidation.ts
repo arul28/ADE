@@ -16,8 +16,6 @@ export function laneLifecycleRefreshOptions(event: LaneLifecycleEvent): Paramete
     includeStatus,
     includeSnapshots: true,
     includeConflictStatus: true,
-    includeRebaseSuggestions: true,
-    includeAutoRebaseStatus: true,
   };
 }
 
@@ -182,8 +180,6 @@ export function useLaneListInvalidation({
           includeStatus: false,
           includeSnapshots: true,
           includeConflictStatus: true,
-          includeRebaseSuggestions: true,
-          includeAutoRebaseStatus: true,
         });
       }, delayMs);
     };

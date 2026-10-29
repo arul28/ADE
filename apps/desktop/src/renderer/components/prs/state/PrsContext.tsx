@@ -7,43 +7,30 @@ import React, {
   useMemo,
 } from "react";
 import type {
-  PrAiResolutionContext,
-  PrAiResolutionSessionInfo,
   PrWithConflicts,
-  PrMergeContext,
   PrCheck,
   PrComment,
   PrReview,
   PrStatus,
   MergeMethod,
-  RebaseNeed,
-  RebaseEventPayload,
   PrEventPayload,
   LaneSummary,
-  AutoRebaseLaneStatus,
-  AutoRebaseEventPayload,
   PrReviewThread,
   PrDeployment,
   PrSnapshotHydration,
-  PrAgentPermissionMode,
 } from "../../../../shared/types";
-import { buildPrAiResolutionContextKey } from "../../../../shared/types";
-import { getModelById, resolveProviderGroupForModel, type ModelProviderGroup } from "../../../../shared/modelRegistry";
-import { hasExplicitPrsRouteState, parsePrsRouteState, prRouteCoordinatesKey, resolvePrsActiveTab } from "../prsRouteState";
-import { resolveRouteRebaseSelection } from "../shared/rebaseNeedUtils";
+import { hasExplicitPrsRouteState, parsePrsRouteState, prRouteCoordinatesKey } from "../prsRouteState";
 import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
-import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 import { useGithubPollGovernor, type GithubPollGovernor } from "./useGithubPollGovernor";
 import { notePrChangeFiles, prChangeSplitKey, setPrChangeSplitStandDown } from "../shared/prChangeSplitStore";
-
-type PrTab = "normal" | "integration" | "rebase";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
 type RefreshCoreOptions = {
   skipFreshWarmCache?: boolean;
-  githubRefreshMode?: "await" | "background";
+  /** Ask GitHub before reading the local rows. */
+  awaitGithubRefresh?: boolean;
   githubRefreshArgs?: PrRefreshArgs;
 };
 
@@ -72,26 +59,14 @@ function mergePrRefreshArgs(a?: PrRefreshArgs, b?: PrRefreshArgs): PrRefreshArgs
 }
 
 function mergeRefreshCoreOptions(a: RefreshCoreOptions | null, b: RefreshCoreOptions): RefreshCoreOptions {
-  const githubRefreshMode = a?.githubRefreshMode === "await" || b.githubRefreshMode === "await"
-    ? "await"
-    : a?.githubRefreshMode ?? b.githubRefreshMode;
   return {
     skipFreshWarmCache: a
       ? Boolean(a.skipFreshWarmCache && b.skipFreshWarmCache)
       : Boolean(b.skipFreshWarmCache),
-    githubRefreshMode,
+    awaitGithubRefresh: Boolean(a?.awaitGithubRefresh || b.awaitGithubRefresh),
     githubRefreshArgs: mergePrRefreshArgs(a?.githubRefreshArgs, b.githubRefreshArgs),
   };
 }
-
-type InlineTerminalState = {
-  ptyId: string;
-  sessionId: string;
-  provider: string;
-  startedAt: string;
-  exitCode: number | null;
-  minimized: boolean;
-} | null;
 
 /** A locally-confirmed terminal transition, awaiting the next GitHub read. */
 export type OptimisticTerminalState = {
@@ -100,12 +75,9 @@ export type OptimisticTerminalState = {
 };
 
 type PrsState = {
-  activeTab: PrTab;
   prs: PrWithConflicts[];
   lanes: LaneSummary[];
-  mergeContextByPrId: Record<string, PrMergeContext>;
   selectedPrId: string | null;
-  selectedRebaseItemId: string | null;
   mergeMethod: MergeMethod;
   loading: boolean;
   error: string | null;
@@ -121,19 +93,6 @@ type PrsState = {
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   detailLiveDataPrId: string | null;
   detailBusy: boolean;
-
-  // Rebase state
-  rebaseNeeds: RebaseNeed[];
-  autoRebaseStatuses: AutoRebaseLaneStatus[];
-
-  // Inline terminal
-  inlineTerminal: InlineTerminalState;
-
-  // Resolver preferences
-  resolverModel: string;
-  resolverReasoningLevel: string;
-  resolverPermissionMode: PrAgentPermissionMode;
-  resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
 
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
@@ -151,16 +110,8 @@ type PrsState = {
 };
 
 type PrsContextValue = PrsState & {
-  setActiveTab: (tab: PrTab) => void;
   setSelectedPrId: (id: string | null) => void;
-  setSelectedRebaseItemId: (id: string | null) => void;
   setMergeMethod: (method: MergeMethod) => void;
-  setResolverModel: (model: string) => void;
-  setResolverReasoningLevel: (level: string) => void;
-  setResolverPermissionMode: (mode: PrAgentPermissionMode, modelId?: string) => void;
-  upsertResolverSession: (session: PrAiResolutionSessionInfo) => void;
-  clearResolverSession: (context: PrAiResolutionContext) => void;
-  setInlineTerminal: (terminal: InlineTerminalState) => void;
   refresh: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
 
   setViewerLogin: (login: string | null) => void;
@@ -183,21 +134,15 @@ type PrsContextValue = PrsState & {
 
 const PrsContext = createContext<PrsContextValue | null>(null);
 
-const LS_MODEL_KEY = "ade:prs:resolverModel";
-const LS_REASONING_KEY = "ade:prs:resolverReasoningLevel";
-const LS_PERMISSION_KEY = "ade:prs:resolverPermissions";
 const PRS_CONTEXT_CACHE_TTL_MS = 120_000;
 const PRS_DETAIL_CACHE_TTL_MS = 60_000;
 const PRS_CONTEXT_DEFAULT_CACHE_KEY = "__default_project__";
 const PRS_CONTEXT_CACHE_DISABLED = import.meta.env.MODE === "test";
 
 type PrsContextWarmCache = {
-  activeTab: PrTab;
   prs: PrWithConflicts[];
   lanes: LaneSummary[];
-  mergeContextByPrId: Record<string, PrMergeContext>;
   selectedPrId: string | null;
-  selectedRebaseItemId: string | null;
   mergeMethod: MergeMethod;
   detailStatus: PrStatus | null;
   detailChecks: PrCheck[];
@@ -206,10 +151,6 @@ type PrsContextWarmCache = {
   detailReviewThreads: PrReviewThread[];
   detailDeployments: PrDeployment[];
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
-  rebaseNeeds: RebaseNeed[];
-  autoRebaseStatuses: AutoRebaseLaneStatus[];
-  inlineTerminal: InlineTerminalState;
-  resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
   viewerLogin: string | null;
   writeViewerLogin?: string | null;
   cachedAt: number;
@@ -228,161 +169,16 @@ function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCac
   return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
 }
 
-function readBoolLs(key: string, fallback: boolean): boolean {
-  try {
-    const raw = localStorage.getItem(key);
-    if (raw === "true") return true;
-    if (raw === "false") return false;
-  } catch {
-    /* ignore */
-  }
-  return fallback;
-}
-
-type ResolverPermissionFamily = Extract<
-  ModelProviderGroup,
-  "claude" | "codex" | "muse" | "opencode" | "cursor" | "droid" | "pi" | "qwen" | "kimi" | "grok" | "copilot" | "devin" | "antigravity"
->;
-type ResolverPermissionPreferences = Record<ResolverPermissionFamily, PrAgentPermissionMode>;
-
-const DEFAULT_RESOLVER_PERMISSIONS: ResolverPermissionPreferences = {
-  claude: "default",
-  codex: "default",
-  muse: "default",
-  opencode: "edit",
-  cursor: "default",
-  droid: "edit",
-  pi: "default",
-  qwen: "default",
-  kimi: "default",
-  grok: "default",
-  copilot: "default",
-  devin: "default",
-  antigravity: "default",
-};
-
-function normalizeResolverPermissionMode(value: unknown): PrAgentPermissionMode | null {
-  if (
-    value === "read_only" ||
-    value === "guarded_edit" ||
-    value === "full_edit" ||
-    value === "default" ||
-    value === "plan" ||
-    value === "edit" ||
-    value === "full-auto" ||
-    value === "config-toml"
-  ) return value;
-  return null;
-}
-
-function readPersistedResolverPermissions(): ResolverPermissionPreferences {
-  try {
-    const raw = localStorage.getItem(LS_PERMISSION_KEY);
-    if (!raw) return DEFAULT_RESOLVER_PERMISSIONS;
-    const parsed = JSON.parse(raw) as Partial<ResolverPermissionPreferences>;
-    return {
-      claude: normalizeResolverPermissionMode(parsed?.claude) ?? DEFAULT_RESOLVER_PERMISSIONS.claude,
-      codex: normalizeResolverPermissionMode(parsed?.codex) ?? DEFAULT_RESOLVER_PERMISSIONS.codex,
-      muse: normalizeResolverPermissionMode(parsed?.muse) ?? DEFAULT_RESOLVER_PERMISSIONS.muse,
-      opencode: normalizeResolverPermissionMode(parsed?.opencode) ?? DEFAULT_RESOLVER_PERMISSIONS.opencode,
-      cursor: normalizeResolverPermissionMode(parsed?.cursor) ?? DEFAULT_RESOLVER_PERMISSIONS.cursor,
-      droid: normalizeResolverPermissionMode(parsed?.droid) ?? DEFAULT_RESOLVER_PERMISSIONS.droid,
-      pi: normalizeResolverPermissionMode(parsed?.pi) ?? DEFAULT_RESOLVER_PERMISSIONS.pi,
-      qwen: normalizeResolverPermissionMode(parsed?.qwen) ?? DEFAULT_RESOLVER_PERMISSIONS.qwen,
-      kimi: normalizeResolverPermissionMode(parsed?.kimi) ?? DEFAULT_RESOLVER_PERMISSIONS.kimi,
-      grok: normalizeResolverPermissionMode(parsed?.grok) ?? DEFAULT_RESOLVER_PERMISSIONS.grok,
-      copilot: normalizeResolverPermissionMode(parsed?.copilot) ?? DEFAULT_RESOLVER_PERMISSIONS.copilot,
-      devin: normalizeResolverPermissionMode(parsed?.devin) ?? DEFAULT_RESOLVER_PERMISSIONS.devin,
-      antigravity: normalizeResolverPermissionMode(parsed?.antigravity) ?? DEFAULT_RESOLVER_PERMISSIONS.antigravity,
-    };
-  } catch {
-    return DEFAULT_RESOLVER_PERMISSIONS;
-  }
-}
-
-function resolvePermissionFamilyForModel(modelId: string): ResolverPermissionFamily {
-  const descriptor = getModelById(modelId);
-  return descriptor ? resolveProviderGroupForModel(descriptor) : "opencode";
-}
-
-function readPersistedModel(): string {
-  try {
-    const v = localStorage.getItem(LS_MODEL_KEY);
-    if (v && v.trim().length) return v;
-  } catch {
-    /* ignore */
-  }
-  return "anthropic/claude-sonnet-5";
-}
-
-function readPersistedReasoningLevel(): string {
-  try {
-    const value = localStorage.getItem(LS_REASONING_KEY);
-    if (value && value.trim().length > 0) return value.trim();
-  } catch {
-    /* ignore */
-  }
-  return "medium";
-}
-
-function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
-  activeTab: PrTab;
-  selectedPrId: string | null;
-  selectedRebaseItemId: string | null;
-} {
+function readInitialSelectedPrId(fallback?: PrsContextWarmCache | null): string | null {
   try {
     const route = parsePrsRouteState({
       search: window.location.search,
       hash: window.location.hash,
     });
-    const hasExplicitRouteState = hasExplicitPrsRouteState(route);
-    if (!hasExplicitRouteState && fallback) {
-      return {
-        activeTab: fallback.activeTab,
-        selectedPrId: fallback.selectedPrId,
-        selectedRebaseItemId: fallback.selectedRebaseItemId,
-      };
-    }
-    const resolved = resolvePrsActiveTab(route);
-    const activeTab: PrTab = resolved.isWorkflowRoute
-      ? (resolved.effectiveWorkflow ?? "integration")
-      : "normal";
-    return {
-      activeTab,
-      selectedPrId: !resolved.isWorkflowRoute ? route.prId : null,
-      // Mirror PRsPage's resolver so the shape of this id matches what the
-      // rebase UI later expects. rebaseNeeds are empty at provider mount, so
-      // this returns the bare lane id; PRsPage's syncFromLocation effect runs
-      // the same resolver again once needs load and upgrades it to the
-      // canonical need-item key.
-      selectedRebaseItemId: resolved.effectiveWorkflow === "rebase"
-        ? resolveRouteRebaseSelection({ rebaseNeeds: [], routeItemId: route.laneId })
-        : null,
-    };
+    if (!hasExplicitPrsRouteState(route) && fallback) return fallback.selectedPrId;
+    return route.prId;
   } catch { /* ignore */ }
-  return {
-    activeTab: "normal",
-    selectedPrId: null,
-    selectedRebaseItemId: null,
-  };
-}
-
-function currentRouteRequestsPrDiagnostics(): boolean {
-  try {
-    const route = parsePrsRouteState({
-      search: window.location.search,
-      hash: window.location.hash,
-    });
-    return resolvePrsActiveTab(route).isWorkflowRoute || route.prId !== null;
-  } catch {
-    return false;
-  }
-}
-
-function requirePrId(prId: string): string {
-  const normalized = String(prId ?? "").trim();
-  if (!normalized) throw new Error("PR id is required.");
-  return normalized;
+  return null;
 }
 
 /** Remove entries from a keyed record whose key is not in the allowed set. */
@@ -428,23 +224,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const warmCache = useMemo(() => readPrsContextWarmCache(projectRoot), [projectRoot]);
   const warmCacheHydratedAtRef = React.useRef(warmCache?.dataLoadedAt ?? warmCache?.cachedAt ?? 0);
 
-  // Compute initial route state exactly once per provider mount. Reading
-  // window.location + running parsePrsRouteState/resolvePrsActiveTab on every
-  // render would be wasteful; the warm-cache dependency is stable for the mount
-  // and lets plain /prs restores resume the last in-memory PR surface.
-  const initialRouteState = useMemo(() => readInitialRouteState(warmCache), [warmCache]);
-  const [activeTab, setActiveTab] = useState<PrTab>(initialRouteState.activeTab);
-  const activeTabRef = React.useRef<PrTab>(initialRouteState.activeTab);
-  React.useEffect(() => {
-    activeTabRef.current = activeTab;
-  }, [activeTab]);
+  // Read the route's PR exactly once per provider mount. The warm-cache
+  // dependency is stable for the mount and lets plain /prs restores resume the
+  // last in-memory selection.
+  const initialSelectedPrId = useMemo(() => readInitialSelectedPrId(warmCache), [warmCache]);
   const [prs, setPrs] = useState<PrWithConflicts[]>(() => warmCache?.prs ?? []);
   const [lanes, setLanes] = useState<LaneSummary[]>(() => warmCache?.lanes ?? []);
-  const [mergeContextByPrId, setMergeContextByPrId] = useState<Record<string, PrMergeContext>>(
-    () => warmCache?.mergeContextByPrId ?? {},
-  );
-  const [selectedPrId, setSelectedPrId] = useState<string | null>(initialRouteState.selectedPrId);
-  const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(initialRouteState.selectedRebaseItemId);
+  const [selectedPrId, setSelectedPrId] = useState<string | null>(initialSelectedPrId);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>(() => warmCache?.mergeMethod ?? "squash");
   const [loading, setLoading] = useState(!warmCache);
   const [error, setError] = useState<string | null>(null);
@@ -526,83 +312,15 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailStatus,
   ]);
 
-  // Rebase state
-  const [rebaseNeeds, setRebaseNeeds] = useState<RebaseNeed[]>(() => warmCache?.rebaseNeeds ?? []);
-  const [autoRebaseStatuses, setAutoRebaseStatuses] = useState<AutoRebaseLaneStatus[]>(
-    () => warmCache?.autoRebaseStatuses ?? [],
-  );
-  const rebaseNeedsRef = React.useRef<RebaseNeed[]>([]);
-  const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
-  React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
-  React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
-
-  // Inline terminal
-  const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(() => warmCache?.inlineTerminal ?? null);
-
-  // Resolver preferences
-  const [resolverModel, setResolverModelRaw] = useState<string>(readPersistedModel);
-  const [resolverReasoningLevel, setResolverReasoningLevelRaw] = useState<string>(readPersistedReasoningLevel);
-  const [resolverPermissions, setResolverPermissions] = useState<ResolverPermissionPreferences>(readPersistedResolverPermissions);
-  const [resolverSessionsByContextKey, setResolverSessionsByContextKey] = useState<Record<string, PrAiResolutionSessionInfo>>(
-    () => warmCache?.resolverSessionsByContextKey ?? {},
-  );
-
-  const setResolverModel = useCallback((model: string) => {
-    setResolverModelRaw(model);
-    try {
-      localStorage.setItem(LS_MODEL_KEY, model);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const setResolverPermissionMode = useCallback((mode: PrAgentPermissionMode, modelId = resolverModel) => {
-    const family = resolvePermissionFamilyForModel(modelId);
-    setResolverPermissions((prev) => {
-      const next = { ...prev, [family]: mode };
-      try {
-        localStorage.setItem(LS_PERMISSION_KEY, JSON.stringify(next));
-      } catch {
-        /* ignore */
-      }
-      return next;
-    });
-  }, [resolverModel]);
-
-  const setResolverReasoningLevel = useCallback((level: string) => {
-    setResolverReasoningLevelRaw(level);
-    try {
-      localStorage.setItem(LS_REASONING_KEY, level);
-    } catch {
-      /* ignore */
-    }
-  }, []);
-
-  const upsertResolverSession = useCallback((session: PrAiResolutionSessionInfo) => {
-    setResolverSessionsByContextKey((prev) => ({ ...prev, [session.contextKey]: session }));
-  }, []);
-
-  const clearResolverSession = useCallback((context: PrAiResolutionContext) => {
-    const key = buildPrAiResolutionContextKey(context);
-    setResolverSessionsByContextKey((prev) => {
-      if (!(key in prev)) return prev;
-      const next = { ...prev };
-      delete next[key];
-      return next;
-    });
-  }, []);
-
   // Concurrency guard for refresh
   const refreshInFlight = React.useRef(false);
   const refreshPending = React.useRef<RefreshCoreOptions | null>(null);
   const [refreshErrorRetryCount, setRefreshErrorRetryCount] = React.useState(0);
   const prsRef = React.useRef<PrWithConflicts[]>(warmCache?.prs ?? []);
-  const mergeContextByPrIdRef = React.useRef<Record<string, PrMergeContext>>(warmCache?.mergeContextByPrId ?? {});
   React.useEffect(() => { prsRef.current = prs; }, [prs]);
-  React.useEffect(() => { mergeContextByPrIdRef.current = mergeContextByPrId; }, [mergeContextByPrId]);
 
   // Refs for detail polling
-  const selectedPrIdRef = React.useRef<string | null>(initialRouteState.selectedPrId);
+  const selectedPrIdRef = React.useRef<string | null>(initialSelectedPrId);
   React.useEffect(() => { selectedPrIdRef.current = selectedPrId; }, [selectedPrId]);
   const detailFetchInProgress = React.useRef(false);
   const detailStatePrIdRef = React.useRef<string | null>(warmCache?.selectedPrId ?? null);
@@ -676,65 +394,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the id list's content
   }, [active, mergeDetailSnapshots, prsSnapshotWarmKey]);
 
-  const refreshMergeContexts = useCallback(async (prIds: string[]) => {
-    const uniquePrIds = [...new Set(prIds.map((id) => String(id ?? "").trim()).filter(Boolean))];
-    if (uniquePrIds.length === 0) return;
-    const contexts: Record<string, PrMergeContext> = {};
-    if (typeof window.ade.prs.getMergeContexts === "function") {
-      try {
-        Object.assign(contexts, await window.ade.prs.getMergeContexts(uniquePrIds));
-      } catch {
-        /* fall back to single-context hydration below */
-      }
-    }
-    const missingPrIds = uniquePrIds.filter((prId) => contexts[prId] == null);
-    if (missingPrIds.length > 0) {
-      await Promise.all(
-        missingPrIds.map(async (prId) => {
-          try {
-            const ctx = await window.ade.prs.getMergeContext(prId);
-            contexts[prId] = ctx;
-          } catch {
-            /* skip failures */
-          }
-        }),
-      );
-    }
-    setMergeContextByPrId((prev) => {
-      const allowed = new Set(prsRef.current.map((pr) => pr.id));
-      const next = Object.fromEntries(
-        Object.entries(prev).filter(([prId]) => allowed.has(prId))
-      ) as Record<string, PrMergeContext>;
-      for (const [prId, ctx] of Object.entries(contexts)) {
-        next[prId] = ctx;
-      }
-      return jsonEqual(prev, next) ? prev : next;
-    });
-  }, []);
-
-  const conflictAnalysisRefreshSeq = React.useRef(0);
-  const refreshConflictAnalyses = useCallback(async () => {
-    const shouldRefreshConflictAnalysis = () => activeTabRef.current !== "normal";
-    if (!active || !shouldRefreshConflictAnalysis()) return;
-    const requestSeq = ++conflictAnalysisRefreshSeq.current;
-    try {
-      const refreshedPrs = await window.ade.prs.listWithConflicts({ includeConflictAnalysis: true });
-      if (requestSeq !== conflictAnalysisRefreshSeq.current || !shouldRefreshConflictAnalysis()) return;
-      const conflictAnalysisByPrId = new Map(
-        refreshedPrs.map((pr) => [pr.id, pr.conflictAnalysis] as const),
-      );
-      const next = prsRef.current.map((pr) => (
-        conflictAnalysisByPrId.has(pr.id)
-          ? { ...pr, conflictAnalysis: conflictAnalysisByPrId.get(pr.id) ?? null }
-          : pr
-      ));
-      prsRef.current = next;
-      setPrs((prev) => (jsonEqual(prev, next) ? prev : next));
-    } catch (err) {
-      console.warn("[PrsContext] Failed to refresh PR conflict analysis:", err);
-    }
-  }, [active]);
-
   // Track whether the initial data load has completed
   const initialLoadDone = React.useRef(Boolean(warmCache));
 
@@ -742,39 +401,18 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
   // kicks off another refresh instead of silently dropping the request.
-  const applyLocalPrState = useCallback(async (options: {
-    includeWorkflowDiagnostics?: boolean;
-    forceRebaseDiagnostics?: boolean;
-  } = {}) => {
+  const applyLocalPrState = useCallback(async () => {
     if (!active) return;
-    const shouldLoadWorkflowState = activeTabRef.current !== "normal";
-    const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
-      && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
-    // Block only on the fast DB reads (PR list and lanes). Rebase
-    // scanning is git work on disk — let it populate in the background so the
-    // PR list renders immediately when the user opens the tab.
     const [prList, laneList] = await Promise.all([
-      window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
+      window.ade.prs.listWithConflicts(),
       window.ade.lanes.list({ includeStatus: false }),
     ]);
-    const changedPrIds = diffPrIds(prsRef.current, prList);
 
     // Stable-reference updates: only replace state when data actually changed
     // to avoid unnecessary re-render cascades in child components.
     setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
     prsRef.current = prList;
-
-    // Fire-and-forget rebase scans — these were the long pole on PRs-tab cold
-    // open. The header/list doesn't depend on them, so let them stream in.
-    if (shouldLoadRebaseState) {
-      void window.ade.rebase.scanNeeds()
-        .then((next) => setRebaseNeeds((prev) => (jsonEqual(prev, next) ? prev : next)))
-        .catch((err) => console.warn("[PrsContext] Failed to refresh rebase needs:", err));
-      void window.ade.lanes.listAutoRebaseStatuses()
-        .then((next) => setAutoRebaseStatuses((prev) => (jsonEqual(prev, next) ? prev : next)))
-        .catch((err) => console.warn("[PrsContext] Failed to refresh auto-rebase statuses:", err));
-    }
 
     // Clear selectedPrId if the PR no longer exists
     setSelectedPrId((prev) => {
@@ -783,13 +421,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     });
 
     const allowedPrIds = new Set(prList.map((pr) => pr.id));
-    setMergeContextByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
     setDetailSnapshotsByPrId((prev) => pruneByAllowedIds(prev, allowedPrIds));
-
-    if (changedPrIds.length > 0) {
-      void refreshMergeContexts(changedPrIds);
-    }
-  }, [active, refreshMergeContexts]);
+  }, [active]);
 
   const refreshCore = useCallback(async (options: RefreshCoreOptions = {}) => {
     if (!active) return;
@@ -797,12 +430,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       refreshPending.current = mergeRefreshCoreOptions(refreshPending.current, options);
       return;
     }
-    // The normal GitHub list has its own projected snapshot/read-through path and
-    // the runtime poller already reconciles stale rows. Do not start another
-    // fan-out refresh while the user is opening the list; workflow tabs still
-    // need the background refresh because their diagnostics are local-row based.
-    const runBackgroundGithubRefresh =
-      options.githubRefreshMode === "background" && activeTabRef.current !== "normal";
+    // The GitHub list has its own projected snapshot/read-through path and the
+    // runtime poller already reconciles stale rows, so opening the list never
+    // starts another GitHub fan-out refresh.
     const warmCacheAgeMs = Date.now() - warmCacheHydratedAtRef.current;
     const warmCacheUsable =
       warmCacheHydratedAtRef.current > 0
@@ -813,18 +443,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       // in the background. Avoids the visible cold-load freeze on tab return.
       setLoading(false);
       initialLoadDone.current = true;
-      const shouldLoadWorkflowDiagnostics =
-        activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
-      void applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics })
-        .then(() => runBackgroundGithubRefresh
-          ? refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot }).catch(() => null)
-          : null)
-        .then(() => {
-          if (runBackgroundGithubRefresh) {
-            return applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
-          }
-          return null;
-        })
+      void applyLocalPrState()
         .then(() => {
           warmCacheHydratedAtRef.current = Date.now();
         })
@@ -841,24 +460,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     if (isInitial) setLoading(true);
     setError(null);
     try {
-      if (options.githubRefreshMode === "await") {
+      if (options.awaitGithubRefresh) {
         await window.ade.prs.refresh(options.githubRefreshArgs).catch(() => {});
       }
-      const shouldLoadWorkflowDiagnostics =
-        activeTabRef.current !== "normal" || selectedPrIdRef.current !== null || currentRouteRequestsPrDiagnostics();
-      await applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics });
+      await applyLocalPrState();
       warmCacheHydratedAtRef.current = Date.now();
       setRefreshErrorRetryCount(0);
-      if (runBackgroundGithubRefresh) {
-        void refreshPrsCoalesced(options.githubRefreshArgs ?? {}, { projectRoot })
-          .then(() => applyLocalPrState({ forceRebaseDiagnostics: shouldLoadWorkflowDiagnostics }))
-          .then(() => {
-            warmCacheHydratedAtRef.current = Date.now();
-          })
-          .catch((err) => {
-            console.warn("[PrsContext] Background PR refresh failed:", err);
-          });
-      }
     } catch (err) {
       setRefreshErrorRetryCount((count) => count + 1);
       setError(err instanceof Error ? err.message : String(err));
@@ -874,15 +481,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         void refreshCore(pendingRefresh);
       }
     }
-  }, [active, applyLocalPrState, projectRoot]);
+  }, [active, applyLocalPrState]);
 
   // Initial load
   useEffect(() => {
     if (!active) return;
-    void refreshCore({
-      skipFreshWarmCache: true,
-      githubRefreshMode: "background",
-    });
+    void refreshCore({ skipFreshWarmCache: true });
   }, [active, refreshCore]);
 
   const refreshForLaneLifecycle = useCallback(() => {
@@ -1033,7 +637,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
   const refresh = useCallback(async (args: PrRefreshArgs = {}) => {
     const githubRefreshArgs = normalizePrRefreshArgs(args);
-    await refreshCore({ githubRefreshMode: "await", githubRefreshArgs });
+    await refreshCore({ awaitGithubRefresh: true, githubRefreshArgs });
 
     const selectedPrId = selectedPrIdRef.current;
     if (!selectedPrId) return;
@@ -1325,25 +929,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     return startDetailPolling();
   }, [active, noteGithubReadFailure, noteGithubReadSuccess, refreshDetailSilently, selectedPrId]);
 
-  useEffect(() => {
-    if (!active || !selectedPrId) return;
-    if (mergeContextByPrId[selectedPrId]) return;
-    void refreshMergeContexts([selectedPrId]);
-  }, [active, mergeContextByPrId, refreshMergeContexts, selectedPrId]);
-
-  useEffect(() => {
-    if (!active || activeTab === "normal") return;
-    const prIds = prsRef.current.map((pr) => pr.id);
-    if (prIds.length === 0) return;
-    void refreshMergeContexts(prIds);
-  }, [active, activeTab, prs, refreshMergeContexts]);
-
-  const prsConflictRefreshKey = useMemo(() => prs.map((pr) => pr.id).sort().join("|"), [prs]);
-  useEffect(() => {
-    if (!active || activeTab === "normal" || prsConflictRefreshKey.length === 0) return;
-    void refreshConflictAnalyses();
-  }, [active, activeTab, prsConflictRefreshKey, refreshConflictAnalyses]);
-
   // Subscribe to PR events
   useEffect(() => {
     if (!active) return;
@@ -1372,13 +957,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           setSelectedPrId(null);
         }
 
-        if (changedPrIds.length > 0) {
-          void refreshMergeContexts(changedPrIds);
-          if (activeTabRef.current !== "normal") {
-            void refreshConflictAnalyses();
-          }
-        }
-
         // Also refresh detail data for the actively viewed PR only when it changed.
         const activePrId = selectedPrIdRef.current;
         if (activePrId && changedPrIds.includes(activePrId)) {
@@ -1389,78 +967,16 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     return () => {
       unsub();
     };
-  }, [active, refreshConflictAnalyses, refreshDetailSilently, refreshMergeContexts]);
-
-  // Subscribe to rebase events
-  useEffect(() => {
-    if (!active) return;
-    const unsub = window.ade.rebase.onEvent((event: RebaseEventPayload) => {
-      if (event.type === "rebase-needs-updated") {
-        setRebaseNeeds(event.needs);
-      }
-    });
-    return unsub;
-  }, [active]);
-
-  // Periodic rebase needs scan (cancelled flag guards against setState after unmount).
-  // The plain PR browser only needs workflow rebase state when a PR detail is selected.
-  useEffect(() => {
-    let cancelled = false;
-    if (!active || (activeTab === "normal" && selectedPrId == null)) {
-      return () => {
-        cancelled = true;
-      };
-    }
-    const scan = () => {
-      window.ade.rebase.scanNeeds().then((needs) => {
-        if (!cancelled) setRebaseNeeds(needs);
-      }).catch((err) => {
-        console.warn("[PrsContext] Failed to scan rebase needs:", err);
-      });
-    };
-    scan();
-    const timer = setInterval(scan, 60_000);
-    return () => {
-      cancelled = true;
-      clearInterval(timer);
-    };
-  }, [active, activeTab, selectedPrId]);
-
-  // Subscribe to auto-rebase events
-  useEffect(() => {
-    if (!active) return;
-    const unsub = window.ade.lanes.onAutoRebaseEvent((event: AutoRebaseEventPayload) => {
-      if (event.type === "auto-rebase-updated") {
-        setAutoRebaseStatuses(event.statuses);
-      }
-    });
-    return unsub;
-  }, [active]);
-
-  useEffect(() => {
-    if (!active || (activeTab === "normal" && selectedPrId == null)) return;
-    let cancelled = false;
-    window.ade.lanes.listAutoRebaseStatuses().then((statuses) => {
-      if (!cancelled) setAutoRebaseStatuses(statuses);
-    }).catch((err) => {
-      console.warn("[PrsContext] Failed to list auto-rebase statuses:", err);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, activeTab, selectedPrId]);
+  }, [active, refreshDetailSilently]);
 
   useEffect(() => {
     if (PRS_CONTEXT_CACHE_DISABLED) return;
     if (!initialLoadDone.current && prs.length === 0 && lanes.length === 0) return;
     const cachedAt = Date.now();
     prsContextWarmCacheByProject.set(cacheKey, {
-      activeTab,
       prs,
       lanes,
-      mergeContextByPrId,
       selectedPrId,
-      selectedRebaseItemId,
       mergeMethod,
       detailStatus,
       detailChecks,
@@ -1469,18 +985,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailReviewThreads,
       detailDeployments,
       detailSnapshotsByPrId,
-      rebaseNeeds,
-      autoRebaseStatuses,
-      inlineTerminal,
-      resolverSessionsByContextKey,
       viewerLogin,
       writeViewerLogin,
       cachedAt,
       dataLoadedAt: warmCacheHydratedAtRef.current,
     });
   }, [
-    activeTab,
-    autoRebaseStatuses,
     cacheKey,
     detailChecks,
     detailComments,
@@ -1489,27 +999,19 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     detailReviews,
     detailStatus,
     detailSnapshotsByPrId,
-    inlineTerminal,
     lanes,
-    mergeContextByPrId,
     mergeMethod,
     prs,
-    rebaseNeeds,
-    resolverSessionsByContextKey,
     selectedPrId,
-    selectedRebaseItemId,
     viewerLogin,
     writeViewerLogin,
   ]);
 
   const value = useMemo<PrsContextValue>(
     () => ({
-      activeTab,
       prs,
       lanes,
-      mergeContextByPrId,
       selectedPrId,
-      selectedRebaseItemId,
       mergeMethod,
       loading,
       error,
@@ -1523,28 +1025,13 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailSnapshotsByPrId,
       detailLiveDataPrId,
       detailBusy,
-      rebaseNeeds,
-      autoRebaseStatuses,
-      inlineTerminal,
-      resolverModel,
-      resolverReasoningLevel,
-      resolverPermissionMode: resolverPermissions[resolvePermissionFamilyForModel(resolverModel)],
-      resolverSessionsByContextKey,
       viewerLogin,
       writeViewerLogin,
       optimisticTerminalStates,
       markPrTerminalLocally,
       clearPrTerminalLocally,
-      setActiveTab,
       setSelectedPrId,
-      setSelectedRebaseItemId,
       setMergeMethod,
-      setResolverModel,
-      setResolverReasoningLevel,
-      setResolverPermissionMode,
-      upsertResolverSession,
-      clearResolverSession,
-      setInlineTerminal,
       refresh,
       setViewerLogin,
       setWriteViewerLogin,
@@ -1554,21 +1041,17 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       githubPollPeriodFor,
       githubPollGeneration,
     }),
-    // Note: setActiveTab, setSelectedPrId, setSelectedRebaseItemId,
-    // setMergeMethod, setInlineTerminal, setViewerLogin, and setWriteViewerLogin are intentionally excluded from this dependency
-    // array because they are useState setters which are guaranteed to be referentially stable
-    // across re-renders per the React useState contract. Resolver preference setters are
-    // included because they are useCallback wrappers (not raw setters).
+    // Note: setSelectedPrId, setMergeMethod, setViewerLogin, and setWriteViewerLogin are
+    // intentionally excluded from this dependency array because they are useState setters
+    // which are guaranteed to be referentially stable across re-renders per the React
+    // useState contract.
     [
-      activeTab,
       prs,
       lanes,
       markPrTerminalLocally,
       clearPrTerminalLocally,
       optimisticTerminalStates,
-      mergeContextByPrId,
       selectedPrId,
-      selectedRebaseItemId,
       mergeMethod,
       loading,
       error,
@@ -1582,20 +1065,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailSnapshotsByPrId,
       detailLiveDataPrId,
       detailBusy,
-      rebaseNeeds,
-      autoRebaseStatuses,
-      inlineTerminal,
-      resolverModel,
-      resolverReasoningLevel,
-      resolverPermissions,
-      resolverSessionsByContextKey,
       viewerLogin,
       writeViewerLogin,
-      setResolverModel,
-      setResolverReasoningLevel,
-      setResolverPermissionMode,
-      upsertResolverSession,
-      clearResolverSession,
       refresh,
       isGithubPollStoodDown,
       noteGithubReadFailure,

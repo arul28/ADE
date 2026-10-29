@@ -515,17 +515,30 @@ export function createPrChatLinkStore(args: {
 
   const attachNewStackLayerToParentChats = (attachArgs: { prId: string; laneId: string }): void => {
     try {
-      const parent = db.get<{ parent_lane_id: string | null }>(
-        "select parent_lane_id from lanes where id = ? limit 1",
-        [attachArgs.laneId],
-      );
-      const parentLaneId = String(parent?.parent_lane_id ?? "").trim();
-      if (!parentLaneId) return;
-      const pr = db.get<{ repo_owner: string; repo_name: string; github_pr_number: number }>(
-        "select repo_owner, repo_name, github_pr_number from pull_requests where id = ? and project_id = ? limit 1",
+      const pr = db.get<{ repo_owner: string; repo_name: string; github_pr_number: number; base_branch: string | null }>(
+        "select repo_owner, repo_name, github_pr_number, base_branch from pull_requests where id = ? and project_id = ? limit 1",
         [attachArgs.prId, projectId],
       );
       if (!pr) return;
+      // The layer below is the PR whose head branch this PR targets; its
+      // lane's chats are the ones that get the new layer.
+      const lower = db.get<{ lane_id: string | null }>(
+        `
+          select lane_id
+            from pull_requests
+           where project_id = ?
+             and id <> ?
+             and lower(repo_owner) = lower(?)
+             and lower(repo_name) = lower(?)
+             and head_branch = ?
+             and detached_at is null
+           order by updated_at desc
+           limit 1
+        `,
+        [projectId, attachArgs.prId, pr.repo_owner, pr.repo_name, String(pr.base_branch ?? "").trim()],
+      );
+      const parentLaneId = String(lower?.lane_id ?? "").trim();
+      if (!parentLaneId || parentLaneId === attachArgs.laneId) return;
       const knownStackNumber = db.get<{ github_stack_number: number }>(
         `
           select github_stack_number

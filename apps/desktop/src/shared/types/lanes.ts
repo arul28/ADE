@@ -11,6 +11,7 @@ import type {
   GitUpstreamSyncStatus,
 } from "./git";
 import type { TerminalSessionSummary } from "./sessions";
+import type { LaneStart, NewLaneDefaults } from "../laneStart";
 
 // ---------------------------------------------------------------------------
 // Lane types
@@ -48,6 +49,12 @@ export type LaneStatus = {
    * only while drift exists. Absent means no drift (or `switched`).
    */
   branchDriftKind?: LaneBranchDriftKind | null;
+  /**
+   * The branch `ahead`/`behind` are counted against: the open PR's base
+   * branch, else the project's default branch. The primary lane uses its
+   * upstream branch name.
+   */
+  compareBase?: string;
 };
 
 /**
@@ -134,10 +141,8 @@ export type LaneSummary = {
   worktreePath: string;
   worktreeAvailable?: boolean;
   attachedRootPath?: string | null;
-  parentLaneId: string | null;
-  childCount: number;
-  stackDepth: number;
-  parentStatus: LaneStatus | null;
+  /** Set only on the summary `create` returns: how the lane started. */
+  createdFrom?: LaneCreatedFrom | null;
   isEditProtected: boolean;
   status: LaneStatus;
   /** Non-null when the worktree HEAD has drifted off `branchRef`. */
@@ -350,7 +355,6 @@ export type LaneBranchProfile = {
   laneId: string;
   branchRef: string;
   baseRef: string;
-  parentLaneId: string | null;
   sourceBranchRef: string | null;
   createdAt: string;
   updatedAt: string;
@@ -378,8 +382,6 @@ export type LaneStateSnapshotSummary = {
 export type LaneListSnapshot = {
   lane: LaneSummary;
   runtime: LaneRuntimeSummary;
-  rebaseSuggestion: RebaseSuggestion | null;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictStatus: ConflictStatus | null;
   stateSnapshot: LaneStateSnapshotSummary | null;
   /**
@@ -402,11 +404,7 @@ export type LaneListSnapshot = {
 export type LaneDetailPayload = {
   lane: LaneSummary;
   runtime: LaneRuntimeSummary;
-  stackChain: StackChainItem[];
-  children: LaneSummary[];
   stateSnapshot: LaneStateSnapshotSummary | null;
-  rebaseSuggestion: RebaseSuggestion | null;
-  autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictStatus: ConflictStatus | null;
   overlaps: ConflictOverlap[];
   syncStatus: GitUpstreamSyncStatus | null;
@@ -427,16 +425,21 @@ export type ListLanesArgs = {
   includeArchived?: boolean;
   includeStatus?: boolean;
   includeConflictStatus?: boolean;
-  includeRebaseSuggestions?: boolean;
-  includeAutoRebaseStatus?: boolean;
 };
 
 export type CreateLaneArgs = {
   name: string;
   description?: string;
-  parentLaneId?: string;
-  baseBranch?: string;
+  /**
+   * Where the new branch starts and what it brings along. Omitted: the
+   * project's saved new-lane defaults (`getNewLaneDefaults`).
+   */
+  start?: LaneStart | null;
   branchName?: string;
+  /**
+   * An exact commit or ref to start from (e.g. "create a lane at this commit"
+   * in History). Wins over `start`.
+   */
   startPoint?: string;
   linearIssue?: LaneLinearIssue | null;
   /** A GitHub issue the lane is for: linked to the lane itself, so its PR says "Closes #N". */
@@ -448,26 +451,6 @@ export type CreateLaneArgs = {
    * stops the git checkout while it runs.
    */
   operationId?: string;
-};
-
-export type CreateChildLaneArgs = {
-  parentLaneId: string;
-  name: string;
-  description?: string;
-  folder?: string;
-  baseBranchRef?: string;
-  branchName?: string;
-  linearIssue?: LaneLinearIssue | null;
-  /**
-   * A caller-chosen id (a UUID) for this run. Passing it to `cancelGitWrite`
-   * stops the git checkout while it runs.
-   */
-  operationId?: string;
-};
-
-export type CreateLaneFromUnstagedArgs = {
-  sourceLaneId: string;
-  name: string;
 };
 
 export type ImportBranchLaneArgs = {
@@ -533,27 +516,6 @@ export type LaneBranchSwitchResult = {
 export type RenameLaneArgs = {
   laneId: string;
   name: string;
-};
-
-export type ReparentLaneArgs = {
-  laneId: string;
-  newParentLaneId: string;
-  /**
-   * Git branch name to stack onto (resolved in the project repo, prefers `origin/<branch>`).
-   * When omitted, uses the new parent lane's current branch, or for the primary lane the same
-   * upstream / origin resolution as graph reparent.
-   */
-  stackBaseBranchRef?: string | null;
-};
-
-export type ReparentLaneResult = {
-  laneId: string;
-  previousParentLaneId: string | null;
-  newParentLaneId: string;
-  previousBaseRef: string;
-  newBaseRef: string;
-  preHeadSha: string | null;
-  postHeadSha: string | null;
 };
 
 export type UpdateLaneAppearanceArgs = {
@@ -656,7 +618,6 @@ export type LaneDeleteStepName =
   // Destroys the lane's Mac Desktop virtual display. Present on every platform
   // because the step runs unconditionally; off macOS it reports "no display".
   | "destroy_mac_desktop"
-  | "cancel_auto_rebase"
   | "cleanup_env"
   | "git_status"
   | "git_worktree_remove"
@@ -764,17 +725,6 @@ export type LaneDeleteRisk = {
   envInitialized: boolean;
 };
 
-export type StackChainItem = {
-  laneId: string;
-  laneName: string;
-  branchRef: string;
-  depth: number;
-  parentLaneId: string | null;
-  status: LaneStatus;
-};
-
-export type RebaseScope = "lane_only" | "lane_and_descendants";
-
 export type PushMode = "none" | "review_then_push";
 
 export type RebaseLaneStatus = "pending" | "running" | "succeeded" | "conflict" | "blocked" | "skipped";
@@ -782,7 +732,6 @@ export type RebaseLaneStatus = "pending" | "running" | "succeeded" | "conflict" 
 export type RebaseRunLane = {
   laneId: string;
   laneName: string;
-  parentLaneId: string | null;
   status: RebaseLaneStatus;
   preHeadSha: string | null;
   postHeadSha: string | null;
@@ -796,7 +745,6 @@ export type RebaseRunState = "running" | "completed" | "failed" | "aborted";
 export type RebaseRun = {
   runId: string;
   rootLaneId: string;
-  scope: RebaseScope;
   pushMode: PushMode;
   state: RebaseRunState;
   startedAt: string;
@@ -815,7 +763,6 @@ export type RebaseRun = {
 
 export type RebaseStartArgs = {
   laneId: string;
-  scope?: RebaseScope;
   pushMode?: PushMode;
   actor?: string;
   reason?: string;
@@ -854,45 +801,6 @@ export type RebaseTargetCommit = {
   subject: string;
   author: string;
   committedAt: string;
-};
-
-export type RebaseSuggestion = {
-  laneId: string;
-  parentLaneId: string;
-  parentHeadSha: string;
-  behindCount: number;
-  baseLabel?: string | null;
-  groupContext?: string | null;
-  lastSuggestedAt: string;
-  deferredUntil: string | null;
-  dismissedAt: string | null;
-  hasPr: boolean;
-  /** Commits that would be pulled in by a rebase against this target head. Capped at 20 entries; may be undefined for legacy suggestions. */
-  targetCommits?: RebaseTargetCommit[];
-};
-
-export type RebaseSuggestionsEventPayload = {
-  type: "rebase-suggestions-updated";
-  computedAt: string;
-  suggestions: RebaseSuggestion[];
-};
-
-export type AutoRebaseLaneState = "autoRebased" | "rebasePending" | "rebaseConflict" | "rebaseFailed";
-
-export type AutoRebaseLaneStatus = {
-  laneId: string;
-  parentLaneId: string | null;
-  parentHeadSha: string | null;
-  state: AutoRebaseLaneState;
-  updatedAt: string;
-  conflictCount: number;
-  message: string | null;
-};
-
-export type AutoRebaseEventPayload = {
-  type: "auto-rebase-updated";
-  computedAt: string;
-  statuses: AutoRebaseLaneStatus[];
 };
 
 // --- Lane Environment Init args (Phase 5 W1) ---
@@ -976,4 +884,42 @@ export type GetLaneDependencyStatusArgs = {
 export type AcknowledgeLaneDependencyStatusArgs = {
   /** Lockfiles (relative paths) to mark as current; omit for every lockfile. */
   lockfiles?: string[];
+};
+
+/** Who a project's new-lane settings follow. */
+export type NewLaneSettingsScope = {
+  /**
+   * `account-repo`: your ADE account, for this repository, on every computer.
+   * `this-computer`: the project has no remote, so the settings stay here.
+   */
+  kind: "account-repo" | "this-computer";
+  /** `github.com/owner/name` when `kind` is `account-repo`. */
+  repo: string | null;
+};
+
+/** The project's new-lane defaults plus what they resolve to right now. */
+export type NewLaneDefaultsSnapshot = {
+  defaults: NewLaneDefaults;
+  scope: NewLaneSettingsScope;
+  /** The project's default branch, e.g. `main`. */
+  defaultBranch: string;
+  /** The branch the primary lane has checked out, or null when detached. */
+  primaryBranch: string | null;
+};
+
+/** How a lane that was just created started; returned by `create` only. */
+export type LaneCreatedFrom = {
+  /** Null when the lane started at an exact commit (`startPoint`). */
+  start: LaneStart | null;
+  /** The branch the start pointed at, e.g. `main`. */
+  sourceBranch: string;
+  /** The ref the lane branched from: `origin/main`, `main`, or a commit. */
+  startRef: string;
+  startSha: string;
+  /** Files copied from another folder's uncommitted changes. */
+  copiedFiles: number;
+  /** The lane whose uncommitted changes were copied. */
+  copiedFromLaneName: string | null;
+  /** Plain-language notes about fallbacks (a failed fetch, a missing branch). */
+  notes: string[];
 };

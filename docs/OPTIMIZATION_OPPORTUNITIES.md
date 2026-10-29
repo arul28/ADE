@@ -26,7 +26,7 @@ Ground rules used to compile this list:
 - **Estimated gain**: 30–80 ms per second of active use.
 
 ### 3. Split mega-components into memoized children
-- **Where**: `PrDetailPane.tsx` (3569), `AgentChatMessageList.tsx` (3175), `AgentChatPane.tsx` (3080), `IntegrationTab.tsx` (3022).
+- **Where**: `PrDetailPane.tsx` (3569), `AgentChatMessageList.tsx` (3175), `AgentChatPane.tsx` (3080).
 - **Issue**: Single-file components re-render fully on any prop change. List items lack `memo`.
 - **Fix**: Extract stable list items into `React.memo`'d children. Move derived arrays into `useMemo`.
 - **Risk**: Medium (dep-array care required).
@@ -79,7 +79,7 @@ Ground rules used to compile this list:
 - **Estimated gain**: Prevents 50–200 MB leak over 8-hour sessions.
 
 ### 10. Hoist inline config objects to module scope
-- **Where**: `IntegrationTab.tsx` (`OutcomeDot` config), `AppShell.tsx` (`EMPTY_TERMINAL_ATTENTION`), others.
+- **Where**: `AppShell.tsx` (`EMPTY_TERMINAL_ATTENTION`), others.
 - **Issue**: Object literals reconstructed every render.
 - **Fix**: Move to module scope or `useMemo` if deps exist.
 - **Risk**: Low.
@@ -148,7 +148,7 @@ Items applied in this pass (2026-04-14):
 
 - **#2 — Pause renderer watchdog when tab hidden**. `apps/desktop/src/renderer/main.tsx` now runs the 1 s event-loop-stall watchdog only while `document.visibilityState === "visible"`; start/stop helpers + `visibilitychange` listener (with `beforeunload` teardown).
 - **#10 — Combine warmup timers**. `apps/desktop/src/renderer/state/appStore.ts` collapsed `warmLaneStatusTimer` + `warmProviderModeTimer` into a single `warmupTimer` that fires both `refreshLanes` and `refreshProviderMode` after `Math.max(1200, 1800)` ms.
-- **#13 — Hoist inline config objects**. `IntegrationTab.tsx` now defines `OUTCOME_DOT_CONFIG` at module scope (the inline outcome map used by `OutcomeDot`). `AppShell.tsx` was already module-scoped for `EMPTY_TERMINAL_ATTENTION` (no change needed).
+- **#13 — Hoist inline config objects**. `AppShell.tsx` was already module-scoped for `EMPTY_TERMINAL_ATTENTION` (no change needed).
 - **#19 — Atomic UserPreferences store**. `appStore.ts` now persists `theme` / `terminalPreferences` / `smartTooltipsEnabled` into one key (`ade.userPreferences.v1`) with a single `setItem` per change. Legacy keys (`ade.theme`, `ade.smartTooltips`, `ade.terminalPreferences.v1`) are still read as a one-time migration fallback; every setter now snapshots prev state via `set((prev) => { ... })` and writes the unified JSON.
 - **#20 — Compact JSON for machine files**. `apps/desktop/src/preload/preload.ts` was re-audited; it currently has no `JSON.stringify(x, null, 2)` call sites — no-op for this pass.
 

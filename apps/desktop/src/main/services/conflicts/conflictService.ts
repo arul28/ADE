@@ -1,22 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import type {
   ApplyConflictProposalArgs,
   BatchOverlapEntry,
   BatchAssessmentResult,
-  CommitExternalConflictResolverRunArgs,
-  CommitExternalConflictResolverRunResult,
   ConflictChip,
   ConflictEventPayload,
-  ConflictExternalResolverContextGap,
-  ConflictResolverOriginSurface,
-  PrAgentPermissionMode,
-  ConflictResolverPostActionState,
-  ConflictExternalResolverRunStatus,
-  ConflictExternalResolverRunSummary,
   ConflictFileType,
   ConflictOverlap,
   ConflictFileContextV1,
@@ -40,40 +30,22 @@ import type {
   ListOverlapsArgs,
   MergeSimulationArgs,
   MergeSimulationResult,
-  ListExternalConflictResolverRunsArgs,
   PrepareConflictProposalArgs,
   RequestConflictProposalArgs,
-  RunExternalConflictResolverArgs,
   RiskMatrixEntry,
   RunConflictPredictionArgs,
   UndoConflictProposalArgs,
-  PrepareResolverSessionArgs,
-  PrepareResolverSessionResult,
-  FinalizeResolverSessionArgs,
-  AttachResolverSessionArgs,
-  CancelResolverSessionArgs,
-  SuggestResolverTargetArgs,
-  SuggestResolverTargetResult,
-  ResolverSessionScenario,
   RebaseNeed,
   RebaseLaneArgs,
   RebaseResult,
-  IntegrationPairwiseResult,
-  IntegrationProposalStep,
-  IntegrationResolutionState
 } from "../../../shared/types";
-import { buildPrAiResolutionContextKey } from "../../../shared/types";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
-import { normalizePrCreationStrategy } from "../../../shared/prStrategy";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import type { createLaneService } from "../lanes/laneService";
 import type { createOperationService } from "../history/operationService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import { missingFeatureModelMessage, readConfiguredFeatureModel, type createAiIntegrationService } from "../ai/aiIntegrationService";
-import type { createSessionService } from "../sessions/sessionService";
-import type { LaneWorktreeLockService } from "../lanes/laneWorktreeLockService";
 import {
   formatGitExecutionError,
   normalizeConflictType,
@@ -85,12 +57,7 @@ import {
 } from "../git/git";
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
-import { resolveCodexExecutable } from "../ai/codexExecutable";
-import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
-import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
-import { providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
-import { safeSegment } from "../shared/packLegacyUtils";
-import { signalProcessGroup, asString, isRecord, normalizeBranchName, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
+import { asString, isRecord, parseDiffNameOnly, parseDiffNameOnlySorted, parseNumstatRecordsZ, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
 
@@ -131,69 +98,6 @@ type ConflictProposalRow = {
   updated_at: string;
 };
 
-type ExternalResolverRunRecord = {
-  schema: "ade.conflictExternalRun.v1";
-  runId: string;
-  provider: RunExternalConflictResolverArgs["provider"];
-  status: ConflictExternalResolverRunStatus;
-  startedAt: string;
-  completedAt: string | null;
-  targetLaneId: string;
-  sourceLaneIds: string[];
-  cwdLaneId: string;
-  integrationLaneId: string | null;
-  scenario: ResolverSessionScenario;
-  model: string | null;
-  reasoningEffort: string | null;
-  permissionMode: PrAgentPermissionMode | null;
-  originSurface: ConflictResolverOriginSurface;
-  originRunId: string | null;
-  originLabel: string | null;
-  resolverContextKey: string | null;
-  command: string[];
-  changedFiles: string[];
-  summary: string | null;
-  patchPath: string | null;
-  logPath: string | null;
-  insufficientContext: boolean;
-  contextGaps: ConflictExternalResolverContextGap[];
-  warnings: string[];
-  ptyId: string | null;
-  sessionId: string | null;
-  postActions: ConflictResolverPostActionState | null;
-  committedAt?: string | null;
-  commitSha?: string | null;
-  commitMessage?: string | null;
-  error: string | null;
-};
-
-type ExternalResolverContextRef = {
-  kind: "project_context" | "lane_context" | "conflict_context";
-  laneId: string | null;
-  peerLaneId: string | null;
-  absPath: string;
-  repoRelativePath: string;
-  exists: boolean;
-  required: boolean;
-};
-
-type ResolverSessionContext = {
-  laneId: string;
-  peerLaneId: string | null;
-  preview: ConflictProposalPreview;
-  conflictContext: Record<string, unknown> | null;
-};
-
-type IntegrationProposalResolverRow = {
-  id: string;
-  source_lane_ids_json: string;
-  base_branch: string;
-  steps_json: string | null;
-  pairwise_results_json: string | null;
-  resolution_state_json: string | null;
-  integration_lane_id: string | null;
-};
-
 const RISK_SCORE: Record<ConflictRiskLevel, number> = {
   none: 0,
   low: 1,
@@ -208,24 +112,6 @@ const PREFILTER_MAX_PEERS_PER_LANE = 6;
 const PREFILTER_MAX_GLOBAL_PAIRS = 800;
 const PREFILTER_MAX_TOUCHED_FILES = 800;
 const STALE_MS = 5 * 60_000;
-const EXTERNAL_DIFF_MAX_OUTPUT_BYTES = 32 * 1024 * 1024;
-const EXTERNAL_RESOLVER_TIMEOUT_MS = 8 * 60_000;
-
-function terminateExternalResolverProcessTree(
-  child: ReturnType<typeof spawn>,
-  signal: NodeJS.Signals,
-): boolean {
-  if (child.exitCode !== null || child.signalCode !== null) return false;
-  if (process.platform !== "win32" && typeof child.pid === "number") {
-    try {
-      signalProcessGroup(child.pid, signal);
-      return true;
-    } catch {
-      // Fall through to the direct child kill path.
-    }
-  }
-  return terminateProcessTree(child, signal);
-}
 
 function safeJsonArray<T>(raw: string | null): T[] {
   const parsed = safeJsonParse(raw, null);
@@ -273,11 +159,10 @@ function extractOverlapFiles(row: ConflictPredictionRow | undefined): string[] {
  * Resolve `ref` to a SHA, shared across every caller asking the same question.
  *
  * The batch assessment fans out over lanes with an uncapped `Promise.all`, and
- * every lane in a project typically shares one `baseRef` — measured, that was
- * `git rev-parse main` running 14 times at the project root inside a single
+ * every lane in a project typically shares one compare base — measured, that
+ * was `git rev-parse main` running 14 times at the project root inside a single
  * refresh. The cache key carries the cwd, so a repo-wide ref collapses to one
- * subprocess while `HEAD` stays correctly distinct per worktree, and the lane's
- * own `HEAD` read collides with the one `rebaseSuggestionService` makes.
+ * subprocess while `HEAD` stays correctly distinct per worktree.
  */
 async function readHeadSha(cwd: string, ref = "HEAD"): Promise<string> {
   const res = await runGitRepoCached(
@@ -320,39 +205,6 @@ async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string)
   const res = await runGit(["diff", "--name-only", "-z", `${mergeBase}..${headSha}`], { cwd, timeoutMs: 15_000 });
   if (res.exitCode !== 0) return new Set<string>();
   return new Set(parseDiffNameOnly(res.stdout));
-}
-
-function resolveLaneRebaseTarget(args: {
-  lane: LaneSummary;
-  lanesById: Map<string, LaneSummary>;
-}): {
-  comparisonRef: string;
-  fallbackRef?: string;
-  displayBaseBranch: string;
-} {
-  const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
-  const parentBranchRef = branchNameFromLaneRef(parent?.branchRef);
-  if (parentBranchRef && shouldLaneTrackParent({ lane: args.lane, parent })) {
-    return {
-      comparisonRef: parentBranchRef,
-      fallbackRef: `origin/${parentBranchRef}`,
-      displayBaseBranch: parentBranchRef,
-    };
-  }
-
-  const baseBranchRef = args.lane.baseRef?.trim() ?? "";
-  if (baseBranchRef) {
-    return {
-      comparisonRef: `origin/${baseBranchRef}`,
-      fallbackRef: baseBranchRef,
-      displayBaseBranch: baseBranchRef,
-    };
-  }
-
-  return {
-    comparisonRef: args.lane.baseRef,
-    displayBaseBranch: args.lane.baseRef,
-  };
 }
 
 async function readDiffNumstat(cwd: string, mergeBase: string, headSha: string): Promise<{
@@ -515,30 +367,6 @@ function extractPathsFromUnifiedDiff(diffPatch: string): string[] {
   return Array.from(paths).sort((a, b) => a.localeCompare(b));
 }
 
-function extractCommitPathsFromUnifiedDiff(diffPatch: string): string[] {
-  const paths = new Set<string>();
-  for (const line of diffPatch.split(/\r?\n/)) {
-    if (line.startsWith("+++ b/")) {
-      const p = line.slice("+++ b/".length).trim();
-      if (p && p !== "/dev/null") paths.add(p);
-      continue;
-    }
-    if (line.startsWith("--- a/")) {
-      const p = line.slice("--- a/".length).trim();
-      if (p && p !== "/dev/null") paths.add(p);
-      continue;
-    }
-    if (line.startsWith("diff --git ")) {
-      const match = line.match(/^diff --git a\/(.+?) b\/(.+)$/);
-      const left = match?.[1]?.trim();
-      const right = match?.[2]?.trim();
-      if (left && left !== "/dev/null") paths.add(left);
-      if (right && right !== "/dev/null") paths.add(right);
-    }
-  }
-  return Array.from(paths).sort((a, b) => a.localeCompare(b));
-}
-
 function extractDiffPatchFromText(text: string): string {
   const fence = text.match(/```diff\s*\n([\s\S]*?)\n```/i);
   if (fence?.[1]) {
@@ -626,8 +454,6 @@ export function createConflictService({
   projectConfigService,
   aiIntegrationService,
   operationService,
-  sessionService,
-  laneWorktreeLockService,
   conflictPacksDir,
   onEvent
 }: {
@@ -639,36 +465,14 @@ export function createConflictService({
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   aiIntegrationService?: ReturnType<typeof createAiIntegrationService>;
   operationService?: ReturnType<typeof createOperationService>;
-  sessionService?: ReturnType<typeof createSessionService>;
-  laneWorktreeLockService?: LaneWorktreeLockService | null;
   conflictPacksDir?: string;
   onEvent?: (event: ConflictEventPayload) => void;
 }) {
   const pairLocks = new Map<string, Promise<void>>();
   const pairQueued = new Set<string>();
 
-  // Rebase tracking state
-  // Rebase dismiss/defer: persisted to DB, loaded into cache for fast reads
-  const rebaseDismissed = new Map<string, string>(); // laneId -> ISO timestamp
-  const rebaseDeferred = new Map<string, string>();  // laneId -> ISO timestamp (until)
-  const activeRebaseLanes = new Set<string>(); // concurrency guard
-
-  // Load persisted dismiss/defer from DB on init
-  try {
-    const dismissRows = db.all<{ lane_id: string; dismissed_at: string }>(
-      `select lane_id, dismissed_at from rebase_dismissed where project_id = ?`,
-      [projectId]
-    );
-    for (const row of dismissRows) rebaseDismissed.set(row.lane_id, row.dismissed_at);
-
-    const deferRows = db.all<{ lane_id: string; deferred_until: string }>(
-      `select lane_id, deferred_until from rebase_deferred where project_id = ?`,
-      [projectId]
-    );
-    for (const row of deferRows) rebaseDeferred.set(row.lane_id, row.deferred_until);
-  } catch {
-    // Tables may not exist yet — will be created lazily
-  }
+  // Rebase concurrency guard: one rebase per lane at a time.
+  const activeRebaseLanes = new Set<string>();
 
   const runSerializedPairTask = async (pairId: string, task: () => Promise<void>): Promise<void> => {
     const active = pairLocks.get(pairId);
@@ -702,6 +506,9 @@ export function createConflictService({
     return lanes.filter((lane) => !lane.archivedAt);
   };
 
+  /** The branch a lane compares against: its open PR's base, else the default branch. */
+  const compareBaseForLane = (lane: Pick<LaneSummary, "id">): string => laneService.getCompareBase(lane.id);
+
   const sha256 = (input: string): string => createHash("sha256").update(input).digest("hex");
 
   const preparedContexts = new Map<
@@ -725,14 +532,6 @@ export function createConflictService({
     }
   };
 
-  const packsRootDir = conflictPacksDir ? path.dirname(conflictPacksDir) : null;
-  const resolvedPacksRootDir = packsRootDir ?? resolveAdeLayout(projectRoot).packsDir;
-  const toRepoRelativePath = (absPath: string): string => {
-    const rel = path.relative(projectRoot, absPath).replace(/\\/g, "/");
-    if (!rel || rel.startsWith("..")) return absPath.replace(/\\/g, "/");
-    return rel;
-  };
-
   const safeReadText = (absPath: string, maxBytes: number): string => {
     try {
       const fd = fs.openSync(absPath, "r");
@@ -746,61 +545,6 @@ export function createConflictService({
     } catch {
       return "";
     }
-  };
-
-  const externalRunsRootDir = path.join(resolvedPacksRootDir, "external-resolver-runs");
-
-  const resolveResolverSourceTab = (
-    originSurface: ConflictResolverOriginSurface | null | undefined,
-    sourceTab: PrepareResolverSessionArgs["sourceTab"] | null | undefined,
-  ): NonNullable<PrepareResolverSessionArgs["sourceTab"]> => {
-    if (sourceTab) return sourceTab;
-    if (originSurface === "integration") return "integration";
-    if (originSurface === "rebase") return "rebase";
-    return "normal";
-  };
-
-  const buildResolverContextKey = (args: {
-    originSurface?: ConflictResolverOriginSurface | null;
-    sourceTab?: PrepareResolverSessionArgs["sourceTab"] | null;
-    targetLaneId: string;
-    sourceLaneIds: string[];
-    cwdLaneId: string;
-    integrationLaneId: string | null;
-    proposalId?: string | null;
-    scenario: ResolverSessionScenario;
-  }): string =>
-    buildPrAiResolutionContextKey({
-      sourceTab: resolveResolverSourceTab(args.originSurface, args.sourceTab),
-      sourceLaneId: args.sourceLaneIds[0] ?? null,
-      sourceLaneIds: args.sourceLaneIds,
-      targetLaneId: args.targetLaneId,
-      proposalId: args.proposalId ?? null,
-      integrationLaneId: args.integrationLaneId,
-      laneId: args.cwdLaneId,
-      scenario: args.scenario,
-    });
-
-  const extractConflictJobContext = (value: Record<string, unknown> | null): ConflictJobContextV1 | null => {
-    const candidate =
-      isRecord(value) && isRecord(value.conflictContext)
-        ? value.conflictContext
-        : value;
-    if (!isRecord(candidate)) return null;
-    if (candidate.schema !== "ade.conflictJobContext.v1") return null;
-    return candidate as ConflictJobContextV1;
-  };
-
-  const formatIntentSummary = (
-    intent: ConflictJobContextV1["intent"] | null | undefined,
-    key: "source" | "peer" | "target",
-  ): string | null => {
-    const entry = intent?.[key];
-    if (!entry) return null;
-    const commitSummary = entry.commitMessages.length > 0
-      ? entry.commitMessages.slice(0, 4).join(" | ")
-      : "no unique commits captured";
-    return `${entry.laneName ?? entry.laneId} (${entry.branchRef ?? "unknown-branch"}): ${commitSummary}`;
   };
 
   const buildBranchIntent = async (args: {
@@ -819,329 +563,6 @@ export function createConflictService({
     mergeBaseRef: args.mergeBaseRef,
     commitMessages: await readCommitMessagesSince(args.cwd, args.mergeBaseRef, args.headRef),
   });
-
-  const buildProjectContextBody = (args: {
-    targetLaneId: string;
-    sourceLaneIds: string[];
-    cwdLaneId: string;
-    integrationLaneId: string | null;
-    lanesById: Map<string, LaneSummary>;
-  }): string => {
-    const relevantLaneIds = uniqueSorted([
-      args.targetLaneId,
-      args.cwdLaneId,
-      ...(args.integrationLaneId ? [args.integrationLaneId] : []),
-      ...args.sourceLaneIds
-    ]);
-    const lines: string[] = [];
-    lines.push("# ADE Project Context");
-    lines.push("");
-    lines.push("## Resolver Scope");
-    lines.push(`- Target lane: ${args.targetLaneId}`);
-    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
-    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
-    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
-    lines.push("");
-    lines.push("## Relevant Lanes");
-    for (const laneId of relevantLaneIds) {
-      const lane = args.lanesById.get(laneId);
-      if (!lane) {
-        lines.push(`- ${laneId}: unavailable`);
-        continue;
-      }
-      lines.push(
-        `- ${lane.id}: ${lane.name} | branch=${lane.branchRef} | base=${lane.baseRef} | dirty=${lane.status.dirty ? "yes" : "no"} | ahead=${lane.status.ahead} | behind=${lane.status.behind}`
-      );
-    }
-    lines.push("");
-    return `${lines.join("\n").trim()}\n`;
-  };
-
-  const buildLaneContextBody = (lane: LaneSummary): string => {
-    const lines: string[] = [];
-    lines.push(`# ADE Lane Context: ${lane.name}`);
-    lines.push("");
-    lines.push(`- Lane ID: ${lane.id}`);
-    lines.push(`- Branch: ${lane.branchRef}`);
-    lines.push(`- Base: ${lane.baseRef}`);
-    lines.push(`- Worktree: ${lane.worktreePath}`);
-    lines.push(`- Dirty: ${lane.status.dirty ? "yes" : "no"}`);
-    lines.push(`- Ahead: ${lane.status.ahead}`);
-    lines.push(`- Behind: ${lane.status.behind}`);
-    lines.push(`- Parent lane: ${lane.parentLaneId ?? "(none)"}`);
-    if (lane.tags.length) lines.push(`- Tags: ${lane.tags.join(", ")}`);
-    if (lane.description?.trim()) lines.push(`- Description: ${lane.description.trim()}`);
-    lines.push("");
-
-    if (sessionService) {
-      try {
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-        const allSessions = sessionService.list({ laneId: lane.id, limit: 20 });
-        const sessions = allSessions.filter(
-          (s) => (s.title?.trim() || s.summary?.trim()) && s.startedAt >= thirtyDaysAgo
-        );
-        if (sessions.length > 0) {
-          lines.push("## Recent Sessions");
-          lines.push("");
-          for (const s of sessions) {
-            const label = s.title?.trim() || s.goal?.trim() || "Untitled";
-            const tool = s.toolType ?? "unknown";
-            const timeRange = s.endedAt ? `${s.startedAt} → ${s.endedAt}` : `${s.startedAt} → ongoing`;
-            const summaryText = s.summary?.trim() ? `: ${s.summary.trim()}` : "";
-            lines.push(`- **${label}** (${tool}, ${timeRange})${summaryText}`);
-          }
-          lines.push("");
-        }
-      } catch {
-        // Session query failed — omit section silently
-      }
-    }
-
-    return `${lines.join("\n").trim()}\n`;
-  };
-
-  const buildConflictContextBody = (args: {
-    laneId: string;
-    peerLaneId: string | null;
-    preview: ConflictProposalPreview;
-    conflictContext: Record<string, unknown> | null;
-  }): string => {
-    const jobContext = extractConflictJobContext(args.conflictContext);
-    return `${JSON.stringify(
-      {
-        laneId: args.laneId,
-        peerLaneId: args.peerLaneId,
-        preparedAt: args.preview.preparedAt,
-        contextDigest: args.preview.contextDigest,
-        existingProposalId: args.preview.existingProposalId ?? null,
-        warnings: args.preview.warnings,
-        stats: args.preview.stats,
-        files: args.preview.files.map((file) => ({
-          path: file.path,
-          includeReason: file.includeReason,
-          conflictType: file.conflictType ?? null,
-          markerPreview: file.markerPreview,
-        })),
-        relevantFilesForConflict: jobContext?.relevantFilesForConflict ?? null,
-        fileContexts: jobContext?.fileContexts ?? null,
-        relationship: jobContext?.relationship ?? null,
-        intent: jobContext?.intent ?? null,
-        mergeTimeline: jobContext?.mergeTimeline ?? null,
-        insufficientContext: jobContext?.insufficientContext ?? null,
-        insufficientReasons: jobContext?.insufficientReasons ?? null,
-      },
-      null,
-      2
-    )}\n`;
-  };
-
-  const buildExternalResolverContextRefs = (args: {
-    runDir: string;
-    targetLaneId: string;
-    sourceLaneIds: string[];
-    cwdLaneId: string;
-    integrationLaneId: string | null;
-    contexts: Array<{
-      laneId: string;
-      peerLaneId: string | null;
-      preview: ConflictProposalPreview;
-      conflictContext: Record<string, unknown> | null;
-    }>;
-    lanesById: Map<string, LaneSummary>;
-  }): ExternalResolverContextRef[] => {
-    const refs = new Map<string, ExternalResolverContextRef>();
-    const addRef = (ref: Omit<ExternalResolverContextRef, "exists" | "repoRelativePath">) => {
-      const key = `${ref.kind}:${ref.absPath}`;
-      if (refs.has(key)) return;
-      const absPath = path.resolve(ref.absPath);
-      refs.set(key, {
-        ...ref,
-        absPath,
-        repoRelativePath: toRepoRelativePath(absPath),
-        exists: fs.existsSync(absPath)
-      });
-    };
-    const writeGeneratedRef = (relativeName: string, content: string): string => {
-      const absPath = path.join(args.runDir, relativeName);
-      fs.writeFileSync(absPath, content, "utf8");
-      return absPath;
-    };
-
-    addRef({
-      kind: "project_context",
-      laneId: null,
-      peerLaneId: null,
-      absPath: writeGeneratedRef(
-        "project-context.md",
-        buildProjectContextBody({
-          targetLaneId: args.targetLaneId,
-          sourceLaneIds: args.sourceLaneIds,
-          cwdLaneId: args.cwdLaneId,
-          integrationLaneId: args.integrationLaneId,
-          lanesById: args.lanesById
-        })
-      ),
-      required: true
-    });
-
-    const relevantLaneIds = uniqueSorted([
-      args.targetLaneId,
-      args.cwdLaneId,
-      ...(args.integrationLaneId ? [args.integrationLaneId] : []),
-      ...args.sourceLaneIds
-    ]);
-    for (const laneId of relevantLaneIds) {
-      const lane = args.lanesById.get(laneId);
-      if (!lane) continue;
-      addRef({
-        kind: "lane_context",
-        laneId,
-        peerLaneId: null,
-        absPath: writeGeneratedRef(`lane-context-${safeSegment(laneId)}.md`, buildLaneContextBody(lane)),
-        required: true
-      });
-    }
-
-    for (const ctx of args.contexts) {
-      const peerKey = (ctx.peerLaneId?.trim() || "base").trim();
-      if (!peerKey) continue;
-      addRef({
-        kind: "conflict_context",
-        laneId: ctx.laneId,
-        peerLaneId: ctx.peerLaneId ?? null,
-        absPath: writeGeneratedRef(
-          `conflict-context-${safeSegment(ctx.laneId)}-to-${safeSegment(peerKey)}.json`,
-          buildConflictContextBody(ctx)
-        ),
-        required: true
-      });
-    }
-
-    return [...refs.values()].sort((a, b) => {
-      const rank = (value: ExternalResolverContextRef["kind"]): number => {
-        if (value === "project_context") return 1;
-        if (value === "lane_context") return 2;
-        return 3;
-      };
-      const rankDelta = rank(a.kind) - rank(b.kind);
-      if (rankDelta !== 0) return rankDelta;
-      const laneDelta = (a.laneId ?? "").localeCompare(b.laneId ?? "");
-      if (laneDelta !== 0) return laneDelta;
-      const peerDelta = (a.peerLaneId ?? "").localeCompare(b.peerLaneId ?? "");
-      if (peerDelta !== 0) return peerDelta;
-      return a.absPath.localeCompare(b.absPath);
-    });
-  };
-
-  const ensureExternalRunsDir = () => {
-    fs.mkdirSync(externalRunsRootDir, { recursive: true });
-  };
-
-  const resolveExternalResolverCommand = (provider: RunExternalConflictResolverArgs["provider"]): string[] => {
-    const snapshot = projectConfigService.get();
-    const providers = isRecord(snapshot.local.providers)
-      ? snapshot.local.providers
-      : isRecord(snapshot.effective.providers)
-        ? snapshot.effective.providers
-        : {};
-    const contextTools = isRecord((providers as Record<string, unknown>).contextTools)
-      ? ((providers as Record<string, unknown>).contextTools as Record<string, unknown>)
-      : {};
-    const conflictResolvers = isRecord(contextTools.conflictResolvers)
-      ? (contextTools.conflictResolvers as Record<string, unknown>)
-      : {};
-    const providerEntry = isRecord(conflictResolvers[provider]) ? (conflictResolvers[provider] as Record<string, unknown>) : {};
-    return Array.isArray(providerEntry.command) ? providerEntry.command.map((entry) => String(entry)) : [];
-  };
-
-  const toRunSummary = (run: ExternalResolverRunRecord): ConflictExternalResolverRunSummary => ({
-    runId: run.runId,
-    provider: run.provider,
-    status: run.status,
-    startedAt: run.startedAt,
-    completedAt: run.completedAt,
-    targetLaneId: run.targetLaneId,
-    sourceLaneIds: run.sourceLaneIds,
-    cwdLaneId: run.cwdLaneId,
-    integrationLaneId: run.integrationLaneId,
-    scenario: run.scenario,
-    model: run.model,
-    reasoningEffort: run.reasoningEffort,
-    permissionMode: run.permissionMode,
-    command: run.command,
-    changedFiles: run.changedFiles,
-    summary: run.summary,
-    patchPath: run.patchPath,
-    logPath: run.logPath,
-    insufficientContext: run.insufficientContext,
-    contextGaps: run.contextGaps,
-    warnings: run.warnings,
-    originSurface: run.originSurface,
-    originRunId: run.originRunId ?? null,
-    originLabel: run.originLabel ?? null,
-    resolverContextKey: run.resolverContextKey ?? null,
-    ptyId: run.ptyId ?? null,
-    sessionId: run.sessionId ?? null,
-    committedAt: run.committedAt ?? null,
-    commitSha: run.commitSha ?? null,
-    commitMessage: run.commitMessage ?? null,
-    postActions: run.postActions ?? null,
-    error: run.error
-  });
-
-  const writeExternalRunRecord = (run: ExternalResolverRunRecord): void => {
-    ensureExternalRunsDir();
-    const runDir = path.join(externalRunsRootDir, run.runId);
-    fs.mkdirSync(runDir, { recursive: true });
-    fs.writeFileSync(path.join(runDir, "run.json"), `${JSON.stringify(run, null, 2)}\n`, "utf8");
-  };
-
-  const readExternalRunRecord = (runId: string): ExternalResolverRunRecord | null => {
-    const filePath = path.join(externalRunsRootDir, runId, "run.json");
-    if (!fs.existsSync(filePath)) return null;
-    try {
-      const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as ExternalResolverRunRecord;
-      if (!parsed || parsed.schema !== "ade.conflictExternalRun.v1") return null;
-      return parsed;
-    } catch {
-      return null;
-    }
-  };
-
-  const listExternalRunRecords = (): ExternalResolverRunRecord[] => {
-    if (!fs.existsSync(externalRunsRootDir)) return [];
-    const out: ExternalResolverRunRecord[] = [];
-    let entries: fs.Dirent[] = [];
-    try {
-      entries = fs.readdirSync(externalRunsRootDir, { withFileTypes: true });
-    } catch {
-      return [];
-    }
-    for (const entry of entries) {
-      if (!entry.isDirectory()) continue;
-      const run = readExternalRunRecord(entry.name);
-      if (run) out.push(run);
-    }
-    out.sort((a, b) => b.startedAt.localeCompare(a.startedAt));
-    return out;
-  };
-
-  const extractResolverSummary = (output: string): string | null => {
-    const normalized = output.replace(/\r\n/g, "\n");
-    const markers = [
-      /done\.?[\s\S]*?here'?s what (?:i|we) (?:changed|did)[:\s]*([\s\S]+)/i,
-      /summary\s*:\s*([\s\S]+)/i
-    ];
-    for (const marker of markers) {
-      const m = normalized.match(marker);
-      if (!m?.[1]) continue;
-      const clean = m[1].split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 6).join(" ");
-      if (clean) return clean.length > 420 ? `${clean.slice(0, 419)}…` : clean;
-    }
-    const tail = normalized.split("\n").slice(-10).map((line) => line.trim()).filter(Boolean).join(" ");
-    if (!tail) return null;
-    return tail.length > 420 ? `${tail.slice(0, 419)}…` : tail;
-  };
 
   const ensureRelativeRepoPath = (relPath: string): string => {
     const normalized = relPath.trim().replace(/\\/g, "/");
@@ -1433,7 +854,7 @@ export function createConflictService({
 
   const predictLaneVsBase = async (lane: LaneSummary): Promise<void> => {
     const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-    const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+    const baseHead = await readHeadSha(projectRoot, compareBaseForLane(lane));
     if (reuseCurrentPrediction(lane.id, null, laneHead, baseHead)) return;
     const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
     const merge = await runGitMergeTree({
@@ -1575,7 +996,7 @@ export function createConflictService({
     await Promise.all(lanes.map(async (lane) => {
       const [headSha, baseSha] = await Promise.all([
         readHeadSha(lane.worktreePath, "HEAD").catch(() => null),
-        readHeadSha(projectRoot, lane.baseRef).catch(() => null),
+        readHeadSha(projectRoot, compareBaseForLane(lane)).catch(() => null),
       ]);
       currentHeadShaByLaneId.set(lane.id, headSha);
       currentBaseShaByLaneId.set(lane.id, baseSha);
@@ -1800,7 +1221,7 @@ export function createConflictService({
       }));
       overlaps.push({
         peerId: null,
-        peerName: `base (${lane.baseRef})`,
+        peerName: `base (${compareBaseForLane(lane)})`,
         files,
         riskLevel: riskFromPrediction(baseRow.status, overlapFiles.length, conflicting.length)
       });
@@ -1868,7 +1289,7 @@ export function createConflictService({
           }
           laneBHead = await readHeadSha(laneB.worktreePath, "HEAD");
         } else {
-          laneBHead = await readHeadSha(projectRoot, laneA.baseRef);
+          laneBHead = await readHeadSha(projectRoot, compareBaseForLane(laneA));
         }
 
         const mergeBase = await readMergeBase(projectRoot, laneAHead, laneBHead);
@@ -1932,7 +1353,7 @@ export function createConflictService({
   const readTouchedFilesSinceBase = async (lane: LaneSummary): Promise<Set<string>> => {
     try {
       const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-      const baseHead = await readHeadSha(projectRoot, lane.baseRef);
+      const baseHead = await readHeadSha(projectRoot, compareBaseForLane(lane));
       const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
       const touched = await readTouchedFiles(projectRoot, mergeBase, laneHead);
       return pruneTouchedFilesForHeuristic(touched);
@@ -2260,26 +1681,6 @@ export function createConflictService({
     );
   };
 
-  const getIntegrationProposalResolverRow = (proposalId: string): IntegrationProposalResolverRow | null => {
-    return db.get<IntegrationProposalResolverRow>(
-      `
-        select
-          id,
-          source_lane_ids_json,
-          base_branch,
-          steps_json,
-          pairwise_results_json,
-          resolution_state_json,
-          integration_lane_id
-        from integration_proposals
-        where id = ?
-          and project_id = ?
-        limit 1
-      `,
-      [proposalId, projectId]
-    );
-  };
-
   const listProposals = async (args: { laneId: string }): Promise<ConflictProposal[]> => {
     const rows = db.all<ConflictProposalRow>(
       `
@@ -2401,14 +1802,6 @@ export function createConflictService({
     const lane = lanes.find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
 
-    // CONF-022: stack-aware conflict resolution. If a lane is stacked, resolve parent conflicts first.
-    if (lane.parentLaneId) {
-      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
-      if (parentStatus && parentStatus.status !== "merge-ready") {
-        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
-      }
-    }
-
     const warnings: string[] = [];
     if (!subscriptionAvailable) {
       warnings.push("Subscription AI is unavailable; proposal preview is prepared for manual/external resolution.");
@@ -2497,8 +1890,7 @@ export function createConflictService({
         }
       }
 
-      const parentLane = lane.parentLaneId ? lanes.find((entry) => entry.id === lane.parentLaneId) ?? null : null;
-      const baseRef = parentLane?.branchRef ?? lane.baseRef;
+      const baseRef = compareBaseForLane(lane);
       return { kind: "base-ref", baseRef, laneHeadSha };
     })();
 
@@ -2685,7 +2077,7 @@ export function createConflictService({
     });
     const targetIntent = await buildBranchIntent({
       cwd: laneGit.worktreePath,
-      laneId: peerLane?.id ?? lane.parentLaneId ?? lane.baseRef,
+      laneId: peerLane?.id ?? lane.baseRef,
       laneName: peerLane?.name ?? lane.baseRef,
       branchRef: peerLane?.branchRef ?? lane.baseRef,
       role: "target",
@@ -2818,14 +2210,6 @@ export function createConflictService({
     const lanes = await listActiveLanes();
     const lane = lanes.find((entry) => entry.id === laneId);
     if (!lane) throw new Error(`Lane not found: ${laneId}`);
-
-    // Stack-aware check again: lane stacks can change between preview and request.
-    if (lane.parentLaneId) {
-      const parentStatus = await getLaneStatus({ laneId: lane.parentLaneId }).catch(() => null);
-      if (parentStatus && parentStatus.status !== "merge-ready") {
-        throw new Error(`Stack-aware resolution: resolve parent lane conflicts first (parent status: ${parentStatus.status}).`);
-      }
-    }
 
     const existingId = findExistingProposalIdForDigest({ laneId, peerLaneId, contextDigest });
     if (existingId) {
@@ -3061,770 +2445,6 @@ export function createConflictService({
     return rowToProposal(row);
   };
 
-  const ensureIntegrationLane = async (args: {
-    targetLaneId: string;
-    integrationLaneName?: string;
-  }): Promise<LaneSummary> => {
-    const name = (args.integrationLaneName ?? "Integration lane").trim() || "Integration lane";
-    const lanes = await laneService.list({ includeArchived: false });
-    const existing = lanes.find((lane) => !lane.archivedAt && lane.name === name);
-    if (existing) return existing;
-    return await laneService.create({
-      name,
-      description: `Auto-created integration lane for conflict resolution into ${args.targetLaneId}.`,
-      parentLaneId: args.targetLaneId
-    });
-  };
-
-  const buildProposalResolverContexts = async (args: {
-    proposalId: string;
-    sourceLaneIds: string[];
-    requestedCwdLaneId: string;
-    lanesById: Map<string, LaneSummary>;
-  }): Promise<{
-    contexts: ResolverSessionContext[];
-    contextGaps: ConflictExternalResolverContextGap[];
-    integrationLane: LaneSummary | null;
-    sourceLaneIds: string[];
-  }> => {
-    const row = getIntegrationProposalResolverRow(args.proposalId);
-    if (!row) throw new Error(`Integration proposal not found: ${args.proposalId}`);
-
-    const storedSourceLaneIds = uniqueSorted(safeJsonArray<string>(row.source_lane_ids_json ?? null));
-    const requestedSourceLaneIds = args.sourceLaneIds.length > 0 ? args.sourceLaneIds : storedSourceLaneIds;
-    const sourceLaneIds = uniqueSorted(
-      requestedSourceLaneIds.filter((laneId) => storedSourceLaneIds.includes(laneId))
-    );
-    const pairwiseResults = safeJsonArray<IntegrationPairwiseResult>(row.pairwise_results_json ?? null);
-    const steps = safeJsonArray<IntegrationProposalStep>(row.steps_json ?? null);
-    const resolutionState = safeJsonParse(row.resolution_state_json ?? null, null) as IntegrationResolutionState | null;
-    const stepByLaneId = new Map(steps.map((step) => [step.laneId, step] as const));
-    const integrationLaneId = args.requestedCwdLaneId || (row.integration_lane_id?.trim() ?? "");
-    const integrationLane = integrationLaneId ? (args.lanesById.get(integrationLaneId) ?? null) : null;
-
-    let integrationLaneStatus: Record<string, unknown> | null = null;
-    if (integrationLane) {
-      const status = await runGit(["status", "--porcelain"], {
-        cwd: integrationLane.worktreePath,
-        timeoutMs: 10_000
-      });
-      integrationLaneStatus = {
-        exitCode: status.exitCode,
-        porcelain: status.stdout,
-        stderr: status.stderr.trim() || null
-      };
-    }
-
-    const relevantPairs = pairwiseResults.filter((pair) =>
-      sourceLaneIds.includes(pair.laneAId) && sourceLaneIds.includes(pair.laneBId)
-    );
-    const contextGaps: ConflictExternalResolverContextGap[] = [];
-    if (integrationLaneId && !integrationLane) {
-      contextGaps.push({
-        code: "insufficient_context",
-        message: `proposal ${args.proposalId}: integration lane not found (${integrationLaneId})`
-      });
-    }
-    if (sourceLaneIds.length > 1 && relevantPairs.length === 0) {
-      contextGaps.push({
-        code: "insufficient_context",
-        message: `proposal ${args.proposalId}: missing pairwise integration conflict context`
-      });
-    }
-
-    const laneDetails = new Map<string, {
-      touchedFiles: string[];
-      intent: ConflictBranchIntentV1 | null;
-    }>();
-    await Promise.all(
-      sourceLaneIds.map(async (laneId) => {
-        const lane = args.lanesById.get(laneId) ?? null;
-        if (!lane) {
-          laneDetails.set(laneId, { touchedFiles: [], intent: null });
-          return;
-        }
-        const headRef = await readHeadSha(lane.worktreePath, lane.branchRef || "HEAD").catch(() => lane.branchRef || "HEAD");
-        const mergeBaseRef = await readMergeBase(projectRoot, row.base_branch, headRef).catch(() => row.base_branch);
-        const touchedFiles = mergeBaseRef && headRef
-          ? Array.from(await readTouchedFiles(projectRoot, mergeBaseRef, headRef)).sort((a, b) => a.localeCompare(b))
-          : [];
-        laneDetails.set(laneId, {
-          touchedFiles,
-          intent: await buildBranchIntent({
-            cwd: projectRoot,
-            laneId,
-            laneName: lane.name,
-            branchRef: lane.branchRef,
-            role: "source",
-            headRef,
-            mergeBaseRef,
-          }),
-        });
-      })
-    );
-    const targetIntent = integrationLane
-      ? await buildBranchIntent({
-          cwd: projectRoot,
-          laneId: integrationLane.id,
-          laneName: integrationLane.name,
-          branchRef: integrationLane.branchRef,
-          role: "target",
-          headRef: integrationLane.branchRef,
-          mergeBaseRef: row.base_branch,
-        })
-      : null;
-    const mergeTimeline = steps
-      .map((step) => ({
-        laneId: step.laneId,
-        laneName: step.laneName,
-        position: step.position,
-        outcome: step.outcome,
-        resolution: resolutionState?.stepResolutions?.[step.laneId] ?? null,
-        touchedFiles: laneDetails.get(step.laneId)?.touchedFiles ?? [],
-      }))
-      .sort((a, b) => a.position - b.position);
-
-    const contexts = relevantPairs.map<ResolverSessionContext>((pair) => {
-      const files = pair.conflictingFiles.map((file) => ({
-        path: file.path,
-        includeReason: "conflicted" as const,
-        conflictType: file.conflictType ?? null,
-        markerPreview: file.conflictMarkers || null,
-        laneDiff: file.oursExcerpt ?? file.diffHunk ?? "",
-        peerDiff: file.theirsExcerpt ?? null
-      }));
-      const fileContexts: ConflictFileContextV1[] = pair.conflictingFiles.map((file) => ({
-        path: file.path,
-        selectedBecause: "pairwise_conflict_file",
-        conflictType: file.conflictType ?? null,
-        hunks: [
-          ...parseHunksFromDiff(file.diffHunk ?? "", "base_left"),
-          ...parseHunksFromDiff(file.diffHunk ?? "", "base_right"),
-        ],
-        base: null,
-        left: makeContextSide({
-          side: "left",
-          ref: pair.laneAId,
-          blobSha: null,
-          excerpt: file.oursExcerpt ?? file.diffHunk ?? "",
-          fallbackReason: "omitted:pairwise_left_excerpt_unavailable",
-        }),
-        right: makeContextSide({
-          side: "right",
-          ref: pair.laneBId,
-          blobSha: null,
-          excerpt: file.theirsExcerpt ?? "",
-          fallbackReason: "omitted:pairwise_right_excerpt_unavailable",
-        }),
-        markerPreview: file.conflictMarkers || null,
-      }));
-      const conflictJobContext: ConflictJobContextV1 = {
-        schema: "ade.conflictJobContext.v1",
-        relevantFilesForConflict: files.map((file) => ({
-          path: file.path,
-          includeReason: file.includeReason,
-          selectedBecause: "pairwise_conflict_file",
-          conflictType: file.conflictType ?? null,
-        })),
-        fileContexts,
-        relationship: "peer-vs-peer",
-        intent: {
-          source: laneDetails.get(pair.laneAId)?.intent ?? {
-            laneId: pair.laneAId,
-            laneName: pair.laneAName,
-            branchRef: args.lanesById.get(pair.laneAId)?.branchRef ?? null,
-            role: "source",
-            mergeBaseRef: row.base_branch,
-            commitMessages: [],
-          },
-          peer: laneDetails.get(pair.laneBId)?.intent
-            ? { ...laneDetails.get(pair.laneBId)!.intent!, role: "peer" }
-            : {
-                laneId: pair.laneBId,
-                laneName: pair.laneBName,
-                branchRef: args.lanesById.get(pair.laneBId)?.branchRef ?? null,
-                role: "peer",
-                mergeBaseRef: row.base_branch,
-                commitMessages: [],
-              },
-          ...(targetIntent ? { target: targetIntent } : {}),
-        },
-        mergeTimeline,
-      };
-      const conflictContext = redactSecretsDeep({
-        proposalId: args.proposalId,
-        baseBranch: row.base_branch,
-        pairwiseOutcome: pair.outcome,
-        pairwiseResult: pair,
-        stepA: stepByLaneId.get(pair.laneAId) ?? null,
-        stepB: stepByLaneId.get(pair.laneBId) ?? null,
-        resolutionState,
-        integrationLaneId: integrationLane?.id ?? row.integration_lane_id ?? null,
-        integrationLaneStatus,
-        relevantFilesForConflict: conflictJobContext.relevantFilesForConflict,
-        fileContexts: conflictJobContext.fileContexts,
-        relationship: conflictJobContext.relationship,
-        intent: conflictJobContext.intent,
-        mergeTimeline: conflictJobContext.mergeTimeline,
-        conflictContext: conflictJobContext,
-      }) as Record<string, unknown>;
-      const preparedAt = new Date().toISOString();
-      const contextDigest = sha256(JSON.stringify(conflictContext));
-      return {
-        laneId: pair.laneAId,
-        peerLaneId: pair.laneBId,
-        preview: {
-          laneId: pair.laneAId,
-          peerLaneId: pair.laneBId,
-          provider: "subscription",
-          preparedAt,
-          contextDigest,
-          activeConflict: {
-            laneId: integrationLane?.id ?? pair.laneAId,
-            kind: "merge",
-            inProgress: Boolean(integrationLaneStatus),
-            conflictedFiles: pair.conflictingFiles.map((file) => file.path),
-            canContinue: false,
-            canAbort: false
-          },
-          laneExportLite: null,
-          peerLaneExportLite: null,
-          conflictExportStandard: JSON.stringify({
-            proposalId: args.proposalId,
-            baseBranch: row.base_branch,
-            pairwiseOutcome: pair.outcome
-          }),
-          files,
-          stats: {
-            approxChars: JSON.stringify(conflictContext).length,
-            laneExportChars: 0,
-            peerLaneExportChars: 0,
-            conflictExportChars: JSON.stringify(pair).length,
-            fileCount: files.length
-          },
-          warnings: [],
-          existingProposalId: row.id
-        },
-        conflictContext
-      };
-    });
-
-    return {
-      contexts,
-      contextGaps,
-      integrationLane,
-      sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : storedSourceLaneIds
-    };
-  };
-
-  type PromptBuilderArgs = {
-    targetLaneId: string;
-    sourceLaneIds: string[];
-    contexts: Array<{
-      laneId: string;
-      peerLaneId: string | null;
-      preview: ConflictProposalPreview;
-      conflictContext: Record<string, unknown> | null;
-    }>;
-    contextRefs: ExternalResolverContextRef[];
-    cwdLaneId: string;
-    integrationLaneId: string | null;
-    scenario?: ResolverSessionScenario;
-  };
-
-  const buildContextRefsBlock = (contextRefs: ExternalResolverContextRef[]): string[] => {
-    const lines: string[] = [];
-    lines.push("## ADE Context Files");
-    for (const ref of contextRefs) {
-      const tags: string[] = [ref.required ? "required" : "optional", ref.exists ? "present" : "missing"];
-      const laneInfo = ref.laneId ? ` lane=${ref.laneId}` : "";
-      const peerInfo = ref.peerLaneId ? ` peer=${ref.peerLaneId}` : "";
-      lines.push(`- ${ref.kind}${laneInfo}${peerInfo} [${tags.join(", ")}]`);
-      lines.push(`  - path: ${ref.absPath}`);
-      lines.push(`  - repo: ${ref.repoRelativePath}`);
-    }
-    lines.push("");
-    return lines;
-  };
-
-  const buildGuardrailsBlock = (): string[] => {
-    const lines: string[] = [];
-    lines.push("## Guardrails (Non-Negotiable)");
-    lines.push("- Do not modify non-relevant files.");
-    lines.push("- Do not run: git add, git commit, git push, git rebase, git merge, git cherry-pick, git reset.");
-    lines.push("- Keep conflict-resolution work sequential; do not spawn parallel editing agents.");
-    lines.push("- Respect staleness markers and insufficient-context signals.");
-    lines.push("- If context is insufficient, do not fabricate changes.");
-    lines.push("- If blocked, print `INSUFFICIENT_CONTEXT` followed by a concrete gap list.");
-    lines.push("- Modify/delete or rename/delete conflicts default to the target-side deletion unless the source change is clearly essential; explain any exception.");
-    lines.push("- Add/add conflicts should preserve intent from both sides when possible; if not, choose the safer merge and explain the tradeoff.");
-    lines.push("");
-    return lines;
-  };
-
-  const buildPairContextBlock = (contexts: PromptBuilderArgs["contexts"]): string[] => {
-    const lines: string[] = [];
-    lines.push("## Pair Context (Structured)");
-    for (const ctx of contexts) {
-      const jobContext = extractConflictJobContext(ctx.conflictContext);
-      const sourceIntent = formatIntentSummary(jobContext?.intent, "source");
-      const peerIntent = formatIntentSummary(jobContext?.intent, "peer");
-      const targetIntent = formatIntentSummary(jobContext?.intent, "target");
-      const pairPositions = (jobContext?.mergeTimeline ?? [])
-        .filter((step) => step.laneId === ctx.laneId || step.laneId === (ctx.peerLaneId ?? ""))
-        .map((step) => step.position);
-      const currentPairPosition = pairPositions.length > 0 ? Math.max(...pairPositions) : null;
-      const priorSteps = currentPairPosition == null
-        ? []
-        : (jobContext?.mergeTimeline ?? []).filter((step) => step.position < currentPairPosition);
-      lines.push(`### Pair ${ctx.laneId} -> ${ctx.peerLaneId ?? "base"}`);
-      lines.push(`- Prepared at: ${ctx.preview.preparedAt}`);
-      lines.push(`- Context digest: ${ctx.preview.contextDigest}`);
-      lines.push(`- Existing proposal: ${ctx.preview.existingProposalId ?? "none"}`);
-      lines.push(`- Relationship: ${jobContext?.relationship ?? "source-vs-target"}`);
-      lines.push(`- Preview warnings: ${ctx.preview.warnings.join(" | ") || "none"}`);
-      lines.push(`- Relevant files count: ${ctx.preview.files.length}`);
-      lines.push(`- Relevant files: ${ctx.preview.files.map((file) => `${file.path} (${file.includeReason}${file.conflictType ? `, ${file.conflictType}` : ""})`).join(" | ") || "none"}`);
-      if (sourceIntent) lines.push(`- Source intent: ${sourceIntent}`);
-      if (peerIntent) lines.push(`- Peer intent: ${peerIntent}`);
-      if (targetIntent) lines.push(`- Target intent: ${targetIntent}`);
-      if (priorSteps.length > 0) {
-        lines.push(`- Prior integration steps: ${priorSteps.map((step) => `${step.position}:${step.laneName}:${step.outcome}:${step.touchedFiles.join(",") || "no-files-captured"}`).join(" | ")}`);
-      }
-      if (jobContext?.insufficientContext) {
-        lines.push(`- Context gaps: ${(jobContext.insufficientReasons ?? []).join(" | ") || "unspecified"}`);
-      }
-      lines.push("");
-    }
-    return lines;
-  };
-
-  const buildOutputContractBlock = (): string[] => {
-    const lines: string[] = [];
-    lines.push("## Output Contract");
-    lines.push("Done. Here's what changed:");
-    lines.push("- file: <repo-path>");
-    lines.push("- rationale: <one sentence>");
-    lines.push("- unresolved: <none|short note>");
-    lines.push("");
-    lines.push("If blocked:");
-    lines.push("INSUFFICIENT_CONTEXT");
-    lines.push("- gap: <missing artifact, file, or decision>");
-    lines.push("- requested_action: <what user should provide>");
-    lines.push("");
-    return lines;
-  };
-
-  const buildSingleMergePrompt = (args: PromptBuilderArgs): string => {
-    const lines: string[] = [];
-    lines.push("# ADE External Conflict Resolver");
-    lines.push("");
-    lines.push("## Objective");
-    lines.push("- Resolve merge conflicts using generated ADE context files first, then code/docs as needed.");
-    lines.push("- Apply edits in the execution lane worktree only.");
-    lines.push("- Do not commit, push, or stage changes.");
-    lines.push("");
-    lines.push("## Run Metadata");
-    lines.push(`- Scenario: single-merge`);
-    lines.push(`- Target lane: ${args.targetLaneId}`);
-    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
-    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
-    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
-    lines.push("");
-    lines.push("## Required Read Order");
-    lines.push("1) Read all required generated ADE context files listed below.");
-    lines.push("2) Read additional repository files only when needed to resolve conflicts safely.");
-    lines.push("");
-    lines.push(...buildContextRefsBlock(args.contextRefs));
-    lines.push(...buildGuardrailsBlock());
-    lines.push("## Strategy");
-    lines.push("- Merge the single source lane into the target lane.");
-    lines.push("- Resolve each conflicting file using the generated context files to determine correct resolution.");
-    lines.push("- Verify that no unrelated files are modified.");
-    lines.push("");
-    lines.push(...buildPairContextBlock(args.contexts));
-    lines.push(...buildOutputContractBlock());
-    return `${lines.join("\n").trim()}\n`;
-  };
-
-  const buildSequentialMergePrompt = (args: PromptBuilderArgs): string => {
-    const lines: string[] = [];
-    lines.push("# ADE External Conflict Resolver");
-    lines.push("");
-    lines.push("## Objective");
-    lines.push("- Resolve merge conflicts across multiple source lanes sequentially.");
-    lines.push("- Apply edits in the execution lane worktree only.");
-    lines.push("- Do not commit, push, or stage changes.");
-    lines.push("");
-    lines.push("## Run Metadata");
-    lines.push(`- Scenario: sequential-merge`);
-    lines.push(`- Target lane: ${args.targetLaneId}`);
-    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
-    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
-    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
-    lines.push("");
-    lines.push("## Required Read Order");
-    lines.push("1) Read all required generated ADE context files listed below.");
-    lines.push("2) Read additional repository files only when needed to resolve conflicts safely.");
-    lines.push("");
-    lines.push(...buildContextRefsBlock(args.contextRefs));
-    lines.push(...buildGuardrailsBlock());
-    lines.push("## Strategy");
-    lines.push("- Process source lanes in order: " + args.sourceLaneIds.join(" -> ") + ".");
-    lines.push("- For each source lane, resolve conflicts against the current worktree state.");
-    lines.push("- After resolving each source, verify the worktree is clean before proceeding to the next.");
-    lines.push("- Accumulate changes; do not revert between sources.");
-    lines.push("");
-    lines.push(...buildPairContextBlock(args.contexts));
-    lines.push(...buildOutputContractBlock());
-    return `${lines.join("\n").trim()}\n`;
-  };
-
-  const buildIntegrationMergePrompt = (args: PromptBuilderArgs): string => {
-    const lines: string[] = [];
-    lines.push("# ADE External Conflict Resolver");
-    lines.push("");
-    lines.push("## Objective");
-    lines.push("- Resolve merge conflicts by integrating multiple source lanes into a dedicated integration lane.");
-    lines.push("- Apply edits in the integration lane worktree only.");
-    lines.push("- Do not commit, push, or stage changes.");
-    lines.push("");
-    lines.push("## Run Metadata");
-    lines.push(`- Scenario: integration-merge`);
-    lines.push(`- Target lane: ${args.targetLaneId}`);
-    lines.push(`- Source lanes: ${args.sourceLaneIds.join(", ")}`);
-    lines.push(`- Execution lane (cwd): ${args.cwdLaneId}`);
-    lines.push(`- Integration lane: ${args.integrationLaneId ?? "(not used)"}`);
-    lines.push("");
-    lines.push("## Required Read Order");
-    lines.push("1) Read all required generated ADE context files listed below.");
-    lines.push("2) Read additional repository files only when needed to resolve conflicts safely.");
-    lines.push("");
-    lines.push(...buildContextRefsBlock(args.contextRefs));
-    lines.push(...buildGuardrailsBlock());
-    lines.push("## Strategy");
-    lines.push("- The integration lane aggregates changes from all source lanes.");
-    lines.push("- Treat source-vs-source conflicts as peer conflicts with equal authority; preserve intent from both lanes.");
-    lines.push("- Resolve all conflicts holistically, considering interactions between source lanes and any earlier steps already merged.");
-    lines.push("- Ensure the integration lane cleanly merges all source contributions.");
-    lines.push("- Pay special attention to files modified by multiple source lanes.");
-    lines.push("");
-    lines.push(...buildPairContextBlock(args.contexts));
-    lines.push(...buildOutputContractBlock());
-    return `${lines.join("\n").trim()}\n`;
-  };
-
-  const buildExternalResolverPrompt = (args: PromptBuilderArgs): string => {
-    const scenario: ResolverSessionScenario = args.scenario
-      ?? (args.sourceLaneIds.length === 1
-        ? "single-merge"
-        : args.integrationLaneId
-          ? "integration-merge"
-          : "sequential-merge");
-
-    switch (scenario) {
-      case "single-merge":
-        return buildSingleMergePrompt(args);
-      case "sequential-merge":
-        return buildSequentialMergePrompt(args);
-      case "integration-merge":
-        return buildIntegrationMergePrompt(args);
-      default:
-        return buildSingleMergePrompt(args);
-    }
-  };
-
-  type InternalRunExternalConflictResolverArgs = RunExternalConflictResolverArgs & {
-    laneWorktreeLockToken?: string | null;
-  };
-
-  const runExternalResolver = async (args: RunExternalConflictResolverArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const internalArgs = args as InternalRunExternalConflictResolverArgs;
-    const targetLaneId = args.targetLaneId.trim();
-    const sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
-    if (!targetLaneId) throw new Error("targetLaneId is required");
-    if (!sourceLaneIds.length) throw new Error("sourceLaneIds is required");
-
-    const lanes = await listActiveLanes();
-    const laneByIdMap = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const targetLane = laneByIdMap.get(targetLaneId);
-    if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
-
-    const integrationLane = sourceLaneIds.length > 1
-      ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
-      : null;
-    if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
-    const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
-    const cwdLaneId = requestedCwdLaneId.length > 0
-      ? requestedCwdLaneId
-      : (sourceLaneIds.length === 1 ? sourceLaneIds[0]! : integrationLane!.id);
-    const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
-    if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
-
-    const sharedLockToken = internalArgs.laneWorktreeLockToken?.trim() || null;
-    let ownedLockToken: string | null = null;
-    if (laneWorktreeLockService) {
-      if (sharedLockToken) {
-        const lock = laneWorktreeLockService.heartbeat(sharedLockToken);
-        if (!lock) {
-          throw new Error("Lane worktree lock expired before launching conflict resolution.");
-        }
-      } else {
-        const acquired = laneWorktreeLockService.acquire({
-          laneId: cwdLane.id,
-          worktreePath: cwdLane.worktreePath,
-          ownerKind: "conflict_resolution",
-          ownerProposalId: args.originRunId ?? `${targetLaneId}:${sourceLaneIds.join(",")}`,
-          ownerLabel: args.originLabel?.trim() || `Conflict resolution on lane ${cwdLane.name}`,
-        });
-        ownedLockToken = acquired.token;
-      }
-    }
-
-    try {
-    const scenario: ResolverSessionScenario = sourceLaneIds.length > 1 ? "integration-merge" : "single-merge";
-    const prepared = await prepareResolverSession({
-      provider: args.provider,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneName: args.integrationLaneName,
-      scenario,
-      model: args.model ?? null,
-      reasoningEffort: args.reasoningEffort ?? null,
-      permissionMode: args.permissionMode ?? null,
-      originSurface: args.originSurface ?? "manual",
-      originRunId: args.originRunId ?? null,
-      originLabel: args.originLabel ?? null,
-    });
-    const runId = prepared.runId;
-    const runDir = path.join(externalRunsRootDir, runId);
-    const existingRun = readExternalRunRecord(runId);
-    if (!existingRun) {
-      throw new Error(`Resolver session state missing for ${runId}`);
-    }
-    if (prepared.status === "blocked") {
-      return toRunSummary(existingRun);
-    }
-    const promptPath = prepared.promptFilePath;
-    const missingRequiredContexts = existingRun.warnings
-      .filter((warning) => warning.startsWith("missing_context:"))
-      .map((warning) => warning.slice("missing_context:".length));
-
-    const commandTemplate = resolveExternalResolverCommand(args.provider);
-    if (!commandTemplate.length) {
-      const missing: ExternalResolverRunRecord = {
-        ...existingRun,
-        status: "failed",
-        completedAt: new Date().toISOString(),
-        warnings: [
-          ...existingRun.warnings,
-          "resolver_command_missing_in_config",
-          ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
-        ],
-        error: "No external resolver command configured for provider."
-      };
-      writeExternalRunRecord(missing);
-      return toRunSummary(missing);
-    }
-
-    const renderedCommand = commandTemplate.map((token) =>
-      token
-        .replace(/\{\{promptFile\}\}/g, promptPath)
-        .replace(/\{\{projectRoot\}\}/g, projectRoot)
-        .replace(/\{\{targetLaneId\}\}/g, targetLaneId)
-        .replace(/\{\{sourceLaneIds\}\}/g, sourceLaneIds.join(","))
-        .replace(/\{\{runDir\}\}/g, runDir)
-    );
-
-    const configuredBin = renderedCommand[0];
-    if (!configuredBin) {
-      throw new Error("Invalid external resolver command template");
-    }
-    // ADE's suggested templates name `codex`/`claude` bare; those run ADE's
-    // pinned copy (downloaded first if needed), never a PATH CLI. Any other
-    // command is the user's own choice and runs as written.
-    const pinnedProvider = configuredBin === "codex" ? "codex" : configuredBin === "claude" ? "claude" : null;
-    const bin = pinnedProvider === "codex"
-      ? (await requirePinnedProviderExecutable("codex", () => resolveCodexExecutable())).path
-      : pinnedProvider === "claude"
-        ? (await requirePinnedProviderExecutable("claude", () => resolveClaudeCodeExecutable())).path
-        : configuredBin;
-    const resolverEnv = pinnedProvider ? { ...process.env, ...providerSelfUpdateEnv(pinnedProvider) } : process.env;
-
-    writeExternalRunRecord({
-      ...existingRun,
-      command: renderedCommand
-    });
-
-    const proc = await new Promise<{ stdout: string; stderr: string; status: number | null; signal: NodeJS.Signals | null; timedOut: boolean }>((resolve) => {
-      const invocation = resolveCliSpawnInvocation(bin, renderedCommand.slice(1), resolverEnv);
-      const child = spawn(invocation.command, invocation.args, {
-        cwd: cwdLane.worktreePath,
-        env: resolverEnv,
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: process.platform !== "win32",
-        windowsHide: true,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      });
-      let stdout = "";
-      let stderr = "";
-      let timedOut = false;
-      let forceKillTimer: NodeJS.Timeout | null = null;
-      const timeoutTimer = setTimeout(() => {
-        timedOut = true;
-        terminateExternalResolverProcessTree(child, "SIGTERM");
-        forceKillTimer = setTimeout(() => {
-          terminateExternalResolverProcessTree(child, "SIGKILL");
-        }, 2_000);
-      }, EXTERNAL_RESOLVER_TIMEOUT_MS);
-      const cleanupTimers = () => {
-        clearTimeout(timeoutTimer);
-        if (forceKillTimer) clearTimeout(forceKillTimer);
-      };
-      child.stdout?.on("data", (chunk: Buffer) => {
-        if (stdout.length < 8 * 1024 * 1024) stdout += chunk.toString("utf8");
-      });
-      child.stderr?.on("data", (chunk: Buffer) => {
-        if (stderr.length < 8 * 1024 * 1024) stderr += chunk.toString("utf8");
-      });
-      child.on("error", () => {
-        cleanupTimers();
-        resolve({ stdout, stderr, status: 1, signal: null, timedOut });
-      });
-      child.on("close", (code, signal) => {
-        cleanupTimers();
-        resolve({ stdout, stderr, status: code, signal, timedOut });
-      });
-    });
-
-    const stdout = proc.stdout ?? "";
-    const stderr = proc.stderr ?? "";
-    const outputLogPath = path.join(runDir, "output.log");
-    await fs.promises.writeFile(outputLogPath, `${stdout}\n\n--- STDERR ---\n${stderr}\n`, "utf8");
-
-    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
-      cwd: cwdLane.worktreePath,
-      timeoutMs: 45_000,
-      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
-    });
-    const patchPath = path.join(runDir, "changes.patch");
-    let finalPatchPath: string | null = null;
-    if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
-      await fs.promises.writeFile(patchPath, diffResult.stdout, "utf8");
-      finalPatchPath = patchPath;
-    }
-
-    const status: ConflictExternalResolverRunStatus = proc.status === 0 && !proc.timedOut ? "completed" : "failed";
-    const runRecord: ExternalResolverRunRecord = {
-      ...existingRun,
-      status,
-      completedAt: new Date().toISOString(),
-      command: renderedCommand,
-      changedFiles: finalPatchPath ? extractPathsFromUnifiedDiff(diffResult.stdout) : [],
-      summary: extractResolverSummary(stdout),
-      patchPath: finalPatchPath,
-      logPath: outputLogPath,
-      warnings: [
-        ...existingRun.warnings,
-        ...(proc.timedOut ? ["resolver_timeout_process_tree_terminated"] : []),
-        ...(proc.signal ? [`process_signal:${proc.signal}`] : []),
-        ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
-        ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : []),
-        ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
-      ],
-      error: status === "completed"
-        ? null
-        : proc.timedOut
-          ? `External resolver timed out after ${EXTERNAL_RESOLVER_TIMEOUT_MS}ms.`
-          : (stderr.trim() || `Exit code ${proc.status ?? -1}`)
-    };
-    writeExternalRunRecord(runRecord);
-    return toRunSummary(runRecord);
-    } finally {
-      if (ownedLockToken && laneWorktreeLockService) {
-        laneWorktreeLockService.release({ token: ownedLockToken });
-      }
-    }
-  };
-
-  const listExternalResolverRuns = (args: ListExternalConflictResolverRunsArgs = {}): ConflictExternalResolverRunSummary[] => {
-    const laneId = typeof args.laneId === "string" ? args.laneId.trim() : "";
-    const limit = Number.isFinite(Number(args.limit)) ? Math.max(1, Number(args.limit)) : 20;
-    const records = listExternalRunRecords().filter((run) =>
-      laneId
-        ? run.targetLaneId === laneId || run.cwdLaneId === laneId || run.sourceLaneIds.includes(laneId)
-        : true
-    );
-    return records.slice(0, limit).map(toRunSummary);
-  };
-
-  const commitExternalResolverRun = async (
-    args: CommitExternalConflictResolverRunArgs
-  ): Promise<CommitExternalConflictResolverRunResult> => {
-    const runId = args.runId.trim();
-    if (!runId) throw new Error("runId is required");
-    const run = readExternalRunRecord(runId);
-    if (!run) throw new Error(`External resolver run not found: ${runId}`);
-    if (run.status !== "completed") throw new Error("Only completed resolver runs can be committed.");
-    if (!run.patchPath || !fs.existsSync(run.patchPath)) {
-      throw new Error("Resolver run has no patch artifact to commit.");
-    }
-    if (run.commitSha && run.committedAt) {
-      throw new Error(`Resolver run already committed at ${run.committedAt}.`);
-    }
-
-    const laneId = run.cwdLaneId;
-    const lane = laneService.getLaneBaseAndBranch(laneId);
-    const lockToken = laneWorktreeLockService
-      ? laneWorktreeLockService.acquire({
-          laneId,
-          worktreePath: lane.worktreePath,
-          ownerKind: "conflict_resolution",
-          ownerProposalId: runId,
-          ownerLabel: `Commit conflict resolver run ${runId.slice(0, 8)} on lane ${laneId}`,
-        }).token
-      : null;
-    try {
-    const patchBody = fs.readFileSync(run.patchPath, "utf8");
-    const touchedPaths = extractCommitPathsFromUnifiedDiff(patchBody);
-    if (!touchedPaths.length) throw new Error("Resolver patch has no changed paths.");
-    const normalizedPaths = touchedPaths.map((entry) => ensureRelativeRepoPath(entry));
-    const commitMessage = args.message?.trim() || `Resolve conflicts via ADE ${run.provider} external resolver`;
-
-    await runGitOrThrow(["add", "--", ...normalizedPaths], { cwd: lane.worktreePath, timeoutMs: 60_000 });
-    const commitRes = await runGit(
-      ["commit", "-m", commitMessage, "--", ...normalizedPaths],
-      { cwd: lane.worktreePath, timeoutMs: 90_000 }
-    );
-    if (commitRes.exitCode !== 0) {
-      const reason = commitRes.stderr.trim() || commitRes.stdout.trim() || "Failed to create commit.";
-      throw new Error(reason);
-    }
-
-    const commitSha = await readHeadSha(lane.worktreePath);
-    const committedAt = new Date().toISOString();
-    writeExternalRunRecord({
-      ...run,
-      committedAt,
-      commitSha,
-      commitMessage
-    });
-
-    return {
-      runId,
-      laneId,
-      commitSha,
-      message: commitMessage,
-      committedPaths: normalizedPaths
-    };
-    } finally {
-      if (lockToken && laneWorktreeLockService) {
-        laneWorktreeLockService.release({ token: lockToken });
-      }
-    }
-  };
-
   const applyProposal = async (args: ApplyConflictProposalArgs): Promise<ConflictProposal> => {
     const row = getProposalRow(args.proposalId);
     if (!row || row.lane_id !== args.laneId) {
@@ -4029,625 +2649,196 @@ export function createConflictService({
     return rowToProposal(updated);
   };
 
-  const prepareResolverSession = async (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> => {
-    const targetLaneId = args.targetLaneId.trim();
-    let sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
-    if (!targetLaneId) throw new Error("targetLaneId is required");
-    if (!sourceLaneIds.length) throw new Error("sourceLaneIds is required");
-
-    const lanes = await listActiveLanes();
-    const laneByIdMap = new Map(lanes.map((lane) => [lane.id, lane] as const));
-    const targetLane = laneByIdMap.get(targetLaneId);
-    if (!targetLane) throw new Error(`Target lane not found: ${targetLaneId}`);
-
-    const scenario: ResolverSessionScenario = args.scenario
-      ?? (sourceLaneIds.length === 1
-        ? "single-merge"
-        : args.integrationLaneName
-          ? "integration-merge"
-          : "sequential-merge");
-    const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
-    const useProposalContext = args.originSurface === "integration" && typeof args.proposalId === "string" && args.proposalId.trim().length > 0;
-    const proposalContext = useProposalContext
-      ? await buildProposalResolverContexts({
-          proposalId: args.proposalId!.trim(),
-          sourceLaneIds,
-          requestedCwdLaneId,
-          lanesById: laneByIdMap
-        })
-      : null;
-    if (proposalContext) {
-      sourceLaneIds = proposalContext.sourceLaneIds;
-    }
-
-    const integrationLane = proposalContext?.integrationLane ?? (
-      scenario === "integration-merge" && (!requestedCwdLaneId || !laneByIdMap.has(requestedCwdLaneId))
-        ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
-        : null
-    );
-    if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
-    const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
-    let cwdLaneId = defaultCwdLaneId;
-
-    if (requestedCwdLaneId && laneByIdMap.has(requestedCwdLaneId)) {
-      cwdLaneId = requestedCwdLaneId;
-    } else if (sourceLaneIds.length > 1 && integrationLane?.id) {
-      cwdLaneId = integrationLane.id;
-    } else if (
-      requestedCwdLaneId &&
-      (requestedCwdLaneId === targetLaneId || sourceLaneIds.includes(requestedCwdLaneId))
-    ) {
-      cwdLaneId = requestedCwdLaneId;
-    }
-
-    const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
-    if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
-
-    const contexts: ResolverSessionContext[] = proposalContext?.contexts ?? [];
-    const contextGaps: ConflictExternalResolverContextGap[] = [...(proposalContext?.contextGaps ?? [])];
-    if (!proposalContext) {
-      for (const sourceLaneId of sourceLaneIds) {
-        const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
-        const prepared = preparedContexts.get(preview.contextDigest);
-        const conflictContext = prepared?.conflictContext ?? null;
-        const cc =
-          isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
-            ? conflictContext.conflictContext
-            : conflictContext;
-        const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
-        if (insufficient) {
-          const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
-          if (!reasons.length) {
-            contextGaps.push({
-              code: "insufficient_context",
-              message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
-            });
-          } else {
-            for (const reason of reasons) {
-              contextGaps.push({
-                code: "insufficient_context",
-                message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
-              });
-            }
-          }
-        }
-        contexts.push({
-          laneId: sourceLaneId,
-          peerLaneId: targetLaneId,
-          preview,
-          conflictContext: prepared?.conflictContext ?? null
-        });
-      }
-    }
-
-    const runId = randomUUID();
-    const runDir = path.join(externalRunsRootDir, runId);
-    fs.mkdirSync(runDir, { recursive: true });
-    const contextRefs = buildExternalResolverContextRefs({
-      runDir,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      contexts,
-      lanesById: laneByIdMap
-    });
-    const missingRequiredContexts = contextRefs
-      .filter((entry) => entry.required && !entry.exists)
-      .map((entry) => entry.repoRelativePath);
-
-    const warnings: string[] = [
-      ...missingRequiredContexts.map((relPath) => `missing_context:${relPath}`)
-    ];
-    const status: PrepareResolverSessionResult["status"] = contextGaps.length > 0 ? "blocked" : "ready";
-
-    let prompt = buildExternalResolverPrompt({
-      targetLaneId,
-      sourceLaneIds,
-      contexts,
-      contextRefs,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      scenario
-    });
-    const extra = typeof args.additionalInstructions === "string" ? args.additionalInstructions.trim() : "";
-    if (extra.length > 0) {
-      prompt += `\n\n---\n\n## Operator instructions\n\n${extra}\n`;
-    }
-    const promptPath = path.join(runDir, "prompt.md");
-    fs.writeFileSync(promptPath, prompt, "utf8");
-
-    const startedAt = new Date().toISOString();
-    const resolverContextKey = buildResolverContextKey({
-      originSurface: args.originSurface ?? "manual",
-      sourceTab: args.sourceTab,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      proposalId: args.proposalId ?? null,
-      scenario,
-    });
-    const runRecord: ExternalResolverRunRecord = {
-      schema: "ade.conflictExternalRun.v1",
-      runId,
-      provider: args.provider,
-      status: status === "blocked" ? "blocked" : "pending",
-      startedAt,
-      completedAt: status === "blocked" ? startedAt : null,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      scenario,
-      model: args.model ?? null,
-      reasoningEffort: args.reasoningEffort ?? null,
-      permissionMode: args.permissionMode ?? null,
-      originSurface: args.originSurface ?? "manual",
-      originRunId: args.originRunId ?? null,
-      originLabel: args.originLabel ?? null,
-      resolverContextKey,
-      command: [],
-      changedFiles: [],
-      summary: status === "blocked" ? "Insufficient context blocked external resolver execution." : null,
-      patchPath: null,
-      logPath: null,
-      insufficientContext: contextGaps.length > 0,
-      contextGaps,
-      warnings,
-      ptyId: null,
-      sessionId: null,
-      postActions: null,
-      committedAt: null,
-      commitSha: null,
-      commitMessage: null,
-      error: null
-    };
-    writeExternalRunRecord(runRecord);
-
-    return {
-      runId,
-      promptFilePath: promptPath,
-      cwdWorktreePath: cwdLane.worktreePath,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      warnings,
-      contextGaps,
-      status
-    };
-  };
-
-  const finalizeResolverSession = async (args: FinalizeResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const runId = args.runId.trim();
-    if (!runId) throw new Error("runId is required");
-    const run = readExternalRunRecord(runId);
-    if (!run) throw new Error(`External resolver run not found: ${runId}`);
-
-    const cwdLane = laneService.getLaneBaseAndBranch(run.cwdLaneId);
-    const diffResult = await runGit(["diff", "--no-ext-diff", "--no-textconv", "--no-color", "--binary"], {
-      cwd: cwdLane.worktreePath,
-      timeoutMs: 45_000,
-      maxOutputBytes: EXTERNAL_DIFF_MAX_OUTPUT_BYTES
-    });
-
-    const runDir = path.join(externalRunsRootDir, runId);
-    const patchPath = path.join(runDir, "changes.patch");
-    let finalPatchPath: string | null = null;
-    if (diffResult.exitCode === 0 && diffResult.stdout.trim().length > 0) {
-      fs.writeFileSync(patchPath, diffResult.stdout, "utf8");
-      finalPatchPath = patchPath;
-    }
-
-    const completedAt = new Date().toISOString();
-    const status: ConflictExternalResolverRunStatus = args.exitCode === 0 ? "completed" : "failed";
-    const updatedRecord: ExternalResolverRunRecord = {
-      ...run,
-      status,
-      completedAt,
-      changedFiles: finalPatchPath ? extractPathsFromUnifiedDiff(diffResult.stdout) : [],
-      patchPath: finalPatchPath,
-      warnings: [
-        ...(run.warnings ?? []),
-        ...(diffResult.stdoutTruncated ? ["git_diff_stdout_truncated"] : []),
-        ...(diffResult.stderrTruncated ? ["git_diff_stderr_truncated"] : [])
-      ],
-      postActions: args.postActions
-        ? {
-            autoCommit: args.postActions.autoCommit === true,
-            autoPush: args.postActions.autoPush === true,
-            commitMessage: args.postActions.commitMessage ?? null,
-            committedAt: args.postActions.committedAt ?? null,
-            commitSha: args.postActions.commitSha ?? null,
-            pushAt: args.postActions.pushAt ?? null,
-            pushSucceeded: args.postActions.pushSucceeded ?? null,
-            error: args.postActions.error ?? null,
-          }
-        : run.postActions,
-      committedAt: args.postActions?.committedAt ?? run.committedAt ?? null,
-      commitSha: args.postActions?.commitSha ?? run.commitSha ?? null,
-      commitMessage: args.postActions?.commitMessage ?? run.commitMessage ?? null,
-      error: args.exitCode === 0 ? null : `Exit code ${args.exitCode}`
-    };
-    writeExternalRunRecord(updatedRecord);
-
-    return toRunSummary(updatedRecord);
-  };
-
-  const attachResolverSession = async (args: AttachResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const runId = args.runId.trim();
-    if (!runId) throw new Error("runId is required");
-    const run = readExternalRunRecord(runId);
-    if (!run) throw new Error(`External resolver run not found: ${runId}`);
-    const ptyId = typeof args.ptyId === "string" && args.ptyId.trim().length > 0 ? args.ptyId.trim() : null;
-    const updatedRecord: ExternalResolverRunRecord = {
-      ...run,
-      status: run.status === "pending" ? "running" : run.status,
-      ptyId,
-      sessionId: args.sessionId.trim(),
-      command: Array.isArray(args.command) ? args.command.map((entry) => String(entry)) : run.command
-    };
-    writeExternalRunRecord(updatedRecord);
-    return toRunSummary(updatedRecord);
-  };
-
-  const cancelResolverSession = async (args: CancelResolverSessionArgs): Promise<ConflictExternalResolverRunSummary> => {
-    const runId = args.runId.trim();
-    if (!runId) throw new Error("runId is required");
-    const run = readExternalRunRecord(runId);
-    if (!run) throw new Error(`External resolver run not found: ${runId}`);
-    const reason = typeof args.reason === "string" && args.reason.trim().length > 0 ? args.reason.trim() : "Canceled by operator.";
-    const updatedRecord: ExternalResolverRunRecord = {
-      ...run,
-      status: "canceled",
-      completedAt: run.completedAt ?? new Date().toISOString(),
-      error: run.error ?? reason
-    };
-    writeExternalRunRecord(updatedRecord);
-    return toRunSummary(updatedRecord);
-  };
-
-  const suggestResolverTarget = async (args: SuggestResolverTargetArgs): Promise<SuggestResolverTargetResult> => {
-    const sourceLaneId = args.sourceLaneId.trim();
-    const targetLaneId = args.targetLaneId.trim();
-    if (!sourceLaneId || !targetLaneId) throw new Error("sourceLaneId and targetLaneId are required");
-
-    const overlaps = await listOverlaps({ laneId: sourceLaneId });
-    const targetOverlap = overlaps.find((entry) => entry.peerId === targetLaneId);
-    const overlapCount = targetOverlap?.files.length ?? 0;
-
-    // Heuristic based on overlap count and pack availability.
-    if (overlapCount > 5) {
-      return {
-        suggestion: "target",
-        reason: `High overlap count (${overlapCount}) suggests resolving in target to minimize coordination.`
-      };
-    }
-    return {
-      suggestion: "source",
-      reason: `Low overlap count (${overlapCount}) suggests resolving in source for simpler integration.`
-    };
-  };
-
   // ---------------------------------------------------------------------------
   // Rebase tracking methods
   // ---------------------------------------------------------------------------
 
-  const simulateChainedMerge = async (args: {
-    sourceLaneIds: string[];
+  /**
+   * Where a lane rebases onto: its compare base, read from `origin/<base>`
+   * when that exists (what the PR merges into), else the local branch.
+   */
+  const resolveLaneRebaseTarget = (lane: LaneSummary): {
+    comparisonRef: string;
+    fallbackRef: string;
+    displayBaseBranch: string;
+  } => {
+    const base = branchNameFromLaneRef(compareBaseForLane(lane)) || lane.baseRef;
+    return { comparisonRef: `origin/${base}`, fallbackRef: base, displayBaseBranch: base };
+  };
+
+  /** How far back "built on merged work" looks for merged PRs. */
+  const MERGED_WORK_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+
+  type MergedPrHead = {
+    number: number;
+    title: string | null;
+    headBranch: string;
     baseBranch: string;
-  }): Promise<IntegrationProposalStep[]> => {
-    const lanes = await listActiveLanes();
-    const laneMap = new Map(lanes.map((l) => [l.id, l]));
-    const steps: IntegrationProposalStep[] = [];
+    laneId: string | null;
+    mergedHeadSha: string;
+  };
 
-    // Start from the base branch HEAD
-    let accumulatedSha = await readHeadSha(projectRoot, args.baseBranch);
-
-    for (let i = 0; i < args.sourceLaneIds.length; i++) {
-      const laneId = args.sourceLaneIds[i];
-      const lane = laneMap.get(laneId);
-      if (!lane) {
-        steps.push({
-          laneId,
-          laneName: laneId,
-          position: i,
-          outcome: "blocked",
-          conflictingFiles: [],
-          diffStat: { insertions: 0, deletions: 0, filesChanged: 0 }
-        });
-        continue;
-      }
-
-      const laneHeadSha = await readHeadSha(lane.worktreePath, "HEAD");
-      const mergeBase = await readMergeBase(projectRoot, accumulatedSha, laneHeadSha);
-
-      const merge = await runGitMergeTree({
-        cwd: projectRoot,
-        mergeBase,
-        branchA: accumulatedSha,
-        branchB: laneHeadSha,
-        timeoutMs: 60_000
+  /** PRs merged in the last 30 days whose head commit is known. */
+  const listRecentMergedPrHeads = (): MergedPrHead[] => {
+    const since = new Date(Date.now() - MERGED_WORK_LOOKBACK_MS).toISOString();
+    try {
+      return db.all<{
+        github_pr_number: number | null;
+        title: string | null;
+        head_branch: string | null;
+        base_branch: string | null;
+        lane_id: string | null;
+        merged_head_sha: string | null;
+      }>(
+        `
+          select github_pr_number, title, head_branch, base_branch, lane_id, merged_head_sha
+            from pull_requests
+           where project_id = ?
+             and state = 'merged'
+             and merged_head_sha is not null
+             and coalesce(merged_at, updated_at) >= ?
+           order by coalesce(merged_at, updated_at) desc
+        `,
+        [projectId, since],
+      ).flatMap((row) => {
+        const sha = String(row.merged_head_sha ?? "").trim();
+        const number = Number(row.github_pr_number);
+        if (!sha || !Number.isFinite(number)) return [];
+        return [{
+          number,
+          title: row.title ?? null,
+          headBranch: branchNameFromLaneRef(row.head_branch),
+          baseBranch: branchNameFromLaneRef(row.base_branch),
+          laneId: row.lane_id ?? null,
+          mergedHeadSha: sha,
+        }];
       });
+    } catch (err) {
+      logger.warn("conflicts.rebase_needs.merged_prs_read_failed", { error: err instanceof Error ? err.message : String(err) });
+      return [];
+    }
+  };
 
-      const conflictingFiles = merge.conflicts.map((c) => ({
-        path: c.path,
-        conflictMarkers: c.markerPreview,
-        oursExcerpt: null as string | null,
-        theirsExcerpt: null as string | null,
-        diffHunk: null as string | null
-      }));
+  /**
+   * The rebase need for one lane, or null when it needs none. A lane needs a
+   * rebase when its compare base has commits it lacks (`behind`). It is
+   * `built_on_merged` when, on top of that, one of its own commits is the
+   * head of a PR that has since merged into that base (usually by squash), so
+   * its own PR would repeat that work until it is rebased.
+   */
+  const computeRebaseNeed = async (lane: LaneSummary, mergedPrs: MergedPrHead[]): Promise<RebaseNeed | null> => {
+    const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget(lane);
+    const baseHead = await readHeadSha(projectRoot, comparisonRef)
+      .catch(() => readHeadSha(projectRoot, fallbackRef))
+      .catch(() => "");
+    // A base that can't be read is an unknown answer, not "up to date": the
+    // Catch up menu must not read it as "no conflicts".
+    if (!baseHead) throw new Error(`The base branch ${displayBaseBranch} could not be read.`);
+    const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
 
-      const outcome: IntegrationProposalStep["outcome"] =
-        conflictingFiles.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "blocked";
+    const countsRes = await runGit(
+      ["rev-list", "--left-right", "--count", `${baseHead}...${laneHead}`],
+      { cwd: projectRoot, timeoutMs: 15_000 },
+    );
+    if (countsRes.exitCode !== 0) throw new Error(countsRes.stderr.trim() || "git rev-list failed");
+    const [behindRaw, aheadRaw] = countsRes.stdout.trim().split(/\s+/);
+    const behindBy = Number(behindRaw) || 0;
+    const aheadBy = Number(aheadRaw) || 0;
+    if (behindBy === 0) return null;
 
-      // Parse diffStat from the numstat between mergeBase and laneHead
-      const numstat = await readDiffNumstat(projectRoot, mergeBase, laneHeadSha);
-
-      steps.push({
-        laneId,
-        laneName: lane.name,
-        position: i,
-        outcome,
-        conflictingFiles,
-        diffStat: {
-          insertions: numstat.insertions,
-          deletions: numstat.deletions,
-          filesChanged: numstat.files.size
-        }
-      });
-
-      // If the merge was clean and we got a write-tree sha, advance the accumulated tree.
-      // The first line of stdout from --write-tree is the resulting tree sha on success.
-      if (outcome === "clean" && merge.usedWriteTree && merge.stdout.trim()) {
-        const firstLine = merge.stdout.trim().split(/\r?\n/)[0].trim();
-        if (/^[0-9a-f]{40}$/.test(firstLine)) {
-          accumulatedSha = firstLine;
-        } else {
-          // fallback: use the lane head (sequential simulation approximation)
-          accumulatedSha = laneHeadSha;
-        }
-      } else if (outcome === "clean") {
-        accumulatedSha = laneHeadSha;
+    // Built on merged work: one of the lane's own commits (on the lane, not
+    // in the base) is the head of a PR that merged into this base. Listing
+    // the lane's own commits once is the same answer as asking
+    // `merge-base --is-ancestor` per merged PR, for one git call per lane.
+    let mergedPr: RebaseNeed["mergedPr"] = null;
+    const laneBranch = branchNameFromLaneRef(lane.branchRef);
+    const candidates = aheadBy > 0
+      ? mergedPrs.filter((pr) =>
+        pr.baseBranch === displayBaseBranch
+        && pr.laneId !== lane.id
+        && pr.headBranch !== laneBranch)
+      : [];
+    if (candidates.length > 0) {
+      const ownRes = await runGit(
+        ["rev-list", `${baseHead}..${laneHead}`],
+        { cwd: projectRoot, timeoutMs: 15_000 },
+      );
+      if (ownRes.exitCode === 0) {
+        const ownCommits = new Set(ownRes.stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+        const hit = candidates.find((pr) => ownCommits.has(pr.mergedHeadSha));
+        if (hit) mergedPr = { number: hit.number, title: hit.title, headBranch: hit.headBranch };
       }
-      // On conflict, keep the current accumulated sha so subsequent steps simulate
-      // from the last known-good state.
     }
 
-    return steps;
+    // Dry merge-tree to predict conflicts
+    const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
+    const merge = await runGitMergeTree({
+      cwd: projectRoot,
+      mergeBase,
+      branchA: baseHead,
+      branchB: laneHead,
+      timeoutMs: 60_000
+    });
+    // Exit 0 is clean and 1 is conflicts; anything else (a bad object, a git
+    // too old for --write-tree) is no answer, which must not read as "clean".
+    if (merge.exitCode !== 0 && merge.exitCode !== 1) {
+      const detail = (merge.stderr || merge.stdout).trim().split(/\r?\n/)[0];
+      throw new Error(detail || "git merge-tree failed");
+    }
+    const conflictingFiles = merge.conflicts.map((c) => c.path);
+    const prId = db.get<{ id: string }>(
+      `select id from pull_requests
+        where project_id = ? and lane_id = ? and state in ('open', 'draft') and detached_at is null
+        order by updated_at desc limit 1`,
+      [projectId, lane.id],
+    )?.id ?? null;
+
+    return {
+      laneId: lane.id,
+      laneName: lane.name,
+      kind: mergedPr ? "built_on_merged" : "behind",
+      baseBranch: displayBaseBranch,
+      behindBy,
+      mergedPr,
+      conflictPredicted: conflictingFiles.length > 0,
+      conflictingFiles,
+      prId,
+    };
   };
 
   const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
     const lanes = await listActiveLanes();
-    const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+    const mergedPrs = listRecentMergedPrHeads();
     const needs: RebaseNeed[] = [];
 
     // Skip primary lane — it IS the base, rebasing it is nonsensical
-    const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
-    for (const lane of nonPrimaryLanes) {
+    for (const lane of lanes.filter((l) => l.laneType !== "primary")) {
       try {
-        const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
-          lane,
-          lanesById,
-        });
-        const baseHead = await readHeadSha(projectRoot, comparisonRef)
-          .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
-          .catch(() => "");
-        if (!baseHead) continue;
-        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-
-        // Count how many commits the lane is behind base
-        const behindRes = await runGit(
-          ["rev-list", "--count", `${laneHead}..${baseHead}`],
-          { cwd: projectRoot, timeoutMs: 15_000 }
-        );
-        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-
-        if (behindBy === 0) continue;
-
-        // Dry merge-tree to predict conflicts
-        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-        const merge = await runGitMergeTree({
-          cwd: projectRoot,
-          mergeBase,
-          branchA: baseHead,
-          branchB: laneHead,
-          timeoutMs: 60_000
-        });
-
-        const conflictingFiles = merge.conflicts.map((c) => c.path);
-
-        needs.push({
-          laneId: lane.id,
-          laneName: lane.name,
-          kind: "lane_base",
-          baseBranch: displayBaseBranch,
-          behindBy,
-          conflictPredicted: conflictingFiles.length > 0,
-          conflictingFiles,
-          prId: null,
-          groupContext: null,
-          dismissedAt: rebaseDismissed.get(lane.id) ?? null,
-          deferredUntil: rebaseDeferred.get(lane.id) ?? null
-        });
+        const need = await computeRebaseNeed(lane, mergedPrs);
+        if (need) needs.push(need);
       } catch (err) {
         logger.warn(`scanRebaseNeeds: failed for lane ${lane.id}`, { error: err });
       }
     }
 
-    const openPrRows = db.all<{
-      id: string;
-      lane_id: string;
-      base_branch: string | null;
-      creation_strategy: string | null;
-    }>(
-      `
-        select id, lane_id, base_branch, creation_strategy
-        from pull_requests
-        where project_id = ?
-          and state in ('open', 'draft')
-          -- A detached row belongs to a lane that was deleted or has moved to another
-          -- branch; it must not raise rebase needs against the live lane.
-          and detached_at is null
-        order by updated_at desc, created_at desc
-      `,
-      [projectId],
-    );
-
-    const seenPrTargetNeeds = new Set<string>();
-    for (const row of openPrRows) {
-      const lane = lanesById.get(String(row.lane_id ?? "").trim());
-      if (!lane || lane.laneType === "primary") continue;
-      // Gate pr_target drift to PRs whose creation_strategy is "pr_target".
-      // PRs marked "lane_base" carry an immutable base — drift should stay a
-      // lane_base need (surfaced as warning, never auto-rebased). Null rows
-      // predate the column and keep the legacy pr_target behavior.
-      if ((normalizePrCreationStrategy(row.creation_strategy) ?? "pr_target") !== "pr_target") continue;
-      const prBaseBranch = normalizeBranchName(String(row.base_branch ?? "").trim());
-      const parent = lane.parentLaneId ? lanesById.get(lane.parentLaneId) ?? null : null;
-      const laneBaseBranch = normalizeBranchName(branchNameFromLaneRef(
-        shouldLaneTrackParent({ lane, parent }) ? parent?.branchRef : lane.baseRef,
-      ));
-      if (!prBaseBranch || prBaseBranch === laneBaseBranch) continue;
-      const dedupeKey = `${lane.id}:${prBaseBranch}`;
-      if (seenPrTargetNeeds.has(dedupeKey)) continue;
-      seenPrTargetNeeds.add(dedupeKey);
-
-      try {
-        const remoteRef = `origin/${prBaseBranch}`;
-        const baseHead = await readHeadSha(projectRoot, remoteRef)
-          .catch(() => readHeadSha(projectRoot, prBaseBranch))
-          .catch(() => "");
-        if (!baseHead) continue;
-        const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-        const behindRes = await runGit(
-          ["rev-list", "--count", `${laneHead}..${baseHead}`],
-          { cwd: projectRoot, timeoutMs: 15_000 }
-        );
-        const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-        if (behindBy === 0) continue;
-
-        const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-        const merge = await runGitMergeTree({
-          cwd: projectRoot,
-          mergeBase,
-          branchA: baseHead,
-          branchB: laneHead,
-          timeoutMs: 60_000
-        });
-
-        const existingNeed = needs.find((need) => need.laneId === lane.id) ?? null;
-
-        needs.push({
-          laneId: lane.id,
-          laneName: lane.name,
-          kind: "pr_target",
-          baseBranch: prBaseBranch,
-          behindBy,
-          conflictPredicted: merge.conflicts.length > 0,
-          conflictingFiles: merge.conflicts.map((conflict) => conflict.path),
-          prId: String(row.id),
-          groupContext: existingNeed?.groupContext ?? null,
-          dismissedAt: existingNeed?.dismissedAt ?? rebaseDismissed.get(lane.id) ?? null,
-          deferredUntil: existingNeed?.deferredUntil ?? rebaseDeferred.get(lane.id) ?? null,
-        });
-      } catch (err) {
-        logger.warn(`scanRebaseNeeds: failed PR target scan for lane ${lane.id}`, { error: err });
-      }
-    }
-
-    // Deduplicate: when a lane has both a lane-base need and a PR-target need,
-    // keep only the PR-target need (PR target is the source of truth).
-    const laneIdsWithPrNeeds = new Set(needs.filter(n => n.prId != null).map(n => n.laneId));
-    const deduplicated = needs.filter(n => !(n.prId == null && laneIdsWithPrNeeds.has(n.laneId)));
-
     if (onEvent) {
-      onEvent({ type: "rebase-needs-updated", needs: deduplicated, timestamp: new Date().toISOString() });
+      onEvent({ type: "rebase-needs-updated", needs, timestamp: new Date().toISOString() });
     }
 
-    return deduplicated;
+    return needs;
   };
 
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
     const lanes = await listActiveLanes();
-    const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
     const lane = lanes.find((l) => l.id === laneId);
-    if (!lane || lane.laneType === "primary") return null;
-
+    if (!lane) throw new Error(`Lane ${laneId} was not found.`);
+    if (lane.laneType === "primary") return null;
     try {
-      const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
-        lane,
-        lanesById,
-      });
-      const baseHead = await readHeadSha(projectRoot, comparisonRef)
-        .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
-        .catch(() => "");
-      if (!baseHead) return null;
-      const laneHead = await readHeadSha(lane.worktreePath, "HEAD");
-
-      const behindRes = await runGit(
-        ["rev-list", "--count", `${laneHead}..${baseHead}`],
-        { cwd: projectRoot, timeoutMs: 15_000 }
-      );
-      const behindBy = behindRes.exitCode === 0 ? Number(behindRes.stdout.trim()) || 0 : 0;
-
-      if (behindBy === 0) return null;
-
-      const mergeBase = await readMergeBase(projectRoot, baseHead, laneHead);
-      const merge = await runGitMergeTree({
-        cwd: projectRoot,
-        mergeBase,
-        branchA: baseHead,
-        branchB: laneHead,
-        timeoutMs: 60_000
-      });
-
-      const conflictingFiles = merge.conflicts.map((c) => c.path);
-
-      return {
-        laneId: lane.id,
-        laneName: lane.name,
-        kind: "lane_base",
-        baseBranch: displayBaseBranch,
-        behindBy,
-        conflictPredicted: conflictingFiles.length > 0,
-        conflictingFiles,
-        prId: null,
-        groupContext: null,
-        dismissedAt: rebaseDismissed.get(lane.id) ?? null,
-        deferredUntil: rebaseDeferred.get(lane.id) ?? null
-      };
+      return await computeRebaseNeed(lane, listRecentMergedPrHeads());
     } catch (err) {
+      // The caller (Catch up) reads a rejection as "couldn't check".
       logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
-      return null;
-    }
-  };
-
-  const dismissRebase = (laneId: string): void => {
-    const now = new Date().toISOString();
-    rebaseDismissed.set(laneId, now);
-    try {
-      db.run(
-        `insert into rebase_dismissed(lane_id, project_id, dismissed_at)
-         values (?, ?, ?)
-         on conflict(lane_id, project_id) do update set dismissed_at = excluded.dismissed_at`,
-        [laneId, projectId, now]
-      );
-    } catch {
-      // Table may not exist yet — in-memory fallback
-    }
-  };
-
-  const deferRebase = (laneId: string, until: string): void => {
-    rebaseDeferred.set(laneId, until);
-    try {
-      db.run(
-        `insert into rebase_deferred(lane_id, project_id, deferred_until)
-         values (?, ?, ?)
-         on conflict(lane_id, project_id) do update set deferred_until = excluded.deferred_until`,
-        [laneId, projectId, until]
-      );
-    } catch {
-      // Table may not exist yet — in-memory fallback
+      throw err;
     }
   };
 
@@ -4666,7 +2857,6 @@ export function createConflictService({
 
     try {
       const lanes = await listActiveLanes();
-      const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
       const lane = lanes.find((l) => l.id === args.laneId);
       if (!lane) {
         return {
@@ -4691,30 +2881,15 @@ export function createConflictService({
         };
       }
 
-      if (args.aiAssisted) {
-        logger.info(`rebaseLane: AI-assisted rebase requested for lane ${args.laneId}`, {
-          provider: args.provider ?? "codex",
-          modelId: args.modelId ?? null,
-          reasoningEffort: args.reasoningEffort ?? null,
-          permissionMode: args.permissionMode ?? null,
-          autoApplyThreshold: args.autoApplyThreshold
-        });
-      }
-
       if (onEvent) {
         onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
       }
 
-      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget({
-        lane,
-        lanesById,
-      });
+      const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget(lane);
       let rebaseTarget = comparisonRef;
-      if (fallbackRef) {
-        const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
-        if (!comparisonRefExists) {
-          rebaseTarget = fallbackRef;
-        }
+      const comparisonRefExists = await readHeadSha(projectRoot, comparisonRef).catch(() => "");
+      if (!comparisonRefExists) {
+        rebaseTarget = fallbackRef;
       }
       const rebaseRes = await runGit(
         ["rebase", rebaseTarget],
@@ -4722,14 +2897,6 @@ export function createConflictService({
       );
 
       if (rebaseRes.exitCode === 0) {
-        // Clear any dismissal/deferral on successful rebase
-        rebaseDismissed.delete(args.laneId);
-        rebaseDeferred.delete(args.laneId);
-        try {
-          db.run(`delete from rebase_dismissed where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
-          db.run(`delete from rebase_deferred where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
-        } catch { /* table may not exist */ }
-
         if (onEvent) {
           onEvent({ type: "rebase-completed", laneId: args.laneId, success: true, timestamp: new Date().toISOString() });
         }
@@ -4738,7 +2905,6 @@ export function createConflictService({
           laneId: args.laneId,
           success: true,
           conflictingFiles: [],
-          resolvedByAi: false
         };
       }
 
@@ -4768,7 +2934,6 @@ export function createConflictService({
         success: false,
         conflictingFiles,
         error: rebaseRes.stderr.trim() || "Rebase failed with conflicts",
-        resolvedByAi: false
       };
     } finally {
       activeRebaseLanes.delete(args.laneId);
@@ -4785,21 +2950,10 @@ export function createConflictService({
     listProposals,
     prepareProposal,
     requestProposal,
-    runExternalResolver,
-    listExternalResolverRuns,
-    commitExternalResolverRun,
     applyProposal,
     undoProposal,
-    prepareResolverSession,
-    attachResolverSession,
-    finalizeResolverSession,
-    cancelResolverSession,
-    suggestResolverTarget,
-    simulateChainedMerge,
     scanRebaseNeeds,
     getRebaseNeed,
-    dismissRebase,
-    deferRebase,
     rebaseLane
   };
 }

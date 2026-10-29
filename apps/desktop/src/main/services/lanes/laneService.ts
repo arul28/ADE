@@ -34,7 +34,8 @@ import { nonAsarFs } from "../shared/nonAsarFs";
 import { removeTreeOffProcess } from "../shared/removeTreeOffProcess";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
-import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
+import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
+import { readLaneCompareBase } from "./laneCompareBase";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
 import { linearIssueBranchName, resolveLinearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
 import {
@@ -65,9 +66,7 @@ import { writeLaneUsageTombstone, type LaneUsageTombstoneMode } from "./laneUsag
 import type {
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
-  CreateChildLaneArgs,
   CreateLaneArgs,
-  CreateLaneFromUnstagedArgs,
   DeleteLaneArgs,
   DeleteLaneResult,
   LaneDeleteEvent,
@@ -99,10 +98,9 @@ import type {
   LaneStateSnapshotSummary,
   LaneStatus,
   LaneSummary,
+  NewLaneDefaultsSnapshot,
   LaneType,
   ListLanesArgs,
-  ReparentLaneArgs,
-  ReparentLaneResult,
   RecreateMissingWorktreeResult,
   RestoreLaneResult,
   ResolveLaneBranchDriftArgs,
@@ -113,7 +111,6 @@ import type {
   RebaseRunEventPayload,
   RebaseRunLane,
   RebaseRollbackArgs,
-  RebaseScope,
   RebaseStartArgs,
   RebaseStartResult,
   RebasePushArgs,
@@ -121,7 +118,6 @@ import type {
   SessionGitHubIssueLink,
   SessionJiraIssueLink,
   SessionLinearIssueLink,
-  StackChainItem,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { legacyLaneEmojiIcon, legacyLaneIconEmoji, normalizeLaneEmoji } from "../../../shared/laneEmoji";
@@ -133,6 +129,9 @@ import {
   parseWorktreeStatusPorcelainV2,
 } from "./laneBranchDrift";
 import { createLaneBranchHistoryObserver } from "./laneBranchHistory";
+import { copyUncommittedChanges, resolveLaneStart, type LaneStartFolder } from "./laneStartResolver";
+import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
+import { DEFAULT_NEW_LANE_DEFAULTS, isSavableDefaultLaneStart, normalizeLaneStart, plainLaneStartBranch, type NewLaneDefaults } from "../../../shared/laneStart";
 import {
   isAutoLaneTemporaryBranch,
   resolveAppliedAutoLaneBranchFragment,
@@ -155,7 +154,6 @@ type LaneRow = {
   worktree_path: string;
   attached_root_path: string | null;
   is_edit_protected: number;
-  parent_lane_id: string | null;
   color: string | null;
   icon: string | null;
   tags_json: string | null;
@@ -178,7 +176,6 @@ type LaneBranchProfileRow = {
   branch_ref: string;
   normalized_branch_ref: string;
   base_ref: string;
-  parent_lane_id: string | null;
   source_branch_ref: string | null;
   created_at: string;
   updated_at: string;
@@ -516,7 +513,8 @@ function cloneLaneStatus(status: LaneStatus): LaneStatus {
     trackedFileCount: status.trackedFileCount ?? null,
     rebaseInProgress: status.rebaseInProgress,
     headBranchRef: status.headBranchRef ?? null,
-    branchDriftKind: status.branchDriftKind ?? null
+    branchDriftKind: status.branchDriftKind ?? null,
+    ...(status.compareBase ? { compareBase: status.compareBase } : {}),
   };
 }
 
@@ -536,7 +534,6 @@ function cloneLaneSummary(summary: LaneSummary): LaneSummary {
   return {
     ...summary,
     status: cloneLaneStatus(summary.status),
-    parentStatus: summary.parentStatus ? cloneLaneStatus(summary.parentStatus) : null,
     tags: [...summary.tags],
     activeBranchProfile: summary.activeBranchProfile ? { ...summary.activeBranchProfile } : null,
     linearIssue: summary.linearIssue ? cloneLaneLinearIssue(summary.linearIssue) : null,
@@ -934,9 +931,6 @@ function mergePrimaryLinearIssueLink(
 function toLaneSummary(args: {
   row: LaneRow;
   status: LaneStatus;
-  parentStatus: LaneStatus | null;
-  childCount: number;
-  stackDepth: number;
   worktreeAvailable?: boolean;
   activeBranchProfile?: LaneBranchProfile | null;
   linearIssue?: LaneLinearIssue | null;
@@ -944,7 +938,7 @@ function toLaneSummary(args: {
   githubIssueLinks?: LaneGitHubIssueLink[];
   jiraIssueLinks?: LaneJiraIssueLink[];
 }): LaneSummary {
-  const { row, status, parentStatus, childCount, stackDepth, activeBranchProfile, linearIssue } = args;
+  const { row, status, activeBranchProfile, linearIssue } = args;
   const linearIssueLinks = mergePrimaryLinearIssueLink(row.id, linearIssue ?? null, args.linearIssueLinks ?? [], row.created_at);
   return {
     id: row.id,
@@ -956,10 +950,6 @@ function toLaneSummary(args: {
     worktreePath: row.worktree_path,
     ...(typeof args.worktreeAvailable === "boolean" ? { worktreeAvailable: args.worktreeAvailable } : {}),
     attachedRootPath: row.attached_root_path,
-    parentLaneId: row.parent_lane_id,
-    childCount,
-    stackDepth,
-    parentStatus,
     isEditProtected: row.is_edit_protected === 1,
     status,
     branchDrift: detectLaneBranchDrift({
@@ -1451,71 +1441,6 @@ async function computeLaneStatus(
   };
 }
 
-async function resolveParentRebaseTarget(args: {
-  projectRoot: string;
-  parent: LaneRow;
-}): Promise<{ headSha: string; label: string }> {
-  const { projectRoot, parent } = args;
-
-  if (parent.lane_type === "primary") {
-    await fetchRemoteTrackingBranch({
-      projectRoot,
-      targetBranch: parent.branch_ref,
-    }).catch(() => {});
-
-    const candidateRefs: string[] = [];
-    const upstreamRes = await runGit(
-      ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"],
-      { cwd: parent.worktree_path, timeoutMs: 5_000 },
-    );
-    const upstreamRef = upstreamRes.exitCode === 0 ? upstreamRes.stdout.trim() : "";
-    if (upstreamRef) {
-      candidateRefs.push(upstreamRef);
-    }
-    const originRef = `origin/${parent.branch_ref}`;
-    if (!candidateRefs.includes(originRef)) {
-      candidateRefs.push(originRef);
-    }
-
-    for (const ref of candidateRefs) {
-      const res = await runGit(
-        ["rev-parse", "--verify", ref],
-        { cwd: parent.worktree_path, timeoutMs: 5_000 },
-      );
-      const sha = res.exitCode === 0 ? res.stdout.trim() : "";
-      if (sha) {
-        return { headSha: sha, label: ref };
-      }
-    }
-  }
-
-  const headSha = await getHeadSha(parent.worktree_path);
-  if (!headSha) {
-    throw new Error(`Unable to resolve parent HEAD for ${parent.name}`);
-  }
-  return {
-    headSha,
-    label: parent.name,
-  };
-}
-
-function describeParentRebaseTarget(parent: LaneRow, label: string): string {
-  return label === parent.name ? parent.name : `${parent.name} (${label})`;
-}
-
-function rowTracksParent(
-  row: Pick<LaneRow, "base_ref" | "parent_lane_id">,
-  parent: Pick<LaneRow, "lane_type" | "branch_ref"> | null | undefined,
-): boolean {
-  return shouldLaneTrackParent({
-    lane: {
-      baseRef: row.base_ref,
-      parentLaneId: row.parent_lane_id,
-    },
-    parent: parent ? { laneType: parent.lane_type, branchRef: parent.branch_ref } : null,
-  });
-}
-
 async function resolveBranchRebaseTarget(args: {
   projectRoot: string;
   branchRef: string;
@@ -1620,114 +1545,6 @@ async function resolveImportBranchTarget(args: {
   throw new AdeExpectedError(notFound, "user");
 }
 
-function computeStackDepth(args: {
-  laneId: string;
-  rowsById: Map<string, LaneRow>;
-  memo: Map<string, number>;
-  visiting?: Set<string>;
-}): number {
-  const { laneId, rowsById, memo } = args;
-  const visiting = args.visiting ?? new Set<string>();
-  const cached = memo.get(laneId);
-  if (cached != null) return cached;
-  if (visiting.has(laneId)) return 0;
-  visiting.add(laneId);
-  const row = rowsById.get(laneId);
-  let depth = 0;
-  if (row?.parent_lane_id) {
-    depth = 1 + computeStackDepth({ laneId: row.parent_lane_id, rowsById, memo, visiting });
-  }
-  memo.set(laneId, depth);
-  visiting.delete(laneId);
-  return depth;
-}
-
-function sortByCreatedAtAsc(rows: LaneRow[]): LaneRow[] {
-  return [...rows].sort((a, b) => {
-    const aTs = Date.parse(a.created_at);
-    const bTs = Date.parse(b.created_at);
-    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return aTs - bTs;
-    return a.name.localeCompare(b.name);
-  });
-}
-
-function collectDepthFirstIds(args: {
-  rootLaneId: string;
-  childrenByParent: Map<string, LaneRow[]>;
-  includeSelf: boolean;
-}): string[] {
-  const out: string[] = [];
-  const visit = (laneId: string) => {
-    out.push(laneId);
-    for (const child of args.childrenByParent.get(laneId) ?? []) {
-      visit(child.id);
-    }
-  };
-  visit(args.rootLaneId);
-  return args.includeSelf ? out : out.slice(1);
-}
-
-type WorktreeChangeState = {
-  hasStaged: boolean;
-  hasUnstaged: boolean;
-};
-
-async function inspectWorktreeChanges(worktreePath: string): Promise<WorktreeChangeState> {
-  await assertExpectedGitWorktreeRoot(worktreePath);
-
-  const statusRes = await runGit(["status", "--porcelain=v1"], { cwd: worktreePath, timeoutMs: 8_000 });
-  if (statusRes.exitCode !== 0) {
-    throw new Error("Unable to inspect lane worktree state.");
-  }
-
-  let hasStaged = false;
-  let hasUnstaged = false;
-  const lines = statusRes.stdout.split(/\r?\n/).map((line) => line.trimEnd()).filter(Boolean);
-  for (const line of lines) {
-    if (line.startsWith("??")) {
-      hasUnstaged = true;
-    } else {
-      const stagedCode = line[0] ?? " ";
-      const unstagedCode = line[1] ?? " ";
-      if (stagedCode !== " " && stagedCode !== "?") hasStaged = true;
-      if (unstagedCode !== " " && unstagedCode !== "?") hasUnstaged = true;
-    }
-    if (hasStaged && hasUnstaged) break;
-  }
-
-  return { hasStaged, hasUnstaged };
-}
-
-type GitStashEntry = {
-  ref: string;
-  subject: string;
-};
-
-async function listGitStashes(worktreePath: string): Promise<GitStashEntry[]> {
-  await assertExpectedGitWorktreeRoot(worktreePath);
-
-  const stashRes = await runGit(["stash", "list", "--format=%gd%x1f%gs"], {
-    cwd: worktreePath,
-    timeoutMs: 15_000,
-  });
-  if (stashRes.exitCode !== 0) {
-    throw new Error("Unable to inspect git stash entries.");
-  }
-
-  return stashRes.stdout
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [ref, subject] = line.split("\u001f");
-      return {
-        ref: ref?.trim() ?? "",
-        subject: subject?.trim() ?? "",
-      };
-    })
-    .filter((entry) => entry.ref.length > 0);
-}
-
 const LANE_DELETE_PROGRESS_HISTORY_TTL_MS = 60_000;
 const STORAGE_LIFECYCLE_LOCK_LEASE_MS = 15 * 60_000;
 const STORAGE_LIFECYCLE_LOCK_HEARTBEAT_MS = 60_000;
@@ -1767,6 +1584,8 @@ export type LaneCreateRuntimeOptions = {
   laneId?: string | null;
   onCheckoutProgress?: (progress: GitCheckoutProgress) => void;
   signal?: AbortSignal;
+  /** The caller already fetched the start branch (the chat launch's fetch stage). */
+  skipStartFetch?: boolean;
 };
 
 export type LaneDeleteTeardownDeps = {
@@ -1777,12 +1596,6 @@ export type LaneDeleteTeardownDeps = {
   ptyService?: {
     countActiveForLane: (laneId: string) => number;
     disposeForLane: (laneId: string) => number;
-  };
-  autoRebaseService?: {
-    cancelForLane: (laneId: string) => void;
-  };
-  rebaseSuggestionService?: {
-    dismiss: (args: { laneId: string }) => void | Promise<void>;
   };
   fileWatcherService?: {
     countActiveForWorkspace: (workspaceId: string) => number;
@@ -1878,6 +1691,22 @@ export function createLaneService({
   // `setOnWorktreeLaneCreated` because the PR service is constructed after the
   // lane service. Best-effort: failures are swallowed, never blocking creation.
   let onWorktreeLaneCreated: ((lane: LaneSummary) => void | Promise<void>) | null = null;
+
+  // Late-bound: the host wires the project's new-lane settings store (and the
+  // template check that needs the template service) after construction.
+  // Without a store, new lanes use the built-in defaults.
+  let newLaneSettings: NewLaneSettingsStore | null = null;
+  let validateNewLaneTemplateId: ((templateId: string) => void) | null = null;
+  const getNewLaneDefaultsForCreate = (): NewLaneDefaults => {
+    try {
+      return newLaneSettings?.getDefaults() ?? DEFAULT_NEW_LANE_DEFAULTS;
+    } catch (error) {
+      logger.warn("lanes.new_lane_defaults_read_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return DEFAULT_NEW_LANE_DEFAULTS;
+    }
+  };
 
   // Late-bound hook that tears down a lane's environment (Docker Compose stack)
   // when the lane is archived. Set via `setOnLaneArchivedEnvTeardown` because
@@ -2357,9 +2186,6 @@ export function createLaneService({
     toLaneSummary({
       row,
       status: cloneLaneStatus(DEFAULT_LANE_STATUS),
-      parentStatus: null,
-      childCount: 0,
-      stackDepth: 0,
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue: getLaneLinearIssue(row.id),
       linearIssueLinks: getLaneLinearIssueLinks(row.id),
@@ -2706,14 +2532,6 @@ export function createLaneService({
     return allocateLaneColor(usedColors);
   };
 
-  const getChildrenRows = (laneId: string, includeArchived = false) =>
-    db.all<LaneRow>(
-      includeArchived
-        ? "select * from lanes where project_id = ? and parent_lane_id = ? order by created_at asc"
-        : "select * from lanes where project_id = ? and parent_lane_id = ? and status != 'archived' order by created_at asc",
-      [projectId, laneId]
-    );
-
   const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
   /**
    * Each lane's last computed status, with when it was computed and the inputs
@@ -2818,7 +2636,6 @@ export function createLaneService({
     laneId: row.lane_id,
     branchRef: row.branch_ref,
     baseRef: row.base_ref,
-    parentLaneId: row.parent_lane_id,
     sourceBranchRef: row.source_branch_ref,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -2846,7 +2663,6 @@ export function createLaneService({
     options: {
       branchRef?: string;
       baseRef?: string;
-      parentLaneId?: string | null;
       sourceBranchRef?: string | null;
       lastCheckedOutAt?: string | null;
     } = {},
@@ -2862,7 +2678,6 @@ export function createLaneService({
       branch_ref: branchRef,
       normalized_branch_ref: branchRef,
       base_ref: options.baseRef?.trim() || existing?.base_ref || row.base_ref || defaultBaseRef,
-      parent_lane_id: options.parentLaneId !== undefined ? options.parentLaneId : (existing?.parent_lane_id ?? row.parent_lane_id),
       source_branch_ref: options.sourceBranchRef !== undefined ? options.sourceBranchRef : (existing?.source_branch_ref ?? null),
       created_at: existing?.created_at ?? now,
       updated_at: now,
@@ -2875,7 +2690,6 @@ export function createLaneService({
       existing
       && existing.branch_ref === profile.branch_ref
       && existing.base_ref === profile.base_ref
-      && (existing.parent_lane_id ?? null) === (profile.parent_lane_id ?? null)
       && (existing.source_branch_ref ?? null) === (profile.source_branch_ref ?? null)
       && (existing.last_checked_out_at ?? null) === (profile.last_checked_out_at ?? null)
     ) {
@@ -2887,7 +2701,6 @@ export function createLaneService({
           update lane_branch_profiles
           set branch_ref = ?,
               base_ref = ?,
-              parent_lane_id = ?,
               source_branch_ref = ?,
               updated_at = ?,
               last_checked_out_at = ?
@@ -2897,7 +2710,6 @@ export function createLaneService({
         [
           profile.branch_ref,
           profile.base_ref,
-          profile.parent_lane_id,
           profile.source_branch_ref,
           profile.updated_at,
           profile.last_checked_out_at,
@@ -2910,9 +2722,9 @@ export function createLaneService({
         `
           insert into lane_branch_profiles(
             id, project_id, lane_id, branch_ref, normalized_branch_ref, base_ref,
-            parent_lane_id, source_branch_ref, created_at, updated_at, last_checked_out_at
+            source_branch_ref, created_at, updated_at, last_checked_out_at
           )
-          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          values(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `,
         [
           profile.id,
@@ -2921,7 +2733,6 @@ export function createLaneService({
           profile.branch_ref,
           profile.normalized_branch_ref,
           profile.base_ref,
-          profile.parent_lane_id,
           profile.source_branch_ref,
           profile.created_at,
           profile.updated_at,
@@ -3161,36 +2972,6 @@ export function createLaneService({
       message: args.message,
       timestamp: new Date().toISOString()
     });
-  };
-
-  const resolveRebaseOrder = (args: { rootLaneId: string; scope: RebaseScope }): string[] => {
-    const activeRows = getAllLaneRows(false);
-    const childrenByParent = new Map<string, LaneRow[]>();
-    for (const row of activeRows) {
-      if (!row.parent_lane_id) continue;
-      const arr = childrenByParent.get(row.parent_lane_id) ?? [];
-      arr.push(row);
-      childrenByParent.set(row.parent_lane_id, arr);
-    }
-    for (const [parentId, children] of childrenByParent.entries()) {
-      childrenByParent.set(parentId, sortByCreatedAtAsc(children));
-    }
-
-    return args.scope === "lane_and_descendants"
-      ? collectDepthFirstIds({ rootLaneId: args.rootLaneId, childrenByParent, includeSelf: true })
-      : [args.rootLaneId];
-  };
-
-  const resolveRootAncestorId = (rowsById: Map<string, LaneRow>, laneId: string): string => {
-    let currentId = laneId;
-    const visited = new Set<string>();
-    while (!visited.has(currentId)) {
-      visited.add(currentId);
-      const row = rowsById.get(currentId);
-      if (!row?.parent_lane_id) return currentId;
-      currentId = row.parent_lane_id;
-    }
-    return laneId;
   };
 
   const getStoredRebaseRun = (runId: string): RebaseRun => {
@@ -3510,9 +3291,9 @@ export function createLaneService({
         `
           insert into lanes(
             id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+            attached_root_path, is_edit_protected, color, icon, tags_json, status, created_at, archived_at
           )
-          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, null, ?, null, null, 'active', ?, null)
+          values(?, ?, ?, null, 'worktree', ?, ?, ?, null, 0, ?, null, null, 'active', ?, null)
         `,
         [laneId, projectId, displayName, defaultBaseRef, branchRef, worktreePath, laneColor, now]
       );
@@ -3522,7 +3303,6 @@ export function createLaneService({
         upsertBranchProfileForRow(row, {
           branchRef,
           baseRef: defaultBaseRef,
-          parentLaneId: null,
         });
       }
       recoveredCount += 1;
@@ -3648,7 +3428,7 @@ export function createLaneService({
   /**
        * Fold a duplicate lane's user-visible data onto the keeper, then cascade the
        * duplicate row away. Sessions (and their session-scoped Linear and GitHub
-       * links), child lanes, branch profiles, the lane's primary Linear issue, and
+       * links), branch profiles, the lane's primary Linear issue, and
        * additional Linear issue links are all re-pointed first so nothing the user
        * attached to the soon-to-be-deleted row is lost. The caller MUST run this
        * inside a transaction (both call sites already hold `begin immediate`) and
@@ -3670,17 +3450,6 @@ export function createLaneService({
       projectId,
     ]);
     db.run("update session_jira_issues set lane_id = ? where lane_id = ? and project_id = ?", [
-      keeperId,
-      duplicateId,
-      projectId,
-    ]);
-    // Child lanes / branch profiles re-parent onto the keeper.
-    db.run("update lanes set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
-      keeperId,
-      duplicateId,
-      projectId,
-    ]);
-    db.run("update lane_branch_profiles set parent_lane_id = ? where parent_lane_id = ? and project_id = ?", [
       keeperId,
       duplicateId,
       projectId,
@@ -3909,9 +3678,9 @@ export function createLaneService({
       `
         insert into lanes(
           id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          attached_root_path, is_edit_protected, color, icon, tags_json, status, created_at, archived_at
         )
-        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, null, ?, null, null, 'active', ?, null)
+        values(?, ?, ?, ?, 'primary', ?, ?, ?, null, 1, ?, null, null, 'active', ?, null)
       `,
       // Primary does NOT draw from the allocation pool: its colour is reserved
       // ADE purple in every project on every machine, which is what makes it the
@@ -3955,7 +3724,6 @@ export function createLaneService({
       upsertBranchProfileForRow(row, {
         branchRef: detectedBranchRef,
         baseRef: primary.base_ref,
-        parentLaneId: null,
         lastCheckedOutAt: new Date().toISOString(),
       });
     }
@@ -3974,44 +3742,21 @@ export function createLaneService({
       upsertBranchProfileForRow(row, {
         branchRef: visit.branchRef,
         baseRef: row.base_ref,
-        parentLaneId: row.parent_lane_id,
         sourceBranchRef: row.branch_ref,
         lastCheckedOutAt: new Date(visit.lastVisitedAtMs).toISOString(),
       });
     },
   });
 
-  const repairPrimaryParentedRootLanes = (): void => {
-    const primary = getActivePrimaryLane();
-    if (!primary?.id) return;
-    const repairCount = Number(
-      db.get<{ count: number }>(
-        `
-          select count(1) as count
-          from lanes
-          where project_id = ?
-            and lane_type != 'primary'
-            and status != 'archived'
-            and parent_lane_id = ?
-        `,
-        [projectId, primary.id],
-      )?.count ?? 0,
-    );
-    if (repairCount <= 0) return;
-    db.run(
-      `
-        update lanes
-        set parent_lane_id = null,
-            base_ref = ?
-        where project_id = ?
-          and lane_type != 'primary'
-          and status != 'archived'
-          and parent_lane_id = ?
-      `,
-      [defaultBaseRef, projectId, primary.id],
-    );
-    invalidateLaneListCache();
-  };
+  /**
+   * The branch a lane compares against: its open PR's base branch, else the
+   * project's default branch. The primary lane keeps its recorded base (its
+   * status compares against its upstream instead).
+   */
+  const compareBaseForRow = (row: Pick<LaneRow, "id" | "lane_type" | "base_ref" | "branch_ref">): string =>
+    row.lane_type === "primary"
+      ? row.base_ref
+      : readLaneCompareBase({ db, projectId, laneId: row.id, branchRef: row.branch_ref, defaultBranch: defaultBaseRef });
 
   const repairLegacyPrimaryBaseRootLanes = (): void => {
     const normalizedDefaultBaseRef = defaultBaseRef.trim();
@@ -4024,7 +3769,6 @@ export function createLaneService({
           where l.project_id = ?
             and l.lane_type = 'worktree'
             and l.status != 'archived'
-            and l.parent_lane_id is null
             and l.branch_ref like 'ade/%'
             and trim(coalesce(l.base_ref, '')) != ?
             and not exists (
@@ -4047,7 +3791,6 @@ export function createLaneService({
         where project_id = ?
           and lane_type = 'worktree'
           and status != 'archived'
-          and parent_lane_id is null
           and branch_ref like 'ade/%'
           and trim(coalesce(base_ref, '')) != ?
           and not exists (
@@ -4106,8 +3849,10 @@ export function createLaneService({
     const computeResolvedStatus = async (laneId: string): Promise<LaneStatus> => {
       const row = args.rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
-      const parentRow = row.parent_lane_id ? args.rowsById.get(row.parent_lane_id) : null;
-      const statusInputs = [row.worktree_path, row.branch_ref, row.base_ref, row.lane_type, parentRow?.branch_ref ?? ""].join("\0");
+      // A lane compares against its open PR's base branch, else the project's
+      // default branch. The primary lane compares against its upstream below.
+      const compareBase = compareBaseForRow(row);
+      const statusInputs = [row.worktree_path, row.branch_ref, compareBase, row.lane_type].join("\0");
       const maxAgeMs = args.statusMaxAgeMs ?? 0;
       if (maxAgeMs > 0) {
         const remembered = recentLaneStatus.get(laneId);
@@ -4127,12 +3872,12 @@ export function createLaneService({
         statusCache.set(laneId, status);
         return status;
       }
-      const parent = row.parent_lane_id ? args.rowsById.get(row.parent_lane_id) : null;
-      let baseRef = rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref;
+      let baseRef = compareBase;
+      let compareBaseName = branchNameFromLaneRef(compareBase);
 
-      // For primary lanes with no parent, compare against the upstream tracking ref
-      // instead of base_ref (which equals branchRef, giving 0 behind).
-      if (!parent && row.lane_type === "primary") {
+      // The primary lane compares against its upstream tracking ref instead of
+      // base_ref (which equals branchRef, giving 0 behind).
+      if (row.lane_type === "primary") {
         // A ref SHA like any other: the repo cache keeps it for one refresh's
         // window and drops it on any git write.
         const upstreamRes = await runGitRepoCached(
@@ -4142,6 +3887,7 @@ export function createLaneService({
         );
         if (upstreamRes.exitCode === 0 && upstreamRes.stdout.trim()) {
           baseRef = upstreamRes.stdout.trim();
+          compareBaseName = branchNameFromLaneRef(row.branch_ref);
         } else {
           const originRes = await runGit(
             ["rev-parse", "--verify", `origin/${row.branch_ref}`],
@@ -4149,6 +3895,7 @@ export function createLaneService({
           );
           if (originRes.exitCode === 0 && originRes.stdout.trim()) {
             baseRef = originRes.stdout.trim();
+            compareBaseName = branchNameFromLaneRef(row.branch_ref);
           }
         }
       }
@@ -4159,6 +3906,7 @@ export function createLaneService({
       const status = await computeServiceLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
         worktreeRootVerified: true,
       });
+      if (compareBaseName) status.compareBase = compareBaseName;
       statusCache.set(laneId, status);
       recentLaneStatus.set(laneId, { status: cloneLaneStatus(status), at: computedAt, inputs: statusInputs });
       return status;
@@ -4200,11 +3948,6 @@ export function createLaneService({
       await syncPrimaryLaneBranchRef();
     } catch (err) {
       logger.warn("laneService.syncPrimaryLaneBranchRef_failed", { error: err instanceof Error ? err.message : String(err) });
-    }
-    try {
-      repairPrimaryParentedRootLanes();
-    } catch (err) {
-      logger.warn("laneService.repairPrimaryParentedRootLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       repairLegacyPrimaryBaseRootLanes();
@@ -4262,10 +4005,7 @@ export function createLaneService({
 
     const rows = getAllLaneRows(includeArchived);
     const contextRows = getAllLaneRows(true);
-    const activeRows = contextRows.filter((row) => row.status !== "archived");
     const rowsById = new Map(contextRows.map((row) => [row.id, row] as const));
-    const depthMemo = new Map<string, number>();
-    const childCountMap = new Map<string, number>();
 
     // Fetch all lane_linear_issues in a single query and build a map keyed by
     // lane_id (latest by updated_at) — avoids an N+1 in the loop below.
@@ -4362,11 +4102,6 @@ export function createLaneService({
       // Non-fatal — linked issue metadata is additive.
     }
 
-    for (const row of activeRows) {
-      if (!row.parent_lane_id) continue;
-      childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
-    }
-
     const { resolveWorktreeAvailable, resolveStatus } = await createLaneStatusResolver({
       rows,
       rowsById,
@@ -4396,7 +4131,6 @@ export function createLaneService({
               if (await resolveWorktreeAvailable(row)) {
                 await resolveStatus(row.id);
               }
-              if (row.parent_lane_id) await resolveStatus(row.parent_lane_id);
             } catch {
               // Prewarm is best-effort. The ordered loop below re-requests the
               // same value and keeps the existing per-lane error handling.
@@ -4410,7 +4144,6 @@ export function createLaneService({
     for (const row of rows) {
       try {
         let status: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-        let parentStatus: LaneStatus | null = row.parent_lane_id ? cloneLaneStatus(DEFAULT_LANE_STATUS) : null;
         let worktreeAvailable: boolean | undefined;
 
         if (includeStatus) {
@@ -4425,29 +4158,12 @@ export function createLaneService({
             logger.warn("laneService.resolveStatus_failed", { laneId: row.id });
             status = cloneLaneStatus(DEFAULT_LANE_STATUS);
           }
-          if (row.parent_lane_id) {
-            try {
-              parentStatus = await resolveStatus(row.parent_lane_id);
-            } catch {
-              logger.warn("laneService.resolveStatus_failed", { laneId: row.parent_lane_id, context: "parent" });
-              parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-            }
-          }
         }
 
-        let stackDepth = 0;
-        try {
-          stackDepth = computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo });
-        } catch {
-          logger.warn("laneService.computeStackDepth_failed", { laneId: row.id });
-        }
         out.push(
           toLaneSummary({
             row,
             status,
-            parentStatus,
-            childCount: childCountMap.get(row.id) ?? 0,
-            stackDepth,
             worktreeAvailable,
             activeBranchProfile: ensureBranchProfileForRow(row),
             linearIssue: linearIssueByLaneId.get(row.id) ?? null,
@@ -4520,7 +4236,6 @@ export function createLaneService({
     description?: string;
     baseRef: string;
     startPoint: string;
-    parentLaneId: string | null;
     folder?: string;
     branchName?: string | null;
     linearIssue?: LaneLinearIssue | null;
@@ -4618,9 +4333,9 @@ export function createLaneService({
             `
               insert into lanes(
                 id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, folder, status, created_at, archived_at
+                attached_root_path, is_edit_protected, color, icon, tags_json, folder, status, created_at, archived_at
               )
-              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, ?, 'active', ?, null)
+              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, ?, 'active', ?, null)
             `,
             [
               laneId,
@@ -4630,7 +4345,6 @@ export function createLaneService({
               args.baseRef,
               branchRef,
               worktreePath,
-              args.parentLaneId,
               laneColor,
               args.folder ?? null,
               now
@@ -4703,25 +4417,11 @@ export function createLaneService({
 
     const row = getLaneRow(laneId);
     if (!row) throw new Error(`Failed to create lane: ${laneId}`);
-    const rowsById = new Map(getAllLaneRows(true).map((entry) => [entry.id, entry] as const));
     const status = await computeServiceLaneStatus(worktreePath, args.baseRef, branchRef);
-    const parentStatus = args.parentLaneId
-      ? await (async () => {
-        const parentId = args.parentLaneId;
-        if (!parentId) return null;
-        const parent = rowsById.get(parentId);
-        if (!parent) return null;
-        const grandParent = parent.parent_lane_id ? rowsById.get(parent.parent_lane_id) : null;
-        return await computeServiceLaneStatus(parent.worktree_path, grandParent?.branch_ref ?? parent.base_ref, parent.branch_ref);
-      })()
-      : null;
 
     const summary = toLaneSummary({
       row,
       status,
-      parentStatus,
-      childCount: 0,
-      stackDepth: computeStackDepth({ laneId: laneId, rowsById, memo: new Map() }),
       activeBranchProfile: ensureBranchProfileForRow(row),
       linearIssue,
       linearIssueLinks: getLaneLinearIssueLinks(laneId),
@@ -4811,21 +4511,6 @@ export function createLaneService({
       activeWork,
       targetProfile: targetProfile ? toLaneBranchProfile(targetProfile) : null,
     };
-  };
-
-  const isDescendant = (rowsById: Map<string, LaneRow>, laneId: string, possibleDescendantId: string): boolean => {
-    const queue = [laneId];
-    const visited = new Set<string>();
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      if (visited.has(current)) continue;
-      visited.add(current);
-      if (current === possibleDescendantId) return true;
-      for (const row of rowsById.values()) {
-        if (row.parent_lane_id === current) queue.push(row.id);
-      }
-    }
-    return false;
   };
 
   const deleteProgressByLaneId = new Map<string, LaneDeleteProgress>();
@@ -4968,7 +4653,7 @@ export function createLaneService({
   };
 
   /**
-   * Stop handles for lane git writes in flight. Create, child create, import
+   * Stop handles for lane git writes in flight. Create, import
    * and branch switch register under the caller's operation id, and
    * `cancelGitWrite` aborts them; a delete registers under its lane id for
    * `cancelDelete`. The prefixes keep a caller's id from naming a delete.
@@ -5211,11 +4896,6 @@ export function createLaneService({
       });
     }
 
-    db.run("update lanes set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update lane_branch_profiles set parent_lane_id = null where parent_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
-
     // Soft-detach rather than delete: the PR outlives the lane, and deleting the row is
     // what made every merged PR show up as `unmapped` once its lane was cleaned up.
     // Runs before the session/artifact/checkpoint deletes below, because it counts them.
@@ -5363,8 +5043,6 @@ export function createLaneService({
     db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from test_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from rebase_deferred where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from rebase_dismissed where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_state_snapshots where lane_id = ?", [laneId]);
     db.run("delete from lane_branch_profiles where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_worktree_locks where lane_id = ?", [laneId]);
@@ -5595,17 +5273,6 @@ export function createLaneService({
       throw new Error("Primary lane cannot be archived");
     }
     if (row.status === "archived") return null;
-
-    const activeGroupMember = db.get<{ group_id: string }>(
-      `select m.group_id from pr_group_members m
-       join pr_groups g on g.id = m.group_id
-       where m.lane_id = ? and g.project_id = ?
-       limit 1`,
-      [laneId, projectId]
-    );
-    if (activeGroupMember) {
-      throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
-    }
     return row;
   };
 
@@ -5727,12 +5394,6 @@ export function createLaneService({
         error: error instanceof Error ? error.message : String(error),
       });
     };
-    try {
-      teardownDeps?.autoRebaseService?.cancelForLane(laneId);
-    } catch (error) { warn("cancel_auto_rebase", error); }
-    try {
-      await teardownDeps?.rebaseSuggestionService?.dismiss({ laneId });
-    } catch (error) { warn("dismiss_rebase_suggestion", error); }
     try {
       await teardownDeps?.agentChatService?.disposeForLane(laneId);
     } catch (error) { warn("stop_chats", error); }
@@ -5879,9 +5540,7 @@ export function createLaneService({
       if (!row) return null;
 
       const rowsById = getRowsById(true);
-      const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) ?? null : null;
       let status: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-      let parentStatus: LaneStatus | null = parent ? cloneLaneStatus(DEFAULT_LANE_STATUS) : null;
       let worktreeAvailable: boolean | undefined;
 
       if (options.includeStatus !== false) {
@@ -5902,15 +5561,6 @@ export function createLaneService({
           status = cloneLaneStatus(DEFAULT_LANE_STATUS);
         }
 
-        if (parent) {
-          try {
-            parentStatus = await resolveStatus(parent.id);
-          } catch {
-            logger.warn("laneService.getSummary.parent_status_failed", { laneId, parentLaneId: parent.id });
-            parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-          }
-        }
-
         upsertLaneStateSnapshot({
           laneId: row.id,
           status,
@@ -5921,9 +5571,6 @@ export function createLaneService({
       return toLaneSummary({
         row,
         status,
-        parentStatus,
-        childCount: getChildrenRows(row.id, false).length,
-        stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: new Map() }),
         worktreeAvailable,
         activeBranchProfile: ensureBranchProfileForRow(row),
         linearIssue: getLaneLinearIssue(row.id),
@@ -6544,8 +6191,7 @@ export function createLaneService({
       {
         name,
         description,
-        parentLaneId,
-        baseBranch,
+        start,
         branchName,
         startPoint,
         linearIssue,
@@ -6558,328 +6204,100 @@ export function createLaneService({
       const gitWrite = beginLaneGitWrite(operationId, runtimeOptions.signal);
       runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
       try {
+        const issues = { linearIssue, githubIssue, jiraIssue };
         const requestedStartPoint = startPoint?.trim() ?? "";
-        if (parentLaneId) {
-          const parent = getLaneRow(parentLaneId);
-          if (!parent) throw new Error(`Parent lane not found: ${parentLaneId}`);
-          if (parent.status === "archived") throw new Error("Parent lane is archived");
-
-          const trimmedBaseBranch = baseBranch?.trim() ?? "";
-          const requestedBaseRef = parent.lane_type === "primary"
-            ? (trimmedBaseBranch.length > 0 ? trimmedBaseBranch : defaultBaseRef)
-            : parent.branch_ref;
-
-          // If we are branching directly from the current primary checkout, ensure
-          // it is in sync with remote before using it as the base.
-          if (!requestedStartPoint && parent.lane_type === "primary" && requestedBaseRef === parent.branch_ref) {
-            await runGitWithGithubAuthFallbackOrThrow(["fetch", "--prune"], {
-              cwd: parent.worktree_path,
-              timeoutMs: GIT_REMOTE_FETCH_TIMEOUT_MS,
-              signal: gitWrite.signal,
-              cancelMessage: LANE_CREATE_CANCEL_MESSAGE,
-            });
-            const upstreamRes = await runGit(["rev-parse", "@{upstream}"], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-            if (upstreamRes.exitCode === 0) {
-              const behindRes = await runGit(["rev-list", "HEAD..@{upstream}", "--count"], {
-                cwd: parent.worktree_path,
-                timeoutMs: 10_000
-              });
-              if (behindRes.exitCode === 0) {
-                const behindCount = parseInt(behindRes.stdout.trim(), 10);
-                if (behindCount > 0) {
-                  throw new Error(
-                    `Primary branch is behind remote by ${behindCount} commit(s). Pull/sync before creating a new lane.`
-                  );
-                }
-              }
-            }
-          }
-          let parentHeadSha: string | null;
-          if (requestedStartPoint) {
-            const result = await runGit(["rev-parse", "--verify", requestedStartPoint], {
-              cwd: parent.worktree_path,
-              timeoutMs: 10_000,
-            });
-            if (result.exitCode !== 0 || !result.stdout.trim().length) {
-              throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
-            }
-            parentHeadSha = result.stdout.trim();
-          } else if (parent.lane_type === "primary") {
-            const result = await runGit(["rev-parse", requestedBaseRef], { cwd: parent.worktree_path, timeoutMs: 10_000 });
-            if (result.exitCode !== 0 || !result.stdout.trim().length) {
-              throw new Error(`Base branch not found on primary lane: ${requestedBaseRef}`);
-            }
-            parentHeadSha = result.stdout.trim();
-          } else {
-            parentHeadSha = await getHeadSha(parent.worktree_path);
-          }
-          if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
-          return await createWorktreeLane({
+        if (requestedStartPoint) {
+          // An exact commit (History's "create a lane here"): no start resolution.
+          const headRes = await runGit(["rev-parse", "--verify", `${requestedStartPoint}^{commit}`], { cwd: projectRoot, timeoutMs: 10_000 });
+          const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
+          if (!resolvedHead) throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+          const lane = await createWorktreeLane({
             name,
             description,
-            baseRef: requestedBaseRef,
-            startPoint: parentHeadSha,
-            parentLaneId: parent.lane_type === "primary" ? null : parent.id,
+            baseRef: defaultBaseRef,
+            startPoint: resolvedHead,
             branchName,
-            linearIssue,
-            githubIssue,
-            jiraIssue,
+            ...issues,
           }, runtimeOptions);
+          return {
+            ...lane,
+            createdFrom: {
+              start: null,
+              sourceBranch: "",
+              startRef: requestedStartPoint,
+              startSha: resolvedHead,
+              copiedFiles: 0,
+              copiedFromLaneName: null,
+              notes: [],
+            },
+          };
         }
 
-        // No parent specified: branch from defaultBaseRef. Resolve the exact SHA to avoid stale refs.
-        const trimmedBase = baseBranch?.trim() ?? "";
-        const requestedBaseRef = trimmedBase.length > 0 ? trimmedBase : defaultBaseRef;
-        const startRef = requestedStartPoint || requestedBaseRef;
-        const headRes = await runGit(
-          requestedStartPoint ? ["rev-parse", "--verify", requestedStartPoint] : ["rev-parse", requestedBaseRef],
-          { cwd: projectRoot, timeoutMs: 10_000 },
-        );
-        const resolvedHead = headRes.exitCode === 0 ? headRes.stdout.trim() : "";
-        if (requestedStartPoint && !resolvedHead) {
-          throw new Error(`Start point not found for new lane: ${requestedStartPoint}`);
+        let effectiveStart = getNewLaneDefaultsForCreate().start;
+        if (start != null) {
+          const requestedStart = normalizeLaneStart(start);
+          if (!requestedStart) throw new Error("Invalid lane start.");
+          effectiveStart = requestedStart;
         }
-        const resolvedStartPoint = resolvedHead || startRef;
+        const rows = getAllLaneRows(false);
+        const folders: LaneStartFolder[] = rows
+          .filter((row) => row.worktree_path && row.branch_ref)
+          .map((row) => ({ name: row.name, branchRef: row.branch_ref, worktreePath: row.worktree_path }));
+        const primaryRow = rows.find((row) => row.lane_type === "primary") ?? null;
+        const resolved = await resolveLaneStart({
+          start: effectiveStart,
+          projectRoot,
+          defaultBranch: defaultBaseRef,
+          primary: primaryRow
+            ? { name: primaryRow.name, branchRef: primaryRow.branch_ref, worktreePath: primaryRow.worktree_path }
+            : null,
+          folders,
+          skipFetch: runtimeOptions.skipStartFetch === true,
+        });
 
-        return await createWorktreeLane({
+        const lane = await createWorktreeLane({
           name,
           description,
-          baseRef: requestedBaseRef,
-          startPoint: resolvedStartPoint,
-          parentLaneId: null,
+          baseRef: defaultBaseRef,
+          startPoint: resolved.startSha,
           branchName,
-          linearIssue,
-          githubIssue,
-          jiraIssue,
+          ...issues,
         }, runtimeOptions);
+
+        const notes = [...resolved.notes];
+        let copiedFiles = 0;
+        if (resolved.copyFrom && lane.worktreePath) {
+          try {
+            // Copy only from a folder that really is that worktree's root; a
+            // stale path could point into another repository.
+            await assertExpectedGitWorktreeRoot(resolved.copyFrom.worktreePath);
+            copiedFiles = await copyUncommittedChanges({ fromPath: resolved.copyFrom.worktreePath, toPath: lane.worktreePath });
+            if (copiedFiles === 0) notes.push(`${resolved.copyFrom.name} had no uncommitted changes to copy.`);
+          } catch (error) {
+            // The lane is real and usable; only the copy failed. Say so rather
+            // than throwing away a worktree the user can still work in.
+            notes.push(error instanceof Error ? error.message : String(error));
+            logger.warn("lanes.create.copy_uncommitted_failed", {
+              laneId: lane.id,
+              from: resolved.copyFrom.worktreePath,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+        return {
+          ...lane,
+          createdFrom: {
+            start: effectiveStart,
+            sourceBranch: resolved.sourceBranch,
+            startRef: resolved.startRef,
+            startSha: resolved.startSha,
+            copiedFiles,
+            copiedFromLaneName: copiedFiles > 0 ? resolved.copyFrom?.name ?? null : null,
+            notes,
+          },
+        };
       } finally {
         gitWrite.end();
-      }
-    },
-
-    async createChild(
-      args: CreateChildLaneArgs,
-      runtimeOptions: LaneCreateRuntimeOptions = {},
-    ): Promise<LaneSummary> {
-      const gitWrite = beginLaneGitWrite(args.operationId, runtimeOptions.signal);
-      runtimeOptions = { ...runtimeOptions, signal: gitWrite.signal };
-      try {
-        const parent = getLaneRow(args.parentLaneId);
-        if (!parent) throw new Error(`Parent lane not found: ${args.parentLaneId}`);
-        if (parent.status === "archived") throw new Error("Parent lane is archived");
-
-        const trimmedBaseBranchRef = args.baseBranchRef?.trim() ?? "";
-        const hasOverride = trimmedBaseBranchRef.length > 0 && trimmedBaseBranchRef !== parent.branch_ref;
-
-        if (hasOverride) {
-          let localBranchName = trimmedBaseBranchRef;
-          const localExists = await runGit(
-            ["show-ref", "--verify", "--quiet", `refs/heads/${trimmedBaseBranchRef}`],
-            { cwd: projectRoot, timeoutMs: 8_000 },
-          ).then((r) => r.exitCode === 0);
-
-          if (!localExists) {
-            const resolved = await resolveImportBranchTarget({ projectRoot, rawRef: trimmedBaseBranchRef });
-            localBranchName = resolved.localBranchName;
-            const resolvedLocalExists = await runGit(
-              ["show-ref", "--verify", "--quiet", `refs/heads/${resolved.localBranchName}`],
-              { cwd: projectRoot, timeoutMs: 8_000 },
-            ).then((r) => r.exitCode === 0);
-            if (!resolvedLocalExists) {
-              await runGitOrThrow(
-                ["branch", "--track", resolved.localBranchName, resolved.remoteRef],
-                { cwd: projectRoot, timeoutMs: 15_000 },
-              );
-            }
-          }
-
-          const headRes = await runGit(["rev-parse", localBranchName], { cwd: projectRoot, timeoutMs: 10_000 });
-          const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
-            ? headRes.stdout.trim()
-            : localBranchName;
-
-          return await createWorktreeLane({
-            name: args.name,
-            description: args.description,
-            baseRef: localBranchName,
-            startPoint,
-            parentLaneId: parent.id,
-            folder: args.folder,
-            branchName: args.branchName,
-            linearIssue: args.linearIssue ?? null,
-          }, runtimeOptions);
-        }
-
-        if (parent.lane_type === "primary") {
-          const requestedBaseRef = defaultBaseRef;
-          const headRes = await runGit(["rev-parse", requestedBaseRef], { cwd: projectRoot, timeoutMs: 10_000 });
-          const startPoint = headRes.exitCode === 0 && headRes.stdout.trim().length
-            ? headRes.stdout.trim()
-            : requestedBaseRef;
-
-          return await createWorktreeLane({
-            name: args.name,
-            description: args.description,
-            baseRef: requestedBaseRef,
-            startPoint,
-            parentLaneId: null,
-            folder: args.folder,
-            branchName: args.branchName,
-            linearIssue: args.linearIssue ?? null,
-          }, runtimeOptions);
-        }
-
-        const parentHeadSha = await getHeadSha(parent.worktree_path);
-        if (!parentHeadSha) throw new Error(`Unable to resolve parent HEAD for lane ${parent.name}`);
-        return await createWorktreeLane({
-          name: args.name,
-          description: args.description,
-          baseRef: parent.branch_ref,
-          startPoint: parentHeadSha,
-          parentLaneId: parent.id,
-          folder: args.folder,
-          branchName: args.branchName,
-          linearIssue: args.linearIssue ?? null,
-        }, runtimeOptions);
-      } finally {
-        gitWrite.end();
-      }
-    },
-
-    async createFromUnstaged(args: CreateLaneFromUnstagedArgs): Promise<LaneSummary> {
-      const sourceLaneId = args.sourceLaneId.trim();
-      const name = args.name.trim();
-      if (!sourceLaneId) throw new Error("sourceLaneId is required");
-      if (!name) throw new Error("name is required");
-
-      const source = getLaneRow(sourceLaneId);
-      if (!source) throw new Error(`Lane not found: ${sourceLaneId}`);
-      if (source.status === "archived") throw new Error("Source lane is archived");
-
-      const sourceHeadSha = await getHeadSha(source.worktree_path);
-      if (!sourceHeadSha) throw new Error(`Unable to resolve HEAD for lane ${source.name}`);
-
-      const changeState = await inspectWorktreeChanges(source.worktree_path);
-      if (changeState.hasStaged) {
-        throw new Error("This lane has staged changes. Unstage all changes before moving unstaged work to a new lane.");
-      }
-      if (!changeState.hasUnstaged) {
-        throw new Error("This lane has no unstaged changes to move.");
-      }
-
-      const stashMarker = `ade-rescue-unstaged:${source.id}:${randomUUID()}`;
-      let stashRef: string | null = null;
-      let createdLaneId: string | null = null;
-
-      const restoreSourceStash = async (): Promise<void> => {
-        if (!stashRef) return;
-        await runGitOrThrow(["stash", "apply", stashRef], {
-          cwd: source.worktree_path,
-          timeoutMs: 30_000,
-        });
-        await runGitOrThrow(["stash", "drop", stashRef], {
-          cwd: source.worktree_path,
-          timeoutMs: 15_000,
-        });
-        stashRef = null;
-      };
-
-      const cleanupCreatedLane = async (laneId: string): Promise<void> => {
-        const row = getLaneRow(laneId);
-        if (!row) return;
-
-        if (row.lane_type === "worktree" && row.worktree_path && fs.existsSync(row.worktree_path)) {
-          await runGitWorktreeMutation(() =>
-            runGitOrThrow(["worktree", "remove", "--force", row.worktree_path], {
-              cwd: projectRoot,
-              timeoutMs: 60_000,
-            })
-          );
-        }
-
-        if (row.branch_ref) {
-          const refCheck = await runGit(["show-ref", "--verify", "--quiet", `refs/heads/${row.branch_ref}`], {
-            cwd: projectRoot,
-            timeoutMs: 8_000,
-          });
-          if (refCheck.exitCode === 0) {
-            await runGitOrThrow(["branch", "-D", row.branch_ref], { cwd: projectRoot, timeoutMs: 30_000 });
-          }
-        }
-
-        db.run("delete from lane_linear_issues where lane_id = ? and project_id = ?", [laneId, projectId]);
-        db.run("delete from lane_linear_issue_links where lane_id = ? and project_id = ?", [laneId, projectId]);
-        db.run("delete from lanes where id = ? and project_id = ?", [laneId, projectId]);
-        invalidateLaneListCache();
-      };
-
-      try {
-        await runGitOrThrow(["stash", "push", "--keep-index", "-u", "-m", stashMarker], {
-          cwd: source.worktree_path,
-          timeoutMs: 30_000,
-        });
-        const stashEntry = (await listGitStashes(source.worktree_path)).find((entry) => entry.subject.includes(stashMarker));
-        if (!stashEntry) {
-          throw new Error("Created a temporary stash, but could not resolve it.");
-        }
-        stashRef = stashEntry.ref;
-
-        const createdLane = await createWorktreeLane({
-          name,
-          baseRef: source.branch_ref,
-          startPoint: sourceHeadSha,
-          parentLaneId: source.id,
-        });
-        createdLaneId = createdLane.id;
-
-        try {
-          await runGitOrThrow(["stash", "apply", stashRef], {
-            cwd: createdLane.worktreePath,
-            timeoutMs: 30_000,
-          });
-        } catch (error) {
-          const cleanupErrors: string[] = [];
-          try {
-            await cleanupCreatedLane(createdLane.id);
-          } catch (cleanupError) {
-            cleanupErrors.push(`cleanup lane failed: ${cleanupError instanceof Error ? cleanupError.message : String(cleanupError)}`);
-          }
-          try {
-            await restoreSourceStash();
-          } catch (restoreError) {
-            cleanupErrors.push(`restore source changes failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`);
-          }
-          const cleanupMessage = cleanupErrors.length ? ` ${cleanupErrors.join(" ")}` : "";
-          throw new Error(
-            `Couldn't move unstaged changes to the new lane. ${error instanceof Error ? error.message : String(error)}${cleanupMessage}`.trim()
-          );
-        }
-
-        try {
-          await runGitOrThrow(["stash", "drop", stashRef], {
-            cwd: source.worktree_path,
-            timeoutMs: 15_000,
-          });
-          stashRef = null;
-        } catch (error) {
-          logger.warn("laneService.drop_rescue_stash_failed", { error: error instanceof Error ? error.message : String(error) });
-        }
-
-        const refreshedLane = (await listLanes({ includeArchived: false, includeStatus: true })).find(
-          (lane) => lane.id === createdLane.id,
-        );
-        return refreshedLane ?? createdLane;
-      } catch (error) {
-        if (stashRef && !createdLaneId) {
-          try {
-            await restoreSourceStash();
-          } catch (restoreError) {
-            throw new Error(
-              `${error instanceof Error ? error.message : String(error)} Source changes could not be restored: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}`
-            );
-          }
-        }
-        throw error;
       }
     },
 
@@ -6889,8 +6307,6 @@ export function createLaneService({
         name?: string;
         description?: string;
         baseBranch?: string;
-        /** Record an existing lane as this lane's parent without rebasing. */
-        parentLaneId?: string | null;
         /**
          * Push the branch to origin when it tracks nothing. Default true. A
          * cross-machine move carrying unpushed commits passes false: arriving
@@ -6905,10 +6321,6 @@ export function createLaneService({
       const rawRef = (args.branchRef ?? "").trim();
       if (!rawRef) throw new Error("branchRef is required");
       if (rawRef.includes("\0")) throw new Error("Invalid branchRef");
-      const parentLaneId = args.parentLaneId?.trim() || null;
-      const parent = parentLaneId ? getLaneRow(parentLaneId) : null;
-      if (parentLaneId && !parent) throw new Error(`Parent lane not found in this project: ${parentLaneId}`);
-      if (parent && parent.status === "archived") throw new Error("Parent lane is archived");
 
       let branchRef = rawRef;
       let remoteRefToTrack: string | null = null;
@@ -7005,14 +6417,8 @@ export function createLaneService({
         worktreeAdded = true;
         refreshNewWorktreeIndexSoon(worktreePath);
 
-        // Preserve a remote lane tree by recording the parent directly. This
-        // import intentionally uses the given branch as-is and never rebases.
-        // A primary parent is a root lane, as in `createChild`; a lane parent
-        // is also the base its status is counted against.
-        const recordedParentLaneId = parent && parent.lane_type !== "primary" ? parent.id : null;
-        const baseRef = args.baseBranch?.trim()
-          || (parent && parent.lane_type !== "primary" ? parent.branch_ref : null)
-          || defaultBaseRef;
+        // The import uses the given branch as-is and never rebases.
+        const baseRef = args.baseBranch?.trim() || defaultBaseRef;
         const laneColor = allocateLaneColorForProject();
 
         db.run("begin immediate");
@@ -7021,11 +6427,11 @@ export function createLaneService({
             `
               insert into lanes(
                 id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-                attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+                attached_root_path, is_edit_protected, color, icon, tags_json, status, created_at, archived_at
               )
-              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, ?, null, null, 'active', ?, null)
+              values(?, ?, ?, ?, 'worktree', ?, ?, ?, null, 0, ?, null, null, 'active', ?, null)
             `,
-            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, recordedParentLaneId, laneColor, now]
+            [laneId, projectId, displayName, args.description ?? null, baseRef, branchRef, worktreePath, laneColor, now]
           );
 
           const racedAdoptionRows = db.all<{ id: string }>(
@@ -7074,9 +6480,7 @@ export function createLaneService({
 
         const row = getLaneRow(laneId);
         if (!row) throw new Error(`Failed to import lane: ${laneId}`);
-        const rowsById = getRowsById(true);
         const status = await computeServiceLaneStatus(worktreePath, baseRef, branchRef);
-        const parentStatus = parent ? await computeServiceLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref) : null;
 
         if (onHeadChanged) {
           try {
@@ -7095,9 +6499,6 @@ export function createLaneService({
         const summary = toLaneSummary({
           row,
           status,
-          parentStatus,
-          childCount: 0,
-          stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() }),
           activeBranchProfile: ensureBranchProfileForRow(row)
         });
         broadcastLifecycleEvent({
@@ -7112,34 +6513,15 @@ export function createLaneService({
         if (laneInserted) {
           const persistedRow = getLaneRow(laneId);
           if (!persistedRow) throw error;
-          const rowsById = getRowsById(true);
           let status: Awaited<ReturnType<typeof computeLaneStatus>> | null = null;
-          let parentStatus: Awaited<ReturnType<typeof computeLaneStatus>> | null = null;
-          let stackDepth = 0;
           try {
             status = await computeServiceLaneStatus(worktreePath, persistedRow.base_ref, branchRef);
           } catch {
             status = null;
           }
-          try {
-            const parent = persistedRow.parent_lane_id ? getLaneRow(persistedRow.parent_lane_id) : null;
-            if (parent) {
-              parentStatus = await computeServiceLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref);
-            }
-          } catch {
-            parentStatus = null;
-          }
-          try {
-            stackDepth = computeStackDepth({ laneId, rowsById, memo: new Map() });
-          } catch {
-            stackDepth = 0;
-          }
           return toLaneSummary({
             row: persistedRow,
             status: status ?? cloneLaneStatus(DEFAULT_LANE_STATUS),
-            parentStatus,
-            childCount: 0,
-            stackDepth,
           });
         }
 
@@ -7294,7 +6676,6 @@ export function createLaneService({
         let pendingProfileUpsert: {
           branchRef: string;
           baseRef: string;
-          parentLaneId: string | null;
           sourceBranchRef: string | null;
           lastCheckedOutAt: string;
         } | null = null;
@@ -7339,7 +6720,6 @@ export function createLaneService({
           pendingProfileUpsert = {
             branchRef: targetBranchRef,
             baseRef,
-            parentLaneId: null,
             sourceBranchRef: startPoint,
             lastCheckedOutAt: now,
           };
@@ -7381,7 +6761,6 @@ export function createLaneService({
           pendingProfileUpsert = {
             branchRef: targetBranchRef,
             baseRef: args.baseRef?.trim() || existingProfile?.baseRef || defaultBaseRef,
-            parentLaneId: existingProfile?.parentLaneId ?? null,
             sourceBranchRef: existingProfile?.sourceBranchRef ?? null,
             lastCheckedOutAt: now,
           };
@@ -7397,17 +6776,15 @@ export function createLaneService({
           }
           const targetProfile = getBranchProfileRow(row.id, targetBranchRef);
           const baseRef = targetProfile?.base_ref ?? args.baseRef?.trim() ?? defaultBaseRef;
-          const parentLaneId = targetProfile?.parent_lane_id ?? null;
           db.run(
             `
               update lanes
               set branch_ref = ?,
-                  base_ref = ?,
-                  parent_lane_id = ?
+                  base_ref = ?
               where id = ?
                 and project_id = ?
             `,
-            [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
+            [targetBranchRef, baseRef, row.id, projectId],
           );
           db.run("commit");
         } catch (err) {
@@ -7565,7 +6942,6 @@ export function createLaneService({
         upsertBranchProfileForRow(row, {
           branchRef: targetBranchRef,
           baseRef: existingProfile?.base_ref || row.base_ref || defaultBaseRef,
-          parentLaneId: existingProfile?.parent_lane_id ?? row.parent_lane_id,
           sourceBranchRef: existingProfile?.source_branch_ref ?? drift.expectedBranchRef,
           lastCheckedOutAt: new Date().toISOString(),
         });
@@ -7574,15 +6950,13 @@ export function createLaneService({
           `
             update lanes
             set branch_ref = ?,
-                base_ref = ?,
-                parent_lane_id = ?
+                base_ref = ?
             where id = ?
               and project_id = ?
           `,
           [
             targetBranchRef,
             profile?.base_ref ?? row.base_ref ?? defaultBaseRef,
-            profile?.parent_lane_id ?? row.parent_lane_id,
             row.id,
             projectId,
           ],
@@ -7668,171 +7042,7 @@ export function createLaneService({
       return { adopted: true, previousBranchRef: result.previousBranchRef, branchRef: result.branchRef };
     },
 
-    async getChildren(laneId: string): Promise<LaneSummary[]> {
-      // Query only children rows directly instead of fetching and filtering all lanes.
-      const childRows = getChildrenRows(laneId, false);
-      if (childRows.length === 0) return [];
-
-      const allRows = getAllLaneRows(true);
-      const rowsById = new Map(allRows.map((row) => [row.id, row] as const));
-      const activeRows = allRows.filter((row) => row.status !== "archived");
-      const depthMemo = new Map<string, number>();
-
-      // Count children of each child (grandchildren count)
-      const childCountMap = new Map<string, number>();
-      for (const row of activeRows) {
-        if (!row.parent_lane_id) continue;
-        childCountMap.set(row.parent_lane_id, (childCountMap.get(row.parent_lane_id) ?? 0) + 1);
-      }
-
-      // Resolve parent status for all children (they share the same parent)
-      const parentRow = rowsById.get(laneId);
-      let parentStatus: LaneStatus | null = null;
-      if (parentRow) {
-        const grandParent = parentRow.parent_lane_id ? rowsById.get(parentRow.parent_lane_id) : null;
-        try {
-          parentStatus = await computeServiceLaneStatus(
-            parentRow.worktree_path,
-            grandParent?.branch_ref ?? parentRow.base_ref,
-            parentRow.branch_ref
-          );
-        } catch {
-          parentStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-        }
-      }
-
-      const defaultStatus: LaneStatus = cloneLaneStatus(DEFAULT_LANE_STATUS);
-      const out: LaneSummary[] = [];
-      for (const row of childRows) {
-        let status: LaneStatus;
-        try {
-          const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-          status = await computeServiceLaneStatus(
-            row.worktree_path,
-            parent?.branch_ref ?? row.base_ref,
-            row.branch_ref
-          );
-        } catch {
-          status = defaultStatus;
-        }
-        out.push(
-          toLaneSummary({
-            row,
-            status,
-            parentStatus,
-            childCount: childCountMap.get(row.id) ?? 0,
-            stackDepth: computeStackDepth({ laneId: row.id, rowsById, memo: depthMemo }),
-            activeBranchProfile: ensureBranchProfileForRow(row),
-          })
-        );
-      }
-      return out;
-    },
-
-    async getStackChain(laneId: string): Promise<StackChainItem[]> {
-      const start = getLaneRow(laneId);
-      if (!start) throw new Error(`Lane not found: ${laneId}`);
-
-      let rootId = start.id;
-      let cursor: LaneRow | null = start;
-      const visited = new Set<string>();
-      while (cursor?.parent_lane_id && !visited.has(cursor.id)) {
-        visited.add(cursor.id);
-        const parent = getLaneRow(cursor.parent_lane_id);
-        if (!parent) break;
-        rootId = parent.id;
-        cursor = parent;
-      }
-
-      const chainRows = db.all<{
-        id: string;
-        name: string;
-        lane_type: LaneType;
-        branch_ref: string;
-        parent_lane_id: string | null;
-        base_ref: string;
-        worktree_path: string;
-        created_at: string;
-      }>(
-        `
-          with recursive stack as (
-            select id, parent_lane_id, 0 as depth
-            from lanes
-            where id = ? and project_id = ?
-            union all
-            select l.id, l.parent_lane_id, s.depth + 1
-            from lanes l
-            join stack s on l.parent_lane_id = s.id
-            where l.project_id = ? and l.status != 'archived'
-          )
-          select l.id, l.name, l.lane_type, l.branch_ref, l.parent_lane_id, l.base_ref, l.worktree_path, l.created_at
-          from stack s
-          join lanes l on l.id = s.id
-          where l.project_id = ?
-          order by l.created_at asc
-        `,
-        [rootId, projectId, projectId, projectId]
-      );
-
-      if (chainRows.length === 0) return [];
-      const rowsById = new Map(chainRows.map((row) => [row.id, row] as const));
-      const childrenByParent = new Map<string, LaneRow[]>();
-      for (const row of chainRows) {
-        if (!row.parent_lane_id) continue;
-        const arr = childrenByParent.get(row.parent_lane_id) ?? [];
-        const laneRow = getLaneRow(row.id);
-        if (!laneRow) continue;
-        arr.push(laneRow);
-        childrenByParent.set(row.parent_lane_id, arr);
-      }
-      for (const [parentId, children] of childrenByParent.entries()) {
-        childrenByParent.set(parentId, sortByCreatedAtAsc(children));
-      }
-
-      const statusCache = new Map<string, LaneStatus>();
-      const resolveStatus = async (row: {
-        id: string;
-        lane_type: LaneType;
-        parent_lane_id: string | null;
-        base_ref: string;
-        worktree_path: string;
-        branch_ref: string;
-      }): Promise<LaneStatus> => {
-        const cached = statusCache.get(row.id);
-        if (cached) return cached;
-        const parent = row.parent_lane_id ? rowsById.get(row.parent_lane_id) : null;
-        const status = await computeServiceLaneStatus(
-          row.worktree_path,
-          rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref,
-          row.branch_ref,
-        );
-        statusCache.set(row.id, status);
-        return status;
-      };
-
-      const out: StackChainItem[] = [];
-      const visit = async (id: string, depth: number): Promise<void> => {
-        const row = rowsById.get(id);
-        if (!row) return;
-        out.push({
-          laneId: row.id,
-          laneName: row.name,
-          branchRef: row.branch_ref,
-          depth,
-          parentLaneId: row.parent_lane_id,
-          status: await resolveStatus(row)
-        });
-        for (const child of childrenByParent.get(id) ?? []) {
-          await visit(child.id, depth + 1);
-        }
-      };
-
-      await visit(rootId, 0);
-      return out;
-    },
-
     async rebaseStart(args: RebaseStartArgs): Promise<RebaseStartResult> {
-      const scope: RebaseScope = args.scope ?? "lane_and_descendants";
       const pushMode: PushMode = args.pushMode ?? "none";
       const actor = typeof args.actor === "string" && args.actor.trim().length ? args.actor.trim() : "user";
       const reason = typeof args.reason === "string" && args.reason.trim().length ? args.reason.trim() : "rebase";
@@ -7841,49 +7051,40 @@ export function createLaneService({
 
       const target = getLaneRow(args.laneId);
       if (!target) throw new Error(`Lane not found: ${args.laneId}`);
-      const targetParent = target.parent_lane_id ? getLaneRow(target.parent_lane_id) : null;
-      if (persistBaseBranch && rowTracksParent(target, targetParent)) {
-        throw new Error("Cannot persist a base branch override for a parented lane.");
-      }
+      // Rebase onto the lane's compare base (its open PR's base branch, else
+      // the default branch) unless the caller names another branch.
+      const compareBase = compareBaseForRow(target);
+      const rebaseOnto = baseBranchOverride || compareBase;
 
       const runId = randomUUID();
       const startedAt = new Date().toISOString();
-      const order = resolveRebaseOrder({ rootLaneId: target.id, scope });
-      const rowsById = getRowsById(false);
-      const rootStackId = resolveRootAncestorId(rowsById, target.id);
       const conflictingRun = [...rebaseRuns.values()].find((existingRun) =>
-        existingRun.state === "running"
-        && resolveRootAncestorId(rowsById, existingRun.rootLaneId) === rootStackId
+        existingRun.state === "running" && existingRun.rootLaneId === target.id
       );
       if (conflictingRun) {
-        throw new Error(`A rebase run is already active for this lane stack (${conflictingRun.runId.slice(0, 8)}).`);
+        throw new Error(`A rebase run is already active for this lane (${conflictingRun.runId.slice(0, 8)}).`);
       }
 
-      const lanes: RebaseRunLane[] = order.map((laneId) => {
-        const lane = getLaneRow(laneId);
-        return {
-          laneId,
-          laneName: lane?.name ?? laneId,
-          parentLaneId: lane?.parent_lane_id ?? null,
-          status: "pending",
-          preHeadSha: null,
-          postHeadSha: null,
-          error: null,
-          conflictingFiles: [],
-          pushed: false
-        };
-      });
+      const lanes: RebaseRunLane[] = [{
+        laneId: target.id,
+        laneName: target.name,
+        status: "pending",
+        preHeadSha: null,
+        postHeadSha: null,
+        error: null,
+        conflictingFiles: [],
+        pushed: false
+      }];
 
       const run: RebaseRun = {
         runId,
         rootLaneId: target.id,
-        scope,
         pushMode,
         state: "running",
         startedAt,
         finishedAt: null,
         actor,
-        baseBranch: baseBranchOverride || target.base_ref,
+        baseBranch: rebaseOnto,
         lanes,
         currentLaneId: null,
         failedLaneId: null,
@@ -7895,7 +7096,7 @@ export function createLaneService({
       };
 
       rebaseRuns.set(runId, run);
-      emitRunLog({ runId, laneId: null, message: `Starting rebase run (${scope})` });
+      emitRunLog({ runId, laneId: null, message: `Starting rebase onto ${rebaseOnto}` });
       emitRunUpdated(run);
 
       const failRunAtLane = (laneItem: RebaseRunLane, laneId: string, index: number, errorMsg: string): void => {
@@ -7919,54 +7120,29 @@ export function createLaneService({
           continue;
         }
 
-        const isRootLane = index === 0 && lane.id === target.id;
         let parentHead = "";
         let parentTargetLabel = "";
         let operationMetadata: Record<string, unknown> = {
           runId,
           rootLaneId: target.id,
           reason,
-          recursive: scope === "lane_and_descendants",
-          scope,
           pushMode,
           actor,
         };
         try {
-          const parent = lane.parent_lane_id ? getLaneRow(lane.parent_lane_id) : null;
-          const tracksParent = rowTracksParent(lane, parent);
-          if (isRootLane && !tracksParent) {
-            const branchTarget = await resolveBranchRebaseTarget({
-              projectRoot,
-              branchRef: baseBranchOverride || lane.base_ref,
-              preferRemote: true,
-            });
-            parentHead = branchTarget.headSha;
-            parentTargetLabel = describeBranchRebaseTarget(branchTarget.branchName, branchTarget.label);
-            operationMetadata = {
-              ...operationMetadata,
-              baseBranchRef: branchTarget.branchName,
-              baseTargetRef: branchTarget.label,
-              baseHeadSha: branchTarget.headSha,
-            };
-          } else {
-            if (!lane.parent_lane_id || !tracksParent) {
-              failRunAtLane(laneItem, lane.id, index, `${lane.name} has no parent lane to rebase against.`);
-              break;
-            }
-            if (!parent) {
-              failRunAtLane(laneItem, lane.id, index, `Parent lane not found for ${lane.name}`);
-              break;
-            }
-            const parentTarget = await resolveParentRebaseTarget({ projectRoot, parent });
-            parentHead = parentTarget.headSha;
-            parentTargetLabel = describeParentRebaseTarget(parent, parentTarget.label);
-            operationMetadata = {
-              ...operationMetadata,
-              parentLaneId: parent.id,
-              parentBranchRef: parent.branch_ref,
-              parentHeadSha: parentHead,
-            };
-          }
+          const branchTarget = await resolveBranchRebaseTarget({
+            projectRoot,
+            branchRef: rebaseOnto,
+            preferRemote: true,
+          });
+          parentHead = branchTarget.headSha;
+          parentTargetLabel = describeBranchRebaseTarget(branchTarget.branchName, branchTarget.label);
+          operationMetadata = {
+            ...operationMetadata,
+            baseBranchRef: branchTarget.branchName,
+            baseTargetRef: branchTarget.label,
+            baseHeadSha: branchTarget.headSha,
+          };
         } catch (error) {
           failRunAtLane(
             laneItem,
@@ -8110,7 +7286,7 @@ export function createLaneService({
       }
       if (run.state === "completed" && persistBaseBranch && target.base_ref !== baseBranchOverride) {
         db.run(
-          "update lanes set parent_lane_id = null, base_ref = ? where id = ? and project_id = ?",
+          "update lanes set base_ref = ? where id = ? and project_id = ?",
           [baseBranchOverride, target.id, projectId],
         );
         invalidateLaneListCache();
@@ -8229,142 +7405,6 @@ export function createLaneService({
     getRebaseRun(runId: string): RebaseRun | null {
       const run = rebaseRuns.get(runId);
       return run ? cloneRebaseRun(run) : null;
-    },
-
-    async reparent({ laneId, newParentLaneId, stackBaseBranchRef }: ReparentLaneArgs): Promise<ReparentLaneResult> {
-      const lane = getLaneRow(laneId);
-      if (!lane) throw new Error(`Lane not found: ${laneId}`);
-      if (lane.lane_type === "primary") throw new Error("Primary lane cannot be reparented");
-
-      const newParent = getLaneRow(newParentLaneId);
-      if (!newParent) throw new Error(`Parent lane not found: ${newParentLaneId}`);
-      if (newParent.status === "archived") throw new Error("Parent lane is archived");
-      if (lane.id === newParent.id) throw new Error("Cannot reparent lane to itself");
-
-      const rowsById = getRowsById(true);
-      if (isDescendant(rowsById, lane.id, newParent.id)) {
-        throw new Error("Cannot reparent lane under one of its descendants");
-      }
-
-      const previousParentLaneId = lane.parent_lane_id;
-      const previousBaseRef = lane.base_ref;
-      const persistedParentLaneId = newParent.lane_type === "primary" ? null : newParent.id;
-      const stackBaseOverride = stackBaseBranchRef ? normalizeBranchName(stackBaseBranchRef).trim() : "";
-      const newBaseRef = stackBaseOverride || newParent.branch_ref;
-      if (lane.parent_lane_id === persistedParentLaneId && newBaseRef === previousBaseRef) {
-        const headSha = await getHeadSha(lane.worktree_path);
-        return {
-          laneId: lane.id,
-          previousParentLaneId,
-          newParentLaneId: newParent.id,
-          previousBaseRef,
-          newBaseRef: previousBaseRef,
-          preHeadSha: headSha,
-          postHeadSha: headSha,
-        };
-      }
-      const newParentTarget = stackBaseOverride
-        ? await resolveBranchRebaseTarget({ projectRoot, branchRef: stackBaseOverride, preferRemote: true })
-        : await resolveParentRebaseTarget({ projectRoot, parent: newParent });
-      const newParentHead = newParentTarget.headSha;
-      const preHeadSha = await getHeadSha(lane.worktree_path);
-
-      const operation = operationService?.start({
-        laneId: lane.id,
-        kind: "lane_reparent",
-        preHeadSha,
-        metadata: {
-          previousParentLaneId,
-          newParentLaneId: newParent.id,
-          previousBaseRef,
-          newBaseRef,
-          parentHeadSha: newParentHead
-        }
-      });
-
-      db.run(
-        "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
-        [persistedParentLaneId, newBaseRef, lane.id, projectId]
-      );
-      upsertBranchProfileForRow(lane, {
-        branchRef: lane.branch_ref,
-        baseRef: newBaseRef,
-        parentLaneId: persistedParentLaneId,
-      });
-      invalidateLaneListCache();
-
-      try {
-        // A lane that already contains the new parent's tip (it merged that
-        // parent in) needs only the record change. `git rebase` would still
-        // refuse on a dirty worktree, and it could rewrite merge commits.
-        const alreadyContainsParent = preHeadSha
-          ? (await runGit(["merge-base", "--is-ancestor", newParentHead, preHeadSha], {
-              cwd: lane.worktree_path,
-              timeoutMs: 15_000,
-            })).exitCode === 0
-          : false;
-        if (!alreadyContainsParent) {
-          await runGitOrThrow(["rebase", newParentHead], { cwd: lane.worktree_path, timeoutMs: 120_000 });
-        }
-      } catch (error) {
-        try {
-          await runGit(["rebase", "--abort"], { cwd: lane.worktree_path, timeoutMs: 20_000 });
-        } catch {
-          // ignore
-        }
-        db.run(
-          "update lanes set parent_lane_id = ?, base_ref = ? where id = ? and project_id = ?",
-          [previousParentLaneId, previousBaseRef, lane.id, projectId]
-        );
-        upsertBranchProfileForRow(lane, {
-          branchRef: lane.branch_ref,
-          baseRef: previousBaseRef,
-          parentLaneId: previousParentLaneId,
-        });
-        invalidateLaneListCache();
-        const message = error instanceof Error ? error.message : String(error);
-        if (operation?.operationId) {
-          const postHeadSha = await getHeadSha(lane.worktree_path);
-          operationService?.finish({
-            operationId: operation.operationId,
-            status: "failed",
-            postHeadSha,
-            metadataPatch: { error: message }
-          });
-        }
-        throw new Error(message);
-      }
-
-      const postHeadSha = await getHeadSha(lane.worktree_path);
-      if (operation?.operationId) {
-        operationService?.finish({
-          operationId: operation.operationId,
-          status: "succeeded",
-          postHeadSha
-        });
-      }
-      if (preHeadSha !== postHeadSha && onHeadChanged) {
-        try {
-          onHeadChanged({
-            laneId: lane.id,
-            reason: "reparent",
-            preHeadSha,
-            postHeadSha
-          });
-        } catch {
-          // ignore callback failures
-        }
-      }
-
-      return {
-        laneId: lane.id,
-        previousParentLaneId,
-        newParentLaneId: newParent.id,
-        previousBaseRef,
-        newBaseRef,
-        preHeadSha,
-        postHeadSha
-      };
     },
 
     rename({ laneId, name }: { laneId: string; name: string }): void {
@@ -9311,12 +8351,6 @@ export function createLaneService({
           logger.warn("lane.delete.operation_finish_failed", { laneId, status, error: error instanceof Error ? error.message : String(error) });
         }
       };
-      const childRows = getChildrenRows(laneId, false);
-      if (childRows.length > 0) {
-        finishDeleteOperation("failed", { error: "Lane has active child lanes." });
-        throw new AdeExpectedError("Cannot delete a lane with active child lanes. Delete or rebase/archive children first.", "user");
-      }
-
       const worktreeMetadataPath = row.worktree_path
         ? path.join(projectRoot, ".git", "worktrees", path.basename(row.worktree_path))
         : "";
@@ -9330,7 +8364,7 @@ export function createLaneService({
         (fs.existsSync(row.worktree_path) || worktreeRegistered);
       const stepNames: LaneDeleteStepName[] = [];
       if (hasWorktree) stepNames.push("git_status");
-      stepNames.push("cancel_auto_rebase", "stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
+      stepNames.push("stop_chats", "stop_ptys", "stop_watchers", "cleanup_env");
       if (hasWorktree) stepNames.push("git_worktree_remove");
       if (deleteBranch && row.branch_ref) stepNames.push("git_branch_delete");
       if (deleteRemoteBranch && row.branch_ref) stepNames.push("git_remote_branch_delete");
@@ -9448,15 +8482,6 @@ export function createLaneService({
             return { detail: unsavedWork ? "dirty (force enabled)" : "clean" };
           });
         }
-
-        await runStep("cancel_auto_rebase", async () => {
-          teardownDeps?.autoRebaseService?.cancelForLane(laneId);
-          try {
-            await teardownDeps?.rebaseSuggestionService?.dismiss({ laneId });
-          } catch {
-            // ignore
-          }
-        });
 
         await runStep("stop_chats", async () => {
           const svc = teardownDeps?.agentChatService;
@@ -9943,7 +8968,7 @@ export function createLaneService({
       return { cancelled: true };
     },
 
-    /** Stops the git checkout of a create, child create, import or branch switch started with this operation id. */
+    /** Stops the git checkout of a create, import or branch switch started with this operation id. */
     cancelGitWrite(args: CancelLaneGitWriteArgs): CancelLaneGitWriteResult {
       const operationId = typeof args?.operationId === "string" ? args.operationId.trim() : "";
       if (!operationId) throw new Error("operationId is required.");
@@ -10178,6 +9203,74 @@ export function createLaneService({
     },
 
     /**
+     * Late-bind the project's new-lane settings (defaults and templates) and
+     * the check that a template id exists, which needs the template service.
+     */
+    setNewLaneSettingsStore(
+      store: NewLaneSettingsStore | null,
+      options: { validateTemplateId?: ((templateId: string) => void) | null } = {},
+    ): void {
+      newLaneSettings = store;
+      validateNewLaneTemplateId = options.validateTemplateId ?? null;
+    },
+
+    /**
+     * How new lanes start in this project when the caller picks nothing:
+     * Auto-create lane, `ade lanes create` with no flags, and the New lane
+     * dialog's first choice all read this.
+     */
+    getNewLaneDefaults(): NewLaneDefaultsSnapshot {
+      const primary = getAllLaneRows(false).find((row) => row.lane_type === "primary") ?? null;
+      return {
+        defaults: getNewLaneDefaultsForCreate(),
+        scope: newLaneSettings?.scope() ?? { kind: "this-computer", repo: null },
+        defaultBranch: plainLaneStartBranch(defaultBaseRef),
+        primaryBranch: primary?.branch_ref ? plainLaneStartBranch(primary.branch_ref) : null,
+      };
+    },
+
+    /** The project's default branch, e.g. `main`. */
+    getDefaultBranch(): string {
+      return branchNameFromLaneRef(defaultBaseRef) || defaultBaseRef;
+    },
+
+    /**
+     * The branch a lane compares against for ahead/behind, conflicts, rebases
+     * and a new PR's base: its open PR's base branch, else the project's
+     * default branch. The default branch for an unknown lane.
+     */
+    getCompareBase(laneId: string): string {
+      const defaultBranch = branchNameFromLaneRef(defaultBaseRef) || defaultBaseRef;
+      const row = getLaneRow(laneId);
+      if (!row) return defaultBranch;
+      return branchNameFromLaneRef(compareBaseForRow(row)) || defaultBranch;
+    },
+
+    /** Merges the given fields into the saved defaults; fields left out keep their value. */
+    setNewLaneDefaults(args: { defaults: Partial<NewLaneDefaults> }): NewLaneDefaultsSnapshot {
+      if (!newLaneSettings) throw new Error("New-lane settings aren't available on this computer.");
+      const patch = args.defaults ?? {};
+      const next: NewLaneDefaults = { ...getNewLaneDefaultsForCreate() };
+      if (patch.start !== undefined) {
+        const start = normalizeLaneStart(patch.start);
+        if (!start) throw new Error("Invalid lane start.");
+        // A named branch is a per-lane pick. A project that wants every lane
+        // on `develop` checks it out in the primary lane and saves "primary".
+        if (!isSavableDefaultLaneStart(start)) {
+          throw new Error("New lanes can start from the default branch or the primary lane's branch. Pick a specific branch per lane instead.");
+        }
+        next.start = start;
+      }
+      if (patch.templateId !== undefined) {
+        const templateId = typeof patch.templateId === "string" ? patch.templateId.trim() : "";
+        if (templateId) validateNewLaneTemplateId?.(templateId);
+        next.templateId = templateId || null;
+      }
+      newLaneSettings.setDefaults(next);
+      return laneServiceApi.getNewLaneDefaults();
+    },
+
+    /**
      * A lane's worktree is on, or has visited, branches other than the one the
      * lane records — usually an agent cutting a follow-up PR branch. The PR
      * service links the PRs opened from them. Late-bound for the same reason
@@ -10204,7 +9297,6 @@ export function createLaneService({
           upsertBranchProfileForRow(row, {
             branchRef,
             baseRef: row.base_ref,
-            parentLaneId: row.parent_lane_id,
             lastCheckedOutAt: new Date().toISOString(),
           });
         }

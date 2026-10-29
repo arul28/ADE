@@ -17,10 +17,6 @@ function makeLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     branchRef: "refs/heads/ade/router-cost",
     worktreePath: "/tmp/lane-1",
     attachedRootPath: null,
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false },
     color: "#a78bfa",
@@ -63,8 +59,6 @@ const waitingAgent: LaneAgent = {
 function renderRow(overrides: Partial<LaneSidebarRowProps> = {}) {
   const props: LaneSidebarRowProps = {
     lane: makeLane(),
-    depth: 0,
-    indentLevel: 0,
     fallbackColorIndex: 0,
     selected: false,
     multiSelected: false,
@@ -72,8 +66,8 @@ function renderRow(overrides: Partial<LaneSidebarRowProps> = {}) {
     runtime: null,
     agents: [],
     prs: undefined,
-    rebaseSuggestion: null,
-    autoRebaseStatus: null,
+    rebaseLine: null,
+    resolveCatchUpTarget: (laneKey: string) => ({ ok: true as const, laneId: laneKey, pin: null, machineId: null }),
     deleteStatusLabel: null,
     creating: false,
     onSelect: vi.fn(),
@@ -119,11 +113,6 @@ describe("LaneSidebarRow", () => {
     const status = screen.getByTestId("lane-sidebar-agent-status");
     expect(status.getAttribute("data-tone")).toBe("attention");
     expect(status.getAttribute("title")).toContain("PR checks are failing");
-  });
-
-  it("shows a parent hint when the row is not under its stack parent", () => {
-    renderRow({ parentHint: "Lane Timeline" });
-    expect(screen.getByTestId("lane-sidebar-parent-hint").textContent).toBe("↳ Lane Timeline");
   });
 
   it("tints the PR chip's glyph red when the open PR is failing", () => {

@@ -2,21 +2,40 @@ import type {
   LaneTemplate,
   LaneEnvInitConfig,
 } from "../../../shared/types";
-import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
 
 import type { Logger } from "../logging/logger";
 import type { createProjectConfigService } from "../config/projectConfigService";
+import type { NewLaneSettingsStore } from "./newLaneSettingsStore";
 
+/**
+ * Lane templates and the default one.
+ *
+ * A project's own templates and its default template live in the project's
+ * new-lane settings (account settings for the repository when the host has
+ * them), so they follow the user to every computer. Templates committed in the
+ * shared `.ade/ade.yaml` still appear for everyone.
+ */
 export function createLaneTemplateService({
   projectConfigService,
   logger,
+  newLaneSettings,
 }: {
   projectConfigService: ReturnType<typeof createProjectConfigService>;
   logger: Logger;
+  newLaneSettings: NewLaneSettingsStore;
 }) {
-  function listTemplates(): LaneTemplate[] {
+
+  /** Templates from the shared `.ade/ade.yaml`, which no account copy replaces. */
+  function sharedTemplates(): LaneTemplate[] {
     const snapshot = projectConfigService.get();
-    return snapshot.effective.laneTemplates ?? [];
+    const localIds = new Set((snapshot.local.laneTemplates ?? []).map((template) => template.id));
+    return (snapshot.effective.laneTemplates ?? []).filter((template) => !localIds.has(template.id));
+  }
+
+  function listTemplates(): LaneTemplate[] {
+    const own = newLaneSettings.getTemplates();
+    const ownIds = new Set(own.map((template) => template.id));
+    return [...sharedTemplates().filter((template) => !ownIds.has(template.id)), ...own];
   }
 
   function getTemplate(templateId: string): LaneTemplate | null {
@@ -25,26 +44,15 @@ export function createLaneTemplateService({
   }
 
   function getDefaultTemplateId(): string | null {
-    const snapshot = projectConfigService.get();
-    const templateId = snapshot.effective.defaultLaneTemplate ?? null;
-    if (!templateId || templateId === NO_DEFAULT_LANE_TEMPLATE) return null;
-    return listTemplates().some((template) => template.id === templateId) ? templateId : null;
+    const templateId = newLaneSettings.getDefaults().templateId;
+    return templateId && listTemplates().some((template) => template.id === templateId) ? templateId : null;
   }
 
   function setDefaultTemplateId(templateId: string | null): void {
-    const snapshot = projectConfigService.get();
     if (templateId && !listTemplates().some((template) => template.id === templateId)) {
       throw new Error(`Unknown lane template: ${templateId}`);
     }
-    const nextLocal = {
-      ...snapshot.local,
-      defaultLaneTemplate: templateId
-        ? templateId
-        : snapshot.shared.defaultLaneTemplate
-          ? NO_DEFAULT_LANE_TEMPLATE
-          : undefined,
-    };
-    projectConfigService.save({ shared: snapshot.shared, local: nextLocal });
+    newLaneSettings.setDefaults({ ...newLaneSettings.getDefaults(), templateId: templateId ?? null });
     logger.info("lane_template.default_set", { templateId });
   }
 
@@ -62,35 +70,18 @@ export function createLaneTemplateService({
   }
 
   function saveTemplate(template: LaneTemplate): void {
-    const snapshot = projectConfigService.get();
-    const existing = [...(snapshot.local.laneTemplates ?? [])];
-    const idx = existing.findIndex((t) => t.id === template.id);
-    if (idx >= 0) {
-      existing[idx] = template;
-    } else {
-      existing.push(template);
-    }
-    const nextLocal = { ...snapshot.local, laneTemplates: existing };
-    projectConfigService.save({ shared: snapshot.shared, local: nextLocal });
+    const own = newLaneSettings.getTemplates().filter((entry) => entry.id !== template.id);
+    newLaneSettings.setTemplates([...own, template]);
     logger.info("lane_template.saved", { templateId: template.id });
   }
 
   function deleteTemplate(templateId: string): void {
-    const snapshot = projectConfigService.get();
-    const existing = [...(snapshot.local.laneTemplates ?? [])];
-    const filtered = existing.filter((t) => t.id !== templateId);
-    if (filtered.length === existing.length) {
-      throw new Error(`Template not found: ${templateId}`);
-    }
-    const nextLocal = { ...snapshot.local, laneTemplates: filtered };
-    // Clear default if we're deleting the default template
-    const currentDefault = snapshot.local.defaultLaneTemplate;
-    if (currentDefault === templateId) {
-      nextLocal.defaultLaneTemplate = snapshot.shared.defaultLaneTemplate
-        ? NO_DEFAULT_LANE_TEMPLATE
-        : undefined;
-    }
-    projectConfigService.save({ shared: snapshot.shared, local: nextLocal });
+    const own = newLaneSettings.getTemplates();
+    const filtered = own.filter((entry) => entry.id !== templateId);
+    if (filtered.length === own.length) throw new Error(`Template not found: ${templateId}`);
+    newLaneSettings.setTemplates(filtered);
+    const defaults = newLaneSettings.getDefaults();
+    if (defaults.templateId === templateId) newLaneSettings.setDefaults({ ...defaults, templateId: null });
     logger.info("lane_template.deleted", { templateId });
   }
 

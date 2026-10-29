@@ -235,7 +235,6 @@ struct LaneStackCard: View, Equatable {
   let snapshot: LaneListSnapshot
   let isPinned: Bool
   let isOpen: Bool
-  let depth: Int
   var pullRequest: LanePrTag? = nil
   var transitionNamespace: Namespace.ID? = nil
   var isSelectedTransitionSource = false
@@ -258,7 +257,6 @@ struct LaneStackCard: View, Equatable {
       snapshot: snapshot,
       isPinned: isPinned,
       isOpen: isOpen,
-      depth: depth,
       pullRequest: pullRequest,
       isSelectedTransitionSource: isSelectedTransitionSource,
       machine: showsMachineChip ? machine : machine.map { LaneMachineChip(name: "", isLive: $0.isLive, symbol: $0.symbol) }
@@ -421,7 +419,6 @@ func laneStackCardRenderSignature(
   snapshot: LaneListSnapshot,
   isPinned: Bool,
   isOpen: Bool,
-  depth: Int,
   pullRequest: LanePrTag?,
   isSelectedTransitionSource: Bool,
   machine: LaneMachineChip? = nil
@@ -441,7 +438,6 @@ func laneStackCardRenderSignature(
   hasher.combine(lane.status.dirty)
   hasher.combine(lane.status.ahead)
   hasher.combine(lane.status.behind)
-  hasher.combine(lane.childCount)
   // The trailing status mark reads the lane's live chats.
   hasher.combine(snapshot.runtime.awaitingInputCount)
   hasher.combine(snapshot.runtime.runningCount)
@@ -453,7 +449,6 @@ func laneStackCardRenderSignature(
   hasher.combine(laneLinearIssueLinkCount(for: lane))
   hasher.combine(isPinned)
   hasher.combine(isOpen)
-  hasher.combine(depth)
   hasher.combine(isSelectedTransitionSource)
   if let pullRequest {
     hasher.combine(pullRequest.githubPrNumber)
@@ -603,7 +598,6 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   let onOpenPullRequest: (PullRequestListItem) -> Void
   let onCreatePullRequest: () -> Void
   let onRefresh: () -> Void
-  let onStackGraph: () -> Void
   let onOpenFiles: () -> Void
   let onManage: () -> Void
   let onCopyLaneLink: () -> Void
@@ -789,9 +783,8 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
     }
   }
 
-  /// PR, Files and Manage on the bar; Refresh (pull to refresh does it too)
-  /// and the stack graph in ⋯. Six glyphs crowded the bar, and the stack's
-  /// layers glyph was the Lanes tab's own.
+  /// Files and Manage on the bar; Refresh (pull to refresh does it too) and
+  /// the links in ⋯.
   @ToolbarContentBuilder
   private var commonItems: some ToolbarContent {
     ToolbarItem(placement: .topBarTrailing) {
@@ -805,7 +798,6 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
   @ViewBuilder
   private var overflowItems: some View {
     Button("Refresh", systemImage: "arrow.clockwise", action: onRefresh)
-    Button("Stack graph", systemImage: "point.3.connected.trianglepath.dotted", action: onStackGraph)
     Divider()
     Button("Copy ADE lane link", systemImage: "link", action: onCopyLaneLink)
     Button("Copy branch link", systemImage: "arrow.triangle.branch", action: onCopyBranchLink)
@@ -813,7 +805,7 @@ struct LaneDuoDetailLayout<Dashboard: View, Git: View>: View {
 }
 
 /// Desktop's lane dashboard: who the lane is, its pull request, the chats and
-/// CLIs working in it, its changes, its stack and its history, as inset
+/// CLIs working in it, its changes and its history, as inset
 /// grouped sections. Rows open their targets (a chat opens in Work).
 struct LaneDuoDashboard: View {
   let snapshot: LaneListSnapshot
@@ -824,8 +816,6 @@ struct LaneDuoDashboard: View {
   let onOpenPullRequest: (PullRequestListItem) -> Void
   let onCreatePullRequest: () -> Void
   let onOpenChat: (AgentChatSessionSummary) -> Void
-  let onOpenLane: (String) -> Void
-  let onStackGraph: () -> Void
 
   private var lane: LaneSummary { snapshot.lane }
 
@@ -835,7 +825,6 @@ struct LaneDuoDashboard: View {
       pullRequestSection
       sessionsSection
       changesSection
-      stackSection
       historySection
     }
     .listStyle(.insetGrouped)
@@ -1013,60 +1002,6 @@ struct LaneDuoDashboard: View {
 
   private func fileCount(_ count: Int) -> String {
     "\(count) file\(count == 1 ? "" : "s")"
-  }
-
-  // MARK: Stack
-
-  @ViewBuilder
-  private var stackSection: some View {
-    let chain = detail?.stackChain ?? []
-    let children = detail?.children ?? []
-    if chain.count > 1 || !children.isEmpty {
-      Section {
-        ForEach(chain) { item in
-          Button {
-            if item.laneId != lane.id { onOpenLane(item.laneId) }
-          } label: {
-            HStack(spacing: 8) {
-              Image(systemName: item.laneId == lane.id ? "smallcircle.filled.circle" : "circle")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(item.laneId == lane.id ? ADEColor.accent : ADEColor.textMuted)
-              Text(item.laneName)
-                .font(.subheadline.weight(item.laneId == lane.id ? .semibold : .regular))
-                .foregroundStyle(ADEColor.textPrimary)
-                .lineLimit(1)
-              Spacer(minLength: 8)
-              if item.status.ahead > 0 || item.status.behind > 0 {
-                Text("↑\(item.status.ahead) ↓\(item.status.behind)")
-                  .font(.adeMono(11))
-                  .foregroundStyle(ADEColor.textMuted)
-              }
-            }
-            .padding(.leading, CGFloat(item.depth) * 14)
-            .contentShape(Rectangle())
-          }
-          .buttonStyle(.plain)
-        }
-        ForEach(children) { child in
-          Button {
-            onOpenLane(child.id)
-          } label: {
-            Label(child.name, systemImage: "arrow.turn.down.right")
-              .font(.subheadline)
-              .foregroundStyle(ADEColor.textPrimary)
-          }
-          .buttonStyle(.plain)
-        }
-      } header: {
-        HStack {
-          Text("Stack")
-          Spacer()
-          Button("Graph", action: onStackGraph)
-            .font(.caption.weight(.semibold))
-            .textCase(nil)
-        }
-      }
-    }
   }
 
   // MARK: History

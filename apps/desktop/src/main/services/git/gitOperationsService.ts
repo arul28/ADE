@@ -24,6 +24,8 @@ import type {
   GitHeadChangeActionArgs,
   GitListCommitFilesArgs,
   GitFileActionArgs,
+  GitMergeBaseInArgs,
+  GitMergeBaseInResult,
   GitPullArgs,
   GitPullMode,
   GitPushArgs,
@@ -201,6 +203,12 @@ async function getAbsoluteGitDir(worktreePath: string): Promise<string | null> {
   if (res.exitCode !== 0) return null;
   const dir = res.stdout.trim();
   return dir.length ? dir : null;
+}
+
+/** The files left unmerged by a stopped rebase or merge, sorted; empty when git can't say. */
+async function listUnmergedFiles(worktreePath: string, timeoutMs: number): Promise<string[]> {
+  const res = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], { cwd: worktreePath, timeoutMs });
+  return res.exitCode === 0 ? parseDiffNameOnlySorted(res.stdout) : [];
 }
 
 export function createGitOperationsService({
@@ -532,12 +540,7 @@ export function createGitOperationsService({
       if (!gitDir) return false;
       const kind = detectConflictKind(gitDir);
       if (kind !== expected) return false;
-      const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 10_000
-      });
-      if (unmergedRes.exitCode !== 0) return false;
-      return parseDiffNameOnlySorted(unmergedRes.stdout).length > 0;
+      return (await listUnmergedFiles(lane.worktreePath, 10_000)).length > 0;
     };
 
     if (mode === "rebase") {
@@ -1522,11 +1525,7 @@ export function createGitOperationsService({
         const gitDir = await getAbsoluteGitDir(lane.worktreePath);
         const kind = gitDir ? detectConflictKind(gitDir) : null;
 
-        const unmergedRes = await runGit(["diff", "--name-only", "-z", "--diff-filter=U"], {
-          cwd: lane.worktreePath,
-          timeoutMs: 10_000
-        });
-        const conflictedFiles = unmergedRes.exitCode === 0 ? parseDiffNameOnlySorted(unmergedRes.stdout) : [];
+        const conflictedFiles = await listUnmergedFiles(lane.worktreePath, 10_000);
         const inProgress = kind != null;
 
         return {
@@ -1592,6 +1591,112 @@ export function createGitOperationsService({
         }
       });
       return action;
+    },
+
+    /**
+     * Bring the lane up to date by merging its compare base in: fetch, then
+     * `git merge --no-edit origin/<base>` (the local base when there is no
+     * remote copy). It rewrites nothing, so it is safe on a pushed branch, and
+     * it never leaves a half-done merge: on a conflict, or any other failure,
+     * the merge is aborted and the call throws, with the lane as it was.
+     * Refuses a dirty lane and one with a rebase or merge in progress.
+     */
+    async mergeBaseIn(args: GitMergeBaseInArgs): Promise<GitMergeBaseInResult> {
+      const laneId = typeof args?.laneId === "string" ? args.laneId.trim() : "";
+      if (!laneId) throw new AdeExpectedError("git.mergeBaseIn requires laneId.", "user");
+      const baseBranch = laneService.getCompareBase(laneId);
+      const outcome = { mergedRef: baseBranch, upToDate: false, fetched: false };
+      const { action } = await runLaneOperation({
+        laneId,
+        kind: "git_merge_base_in",
+        reason: "merge_base_in",
+        metadata: { baseBranch },
+        fn: async (lane) => {
+          if (lane.laneType === "primary") {
+            throw new AdeExpectedError("The primary lane is the base; there is nothing to merge into it.", "user");
+          }
+          const gitDir = await getAbsoluteGitDir(lane.worktreePath);
+          const inProgress = gitDir ? detectConflictKind(gitDir) : null;
+          if (inProgress) {
+            throw new AdeExpectedError(`A ${inProgress} is already in progress in this lane. Finish or abort it first.`, "user");
+          }
+          if (await isWorktreeDirty(lane.worktreePath)) {
+            throw new AdeExpectedError("The lane has uncommitted changes. Commit or stash them before merging.", "user");
+          }
+
+          try {
+            await runGitWithGithubAuthFallbackOrThrow(["fetch", "origin", baseBranch], {
+              cwd: lane.worktreePath,
+              timeoutMs: GIT_FETCH_TIMEOUT_MS,
+            });
+            outcome.fetched = true;
+          } catch (error) {
+            // Offline or no remote: merge the last known copy, and say so.
+            logger.info("git.merge_base_in_fetch_failed", { laneId, baseBranch, error: String(error) });
+          }
+
+          let baseSha = "";
+          for (const ref of [`origin/${baseBranch}`, baseBranch]) {
+            const res = await runGit(["rev-parse", "--verify", "--quiet", `${ref}^{commit}`], {
+              cwd: lane.worktreePath,
+              timeoutMs: 5_000,
+            });
+            const sha = res.exitCode === 0 ? res.stdout.trim() : "";
+            if (sha) {
+              baseSha = sha;
+              outcome.mergedRef = ref;
+              break;
+            }
+          }
+          if (!baseSha) throw new AdeExpectedError(`Could not find the base branch "${baseBranch}".`, "user");
+
+          const contained = await runGit(["merge-base", "--is-ancestor", baseSha, "HEAD"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 15_000,
+          });
+          if (contained.exitCode === 0) {
+            outcome.upToDate = true;
+            return;
+          }
+
+          const merge = await runGit(["merge", "--no-edit", outcome.mergedRef], {
+            cwd: lane.worktreePath,
+            timeoutMs: 120_000,
+          });
+          if (merge.exitCode === 0) return;
+
+          const conflicted = await listUnmergedFiles(lane.worktreePath, 15_000);
+          // A merge that stopped part-way leaves MERGE_HEAD; one that refused
+          // to start (an untracked file in the way) changed nothing.
+          const mergeHead = await runGit(["rev-parse", "--verify", "--quiet", "MERGE_HEAD"], {
+            cwd: lane.worktreePath,
+            timeoutMs: 5_000,
+          });
+          if (mergeHead.exitCode === 0) {
+            const abort = await runGit(["merge", "--abort"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+            if (abort.exitCode !== 0) {
+              const reset = await runGit(["reset", "--merge"], { cwd: lane.worktreePath, timeoutMs: 60_000 });
+              if (reset.exitCode !== 0) {
+                // Saying "nothing changed" here would hide a half-done merge.
+                throw new Error(
+                  `Merging ${outcome.mergedRef} stopped part-way and could not be undone. Abort the merge from the Git panel.`,
+                );
+              }
+            }
+          }
+          if (conflicted.length > 0) {
+            const shown = conflicted.slice(0, 5).join(", ");
+            const more = conflicted.length > 5 ? ` and ${conflicted.length - 5} more` : "";
+            throw new AdeExpectedError(
+              `Merging ${outcome.mergedRef} conflicts in ${conflicted.length} file${conflicted.length === 1 ? "" : "s"} (${shown}${more}). The merge was undone; nothing changed.`,
+              "user",
+            );
+          }
+          const detail = (merge.stderr || merge.stdout).trim().split(/\r?\n/)[0] ?? "";
+          throw new Error(`Could not merge ${outcome.mergedRef}${detail ? `: ${detail}` : "."} Nothing changed.`);
+        },
+      });
+      return { ...action, baseBranch, ...outcome };
     },
 
     async listBranches(args: { laneId: string }): Promise<GitBranchSummary[]> {

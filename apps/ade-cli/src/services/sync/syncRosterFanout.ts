@@ -28,7 +28,7 @@ export const ROSTER_DIRTYING_COMMAND_ACTIONS: ReadonlySet<string> = new Set<stri
   "work.startCliSession",
   "work.resumeCliSession",
   "lanes.create",
-  "lanes.createChild",
+  "lanes.importBranch",
   "lanes.archive",
   "lanes.delete",
 ]);

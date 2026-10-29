@@ -16,7 +16,6 @@ import {
   Cloud,
   X,
   Minus,
-  TreeStructure,
   PencilSimple,
 } from "@phosphor-icons/react";
 import { Button } from "../ui/Button";
@@ -37,11 +36,7 @@ import type {
 import { LaneDialogShell } from "./LaneDialogShell";
 import { LinearMark } from "./linearBrand";
 import { showToast } from "../app/toast/toastStore";
-import {
-  LABEL_CLASS_NAME,
-  INPUT_CLASS_NAME,
-  SELECT_CLASS_NAME
-} from "./laneDialogTokens";
+import { INPUT_CLASS_NAME } from "./laneDialogTokens";
 import { LaneColorPicker } from "./LaneColorPicker";
 import { colorsInUse, getLaneAccent, laneColorName } from "./laneColorPalette";
 import { laneEmojiForDisplay } from "../../../shared/laneEmoji";
@@ -80,7 +75,6 @@ function formatBytesCompact(bytes: number): string {
 
 const STEP_LABELS: Record<LaneDeleteStepName, string> = {
   git_status: "Checking dirty state",
-  cancel_auto_rebase: "Cancelling auto-rebase",
   stop_chats: "Closing chat sessions",
   stop_ptys: "Closing terminal sessions",
   stop_watchers: "Stopping file watchers",
@@ -353,7 +347,7 @@ export function laneActionErrorTone(error: LaneActionError): Pick<BannerModel, "
   return noticeKindModel(error.kind, error.kind === "failure" || error.reportable ? report : undefined);
 }
 
-export type ManageLaneTab = "appearance" | "stack" | "archive" | "delete";
+export type ManageLaneTab = "appearance" | "archive" | "delete";
 
 type ManageLaneTabDef = {
   id: ManageLaneTab;
@@ -361,12 +355,11 @@ type ManageLaneTabDef = {
   icon: typeof Palette;
 };
 
-type ManageLaneTabTone = "delete" | "accent" | "stack" | "neutral";
+type ManageLaneTabTone = "delete" | "accent" | "neutral";
 
 const TAB_PANEL_TONE_CLASS: Record<ManageLaneTabTone, string> = {
   delete: "border-red-500/25 bg-gradient-to-br from-red-500/[0.1] via-red-950/20 to-transparent",
   accent: "border-accent/25 bg-gradient-to-br from-accent/[0.1] via-accent/[0.02] to-transparent",
-  stack: "border-violet-500/25 bg-gradient-to-br from-violet-500/[0.1] via-violet-950/10 to-transparent",
   neutral: "border-fg/[0.08] bg-gradient-to-br from-fg/[0.06] via-fg/[0.02] to-transparent",
 };
 
@@ -451,7 +444,6 @@ export function ManageLaneDialog({
   onArchive,
   onDelete,
   onAppearanceChanged,
-  onStackReorganized,
   runtimePin,
   initialTab,
 }: {
@@ -473,7 +465,6 @@ export function ManageLaneDialog({
   onArchive: () => Promise<boolean>;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
-  onStackReorganized?: () => void | Promise<void>;
   runtimePin?: OpenProjectBinding | null;
   /** Tab to open on, e.g. "archive" for the sidebar's "Archive all". Defaults to Delete. */
   initialTab?: ManageLaneTab | null;
@@ -525,7 +516,6 @@ export function ManageLaneDialog({
     return [
       { id: "delete" as const, label: "Delete", icon: Trash, show: true },
       { id: "appearance" as const, label: "Appearance", icon: Palette, show: !!singleLaneType },
-      { id: "stack" as const, label: "Restack", icon: TreeStructure, show: !!singleLaneType && singleLaneType !== "primary" },
       { id: "archive" as const, label: "Archive", icon: Archive, show: true },
     ]
       .filter((t) => t.show)
@@ -751,18 +741,6 @@ export function ManageLaneDialog({
                 allLanes={allLanes}
                 disabled={laneActionBusy}
                 onChanged={onAppearanceChanged}
-                runtimePin={runtimePin}
-              />
-            </ManageLaneTabPanel>
-          ) : null}
-
-          {activeTab === "stack" && singleLane && singleLane.laneType !== "primary" ? (
-            <ManageLaneTabPanel tone="stack">
-              <StackPositionSection
-                lane={singleLane}
-                allLanes={allLanes}
-                disabled={laneActionBusy}
-                onDone={onStackReorganized}
                 runtimePin={runtimePin}
               />
             </ManageLaneTabPanel>
@@ -1296,7 +1274,7 @@ function AppearanceSection({
   return (
     <>
       <div className="flex items-center justify-between gap-3">
-        <p className="text-xs text-muted-fg/70">Lane color in tabs and stack. No git changes.</p>
+        <p className="text-xs text-muted-fg/70">Lane color in tabs and the lane list. No git changes.</p>
         {currentName ? (
           <span className="shrink-0 rounded-full border border-accent/25 bg-accent/10 px-2 py-0.5 text-[10px] font-medium text-accent">
             {currentName}
@@ -1340,230 +1318,5 @@ function AppearanceSection({
         <div className="sr-only" role="status">Updating</div>
       ) : null}
     </>
-  );
-}
-
-// Mirror the backend's normalization (apps/desktop/src/main/services/shared/utils.ts
-// `normalizeBranchName`) so the frontend `baseChanged` check matches what the
-// IPC handler will actually compare against. Without this, typing
-// `refs/heads/main` or `origin/main` when the stored ref is already `main` would
-// flip `baseChanged` to true but the backend would no-op the rebase.
-function normalizeBranchRefForCompare(ref: string): string {
-  return ref
-    .trim()
-    .replace(/^refs\/heads\//, "")
-    .replace(/^origin\//, "");
-}
-
-function collectDescendantLaneIds(rootId: string, all: LaneSummary[]): Set<string> {
-  const childrenByParent = new Map<string, LaneSummary[]>();
-  for (const row of all) {
-    if (!row.parentLaneId) continue;
-    const list = childrenByParent.get(row.parentLaneId) ?? [];
-    list.push(row);
-    childrenByParent.set(row.parentLaneId, list);
-  }
-  const out = new Set<string>();
-  const stack = [...(childrenByParent.get(rootId) ?? [])];
-  while (stack.length) {
-    const row = stack.pop()!;
-    if (out.has(row.id)) continue;
-    out.add(row.id);
-    const kids = childrenByParent.get(row.id);
-    if (kids) stack.push(...kids);
-  }
-  return out;
-}
-
-function StackPositionSection({
-  lane,
-  allLanes,
-  disabled,
-  onDone,
-  runtimePin,
-}: {
-  lane: LaneSummary;
-  allLanes: LaneSummary[];
-  disabled: boolean;
-  onDone?: () => void | Promise<void>;
-  runtimePin?: OpenProjectBinding | null;
-}) {
-  const primaryLane = React.useMemo(
-    () => allLanes.find((l) => l.laneType === "primary" && !l.archivedAt) ?? null,
-    [allLanes],
-  );
-
-  const effectiveCurrentParentId = lane.parentLaneId ?? primaryLane?.id ?? "";
-
-  const candidates = React.useMemo(() => {
-    const descendants = collectDescendantLaneIds(lane.id, allLanes);
-    const list = allLanes.filter(
-      (l) => !l.archivedAt && l.id !== lane.id && !descendants.has(l.id),
-    );
-    list.sort((a, b) => {
-      const ap = a.laneType === "primary" ? 0 : 1;
-      const bp = b.laneType === "primary" ? 0 : 1;
-      if (ap !== bp) return ap - bp;
-      return a.name.localeCompare(b.name);
-    });
-    return list;
-  }, [allLanes, lane.id]);
-
-  const [stackParentId, setStackParentId] = React.useState(effectiveCurrentParentId);
-  const [baseBranchInput, setBaseBranchInput] = React.useState("");
-  const [busy, setBusy] = React.useState(false);
-  const [error, setError] = React.useState<string | null>(null);
-  const [success, setSuccess] = React.useState<string | null>(null);
-
-  React.useEffect(() => {
-    setStackParentId(effectiveCurrentParentId);
-    setBaseBranchInput("");
-    setError(null);
-    setSuccess(null);
-  }, [lane.id, lane.parentLaneId, lane.baseRef, effectiveCurrentParentId]);
-
-  const defaultBaseBranch = candidates.find((c) => c.id === stackParentId)?.branchRef ?? "";
-
-  const baseOverrideTrim = baseBranchInput.trim();
-  const normalizedOverride = normalizeBranchRefForCompare(baseOverrideTrim);
-  const normalizedExistingBase = normalizeBranchRefForCompare(lane.baseRef ?? "");
-  const normalizedDefaultBase = normalizeBranchRefForCompare(defaultBaseBranch);
-  const parentChanged = stackParentId !== effectiveCurrentParentId;
-  // baseChanged covers two cases:
-  //   1. User typed a non-empty override that resolves to a different effective
-  //      branch than what is currently stored (after normalizing refs/heads/
-  //      and origin/ prefixes consistent with the backend).
-  //   2. User cleared the field while the lane's stored base actually diverges
-  //      from the selected parent's current branch — clearing then removes the
-  //      override and the backend will rebase onto the parent's branch.
-  //      `lane.baseRef` is a non-nullable string so we can't gate on its mere
-  //      presence; we must compare it against the effective default to avoid
-  //      enabling Apply on initial open when nothing has actually changed.
-  const baseChanged = normalizedOverride.length > 0
-    ? normalizedOverride !== normalizedExistingBase
-    : normalizedExistingBase.length > 0 &&
-      normalizedExistingBase !== normalizedDefaultBase;
-  const canApply =
-    !lane.status.dirty &&
-    !lane.status.rebaseInProgress &&
-    !busy &&
-    !disabled &&
-    Boolean(stackParentId) &&
-    (parentChanged || baseChanged);
-
-  const apply = async () => {
-    if (!canApply || !stackParentId) return;
-    setError(null);
-    setSuccess(null);
-    setBusy(true);
-    try {
-      const args = {
-        laneId: lane.id,
-        newParentLaneId: stackParentId,
-        stackBaseBranchRef: baseOverrideTrim || null,
-      };
-      await (runtimePin
-        ? window.ade.lanes.reparent(args, runtimePin)
-        : window.ade.lanes.reparent(args));
-      setSuccess("Stack position updated.");
-      await onDone?.();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update stack position.");
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <div data-tour="lanes.manageDialog.stack">
-      <p className="text-xs text-muted-fg/70">
-        Change parent lane and optional base branch. Runs <span className="font-mono text-fg/75">git rebase</span> on apply.
-      </p>
-
-      <div className="mt-3 inline-flex items-center gap-1.5 rounded-full border border-amber-400/25 bg-amber-500/10 px-2.5 py-1 text-[10px] font-medium text-amber-200">
-        <WarningCircle size={12} weight="fill" />
-        Rebase on apply
-      </div>
-
-      {!primaryLane ? (
-        <Banner
-          model={{ id: "lane-stack-no-primary", tone: "warning", title: "No primary lane found." }}
-          layout="inline"
-          style={{ marginTop: 12 }}
-        />
-      ) : null}
-
-      {lane.status.dirty ? (
-        <Banner
-          model={{ id: "lane-stack-dirty", tone: "warning", title: "Commit or stash first." }}
-          layout="inline"
-          style={{ marginTop: 12 }}
-        />
-      ) : null}
-
-      {lane.status.rebaseInProgress ? (
-        <Banner
-          model={{ id: "lane-stack-rebase-in-progress", tone: "warning", title: "Finish or abort the current rebase first." }}
-          layout="inline"
-          style={{ marginTop: 8 }}
-        />
-      ) : null}
-
-      <span className={`${LABEL_CLASS_NAME} mt-4 block`}>Parent lane</span>
-      <select
-        className={SELECT_CLASS_NAME}
-        value={stackParentId}
-        disabled={busy || disabled || candidates.length === 0}
-        onChange={(e) => {
-          setStackParentId(e.target.value);
-          setBaseBranchInput("");
-          setSuccess(null);
-        }}
-      >
-        {candidates.length === 0 ? (
-          <option value="">No valid parent</option>
-        ) : (
-          candidates.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.laneType === "primary" ? `${c.name} (primary)` : `${c.name} · ${c.branchRef}`}
-            </option>
-          ))
-        )}
-      </select>
-
-      <span className={`${LABEL_CLASS_NAME} mt-3 block`}>Base branch (optional)</span>
-      <input
-        className={`${INPUT_CLASS_NAME} mt-1.5`}
-        value={baseBranchInput}
-        disabled={busy || disabled}
-        onChange={(e) => {
-          setBaseBranchInput(e.target.value);
-          setSuccess(null);
-        }}
-        placeholder={defaultBaseBranch ? defaultBaseBranch.replace(/^refs\/heads\//, "") : "branch-name"}
-      />
-
-      {error ? (
-        <Banner
-          layout="inline"
-          style={{ marginTop: 8 }}
-          model={{
-            id: "manage-lane-stack-error",
-            tone: "error",
-            title: error,
-            report: { surface: "manage_lane_stack_position" },
-            dismiss: { onDismiss: () => setError(null) },
-          }}
-        />
-      ) : null}
-      {success ? <div className="mt-2 text-xs text-emerald-300">{success}</div> : null}
-
-      <div className="mt-4">
-        <Button size="sm" variant="outline" disabled={!canApply} onClick={() => { void apply(); }}>
-          {busy ? <CircleNotch size={13} className="animate-spin" /> : null}
-          {busy ? "Applying…" : "Apply restack"}
-        </Button>
-      </div>
-    </div>
   );
 }

@@ -317,9 +317,8 @@ function createBatchHarness() {
     },
   ];
   const lanes = [
-    { laneId: "lane-child", parentLaneId: "lane-root", name: "Child lane", branchRef: "feature/child" },
-    { laneId: "lane-other", parentLaneId: null, name: "Other lane", branchRef: "feature/other" },
-    { laneId: "lane-root", parentLaneId: null, name: "Root lane", branchRef: "feature/root" },
+    { laneId: "lane-child", name: "Child lane", branchRef: "feature/child" },
+    { laneId: "lane-other", name: "Other lane", branchRef: "feature/other" },
   ];
   const persistedMoves = new Map<string, CrossMachineHandoffPersisted>();
   const persistedBatches = new Map<string, AgentChatCrossMachineBatchMoveRecord>();
@@ -327,7 +326,7 @@ function createBatchHarness() {
   const preparedLanes = new Map<string, CrossMachineLaneOutboxEntry>();
   const accepted: AgentChatCrossMachineHandoffCapsule[] = [];
   const laneImportCalls: AgentChatCrossMachineLaneImportArgs[] = [];
-  let loseRootLaneImportAnswer = true;
+  let loseChildLaneImportAnswer = true;
   const waiters: Array<{
     batchId: string;
     predicate: (record: AgentChatCrossMachineBatchMoveRecord) => boolean;
@@ -369,8 +368,8 @@ function createBatchHarness() {
         if (input.action === "importCrossMachineHandoffLane") {
           const payload = input.args as AgentChatCrossMachineLaneImportArgs;
           laneImportCalls.push(structuredClone(payload));
-          if (payload.sourceLane.laneId === "lane-root" && loseRootLaneImportAnswer) {
-            loseRootLaneImportAnswer = false;
+          if (payload.sourceLane.laneId === "lane-child" && loseChildLaneImportAnswer) {
+            loseChildLaneImportAnswer = false;
             throw new Error("lost answer");
           }
           return {
@@ -449,11 +448,10 @@ function createBatchHarness() {
         blockers: [],
         changes: null,
       }),
-      prepareBatchLane: async ({ importId, lane, destinationParentLaneId }) => ({
+      prepareBatchLane: async ({ importId, lane }) => ({
         importId,
         sourceMachineName: "source machine",
-        sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
-        ...(destinationParentLaneId ? { destinationParentLaneId } : {}),
+        sourceLane: { laneId: lane.laneId, parentLaneId: null, name: lane.name },
         branchRef: lane.branchRef,
         headSha: "a".repeat(40),
         originUrl: ORIGIN,
@@ -497,7 +495,6 @@ function createBatchHarness() {
             spawnKind: sourceChat.spawnKind,
           },
           sourceLane: args.batchMove?.sourceLane,
-          ...(args.batchMove?.destinationParentLaneId ? { destinationParentLaneId: args.batchMove.destinationParentLaneId } : {}),
           ...(args.batchMove?.parentLink ? { parentLink: args.batchMove.parentLink } : {}),
           ...(args.batchMove ? { batchMove: args.batchMove } : {}),
           target: { targetModelId: args.targetModelId },
@@ -568,15 +565,14 @@ describe("cross-machine move orchestrator", () => {
     const partial = await h.waitFor(started.batchId, (record) => record.state === "partial");
     const stateById = Object.fromEntries(partial.items.map((item) => [item.id, item.state]));
     expect(stateById).toMatchObject({
-      "lane:lane-root": "unknown",
-      "lane:lane-child": "blocked",
+      "lane:lane-child": "unknown",
       "lane:lane-other": "continued",
       "chat:chat-parent": "blocked",
       "chat:chat-child": "blocked",
       "chat:chat-other": "continued",
     });
     expect(partial.items.some((item) => item.id === "chat:chat-away")).toBe(false);
-    expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual(["lane-other", "lane-root"]);
+    expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual(["lane-child", "lane-other"]);
     expect(h.accepted.map((capsule) => capsule.source.sessionId)).toEqual(["chat-other"]);
 
     await h.orchestrator.retryBatch(started.batchId);
@@ -584,13 +580,10 @@ describe("cross-machine move orchestrator", () => {
     expect(completed.items.every((item) => item.state === "continued")).toBe(true);
     expect(completed.items.some((item) => item.id === "chat:chat-away")).toBe(false);
     expect(h.laneImportCalls.map((item) => item.sourceLane.laneId)).toEqual([
+      "lane-child",
       "lane-other",
-      "lane-root",
-      "lane-root",
       "lane-child",
     ]);
-    const importedChildLane = h.laneImportCalls.find((item) => item.sourceLane.laneId === "lane-child");
-    expect(importedChildLane?.destinationParentLaneId).toBe("destination-lane-root");
     const parentIndex = h.accepted.findIndex((capsule) => capsule.source.sessionId === "chat-parent");
     const childIndex = h.accepted.findIndex((capsule) => capsule.source.sessionId === "chat-child");
     expect(parentIndex).toBeGreaterThanOrEqual(0);

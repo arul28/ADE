@@ -86,24 +86,6 @@ function projectPrScope(projectId: string, prIds: string[]): {
   };
 }
 
-function pruneEmptyPrGroups(db: DbLike, projectId: string): void {
-  db.run(
-    `
-      delete from pr_groups
-      where project_id = ?
-        and id in (
-          select g.id
-          from pr_groups g
-          left join pr_group_members m on m.group_id = g.id
-          where g.project_id = ?
-          group by g.id
-          having count(m.id) = 0
-        )
-    `,
-    [projectId, projectId],
-  );
-}
-
 function runDeleteAllowMissingTable(db: DbLike, sql: string, params: unknown[]): void {
   try {
     db.run(sql, params);
@@ -117,11 +99,6 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
   const scope = projectPrScope(projectId, prIds);
   if (!scope) return;
 
-  db.run(
-    `delete from pr_group_members
-     where pr_id in (${scope.selectSql})`,
-    scope.params,
-  );
   db.run(
     `delete from pull_request_snapshots
      where pr_id in (${scope.selectSql})`,
@@ -144,7 +121,6 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
     [projectId, ...scope.params],
   );
   db.run(`delete from pull_requests where id in (${scope.selectSql})`, scope.params);
-  pruneEmptyPrGroups(db, projectId);
 }
 
 /**
@@ -163,7 +139,7 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
  * first so the merged view survives the purge.
  *
  * The mutation takes explicit PR ids rather than a SQL predicate, keeping one parameter
- * list for all four statements below instead of making them agree positionally.
+ * list for every statement below instead of making them agree positionally.
  */
 function detachRows(
   db: ReadableDbLike,
@@ -230,12 +206,6 @@ function detachRows(
     scope.params,
   );
 
-  // Group membership is lane-scoped work-in-progress, not history — it goes.
-  db.run(
-    `delete from pr_group_members
-     where pr_id in (${scope.selectSql})`,
-    scope.params,
-  );
   // Chat ownership is live routing metadata, not lane-deletion history. Once
   // the lane is detached its sessions are deleted, so retaining these edges
   // would send future PR cards to a chat that no longer exists.
@@ -255,7 +225,6 @@ function detachRows(
      where project_id = ? and pr_id in (${scope.selectSql})`,
     [projectId, ...scope.params],
   );
-  pruneEmptyPrGroups(db, projectId);
 }
 
 export function detachPullRequestRowsForLane(
@@ -274,15 +243,6 @@ export function detachPullRequestRowsForLane(
     detachedAt,
     provenance: countLaneProvenance(db, projectId, laneId),
   });
-  // Lane-scoped membership survives the id lookup above (a group member can outlive its
-  // PR row), so clear it explicitly and prune once.
-  db.run(
-    `delete from pr_group_members
-     where lane_id = ?
-       and group_id in (select id from pr_groups where project_id = ?)`,
-    [laneId, projectId],
-  );
-  pruneEmptyPrGroups(db, projectId);
 }
 
 /**

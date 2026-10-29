@@ -8236,7 +8236,7 @@ function AgentChatComposerImpl({
                   );
                 })}
               </div>
-              <SmartTooltip content={{ label: "Add model", description: "Add another model and child lane to this parallel launch." }}>
+              <SmartTooltip content={{ label: "Add model", description: "Add another model, with its own lane, to this parallel launch." }}>
                 <button
                   type="button"
                   className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-fg/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-fg/[0.2] hover:bg-fg/[0.04] hover:text-fg/75 disabled:opacity-40"
@@ -8734,7 +8734,7 @@ function AgentChatComposerImpl({
                     ? `Send to ${cloudTargetLabel}`
                     : "Send";
                 const description = parallelChatMode
-                  ? "Create child lanes and send this prompt with its attachments to every configured model."
+                  ? "Create a lane for each model from this lane's branch and send this prompt with its attachments to each one."
                   : cloudMode
                     ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
                     : "Send this prompt to the selected model.";

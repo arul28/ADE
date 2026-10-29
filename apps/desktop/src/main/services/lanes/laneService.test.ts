@@ -144,952 +144,6 @@ async function seedProjectAndStack(db: any, args: { projectId: string; repoRoot:
   );
 }
 
-describe("laneService createFromUnstaged", () => {
-  beforeEach(() => {
-    vi.mocked(getHeadSha).mockReset();
-    vi.mocked(runGit).mockReset();
-    vi.mocked(runGitOrThrow).mockReset();
-  });
-
-  it("includes worktree availability in lane summaries", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-worktree-available-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-worktree-available", repoRoot });
-      const missingChildPath = path.join(repoRoot, "child");
-
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const laneBranchGitStub = defaultLaneBranchGitStub(args);
-        if (laneBranchGitStub) return laneBranchGitStub;
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return cwd === missingChildPath
-            ? { exitCode: 128, stdout: "", stderr: "missing worktree" }
-            : { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
-        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-worktree-available",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const lanes = await service.list({ includeStatus: true });
-
-      expect(lanes.find((lane) => lane.id === "lane-main")?.worktreeAvailable).toBe(true);
-      expect(lanes.find((lane) => lane.id === "lane-parent")?.worktreeAvailable).toBe(true);
-      expect(lanes.find((lane) => lane.id === "lane-child")?.worktreeAvailable).toBe(false);
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("includes cached git age, file totals, and split change counts", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-git-summary-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-git-summary", repoRoot });
-      const childPath = path.join(repoRoot, "child");
-      const commitAt = "2026-09-09T16:00:00.000Z";
-
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
-        }
-        if (args[0] === "status") {
-          return {
-            exitCode: 0,
-            stdout: cwd === childPath
-              ? [
-                "# branch.head feature/child",
-                // The status header carries the upstream lag the lane reports.
-                "# branch.upstream origin/feature/child",
-                "# branch.ab +1 -4",
-                "1 MM N... 100644 100644 100644 aaa bbb src/both.ts",
-                "1 M. N... 100644 100644 100644 aaa bbb src/staged.ts",
-                "1 .M N... 100644 100644 100644 aaa bbb src/unstaged.ts",
-                "? new.txt",
-              ].join("\n")
-              : "# branch.head feature/parent\n",
-            stderr: "",
-          } as any;
-        }
-        // One spawn carries both the committed tree and the commit date.
-        if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
-          return { exitCode: 0, stdout: `head-child\0tree-child\0${commitAt}\n`, stderr: "" } as any;
-        }
-        if (args[0] === "ls-files") return { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
-        if (args[0] === "rev-list" && args[1] === "--left-right") {
-          return { exitCode: 0, stdout: "2\t3\n", stderr: "" } as any;
-        }
-        return { exitCode: 1, stdout: "", stderr: "" } as any;
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-git-summary",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const summary = await service.getSummary("lane-child", { includeStatus: true });
-
-      expect(summary).toMatchObject({
-        lastCommitAt: commitAt,
-        trackedFileCount: 3,
-        status: {
-          dirty: true,
-          changedFileCount: 4,
-          staged: 2,
-          unstaged: 2,
-          untracked: 1,
-          ahead: 3,
-          behind: 2,
-          remoteBehind: 4,
-          lastCommitAt: commitAt,
-          trackedFileCount: 3,
-        },
-      });
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it.each([
-    ["a normal branch name", "main"],
-    ["a branch name that looks like a commit id", "deadbeef"],
-  ])("counts ahead/behind against origin/<base> when the base exists only remotely (%s)", async (_label, baseName) => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-remote-only-base-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-remote-only-base", repoRoot, parentBaseRef: baseName });
-      // Git as it behaves in a clone that never checked out the base: the short
-      // name does not resolve (git's lookup skips refs/remotes/origin/<name>),
-      // the remote-tracking ref does.
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
-        }
-        if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/parent\n", stderr: "" } as any;
-        if (args[0] === "rev-list" && args[1] === "--left-right") {
-          const range = args[3] ?? "";
-          if (range === `refs/remotes/origin/${baseName}...feature/parent`) return { exitCode: 0, stdout: "5\t2\n", stderr: "" } as any;
-          return { exitCode: 128, stdout: "", stderr: `fatal: ambiguous argument '${range}': unknown revision` } as any;
-        }
-        return { exitCode: 1, stdout: "", stderr: "" } as any;
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-remote-only-base",
-        defaultBaseRef: baseName,
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const summary = await service.getSummary("lane-parent", { includeStatus: true });
-
-      expect(summary?.status).toMatchObject({ ahead: 2, behind: 5 });
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("caches tracked-file totals by HEAD and index, and invalidates when tracked files are added", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-09-09T16:00:00.000Z"));
-
-    const repoRoot = makeTempRepoRoot("ade-lane-service-tracked-file-cache-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-tracked-file-cache", repoRoot });
-      let treeHash = "tree-a";
-      let headOid = "head-a";
-      let trackedFiles = "src/a.ts\0src/b.ts\0";
-      const parentPath = path.join(repoRoot, "parent");
-      const childPath = path.join(repoRoot, "child");
-      for (const worktreePath of [parentPath, childPath]) {
-        fs.mkdirSync(path.join(worktreePath, ".git"), { recursive: true });
-        fs.writeFileSync(path.join(worktreePath, ".git", "index"), "index-a");
-      }
-
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
-        }
-        if (args[0] === "status") {
-          expect(args).toEqual([
-            "status",
-            "--porcelain=v2",
-            "--branch",
-            "--untracked-files=normal",
-            "-z",
-          ]);
-          return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
-        }
-        if (args[0] === "log") {
-          expect(args).toEqual(["log", "-1", "--format=%H%x00%T%x00%cI"]);
-          return { exitCode: 0, stdout: `${headOid}\x00${treeHash}\x002026-09-09T15:00:00.000Z\n`, stderr: "" } as any;
-        }
-        if (args[0] === "ls-files") return { exitCode: 0, stdout: trackedFiles, stderr: "" } as any;
-        if (args[0] === "rev-list" && args[1] === "--left-right") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" } as any;
-        }
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
-          return { exitCode: 1, stdout: "", stderr: "" } as any;
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "" } as any;
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-tracked-file-cache",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const first = await service.getSummary("lane-child", { includeStatus: true });
-      expect(first?.trackedFileCount).toBe(2);
-      const callCountAfterFirst = vi.mocked(runGit).mock.calls.length;
-
-      const sameTree = await service.getSummary("lane-child", { includeStatus: true });
-      expect(sameTree?.trackedFileCount).toBe(2);
-      const secondRefreshCalls = vi.mocked(runGit).mock.calls.slice(callCountAfterFirst);
-      expect(secondRefreshCalls.filter(([args]) => args[0] === "ls-files")).toHaveLength(0);
-      // The tree hash rides along on the commit-date spawn, so a cached refresh
-      // adds exactly one metadata process per lane and no `rev-parse` for it.
-      expect(secondRefreshCalls.filter(([args]) =>
-        args[0] === "rev-parse" && args[1] === "HEAD^{tree}"
-      )).toHaveLength(0);
-      // Exactly one metadata spawn per lane in the refresh (parent + child).
-      expect(secondRefreshCalls.filter(([args]) => args[0] === "log")).toHaveLength(2);
-
-      // Staging a new tracked file changes the index while HEAD stays put.
-      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0";
-      fs.writeFileSync(path.join(childPath, ".git", "index"), "index-b-with-added-file");
-      const changedIndex = await service.getSummary("lane-child", { includeStatus: true });
-      expect(changedIndex?.trackedFileCount).toBe(3);
-      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(3);
-
-      // A commit/checkout changes HEAD even if the index metadata is unchanged.
-      headOid = "head-b";
-      treeHash = "tree-b";
-      trackedFiles = "src/a.ts\0src/b.ts\0src/c.ts\0src/d.ts\0";
-      const changedHead = await service.getSummary("lane-child", { includeStatus: true });
-      expect(changedHead?.trackedFileCount).toBe(4);
-      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files")).toHaveLength(5);
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-      vi.useRealTimers();
-    }
-  });
-
-  it("reports no tracked-file total when the ls-files listing was truncated, and does not cache it", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-tracked-file-truncated-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-tracked-file-truncated", repoRoot });
-      let truncated = true;
-
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" } as any;
-        }
-        if (args[0] === "status") return { exitCode: 0, stdout: "# branch.head feature/child\0", stderr: "" } as any;
-        if (args[0] === "log") {
-          return { exitCode: 0, stdout: "head-truncated\x00tree-truncated\x002026-09-09T15:00:00.000Z\n", stderr: "" } as any;
-        }
-        if (args[0] === "ls-files") {
-          return truncated
-            ? { exitCode: 0, stdout: "a\0b\0", stderr: "", stdoutTruncated: true } as any
-            : { exitCode: 0, stdout: "a\0b\0c\0", stderr: "" } as any;
-        }
-        if (args[0] === "rev-list" && args[1] === "--left-right") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" } as any;
-        }
-        return { exitCode: 1, stdout: "", stderr: "" } as any;
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-tracked-file-truncated",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const first = await service.getSummary("lane-child", { includeStatus: true });
-      // A truncated listing is a wrong number, not a smaller one.
-      expect(first?.trackedFileCount).toBeNull();
-
-      // ...and it was not cached, so the next refresh asks git again.
-      truncated = false;
-      const before = vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files").length;
-      const second = await service.getSummary("lane-child", { includeStatus: true });
-      expect(second?.trackedFileCount).toBe(3);
-      expect(vi.mocked(runGit).mock.calls.filter(([args]) => args[0] === "ls-files").length)
-        .toBeGreaterThan(before);
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("preserves agent summaries during status-only snapshot refreshes", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-status-snapshot-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-status-snapshot", repoRoot });
-      const now = "2026-03-11T12:00:00.000Z";
-      db.run(
-        "insert into lane_state_snapshots(lane_id, agent_summary_json, updated_at) values (?, ?, ?)",
-        ["lane-child", JSON.stringify({ headline: "Keep this summary" }), now],
-      );
-
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const laneBranchGitStub = defaultLaneBranchGitStub(args);
-        if (laneBranchGitStub) return laneBranchGitStub;
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
-        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-status-snapshot",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      await service.getSummary("lane-child", { includeStatus: true });
-
-      expect(service.getStateSnapshot("lane-child")?.agentSummary).toEqual({
-        headline: "Keep this summary",
-      });
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("skips lane_state_snapshots writes when the lane status is unchanged", async () => {
-    // Regression: unchanged status polls used to rewrite updated_at on every
-    // summary read, replicating a CRDT row change to phones every poll and
-    // hammering the mobile Lanes list with no-op invalidations.
-    const repoRoot = makeTempRepoRoot("ade-lane-service-noop-snapshot-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      await seedProjectAndStack(db, { projectId: "proj-noop-snapshot", repoRoot });
-
-      let statusStdout = "";
-      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        const laneBranchGitStub = defaultLaneBranchGitStub(args);
-        if (laneBranchGitStub) return laneBranchGitStub;
-        const cwd = opts?.cwd ?? repoRoot;
-        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
-          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
-        if (args[0] === "status") return { exitCode: 0, stdout: statusStdout, stderr: "" };
-        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-noop-snapshot",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      await service.getSummary("lane-child", { includeStatus: true });
-      const row = () =>
-        db.get<{ dirty: number; updated_at: string }>(
-          "select dirty, updated_at from lane_state_snapshots where lane_id = ?",
-          ["lane-child"],
-        );
-      expect(row()?.dirty).toBe(0);
-
-      // Pin updated_at to a sentinel; an unchanged-status read must not touch it.
-      const sentinel = "2026-03-11T12:34:56.000Z";
-      db.run("update lane_state_snapshots set updated_at = ? where lane_id = ?", [sentinel, "lane-child"]);
-      await service.getSummary("lane-child", { includeStatus: true });
-      expect(row()).toEqual({ dirty: 0, updated_at: sentinel });
-
-      // A real status change still writes.
-      statusStdout = " M file.txt\n";
-      await service.getSummary("lane-child", { includeStatus: true });
-      expect(row()?.dirty).toBe(1);
-      expect(row()?.updated_at).not.toBe(sentinel);
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("recreates the primary lane when the only stored primary lane is archived", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-primary-archived-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-03-11T12:00:00.000Z";
-    db.run(
-      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-      ["proj-primary-archived", repoRoot, "demo", "main", now, now],
-    );
-    db.run(
-      `
-        insert into lanes(
-          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `,
-      ["lane-main-archived", "proj-primary-archived", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "archived", now, now],
-    );
-
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-primary-archived",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await service.ensurePrimaryLane();
-
-    const lanes = await service.list({ includeArchived: true, includeStatus: false });
-    const activePrimary = lanes.find((lane) => lane.laneType === "primary" && lane.archivedAt == null);
-    expect(activePrimary).toBeTruthy();
-    expect(lanes.filter((lane) => lane.laneType === "primary")).toHaveLength(2);
-  });
-
-  it("notifies when a new lane is linked to a Linear issue", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-linear-card-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-05-12T20:00:00.000Z";
-    db.run(
-      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-      ["proj-linear-card", repoRoot, "demo", "main", now, now],
-    );
-
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
-      if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") return { exitCode: 1, stdout: "", stderr: "" };
-      if (args[0] === "ls-remote") return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "push") return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
-      if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-      if (args[0] === "rev-parse" && args.includes("@{upstream}")) return { exitCode: 1, stdout: "", stderr: "" };
-      if (args[0] === "rev-parse" && args.includes("--git-dir")) return { exitCode: 1, stdout: "", stderr: "" };
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-    vi.mocked(runGitOrThrow).mockResolvedValue("");
-
-    const onLinearIssueLinked = vi.fn();
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-linear-card",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-      onLinearIssueLinked,
-    });
-
-    const lane = await service.create({
-      name: "ABC-42 Fix flaky sync run",
-      linearIssue: makeLinearIssue(),
-    });
-
-    expect(lane.linearIssue?.identifier).toBe("ABC-42");
-    expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
-      lane: expect.objectContaining({ id: lane.id, name: "ABC-42 Fix flaky sync run" }),
-      issue: expect.objectContaining({ id: "issue-1", identifier: "ABC-42" }),
-      linkedAt: lane.createdAt,
-    }));
-  });
-
-  it("links Linear issues that do not belong to a Linear project", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-linear-projectless-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-linear-projectless", repoRoot });
-
-    const onLinearIssueLinked = vi.fn();
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-linear-projectless",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-      onLinearIssueLinked,
-    });
-
-    const issue = {
-      ...makeLinearIssue(),
-      id: "issue-projectless",
-      identifier: "ADE-45",
-      title: "Run Cursor SDK audit",
-      url: "https://linear.app/ade-linear/issue/ADE-45/run-cursor-sdk-audit",
-      projectId: "",
-      projectSlug: "",
-      projectName: null,
-      teamId: "team-ade",
-      teamKey: "ADE",
-      teamName: "ADE",
-    };
-
-    const links = service.linkLinearIssues({
-      laneId: "lane-child",
-      issues: [issue],
-      source: "manual",
-    });
-
-    expect(links).toHaveLength(1);
-    expect(service.hasLinearLinkedLanes()).toBe(true);
-    expect(links[0]?.issue).toEqual(expect.objectContaining({
-      identifier: "ADE-45",
-      projectId: "",
-      projectSlug: "",
-      teamKey: "ADE",
-    }));
-
-    const lanes = await service.list({ includeStatus: false });
-    const child = lanes.find((lane) => lane.id === "lane-child");
-    expect(child?.linearIssueLinks).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        role: "worked",
-        source: "manual",
-        issue: expect.objectContaining({
-          identifier: "ADE-45",
-          projectId: "",
-          projectSlug: "",
-          teamKey: "ADE",
-        }),
-      }),
-    ]));
-    expect(service.refreshLinearIssueSnapshots({
-      id: "issue-projectless",
-      title: "Stale webhook title",
-      updatedAt: "2026-05-11T19:00:00.000Z",
-    })).toEqual([]);
-    expect((await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child")?.linearIssueLinks?.[0]?.issue.title)
-      .toBe("Run Cursor SDK audit");
-    expect(service.refreshLinearIssueSnapshots({
-      id: "issue-projectless",
-      title: "Fresh webhook title",
-      updatedAt: "2026-05-13T19:00:00.000Z",
-    })).toEqual(["lane-child"]);
-    expect((await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-child")?.linearIssueLinks?.[0]?.issue.title)
-      .toBe("Fresh webhook title");
-    expect(onLinearIssueLinked).toHaveBeenCalledWith(expect.objectContaining({
-      lane: expect.objectContaining({ id: "lane-child" }),
-      issue: expect.objectContaining({ identifier: "ADE-45" }),
-    }));
-  });
-
-  it("moves unstaged and untracked changes into a new child lane", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-success-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-rescue-success", repoRoot });
-
-    const sourceWorktreePath = path.join(repoRoot, "parent");
-    const primaryWorktreePath = path.join(repoRoot, "main");
-    let stashMessage = "";
-    let stashPushed = false;
-    let createdWorktreePath = "";
-
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd === sourceWorktreePath) return "sha-parent-head";
-      return "sha-generic";
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      if (args[0] === "stash" && args[1] === "push") {
-        stashPushed = true;
-        stashMessage = args[args.length - 1] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "worktree" && args[1] === "add") {
-        createdWorktreePath = args[4] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "stash" && args[1] === "apply") {
-        expect(options.cwd).toBe(createdWorktreePath);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "stash" && args[1] === "drop") {
-        expect(options.cwd).toBe(sourceWorktreePath);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-        if (options.cwd === sourceWorktreePath) {
-          return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n?? src/new.ts\n", stderr: "" };
-        }
-        if (options.cwd === createdWorktreePath) {
-          return { exitCode: 0, stdout: " M src/file.ts\n?? src/new.ts\n", stderr: "" };
-        }
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "stash" && args[1] === "list") {
-        return { exitCode: 0, stdout: `stash@{0}\u001fOn feature/parent: ${stashMessage}\n`, stderr: "" };
-      }
-      if (args[0] === "push" && args[1] === "-u") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--verify") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: not a valid ref" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-        expect(options.cwd).toBe(primaryWorktreePath);
-        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-rescue-success",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const result = await service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Rescue lane" });
-
-    expect(result.parentLaneId).toBe("lane-parent");
-    expect(result.baseRef).toBe("feature/parent");
-    expect(result.status.dirty).toBe(true);
-    expect(runGitOrThrow).toHaveBeenCalledWith(
-      ["stash", "push", "--keep-index", "-u", "-m", expect.stringContaining("ade-rescue-unstaged:lane-parent:")],
-      expect.objectContaining({ cwd: sourceWorktreePath }),
-    );
-  });
-
-  it("rejects the rescue flow when staged changes exist", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-staged-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-rescue-staged", repoRoot });
-
-    const sourceWorktreePath = path.join(repoRoot, "parent");
-
-    vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
-    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && options.cwd === sourceWorktreePath) {
-        return { exitCode: 0, stdout: "M  src/file.ts\n", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-rescue-staged",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Rescue lane" })).rejects.toThrow(
-      /unstage all changes/i,
-    );
-    expect(runGitOrThrow).not.toHaveBeenCalled();
-  });
-
-  it("allows rescuing unstaged changes from the primary lane even when it is behind remote", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-primary-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-rescue-primary", repoRoot });
-
-    const sourceWorktreePath = path.join(repoRoot, "main");
-    let stashMessage = "";
-    let stashPushed = false;
-    let createdWorktreePath = "";
-
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd === sourceWorktreePath) return "sha-main-head";
-      return "sha-generic";
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      if (args[0] === "stash" && args[1] === "push") {
-        stashPushed = true;
-        stashMessage = args[args.length - 1] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "worktree" && args[1] === "add") {
-        createdWorktreePath = args[4] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "stash" && args[1] === "apply") {
-        expect(options.cwd).toBe(createdWorktreePath);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "stash" && args[1] === "drop") {
-        expect(options.cwd).toBe(sourceWorktreePath);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-        if (options.cwd === sourceWorktreePath) {
-          return { exitCode: 0, stdout: stashPushed ? "" : " M README.md\n", stderr: "" };
-        }
-        if (options.cwd === createdWorktreePath) {
-          return { exitCode: 0, stdout: " M README.md\n", stderr: "" };
-        }
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "stash" && args[1] === "list") {
-        return { exitCode: 0, stdout: `stash@{0}\u001fOn main: ${stashMessage}\n`, stderr: "" };
-      }
-      if (args[0] === "push" && args[1] === "-u") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-        return { exitCode: 0, stdout: "3\t0\n", stderr: "" };
-      }
-      if (args[0] === "rev-list" && args[1] === "HEAD..@{upstream}" && args[2] === "--count") {
-        return { exitCode: 0, stdout: "3\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "main@{upstream}") {
-        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
-        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
-        return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-rescue-primary",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const result = await service.createFromUnstaged({ sourceLaneId: "lane-main", name: "Primary rescue lane" });
-
-    expect(result.parentLaneId).toBeNull();
-    expect(result.baseRef).toBe("main");
-    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => Array.isArray(args) && args[0] === "fetch")).toBe(false);
-  });
-
-  it("restores the source work and removes the new lane when applying in the target lane fails", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-rollback-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-rescue-rollback", repoRoot });
-
-    const sourceWorktreePath = path.join(repoRoot, "parent");
-    let stashMessage = "";
-    let stashPushed = false;
-    let createdWorktreePath = "";
-    let restoredSource = false;
-
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (cwd === sourceWorktreePath) return "sha-parent-head";
-      return "sha-generic";
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      if (args[0] === "stash" && args[1] === "push") {
-        stashPushed = true;
-        stashMessage = args[args.length - 1] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "worktree" && args[1] === "add") {
-        createdWorktreePath = args[4] ?? "";
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "stash" && args[1] === "apply") {
-        if (options.cwd === createdWorktreePath) {
-          throw new Error("target apply failed");
-        }
-        if (options.cwd === sourceWorktreePath) {
-          restoredSource = true;
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-      }
-      if (args[0] === "stash" && args[1] === "drop") {
-        expect(options.cwd).toBe(sourceWorktreePath);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "worktree" && args[1] === "remove") {
-        expect(args).toEqual(["worktree", "remove", "--force", createdWorktreePath]);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "branch" && args[1] === "-D") {
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-        if (options.cwd === sourceWorktreePath) {
-          return { exitCode: 0, stdout: stashPushed ? "" : " M src/file.ts\n", stderr: "" };
-        }
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "stash" && args[1] === "list") {
-        return { exitCode: 0, stdout: `stash@{0}\u001fOn feature/parent: ${stashMessage}\n`, stderr: "" };
-      }
-      if (args[0] === "push" && args[1] === "-u") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-rescue-rollback",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Broken rescue lane" })).rejects.toThrow(
-      /couldn't move unstaged changes/i,
-    );
-    expect(restoredSource).toBe(true);
-    expect(db.get<{ count: number }>("select count(*) as count from lanes where project_id = ?", ["proj-rescue-rollback"])?.count).toBe(3);
-  });
-
-  it("rejects the rescue flow when there are no unstaged changes", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-empty-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-rescue-empty", repoRoot });
-
-    const sourceWorktreePath = path.join(repoRoot, "parent");
-
-    vi.mocked(getHeadSha).mockResolvedValue("sha-parent-head");
-    vi.mocked(runGit).mockImplementation(async (args: string[], options: { cwd?: string } = {}) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain") && options.cwd === sourceWorktreePath) {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-rescue-empty",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await expect(service.createFromUnstaged({ sourceLaneId: "lane-parent", name: "Empty rescue lane" })).rejects.toThrow(
-      /no unstaged changes/i,
-    );
-    expect(runGitOrThrow).not.toHaveBeenCalled();
-  });
-});
-
 describe("laneService automatic lane identity", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();
@@ -1383,80 +437,6 @@ describe("laneService create", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
-  it("creates an unparented lane from the requested base branch", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-create-root-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-03-11T12:00:00.000Z";
-
-    try {
-      db.run(
-        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-        ["proj-create-root", repoRoot, "demo", "main", now, now],
-      );
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        ["lane-main", "proj-create-root", "Main", null, "primary", "main", "fix-rebase-and-new-lane-flow", repoRoot, null, 0, null, null, null, null, "active", now, null],
-      );
-
-      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-        if (args[0] === "worktree" && args[1] === "add") {
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "main") {
-          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
-        }
-        if (args[0] === "push" && args[1] === "-u") {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        }
-        if (
-          args[0] === "rev-parse"
-          && args[1] === "--abbrev-ref"
-          && args[2] === "--symbolic-full-name"
-          && args[3] === "@{upstream}"
-        ) {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-create-root",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const lane = await service.create({ name: "Git actions fixes", baseBranch: "main" });
-
-      expect(lane.parentLaneId).toBeNull();
-      expect(lane.baseRef).toBe("main");
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
   it("does not let a concurrent list adopt a half-created worktree as a duplicate lane", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-create-race-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
@@ -1512,7 +492,7 @@ describe("laneService create", () => {
         if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
           return { exitCode: 0, stdout: "refs/heads/main\n", stderr: "" };
         }
-        if (args[0] === "rev-parse" && args[1] === "main") {
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet" && args[3] === "refs/heads/main^{commit}") {
           return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
         }
         if (args[0] === "push" && args[1] === "-u") {
@@ -1546,7 +526,7 @@ describe("laneService create", () => {
         worktreesDir: path.join(repoRoot, "worktrees"),
       });
 
-      createPromise = service.create({ name: "Race lane", baseBranch: "main" });
+      createPromise = service.create({ name: "Race lane", start: { from: "default", on: "local" } });
       await vi.waitFor(() => {
         expect(pendingWorktree).not.toBeNull();
       });
@@ -1595,7 +575,7 @@ describe("laneService create", () => {
       vi.mocked(runGit).mockImplementation(async (args: string[]) => {
         const laneBranchGitStub = defaultLaneBranchGitStub(args);
         if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "abc123456789") {
+        if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "abc123456789^{commit}") {
           return { exitCode: 0, stdout: "sha-selected\n", stderr: "" };
         }
         if (args[0] === "show-ref" && args[1] === "--verify" && args[2] === "--quiet") {
@@ -1632,7 +612,6 @@ describe("laneService create", () => {
 
       const lane = await service.create({
         name: "History point",
-        baseBranch: "main",
         branchName: "history/point",
         startPoint: "abc123456789",
       });
@@ -1640,166 +619,13 @@ describe("laneService create", () => {
       expect(lane.baseRef).toBe("main");
       expect(lane.branchRef).toBe("history/point");
       expect(worktreeStartPoint).toBe("sha-selected");
+      expect(lane.createdFrom).toMatchObject({ startRef: "abc123456789", startSha: "sha-selected" });
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
     }
   });
 
-  it("creates a fresh lane from primary using the project default base by default", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-create-from-primary-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-03-11T12:00:00.000Z";
-
-    try {
-      db.run(
-        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-        ["proj-create-from-primary", repoRoot, "demo", "main", now, now],
-      );
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        ["lane-main", "proj-create-from-primary", "Main", null, "primary", "main", "feature/live-primary", repoRoot, null, 1, null, null, null, null, "active", now, null],
-      );
-
-      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-        if (args[0] === "fetch" && args[1] === "--prune") {
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-        if (args[0] === "worktree" && args[1] === "add") {
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "@{upstream}") {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "main") {
-          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
-        }
-        if (args[0] === "push" && args[1] === "-u") {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        }
-        if (
-          args[0] === "rev-parse"
-          && args[1] === "--abbrev-ref"
-          && args[2] === "--symbolic-full-name"
-          && args[3] === "@{upstream}"
-        ) {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-create-from-primary",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const lane = await service.create({ name: "Fresh lane", parentLaneId: "lane-main" });
-
-      expect(lane.parentLaneId).toBeNull();
-      expect(lane.baseRef).toBe("main");
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("creates a root lane from the default base when the requested parent is primary", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-create-primary-parent-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-03-11T12:00:00.000Z";
-
-    try {
-      db.run(
-        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-        ["proj-create-primary-parent", repoRoot, "demo", "main", now, now],
-      );
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        ["lane-main", "proj-create-primary-parent", "Primary", null, "primary", "main", "feature-overhaul", repoRoot, null, 1, null, null, null, null, "active", now, null],
-      );
-
-      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-        if (args[0] === "worktree" && args[1] === "add") {
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "main") {
-          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
-        }
-        if (args[0] === "push" && args[1] === "-u") {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        }
-        if (
-          args[0] === "rev-parse"
-          && args[1] === "--abbrev-ref"
-          && args[2] === "--symbolic-full-name"
-          && args[3] === "@{upstream}"
-        ) {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-create-primary-parent",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const lane = await service.create({ name: "Fresh root lane", parentLaneId: "lane-main" });
-
-      expect(lane.parentLaneId).toBeNull();
-      expect(lane.baseRef).toBe("main");
-      expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => Array.isArray(args) && args[0] === "fetch")).toBe(false);
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
 });
 
 describe("laneService list repairs", () => {
@@ -1999,7 +825,6 @@ describe("laneService list repairs", () => {
       const sharedPathLanes = lanes.filter((lane) => lane.worktreePath === sharedWorktreePath);
       expect(sharedPathLanes.map((lane) => lane.id)).toEqual([keeperId]);
       expect(lanes.some((lane) => lane.id === artifactId)).toBe(false);
-      expect(lanes.find((lane) => lane.id === "lane-dup-child")?.parentLaneId).toBe(keeperId);
       expect(
         db.get<{ lane_id: string }>("select lane_id from terminal_sessions where id = ?", ["session-on-dup"])?.lane_id,
       ).toBe(keeperId);
@@ -3523,7 +2348,6 @@ describe("laneService importBranch", () => {
 
     expect(result.branchRef).toBe("feature/import");
     expect(result.baseRef).toBe("main");
-    expect(result.parentLaneId).toBeNull();
     expect(runGitOrThrow).toHaveBeenCalledWith(
       ["branch", "--track", "feature/import", "upstream/feature/import"],
       expect.objectContaining({ cwd: repoRoot }),
@@ -3902,7 +2726,7 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGitOrThrow).mockReset();
   });
 
-  it("skips rebasing when the parent head is already an ancestor of the lane head", async () => {
+  it("skips rebasing when the compare base is already an ancestor of the lane head", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-skip-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-skip", repoRoot });
@@ -3916,7 +2740,11 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
+        expect(args[2]).toBe("sha-origin-main");
         return { exitCode: 0, stdout: "", stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
@@ -3933,7 +2761,7 @@ describe("laneService rebaseStart", () => {
       },
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-child", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     expect(result.run.error).toBeNull();
@@ -4007,7 +2835,7 @@ describe("laneService rebaseStart", () => {
       worktreesDir: path.join(repoRoot, "worktrees"),
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-root", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-root", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     expect(result.run.lanes[0]?.status).toBe("succeeded");
@@ -4075,7 +2903,6 @@ describe("laneService rebaseStart", () => {
 
     const started = await service.rebaseStart({
       laneId: "lane-root",
-      scope: "lane_only",
       actor: "user",
       baseBranchOverride: "main",
     });
@@ -4089,7 +2916,7 @@ describe("laneService rebaseStart", () => {
     expect(afterRollback.base_ref).toBe("release-9");
   });
 
-  it("rejects overlapping rebase runs for the same stack while one is active", async () => {
+  it("rejects an overlapping rebase run for the same lane while one is active", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-overlap-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-overlap", repoRoot });
@@ -4103,6 +2930,9 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation((args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return Promise.resolve(laneBranchGitStub);
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return Promise.resolve({ exitCode: 0, stdout: "sha-origin-main\n", stderr: "" });
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return Promise.resolve({ exitCode: 1, stdout: "", stderr: "" });
       }
@@ -4125,11 +2955,13 @@ describe("laneService rebaseStart", () => {
       worktreesDir: path.join(repoRoot, "worktrees"),
     });
 
-    const firstRun = service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const firstRun = service.rebaseStart({ laneId: "lane-child", actor: "user" });
+    await vi.waitFor(() => {
+      expect(resolveRebase, "the first run reached git rebase").not.toBeNull();
+    });
 
-    await expect(service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" })).rejects.toThrow(
-      /already active for this lane stack/i,
+    await expect(service.rebaseStart({ laneId: "lane-child", actor: "user" })).rejects.toThrow(
+      /already active for this lane/i,
     );
 
     if (!resolveRebase) {
@@ -4202,7 +3034,6 @@ describe("laneService rebaseStart", () => {
 
     const result = await service.rebaseStart({
       laneId: "lane-root",
-      scope: "lane_only",
       actor: "user",
       baseBranchOverride: "main",
     });
@@ -4213,7 +3044,6 @@ describe("laneService rebaseStart", () => {
     expect(result.run.rootBaseRefAfter).toBe("main");
     const updated = await service.list({ includeStatus: false });
     expect(updated.find((lane) => lane.id === "lane-root")?.baseRef).toBe("main");
-    expect(updated.find((lane) => lane.id === "lane-root")?.parentLaneId).toBeNull();
   });
 
   it("rebases against the primary lane remote tracking ref when it is available", async () => {
@@ -4263,7 +3093,7 @@ describe("laneService rebaseStart", () => {
       worktreesDir: path.join(repoRoot, "worktrees"),
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     expect(result.run.error).toBeNull();
@@ -4323,7 +3153,7 @@ describe("laneService rebaseStart", () => {
       },
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     expect(result.run.lanes[0]?.status).toBe("succeeded");
@@ -4375,70 +3205,11 @@ describe("laneService rebaseStart", () => {
       },
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("failed");
     expect(result.run.error).toContain('Unable to resolve base branch "main".');
     expect(result.run.lanes[0]?.status).toBe("blocked");
-  });
-
-  it("uses parent HEAD directly for non-primary (worktree) parent without remote resolution", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-worktree-parent-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-worktree-parent", repoRoot });
-    const logs: string[] = [];
-
-    // lane-child has parent lane-parent (which is lane_type=worktree, not primary)
-    vi.mocked(runGitOrThrow).mockResolvedValue({ exitCode: 0, stdout: "", stderr: "" } as any);
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (path.basename(cwd) === "parent") return "sha-parent-head";
-      if (path.basename(cwd) === "child") return "sha-child-head";
-      return "sha-main";
-    });
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      // For a worktree parent, resolveParentRebaseTarget should NOT call
-      // rev-parse for upstream or origin refs. It goes straight to getHeadSha.
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref") {
-        throw new Error("Should not resolve upstream for non-primary parent");
-      }
-      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
-        expect(args[2]).toBe("sha-parent-head");
-        expect(args[3]).toBe("sha-child-head");
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rebase") {
-        expect(args[1]).toBe("sha-parent-head");
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-worktree-parent",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-      onRebaseEvent: (event) => {
-        if (event.type === "rebase-run-log") logs.push(event.message);
-      },
-    });
-
-    const result = await service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
-
-    expect(result.run.state).toBe("completed");
-    expect(result.run.lanes[0]?.status).toBe("succeeded");
-    // For worktree parent, the label is the parent name itself, so no parenthesized ref
-    const rebaseLog = logs.find((line) => line.includes("Rebasing"));
-    expect(rebaseLog, "expected a 'Rebasing' log entry").toBeTruthy();
-    // parentHead.slice(0, 8) truncates the sha, so check substring
-    expect(rebaseLog).toContain("onto Parent (sha-pare");
-    expect(rebaseLog).not.toContain("origin/");
   });
 
   it("fails the rebase run when the detached root lane base branch cannot be resolved", async () => {
@@ -4471,7 +3242,7 @@ describe("laneService rebaseStart", () => {
       worktreesDir: path.join(repoRoot, "worktrees"),
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("failed");
     expect(result.run.error).toContain('Unable to resolve base branch "main".');
@@ -4521,7 +3292,7 @@ describe("laneService rebaseStart", () => {
       },
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     expect(result.run.lanes[0]?.status).toBe("skipped");
@@ -4544,6 +3315,9 @@ describe("laneService rebaseStart", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
+        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
+      }
       if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
         return { exitCode: 1, stdout: "", stderr: "" };
       }
@@ -4565,7 +3339,7 @@ describe("laneService rebaseStart", () => {
       },
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-child", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-child", actor: "user" });
 
     expect(result.run.state).toBe("failed");
     expect(result.run.error).toContain("uncommitted changes");
@@ -4616,7 +3390,7 @@ describe("laneService rebaseStart", () => {
       worktreesDir: path.join(repoRoot, "worktrees"),
     });
 
-    const result = await service.rebaseStart({ laneId: "lane-parent", scope: "lane_only", actor: "user" });
+    const result = await service.rebaseStart({ laneId: "lane-parent", actor: "user" });
 
     expect(result.run.state).toBe("completed");
     // When upstream is already origin/main, it should NOT add origin/main twice
@@ -4624,436 +3398,6 @@ describe("laneService rebaseStart", () => {
     expect(revParseVerifyCalls).toHaveLength(1);
     expect(revParseVerifyCalls[0]).toBe("origin/main");
   });
-});
-
-describe("laneService reparent", () => {
-  beforeEach(() => {
-    vi.mocked(getHeadSha).mockReset();
-    vi.mocked(runGit).mockReset();
-    vi.mocked(runGitOrThrow).mockReset();
-  });
-
-  it("uses the primary lane's remote tracking ref when reparenting under primary", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-primary-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-reparent-primary", repoRoot });
-
-    let childHeadReads = 0;
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (path.basename(cwd) === "child") {
-        childHeadReads += 1;
-        return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
-      }
-      return "sha-unused";
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (
-        args[0] === "rev-parse"
-        && args[1] === "--abbrev-ref"
-        && args[2] === "--symbolic-full-name"
-        && args[3] === "@{upstream}"
-      ) {
-        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
-        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
-      }
-      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "rebase") {
-        expect(args[1]).toBe("sha-origin-main");
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-reparent-primary",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const result = await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" });
-
-    expect(result.previousParentLaneId).toBe("lane-parent");
-    expect(result.newParentLaneId).toBe("lane-main");
-    expect(result.preHeadSha).toBe("sha-child-pre");
-    expect(result.postHeadSha).toBe("sha-child-post");
-    expect(runGitOrThrow).toHaveBeenCalledWith(
-      ["rebase", "sha-origin-main"],
-      expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
-    );
-    expect(
-      db.get<{ base_ref: string; parent_lane_id: string | null }>(
-        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
-        ["lane-child", "feature/child"],
-      ),
-    ).toEqual({ base_ref: "main", parent_lane_id: null });
-  });
-
-  it("reparents onto stackBaseBranchRef when provided", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-stack-base-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-reparent-stack-base", repoRoot });
-
-    let childHeadReads = 0;
-    vi.mocked(getHeadSha).mockImplementation(async (cwd: string) => {
-      if (path.basename(cwd) === "child") {
-        childHeadReads += 1;
-        return childHeadReads === 1 ? "sha-child-pre" : "sha-child-post";
-      }
-      return "sha-unused";
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/develop") {
-        return { exitCode: 0, stdout: "sha-origin-develop\n", stderr: "" };
-      }
-      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "rebase") {
-        expect(args[1]).toBe("sha-origin-develop");
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-reparent-stack-base",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const result = await service.reparent({
-      laneId: "lane-child",
-      newParentLaneId: "lane-main",
-      stackBaseBranchRef: "develop",
-    });
-
-    expect(result.newBaseRef).toBe("develop");
-    expect(result.newParentLaneId).toBe("lane-main");
-    expect(runGitOrThrow).toHaveBeenCalledWith(
-      ["rebase", "sha-origin-develop"],
-      expect.objectContaining({ cwd: path.join(repoRoot, "child") }),
-    );
-    expect(
-      db.get<{ base_ref: string; parent_lane_id: string | null }>(
-        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
-        ["lane-child", "feature/child"],
-      ),
-    ).toEqual({ base_ref: "develop", parent_lane_id: null });
-  });
-
-  it("restores the active branch profile when reparent rebase fails", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-rollback-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-reparent-rollback", repoRoot });
-
-    vi.mocked(getHeadSha).mockResolvedValue("sha-child");
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (
-        args[0] === "rev-parse"
-        && args[1] === "--abbrev-ref"
-        && args[2] === "--symbolic-full-name"
-        && args[3] === "@{upstream}"
-      ) {
-        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
-        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
-      }
-      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rebase" && args[1] === "--abort") {
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "rebase") throw new Error("rebase failed");
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-reparent-rollback",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await expect(service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" })).rejects.toThrow("rebase failed");
-    expect(
-      db.get<{ base_ref: string; parent_lane_id: string | null }>(
-        "select base_ref, parent_lane_id from lanes where id = ?",
-        ["lane-child"],
-      ),
-    ).toEqual({ base_ref: "feature/parent", parent_lane_id: "lane-parent" });
-    expect(
-      db.get<{ base_ref: string; parent_lane_id: string | null }>(
-        "select base_ref, parent_lane_id from lane_branch_profiles where lane_id = ? and branch_ref = ?",
-        ["lane-child", "feature/child"],
-      ),
-    ).toEqual({ base_ref: "feature/parent", parent_lane_id: "lane-parent" });
-  });
-
-  it("skips git rebase when parent and base ref are unchanged", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-noop-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-reparent-noop", repoRoot });
-
-    vi.mocked(getHeadSha).mockResolvedValue("sha-stable");
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-    vi.mocked(runGitOrThrow).mockReset();
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-reparent-noop",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-parent" });
-
-    expect(runGitOrThrow).not.toHaveBeenCalled();
-  });
-
-  it("updates only the record when the lane already contains the new parent's tip", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-contains-parent-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-reparent-contains-parent", repoRoot });
-
-    vi.mocked(getHeadSha).mockResolvedValue("sha-child-merged-main");
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (
-        args[0] === "rev-parse"
-        && args[1] === "--abbrev-ref"
-        && args[2] === "--symbolic-full-name"
-        && args[3] === "@{upstream}"
-      ) {
-        return { exitCode: 0, stdout: "origin/main\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "origin/main") {
-        return { exitCode: 0, stdout: "sha-origin-main\n", stderr: "" };
-      }
-      if (args[0] === "merge-base" && args[1] === "--is-ancestor") {
-        expect(args.slice(2)).toEqual(["sha-origin-main", "sha-child-merged-main"]);
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-reparent-contains-parent",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const result = await service.reparent({ laneId: "lane-child", newParentLaneId: "lane-main" });
-
-    expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "rebase")).toBe(false);
-    expect(result.postHeadSha).toBe("sha-child-merged-main");
-    expect(
-      db.get<{ base_ref: string; parent_lane_id: string | null }>(
-        "select base_ref, parent_lane_id from lanes where id = ?",
-        ["lane-child"],
-      ),
-    ).toEqual({ base_ref: "main", parent_lane_id: null });
-  });
-});
-
-describe("laneService createChild", () => {
-  beforeEach(() => {
-    vi.mocked(getHeadSha).mockReset();
-    vi.mocked(runGit).mockReset();
-    vi.mocked(runGitOrThrow).mockReset();
-  });
-
-  it("createChild from primary anchors the new lane to the project default base", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-child-primary-default-base-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    const now = "2026-03-11T12:00:00.000Z";
-
-    try {
-      db.run(
-        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-        ["proj-child-primary-default-base", repoRoot, "demo", "main", now, now],
-      );
-      db.run(
-        `
-          insert into lanes(
-            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `,
-        ["lane-main", "proj-child-primary-default-base", "Main", null, "primary", "main", "feature/live-primary", repoRoot, null, 1, null, null, null, null, "active", now, null],
-      );
-
-      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-        if (args[0] === "worktree" && args[1] === "add") {
-          return { exitCode: 0, stdout: "", stderr: "" } as any;
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-        if (args[0] === "rev-parse" && args[1] === "main") {
-          return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
-        }
-        if (args[0] === "push" && args[1] === "-u") {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-          return { exitCode: 0, stdout: "", stderr: "" };
-        }
-        if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-          return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        }
-        if (
-          args[0] === "rev-parse"
-          && args[1] === "--abbrev-ref"
-          && args[2] === "--symbolic-full-name"
-          && args[3] === "@{upstream}"
-        ) {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-          return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-        }
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-child-primary-default-base",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-      });
-
-      const lane = await service.createChild({
-        parentLaneId: "lane-main",
-        name: "Primary child lane",
-      });
-
-      expect(lane.parentLaneId).toBeNull();
-      expect(lane.baseRef).toBe("main");
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-
-  it("createChild with baseBranchRef tracks remote-only branch and bases lane on it", async () => {
-    const repoRoot = makeTempRepoRoot("ade-lane-service-child-base-override-");
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    await seedProjectAndStack(db, { projectId: "proj-child-base-override", repoRoot });
-
-    const trackCalls: string[][] = [];
-
-    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
-      if (args[0] === "branch" && args[1] === "--track") {
-        trackCalls.push([...args]);
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      if (args[0] === "worktree" && args[1] === "add") {
-        // worktree add -b <new-branch> <path> <startPoint>
-        expect(args[2]).toBe("-b");
-        expect(args[5]).toBe("sha-feature-remote");
-        return { exitCode: 0, stdout: "", stderr: "" } as any;
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-      const laneBranchGitStub = defaultLaneBranchGitStub(args);
-      if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/origin/feature/remote-only") {
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      if (args[0] === "fetch" && args[1] === "--prune" && args[2] === "--all") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/remotes/origin/feature/remote-only") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/remote-only") {
-        return { exitCode: 1, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "feature/remote-only") {
-        return { exitCode: 0, stdout: "sha-feature-remote\n", stderr: "" };
-      }
-      if (args[0] === "push" && args[1] === "-u") {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "status" && String(args[1]).startsWith("--porcelain")) {
-        return { exitCode: 0, stdout: "", stderr: "" };
-      }
-      if (args[0] === "rev-list" && args[1] === "--left-right" && args[2] === "--count") {
-        return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "--symbolic-full-name" && args[3] === "@{upstream}") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no upstream configured" };
-      }
-      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
-        return { exitCode: 1, stdout: "", stderr: "fatal: no git dir" };
-      }
-      throw new Error(`Unexpected git call: ${args.join(" ")}`);
-    });
-
-    const service = createLaneService({
-      db,
-      projectRoot: repoRoot,
-      projectId: "proj-child-base-override",
-      defaultBaseRef: "main",
-      worktreesDir: path.join(repoRoot, "worktrees"),
-    });
-
-    const lane = await service.createChild({
-      parentLaneId: "lane-parent",
-      name: "Override base child",
-      baseBranchRef: "origin/feature/remote-only",
-    });
-
-    expect(trackCalls).toEqual([["branch", "--track", "feature/remote-only", "origin/feature/remote-only"]]);
-    expect(lane.baseRef).toBe("feature/remote-only");
-    expect(lane.parentLaneId).toBe("lane-parent");
-  });
-
 });
 
 describe("laneService updateAppearance color uniqueness", () => {
@@ -5243,17 +3587,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
         return 1;
       }),
     };
-    const autoRebaseService = {
-      cancelForLane: vi.fn(() => {
-        calls.push("cancel_auto_rebase");
-      }),
-    };
-    const rebaseSuggestionService = {
-      dismiss: vi.fn(async () => {
-        // already counted by cancel_auto_rebase step; do not duplicate
-      }),
-    };
-    return { calls, agentChatService, ptyService, fileWatcherService, autoRebaseService, rebaseSuggestionService };
+    return { calls, agentChatService, ptyService, fileWatcherService };
   }
 
   async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
@@ -5278,8 +3612,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
         agentChatService: opts.teardown.agentChatService,
         ptyService: opts.teardown.ptyService,
         fileWatcherService: opts.teardown.fileWatcherService,
-        autoRebaseService: opts.teardown.autoRebaseService,
-        rebaseSuggestionService: opts.teardown.rebaseSuggestionService,
       },
     });
     // First call (lane-child) has no children rows after the seed; we delete lane-child.
@@ -5739,7 +4071,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(fake.calls.indexOf("stop_chats")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_ptys")).toBeLessThan(wtIdx);
     expect(fake.calls.indexOf("stop_watchers")).toBeLessThan(wtIdx);
-    expect(fake.calls.indexOf("cancel_auto_rebase")).toBeLessThan(wtIdx);
 
     // Final event reports overall completion.
     const last = events[events.length - 1];
@@ -6220,8 +4551,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       "insert into test_runs(id, project_id, lane_id, suite_key, started_at, status, log_path) values (?, ?, ?, ?, ?, ?, ?)",
       ["test-run-child", projectId, "lane-child", "unit", now, "passed", path.join(repoRoot, "test.log")],
     );
-    db.run("insert into rebase_deferred(lane_id, project_id, deferred_until) values (?, ?, ?)", ["lane-child", projectId, now]);
-    db.run("insert into rebase_dismissed(lane_id, project_id, dismissed_at) values (?, ?, ?)", ["lane-child", projectId, now]);
     db.run(
       `
         insert into lane_worktree_locks(
@@ -6250,8 +4579,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       `,
       ["pr-parent", projectId, "lane-parent", "acme", "demo", 2, "https://example.com/pr/2", "open", "main", "feature/parent", now, now],
     );
-    db.run("insert into pr_groups(id, project_id, group_type, name, created_at) values (?, ?, ?, ?, ?)", ["group-child", projectId, "queue", "Queue", now]);
-    db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
     db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
     db.run(
       `
@@ -6268,7 +4595,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
 
     expect(count("lanes", "id = ?", ["lane-child"])).toBe(0);
     expect(count("lane_branch_profiles", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(db.get<{ parent_lane_id: string | null }>("select parent_lane_id from lane_branch_profiles where id = ?", ["profile-parent-ref"])?.parent_lane_id).toBeNull();
     expect(count("lane_state_snapshots", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("conflict_predictions", "lane_a_id = ? or lane_b_id = ?", ["lane-child", "lane-child"])).toBe(0);
     expect(count("conflict_proposals", "lane_id = ? or peer_lane_id = ?", ["lane-child", "lane-child"])).toBe(0);
@@ -6296,7 +4622,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       artifacts: expect.any(Number),
       checkpoints: expect.any(Number),
     });
-    expect(count("pr_group_members", "lane_id = ?", ["lane-child"])).toBe(0);
     // The snapshot row survives with the bulky kinds purged, so storage does not grow.
     expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(1);
     expect(
@@ -6314,8 +4639,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("operations", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("packs_index", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("test_runs", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("rebase_deferred", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("rebase_dismissed", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("lane_worktree_locks", "lane_id = ?", ["lane-child"])).toBe(0);
   });
 
@@ -7457,7 +5780,7 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
       if (worktreeAdded && args[0] === "show-ref") return { exitCode: 0, stdout: "", stderr: "" };
       const laneBranchGitStub = defaultLaneBranchGitStub(args);
       if (laneBranchGitStub) return laneBranchGitStub;
-      if (args[0] === "rev-parse" && args[1] === "main") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
+      if (args[0] === "rev-parse" && args[1] === "--verify" && args[2] === "--quiet") return { exitCode: 0, stdout: "sha-main\n", stderr: "" };
       if (args[0] === "branch" && args[1] === "-D") {
         branchDeleted = true;
         return { exitCode: 0, stdout: "", stderr: "" };

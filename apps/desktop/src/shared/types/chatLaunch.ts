@@ -1,13 +1,14 @@
 import type { AgentChatCreateArgs, AgentChatSendArgs, AgentChatFileRef } from "./chat";
 import type { LaneEnvInitStep } from "./config";
 import type { LaneLinearIssue } from "./lanes";
+import type { LaneStart } from "../laneStart";
 
 /**
  * A chat (or CLI session) launched into a lane that does not exist yet.
  *
  * The brain owns the whole launch: it reserves the chat's session id and the
- * lane's id up front, returns immediately, and then fetches the base, checks
- * out the worktree, applies the project's default lane template, creates the
+ * lane's id up front, returns immediately, and then fetches the start branch
+ * (when the lane starts from pushed work), checks out the worktree, applies the project's default lane template, creates the
  * chat and sends the opening message. Every client (desktop, hosted web, iOS)
  * renders the same snapshot, streamed as `chat_launch_event` runtime events
  * and readable on demand with `chat.getLaunch` / `chat.listLaunches`.
@@ -40,7 +41,8 @@ export type ChatLaunchMode = "foreground" | "background";
 /**
  * The stages a launch walks through, in order. Only stages that are true for
  * this launch are present in `ChatLaunchSnapshot.stages`:
- * - `fetch` is omitted when the project creates lanes from the local base.
+ * - `fetch` is present only when the lane starts from pushed work
+ *   (`LaneStart.on === "remote"`); it fetches the start branch.
  * - `environment` is omitted when neither a default lane template nor a
  *   project lane-environment config applies.
  * - `agent` is "Start agent" for a chat and "Start CLI session" for a CLI launch.
@@ -171,18 +173,17 @@ export type ChatLaunchChatArgs = {
 
 /**
  * An explicit recipe for the lane a launch creates, when the user configured one
- * instead of taking the prompt-derived default. Optional and additive: a launch
- * that omits it behaves exactly as before (deterministic name, project default
- * base and template). The lane name still travels as `ChatLaunchArgs.laneName`
- * and a root lane's base as `ChatLaunchArgs.baseBranch`, so this only carries
- * what those two fields cannot express.
+ * instead of taking the project's new-lane defaults. Optional: a launch that
+ * omits it gets a prompt-named lane with the defaults
+ * (`laneService.getNewLaneDefaults()`: start and template). The lane name
+ * travels as `ChatLaunchArgs.laneName`.
  */
 export type ChatLaunchLaneConfig = {
-  /** `root` branches from the base; `child` branches from `parentLaneId`; `import` adopts `branchRef`. */
-  mode: "root" | "child" | "import";
-  /** child mode: the lane to branch from. */
-  parentLaneId?: string | null;
-  /** import mode: the existing local or remote branch ref to adopt. */
+  /** `new` cuts a new branch from `start`; `existing` works directly on `branchRef`. */
+  mode: "new" | "existing";
+  /** new mode: where the branch starts and what it brings; omitted = the project's default start. */
+  start?: LaneStart | null;
+  /** existing mode: the local or remote branch ref the lane works on. */
   branchRef?: string | null;
   /** Lane template applied as this launch's environment; omitted = project default. */
   templateId?: string | null;
@@ -190,6 +191,11 @@ export type ChatLaunchLaneConfig = {
   color?: string | null;
   /** Linear issue bound to the new lane. */
   linearIssue?: LaneLinearIssue | null;
+  /**
+   * New mode: nobody chose the lane's name, so the launch names it like a
+   * plain auto-create (placeholder branch, then a title from the prompt).
+   */
+  autoName?: boolean;
 };
 
 export type ChatLaunchArgs = {
@@ -216,12 +222,10 @@ export type ChatLaunchArgs = {
   prompt: string;
   displayPrompt?: string | null;
   attachments?: AgentChatFileRef[];
-  /** Optional explicit base ref; omitted = the project's configured new-lane base. */
-  baseBranch?: string | null;
   /**
-   * Optional explicit recipe for the lane this launch creates (child lane,
-   * imported branch, template, color, Linear issue). Omitted = the default
-   * prompt-derived root lane.
+   * Optional explicit recipe for the lane this launch creates (start, existing
+   * branch, template, color, Linear issue). Omitted = a prompt-named lane with
+   * the project's new-lane defaults.
    */
   laneConfig?: ChatLaunchLaneConfig | null;
   /** Registry model id used for background lane naming and for display. */

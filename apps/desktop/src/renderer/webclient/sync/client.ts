@@ -195,8 +195,6 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 65_000;
 const LONG_RUNNING_COMMAND_TIMEOUT_MS: ReadonlyMap<string, number> = new Map([
   ...[
     "lanes.create",
-    "lanes.createChild",
-    "lanes.createFromUnstaged",
     "lanes.importBranch",
     "lanes.unarchive",
     "lanes.archiveAndReclaim",

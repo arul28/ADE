@@ -183,28 +183,11 @@ describe("pullRequestRowCleanup detach", () => {
     ).toBeNull();
   });
 
-  it("does not purge snapshots or group membership for ids owned by another project", () => {
+  it("does not purge snapshots for ids owned by another project", () => {
     insertPr("pr-local");
     insertPr("pr-foreign", { projectId: OTHER_PROJECT_ID, laneId: "lane-foreign" });
     insertSnapshot("pr-local");
     insertSnapshot("pr-foreign");
-    db.run(
-      "insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)",
-      ["group-local", PROJECT_ID, DETACHED_AT],
-    );
-    db.run(
-      "insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)",
-      ["group-foreign", OTHER_PROJECT_ID, DETACHED_AT],
-    );
-    db.run(
-      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
-       values ('member-local', 'group-local', 'pr-local', ?, 0, 'source')`,
-      [LANE_ID],
-    );
-    db.run(
-      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
-       values ('member-foreign', 'group-foreign', 'pr-foreign', 'lane-foreign', 0, 'source')`,
-    );
 
     detachPullRequestRowsByIds(db, {
       projectId: PROJECT_ID,
@@ -225,8 +208,6 @@ describe("pullRequestRowCleanup detach", () => {
         "pr-foreign",
       ])?.checks_json,
     ).not.toBeNull();
-    expect(db.get("select id from pr_group_members where id = 'member-local'")).toBeNull();
-    expect(db.get("select id from pr_group_members where id = 'member-foreign'")).not.toBeNull();
     expect(
       db.get<{ detached_at: string | null }>("select detached_at from pull_requests where id = 'pr-foreign'")
         ?.detached_at,

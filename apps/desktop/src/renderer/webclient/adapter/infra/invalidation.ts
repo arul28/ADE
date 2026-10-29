@@ -116,10 +116,7 @@ const TABLE_DOMAINS: Readonly<Record<string, readonly InvalidationDomain[]>> = {
   github_pr_stacks: ["prs"],
   github_pr_stack_entries: ["prs"],
   github_webhook_deliveries: ["prs"],
-  pr_groups: ["prs"],
-  pr_group_members: ["prs"],
   pr_auto_link_ignores: ["prs"],
-  integration_proposals: ["prs"],
 
   // ── Files ────────────────────────────────────────────────────────────────
   files_workspaces: ["files"],
@@ -129,8 +126,6 @@ const TABLE_DOMAINS: Readonly<Record<string, readonly InvalidationDomain[]>> = {
   file_history_snapshots: ["files"],
 
   // ── Rebase / conflicts ───────────────────────────────────────────────────
-  rebase_deferred: ["rebase"],
-  rebase_dismissed: ["rebase"],
   conflict_predictions: ["rebase"],
   conflict_proposals: ["rebase"],
 };

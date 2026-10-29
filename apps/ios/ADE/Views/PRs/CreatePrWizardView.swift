@@ -1,31 +1,6 @@
 import AVKit
 import SwiftUI
 
-// MARK: - Create PR mode (single / integration)
-
-enum CreatePrMode: String, CaseIterable, Identifiable {
-  case single, integration
-  var id: String { rawValue }
-  var title: String {
-    switch self {
-    case .single: return "Single"
-    case .integration: return "Integration"
-    }
-  }
-  var symbol: String {
-    switch self {
-    case .single: return "doc.badge.plus"
-    case .integration: return "arrow.triangle.merge"
-    }
-  }
-  var description: String {
-    switch self {
-    case .single: return "One branch, one PR"
-    case .integration: return "Merge several lanes into one integration PR"
-    }
-  }
-}
-
 // MARK: - Public view
 
 struct CreatePrWizardView: View {
@@ -40,10 +15,7 @@ struct CreatePrWizardView: View {
   let createCapabilities: PrCreateCapabilities?
   /// Single-PR submit: (laneId, title, body, draft, baseBranch, labels, reviewers, strategy).
   let onCreateSingle: (String, String, String, Bool, String, [String], [String], String?) async -> Bool
-  /// Integration PR submit (caller runs simulateIntegration → commitIntegration).
-  let onCreateIntegration: (CreateIntegrationRequest) async -> Bool
   let initialLaneId: String?
-  let singleModeOnly: Bool
   /// Shown in a pane beside a chat (the Duo, an iPad), where desktop opens
   /// it: no navigation stack of its own (it would take over the chat's
   /// toolbar); its title and Create go to the pane's header, and Close is the
@@ -54,21 +26,15 @@ struct CreatePrWizardView: View {
     lanes: [LaneSummary],
     createCapabilities: PrCreateCapabilities? = nil,
     initialLaneId: String? = nil,
-    singleModeOnly: Bool = false,
-    onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) async -> Bool,
-    onCreateIntegration: @escaping (CreateIntegrationRequest) async -> Bool
+    onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) async -> Bool
   ) {
     self.lanes = lanes
     self.createCapabilities = createCapabilities
     self.initialLaneId = initialLaneId
-    self.singleModeOnly = singleModeOnly
     self.onCreateSingle = onCreateSingle
-    self.onCreateIntegration = onCreateIntegration
   }
 
-  @State private var createMode: CreatePrMode = .single
   @State private var selectedLaneId = ""
-  @State private var selectedLaneIds: Set<String> = []
   @State private var baseBranch = ""
   @State private var title = ""
   @State private var bodyText = ""
@@ -80,8 +46,6 @@ struct CreatePrWizardView: View {
   @State private var errorMessage: String?
   @State private var editPresented = false
   @State private var lastAutoTitle = ""
-  // Integration-only state.
-  @State private var integrationLaneName = ""
   // Cached eligible lane options — recomputed only when the source-of-truth
   // (capabilities / lanes) shifts, not on every keystroke.
   @State private var cachedLaneOptions: [CreatePrLaneOption] = []
@@ -141,27 +105,6 @@ struct CreatePrWizardView: View {
     return lanes.first(where: { $0.id == selectedLaneId })
   }
 
-  /// Integration branches derived from other lanes of type "integration".
-  /// These are surfaced alongside the repo default as legal PR targets.
-  private var integrationTargets: [IntegrationTargetOption] {
-    lanes
-      .filter { $0.archivedAt == nil && $0.laneType == "integration" && $0.id != selectedOption?.id }
-      .map { lane in
-        let childNote: String = {
-          switch lane.childCount {
-          case 0: return "integration"
-          case 1: return "stacked · 1 child"
-          default: return "stacked · \(lane.childCount) children"
-          }
-        }()
-        return IntegrationTargetOption(
-          id: lane.branchRef,
-          branchRef: lane.branchRef,
-          subtitle: childNote
-        )
-      }
-  }
-
   private var defaultTargetBranch: String {
     selectedOption?.defaultBaseBranch
       ?? createCapabilities?.defaultBaseBranch
@@ -177,22 +120,13 @@ struct CreatePrWizardView: View {
   }
 
   private var branchTargetOptions: [PrBranchTargetOption] {
-    var targets = [
+    let targets = [
       PrBranchTargetOption(
         id: defaultTargetBranch,
         label: defaultTargetBranch,
         subtitle: "origin · default branch"
       )
     ]
-    for integration in integrationTargets {
-      targets.append(
-        PrBranchTargetOption(
-          id: integration.id,
-          label: integration.branchRef,
-          subtitle: integration.subtitle
-        )
-      )
-    }
     return targets
   }
 
@@ -264,14 +198,8 @@ struct CreatePrWizardView: View {
     let target = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
     let resolvedTarget = target.isEmpty ? defaultTargetBranch : target
     let targetDisplayName = displayNameForTargetBranch(resolvedTarget)
-    switch createMode {
-    case .single:
-      guard let option = selectedOption else { return "" }
-      return Self.defaultPrTitle(source: option.title, target: targetDisplayName)
-    case .integration:
-      let source = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
-      return Self.defaultPrTitle(source: source.isEmpty ? "Integration" : source, target: targetDisplayName)
-    }
+    guard let option = selectedOption else { return "" }
+    return Self.defaultPrTitle(source: option.title, target: targetDisplayName)
   }
 
   private func applyDefaultTitleIfUntouched() {
@@ -293,21 +221,11 @@ struct CreatePrWizardView: View {
 
   private var canSubmit: Bool {
     if isSubmitting { return false }
-    switch createMode {
-    case .single:
-      guard selectedLane != nil, selectedLaneCanCreate else { return false }
-      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      let effectiveTitle = trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle
-      let hasTitle = !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      let hasBase = !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      return hasTitle && hasBase
-    case .integration:
-      let hasName = !integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      let effectiveTitle = trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle
-      let hasTitle = !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      return selectedLaneIds.count >= 2 && hasName && hasTitle
-    }
+    guard selectedLane != nil, selectedLaneCanCreate else { return false }
+    let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    let effectiveTitle = trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle
+    return !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   var body: some View {
@@ -354,28 +272,13 @@ struct CreatePrWizardView: View {
             .padding(.top, 8)
             .padding(.bottom, 12)
           }
-          if !singleModeOnly {
-            modeSelectorSection
-          }
-          switch createMode {
-          case .single:
-            branchesSection
-            detailsSection
-            strategySection
-            stanceSection
-            reviewersSection
-            labelsSection
-            finalReviewSection
-          case .integration:
-            multiLaneSection(mode: .integration)
-            targetBranchSection(title: "Target branch")
-            integrationSettingsSection
-            detailsSection
-            stanceSection
-            reviewersSection
-            labelsSection
-            integrationReviewSection
-          }
+          branchesSection
+          detailsSection
+          strategySection
+          stanceSection
+          reviewersSection
+          labelsSection
+          finalReviewSection
           Color.clear.frame(height: 72)
         }
       }
@@ -393,42 +296,12 @@ struct CreatePrWizardView: View {
       .onChange(of: baseBranch) { _, _ in
         applyDefaultTitleIfUntouched()
       }
-      .onChange(of: integrationLaneName) { _, _ in
-        if createMode == .integration {
-          applyDefaultTitleIfUntouched()
-        }
-      }
-      .onChange(of: createMode) { _, newValue in
-        // Reset shared fields when flipping modes so stale values from the
-        // previous mode's submit don't leak over.
-        errorMessage = nil
-        if newValue == .single {
-          // Restore single-mode defaults using the currently selected lane.
-          applyDefaultTitleIfUntouched()
-        } else {
-          // Reset the title input so it doesn't carry over the single-lane
-          // suggestion.
-          title = ""
-          lastAutoTitle = ""
-          bodyText = ""
-          // Seed integration name so the form feels started.
-          if newValue == .integration && integrationLaneName.isEmpty {
-            integrationLaneName = "integration/\(Int(Date().timeIntervalSince1970))"
-          }
-          if newValue == .integration {
-            applyDefaultTitleIfUntouched()
-          }
-        }
-      }
       .sheet(isPresented: $editPresented) {
         editorSheet
       }
   }
 
   private func seedSelection() {
-        if singleModeOnly {
-          createMode = .single
-        }
         refreshCachedLaneOptions()
         if selectedLaneId.isEmpty {
           if let initialLaneId,
@@ -531,22 +404,6 @@ struct CreatePrWizardView: View {
     .frame(maxWidth: .infinity)
     .padding(.vertical, 9)
     .background(ADEKit.track, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-  }
-
-  private func targetBranchSection(title: String) -> some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: title)
-      VStack(alignment: .leading, spacing: 6) {
-        PrTargetBranchPickerDropdown(
-          targets: branchTargetOptions,
-          selectedBranch: $baseBranch
-        )
-      }
-      .padding(14)
-      .wizardCard()
-      .padding(.horizontal, 16)
-      .padding(.bottom, 8)
-    }
   }
 
   // MARK: - Details
@@ -739,122 +596,6 @@ struct CreatePrWizardView: View {
     return steps
   }
 
-  // MARK: - Mode selector
-
-  private var modeSelectorSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Mode")
-      ScrollView(.horizontal, showsIndicators: false) {
-        HStack(spacing: 8) {
-          ForEach(CreatePrMode.allCases) { mode in
-            ModeCard(
-              mode: mode,
-              selected: mode == createMode,
-              action: { createMode = mode }
-            )
-            .frame(width: 148)
-          }
-        }
-        .padding(.horizontal, 16)
-      }
-      .padding(.bottom, 12)
-    }
-  }
-
-  // MARK: - Multi-lane select
-
-  @ViewBuilder
-  private func multiLaneSection(mode: CreatePrMode) -> some View {
-    let options = cachedLaneOptions.isEmpty ? eligibleLaneOptions : cachedLaneOptions
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Lanes") {
-        let minCount = 2
-        let label = selectedLaneIds.count >= minCount
-          ? "\(selectedLaneIds.count) selected"
-          : "select \(minCount)+"
-        PrMonoText(text: label, color: ADEColor.textMuted, size: 10)
-      }
-      if options.isEmpty {
-        Text("No lanes are eligible to open a PR right now.")
-          .font(.subheadline)
-          .foregroundStyle(ADEColor.textSecondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(14)
-          .wizardCard()
-          .padding(.horizontal, 16)
-          .padding(.bottom, 8)
-      } else {
-        LazyVStack(spacing: 0) {
-          ForEach(Array(options.enumerated()), id: \.element.id) { index, option in
-            if index > 0 { PrRowSeparator() }
-            Button {
-              toggleLaneSelection(option.id)
-            } label: {
-              MultiLaneRow(option: option, selected: selectedLaneIds.contains(option.id))
-            }
-            .buttonStyle(.plain)
-          }
-        }
-        .wizardCard()
-        .padding(.horizontal, 16)
-        .padding(.bottom, 8)
-      }
-    }
-  }
-
-  private func toggleLaneSelection(_ id: String) {
-    if selectedLaneIds.contains(id) {
-      selectedLaneIds.remove(id)
-    } else {
-      selectedLaneIds.insert(id)
-    }
-    errorMessage = nil
-  }
-
-  // MARK: - Integration settings
-
-  private var integrationSettingsSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Integration branch")
-      VStack(alignment: .leading, spacing: 6) {
-        TextField("integration/my-batch", text: $integrationLaneName)
-          .font(.system(size: 13, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .autocorrectionDisabled()
-          .textInputAutocapitalization(.never)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .adeKitCard(padding: nil)
-        Text("Name the integration lane that will carry the merged work.")
-          .font(.system(size: 10, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .padding(.horizontal, 14)
-      }
-      .padding(.horizontal, 16)
-      .padding(.bottom, 10)
-    }
-  }
-
-  private var integrationReviewSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Review") {
-        PrMonoText(text: "integration", color: ADEColor.textMuted, size: 10)
-      }
-      let count = selectedLaneIds.count
-      let base = baseBranch.isEmpty ? defaultTargetBranch : baseBranch
-      VStack(alignment: .leading, spacing: 6) {
-        ReviewLine(label: "Source lanes", value: "\(count)")
-        ReviewLine(label: "Integration lane", value: integrationLaneName.isEmpty ? "—" : integrationLaneName)
-        ReviewLine(label: "Target", value: base)
-        ReviewLine(label: "Stance", value: draft ? "draft" : "ready")
-      }
-      .padding(14)
-      .wizardCard()
-      .padding(.horizontal, 16)
-      .padding(.bottom, 8)
-    }
-  }
-
   // MARK: - Submit button
 
   private var submitButton: some View {
@@ -875,18 +616,7 @@ struct CreatePrWizardView: View {
     .disabled(!canSubmit)
   }
 
-  private var submitLabel: String {
-    if isSubmitting {
-      switch createMode {
-      case .single: return "Opening…"
-      case .integration: return "Merging…"
-      }
-    }
-    switch createMode {
-    case .single: return "Open"
-    case .integration: return "Integrate"
-    }
-  }
+  private var submitLabel: String { isSubmitting ? "Opening…" : "Open" }
 
   @MainActor
   private func submit() async {
@@ -902,9 +632,7 @@ struct CreatePrWizardView: View {
       .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "@")) }
       .filter { !$0.isEmpty }
 
-    switch createMode {
-    case .single:
-      guard let option = selectedOption, selectedLaneCanCreate else {
+    guard let option = selectedOption, selectedLaneCanCreate else {
         isSubmitting = false
         return
       }
@@ -923,32 +651,6 @@ struct CreatePrWizardView: View {
       if !completed {
         errorMessage = "The pull request was not created."
       }
-    case .integration:
-      let laneIds = orderedSelectedLaneIds
-      let trimmedName = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
-      let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-      let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-      let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
-      let completed = await onCreateIntegration(
-        CreateIntegrationRequest(
-          sourceLaneIds: laneIds,
-          integrationLaneName: trimmedName,
-          title: trimmedTitle.isEmpty ? currentDefaultTitle : trimmedTitle,
-          body: bodyText,
-          draft: draft,
-          baseBranch: targetBranch
-        )
-      )
-      isSubmitting = false
-      if !completed {
-        errorMessage = "The integration PR was not created."
-      }
-    }
-  }
-
-  private var orderedSelectedLaneIds: [String] {
-    // Preserve eligibleLaneOptions order so multi-lane submits are deterministic.
-    eligibleLaneOptions.map(\.id).filter { selectedLaneIds.contains($0) }
   }
 
   private func refreshCachedLaneOptions() {
@@ -1040,7 +742,7 @@ fileprivate enum PrStrategyChoice: String {
 
   var helper: String {
     switch self {
-    case .prTarget: return "Recommended · auto-rebase on"
+    case .prTarget: return "Recommended"
     case .laneBase: return "Best for long-lived branches"
     }
   }
@@ -1093,12 +795,6 @@ fileprivate struct StrategyRow: View {
   }
 }
 
-fileprivate struct IntegrationTargetOption: Identifiable, Equatable {
-  let id: String
-  let branchRef: String
-  let subtitle: String
-}
-
 fileprivate struct NextStepItem: Identifiable, Equatable {
   let id: String
   let label: String
@@ -1137,132 +833,12 @@ fileprivate struct NextStepRow: View {
 
 // MARK: - Mode + multi-lane row views
 
-fileprivate struct ModeCard: View {
-  let mode: CreatePrMode
-  let selected: Bool
-  let action: () -> Void
-
-  var body: some View {
-    let shape = RoundedRectangle(cornerRadius: 12, style: .continuous)
-    Button(action: action) {
-      VStack(alignment: .leading, spacing: 6) {
-        HStack(spacing: 6) {
-          Image(systemName: mode.symbol)
-            .font(.system(size: 12, weight: .semibold))
-            .foregroundStyle(selected ? ADEColor.accent : ADEColor.textSecondary)
-          Text(mode.title)
-            .font(.system(size: 13, weight: .semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-            .minimumScaleFactor(0.75)
-          Spacer(minLength: 0)
-        }
-        Text(mode.description)
-          .font(.system(size: 11))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(2)
-          .multilineTextAlignment(.leading)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(10)
-      .frame(minHeight: 72, alignment: .topLeading)
-      .background(ADEKit.surface, in: shape)
-      .overlay(shape.strokeBorder(selected ? ADEColor.accent : ADEKit.edge, lineWidth: selected ? 1.25 : 0.75))
-      .contentShape(shape)
-    }
-    .buttonStyle(.plain)
-    .accessibilityAddTraits(selected ? [.isSelected] : [])
-  }
-}
-
-fileprivate struct MultiLaneRow: View {
-  let option: CreatePrLaneOption
-  let selected: Bool
-
-  var body: some View {
-    HStack(spacing: 10) {
-      ZStack {
-        if selected {
-          Circle()
-            .fill(ADEColor.accent)
-            .frame(width: 22, height: 22)
-          Image(systemName: "checkmark")
-            .font(.system(size: 11, weight: .bold))
-            .foregroundStyle(.white)
-        } else {
-          Circle()
-            .strokeBorder(ADEColor.border.opacity(0.6), lineWidth: 1)
-            .frame(width: 22, height: 22)
-        }
-      }
-
-      VStack(alignment: .leading, spacing: 1) {
-        Text(option.title)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(1)
-        Text(option.branchRef)
-          .font(.system(size: 10.5, design: .monospaced))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-        if let subtitle = option.subtitle, !subtitle.isEmpty {
-          Text(subtitle)
-            .font(.system(size: 10))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-      }
-      Spacer(minLength: 0)
-    }
-    .padding(.leading, 12)
-    .padding(.trailing, 14)
-    .padding(.vertical, 11)
-    .contentShape(Rectangle())
-  }
-}
-
-fileprivate struct ReviewLine: View {
-  let label: String
-  let value: String
-
-  var body: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Text(label)
-        .font(.system(size: 11, design: .monospaced))
-        .foregroundStyle(ADEColor.textMuted)
-        .frame(width: 120, alignment: .leading)
-      Text(value)
-        .font(.system(size: 12, weight: .semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(2)
-        .multilineTextAlignment(.leading)
-      Spacer(minLength: 0)
-    }
-  }
-}
-
-// MARK: - Shared types
-
-/// Unified lane option for the wizard picker — abstracts both the legacy
-/// LaneSummary list and the host-provided PrCreateLaneEligibility entries.
 struct CreatePrLaneOption: Identifiable, Equatable {
   let id: String
   let title: String
   let branchRef: String
   let defaultBaseBranch: String
   let subtitle: String?
-}
-
-/// Integration-PR submit payload. Caller runs simulateIntegration →
-/// commitIntegration in sequence.
-struct CreateIntegrationRequest: Equatable {
-  let sourceLaneIds: [String]
-  let integrationLaneName: String
-  let title: String
-  let body: String
-  let draft: Bool
-  let baseBranch: String?
 }
 
 struct PrMarkdownRenderer: View {

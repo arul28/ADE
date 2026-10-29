@@ -32,11 +32,8 @@ Evidence run ids used so far:
 
 | id | action | state | evidence |
 | --- | --- | --- | --- |
-| prs.route.github.open | Open PRs route on GitHub surface with perf-pass project | measured | baseline and optimized run ids above |
-| prs.route.workflows.open | Switch from GitHub surface to Workflows surface | measured | `prs-ui-rebase-fetch-ttl-20260512-062130` |
+| prs.route.github.open | Open PRs route with perf-pass project | measured | baseline and optimized run ids above |
 | prs.header.create-pr | Open Create PR modal | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.open` |
-| prs.header.tab.github | Switch to GitHub tab | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.header.tab.github` |
-| prs.header.tab.workflows | Switch to Workflows tab | measured | `prs-ui-rebase-fetch-ttl-20260512-062130` |
 
 ## GitHub list
 
@@ -86,54 +83,13 @@ Evidence run ids used so far:
 | prs.detail.close-pr | Close PR | prompt-only | `PrDetailPane.tsx` |
 | prs.detail.reopen-pr | Reopen PR | prompt-only | `PrDetailPane.tsx` |
 
-## Workflows shell
-
-| id | action | state | evidence |
-| --- | --- | --- | --- |
-| prs.workflows.active | Select Active | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.workflows.active` |
-| prs.workflows.history | Select History | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.workflows.history`; empty history state rendered |
-| prs.workflows.integration | Select Integration | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.integration.select` |
-| prs.workflows.rebase | Select Rebase/Merge | measured | `prs-ui-ptm-audit-20260512-0635` |
-| prs.workflows.refresh | Click Workflows Refresh | measured | stale/no-op UI plus explicit all-18 refresh evidence |
-
-
-## Integration workflow
-
-| id | action | state | evidence |
-| --- | --- | --- | --- |
-| prs.integration.select | Select integration workflow | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.integration.select` |
-| prs.integration.refresh | Click integration workflow Refresh | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.integration.refresh` |
-| prs.integration.open-linked-pr | Open linked PR in ADE | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.integration.open-linked-pr` |
-| prs.integration.open-github | Open linked PR on GitHub | external-skip | `WorkflowsTab.tsx` |
-| prs.integration.cleanup | Open cleanup controls | prompt-only | `WorkflowsTab.tsx` |
-| prs.integration.dismiss-cleanup | Dismiss cleanup prompt | prompt-only | `WorkflowsTab.tsx` |
-| prs.integration.simulate | Simulate integration | sandbox-only | `IntegrationTab.tsx` |
-| prs.integration.create-lane | Create integration lane | sandbox-only | `IntegrationTab.tsx` |
-| prs.integration.commit | Commit integration | prompt-only | mutates perf-pass/GitHub workflow |
-| prs.integration.resolver | Start integration resolver | sandbox-only | `IntegrationTab.tsx` |
-
-## Rebase/Merge workflow
-
-| id | action | state | evidence |
-| --- | --- | --- | --- |
-| prs.rebase.select-need | Select a rebase need | measured | `prs-ui-ptm-audit-20260512-0635` |
-| prs.rebase.commit-expand | Expand commit/file details | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.rebase.commit-expand`; expanded `5c7d11f` file details |
-| prs.rebase.dismiss | Dismiss/defer rebase need | prompt-only | `RebaseTab.tsx` |
-| prs.rebase.ai | Rebase with AI | sandbox-only | `RebaseTab.tsx` |
-| prs.rebase.local | Rebase now local only | prompt-only | mutates perf-pass worktree |
-| prs.rebase.push | Rebase and push | prompt-only | externally visible GitHub push |
-| prs.rebase.abort | Abort active rebase | prompt-only | `RebaseTab.tsx` |
-| prs.rebase.rollback | Roll back completed rebase | prompt-only | `RebaseTab.tsx` |
-
 ## Create PR modal
 
 | id | action | state | evidence |
 | --- | --- | --- | --- |
 | prs.create.open | Open Create PR modal | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.open` |
-| prs.create.mode.normal | Select normal PR mode | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.mode.normal` |
-| prs.create.mode.integration | Select integration workflow mode | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.mode.integration` |
 | prs.create.lane-picker | Change lane/source pickers | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.lane-picker` |
-| prs.create.rebase-warning | Read rebase warning panel | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.lane-picker`; warning rendered for behind lane selection |
+| prs.create.rebase-warning | Read lane readiness warning panel | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.lane-picker`; warning rendered for behind lane selection |
 | prs.create.submit | Submit PR creation | prompt-only | externally visible GitHub PR |
 
 ## Deferred and non-executed rows

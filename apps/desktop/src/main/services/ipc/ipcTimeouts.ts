@@ -57,8 +57,6 @@ const RUNTIME_ACTION_CHANNEL: Record<string, Record<string, string>> = {
   },
   lane: {
     create: IPC.lanesCreate,
-    createChild: IPC.lanesCreateChild,
-    createFromUnstaged: IPC.lanesCreateFromUnstaged,
     importBranch: IPC.lanesImportBranch,
     switchBranch: IPC.lanesSwitchBranch,
     unarchive: IPC.lanesUnarchive,
@@ -229,10 +227,6 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     // LANE_GIT_WRITE_ACTION_TIMEOUT_MS.
     case IPC.lanesCreate:
       return localRuntimeActionIpcTimeoutMs("lane", "create");
-    case IPC.lanesCreateChild:
-      return localRuntimeActionIpcTimeoutMs("lane", "createChild");
-    case IPC.lanesCreateFromUnstaged:
-      return localRuntimeActionIpcTimeoutMs("lane", "createFromUnstaged");
     case IPC.lanesImportBranch:
       return localRuntimeActionIpcTimeoutMs("lane", "importBranch");
     case IPC.lanesSwitchBranch:

@@ -22,8 +22,6 @@ struct PRsTabView: View, Equatable {
   @State var duoSelectedPrId: String?
   @State private var prs: [PullRequestListItem] = []
   @State private var lanes: [LaneSummary] = []
-  @State private var laneSnapshots: [LaneListSnapshot] = []
-  @State private var integrationProposals: [IntegrationProposal] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
   @State private var githubExternalHistoryLoaded = false
@@ -37,7 +35,6 @@ struct PRsTabView: View, Equatable {
   @State private var errorMessage: String?
   @State private var createPresented = false
   @State private var createInitialLaneId: String?
-  @State private var stackPresentation: PrStackPresentation?
   @State private var refreshFeedbackToken = 0
   @State private var lastPrsLocalProjectionReload = Date.distantPast
   @State private var lastHandledPrsProjectionRevision: Int?
@@ -51,8 +48,6 @@ struct PRsTabView: View, Equatable {
   @State private var githubDerived: PrGitHubDerivedList = .empty
   @State private var laneLinkRequest: PrGitHubLaneLinkRequest?
   @State private var autoMapRequest: PrAutoMapRequest?
-  @SceneStorage("ade.prs.rootSurface") private var rootSurfaceRawValue = PrRootSurface.github.rawValue
-  @SceneStorage("ade.prs.workflowFilter") private var workflowFilterRawValue = PrWorkflowKindFilter.all.rawValue
   /// Primary headline selector for the GitHub surface (desktop parity): three
   /// status categories — Open (folds draft), Merged, Closed.
   @SceneStorage("ade.prs.githubCategory") private var githubCategoryRawValue = PrGitHubCategory.open.rawValue
@@ -83,22 +78,6 @@ struct PRsTabView: View, Equatable {
       && prs.isEmpty && githubSnapshot == nil
   }
 
-  var selectedRootSurface: Binding<PrRootSurface> {
-    Binding(
-      get: { PrRootSurface(rawValue: rootSurfaceRawValue) ?? .github },
-      set: { rootSurfaceRawValue = $0.rawValue }
-    )
-  }
-
-  private var selectedWorkflowFilter: Binding<PrWorkflowKindFilter> {
-    Binding(
-      get: { PrWorkflowKindFilter(rawValue: workflowFilterRawValue) ?? .all },
-      set: { workflowFilterRawValue = $0.rawValue }
-    )
-  }
-
-  /// Primary three-way category selector (Open / Merged / Closed). Folds draft
-  /// into Open. Drives both the headline tabs and the list derivation.
   private var selectedGitHubCategory: Binding<PrGitHubCategory> {
     Binding(
       get: { PrGitHubCategory(rawValue: githubCategoryRawValue) ?? .open },
@@ -169,7 +148,7 @@ struct PRsTabView: View, Equatable {
     }
   }
 
-  /// Stable registry key for root-level workflow actions (integration /
+  /// Stable registry key for root-level actions (
   /// create / link). These share one in-flight banner, so one key is correct.
   static let rootActionKey = "prs.root"
 
@@ -211,64 +190,6 @@ struct PRsTabView: View, Equatable {
     return githubDerived.categoryCounts
   }
 
-  /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
-  /// legacy per-kind fetches (integrationProposals / laneSnapshots-derived rebase)
-  /// so offline cached state still renders if the mobile snapshot fetch failed.
-  private var workflowCards: [PrWorkflowCard] {
-    if let mobileSnapshot {
-      return mobileSnapshot.workflowCards.filter {
-        $0.kind == "integration" || $0.kind == "rebase"
-      }
-    }
-    return legacyWorkflowCards
-  }
-
-  private var legacyWorkflowCards: [PrWorkflowCard] {
-    var cards: [PrWorkflowCard] = []
-
-    for proposal in integrationProposals {
-      cards.append(legacyIntegrationCard(from: proposal))
-    }
-    for item in rebaseWorkflowItems {
-      cards.append(legacyRebaseCard(from: item))
-    }
-
-    return cards
-  }
-
-  private var rebaseWorkflowItems: [PrRebaseWorkflowItem] {
-    laneSnapshots.compactMap { snapshot in
-      guard let suggestion = snapshot.rebaseSuggestion, suggestion.dismissedAt == nil else { return nil }
-      let severity: String
-      if snapshot.autoRebaseStatus?.state == "rebaseConflict" {
-        severity = "critical"
-      } else if suggestion.behindCount >= 10 {
-        severity = "warning"
-      } else {
-        severity = "info"
-      }
-
-      let message = snapshot.autoRebaseStatus?.message
-        ?? "\(snapshot.lane.name) is \(suggestion.behindCount) commit\(suggestion.behindCount == 1 ? "" : "s") behind its parent lane."
-
-      return PrRebaseWorkflowItem(
-        laneId: snapshot.lane.id,
-        laneName: snapshot.lane.name,
-        branchRef: snapshot.lane.branchRef,
-        behindCount: suggestion.behindCount,
-        severity: severity,
-        statusMessage: message,
-        deferredUntil: suggestion.deferredUntil
-      )
-    }
-    .sorted { lhs, rhs in
-      if lhs.severity == rhs.severity {
-        return lhs.behindCount > rhs.behindCount
-      }
-      return severityRank(lhs.severity) < severityRank(rhs.severity)
-    }
-  }
-
   private var canCreatePr: Bool {
     if let createCaps = mobileSnapshot?.createCapabilities {
       return createCaps.canCreateAny && canRunWorkflowActions
@@ -293,17 +214,6 @@ struct PRsTabView: View, Equatable {
     return syncService.requestedPrNavigation?.id
   }
 
-  private var workflowKindCounts: [String: Int] {
-    var counts: [String: Int] = [:]
-    for card in workflowCards {
-      counts[card.kind, default: 0] += 1
-    }
-    counts["all"] = workflowCards.count
-    return counts
-  }
-
-  /// Re-read the other machines while the tab is visible, for the focused
-  /// project, and again when a machine's live link comes or goes.
   private var remotePrsPollKey: String? {
     guard isActive, let projectId = inputs.activeProjectId else { return nil }
     return "\(projectId)|\(inputs.liveMachineKeys.joined(separator: ","))"
@@ -420,8 +330,6 @@ struct PRsTabView: View, Equatable {
       remotePrs.reset()
       prs = []
       lanes = []
-      laneSnapshots = []
-      integrationProposals = []
       mobileSnapshot = nil
       githubSnapshot = nil
       githubExternalHistoryLoaded = false
@@ -448,10 +356,6 @@ struct PRsTabView: View, Equatable {
       createInitialLaneId = nil
     }) {
       createPrWizardSheet
-    }
-    .sheet(item: $stackPresentation) { presentation in
-      PrStackSheet(groupId: presentation.id, groupName: presentation.groupName)
-        .environmentObject(syncService)
     }
     .sheet(item: $laneLinkRequest) { request in
       PrLaneLinkSheet(
@@ -499,7 +403,7 @@ struct PRsTabView: View, Equatable {
     NavigationStack(path: $path) {
       prsListColumnContent(diagnosticsKey: "pr-list")
         // Root PR actions run at the service level (`runDurablePrAction`), so
-        // switching tabs never aborts in-flight integration or link work.
+        // switching tabs never aborts in-flight link work.
         .navigationDestination(for: String.self) { prId in
           duoPrDetail(prId)
         }
@@ -572,12 +476,7 @@ struct PRsTabView: View, Equatable {
           }
         }
       } else {
-        switch selectedRootSurface.wrappedValue {
-        case .github:
-          githubSurfaceRows
-        case .workflows:
-          workflowsSurfaceRows
-        }
+        githubSurfaceRows
       }
     }
     .adeFlatList()
@@ -609,14 +508,9 @@ struct PRsTabView: View, Equatable {
     syncService.projects.first { $0.id == syncService.activeProjectId }?.iconDataUrl
   }
 
-  /// "PRs ▾": GitHub or Workflows, and Refresh.
+  /// PR list refresh menu.
   private var duoTitleMenu: some View {
     Menu {
-      Picker("View", selection: selectedRootSurface) {
-        Label("GitHub", systemImage: "arrow.triangle.pull").tag(PrRootSurface.github)
-        Label(workflowCards.isEmpty ? "Workflows" : "Workflows (\(workflowCards.count))", systemImage: "point.3.filled.connected.trianglepath.dotted")
-          .tag(PrRootSurface.workflows)
-      }
       Section {
         Button {
           Task {
@@ -630,9 +524,9 @@ struct PRsTabView: View, Equatable {
         .disabled(prsStatus.phase == .hydrating)
       }
     } label: {
-      PrListTitleLabel(title: selectedRootSurface.wrappedValue == .github ? "PRs" : "Workflows")
+      PrListTitleLabel(title: "PRs")
     }
-    .accessibilityLabel(selectedRootSurface.wrappedValue == .github ? "PRs, switch view" : "Workflows, switch view")
+    .accessibilityLabel("PRs menu")
   }
 
   /// The column's second header row (search with the scope and sort inside
@@ -640,10 +534,8 @@ struct PRsTabView: View, Equatable {
   private var duoPrsHeaderRows: some View {
     PrListHeaderBar(
       searchText: $searchText,
-      prompt: selectedRootSurface.wrappedValue == .github ? "Search PRs" : "Search workflows",
-      filterActive: selectedRootSurface.wrappedValue == .github
-        ? hasActiveFilters
-        : selectedWorkflowFilter.wrappedValue != .all,
+      prompt: "Search PRs",
+      filterActive: hasActiveFilters,
       canCreate: canCreatePr,
       onCreate: {
         createInitialLaneId = nil
@@ -652,7 +544,6 @@ struct PRsTabView: View, Equatable {
       onOpenActivity: { syncService.attentionDrawerPresented = true },
       onOpenSettings: { syncService.settingsPresented = true }
     ) {
-      if selectedRootSurface.wrappedValue == .github {
         Picker("Show", selection: selectedGitHubScopeFilter) {
           ForEach(PrGitHubScopeFilter.allCases) { scope in
             Text(scope.title).tag(scope)
@@ -665,19 +556,9 @@ struct PRsTabView: View, Equatable {
           }
         }
         .pickerStyle(.inline)
-      } else {
-        Picker("Kind", selection: selectedWorkflowFilter) {
-          ForEach(PrWorkflowKindFilter.allCases) { filter in
-            let count = workflowKindCounts[filter.rawValue] ?? 0
-            Text(verbatim: count > 0 ? "\(filter.title) \(count)" : filter.title).tag(filter)
-          }
-        }
-        .pickerStyle(.inline)
-      }
+
     } category: {
-      if selectedRootSurface.wrappedValue == .github {
-        githubCategoryPicker
-      }
+      githubCategoryPicker
     }
   }
 
@@ -695,15 +576,10 @@ struct PRsTabView: View, Equatable {
       }
       .id(prId)
     } else {
-      // Workflows has no detail of its own: say what the list does there,
-      // not "Select a pull request" beside a list of rebase cards.
-      let workflows = selectedRootSurface.wrappedValue == .workflows
       DuoSplitPlaceholder(
-        symbol: workflows ? "point.3.filled.connected.trianglepath.dotted" : "arrow.triangle.pull",
-        title: workflows ? "Workflows" : "Select a pull request",
-        message: workflows
-          ? "Rebase, defer or dismiss from the list. Inspect drift shows what changed on the base."
-          : "Choose a pull request to read its description, review threads, files and checks.",
+        symbol: "arrow.triangle.pull",
+        title: "Select a pull request",
+        message: "Choose a pull request to read its description, review threads, files and checks.",
         includesUtilities: !duoLayout.hasEdgeBar
       )
     }
@@ -964,7 +840,6 @@ struct PRsTabView: View, Equatable {
         actionRuns: [],
         activityEvents: [],
         deployments: [],
-        groupMembers: [],
         capabilities: nil,
         unavailableParts: [],
         loadedAt: .distantPast
@@ -972,112 +847,6 @@ struct PRsTabView: View, Equatable {
       for: routeId
     )
     openPrDetail(routeId)
-  }
-
-  @ViewBuilder
-  var workflowsSurfaceRows: some View {
-    Section {
-      if groupedWorkflowCards.isEmpty {
-        PrFlatEmptyRow(
-          title: "No active PR workflows",
-          message: "Integration and rebase work shows here once the machine syncs it."
-        )
-        .adeFlatRow(separator: .hidden)
-      }
-    }
-    ForEach(groupedWorkflowCards, id: \.title) { group in
-      Section {
-        ForEach(group.cards) { card in
-          workflowCardView(card)
-            .adeFlatRow(insets: EdgeInsets(top: 12, leading: 16, bottom: 12, trailing: 16))
-        }
-      } header: {
-        ADEFlatSectionHeader(group.title, detail: "\(group.cards.count)")
-      }
-    }
-  }
-
-  private func workflowCardView(_ card: PrWorkflowCard) -> some View {
-    PrMobileWorkflowCardView(
-      card: card,
-      isLive: canRunWorkflowActions,
-      onOpenPr: { prId in openPrDetail(prId) },
-      onCreateIntegrationLane: { proposalId in
-        runPrRootAction("Creating integration lane") {
-          _ = try await syncService.createIntegrationLaneForProposal(proposalId: proposalId)
-        }
-      },
-      onDeleteIntegrationProposal: { proposalId in
-        runPrRootAction("Deleting integration proposal") {
-          _ = try await syncService.deleteIntegrationProposal(proposalId: proposalId)
-        }
-      },
-      onDismissIntegrationCleanup: { proposalId in
-        runPrRootAction("Dismissing integration cleanup") {
-          try await syncService.dismissIntegrationCleanup(proposalId: proposalId)
-        }
-      },
-      onCleanupIntegrationWorkflow: { proposalId, sourceLaneIds in
-        runPrRootAction("Cleaning up integration lanes") {
-          try await syncService.cleanupIntegrationWorkflow(
-            proposalId: proposalId,
-            archiveIntegrationLane: true,
-            archiveSourceLaneIds: sourceLaneIds
-          )
-        }
-      },
-      onResolveIntegrationLane: { proposalId, laneId in
-        runPrRootAction("Resolving integration lane") {
-          _ = try await syncService.startIntegrationResolution(proposalId: proposalId, laneId: laneId)
-        }
-      },
-      onRecheckIntegrationLane: { proposalId, laneId in
-        runPrRootAction("Rechecking integration lane") {
-          _ = try await syncService.recheckIntegrationStep(proposalId: proposalId, laneId: laneId)
-        }
-      },
-      onRebaseLane: { laneId in
-        runPrRootAction("Rebasing lane") {
-          try await syncService.startLaneRebase(laneId: laneId)
-        }
-      },
-      onDeferRebase: { laneId in
-        runPrRootAction("Deferring rebase") {
-          try await syncService.deferRebaseSuggestion(laneId: laneId)
-        }
-      },
-      onDismissRebase: { laneId in
-        runPrRootAction("Dismissing rebase") {
-          try await syncService.dismissRebaseSuggestion(laneId: laneId)
-        }
-      }
-    )
-  }
-
-  private struct WorkflowCardGroup {
-    let title: String
-    let cards: [PrWorkflowCard]
-  }
-
-  private var groupedWorkflowCards: [WorkflowCardGroup] {
-    let cards = workflowCards.filter { card in
-      let selected = selectedWorkflowFilter.wrappedValue
-      guard selected != .all else { return true }
-      return card.kind == selected.rawValue
-    }
-    guard !cards.isEmpty else { return [] }
-
-    let integration = cards.filter { $0.kind == "integration" }
-    let rebase = cards.filter { $0.kind == "rebase" }
-
-    var groups: [WorkflowCardGroup] = []
-    if !integration.isEmpty {
-      groups.append(WorkflowCardGroup(title: "Integration", cards: integration))
-    }
-    if !rebase.isEmpty {
-      groups.append(WorkflowCardGroup(title: "Rebase", cards: rebase))
-    }
-    return groups
   }
 
   @MainActor
@@ -1171,24 +940,6 @@ struct PRsTabView: View, Equatable {
         if mobileSnapshot != nextMobileSnapshot {
           mobileSnapshot = nextMobileSnapshot
         }
-        if !laneSnapshots.isEmpty {
-          laneSnapshots = []
-        }
-        if !integrationProposals.isEmpty {
-          integrationProposals = []
-        }
-      } else if mobileSnapshot == nil {
-        async let laneSnapshotsTask = syncService.fetchLaneListSnapshots()
-        async let integrationTask = syncService.fetchIntegrationProposals()
-
-        let loadedLaneSnapshots = try await laneSnapshotsTask
-        let loadedIntegrationProposals = try await integrationTask
-        if laneSnapshots != loadedLaneSnapshots {
-          laneSnapshots = loadedLaneSnapshots
-        }
-        if integrationProposals != loadedIntegrationProposals {
-          integrationProposals = loadedIntegrationProposals
-        }
       }
 
       let message = refreshError?.localizedDescription
@@ -1268,7 +1019,6 @@ struct PRsTabView: View, Equatable {
     if let createLaneId = request.createLaneId?.trimmingCharacters(in: .whitespacesAndNewlines),
        !createLaneId.isEmpty {
       await reload(refreshRemote: false)
-      rootSurfaceRawValue = PrRootSurface.github.rawValue
       path = NavigationPath()
       duoSelectedPrId = nil
       laneContextLaneId = createLaneId
@@ -1293,7 +1043,6 @@ struct PRsTabView: View, Equatable {
       )
     }
 
-    rootSurfaceRawValue = PrRootSurface.github.rawValue
     path = NavigationPath()
     duoSelectedPrId = nil
     laneContextLaneId = nil
@@ -1334,9 +1083,7 @@ struct PRsTabView: View, Equatable {
       lanes: lanes,
       createCapabilities: mobileSnapshot?.createCapabilities,
       initialLaneId: createInitialLaneId,
-      singleModeOnly: createInitialLaneId != nil,
-      onCreateSingle: handleCreateSinglePr,
-      onCreateIntegration: handleCreateIntegrationPr
+      onCreateSingle: handleCreateSinglePr
     )
     .environmentObject(syncService)
     .presentationDetents([.large])
@@ -1376,42 +1123,7 @@ struct PRsTabView: View, Equatable {
     )
   }
 
-  @MainActor
-  private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) async -> Bool {
-    await performPrRootAction(
-      "Creating integration PR",
-      operation: {
-        let proposal = try await syncService.simulateIntegration(
-          sourceLaneIds: request.sourceLaneIds,
-          baseBranch: request.baseBranch,
-          persist: true,
-          mergeIntoLaneId: nil
-        )
-        // Conflict path: the desktop surfaces a dedicated conflict
-        // resolution UI; on iOS v1 we bail out with a friendly error
-        // so the host sheet can re-surface. v2 TODO: render the
-        // pairwise conflict matrix inline.
-        if proposal.status == "conflict" || proposal.overallOutcome == "conflict" {
-          throw PrWizardError.integrationConflict
-        }
-        _ = try await syncService.commitIntegration(
-          proposalId: proposal.proposalId,
-          integrationLaneName: request.integrationLaneName,
-          title: request.title,
-          body: request.body,
-          draft: request.draft,
-          pauseOnConflict: true,
-          allowDirtyWorktree: nil,
-          preferredIntegrationLaneId: nil
-        )
-      },
-      onSuccess: {
-        createPresented = false
-      }
-    )
-  }
-
-  /// Fire-and-forget root workflow action (integration / link / merge /
+  /// Fire-and-forget root action (link / merge /
   /// rebase). The in-flight entry + Task lifecycle live on `SyncService`, so the
   /// work COMPLETES and the spinner persists even if the user switches tabs and
   /// tears this view down. The view-side closures only run if the view is still
@@ -1552,85 +1264,6 @@ struct PRsTabView: View, Equatable {
     UIApplication.shared.open(url)
   }
 
-  // MARK: - Legacy → unified workflow card adapters
-  //
-  // These let the root screen keep rendering integration/rebase state when the mobile
-  // snapshot fetch isn't available (older desktop build, or cold cache). Once every host the
-  // user pairs with supports `prs.getMobileSnapshot` these can be dropped.
-
-  private func legacyIntegrationCard(from proposal: IntegrationProposal) -> PrWorkflowCard {
-    PrWorkflowCard(
-      id: "integration:\(proposal.id)",
-      kind: "integration",
-      proposalId: proposal.id,
-      title: proposal.title ?? proposal.integrationLaneName,
-      baseBranch: proposal.baseBranch,
-      overallOutcome: proposal.overallOutcome,
-      integrationStatus: proposal.status,
-      laneCount: proposal.laneSummaries.count,
-      conflictLaneCount: proposal.laneSummaries.filter { $0.outcome == "conflict" }.count,
-      lanes: proposal.laneSummaries.map {
-        PrIntegrationWorkflowLane(laneId: $0.laneId, laneName: $0.laneName, outcome: $0.outcome)
-      },
-      workflowDisplayState: proposal.workflowDisplayState,
-      cleanupState: proposal.cleanupState,
-      linkedPrId: proposal.linkedPrId,
-      integrationLaneId: proposal.integrationLaneId,
-      preferredIntegrationLaneId: proposal.preferredIntegrationLaneId,
-      mergeIntoHeadSha: proposal.mergeIntoHeadSha,
-      integrationLaneOrigin: proposal.integrationLaneOrigin,
-      createdAt: nil,
-      laneId: nil,
-      laneName: nil,
-      behindBy: nil,
-      conflictPredicted: nil,
-      prId: nil,
-      prNumber: nil,
-      dismissedAt: nil,
-      deferredUntil: nil
-    )
-  }
-
-  private func legacyRebaseCard(from item: PrRebaseWorkflowItem) -> PrWorkflowCard {
-    PrWorkflowCard(
-      id: "rebase:\(item.laneId)",
-      kind: "rebase",
-      proposalId: nil,
-      title: nil,
-      baseBranch: nil,
-      overallOutcome: nil,
-      integrationStatus: nil,
-      laneCount: nil,
-      conflictLaneCount: nil,
-      lanes: nil,
-      workflowDisplayState: nil,
-      cleanupState: nil,
-      linkedPrId: nil,
-      integrationLaneId: nil,
-      preferredIntegrationLaneId: nil,
-      mergeIntoHeadSha: nil,
-      integrationLaneOrigin: nil,
-      createdAt: nil,
-      laneId: item.laneId,
-      laneName: item.laneName,
-      behindBy: item.behindCount,
-      conflictPredicted: item.severity == "critical",
-      prId: nil,
-      prNumber: nil,
-      dismissedAt: nil,
-      deferredUntil: item.deferredUntil
-    )
-  }
-}
-fileprivate enum PrWizardError: LocalizedError {
-  case integrationConflict
-
-  var errorDescription: String? {
-    switch self {
-    case .integrationConflict:
-      return "Integration has conflicts — simulate in full first"
-    }
-  }
 }
 
 /// The PR list's trailing edge: beside a detail the column ends at the seam

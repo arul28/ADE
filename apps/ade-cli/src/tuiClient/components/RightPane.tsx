@@ -79,6 +79,7 @@ import {
   normalizeNewLaneBranchSource,
   normalizeNewLaneStart,
 } from "../newLaneForm";
+import { LANE_START_ON_LABEL, LANE_START_FROM_LABEL } from "../../../../desktop/src/shared/laneStart";
 import { ActivityPaneView } from "./ActivityPaneView";
 
 // Cap per-file diff body so a pathological 50k-line file can't make the right
@@ -143,7 +144,6 @@ export const LANE_DETAIL_ACTIONS: ReadonlyArray<{
   { k: "c", label: "commit", slashCommand: "/commit", detail: "claude will draft message", glyph: "✓", glyphColorKind: "additive" },
   { k: "p", label: "push", slashCommand: "/push", glyph: "↑", glyphColorKind: "additive" },
   { k: "d", label: "diff", slashCommand: "/diff", glyph: "≡", glyphColorKind: "navigation" },
-  { k: "r", label: "reparent", slashCommand: "/reparent", detail: "optional base ref", glyph: "⎇", glyphColorKind: "navigation" },
   { k: "x", label: "delete lane", slashCommand: "/lane delete", detail: "requires name", glyph: "✗", glyphColorKind: "destructive" },
 ];
 
@@ -2084,7 +2084,7 @@ function NewLaneFormPane({
     const matches = filterNewLaneBranchMatches({
       branches: content.branches,
       query: formValues[name]?.trim() ?? "",
-      remote: name === "baseBranch" ? true : branchSource === "remote",
+      remote: start === "existing" ? branchSource === "remote" : (formValues.on || "remote") === "remote",
       limit: NEW_LANE_TYPEAHEAD_ROWS,
     });
     return Array.from({ length: NEW_LANE_TYPEAHEAD_ROWS }, (_, index) => (
@@ -2097,7 +2097,6 @@ function NewLaneFormPane({
   const renderField = (field: NewLaneFormContent["fields"][number]) => {
     switch (field.name) {
       case "name":
-      case "parent":
       case "branch":
       case "baseBranch":
       case "linearIssue":
@@ -2110,6 +2109,20 @@ function NewLaneFormPane({
               {"  "}{endTruncate(value || field.placeholder || "", inner - 2)}
             </Text>
             {field.name === typeahead ? typeaheadRows(field.name) : null}
+          </Box>
+        );
+      }
+      case "from":
+      case "on": {
+        const labels = field.name === "from" ? LANE_START_FROM_LABEL : LANE_START_ON_LABEL;
+        const value = formValues[field.name] || (field.name === "from" ? "default" : "remote");
+        const label = (labels as Record<string, string>)[value] ?? value;
+        return (
+          <Box key={field.name} flexDirection="column" marginTop={1}>
+            {labelRow(field.name, field.label)}
+            <Text color={active(field.name) ? theme.color.violet : theme.color.t3} wrap="truncate-end">
+              {"  "}‹ {endTruncate(label, inner - 6)} ›
+            </Text>
           </Box>
         );
       }
@@ -2139,7 +2152,7 @@ function NewLaneFormPane({
       case "start":
         return (
           <Box key="start" flexDirection="column" marginTop={1}>
-            {labelRow("start", "Start from")}
+            {labelRow("start", "Mode")}
             {NEW_LANE_START_ORDER.map((mode) => {
               const chosen = start === mode;
               return (

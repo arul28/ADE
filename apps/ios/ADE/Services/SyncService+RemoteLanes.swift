@@ -24,7 +24,7 @@ struct SyncRemoteLaneTarget {
 
 /// Keys whose values are lane ids, in command args and in host replies.
 private let syncLaneIdKeys: Set<String> = [
-  "laneId", "parentLaneId", "baseLaneId", "sourceLaneId", "targetLaneId", "newParentLaneId",
+  "laneId", "baseLaneId", "sourceLaneId", "targetLaneId",
 ]
 private let syncLaneIdListKeys: Set<String> = ["laneIds"]
 
@@ -140,8 +140,6 @@ extension SyncService {
       "includeArchived": true,
       "includeStatus": true,
       "includeConflictStatus": true,
-      "includeRebaseSuggestions": true,
-      "includeAutoRebaseStatus": true,
     ]
     let raw = try await sendCommand(
       action: "lanes.refreshSnapshots",

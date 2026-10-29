@@ -553,8 +553,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         includeStatus: false,
         includeSnapshots: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       });
     });
     expect(refreshLanesSpy).toHaveBeenCalledTimes(1);
@@ -576,8 +574,6 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         includeStatus: false,
         includeSnapshots: false,
         includeConflictStatus: false,
-        includeRebaseSuggestions: false,
-        includeAutoRebaseStatus: false,
       });
     });
     expect(refreshLanesSpy).toHaveBeenCalledTimes(1);

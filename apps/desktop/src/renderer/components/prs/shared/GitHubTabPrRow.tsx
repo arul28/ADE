@@ -1,11 +1,11 @@
 import React from "react";
-import { ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
+import { ChatText, CheckCircle, CircleDashed, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrFile, PrSummary } from "../../../../shared/types/prs";
 import type { OpenProjectBinding } from "../../../../shared/types";
 import { pinArg } from "../../../state/laneMachineRouting";
 import { PrRowChangeStat } from "./PrChangeSplit";
-import { COLORS, MONO_FONT, SANS_FONT, inlineBadge, toneText, fgTint } from "../../lanes/laneDesignTokens";
+import { COLORS, MONO_FONT, SANS_FONT, toneText, fgTint } from "../../lanes/laneDesignTokens";
 import { LaneIcon } from "../../ui/vcsIcons";
 import { LaneChip } from "../../terminals/LaneChip";
 import { useAppStore } from "../../../state/appStore";
@@ -126,39 +126,6 @@ function reviewIndicator(linkedPr: PrSummary | null): { color: string; label: st
       return null;
   }
 }
-
-/* -- adeKind badge with distinctive styling -- */
-const ADE_KIND_STYLES: Record<string, { color: string; background: string; border: string }> = {
-  integration: {
-    color: toneText("#FBBF24"),
-    background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
-    border: "1px solid rgba(245,158,11,0.22)",
-  },
-};
-
-function AdeKindBadge({ kind }: { kind: GitHubPrListItem["adeKind"] }): React.ReactElement | null {
-  if (!kind || kind === "single") return null;
-  const style = ADE_KIND_STYLES[kind];
-  if (!style) return null;
-  return <span style={adeKindBadgeStyle(style)}>{kind}</span>;
-}
-
-function adeKindBadgeStyle(style: { color: string; background: string; border: string }): React.CSSProperties {
-  return {
-    display: "inline-flex",
-    alignItems: "center",
-    padding: "2px 7px",
-    fontSize: 10,
-    fontWeight: 600,
-    fontFamily: SANS_FONT,
-    color: style.color,
-    background: style.background,
-    border: style.border,
-    borderRadius: 5,
-  };
-}
-
-
 
 /**
  * The lane column of a PR row.
@@ -561,7 +528,6 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           <span style={stateBadgeStyle(item)}>{item.state}</span>
         ) : null}
         {terminal ? <PrRowMergeFacts item={item} /> : null}
-        <AdeKindBadge kind={item.adeKind} />
         {item.scope === "external" ? (
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
             {item.repoOwner}/{item.repoName}
@@ -582,17 +548,6 @@ export const GitHubTabPrRow = React.memo(function GitHubTabPrRow({
           additions={linkedPr?.additions ?? item.additions ?? null}
           deletions={linkedPr?.deletions ?? item.deletions ?? null}
         />
-        {/* The one honest amber left in the merged list: the remote branch still
-            exists. Selecting the row surfaces the real Delete branch action. */}
-        {item.cleanupState === "required" ? (
-          <span
-            title="The remote branch still exists — open this PR to delete it"
-            style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5, display: "inline-flex", alignItems: "center", gap: 4 }}
-          >
-            <GitBranch size={10} weight="bold" />
-            branch
-          </span>
-        ) : null}
         {item.commentCount > 0 ? (
           <span style={{
             marginLeft: "auto",

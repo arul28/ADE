@@ -206,15 +206,9 @@ conflict_predictions (
   predicted_at TEXT NOT NULL,
   expires_at TEXT
 )
-
--- Rebase dismiss/defer (persisted across app restarts)
-rebase_dismissed (project_id, lane_id, dismissed_at)
-rebase_deferred  (project_id, lane_id, deferred_until)
 ```
 
-Both rebase tables are loaded into in-memory caches
-(`rebaseDismissed`, `rebaseDeferred`) on service init for fast reads
-during scan.
+Rebase needs are computed on each scan and never stored.
 
 ## Events
 
@@ -232,9 +226,6 @@ events to drive the `RiskMatrix` animated progress bar.
 
 ## Gotchas
 
-- **Don't clear `prediction` tables at startup.** The rebase
-  dismiss/defer caches load from DB on service init; wiping them
-  would re-surface every dismissed suggestion on next boot.
 - **Prefilter does NOT guarantee freshness.** A pair below the
   "likely conflict" threshold is not re-predicted in prefilter
   mode. The UI treats those as `unknown` status for pairs that lack

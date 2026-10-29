@@ -77,7 +77,6 @@ export function buildPrNotificationToast(
       selectedPrNumber: event.prNumber,
       repoOwner: event.repoOwner,
       repoName: event.repoName,
-      selectedRebaseItemId: null,
       detailTab,
     });
     navigate(`/prs${search}`);

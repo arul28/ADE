@@ -25,7 +25,6 @@ struct LaneDetailScreen: View {
   @State var errorMessage: String?
   @State private(set) var busyAction: String?
   @State var selectedDiffRequest: LaneDiffRequest?
-  @State private var showStackGraph = false
   @State var managePresented = false
   @State var showBranchPicker = false
   @State private var lanePullRequests: [PullRequestListItem] = []
@@ -34,7 +33,6 @@ struct LaneDetailScreen: View {
   @State var stashMessage = ""
   @State var pendingFileConfirmation: LaneFileConfirmation?
   @State private var filesWorkspaceId: String?
-  @State var rebaseSuggestionDismissed = false
   @State var showCommitDiffPicker = false
   @State var commitDiffFiles: [String] = []
   @State var commitDiffSha = ""
@@ -55,8 +53,7 @@ struct LaneDetailScreen: View {
     "\(laneId)-\(syncService.laneDetailProjectionRevision)-\(syncService.laneDetailRevisions[laneId] ?? 0)"
   }
   @State private var copiedLinkNotice: String?
-  @State private var showRescueSheet = false
-  @State private var rescueLaneName = ""
+  @State private var newLaneWithChangesPresented = false
   /// The Duo's git column shows this diff in place of the git list.
   @State private var inlineDiffRequest: LaneDiffRequest?
 
@@ -86,8 +83,6 @@ struct LaneDetailScreen: View {
       return LaneListSnapshot(
         lane: detail.lane,
         runtime: detail.runtime,
-        rebaseSuggestion: detail.rebaseSuggestion,
-        autoRebaseStatus: detail.autoRebaseStatus,
         conflictStatus: detail.conflictStatus,
         stateSnapshot: detail.stateSnapshot
       )
@@ -160,9 +155,6 @@ struct LaneDetailScreen: View {
     .sheet(item: $selectedDiffRequest) { request in
       LaneDiffScreen(request: request)
     }
-    .sheet(isPresented: $showStackGraph) {
-      LaneStackGraphSheet(snapshots: allLaneSnapshots, selectedLaneId: laneId)
-    }
     .alert(item: $pendingFileConfirmation) { confirmation in
       Alert(
         title: Text(confirmation.title),
@@ -213,8 +205,8 @@ struct LaneDetailScreen: View {
         )
       }
     }
-    .sheet(isPresented: $showRescueSheet) {
-      rescueLaneSheet
+    .sheet(isPresented: $newLaneWithChangesPresented) {
+      newLaneWithChangesSheet
     }
     .onDisappear {
       ScrollDiagnostics.shared.leave(.laneDetail)
@@ -234,7 +226,6 @@ struct LaneDetailScreen: View {
       if let copiedLinkNotice {
         copiedBanner(copiedLinkNotice)
       }
-      rebaseBannerSection
     }
     .padding(.horizontal, 16)
     .padding(.top, 4)
@@ -353,14 +344,10 @@ struct LaneDetailScreen: View {
       },
       onSwitchBranch: { showBranchPicker = true },
       onRebaseLane: { requestGitConfirmation(.rebaseLane) },
-      onRebaseDescendants: { requestGitConfirmation(.rebaseDescendants) },
       onRebaseAndPush: { requestGitConfirmation(.rebaseAndPush) },
       onForcePush: { requestGitConfirmation(.forcePush) },
       onOpenLinkedPullRequest: { pr in openPullRequest(pr) },
-      onCreateLaneFromChanges: {
-        rescueLaneName = suggestedRescueLaneName
-        showRescueSheet = true
-      },
+      onCreateLaneFromChanges: { openNewLaneWithChanges() },
       loadBranchChanges: syncService.supportsBranchDiff
         ? { try await syncService.fetchBranchChanges(laneId: laneId) }
         : nil,
@@ -405,7 +392,6 @@ struct LaneDetailScreen: View {
         syncService.requestedPrNavigation = PrNavigationRequest(createLaneId: laneId)
       },
       onRefresh: { Task { await loadDetail(refreshRemote: true) } },
-      onStackGraph: { showStackGraph = true },
       onOpenFiles: { Task { await openFiles() } },
       onManage: { managePresented = true },
       onCopyLaneLink: copyLaneLink,
@@ -424,9 +410,7 @@ struct LaneDetailScreen: View {
         },
         onOpenChat: { chat in
           syncService.requestedWorkSessionNavigation = WorkSessionNavigationRequest(sessionId: chat.sessionId, laneId: laneId)
-        },
-        onOpenLane: { id in syncService.requestedLaneNavigation = LaneNavigationRequest(laneId: id) },
-        onStackGraph: { showStackGraph = true }
+        }
       )
       .refreshable { await loadDetail(refreshRemote: true) }
     } git: {
@@ -462,51 +446,59 @@ struct LaneDetailScreen: View {
     }
   }
 
-  private var suggestedRescueLaneName: String {
-    let base = currentSnapshot.lane.name
-    return base.isEmpty ? "Rescue lane" : "\(base) changes"
+  // MARK: - New lane with these changes
+
+  /// The lanes of this lane's machine (namespaced ids for another machine):
+  /// the new lane goes there, and this lane is where the changes are copied from.
+  private var sameMachineLanes: [LaneSummary] {
+    let machineKey = workParseRemoteLaneId(laneId)?.machineKey
+    var lanes = allLaneSnapshots.map(\.lane).filter { workParseRemoteLaneId($0.id)?.machineKey == machineKey }
+    if !lanes.contains(where: { $0.id == laneId }) {
+      lanes.append(currentSnapshot.lane)
+    }
+    return lanes
+  }
+
+  /// Where `lanes.create` goes: nil for the focused machine, else this lane's
+  /// machine's checkout of the project.
+  private var newLaneTarget: LaneCreateTarget? {
+    guard let machineKey = workParseRemoteLaneId(laneId)?.machineKey,
+          let repo = syncService.remoteLaneRepo(machineKey: machineKey) else { return nil }
+    return LaneCreateTarget(projectId: repo.markedProjectId, rootPath: repo.rootPath)
+  }
+
+  /// A new branch from this lane's branch with a copy of its uncommitted
+  /// changes. This lane keeps its changes.
+  private func openNewLaneWithChanges() {
+    // A lane of another machine must reach that machine; never fall back to
+    // the focused one.
+    if workParseRemoteLaneId(laneId) != nil, newLaneTarget == nil {
+      ADEHaptics.error()
+      errorMessage = "This lane's machine no longer lists this project."
+      return
+    }
+    newLaneWithChangesPresented = true
   }
 
   @ViewBuilder
-  private var rescueLaneSheet: some View {
-    NavigationStack {
-      Form {
-        Section {
-          TextField("Lane name", text: $rescueLaneName)
-            .textInputAutocapitalization(.words)
-        } footer: {
-          Text("Moves unstaged changes into a new child lane on this stack.")
-            .font(.caption)
-        }
+  private var newLaneWithChangesSheet: some View {
+    let lanes = sameMachineLanes
+    LaneCreateSheet(
+      primaryLane: lanes.first { $0.laneType == "primary" },
+      lanes: lanes,
+      initialMode: .newBranch,
+      initialStart: LaneStart(
+        from: .branch,
+        branch: plainLaneStartBranch(currentSnapshot.lane.branchRef),
+        on: .uncommitted
+      ),
+      showsModePicker: true,
+      target: newLaneTarget,
+      onComplete: { _ in
+        ADEHaptics.success()
+        await onRefreshRoot()
       }
-      .navigationTitle("New lane")
-      .navigationBarTitleDisplayMode(.inline)
-      .toolbar {
-        ToolbarItem(placement: .cancellationAction) {
-          Button("Cancel") { showRescueSheet = false }
-        }
-        ToolbarItem(placement: .confirmationAction) {
-          Button("Create") {
-            Task { await createLaneFromUnstagedChanges() }
-          }
-          .disabled(rescueLaneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-        }
-      }
-    }
-    .presentationDetents([.medium])
-  }
-
-  @MainActor
-  private func createLaneFromUnstagedChanges() async {
-    let name = rescueLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !name.isEmpty else { return }
-    await performAction("create rescue lane", refreshRoot: true) {
-      _ = try await syncService.createFromUnstaged(sourceLaneId: laneId, name: name)
-    }
-    if errorMessage == nil {
-      showRescueSheet = false
-      rescueLaneName = ""
-    }
+    )
   }
 
   @MainActor
@@ -591,20 +583,6 @@ struct LaneDetailScreen: View {
     .adeKitCard(padding: 12)
   }
 
-  @MainActor
-  func handleRebaseSuggestionDismiss() {
-    Task {
-      do {
-        try await syncService.dismissRebaseSuggestion(laneId: laneId)
-        rebaseSuggestionDismissed = true
-        await onRefreshRoot()
-      } catch {
-        ADEHaptics.error()
-        errorMessage = error.localizedDescription
-      }
-    }
-  }
-
   var canRunLiveActions: Bool {
     laneAllowsLiveActions(connectionState: syncService.connectionState, laneStatus: syncService.status(for: .lanes))
   }
@@ -686,11 +664,7 @@ struct LaneDetailScreen: View {
     switch confirmation {
     case .rebaseLane:
       await performAction(confirmation.actionLabel) {
-        try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only")
-      }
-    case .rebaseDescendants:
-      await performAction(confirmation.actionLabel) {
-        try await syncService.startLaneRebase(laneId: laneId, scope: "lane_and_descendants")
+        try await syncService.startLaneRebase(laneId: laneId)
       }
     case .forcePush:
       await performAction(confirmation.actionLabel) {
@@ -731,7 +705,7 @@ struct LaneDetailScreen: View {
   }
 
   func runRebaseAndPush() async throws {
-    try await syncService.startLaneRebase(laneId: laneId, scope: "lane_only", pushMode: "none")
+    try await syncService.startLaneRebase(laneId: laneId, pushMode: "none")
     try? await syncService.fetchGit(laneId: laneId)
     let syncStatus = try await syncService.fetchSyncStatus(laneId: laneId)
     if syncStatus.hasUpstream == false {

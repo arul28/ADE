@@ -473,7 +473,7 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     // Display-only: safe to carry over.
     ui: { linearBatchLaunchDefaultPrompt: "Legacy prompt" },
     // Automatic lifecycle behavior: must be skipped like other executable keys.
-    git: { autoRebaseOnHeadChange: true },
+    git: { newLaneBaseSource: "local" },
     laneCleanup: { maxActiveLanes: 3 },
   };
 
@@ -517,7 +517,6 @@ describe("projectConfigService - committed ade.yaml carry-over", () => {
     expect(snapshot.local.ui?.linearBatchLaunchDefaultPrompt).toBe("Legacy prompt");
     expect(snapshot.local.laneCleanup).toBeUndefined();
     expect(snapshot.local.git).toBeUndefined();
-    expect(snapshot.effective.git.autoRebaseOnHeadChange).not.toBe(true);
 
     const persisted = YAML.parse(fs.readFileSync(path.join(adeDir, "local.yaml"), "utf8")) as Record<string, any>;
     expect(persisted.testSuites).toEqual([]);

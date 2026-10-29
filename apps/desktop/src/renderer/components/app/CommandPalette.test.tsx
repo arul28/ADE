@@ -74,10 +74,6 @@ function makeLane(overrides: Record<string, unknown> = {}) {
     baseRef: "main",
     branchRef: "feature/redesign-new-chat-ui",
     worktreePath: "/tmp/wt/redesign",
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 0,
-    parentStatus: null,
     isEditProtected: false,
     status: "active",
     color: null,
@@ -1501,8 +1497,8 @@ describe("CommandPalette", () => {
 
   it("finds an individual setting by name and routes to its card", async () => {
     // The palette used to carry eight hardcoded "Go to X Settings" commands and
-    // nothing per-setting, so searching "rebase" surfaced commits and PRs but
-    // never the auto-rebase toggle. Entries are now generated from the settings
+    // nothing per-setting, so searching for a setting surfaced commits and PRs
+    // but never the setting. Entries are now generated from the settings
     // manifest, one per setting, each landing on its own anchor.
     seedStore();
     render(
@@ -1515,9 +1511,9 @@ describe("CommandPalette", () => {
     const input = await screen.findByPlaceholderText(
       "Search commands, projects, and threads…",
     );
-    fireEvent.change(input, { target: { value: "rebase" } });
+    fireEvent.change(input, { target: { value: "lane templates" } });
 
-    const entry = await screen.findByText("Auto-rebase child lanes");
+    const entry = await screen.findByText("Lane templates");
     expect(entry).toBeTruthy();
     fireEvent.click(entry);
 

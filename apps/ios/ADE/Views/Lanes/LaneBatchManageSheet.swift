@@ -7,36 +7,6 @@ struct LaneBatchOperationResult<Value> {
   let result: Result<Value, Error>
 }
 
-func laneDeleteDependencyBatches(snapshots: [LaneListSnapshot]) -> [[String]] {
-  let laneIds = snapshots.map(\.lane.id)
-  let parentById = Dictionary(uniqueKeysWithValues: snapshots.compactMap { snapshot -> (String, String)? in
-    guard let parentLaneId = snapshot.lane.parentLaneId else { return nil }
-    return (snapshot.lane.id, parentLaneId)
-  })
-  var remaining = Set(laneIds)
-  var batches: [[String]] = []
-
-  while !remaining.isEmpty {
-    let leafIds = laneIds.filter { laneId in
-      guard remaining.contains(laneId) else { return false }
-      return !laneIds.contains { candidateId in
-        remaining.contains(candidateId) && parentById[candidateId] == laneId
-      }
-    }
-
-    let batchIds = leafIds.isEmpty
-      ? laneIds.first(where: { remaining.contains($0) }).map { [$0] } ?? []
-      : leafIds
-    guard !batchIds.isEmpty else { break }
-    batches.append(batchIds)
-    for laneId in batchIds {
-      remaining.remove(laneId)
-    }
-  }
-
-  return batches
-}
-
 @MainActor
 func runLaneDeleteBatchWithConcurrency<Value>(
   laneIds: [String],
@@ -253,24 +223,22 @@ struct LaneBatchManageSheet: View {
     let remoteName = deleteRemoteName
     let force = deleteForce
 
-    for batch in laneDeleteDependencyBatches(snapshots: snapshots) {
-      let results = await runLaneDeleteBatchWithConcurrency(laneIds: batch) { laneId in
-        try await syncService.deleteLane(
-          laneId,
-          deleteBranch: deleteBranch,
-          deleteRemoteBranch: deleteRemoteBranch,
-          remoteName: remoteName,
-          force: force
-        )
-      }
+    let results = await runLaneDeleteBatchWithConcurrency(laneIds: laneIds) { laneId in
+      try await syncService.deleteLane(
+        laneId,
+        deleteBranch: deleteBranch,
+        deleteRemoteBranch: deleteRemoteBranch,
+        remoteName: remoteName,
+        force: force
+      )
+    }
 
-      for result in results {
-        switch result.result {
-        case .success:
-          deletedLaneIds.append(result.laneId)
-        case .failure(let error):
-          failures.append("\(result.laneId) (\(error.localizedDescription))")
-        }
+    for result in results {
+      switch result.result {
+      case .success:
+        deletedLaneIds.append(result.laneId)
+      case .failure(let error):
+        failures.append("\(result.laneId) (\(error.localizedDescription))")
       }
     }
 

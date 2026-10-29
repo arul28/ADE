@@ -15,7 +15,6 @@ export const docs = {
   // Lanes
   lanesOverview: `${DOCS_BASE}/lanes/overview`,
   lanesCreating: `${DOCS_BASE}/lanes/creating`,
-  lanesStacks: `${DOCS_BASE}/lanes/stacks`,
   lanesPacks: `${DOCS_BASE}/lanes/packs`,
   lanesEnvironment: `${DOCS_BASE}/lanes/environment`,
 

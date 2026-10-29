@@ -989,7 +989,7 @@ export async function trustGitSafeDirectory(repoPath: string): Promise<{ spec: s
 
 /**
  * Read the HEAD SHA (or null if unavailable) for a given worktree path.
- * Shared across gitOperationsService, laneService, autoRebaseService, and rebaseSuggestionService.
+ * Shared across gitOperationsService and laneService.
  */
 export async function getHeadSha(worktreePath: string): Promise<string | null> {
   // Shares the repo cache — and the key shape — with conflictService's own HEAD

@@ -2133,7 +2133,7 @@ still-live button invites a second spend.
   the next prompt. CLI draft launches forward the prompt into the PTY
   through `onLaunchCliSession` (typed as `(args: WorkPtyLaunchArgs) =>
   Promise<WorkPtyLaunchResult>`) with `disposition` matching the
-  launch mode. Parallel launch still creates child lanes, starts one
+  launch mode. Parallel launch still creates lanes from the current branch, starts one
   chat in each lane, sends the same prompt and attachments to every
   session, then opens the Lanes view focused on the new lane set.
 - **Composer draft persistence.** Draft composer state (text, model,
@@ -3098,7 +3098,7 @@ session primitives:
 1. `AgentChatPane` derives a deterministic slug base from the user's
    prompt (`createDeterministicAutoLaneName`) up front — no blocking
    `suggestLaneName` call before the lanes exist.
-2. The pane creates one child lane per selected model slot using a
+2. The pane creates one lane from the current branch per selected model slot using a
    unique `<base>-<model-family>` style name and persists progress under
    `agent-chat-parallel-launch:<projectRoot>:<parentLaneId>` in `kv`.
    When AI titles are enabled, `startBackgroundParallelLaneNaming` then
@@ -3111,13 +3111,13 @@ session primitives:
    If no model produces a usable
    name the deterministic base is kept; the generic empty-prompt fallback
    is `parallel-task`.
-3. For each child lane it creates an `AgentChatSession`, sends the same
+3. For each new lane it creates an `AgentChatSession`, sends the same
    prompt and attachments, and records `sentLaneIds` after each
    successful dispatch.
 4. When all sends succeed, the persisted state is cleared and the app
    navigates to `/lanes?laneIds=<ids>&inspectorTab=work`, which opens
    the new lanes side-by-side with the Work pane emphasized.
-5. If lane creation or send fails, unsent transient child lanes are
+5. If lane creation or send fails, unsent transient lanes are
    cleaned up best-effort. On reload, unfinished persisted launch state
    is recovered and cleaned up before the user can start another launch.
 
@@ -3376,7 +3376,7 @@ A worker whose owner is alive is never touched, because that owner can be
 another brain. A worker from a build before the marker counts as orphaned only
 on POSIX with ppid 1, and only when its whole command line is the shape old
 builds forked: a node, Electron, or `ADE.app/Contents/MacOS/ADE` executable
-followed by the absolute script path and nothing else. So a reparented
+followed by the absolute script path and nothing else. So a reassigned
 `tail -f …/cursorSdkWorker.cjs` is not taken for a worker. Windows keeps a dead
 parent's pid as the ppid, so the sweep leaves an unmarked worker alone there.
 The listing parser, the wait for exit, and the kill ladder are shared with the
@@ -4028,7 +4028,7 @@ handlers live in `apps/desktop/src/main/services/ipc/registerIpc.ts`.
 | `ade.agentChat.getEventHistoryPage` | invoke | Page older transcript events with one object argument (`{ sessionId, beforeOffset, maxBytes? }`), returning `AgentChatEventHistoryPage`. `startOffset` strictly decreases while `hasMore` is true, which is what makes client paging loops terminate; a non-decreasing cursor is a retryable protocol failure rather than exhaustion. Carries the same `sessionFound` / `unavailable` distinction as the snapshot; an unreachable-runtime page echoes the caller's cursor back as `startOffset` so it does not also claim the head of the transcript was reached. |
 | `ade.agentChat.create` | invoke | Create a new session; returns the `AgentChatSession`. Accepts `fastMode?: boolean` (the legacy-named `codexFastMode` is still accepted) for any provider/model descriptor that advertises `serviceTiers: ["fast"]`, and `fastTier: "ultrafast"` for a Codex model whose catalog offers that tier. Also accepts caller-injected `mcpServers` and tristate `strictMcpConfig`; the created session reports what the provider could honor as `mcpCapability`. See [Caller-injected MCP](#caller-injected-mcp). |
 | `ade.agentChat.suggestLaneName` | invoke | Derive a slug-safe lane name from a Work launch prompt using the session-intelligence title prompt, with a prompt-slug + optional unique temporary fallback. |
-| `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and parent lane id. |
+| `ade.agentChat.parallelLaunchState.get` / `.set` | invoke | Read/write crash-recovery state for renderer-orchestrated parallel launches. State is scoped by project root and source lane id. |
 | `ade.agentChat.handoff` | invoke | Create a handoff session. `fastMode` carries Fast and `fastTier` names Codex Ultrafast when the target model offers it. `mode: "brief"` sends a compact summarized hidden first message and may use `targetLaneId` to move the new chat to any active lane in the project; unknown, unavailable, and archived lanes are rejected. `mode: "fork"` requires the same provider on both sides while allowing the target model to change within that provider, and always keeps the new chat in the source lane (a differing `targetLaneId` is rejected). Local forks also seed the source ADE transcript into the new chat with fork provenance. `handoffNote` is an optional user-authored addition: brief mode appends it to the hidden handoff prompt, while fork mode sends it as the first user turn. Claude forks through the SDK session pointer; Codex forks the app-server thread with `thread/fork` in a short-lived private app-server that has exited before the new chat resumes the thread (`codexEphemeralFork.ts`; the source chat's own app-server would keep the fork's writer lock); OpenCode calls SDK `session.fork` (`POST /session/{id}/fork`); Droid calls SDK `session.fork()` (`droid.fork_session`) and then re-opens the source branch, because 0.9.x retires the source session handle on fork and the source chat must stay usable. Cursor has no provider fork surface at all and a Cursor thread cannot be resumed twice, so ADE forks it at the ADE layer: the new chat carries no `cursorSdkAgentId`, so its first send opens a brand-new Cursor agent and prefixes that send with the full source transcript replayed verbatim (the same `buildFittedTranscriptReplay` path a cross-provider fork uses, and the same replay an agent rotation stages), trimmed oldest-first if it exceeds the target model's context window or the target provider's input limit — in which case the handoff result carries `replayFork` and the chat shows a truncation notice. Codex replay inputs stay below the app-server's 1,048,576-character text limit. OpenCode and Droid persist the forked provider session as the new chat's resume pointer (`providerSessionId` / `droidSdkSessionId`). Codex targets do not inherit ADE session goals or seed app-server goals during handoff, and forked Codex threads are goal-cleared before any optional note is sent. Cross-machine fork additionally transports and rematerializes provider-native history for Claude, Codex, and OpenCode; cross-machine Cursor and Droid handoffs remain brief-only, Cursor because a replay fork has no provider artifact to send. Forwards `fastMode` — and `fastTier` for Codex Ultrafast — when the target model supports it. |
 | `ade.agentChat.send` | invoke | Dispatch a user message + attachments. If the session has ended, sending is the continuation path. |
 | `ade.agentChat.steer` | invoke | Send a follow-up message mid-turn. Which `dispatchMode` values a session accepts is `ACTIVE_TURN_DISPATCH_MODES`, not a list here; omitting it stages the message — except on the CTO thread, whose queue cap is zero and which resolves the omission to the provider's first non-queue mode. Claude's `"inline"` / `"interrupt"` are atomic SDK `priority: "next"` / `"now"` deliveries. Codex accepts `"inline"` only — its app-server folds a `turn/steer` request into the turn already running — and is rejected for `"interrupt"`. Cursor's `"interrupt"` is cancel + resend on the same agent thread, and its `"inline"` is `Run.steer()` into the live local run — a refusal there is not an error: the message is staged exactly as a queued send would have been, gets one "will send as a new message" notice, and the queue head is flushed if the turn boundary has already passed, so the returned `queued` flag still reflects what actually happened. OpenCode accepts `"inline"` and `"queue"`: inline admits the message through the v2 session prompt's `delivery: "steer"` into the live agent loop, and a refusal stages the row the same way Cursor's does, with one notice and `queued: true` reporting the truth. Returns `AgentChatSteerResult` (`{ steerId, queued, reason?: "queue_full" }`) — `queued: false, reason: "queue_full"` when the queue is at its cap. |

@@ -157,9 +157,8 @@ export function createGithubStackMerge(deps: GithubStackMergeDeps) {
 
   /**
    * Clean up after a stack merge. Lighter than a single-PR merge's cleanup:
-   * GitHub rebases and retargets the rest of the stack itself, so ADE must not
-   * auto-rebase child lanes on top of that. Only the requested PR's lane is
-   * archived; the other merged layers keep theirs.
+   * GitHub rebases and retargets the rest of the stack itself. Only the
+   * requested PR's lane is archived; the other merged layers keep theirs.
    */
   const finishMerge = async (
     repo: GitHubRepoRef,

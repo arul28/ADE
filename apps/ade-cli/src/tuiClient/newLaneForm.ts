@@ -2,34 +2,31 @@ import type { LaneLinearIssue, LaneSummary } from "../../../desktop/src/shared/t
 import { LANE_COLOR_PALETTE } from "../../../desktop/src/shared/laneColorPalette";
 import { linearIssueBranchName } from "../../../desktop/src/shared/linearIssueBranch";
 
-/**
- * Pure model for the /new lane form — mirrors the desktop CreateLaneDialog's
- * "Start from" modes (primary base branch / start from an existing branch /
- * child of an existing lane) plus the color picker, adapted to the TUI's
- * right-pane form system. The form's field list
- * is rebuilt when the start mode cycles so each mode only shows the inputs it
- * actually uses.
- */
+import {
+  LANE_START_ON_VALUES,
+  LANE_START_FROM_VALUES,
+  normalizeLaneStart,
+  plainLaneStartBranch,
+  type LaneStart,
+  type LaneStartOn,
+  type LaneStartFrom,
+} from "../../../desktop/src/shared/laneStart";
 
-export type NewLaneStart = "primary" | "child" | "import";
+/** `new` cuts a new branch; `existing` works directly on a branch that already exists. */
+export type NewLaneStart = "new" | "existing";
 export type NewLaneBranchSource = "remote" | "local";
 
-/**
- * Display + cycle order of the vertical "Start from" option list. The
- * internal "import" mode value is kept for payload stability but renders as
- * "branch" (desktop calls this mode "Branch").
- */
-export const NEW_LANE_START_ORDER: readonly NewLaneStart[] = ["primary", "import", "child"];
+export const NEW_LANE_START_ORDER: readonly NewLaneStart[] = ["new", "existing"];
 
 export function normalizeNewLaneStart(value: string | null | undefined): NewLaneStart {
-  return value === "child" || value === "import" ? value : "primary";
+  return value === "existing" ? value : "new";
 }
 
 export function cycleNewLaneStart(value: string | null | undefined, delta: number): NewLaneStart {
   const current = normalizeNewLaneStart(value);
   const index = NEW_LANE_START_ORDER.indexOf(current);
   const next = (index + delta + NEW_LANE_START_ORDER.length) % NEW_LANE_START_ORDER.length;
-  return NEW_LANE_START_ORDER[next] ?? "primary";
+  return NEW_LANE_START_ORDER[next] ?? "new";
 }
 
 export function normalizeNewLaneBranchSource(value: string | null | undefined): NewLaneBranchSource {
@@ -41,17 +38,26 @@ export function toggleNewLaneBranchSource(value: string | null | undefined): New
 }
 
 export const NEW_LANE_START_LABEL: Record<NewLaneStart, string> = {
-  primary: "primary",
-  import: "branch",
-  child: "child",
+  new: "Create new branch",
+  existing: "Use existing branch",
 };
 
 /** One-line option descriptions; each must fit next to its label at 44 cols. */
 export const NEW_LANE_START_HINT: Record<NewLaneStart, string> = {
-  primary: "new lane off the base branch",
-  import: "start from existing branch",
-  child: "stack on another lane",
+  new: "new lane off the base branch",
+  existing: "start from existing branch",
 };
+
+function cycleChoice<T extends string>(values: readonly T[], value: string | null | undefined, delta: number): T {
+  const index = Math.max(0, values.findIndex(item => item === value));
+  return values[((index + delta) % values.length + values.length) % values.length]!;
+}
+export function cycleNewLaneFrom(value: string | null | undefined, delta: number): LaneStartFrom {
+  return cycleChoice(LANE_START_FROM_VALUES, value, delta);
+}
+export function cycleNewLaneOn(value: string | null | undefined, delta: number): LaneStartOn {
+  return cycleChoice(LANE_START_ON_VALUES, value, delta);
+}
 
 // ---------------------------------------------------------------------------
 // Color picker (desktop parity)
@@ -97,26 +103,20 @@ export type NewLaneFormField = {
 
 export function newLaneFormFields(
   start: NewLaneStart,
-  options: { activeLaneName?: string | null } = {},
+  options: { from?: string | null } = {},
 ): NewLaneFormField[] {
   const fields: NewLaneFormField[] = [
     { name: "name", label: "Name", required: true, placeholder: "feature-name" },
     { name: "color", label: "Color", initialValue: "" },
-    { name: "start", label: "Start from", initialValue: start },
+    { name: "start", label: "Mode", initialValue: start },
   ];
-  if (start === "child") {
-    fields.push({
-      name: "parent",
-      label: "Parent lane",
-      placeholder: options.activeLaneName ?? "active lane",
-    });
-    fields.push({ name: "baseBranch", label: "Base override", placeholder: "parent branch" });
-  } else if (start === "import") {
-    fields.push({ name: "branchSource", label: "Source", initialValue: "remote" });
-    fields.push({ name: "branch", label: "Branch", required: true, placeholder: "origin/feature-x" });
-    fields.push({ name: "baseBranch", label: "Base branch", placeholder: "default" });
+  if (start === "existing") {
+    fields.push({ name: "branchSource", label: "Source", initialValue: "local" });
+    fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
   } else {
-    fields.push({ name: "baseBranch", label: "Base branch", placeholder: "default" });
+    fields.push({ name: "from", label: "Start from", initialValue: "default" });
+    if (options.from === "branch") fields.push({ name: "branch", label: "Branch", required: true, placeholder: "feature-x" });
+    fields.push({ name: "on", label: "On", initialValue: "remote" });
   }
   fields.push({ name: "linearIssue", label: "Linear issue", placeholder: "ADE-123 or issue id" });
   fields.push({ name: "templateId", label: "Setup template", placeholder: "default" });
@@ -131,15 +131,9 @@ export function newLaneFormFields(
 /** Fixed number of reserved typeahead rows under the typeahead field. */
 export const NEW_LANE_TYPEAHEAD_ROWS = 4;
 
-/**
- * Which field (if any) shows the branch typeahead for the given mode:
- * the branch field in branch/import mode, the base-branch field in primary
- * mode (remote branches). Child mode has none.
- */
 export function newLaneTypeaheadField(fields: ReadonlyArray<{ name: string }>): "branch" | "baseBranch" | null {
   if (fields.some((field) => field.name === "branch")) return "branch";
-  if (fields.some((field) => field.name === "parent")) return null;
-  return fields.some((field) => field.name === "baseBranch") ? "baseBranch" : null;
+  return null;
 }
 
 /**
@@ -187,7 +181,7 @@ export function newLaneFormFieldRowOffsets(fields: ReadonlyArray<{ name: string 
   let row = 0;
   for (const field of fields) {
     offsets.push(row + 1);
-    let height = field.name === "start" ? 5 : field.name === "create" ? 2 : 3;
+    let height = field.name === "start" ? 4 : field.name === "create" ? 2 : 3;
     if (field.name === typeahead) height += NEW_LANE_TYPEAHEAD_ROWS;
     row += height;
   }
@@ -195,7 +189,7 @@ export function newLaneFormFieldRowOffsets(fields: ReadonlyArray<{ name: string 
 }
 
 /**
- * Map a click row offset inside the start block (0 = label, 1..3 = options in
+ * Map a click row offset inside the mode block (0 = label, 1..2 = options in
  * NEW_LANE_START_ORDER) onto the chosen start mode; null = no option hit.
  */
 export function newLaneStartForClickRow(relY: number): NewLaneStart | null {
@@ -223,19 +217,13 @@ export function newLaneCreateAction(args: {
   const start = normalizeNewLaneStart(args.values.start);
   const name = args.values.name?.trim() ?? "";
   if (!name) return { label: "create lane", enabled: false, reason: "name required" };
-  if (start === "import") {
+  if (start === "existing") {
     const branch = args.values.branch?.trim() ?? "";
     if (!branch) return { label: "import branch", enabled: false, reason: "branch required" };
     return { label: `import ${branch}`, enabled: true, reason: null };
   }
-  if (start === "child") {
-    const parent = args.values.parent?.trim()
-      || args.fields.find((field) => field.name === "parent")?.placeholder
-      || "";
-    return { label: parent ? `create from lane ${parent}` : "create lane", enabled: true, reason: null };
-  }
-  const base = args.values.baseBranch?.trim() ?? "";
-  return { label: base ? `create from ${base}` : "create lane", enabled: true, reason: null };
+  if (args.values.from === "branch" && !args.values.branch?.trim()) return { label: "create lane", enabled: false, reason: "branch required" };
+  return { label: "create lane", enabled: true, reason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -245,19 +233,7 @@ export function newLaneCreateAction(args: {
 export type NewLaneSubmission =
   | {
       kind: "create";
-      payload: { name: string; baseBranch?: string; branchName?: string; linearIssue?: LaneLinearIssue | null };
-      color?: string;
-      templateId?: string;
-    }
-  | {
-      kind: "createChild";
-      payload: {
-        name: string;
-        parentLaneId: string;
-        baseBranchRef?: string;
-        branchName?: string;
-        linearIssue?: LaneLinearIssue | null;
-      };
+      payload: { name: string; start: LaneStart; branchName?: string; linearIssue?: LaneLinearIssue | null };
       color?: string;
       templateId?: string;
     }
@@ -291,7 +267,7 @@ export function buildNewLaneSubmission(args: {
       }
     : {};
 
-  if (start === "import") {
+  if (start === "existing") {
     if (linearIssueInput) {
       return {
         kind: "error",
@@ -312,38 +288,21 @@ export function buildNewLaneSubmission(args: {
     };
   }
 
-  if (start === "child") {
-    const parentInput = args.values.parent?.trim() ?? "";
-    const parent = parentInput
-      ? args.lanes.find((lane) => lane.id === parentInput)
-        ?? args.lanes.find((lane) => lane.name.toLowerCase() === parentInput.toLowerCase())
-      : args.lanes.find((lane) => lane.id === args.activeLaneId);
-    if (!parent) {
-      return {
-        kind: "error",
-        message: parentInput
-          ? `No lane named "${parentInput}".`
-          : "No parent lane — select a lane first or name one.",
-      };
-    }
-    return {
-      kind: "createChild",
-      payload: {
-        name,
-        parentLaneId: parent.id,
-        ...(baseBranch ? { baseBranchRef: baseBranch } : {}),
-        ...withLinearIssue,
-      },
-      ...withColor,
-      ...withTemplate,
-    };
+  const from = args.values.from?.trim() || "default";
+  const on = args.values.on?.trim() || "remote";
+  if (!(LANE_START_FROM_VALUES as readonly string[]).includes(from)) {
+    return { kind: "error", message: `Start from must be ${LANE_START_FROM_VALUES.join(", ")}.` };
   }
-
+  if (!(LANE_START_ON_VALUES as readonly string[]).includes(on)) {
+    return { kind: "error", message: `On must be ${LANE_START_ON_VALUES.join(", ")}.` };
+  }
+  const laneStart = normalizeLaneStart({ from, branch: plainLaneStartBranch(args.values.branch), on });
+  if (!laneStart) return { kind: "error", message: "Branch is required." };
   return {
     kind: "create",
     payload: {
       name,
-      ...(baseBranch ? { baseBranch } : {}),
+      start: laneStart,
       ...withLinearIssue,
     },
     ...withColor,

@@ -868,7 +868,7 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
   }
 
   private func makeLane(id: String, name: String) -> LaneSummary {
-    LaneSummary(id: id, name: name, description: nil, laneType: "worktree", baseRef: "main", branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil, parentLaneId: nil, childCount: 0, stackDepth: 0, parentStatus: nil, isEditProtected: false, status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false), color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil, createdAt: "", archivedAt: nil, devicesOpen: nil)
+    LaneSummary(id: id, name: name, description: nil, laneType: "worktree", baseRef: "main", branchRef: "feature/\(id)", worktreePath: "/tmp/\(id)", attachedRootPath: nil, isEditProtected: false, status: LaneStatus(dirty: false, ahead: 0, behind: 0, remoteBehind: 0, rebaseInProgress: false), color: nil, icon: nil, tags: [], folder: nil, linearIssue: nil, linearIssueLinks: nil, createdAt: "", archivedAt: nil, devicesOpen: nil)
   }
 
   private func makeSession(id: String, laneId: String, laneName: String) -> TerminalSessionSummary {
@@ -888,11 +888,7 @@ final class WorkLiveRosterHydrationTests: XCTestCase {
         endedCount: 0,
         sessionCount: 0
       ),
-      stackChain: [],
-      children: [],
       stateSnapshot: nil,
-      rebaseSuggestion: nil,
-      autoRebaseStatus: nil,
       conflictStatus: nil,
       overlaps: [],
       syncStatus: nil,

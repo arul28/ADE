@@ -956,10 +956,13 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const rebase: Record<string, unknown> = {
     scanNeeds: () => call("rebase.scanNeeds", {}, []),
-    dismiss: async (laneId: string) => {
-      await call("rebase.dismiss", { laneId }, undefined, false);
+    // No offline answer: "no need" would read as "no conflicts".
+    getNeed: (laneId: string, pin?: RuntimePinArg) => {
+      assertWebRuntimePinRoutable("rebase.getNeed", pin, infra);
+      return call("rebase.getNeed", { laneId }, () => {
+        throw new Error("Couldn't check for conflicts.");
+      });
     },
-    execute: (args: unknown) => call("rebase.execute", args, { ok: false, error: "unsupported" }, false),
     onEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
   };
 

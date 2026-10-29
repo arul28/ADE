@@ -1,0 +1,152 @@
+/*
+  The lane Git panel (LaneGitActionsPane), in the Lanes tab and in the Work
+  tools pane. One column: uncommitted changes, what is committed on this
+  branch, then History. Each list section is as tall as its rows up to a cap
+  and scrolls inside it; History takes the rest of the pane.
+*/
+
+.ade-git-body {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0 8px 8px;
+}
+
+.ade-git-section {
+  display: flex;
+  flex: 0 1 auto;
+  flex-direction: column;
+  min-width: 0;
+}
+.ade-git-section + .ade-git-section {
+  padding-top: 8px;
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-git-section[data-section="stashes"] { max-height: 30%; }
+.ade-git-section[data-section="uncommitted"] { max-height: 50%; }
+.ade-git-body[data-committed="hidden"] .ade-git-section[data-section="uncommitted"] { max-height: 65%; }
+.ade-git-section[data-section="committed"] { max-height: 32%; }
+.ade-git-section[data-section="diff"] { flex: 2 1 0; min-height: 0; }
+.ade-git-section[data-section="history"] { flex: 1 1 0; min-height: 120px; }
+
+/* Title, count, then the section's quiet actions on the right. */
+.ade-git-section-head {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 0 2px 4px;
+  white-space: nowrap;
+}
+.ade-git-section[data-section="stashes"] > .ade-git-section-head { flex-wrap: wrap; row-gap: 2px; }
+.ade-git-count { flex: none; font-size: 11px; color: var(--kit-text-3); }
+.ade-git-section-aside {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  margin-left: auto;
+}
+.ade-git-base,
+.ade-git-section-detail {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-git-base { margin-left: auto; padding-right: 4px; }
+.ade-git-section-detail { flex: 1 1 0; font-family: var(--font-mono); }
+
+/* A virtualized file list: its rows' height, then it scrolls. */
+.ade-git-list {
+  flex: 0 1 auto;
+  min-height: 28px;
+  overflow: auto;
+}
+
+/* "Staged (2)" and "Unstaged (3)" inside the Uncommitted list. */
+.ade-git-subgroup {
+  padding: 4px 8px 2px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--kit-text-3);
+}
+
+/* A section with nothing in it says so in one line. */
+.ade-git-empty {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 8px;
+  min-height: 32px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+.ade-git-empty > svg { flex: none; color: var(--kit-text-3); }
+.ade-git-empty[data-tone="ok"] > svg { color: var(--kit-ok); }
+
+.ade-git-truncated {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+
+/* The commit message and Commit, at the foot of the uncommitted changes. */
+.ade-git-composer {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+}
+.ade-git-composer .kit-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  font-size: 12px;
+}
+.ade-git-composer .kit-btn { height: 28px; }
+
+.ade-git-diff-frame {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--kit-rule);
+  border-radius: 10px;
+}
+
+.ade-git-history { flex: 1 1 0; min-height: 0; }
+
+.ade-git-stash-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-height: 0;
+  overflow: auto;
+}
+.ade-git-stash-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  padding: 4px 4px 4px 8px;
+  border-radius: var(--radius-md);
+}
+.ade-git-stash-row:hover { background: var(--kit-hover); }
+.ade-git-stash-text { flex: 1 1 140px; min-width: 0; }
+.ade-git-stash-subject { font-size: 12px; color: var(--color-fg); }
+.ade-git-stash-meta { font-size: 10.5px; color: var(--kit-text-3); }
+.ade-git-stash-more { padding: 2px 8px; font-size: 11px; color: var(--kit-text-3); }

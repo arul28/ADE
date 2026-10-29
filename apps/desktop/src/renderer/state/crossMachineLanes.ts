@@ -1418,7 +1418,7 @@ function withPreservedLaneStatus(machineId: string, lanes: LaneSummary[]): LaneS
   return lanes.map((lane) => {
     const prior = previousById.get(lane.id);
     return prior
-      ? { ...lane, status: prior.status, parentStatus: prior.parentStatus }
+      ? { ...lane, status: prior.status }
       : lane;
   });
 }

@@ -166,7 +166,6 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/dismiss-message", description: "Dismiss an accepted but unprocessed message", placement: "right", argumentHint: "<steer-id> [session-id]", category: "Chats" },
   { name: "/diff", description: "Show active lane diff", placement: "right", category: "Lanes" },
   { name: "/log", description: "Show recent commits", placement: "right", category: "Lanes" },
-  { name: "/reparent", description: "Move the active lane under another lane", placement: "right", argumentHint: "<parent-lane-id|parent-name> [stack-base-ref]", category: "Lanes" },
   { name: "/lane details", description: "Open lane activity details for the active or selected lane", placement: "right", argumentHint: "[lane-id|name]", category: "Lanes" },
   { name: "/lane rename", description: "Rename the active lane", placement: "right", argumentHint: "[name]", category: "Lanes" },
   { name: "/lane archive", description: "Archive the active lane", placement: "right", category: "Lanes" },

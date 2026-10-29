@@ -1,6 +1,6 @@
 ---
 name: ade-cli-control-plane
-description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, send a message to a chat later, or spawn a child lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
+description: Use this skill when you need to hand work to another ADE agent, wait for or check whether delegated work has finished, read another agent's chat transcript, report status or raise a question on the Work row, schedule a wake-up for later, send a message to a chat later, or create a lane — and generally whenever you need ADE's own state (lanes, chats, actions, proof, secrets, runtime/socket status) through the `ade` CLI.
 ---
 
 # ADE CLI control plane
@@ -109,7 +109,7 @@ Start work from an issue:
 
 ```
 ade new chat --mode chat --lane <lane> --provider codex --model <m> --type subagent --prompt "Work this issue"
-ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <m> --type subagent
+ade lanes create --name ENG-431 --issue-id ENG-431 --start-chat --provider codex --model <m> --type subagent
 ade chat create --from-linear-issue ENG-431 --type subagent # compatibility path: chat with the issue attached + kickoff
 ```
 
@@ -176,8 +176,8 @@ after every turn it finishes.
 another provider, so it works where a native subagent would: in your lane,
 under your chat. Leaving `--lane` out picks your lane when `ADE_LANE_ID` is
 set (it is in an ADE chat or lane shell); elsewhere pass `--lane <your lane>`.
-Create a new lane for it (`--lane auto`, `ade lanes child`) only when the user
-asks. Children in one lane share its Apple device: let one agent drive it and
+Create a new lane for it (`--auto-create-lane`, `ade lanes create`) only when the user
+asks. Agents in one lane share its Apple device: let one agent drive it and
 hand that agent the device work (see ade-apple).
 
 To wait on a terminal (a dev server, a long build, a log), watch it instead of
@@ -191,9 +191,8 @@ byte. `ade terminal watches` lists yours; `ade terminal unwatch <watch-id>`
 stops one. A watch ends after 2h by default (max 24h), after 20 wakes in an
 hour, or if ADE restarts; re-arm it then.
 
-When the new work must carry the current lane's unmerged commits, follow the
-child-lane rule in the `ade-lanes-git` skill and use
-`ade lanes child --lane <current> --name <n>` instead of a fresh lane.
+When the new work must carry the current lane's unmerged commits, use
+`ade lanes create --name <n> --from <your branch> --on local` to continue unmerged work. Use `--on uncommitted` to copy uncommitted changes too.
 
 Transcript reads are silent and available for any project-backed chat in any
 registered project on this machine. Personal/no-project chats remain on the

@@ -173,6 +173,7 @@ function createRuntime() {
     } as any,
     laneService: {
       list: vi.fn(async () => laneRows),
+      getCompareBase: vi.fn(() => "main"),
       ensurePrimaryLane: vi.fn(async () => laneRows[0]),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
@@ -356,8 +357,6 @@ function createRuntime() {
       getLogTail: vi.fn(() => "")
     },
     prService: {
-      simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
-      createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       createFromLane: vi.fn(async () => ({
         id: "pr-new",
         laneId: "lane-1",
@@ -4261,42 +4260,18 @@ describe("adeRpcServer", () => {
       source: "agent",
     });
 
+    // Without a base, the title names the lane on the branch the lane compares against.
     (fixture.runtime.laneService.list as any).mockResolvedValueOnce([
-      {
-        id: "primary",
-        name: "Primary",
-        laneType: "primary",
-        parentLaneId: null,
-        baseRef: "main",
-        branchRef: "main",
-        archivedAt: null,
-      },
-      {
-        id: "parent-lane",
-        name: "Parent",
-        laneType: "worktree",
-        parentLaneId: null,
-        baseRef: "main",
-        branchRef: "feature/parent",
-        archivedAt: null,
-      },
-      {
-        id: "child-lane",
-        name: "Child",
-        laneType: "worktree",
-        parentLaneId: "parent-lane",
-        baseRef: "main",
-        branchRef: "feature/child",
-        archivedAt: null,
-      },
+      { id: "primary", name: "Primary", laneType: "primary", baseRef: "main", branchRef: "main", archivedAt: null },
+      { id: "feature-lane", name: "Feature", laneType: "worktree", baseRef: "main", branchRef: "feature/x", archivedAt: null },
     ]);
-    const stackedDefaulted = await callTool(handler, "create_pr_from_lane", {
-      laneId: "child-lane",
+    const baseless = await callTool(handler, "create_pr_from_lane", {
+      laneId: "feature-lane",
     });
-    expect(stackedDefaulted?.isError).toBeUndefined();
+    expect(baseless?.isError).toBeUndefined();
     expect(fixture.runtime.prService.createFromLane).toHaveBeenLastCalledWith({
-      laneId: "child-lane",
-      title: "Child -> Parent",
+      laneId: "feature-lane",
+      title: "Feature -> Primary",
       body: "",
       draft: false,
       closeLinearIssueOnMerge: true,
@@ -7980,93 +7955,8 @@ describe("adeRpcServer", () => {
     expect(plain.structuredContent.setup).toBeUndefined();
   });
 
-  it("defaults a base-less create_lane to the fetched remote-tracking ref", async () => {
+  it("records usage for run_ade_action lane.create", async () => {
     const fixture = createRuntime();
-    fixture.runtime.laneService.list = vi.fn(async () => [
-      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
-    ]) as any;
-    fixture.runtime.gitService.listBranches = vi.fn(async () => [
-      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
-      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
-    ]) as any;
-    fixture.runtime.projectConfigService = {
-      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
-    } as any;
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "agent" });
-    const response = await callTool(handler, "create_lane", { name: "new-feature" });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.gitService.fetch).toHaveBeenCalledWith({ laneId: "lane-primary" });
-    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "new-feature", baseBranch: "origin/main" })
-    );
-  });
-
-  it("returns a non-blocking stale-base warning when the remote fetch fails", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.laneService.list = vi.fn(async () => [
-      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
-    ]) as any;
-    fixture.runtime.gitService.fetch = vi.fn(async () => { throw new Error("offline"); });
-    fixture.runtime.gitService.listBranches = vi.fn(async () => [
-      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
-      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
-    ]) as any;
-    fixture.runtime.projectConfigService = {
-      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
-    } as any;
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "agent" });
-    const response = await callTool(handler, "create_lane", { name: "new-feature" });
-
-    expect(response.structuredContent.warning).toBe(
-      "⚠ Base origin/main may be stale — fetch failed; using last-known ref.",
-    );
-    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
-      expect.objectContaining({ baseBranch: "origin/main" }),
-    );
-  });
-
-  it("returns a non-blocking warning when local main is behind and no remote ref can be selected", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.laneService.list = vi.fn(async () => [
-      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
-    ]) as any;
-    fixture.runtime.gitService.listBranches = vi.fn(async () => [
-      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
-    ]) as any;
-    fixture.runtime.gitService.getSyncStatus = vi.fn(async () => ({ behind: 4, ahead: 0 }));
-    fixture.runtime.projectConfigService = {
-      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
-    } as any;
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "agent" });
-    const response = await callTool(handler, "create_lane", { name: "new-feature" });
-
-    expect(response.structuredContent.warning).toBe(
-      "⚠ local main is 4 behind origin — creating off possibly-stale base.",
-    );
-    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
-      expect.not.objectContaining({ baseBranch: expect.anything() }),
-    );
-  });
-
-  it("defaults a base-less run_ade_action lane.create to the remote-tracking ref", async () => {
-    const fixture = createRuntime();
-    fixture.runtime.laneService.list = vi.fn(async () => [
-      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
-    ]) as any;
-    fixture.runtime.gitService.listBranches = vi.fn(async () => [
-      { name: "main", isCurrent: true, isRemote: false, upstream: "origin/main" },
-      { name: "origin/main", isCurrent: false, isRemote: true, upstream: null },
-    ]) as any;
-    fixture.runtime.projectConfigService = {
-      getEffective: vi.fn(() => ({ git: { newLaneBaseSource: "remote" } })),
-    } as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     await initialize(handler, { callerId: "coord-1", role: "agent" });
@@ -8078,7 +7968,7 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
-      expect.objectContaining({ name: "action-lane", baseBranch: "origin/main" })
+      expect.objectContaining({ name: "action-lane" })
     );
     expect(fixture.runtime.db.run).toHaveBeenCalledWith(
       expect.stringContaining("insert into usage_events"),
@@ -8086,20 +7976,23 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("skips the remote default when create_lane has an explicit base or parent", async () => {
+  it("passes a lane start through create_lane and refuses an invalid one before creating", async () => {
     const fixture = createRuntime();
-    fixture.runtime.laneService.list = vi.fn(async () => [
-      { id: "lane-primary", laneType: "primary", baseRef: "main", branchRef: "main" },
-    ]) as any;
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     await initialize(handler, { callerId: "coord-1", role: "agent" });
-    await callTool(handler, "create_lane", { name: "explicit-base", baseBranch: "develop" });
-    await callTool(handler, "create_lane", { name: "child", parentLaneId: "lane-primary" });
+    const invalid = await callTool(handler, "create_lane", { name: "bad", start: { from: "branch", on: "local" } });
+    expect(invalid?.isError).toBe(true);
+    expect(fixture.runtime.laneService.create).not.toHaveBeenCalled();
 
-    expect(fixture.runtime.gitService.fetch).not.toHaveBeenCalled();
-    expect((fixture.runtime.laneService.create as any).mock.calls[0][0].baseBranch).toBe("develop");
-    expect((fixture.runtime.laneService.create as any).mock.calls[1][0].baseBranch).toBeUndefined();
+    const response = await callTool(handler, "create_lane", {
+      name: "from-develop",
+      start: { from: "branch", branch: "origin/develop", on: "local" },
+    });
+    expect(response?.isError).toBeUndefined();
+    expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
+      expect.objectContaining({ name: "from-develop", start: { from: "branch", branch: "develop", on: "local" } }),
+    );
   });
 
   it("passes branch and Linear issue data through create_lane", async () => {
@@ -8138,7 +8031,6 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "create_lane", {
       name: "new-feature",
-      baseBranch: "main",
       branchName: "ade-123-create-linked-lane",
       linearIssue,
     });
@@ -8147,7 +8039,6 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.laneService.create).toHaveBeenCalledWith(
       expect.objectContaining({
         name: "new-feature",
-        baseBranch: "main",
         branchName: "ade-123-create-linked-lane",
         linearIssue: expect.objectContaining({
           id: "issue-1",
@@ -8209,46 +8100,6 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("routes simulate_integration as a read-only dry-merge", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler);
-    const response = await callTool(handler, "simulate_integration", {
-      sourceLaneIds: ["lane-1", "lane-2"],
-      baseBranch: "main"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.simulateIntegration).toHaveBeenCalledWith({
-      sourceLaneIds: ["lane-1", "lane-2"],
-      baseBranch: "main"
-    });
-  });
-
-  it("routes create_integration with authorization", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "agent" });
-    const response = await callTool(handler, "create_integration", {
-      sourceLaneIds: ["lane-1"],
-      integrationLaneName: "integration-branch",
-      baseBranch: "main",
-      title: "Integration PR"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.createIntegrationPr).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourceLaneIds: ["lane-1"],
-        integrationLaneName: "integration-branch",
-        baseBranch: "main",
-        title: "Integration PR"
-      })
-    );
-  });
-
   it("routes rebase_lane with authorization", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -8256,13 +8107,10 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
-      aiAssisted: true
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith(
-      expect.objectContaining({ laneId: "lane-1", aiAssisted: true })
-    );
+    expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith({ laneId: "lane-1" });
   });
 
   it("suggests stash or commit tools when rebase_lane is blocked by a dirty worktree", async () => {
@@ -8278,7 +8126,6 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
-      aiAssisted: true,
     });
 
     expect(response?.isError).toBeUndefined();

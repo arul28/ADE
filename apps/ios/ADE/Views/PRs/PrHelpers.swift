@@ -833,14 +833,6 @@ func fileStatusTint(_ status: String) -> Color {
   }
 }
 
-func severityRank(_ severity: String) -> Int {
-  switch severity {
-  case "critical": return 0
-  case "warning": return 1
-  default: return 2
-  }
-}
-
 func titleCase(_ raw: String) -> String {
   raw
     .replacingOccurrences(of: "_", with: " ")

@@ -46,64 +46,21 @@ struct AddLaneSheet: View {
           }
           ADESettingsSection(machines.count > 1 ? "Kind" : nil) {
           ADESettingsRows {
-          LaneCreateOptionLink(
-            symbol: "plus.square.on.square",
-            title: "New lane",
-            subtitle: "Start from the primary branch"
-          ) {
-            LaneCreateSheet(
-              primaryLane: primaryLane,
-              lanes: lanes,
-              initialMode: .primary,
-              showsModePicker: false,
-              target: target,
-              onComplete: handleCreate
-            )
-          }
-
-          LaneCreateOptionLink(
-            symbol: "arrow.triangle.branch",
-            title: "From existing branch",
-            subtitle: "Import an existing git branch"
-          ) {
-            LaneCreateSheet(
-              primaryLane: primaryLane,
-              lanes: lanes,
-              initialMode: .importBranch,
-              showsModePicker: false,
-              target: target,
-              onComplete: handleCreate
-            )
-          }
-
-          LaneCreateOptionLink(
-            symbol: "square.stack.3d.up",
-            title: "Child lane",
-            subtitle: "Stack on top of another lane"
-          ) {
-            LaneCreateSheet(
-              primaryLane: primaryLane,
-              lanes: lanes,
-              initialMode: .child,
-              showsModePicker: false,
-              target: target,
-              onComplete: handleCreate
-            )
-          }
-
-          LaneCreateOptionLink(
-            symbol: "cross.case",
-            title: "Rescue unstaged",
-            subtitle: "Move dirty changes into a new lane"
-          ) {
-            LaneCreateSheet(
-              primaryLane: primaryLane,
-              lanes: lanes,
-              initialMode: .rescueUnstaged,
-              showsModePicker: false,
-              target: target,
-              onComplete: handleCreate
-            )
+          ForEach(LaneCreateMode.allCases) { mode in
+            LaneCreateOptionLink(
+              symbol: mode.symbol,
+              title: mode.title,
+              subtitle: mode.help
+            ) {
+              LaneCreateSheet(
+                primaryLane: primaryLane,
+                lanes: lanes,
+                initialMode: mode,
+                showsModePicker: false,
+                target: target,
+                onComplete: handleCreate
+              )
+            }
           }
           }
           // Creating a lane always names its machine first.

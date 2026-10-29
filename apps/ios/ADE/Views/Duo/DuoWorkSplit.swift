@@ -637,7 +637,6 @@ private struct DuoWorkPreviewHost: View {
       actionRuns: PrFlatPreviewData.actionRuns,
       activityEvents: PrFlatPreviewData.activity,
       deployments: [],
-      groupMembers: [],
       capabilities: nil,
       unavailableParts: [],
       loadedAt: Date()

@@ -2,13 +2,7 @@ import type { LaneType } from "./types";
 
 type LaneLike = {
   baseRef?: string | null;
-  parentLaneId?: string | null;
 };
-
-type ParentLike = {
-  laneType?: LaneType | null;
-  branchRef?: string | null;
-} | null;
 
 export function branchNameFromLaneRef(ref?: string | null): string {
   const trimmed = (ref ?? "").trim();
@@ -22,18 +16,22 @@ export function branchNameFromLaneRef(ref?: string | null): string {
   return trimmed;
 }
 
-export function shouldLaneTrackParent(args: {
-  lane: LaneLike | null | undefined;
-  parent: ParentLike;
-}): boolean {
-  const lane = args.lane ?? null;
-  const parent = args.parent ?? null;
-  if (!lane?.parentLaneId || !parent) return false;
-
-  const parentBranch = branchNameFromLaneRef(parent.branchRef);
-  if (!parentBranch) return false;
-
-  return parent.laneType !== "primary";
+/**
+ * The branch a lane compares against, the same way GitHub does: its open
+ * pull request's base branch when it has one, else the project's default
+ * branch. Ahead/behind, the branch diff, conflict prediction, the rebase
+ * target and the default base of a new pull request all use this. (The
+ * primary lane compares against its upstream instead.)
+ */
+export function resolveLaneCompareBase(args: {
+  /** Base branch of the lane's open or draft pull request, if it has one. */
+  prBaseBranch?: string | null;
+  /** The project's default branch, e.g. `main`. */
+  defaultBranch: string;
+}): string {
+  const prBase = branchNameFromLaneRef(args.prBaseBranch);
+  if (prBase) return prBase;
+  return branchNameFromLaneRef(args.defaultBranch) || "main";
 }
 
 type LaneBaseBranchLike = {
@@ -67,15 +65,9 @@ export function laneIsOnBaseBranch(lane: LaneBaseBranchLike): boolean {
 
 export function resolveStableLaneBaseBranch(args: {
   lane: LaneLike | null | undefined;
-  parent?: ParentLike;
   primaryBranchRef?: string | null;
 }): string {
   const lane = args.lane ?? null;
-  const parent = args.parent ?? null;
-  if (shouldLaneTrackParent({ lane, parent })) {
-    return branchNameFromLaneRef(parent?.branchRef);
-  }
-
   const baseBranch = branchNameFromLaneRef(lane?.baseRef);
   if (baseBranch) return baseBranch;
   return branchNameFromLaneRef(args.primaryBranchRef ?? "main");

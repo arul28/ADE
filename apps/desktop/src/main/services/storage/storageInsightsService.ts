@@ -550,14 +550,6 @@ export function createStorageInsightsService(options: StorageInsightsServiceOpti
         if (hasActiveLaneWorktreeLock(lane.id)) continue;
         const row = rows.find((entry) => entry.id === lane.id);
         if (!row) continue;
-        const inPrGroup = options.db.get<{ group_id: string }>(
-          `select m.group_id from pr_group_members m
-             join pr_groups g on g.id = m.group_id
-            where m.lane_id = ? and g.project_id = ?
-            limit 1`,
-          [lane.id, projectId],
-        );
-        if (inPrGroup) continue;
         const risk = await laneService.getReclaimRisk({ laneId: lane.id });
         if (risk.dirty || risk.activeChatCount > 0 || risk.activePtyCount > 0 || risk.activeWatcherCount > 0) continue;
         if (risk.blockedReasons.some((reason) => reason.code === "unmerged_work")) continue;

@@ -28,6 +28,8 @@ import type {
 } from "../../../shared/types";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
 import { useLaneTemplateSetupChat } from "../lanes/useLaneTemplateSetupChat";
+import { getNewLaneDefaultsCached } from "../../lib/newLaneDefaultsCache";
+import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 
 function generateId(): string {
   return `tpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
@@ -213,24 +215,31 @@ function removeAt<T>(items: T[], index: number): T[] {
  * Matches `lanes-git.lane-templates` in `settingsManifest.ts`. Every state of
  * this section renders it, so a Cmd-K result or `?tab=lanes-git#lane-templates`
  * deeplink lands here whether templates are still loading or one is open in the
- * editor. `SettingsManagerPage` owns the id and its `data-settings-anchor`
- * mirror, the way `SettingsCard` does, so settings search can filter this
- * section too.
+ * editor. `ModernSection` sets the id and its `data-settings-anchor` mirror, so
+ * settings search can filter this step too.
  */
 const ANCHOR = "lane-templates";
+const GROUP = "New lanes";
 
-const TITLE = "Lane templates";
-const DESCRIPTION = "Set up every new lane the same way: copy files in, install packages, run a script.";
+const TITLE = "Template";
+const DESCRIPTION = "Set up new lanes the same way: copy files in, install packages, run a script.";
 
 export function LaneTemplatesSection() {
-  // Templates live in each machine's `.ade/local.yaml`, so they are read and
-  // written on the machine the Settings page shows.
+  // A project's templates follow the account (per repository); they are read
+  // and written through the machine the Settings page shows, which also adds
+  // any templates committed in the repository's shared config.
   const { pin, machineName } = useSettingsMachineScope();
   const { start: startTemplateChat, busy: templateChatBusy } = useLaneTemplateSetupChat({ pin, machineName, origin: "settings" });
   const [templates, setTemplates] = useState<LaneTemplate[]>([]);
   const [defaultId, setDefaultId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<LaneTemplate | null>(null);
+  const projectRoot = useAppStore(selectActiveProjectRoot);
+  // The default template is part of the new-lane defaults every surface
+  // shares; re-read them after a change here so none keeps a stale copy.
+  const refreshNewLaneDefaults = useCallback(() => {
+    void getNewLaneDefaultsCached({ projectRoot, pin, force: true });
+  }, [pin, projectRoot]);
 
   const refresh = useCallback(async () => {
     try {
@@ -258,26 +267,29 @@ export function LaneTemplatesSection() {
     } catch {
       await refresh();
     }
-  }, [pin, refresh]);
+    refreshNewLaneDefaults();
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const handleSave = useCallback(async (template: LaneTemplate) => {
     try {
       await window.ade.lanes.saveTemplate({ template }, pin);
       setEditing(null);
       await refresh();
+      refreshNewLaneDefaults();
     } catch (err: unknown) {
       showToast({ title: "Failed to save template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [pin, refresh]);
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const handleDelete = useCallback(async (templateId: string) => {
     try {
       await window.ade.lanes.deleteTemplate({ templateId }, pin);
       await refresh();
+      refreshNewLaneDefaults();
     } catch (err: unknown) {
       showToast({ title: "Failed to delete template", message: err instanceof Error ? err.message : String(err), tone: "error" });
     }
-  }, [pin, refresh]);
+  }, [pin, refresh, refreshNewLaneDefaults]);
 
   const newTemplateButton = (
     <button type="button" className="ade-modern-btn" onClick={() => setEditing(emptyTemplate())}>
@@ -303,7 +315,7 @@ export function LaneTemplatesSection() {
 
   if (loading) {
     return (
-      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <ModernSection size="step" group={GROUP} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <p className="ade-modern-muted">Loading templates...</p>
       </ModernSection>
     );
@@ -311,7 +323,7 @@ export function LaneTemplatesSection() {
 
   if (editing) {
     return (
-      <ModernSection group={TITLE} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
+      <ModernSection size="step" group={GROUP} anchor={ANCHOR} title={TITLE} hint={DESCRIPTION}>
         <div className="ade-lt-editor">
           <TemplateEditor
             template={editing}
@@ -325,7 +337,8 @@ export function LaneTemplatesSection() {
 
   return (
     <ModernSection
-      group={TITLE}
+      size="step"
+      group={GROUP}
       anchor={ANCHOR}
       title={TITLE}
       hint={DESCRIPTION}
@@ -359,8 +372,8 @@ export function LaneTemplatesSection() {
         <>
           <ModernRows>
             <ModernRow
-              title="Use for new lanes"
-              hint="Picked for you when you create a lane. You can still choose a different one there."
+              title="New lanes use"
+              hint="Auto-create lane too. You can pick another when you make a lane."
               control={(
                 <SettingsSelect
                   value={defaultId ?? ""}

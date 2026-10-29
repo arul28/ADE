@@ -481,7 +481,6 @@ struct ChatLaunchRequest: Equatable {
   let projectId: String?
   let projectRootPath: String?
   let originClientId: String?
-  var baseBranch: String? = nil
 }
 
 /// Whether a new-chat send goes through the host-owned launch
@@ -618,9 +617,6 @@ func chatLaunchCommandArgs(
   }
   if let origin = request.originClientId, !origin.isEmpty {
     args["originClientId"] = origin
-  }
-  if let base = request.baseBranch?.trimmingCharacters(in: .whitespacesAndNewlines), !base.isEmpty {
-    args["baseBranch"] = base
   }
   return args
 }

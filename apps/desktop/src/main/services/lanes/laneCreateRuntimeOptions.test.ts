@@ -84,7 +84,7 @@ describe("laneService.create runtime options", () => {
     try {
       const progress: number[] = [];
       const lane = await service.create(
-        { name: "reserved lane", branchName: "ade/0a1b2c3d", baseBranch: "main" },
+        { name: "reserved lane", branchName: "ade/0a1b2c3d", start: { from: "default", on: "local" } },
         { laneId: RESERVED_ID, onCheckoutProgress: (update) => progress.push(update.percent) },
       );
       expect(lane.id).toBe(RESERVED_ID);
@@ -101,7 +101,7 @@ describe("laneService.create runtime options", () => {
     try {
       expect(service.findLaneIdentity(RESERVED_ID)).toBeNull();
       const lane = await service.create(
-        { name: "adopt me", branchName: "ade/77777777", baseBranch: "main" },
+        { name: "adopt me", branchName: "ade/77777777", start: { from: "default", on: "local" } },
         { laneId: RESERVED_ID },
       );
       expect(service.findLaneIdentity(RESERVED_ID)).toEqual({
@@ -119,10 +119,10 @@ describe("laneService.create runtime options", () => {
   it("rejects a reserved id that is not a UUID or is already taken", async () => {
     const { db, service } = await setup();
     try {
-      await expect(service.create({ name: "bad", baseBranch: "main" }, { laneId: "not-a-uuid" })).rejects.toThrow(/UUID/);
-      await service.create({ name: "first", branchName: "ade/11111111", baseBranch: "main" }, { laneId: RESERVED_ID });
+      await expect(service.create({ name: "bad", start: { from: "default", on: "local" } }, { laneId: "not-a-uuid" })).rejects.toThrow(/UUID/);
+      await service.create({ name: "first", branchName: "ade/11111111", start: { from: "default", on: "local" } }, { laneId: RESERVED_ID });
       await expect(
-        service.create({ name: "second", branchName: "ade/22222222", baseBranch: "main" }, { laneId: RESERVED_ID }),
+        service.create({ name: "second", branchName: "ade/22222222", start: { from: "default", on: "local" } }, { laneId: RESERVED_ID }),
       ).rejects.toThrow(/already in use/);
     } finally {
       db.close();
@@ -135,7 +135,7 @@ describe("laneService.create runtime options", () => {
       const abort = new AbortController();
       abort.abort();
       await expect(
-        service.create({ name: "aborted", branchName: "ade/33333333", baseBranch: "main" }, { laneId: RESERVED_ID, signal: abort.signal }),
+        service.create({ name: "aborted", branchName: "ade/33333333", start: { from: "default", on: "local" } }, { laneId: RESERVED_ID, signal: abort.signal }),
       ).rejects.toThrow();
       expect(git(repo, "branch", "--list", "ade/33333333").trim()).toBe("");
       expect(git(repo, "worktree", "list").trim().split("\n")).toHaveLength(1);
@@ -154,7 +154,7 @@ describe("laneService.create runtime options", () => {
       const seen: number[] = [];
       await expect(
         service.create(
-          { name: "mid checkout", branchName: "ade/44444444", baseBranch: "main" },
+          { name: "mid checkout", branchName: "ade/44444444", start: { from: "default", on: "local" } },
           {
             laneId: RESERVED_ID,
             signal: abort.signal,
@@ -193,7 +193,7 @@ describe("laneService.create runtime options", () => {
       expect(git(repo, "worktree", "list").trim().split("\n")).toHaveLength(1);
 
       const lane = await service.create(
-        { name: "retry lane", branchName: "ade/66666666", baseBranch: "main" },
+        { name: "retry lane", branchName: "ade/66666666", start: { from: "default", on: "local" } },
         { laneId: RESERVED_ID },
       );
       expect(lane.worktreePath).toBe(reservedPath);
@@ -253,7 +253,7 @@ describe("stopping lane git writes", () => {
     let markStarted: () => void = () => {};
     const started = new Promise<void>((resolve) => { markStarted = resolve; });
     const result = service.create(
-      { name, branchName: `ade/${operationId}`, baseBranch: "main", operationId },
+      { name, branchName: `ade/${operationId}`, start: { from: "default", on: "local" }, operationId },
       { onCheckoutProgress: () => markStarted() },
     );
     let settled = false;
@@ -269,7 +269,7 @@ describe("stopping lane git writes", () => {
         hangCheckouts(repo);
         const first = startHungCreate(service, "first", "op-first");
         await first.started;
-        const queued = service.create({ name: "queued", branchName: "ade/op-queued", baseBranch: "main", operationId: "op-queued" });
+        const queued = service.create({ name: "queued", branchName: "ade/op-queued", start: { from: "default", on: "local" }, operationId: "op-queued" });
 
         expect(service.cancelGitWrite({ operationId: "op-queued" })).toEqual({ cancelled: true });
         await expect(queued).rejects.toThrow("Lane creation was cancelled.");
@@ -301,7 +301,7 @@ describe("stopping lane git writes", () => {
         onDeleteEvent: ({ progress }) => { if (progress.cancellable) markRemovable(); },
       });
       try {
-        const victim = await service.create({ name: "victim", branchName: "ade/victim", baseBranch: "main" });
+        const victim = await service.create({ name: "victim", branchName: "ade/victim", start: { from: "default", on: "local" } });
         expect(service.cancelDelete(victim.id)).toMatchObject({ cancelled: false });
 
         hangCheckouts(repo);

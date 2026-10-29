@@ -93,38 +93,48 @@
 .ade-ms-privacy { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px 20px; margin-top: 4px; }
 .ade-ms-privacy > div { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 
-/* ── Lanes: a tiny lane card for the rebase-suggestion choices ──────── */
+/* ── New lanes: one flow of steps under the tab ─────────────────────── */
 
-.ade-lb-mini {
+/* The tab's steps, 28px apart: Start from, On, Template. */
+.ade-nl-flow { display: flex; flex-direction: column; gap: 28px; min-width: 0; }
+
+/* Who uses these settings, and where they are saved. */
+.ade-nl-meta {
   display: flex;
-  flex-direction: column;
-  gap: 7px;
-  width: 64%;
-  padding: 9px 10px;
-  border-radius: 6px;
-  border: 1px solid color-mix(in srgb, var(--color-fg) 12%, transparent);
-  background: color-mix(in srgb, var(--color-bg) 70%, transparent);
-  overflow: hidden;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-3);
 }
-.ade-lb-mini-banner {
-  height: 6px;
-  margin: -9px -10px 0;
-  background: color-mix(in srgb, var(--kit-warn) 55%, transparent);
+.ade-nl-meta code { font-family: var(--font-mono); font-size: 11.5px; color: var(--kit-text-2); }
+.ade-nl-meta-end { display: inline-flex; align-items: center; gap: 8px; flex: none; }
+.ade-nl-scope-repo { color: var(--kit-text-3); }
+
+.ade-nl-grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ade-nl-mono { font-family: var(--font-mono); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ade-nl-loading { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+.ade-nl-loading > span { height: 72px; border-radius: var(--radius-lg); }
+
+/* The primary card's branch switcher, in place of the branch line. Its
+   trigger has its own padding, so it is pulled back to the title's edge. */
+.ade-nl-primary { display: flex; min-width: 0; margin-left: -8px; }
+
+/* The one-line answer under the choices. */
+.ade-nl-summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-lg);
+  background: var(--kit-panel-bg);
+  border: 1px solid var(--kit-panel-edge);
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--kit-text-2);
 }
-.ade-lb-mini-row { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
-.ade-lb-mini-line { height: 4px; width: 55%; border-radius: 2px; background: currentColor; opacity: 0.4; }
-.ade-lb-mini-line--short { width: 35%; opacity: 0.22; }
-.ade-lb-mini-badge {
-  flex: none;
-  height: 12px;
-  padding: 0 4px;
-  border-radius: 3px;
-  font-family: var(--font-mono);
-  font-size: 7.5px;
-  line-height: 12px;
-  color: var(--kit-warn);
-  background: color-mix(in srgb, var(--kit-warn) 16%, transparent);
-}
+.ade-nl-summary > svg { flex: none; margin-top: 2px; color: var(--kit-text-3); }
 
 /* ── Lane templates ─────────────────────────────────────────────────── */
 

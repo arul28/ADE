@@ -626,10 +626,6 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var branchRef: String
   var worktreePath: String
   var attachedRootPath: String?
-  var parentLaneId: String?
-  var childCount: Int
-  var stackDepth: Int
-  var parentStatus: LaneStatus?
   var isEditProtected: Bool
   var status: LaneStatus
   var color: String?
@@ -642,6 +638,71 @@ struct LaneSummary: Codable, Identifiable, Equatable {
   var createdAt: String
   var archivedAt: String?
   var devicesOpen: [DeviceMarker]?
+}
+
+/// Where a new lane's branch starts, and on which copy of that branch
+/// (`LaneStart` in `apps/desktop/src/shared/laneStart.ts`).
+/// - `from`: the project's default branch, the primary lane's branch, or a named `branch`.
+/// - `on`: `remote` fetches and starts from `origin/<branch>`; `local` starts from the
+///   local tip; `uncommitted` also copies the uncommitted changes of the lane that has the
+///   branch checked out (that lane keeps them).
+struct LaneStart: Codable, Equatable {
+  enum From: String, Codable, CaseIterable {
+    case `default`
+    case primary
+    case branch
+  }
+
+  enum On: String, Codable, CaseIterable, Identifiable {
+    case remote
+    case local
+    case uncommitted
+
+    var id: String { rawValue }
+
+    var title: String {
+      switch self {
+      case .remote: return "Remote"
+      case .local: return "Local"
+      case .uncommitted: return "Local + uncommitted"
+      }
+    }
+  }
+
+  var from: From
+  var branch: String? = nil
+  var on: On
+
+  static let builtInDefault = LaneStart(from: .default, on: .remote)
+
+  /// The JSON object `lanes.create` takes as `start`.
+  var commandPayload: [String: Any] {
+    var payload: [String: Any] = ["from": from.rawValue, "on": on.rawValue]
+    if from == .branch, let branch, !branch.isEmpty {
+      payload["branch"] = branch
+    }
+    return payload
+  }
+}
+
+/// How every new lane in a project starts unless the user picks otherwise.
+struct NewLaneDefaults: Codable, Equatable {
+  var start: LaneStart
+  var templateId: String?
+}
+
+struct NewLaneSettingsScope: Codable, Equatable {
+  /// "account-repo" or "this-computer".
+  var kind: String
+  var repo: String?
+}
+
+/// `lanes.getNewLaneDefaults`: the saved defaults plus the branches they point at.
+struct NewLaneDefaultsSnapshot: Codable, Equatable {
+  var defaults: NewLaneDefaults
+  var scope: NewLaneSettingsScope?
+  var defaultBranch: String
+  var primaryBranch: String?
 }
 
 struct DeviceMarker: Codable, Identifiable, Equatable, Hashable {
@@ -728,47 +789,6 @@ struct LaneStateSnapshotSummary: Codable, Equatable {
   var laneId: String
   var agentSummary: [String: RemoteJSONValue]?
   var updatedAt: String?
-}
-
-public struct RebaseTargetCommit: Codable, Equatable, Identifiable {
-  public var id: String { sha }
-  public var sha: String
-  public var shortSha: String
-  public var subject: String
-  public var author: String
-  public var committedAt: String
-
-  public init(sha: String, shortSha: String, subject: String, author: String, committedAt: String) {
-    self.sha = sha
-    self.shortSha = shortSha
-    self.subject = subject
-    self.author = author
-    self.committedAt = committedAt
-  }
-}
-
-struct RebaseSuggestion: Codable, Equatable {
-  var laneId: String
-  var parentLaneId: String
-  var parentHeadSha: String
-  var behindCount: Int
-  var lastSuggestedAt: String
-  var deferredUntil: String?
-  var dismissedAt: String?
-  var hasPr: Bool
-  /// Commits the rebase would pull in. Optional so older hosts and legacy
-  /// snapshots continue to decode cleanly.
-  var targetCommits: [RebaseTargetCommit]? = nil
-}
-
-struct AutoRebaseLaneStatus: Codable, Equatable {
-  var laneId: String
-  var parentLaneId: String?
-  var parentHeadSha: String?
-  var state: String
-  var updatedAt: String
-  var conflictCount: Int
-  var message: String?
 }
 
 struct ConflictStatus: Codable, Equatable {
@@ -865,7 +885,6 @@ struct LaneBranchProfile: Codable, Identifiable, Equatable {
   var laneId: String
   var branchRef: String
   var baseRef: String
-  var parentLaneId: String?
   var sourceBranchRef: String?
   var createdAt: String
   var updatedAt: String
@@ -923,16 +942,6 @@ struct FileDiff: Codable, Equatable {
   var modified: DiffSide
   var isBinary: Bool?
   var language: String?
-}
-
-struct StackChainItem: Codable, Identifiable, Equatable {
-  var id: String { laneId }
-  var laneId: String
-  var laneName: String
-  var branchRef: String
-  var depth: Int
-  var parentLaneId: String?
-  var status: LaneStatus
 }
 
 struct AgentChatScheduledWorkItem: Codable, Identifiable, Equatable {
@@ -5392,8 +5401,6 @@ struct LaneListSnapshot: Codable, Identifiable, Equatable {
   var id: String { lane.id }
   var lane: LaneSummary
   var runtime: LaneRuntimeSummary
-  var rebaseSuggestion: RebaseSuggestion?
-  var autoRebaseStatus: AutoRebaseLaneStatus?
   var conflictStatus: ConflictStatus?
   var stateSnapshot: LaneStateSnapshotSummary?
 }
@@ -5401,11 +5408,7 @@ struct LaneListSnapshot: Codable, Identifiable, Equatable {
 struct LaneDetailPayload: Codable, Equatable {
   var lane: LaneSummary
   var runtime: LaneRuntimeSummary
-  var stackChain: [StackChainItem]
-  var children: [LaneSummary]
   var stateSnapshot: LaneStateSnapshotSummary?
-  var rebaseSuggestion: RebaseSuggestion?
-  var autoRebaseStatus: AutoRebaseLaneStatus?
   var conflictStatus: ConflictStatus?
   var overlaps: [ConflictOverlap]
   var syncStatus: GitUpstreamSyncStatus?
@@ -6071,24 +6074,6 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var crossLaneChatSessionIds: [String]? = nil
 }
 
-struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
-  var id: String { prId }
-  var groupId: String
-  var groupType: String
-  var groupName: String?
-  var targetBranch: String?
-  var prId: String
-  var laneId: String
-  var laneName: String
-  var title: String
-  var state: String
-  var githubPrNumber: Int
-  var githubUrl: String
-  var baseBranch: String
-  var headBranch: String
-  var position: Int
-}
-
 struct PullRequestDraftSuggestion: Codable, Equatable {
   var title: String
   var body: String
@@ -6656,100 +6641,6 @@ struct PullRequestRefreshPayload: Codable, Equatable {
       return false
     }
   }
-}
-
-struct IntegrationConflictFile: Codable, Identifiable, Equatable {
-  var id: String { "\(path):\(conflictType ?? "none")" }
-  var path: String
-  var conflictType: String?
-  var conflictMarkers: String
-  var oursExcerpt: String?
-  var theirsExcerpt: String?
-  var diffHunk: String?
-}
-
-struct IntegrationDiffStat: Codable, Equatable {
-  var insertions: Int
-  var deletions: Int
-  var filesChanged: Int
-}
-
-struct IntegrationProposalStep: Codable, Identifiable, Equatable {
-  var id: String { laneId }
-  var laneId: String
-  var laneName: String
-  var position: Int
-  var outcome: String
-  var conflictingFiles: [IntegrationConflictFile]
-  var diffStat: IntegrationDiffStat
-}
-
-struct IntegrationPairwiseResult: Codable, Identifiable, Equatable {
-  var id: String { "\(laneAId):\(laneBId)" }
-  var laneAId: String
-  var laneAName: String
-  var laneBId: String
-  var laneBName: String
-  var outcome: String
-  var conflictingFiles: [IntegrationConflictFile]
-}
-
-struct IntegrationLaneSummary: Codable, Identifiable, Equatable {
-  var id: String { laneId }
-  var laneId: String
-  var laneName: String
-  var outcome: String
-  var commitHash: String
-  var commitCount: Int
-  var conflictsWith: [String]
-  var diffStat: IntegrationDiffStat
-}
-
-struct IntegrationLaneSnapshot: Codable, Equatable {
-  var headSha: String?
-  var dirty: Bool
-}
-
-struct IntegrationResolutionState: Codable, Equatable {
-  var integrationLaneId: String
-  var stepResolutions: [String: String]
-  var activeWorkerStepId: String?
-  var activeLaneId: String?
-  var createdSnapshot: IntegrationLaneSnapshot?
-  var currentSnapshot: IntegrationLaneSnapshot?
-  var laneChangeStatus: String?
-  var updatedAt: String
-}
-
-struct IntegrationProposal: Codable, Identifiable, Equatable {
-  var id: String { proposalId }
-  var proposalId: String
-  var sourceLaneIds: [String]
-  var baseBranch: String
-  var pairwiseResults: [IntegrationPairwiseResult]
-  var laneSummaries: [IntegrationLaneSummary]
-  var steps: [IntegrationProposalStep]
-  var overallOutcome: String
-  var createdAt: String
-  var title: String?
-  var body: String?
-  var draft: Bool?
-  var integrationLaneName: String?
-  var status: String
-  var integrationLaneId: String?
-  var integrationLaneOrigin: String?
-  var linkedGroupId: String?
-  var linkedPrId: String?
-  var workflowDisplayState: String?
-  var cleanupState: String?
-  var closedAt: String?
-  var mergedAt: String?
-  var completedAt: String?
-  var cleanupDeclinedAt: String?
-  var cleanupCompletedAt: String?
-  var preferredIntegrationLaneId: String?
-  var mergeIntoHeadSha: String?
-  var resolutionState: IntegrationResolutionState?
 }
 
 struct TerminalScreenSnapshot: Codable, Equatable {
@@ -7384,7 +7275,6 @@ struct PrStackMember: Codable, Identifiable, Equatable {
   var id: String { laneId }
   var laneId: String
   var laneName: String
-  var parentLaneId: String?
   var depth: Int
   var role: String
   var dirty: Bool
@@ -7432,7 +7322,6 @@ struct PrCreateLaneEligibility: Codable, Identifiable, Equatable {
   var id: String { laneId }
   var laneId: String
   var laneName: String
-  var parentLaneId: String?
   var repoOwner: String?
   var repoName: String?
   var defaultBaseBranch: String
@@ -7450,111 +7339,6 @@ struct PrCreateCapabilities: Codable, Equatable {
   var canCreateAny: Bool
   var defaultBaseBranch: String?
   var lanes: [PrCreateLaneEligibility]
-}
-
-struct PrIntegrationWorkflowLane: Codable, Identifiable, Equatable {
-  var id: String { laneId }
-  var laneId: String
-  var laneName: String
-  var outcome: String
-}
-
-/// Unified mobile workflow card. Integration and rebase payload fields match
-/// the desktop discriminated union encoded as `kind`.
-struct PrWorkflowCard: Codable, Identifiable, Equatable {
-  var id: String
-  var kind: String
-  // integration
-  var proposalId: String?
-  var title: String?
-  var baseBranch: String?
-  var overallOutcome: String?
-  var integrationStatus: String?
-  var laneCount: Int?
-  var conflictLaneCount: Int?
-  var lanes: [PrIntegrationWorkflowLane]?
-  var workflowDisplayState: String?
-  var cleanupState: String?
-  var linkedPrId: String?
-  var integrationLaneId: String?
-  var preferredIntegrationLaneId: String?
-  var mergeIntoHeadSha: String?
-  var integrationLaneOrigin: String?
-  var createdAt: String?
-  // rebase
-  var laneId: String?
-  var laneName: String?
-  var behindBy: Int?
-  var conflictPredicted: Bool?
-  var prId: String?
-  var prNumber: Int?
-  var dismissedAt: String?
-  var deferredUntil: String?
-  var targetCommits: [RebaseTargetCommit]?
-  /// Host-resolved rebase mode for the rebase card's lane: "auto" when the
-  /// linked PR (or no PR) permits auto-rebase on base advance, "manual" when
-  /// the PR carries an immutable base (lane_base strategy). Absent on older
-  /// hosts — clients should default to "auto" when missing.
-  var rebaseMode: String?
-  /// Raw creation strategy of the lane's most-recent open/draft PR
-  /// ("pr_target" | "lane_base"), or null when no PR is linked. Lets the
-  /// client render strategy-specific copy without re-deriving the mode.
-  var creationStrategy: String?
-
-  private enum CodingKeys: String, CodingKey {
-    case id
-    case kind
-    case proposalId, title, baseBranch, overallOutcome
-    case integrationStatus = "status"
-    case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
-    case laneId, laneName, behindBy, conflictPredicted, prId, prNumber, dismissedAt, deferredUntil, targetCommits, rebaseMode, creationStrategy
-  }
-}
-
-struct CreateIntegrationLaneForProposalResult: Codable, Equatable {
-  var integrationLaneId: String
-  var mergedCleanLanes: [String]
-  var conflictingLanes: [String]
-}
-
-struct StartIntegrationResolutionResult: Codable, Equatable {
-  var conflictFiles: [String]
-  var mergedClean: Bool
-  var integrationLaneId: String
-}
-
-struct RecheckIntegrationStepResult: Codable, Equatable {
-  var resolution: String
-  var remainingConflictFiles: [String]
-  var allResolved: Bool
-  var message: String?
-}
-
-struct DeleteIntegrationProposalResult: Codable, Equatable {
-  var proposalId: String
-  var integrationLaneId: String?
-  var deletedIntegrationLane: Bool
-}
-
-struct IntegrationMergeResult: Codable, Equatable {
-  var laneId: String
-  var success: Bool
-  var error: String?
-}
-
-struct CreateIntegrationPrResult: Codable, Equatable {
-  var groupId: String
-  var integrationLaneId: String
-  var pr: PrSummary
-  var mergeResults: [IntegrationMergeResult]
-}
-
-struct CleanupIntegrationWorkflowResult: Codable, Equatable {
-  var proposalId: String
-  var archivedLaneIds: [String]
-  var skippedLaneIds: [String]
-  var workflowDisplayState: String
-  var cleanupState: String
 }
 
 struct LandResult: Codable, Equatable {
@@ -7582,7 +7366,6 @@ struct PrMobileSnapshot: Codable, Equatable {
   var stacks: [PrStackInfo]
   var capabilities: [String: PrActionCapabilities]
   var createCapabilities: PrCreateCapabilities
-  var workflowCards: [PrWorkflowCard]
   var live: Bool
 }
 

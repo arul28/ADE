@@ -1,12 +1,12 @@
 /**
- * Batch moves: several Work chats and the lane tree they live on, moved to one
- * machine in parent-first order. Driven from the source brain by the
+ * Batch moves: several Work chats and the lanes they live on, moved to one
+ * machine, each chat after its parent chat. Driven from the source brain by the
  * orchestrator (crossMachineHandoffOrchestrator.ts), which owns each chat's
  * own move; a batch record only orders those moves and imports the lanes
  * they need first.
  *
- * - Lanes arrive before their child lanes and before any chat on them; a chat
- *   arrives after its parent chat when both are selected.
+ * - Lanes arrive before any chat on them; a chat arrives after its parent
+ *   chat when both are selected.
  * - A lane import's payload is kept in the outbox before it is sent, so a
  *   retry resends exactly what may already be there; the destination dedupes
  *   by import id. A chat item's move is an ordinary move under a batch-derived
@@ -73,7 +73,6 @@ export type CrossMachineBatchChat = {
 
 export type CrossMachineBatchLane = {
   laneId: string;
-  parentLaneId: string | null;
   name: string;
   branchRef: string;
   originMachineKey?: string | null;
@@ -113,7 +112,6 @@ export type CrossMachineBatchMoveDeps = {
     importId: string;
     lane: CrossMachineBatchLane;
     returnToLaneId?: string;
-    destinationParentLaneId?: string;
     includeChanges: boolean;
   }) => Promise<AgentChatCrossMachineLaneImportArgs>;
   validateBatchLane: (payload: AgentChatCrossMachineLaneImportArgs) => Promise<void>;
@@ -459,21 +457,10 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     const lanesById = new Map(lanes.map((lane) => [lane.laneId, lane]));
     const selectedLaneIds = new Set<string>();
     for (const chat of orderedChats) {
-      let laneId: string | null = chat.laneId;
-      while (laneId) {
-        if (selectedLaneIds.has(laneId)) break;
-        const lane = lanesById.get(laneId);
-        if (!lane) throw new Error(`The source lane '${laneId}' could not be loaded.`);
-        selectedLaneIds.add(laneId);
-        laneId = lane.parentLaneId;
-      }
+      if (!lanesById.has(chat.laneId)) throw new Error(`The source lane '${chat.laneId}' could not be loaded.`);
+      selectedLaneIds.add(chat.laneId);
     }
-    const orderedLanes = orderParentsFirst(
-      lanes.filter((lane) => selectedLaneIds.has(lane.laneId)),
-      (lane) => lane.laneId,
-      (lane) => lane.parentLaneId,
-      "The selected lane tree contains a parent cycle and can't be moved.",
-    );
+    const orderedLanes = lanes.filter((lane) => selectedLaneIds.has(lane.laneId));
 
     const machine = await moves.resolveMachine(selector);
     const transport = moves.requireTransport();
@@ -612,7 +599,7 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
         id: laneItemId(lane.laneId),
         kind: "lane",
         state: "pending",
-        dependsOn: lane.parentLaneId && selectedLaneIds.has(lane.parentLaneId) ? [laneItemId(lane.parentLaneId)] : [],
+        dependsOn: [],
         sourceLaneId: lane.laneId,
         importId: laneImportId(lane.laneId),
         ...(returnLaneId ? { returnToLaneId: returnLaneId } : {}),
@@ -706,15 +693,10 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       // destination answers from its record for this import id.
       payload = stored.payload;
     } else {
-      const parentLaneItem = lane.parentLaneId ? findLaneItem(batch, lane.parentLaneId) : null;
-      if (lane.parentLaneId && !parentLaneItem?.destinationLaneId) {
-        throw new Error("The destination parent lane was not imported before its child lane.");
-      }
       payload = await deps.prepareBatchLane({
         importId,
         lane,
         ...(item.returnToLaneId ? { returnToLaneId: item.returnToLaneId } : {}),
-        ...(parentLaneItem?.destinationLaneId ? { destinationParentLaneId: parentLaneItem.destinationLaneId } : {}),
         includeChanges: batch.includeChanges,
       });
       await deps.validateBatchLane(payload);
@@ -812,7 +794,6 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
     const laneItem = findLaneItem(batch, item.sourceLaneId);
     const lane = (await deps.listBatchLanes()).find((candidate) => candidate.laneId === item.sourceLaneId);
     if (!laneItem?.destinationLaneId || !lane) throw new Error("The destination lane was not imported before its chat.");
-    const parentLaneItem = lane.parentLaneId ? findLaneItem(batch, lane.parentLaneId) : null;
     const parentChatItem = item.dependsOn
       .map((id) => batch.items.find((candidate) => candidate.id === id))
       .find((candidate): candidate is AgentChatCrossMachineBatchMoveChatItem => candidate?.kind === "chat");
@@ -827,8 +808,8 @@ export function createCrossMachineBatchMoves({ batch: deps, moves }: {
       snapshotSha: laneItem.snapshotSha ?? null,
       ...(batch.note ? { note: batch.note } : {}),
       ...(item.modeFallbackReason ? { modeFallbackReason: item.modeFallbackReason } : {}),
-      sourceLane: { laneId: lane.laneId, parentLaneId: lane.parentLaneId, name: lane.name },
-      ...(parentLaneItem?.destinationLaneId ? { destinationParentLaneId: parentLaneItem.destinationLaneId } : {}),
+      // Older destinations read the key.
+      sourceLane: { laneId: lane.laneId, parentLaneId: null, name: lane.name },
       ...(parentChatItem?.destinationSessionId
         ? {
             parentLink: {

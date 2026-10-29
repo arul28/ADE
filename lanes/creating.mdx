@@ -1,23 +1,20 @@
 ---
 title: "Create and manage lanes"
-description: "Every way to start a lane — new worktree, child lane, imported branch, or attached external worktree — plus rename, archive, and delete."
+description: "Every way to start a lane — a new branch or an existing branch — plus rename, archive, and delete."
 icon: "plus"
 ---
 
-Your repo root is always the **primary lane** — it exists from the moment you open the project, and it can't be deleted or restacked. Every *other* lane is a git worktree you create for a single task, isolated under `.ade/worktrees/`. You never pick a "lane type"; what varies is **how** you bring the new lane into being.
+Your repo root is always the **primary lane** — it exists from the moment you open the project, and it can't be deleted. Every *other* lane is a git worktree you create for a single task, isolated under `.ade/worktrees/`. You never pick a "lane type"; what varies is **how** you bring the new lane into being.
 
 <Frame caption="Start a new lane from the Lanes view.">
   <img src="/media/current/lanes.jpg" alt="The New lane button in the Lanes view" />
 </Frame>
 
-## The four ways to create a lane
+## Ways to create a lane
 
 <CardGroup cols={2}>
   <Card title="New worktree off a branch" icon="code-branch">
     Branch a fresh worktree from your default branch — or any other branch. The default, and the safest place for agent work.
-  </Card>
-  <Card title="Child lane (stacked)" icon="layer-group" href="/lanes/stacks">
-    Branch a lane off another lane instead of `main` to build dependent work as a stack. ADE calls these **child lanes**.
   </Card>
   <Card title="Import an existing branch" icon="download">
     Pull a branch you already have — local or remote — into a worktree ADE manages.
@@ -39,7 +36,7 @@ This is the default path. Open the **New lane** dialog, name the task, and choos
     Use a short, outcome-shaped name like `fix-auth-redirect` or `add-health-endpoint`. The name becomes the branch and the worktree folder slug. ADE picks an unused accent color for the lane; click the colored dot inside the name field to change it.
   </Step>
   <Step title="Choose the base">
-    Open **Based on**. Your default branch is listed first and tagged `default`. Use the **Remote** / **Local** switch in that popover to start from a remote or local branch instead.
+    Choose **Start from**: the project default branch, the primary lane branch, or another branch. Under **Bring**, choose pushed commits, local commits, or uncommitted changes. Uncommitted changes are copied, including staged, unstaged, and untracked files; the source stays unchanged.
   </Step>
   <Step title="Create">
     Click **Create lane**. ADE runs `git worktree add`, checks the new branch out under `.ade/worktrees/`, and the lane appears in the list.
@@ -56,7 +53,7 @@ Every branch or lane choice opens an inline popover above the form. The popover 
 
 ### Machine and extras
 
-The three modes sit under the name field, and each has a tooltip that explains it. Two more rows appear as needed:
+The two modes sit under the name field, and each has a tooltip that explains it. Two more rows appear as needed:
 
 - **Machine** appears only when more than one machine is connected. **Least loaded** lets ADE pick the least-loaded machine right now; otherwise choose a specific machine. Each one shows its free disk and repo path. Machines without the repository are disabled, and **Connect another machine…** is at the bottom of the list.
 - **Extras** holds **Attach Linear issue** and **Use a template**. Attaching an issue shows a card with its identifier, title, and branch name. While an issue is attached, **As existing branch** is unavailable. **Use a template** chooses the lane template that sets up env files, installs, and services, or **No template**; it also links to **Manage templates…** or **Create a template…**.
@@ -69,10 +66,6 @@ You don't have to fill in the dialog by hand. Hand ADE a task — or attach a Li
 Attaching a Linear issue derives the branch name from the issue identifier and title (`IDENT-title-slug`), or uses Linear's own branch name when it provides one. If that branch already exists locally or on the remote, the issue card warns and **Create lane** stays disabled until you detach the issue, so you don't accidentally collide with existing work.
 </Tip>
 
-## Child lane (stacked)
-
-To build on top of work that hasn't merged yet, create a **child lane**: its branch is based on the parent lane's branch instead of `main`. In the New lane dialog, choose **As child lane**, pick the **Parent** lane, and click **Create child lane**. The child rebases when its parent moves. **Based on** defaults to the parent's branch, tagged `parent`; you can pick any other branch, including remote `origin/` branches. It stays disabled until a parent is picked. The full review flow — stacked PRs and rebase propagation — lives in [Stack lanes](/lanes/stacks).
-
 ## Import an existing branch
 
 Have a branch already, local or remote, that you want ADE to manage as a worktree? Choose **As existing branch** in the New lane dialog, pick the branch, and click **Import branch**. ADE creates a managed worktree checked out to that branch, and the lane works on it directly; no new branch is made. The checked-out branch is listed first, then the rest by most recent commit. Picking a branch fills in the lane name if the name is empty or still auto-filled.
@@ -81,17 +74,9 @@ Have a branch already, local or remote, that you want ADE to manage as a worktre
 The same popover search that backs new worktrees powers import — search by name, filter to your own branches (`mine` or `author:me`), or jump straight to a PR number (`#NNN`). The PR pills come from GitHub and are fail-soft: if the PR lookup errors, the list still works, just without pills.
 </Note>
 
-## Attach an external worktree
+## Copy uncommitted work
 
-If you created a `git worktree` outside ADE, attach its path from the lane actions. ADE records the lane and tracks its status, but never moves or cleans the directory — deleting an attached lane only removes ADE's row, leaving your files in place.
-
-<Tip>
-If you later want ADE to own an attached worktree (and eventually auto-clean it), use **adopt** to move it under `.ade/worktrees/` and promote it to a managed lane.
-</Tip>
-
-## Rescue uncommitted work
-
-Started editing in the wrong place? ADE can lift uncommitted changes into a fresh child lane — it stashes the work in the source worktree and applies it in the new lane, then rolls back cleanly if the apply fails. This is the "rescue uncommitted work" path; it needs the source to have no staged changes and no in-progress merge or rebase.
+Choose a new branch, select the source branch, and choose **Uncommitted** under **Bring**. ADE copies changes from the folder with that branch checked out and leaves the source untouched.
 
 ## Create a lane from a commit
 
@@ -110,7 +95,7 @@ Open a lane's manage dialog to change it once work is underway or done.
 
 ### What delete tears down
 
-Delete isn't just `rm -rf`. ADE runs an ordered teardown and shows live progress for each step: it cancels auto-rebase, stops the lane's processes, terminals, and file watchers, cleans up lane environment resources, releases the lane's leased port range, removes the git worktree, and only then clears ADE's rows. You can optionally also delete the local branch (and the remote branch). Before you confirm, ADE surfaces a preflight check — dirty files, unpushed commits, running processes, and whether a remote branch exists.
+Delete isn't just `rm -rf`. ADE runs an ordered teardown and shows live progress for each step: it stops the lane's processes, terminals, and file watchers, cleans up lane environment resources, releases the lane's leased port range, removes the git worktree, and only then clears ADE's rows. You can optionally also delete the local branch (and the remote branch). Before you confirm, ADE surfaces a preflight check — dirty files, unpushed commits, running processes, and whether a remote branch exists.
 
 <Warning>
 Deleting a managed worktree removes its working directory, including uncommitted changes. ADE warns you about dirty state and unpushed commits first, but commit or push anything you want to keep before you confirm. Once a delete starts it runs to completion — it can't be cancelled.
@@ -129,7 +114,7 @@ Deleting a managed worktree removes its working directory, including uncommitted
 
     ```bash
     ade lanes list --text                 # list lanes in the active project
-    ade lanes create "fix-checkout-flow"  # branch a new worktree lane
+    ade lanes create --name fix-checkout-flow  # branch a new worktree lane
     ade lanes delete <lane-id> --force    # tear down a merged or abandoned lane
     ```
 
@@ -141,7 +126,7 @@ Deleting a managed worktree removes its working directory, including uncommitted
   <Card title="Lanes overview" icon="code-branch" href="/lanes/overview">
     How lanes isolate work and sync across surfaces.
   </Card>
-  <Card title="Stack lanes" icon="layer-group" href="/lanes/stacks">
-    Build child-lane chains and reviewable stacks.
+  <Card title="Stacked pull requests" icon="layer-group" href="/tools/pull-requests">
+    Review dependent branches with GitHub pull requests.
   </Card>
 </CardGroup>

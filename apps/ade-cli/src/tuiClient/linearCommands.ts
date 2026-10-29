@@ -328,7 +328,7 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     if (!issues || issues.length !== 1) {
       return usage(
         "Linear create-from",
-        "Usage: /linear create-from --issue-id <id> [--name <name>] [--base <branch>]",
+        "Usage: /linear create-from --issue-id <id> [--name <name>]",
       );
     }
     const issue = issues[0]!;
@@ -341,7 +341,6 @@ export function buildLinearToolRequest(input: string): LinearToolRequest {
     return tool("Linear create lane", "create_lane", compactArgs({
       name,
       linearIssue: issue,
-      baseBranch: optionString(options, "base", "baseBranch") ?? undefined,
       branchName: optionString(options, "branchName") ?? undefined,
     }));
   }

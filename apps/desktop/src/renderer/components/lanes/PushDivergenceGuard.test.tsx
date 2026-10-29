@@ -70,10 +70,6 @@ function buildLane(overrides: Partial<LaneSummary> = {}): LaneSummary {
     baseRef: "main",
     branchRef: LANE_BRANCH_REF,
     worktreePath: "/tmp/ade/divergence",
-    parentLaneId: null,
-    childCount: 0,
-    stackDepth: 1,
-    parentStatus: null,
     isEditProtected: false,
     status: { dirty: false, ahead: 2, behind: 0, remoteBehind: 0, rebaseInProgress: false },
     color: null,
@@ -139,8 +135,6 @@ describe("LaneGitActionsPane push divergence guard", () => {
         })),
       },
       lanes: {
-        listAutoRebaseStatuses: vi.fn(async () => []),
-        onAutoRebaseEvent: vi.fn(() => () => undefined),
       },
       projectConfig: { get: vi.fn(async () => ({ effective: {} })) },
     } as any;
@@ -161,8 +155,6 @@ describe("LaneGitActionsPane push divergence guard", () => {
       <MemoryRouter>
         <LaneGitActionsPane
           laneId="lane-1"
-          autoRebaseEnabled={false}
-          onOpenSettings={vi.fn()}
           onSelectFile={vi.fn()}
           onSelectCommit={vi.fn()}
           selectedPath={null}

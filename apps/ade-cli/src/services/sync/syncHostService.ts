@@ -25,6 +25,7 @@ import {
   MOBILE_SYNC_COMPATIBILITY_CONTRACT_VERSION,
   MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS,
   evaluateMobileSyncCompatibility,
+  isMobileAppBuildTooOld,
 } from "../../../../desktop/src/shared/syncMobileCompatibility";
 import type {
   AgentChatEventEnvelope,
@@ -183,12 +184,10 @@ import type { createFileService } from "../../../../desktop/src/main/services/fi
 import type { createDiffService } from "../../../../desktop/src/main/services/diffs/diffService";
 import type { createGitOperationsService } from "../../../../desktop/src/main/services/git/gitOperationsService";
 import type { createGithubService } from "../../../../desktop/src/main/services/github/githubService";
-import type { createAutoRebaseService } from "../../../../desktop/src/main/services/lanes/autoRebaseService";
 import type { createLaneEnvironmentService } from "../../../../desktop/src/main/services/lanes/laneEnvironmentService";
 import type { createLaneService } from "../../../../desktop/src/main/services/lanes/laneService";
 import type { createLaneTemplateService } from "../../../../desktop/src/main/services/lanes/laneTemplateService";
 import type { createPortAllocationService } from "../../../../desktop/src/main/services/lanes/portAllocationService";
-import type { createRebaseSuggestionService } from "../../../../desktop/src/main/services/lanes/rebaseSuggestionService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
@@ -279,6 +278,7 @@ import {
   normalizeSyncApplicationCompressionOffer,
   parseSyncEnvelope,
   parseSyncEnvelopeChunkPayload,
+  mobileAppTooOldHelloError,
   sendSyncProtocolVersionMismatchAndClose,
   SYNC_BINARY_ENVELOPES_CAPABILITY,
   SYNC_CHUNKED_ENVELOPES_CAPABILITY,
@@ -1262,8 +1262,6 @@ type SyncHostServiceArgs = {
   portAllocationService?: ReturnType<typeof createPortAllocationService>;
   laneEnvironmentService?: ReturnType<typeof createLaneEnvironmentService>;
   laneTemplateService?: ReturnType<typeof createLaneTemplateService>;
-  rebaseSuggestionService?: ReturnType<typeof createRebaseSuggestionService>;
-  autoRebaseService?: ReturnType<typeof createAutoRebaseService>;
   /**
    * Optional handler for the `deeplinks.open` sync command (iOS Send-to-Mac).
    * Desktop main.ts passes a wrapper that parses the URL + dispatches via the
@@ -2538,8 +2536,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,
     laneTemplateService: args.laneTemplateService,
-    rebaseSuggestionService: args.rebaseSuggestionService,
-    autoRebaseService: args.autoRebaseService,
     // Lane presence lives in this closure; without the stamp, a presence-only
     // change (devicesOpen) would keep matching ifNoneMatch and serve stale
     // presence via notModified. The injected-service path (syncService.ts)
@@ -3183,7 +3179,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   const decorateLaneDetailPayload = (detail: LaneDetailPayload): LaneDetailPayload => ({
     ...detail,
     lane: decorateLaneSummary(detail.lane),
-    children: decorateLaneSummaries(detail.children),
   });
 
   const decorateCommandResult = (
@@ -3193,7 +3188,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     pruneExpiredLanePresence();
     switch (action) {
       case "lanes.list":
-      case "lanes.getChildren":
         return Array.isArray(result) ? decorateLaneSummaries(result as LaneSummary[]) : result;
       case "lanes.refreshSnapshots": {
         const payload = result as
@@ -3216,8 +3210,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
           ? decorateLaneDetailPayload(result as LaneDetailPayload)
           : result;
       case "lanes.create":
-      case "lanes.createChild":
-      case "lanes.createFromUnstaged":
       case "lanes.importBranch":
         return result && typeof result === "object"
           ? decorateLaneSummary(result as LaneSummary)
@@ -7946,6 +7938,21 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         } catch {
           // ignore
         }
+        return;
+      }
+      // Covers the upgrade-header hello too: it is queued through this path.
+      if (isMobileAppBuildTooOld(hello.peer)) {
+        sendSyncProtocolVersionMismatchAndClose(
+          peer.ws,
+          { requestId: envelope.requestId, payload: mobileAppTooOldHelloError(Number(hello.peer.appBuild)) },
+          () => clearPeerAuthTimeout(peer),
+        );
+        args.logger.warn("sync.hello.mobile_too_old", {
+          appVersion: hello.peer.appVersion ?? null,
+          appBuild: hello.peer.appBuild ?? null,
+          peerDeviceId: hello.peer.deviceId,
+          remoteAddress: peer.remoteAddress,
+        });
         return;
       }
       const negotiatedCompression = negotiateSyncApplicationCompression(hello.compression);

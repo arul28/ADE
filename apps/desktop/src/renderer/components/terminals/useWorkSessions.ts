@@ -1998,8 +1998,6 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       includeStatus: false,
       includeSnapshots: false,
       includeConflictStatus: false,
-      includeRebaseSuggestions: false,
-      includeAutoRebaseStatus: false,
     }).catch(() => {});
   }, [
     isWorkRoute,

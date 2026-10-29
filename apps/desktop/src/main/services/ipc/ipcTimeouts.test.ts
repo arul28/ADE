@@ -343,8 +343,6 @@ describe("ipcInvokeTimeoutMs", () => {
   // still writing the tree, and the retry finds a half-made lane.
   it.each([
     ["lane", "create", IPC.lanesCreate],
-    ["lane", "createChild", IPC.lanesCreateChild],
-    ["lane", "createFromUnstaged", IPC.lanesCreateFromUnstaged],
     ["lane", "importBranch", IPC.lanesImportBranch],
     ["lane", "switchBranch", IPC.lanesSwitchBranch],
     ["git", "checkoutBranch", IPC.gitCheckoutBranch],
