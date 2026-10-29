@@ -13,6 +13,9 @@ import { SettingsToggle } from "../settings/primitives/SettingsControls";
 import { Banner } from "../ui/notice";
 import { Dialog } from "../ui/dialog";
 import type { MachineRouteItem, MachineRouteKind } from "./machineRouteModel";
+// The badges and panels are also drawn in the Connections popover, which can
+// open before the Account page has ever loaded this stylesheet.
+import "./accountPage.css";
 
 /**
  * Tailscale's mark: a 3×3 grid of dots, the middle row and the bottom centre
