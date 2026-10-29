@@ -24964,7 +24964,7 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
  * follows for its scratch directory under the system temp dir.
  */
 const EPHEMERAL_RUNTIME_SCRATCH_PATTERN =
-  /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/;
+  /(^|[/\\])ade-(stdio-rpc|local-runtime)[^/\\]*/;
 
 function isEphemeralRuntimeScratchPath(candidate: string): boolean {
   const normalizedPath = path.resolve(candidate);
