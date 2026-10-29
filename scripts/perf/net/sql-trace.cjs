@@ -1,7 +1,8 @@
 // Preload for a measurement brain: times every node:sqlite statement and transaction in the process.
 //   ADE_PERF_EXTRA_REQUIRE=<abs path>/sql-trace.cjs ADE_PERF_SQLTRACE_FILE=<file.jsonl> node scripts/perf/net/measure-brain.mjs start ...
 // Appends JSON lines to $ADE_PERF_SQLTRACE_FILE (default <os temp>/sql-<pid>.jsonl): every statement of
-// 0.2 ms or more ({ at, thread, kind, ms, sql }) and every transaction span ({ kind: "txn", ms, stmtMs, n }).
+// 0.2 ms or more ({ at, thread, kind, ms, sql }), or every statement with ADE_PERF_SQLTRACE_ALL=1, and every
+// transaction span ({ kind: "txn", ms, stmtMs, n }).
 // `at` is wall-clock ms; `thread` is the worker thread id (0 is the event loop; the off-thread sync export
 // runs on a worker, which preloads also reach). Measurement brains only; never the installed app.
 "use strict";
@@ -12,6 +13,7 @@ const sqlite = require("node:sqlite");
 const { threadId } = require("node:worker_threads");
 
 const out = process.env.ADE_PERF_SQLTRACE_FILE || path.join(os.tmpdir(), `sql-${process.pid}.jsonl`);
+const minMs = process.env.ADE_PERF_SQLTRACE_ALL === "1" ? 0 : 0.2;
 let buf = [];
 const flush = () => {
   if (!buf.length) return;
@@ -47,7 +49,7 @@ const note = (kind, sql, ms) => {
     buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind: "txn", ms: +(now - txnStart).toFixed(2), stmtMs: +txnMs.toFixed(2), n: txnStmts, sql: txnSql }));
     txnStart = null;
   }
-  if (ms >= 0.2) buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind, ms: +ms.toFixed(2), sql: text.slice(0, 200) }));
+  if (ms >= minMs) buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind, ms: +ms.toFixed(2), sql: text.slice(0, 200) }));
 };
 
 const statement = sqlite.StatementSync.prototype;
