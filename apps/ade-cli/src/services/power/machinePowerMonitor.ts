@@ -33,6 +33,14 @@ import { createSuspendGapDetector, type SuspendGapDetector } from "./suspendGapD
  */
 export const MACHINE_POWER_POLL_MS = 60_000;
 
+/**
+ * How often a machine that read as having no battery (a desktop, a server) is
+ * read again. It cannot grow one while it runs, and each read starts a process:
+ * on Windows a PowerShell with two CIM queries, about 0.3 s of CPU, once a
+ * minute for an answer that never changes. A resume still re-reads at once.
+ */
+export const MACHINE_POWER_NO_BATTERY_POLL_MS = 30 * 60_000;
+
 export type MachinePowerEvent =
   | { kind: "suspend"; at: number; announced: boolean }
   | {
@@ -194,10 +202,11 @@ export function createMachinePowerMonitor(
 
   const schedulePoll = (): void => {
     if (!started || disposed || pollTimer) return;
+    const delayMs = power && !power.battery ? Math.max(pollMs, MACHINE_POWER_NO_BATTERY_POLL_MS) : pollMs;
     pollTimer = setTimeout(() => {
       pollTimer = null;
       void refreshPower().finally(schedulePoll);
-    }, pollMs);
+    }, delayMs);
     pollTimer.unref?.();
   };
 

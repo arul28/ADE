@@ -105,7 +105,7 @@ import { createAutomationSecretService as createAutomationSecretServiceImpl } fr
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { ghConfigDir } from "./services/credentials/ghConfigDir";
 import { createExpiringPromiseCache } from "../../desktop/src/shared/expiringPromiseCache";
-import { knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
+import { gitCommonDirFor, knownGitCommonDir, runGitRepoCached } from "../../desktop/src/main/services/git/git";
 import { invalidateGitRepoCache, isRefAffectingGitCommand } from "../../desktop/src/main/services/git/gitRepoCache";
 import { execFileOffThread, offThreadSpawnEnabled } from "../../desktop/src/main/services/shared/offThreadSpawn";
 import {
@@ -601,17 +601,35 @@ const ghAuthTokenCache = createExpiringPromiseCache<GhAuthTokenResult>({
 });
 
 /**
- * The origin URL from the repo-scoped git cache. It uses the short freshness
- * window because users and other processes can edit remotes outside ADE.
+ * The origin URL from the repo-scoped git cache. Users and other processes edit
+ * remotes outside ADE, so the answer is keyed by the repository's config file
+ * as it is now: an edit rewrites that file and the next read runs git. Then it
+ * can use the long window, and the GitHub relay poll (every 30 s) stops starting
+ * `git remote get-url` each time. Without a readable config file it keeps the
+ * short window.
  */
 async function readGitOriginAsync(projectRoot: string): Promise<string | null> {
+  const configKey = await repoConfigFileKey(projectRoot);
   const result = await runGitRepoCached(
     ["remote", "get-url", "origin"],
     { cwd: projectRoot, timeoutMs: 2_000, maxOutputBytes: 64 * 1024 },
-    { key: "remote-url:origin", cacheClass: "volatile" },
+    configKey
+      ? { key: `remote-url:origin:${configKey}`, cacheClass: "stable" }
+      : { key: "remote-url:origin", cacheClass: "volatile" },
   );
   const remote = result.exitCode === 0 ? result.stdout.trim() : "";
   return remote || null;
+}
+
+async function repoConfigFileKey(projectRoot: string): Promise<string | null> {
+  const commonGitDir = await gitCommonDirFor(projectRoot);
+  if (!commonGitDir) return null;
+  try {
+    const stat = await fs.promises.stat(path.join(commonGitDir, "config"), { bigint: true });
+    return `${stat.ino}:${stat.size}:${stat.mtimeNs}`;
+  } catch {
+    return null;
+  }
 }
 
 async function runGitHeadlessAsync(
