@@ -536,22 +536,26 @@ describe.skipIf(!isCrsqliteAvailable())("kvDb sync foundation", () => {
     db.close();
   });
 
-  it("drops the retired review schema from an upgraded database", async () => {
-    const dbPath = makeDbPath("ade-kvdb-sync-retired-review-drop-");
+  it.each([
+    ["review", ["review_runs", "review_findings"]],
+    ["PR workflow", ["pr_groups", "pr_group_members", "integration_proposals", "rebase_dismissed", "rebase_deferred"]],
+  ])("drops the retired %s schema from an upgraded database", async (_label, tables) => {
+    const dbPath = makeDbPath("ade-kvdb-sync-retired-drop-");
     const first = await openKvDb(dbPath, createLogger() as any);
-    // An upgraded database still holds the review tables the previous release
+    // An upgraded database still holds the tables the previous release
     // created — as CRRs, with triggers and shadow tables — and the next open
     // has to retire them locally.
-    first.run("create table review_findings (id text primary key not null, run_id text not null default '')");
-    first.run("create table review_runs (id text primary key not null, project_id text not null default '')");
-    first.run("insert into review_runs(id, project_id) values ('run-1', 'project-1')");
-    first.run("insert into review_findings(id, run_id) values ('finding-1', 'run-1')");
-    first.get("select crsql_as_crr(?)", ["review_runs"]);
-    first.get("select crsql_as_crr(?)", ["review_findings"]);
+    for (const table of tables) {
+      first.run(`create table if not exists ${table} (id text primary key not null, project_id text not null default '')`);
+      first.run(`insert into ${table}(id, project_id) values ('row-1', 'project-1')`);
+      first.get("select crsql_as_crr(?)", [table]);
+    }
     first.close();
 
     const second = await openKvDb(dbPath, createLogger() as any);
-    expect(second.get("select name from sqlite_master where name like 'review_%'")).toBeNull();
+    for (const table of tables) {
+      expect(second.get("select name from sqlite_master where name = ? or name like ?", [table, `${table}__crsql_%`])).toBeNull();
+    }
     second.close();
   });
 

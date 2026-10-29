@@ -2332,7 +2332,6 @@ export async function createAdeRuntime(args: {
       laneService,
       operationService,
       conflictService,
-      laneWorktreeLockService,
       openExternal: async () => {},
       onGitHubStatusChanged: (status) =>
         pushEvent("runtime", { type: "github_status_changed", event: status }),

@@ -4538,8 +4538,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       "insert into test_runs(id, project_id, lane_id, suite_key, started_at, status, log_path) values (?, ?, ?, ?, ?, ?, ?)",
       ["test-run-child", projectId, "lane-child", "unit", now, "passed", path.join(repoRoot, "test.log")],
     );
-    db.run("insert into rebase_deferred(lane_id, project_id, deferred_until) values (?, ?, ?)", ["lane-child", projectId, now]);
-    db.run("insert into rebase_dismissed(lane_id, project_id, dismissed_at) values (?, ?, ?)", ["lane-child", projectId, now]);
     db.run(
       `
         insert into lane_worktree_locks(
@@ -4568,8 +4566,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       `,
       ["pr-parent", projectId, "lane-parent", "acme", "demo", 2, "https://example.com/pr/2", "open", "main", "feature/parent", now, now],
     );
-    db.run("insert into pr_groups(id, project_id, group_type, name, created_at) values (?, ?, ?, ?, ?)", ["group-child", projectId, "queue", "Queue", now]);
-    db.run("insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, ?)", ["member-child", "group-child", "pr-child", "lane-child", 0, "member"]);
     db.run("insert into pull_request_snapshots(pr_id, updated_at) values (?, ?)", ["pr-child", now]);
     db.run(
       `
@@ -4613,7 +4609,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
       artifacts: expect.any(Number),
       checkpoints: expect.any(Number),
     });
-    expect(count("pr_group_members", "lane_id = ?", ["lane-child"])).toBe(0);
     // The snapshot row survives with the bulky kinds purged, so storage does not grow.
     expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(1);
     expect(
@@ -4631,8 +4626,6 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("operations", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("packs_index", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("test_runs", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("rebase_deferred", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("rebase_dismissed", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("lane_worktree_locks", "lane_id = ?", ["lane-child"])).toBe(0);
   });
 

@@ -47,21 +47,6 @@ Consumers:
 
 - The `conflicts.simulateMerge` runtime action and the CTO `simulateMerge`
   tool. The desktop renderer has no bridge for it.
-- Integration tab → per-pair simulation (via `prService.simulateIntegration`,
-  not `conflictService.simulateMerge`).
-
-## Chained simulation
-
-`simulateChainedMerge` covers multi-lane sequential merges (the
-merge-plan flow). For each step in stack-depth order:
-
-1. Simulate the merge of the current source onto the running
-   chain state.
-2. If clean, apply it to an in-memory chain tree and continue.
-3. If conflicted, stop and report the blocked step.
-
-This feeds the Integration tab's merge plan view where the user sees
-"lanes 1-3 merge cleanly; lane 4 conflicts with lane 2."
 
 ## AI resolution proposal
 
@@ -153,7 +138,7 @@ are cleaned up on proposal rejection/application.
 ## External CLI resolver
 
 `runExternalResolver(args)` runs a Codex / Claude CLI session in the
-target lane's worktree (single-source) or a dedicated integration
+target lane's worktree (single-source) or a dedicated merge
 lane (multi-source). Resolution happens interactively; the resolver
 runs with full repo access and produces changes that ADE then
 commits via the explicit `commitExternalResolverRun` step.
@@ -162,10 +147,9 @@ commits via the explicit `commitExternalResolverRun` step.
 
 - **Single source lane** (`sourceLaneIds.length === 1`): cwd =
   source lane's worktree.
-- **Multi-source integration merge** (`sourceLaneIds.length > 1`):
-  cwd = integration lane's worktree. The integration lane is
-  created automatically via `ensureIntegrationLane` if not
-  supplied.
+- **Multi-source merge** (`sourceLaneIds.length > 1`):
+  cwd = a merge lane's worktree, created automatically via
+  `ensureIntegrationLane` if not supplied.
 - **Explicit override**: caller may pass `cwdLaneId` to force a
   specific worktree.
 
@@ -233,7 +217,7 @@ state.
 lane for the UI given the scenario:
 
 - Single-source: the source lane.
-- Multi-source: heuristic prefers existing integration lanes over
+- Multi-source: heuristic prefers an existing merge lane over
   creating a new one; ties break by most recently touched.
 
 ## User configuration (`local.yaml`)
@@ -252,7 +236,7 @@ ai:
 ```
 
 The conflict resolution dialog reads and writes these values via
-`projectConfigService`. Merge simulation runs from the integration and lane surfaces.
+`projectConfigService`. Merge simulation runs from the lane surfaces.
 
 ## Gotchas
 
@@ -278,10 +262,10 @@ The conflict resolution dialog reads and writes these values via
 - **Process signals** (SIGTERM, etc) are recorded as
   `process_signal:<signal>` warnings so postmortem debugging can
   distinguish "CLI crashed" from "CLI exited non-zero cleanly."
-- **Integration lane auto-creation** happens only for multi-source
-  runs. If you manually create an integration lane first and pass
-  it via `cwdLaneId`, the service does not try to create a second
-  one — it respects the override.
+- **Merge lane auto-creation** happens only for multi-source
+  runs. If you create the lane first and pass it via `cwdLaneId`,
+  the service does not try to create a second one — it respects
+  the override.
 - **TTL for prepared previews (20 min)** may force re-prepare if the
   user takes too long between preview and dispatch. The dispatch
   path re-prepares transparently.

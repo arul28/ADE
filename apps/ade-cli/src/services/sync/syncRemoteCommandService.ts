@@ -75,7 +75,6 @@ import type {
   AgentChatGetCrossMachineBatchMoveArgs,
   AgentChatRetryCrossMachineBatchMoveArgs,
   AgentChatArchiveArgs,
-  AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
   AgentChatEventHistorySnapshot,
   AgentChatApproveArgs,
@@ -101,10 +100,8 @@ import type {
   AgentChatSuggestLaneNameArgs,
   AgentChatModelCatalogMode,
   AgentChatModelCatalogRefreshProvider,
-  AgentChatOpenCodePermissionMode,
   AgentChatParallelLaunchState,
   AgentChatParallelLaunchStateArgs,
-  AgentChatPermissionMode,
   AgentChatPrepareCrossMachineHandoffArgs,
   AgentChatStartCrossMachineHandoffArgs,
   AgentChatPreviewCrossMachineHandoffArgs,
@@ -144,17 +141,12 @@ import type {
   ClosePrArgs,
   CleanupPrBranchArgs,
   CtoIdentity,
-  CommitIntegrationArgs,
   CreateLaneArgs,
   CreateLaneFromPrBranchArgs,
   CreatePrFromLaneArgs,
-  CreateIntegrationLaneForProposalArgs,
   CreateGitHubPrStackArgs,
-  CleanupIntegrationWorkflowArgs,
   DeleteLaneArgs,
   DeletePrArgs,
-  DeleteIntegrationProposalArgs,
-  DismissIntegrationCleanupArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
   GitBatchFileActionArgs,
@@ -197,35 +189,23 @@ import type {
   LaneListSnapshot,
   LaneStateSnapshotSummary,
   ListLanesArgs,
-  ListIntegrationWorkflowsArgs,
   ListGitHubPrStacksArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   LinkPrToLaneArgs,
   PostPrReviewCommentArgs,
-  PrAgentPermissionMode,
-  PrAiResolutionContext,
-  PrAiResolutionGetSessionArgs,
-  PrAiResolutionGetSessionResult,
-  PrAiResolutionSessionInfo,
-  PrAiResolutionSessionStatus,
-  PrAiResolutionStartArgs,
-  PrAiResolutionStartResult,
   RebasePushArgs,
   RebaseStartArgs,
   RenameLaneArgs,
   ReopenPrArgs,
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
-  RecheckIntegrationStepArgs,
   ReactToPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   RequestPrReviewersArgs,
   RerunPrChecksArgs,
   SetPrLabelsArgs,
   SetPrReviewThreadResolvedArgs,
-  SimulateIntegrationArgs,
-  StartIntegrationResolutionArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
   LinkPrChatSessionArgs,
@@ -271,7 +251,6 @@ import type {
   SessionSettleOverride,
   SessionWakeReason,
   UpdateSessionMetaArgs,
-  UpdateIntegrationProposalArgs,
   AgentChatLaunchCliArgs,
   AiConfig,
   TerminalToolType,
@@ -307,8 +286,6 @@ import {
 import { parseDeeplink, type ParseError } from "../../../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../../../desktop/src/shared/webClientUrl";
-import { buildPrAiResolutionContextKey } from "../../../../desktop/src/shared/types";
-import { getModelById } from "../../../../desktop/src/shared/modelRegistry";
 import {
   PUSH_GET_STATUS_ACTION,
   PUSH_REGISTER_DEVICE_ACTION,
@@ -1835,24 +1812,6 @@ function parsePostPrReviewCommentArgs(value: Record<string, unknown>): PostPrRev
   };
 }
 
-function parseStartPrAiResolutionArgs(value: Record<string, unknown>): PrAiResolutionStartArgs {
-  return {
-    context: isRecord(value.context) ? value.context as PrAiResolutionContext : {} as PrAiResolutionContext,
-    model: requireString(value.model, "prs.aiResolutionStart requires model."),
-    ...("reasoning" in value ? { reasoning: value.reasoning == null ? null : asTrimmedString(value.reasoning) ?? null } : {}),
-    ...(asTrimmedString(value.permissionMode) ? { permissionMode: asTrimmedString(value.permissionMode)! as PrAgentPermissionMode } : {}),
-    ...("additionalInstructions" in value
-      ? { additionalInstructions: value.additionalInstructions == null ? null : asTrimmedString(value.additionalInstructions) ?? null }
-      : {}),
-  };
-}
-
-function parseGetPrAiResolutionSessionArgs(value: Record<string, unknown>): PrAiResolutionGetSessionArgs {
-  return {
-    context: isRecord(value.context) ? value.context as PrAiResolutionContext : {} as PrAiResolutionContext,
-  };
-}
-
 function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate: ProjectConfigCandidate } {
   if (!isRecord(value.candidate)) throw new Error("projectConfig.save requires candidate.");
   return { candidate: value.candidate as ProjectConfigCandidate };
@@ -2616,441 +2575,6 @@ function createAgentChatAttachmentUpload(
     filename: rawFilename || "attachment",
     deviceId: typeof payload.deviceId === "string" ? payload.deviceId : null,
   });
-}
-
-function inferPrAiProvider(modelId: string): "codex" | "claude" {
-  const descriptor = getModelById(modelId);
-  return descriptor?.family === "anthropic" ? "claude" : "codex";
-}
-
-function collectPrAiSourceLaneIds(context: PrAiResolutionContext): string[] {
-  const sourceLaneIds = new Set<string>();
-  const add = (value: string | null | undefined) => {
-    const normalized = typeof value === "string" ? value.trim() : "";
-    if (normalized) sourceLaneIds.add(normalized);
-  };
-  for (const laneId of context.sourceLaneIds ?? []) {
-    add(laneId);
-  }
-  add(context.sourceLaneId ?? null);
-  if (context.sourceTab !== "integration") {
-    add(context.laneId ?? null);
-  }
-  return Array.from(sourceLaneIds);
-}
-
-function mapPrAiPermissionMode(mode: PrAgentPermissionMode): AgentChatPermissionMode {
-  if (mode === "full_edit") return "full-auto";
-  if (mode === "guarded_edit") return "edit";
-  if (mode === "read_only") return "plan";
-  return mode;
-}
-
-function mapPrAiPermissionModeToNativeFields(
-  mode: PrAgentPermissionMode,
-  provider: string,
-): Partial<Pick<AgentChatCreateArgs, "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "interactionMode" | "cursorModeId">> {
-  const legacy = mapPrAiPermissionMode(mode);
-  if (provider === "claude") {
-    const map: Record<string, AgentChatClaudePermissionMode> = {
-      "full-auto": "bypassPermissions",
-      "edit": "acceptEdits",
-      "plan": "plan",
-      "default": "default",
-    };
-    return { claudePermissionMode: map[legacy] ?? "default" };
-  }
-  if (provider === "codex") {
-    if (legacy === "config-toml") {
-      return {
-        codexApprovalPolicy: "on-request",
-        codexSandbox: "workspace-write",
-        codexConfigSource: "config-toml",
-      };
-    }
-    if (legacy === "full-auto") return { codexApprovalPolicy: "never", codexSandbox: "danger-full-access", codexConfigSource: "flags" };
-    if (legacy === "edit" || legacy === "default") return { codexApprovalPolicy: "on-request", codexSandbox: "workspace-write", codexConfigSource: "flags" };
-    return { codexApprovalPolicy: "on-request", codexSandbox: "read-only", codexConfigSource: "flags" };
-  }
-  if (provider === "droid") {
-    // PR-AI's generic default intentionally remains review-safe read-only;
-    // the shared conversion handles the explicit plan/edit/full-auto tiers.
-    if (legacy === "default") return { droidPermissionMode: "read-only" };
-    return { droidPermissionMode: droidPermissionModeFromLegacyPermissionMode(legacy) ?? "read-only" };
-  }
-  if (provider === "muse") {
-    // Plan is Muse's read-only mode plus ADE's plan guidance.
-    if (legacy === "plan") return { musePermissionMode: "denyUnmatched", interactionMode: "plan" };
-    return { musePermissionMode: musePermissionModeFromLegacyPermissionMode(legacy) ?? "onRequest" };
-  }
-  if (provider === "cursor") {
-    if (legacy === "full-auto") return { cursorModeId: "full-auto" };
-    if (legacy === "plan") return { cursorModeId: "plan" };
-    return { cursorModeId: "agent" };
-  }
-  const umap: Record<string, AgentChatOpenCodePermissionMode> = {
-    "full-auto": "full-auto",
-    "edit": "edit",
-    "plan": "plan",
-    "config-toml": "config-toml",
-  };
-  return { opencodePermissionMode: umap[legacy] ?? "edit" };
-}
-
-function deriveAiPermissionModeFromSummary(
-  summary: Pick<AgentChatSessionSummary, "provider" | "permissionMode" | "claudePermissionMode" | "codexApprovalPolicy" | "codexSandbox" | "codexConfigSource" | "opencodePermissionMode" | "droidPermissionMode" | "musePermissionMode" | "cursorModeId"> | null | undefined,
-): PrAgentPermissionMode | null {
-  if (!summary) return null;
-  if (summary.permissionMode) return summary.permissionMode;
-  if (summary.provider === "claude") {
-    if (summary.claudePermissionMode === "bypassPermissions") return "full-auto";
-    if (summary.claudePermissionMode === "acceptEdits") return "edit";
-    if (summary.claudePermissionMode === "plan") return "plan";
-    if (summary.claudePermissionMode === "default") return "default";
-    return null;
-  }
-  if (summary.provider === "codex") {
-    if (summary.codexConfigSource === "config-toml") return "config-toml";
-    if (summary.codexApprovalPolicy === "never" && summary.codexSandbox === "danger-full-access") return "full-auto";
-    if (summary.codexSandbox === "workspace-write") return "default";
-    if (summary.codexSandbox === "read-only") return "plan";
-    return null;
-  }
-  if (summary.provider === "droid") {
-    if (summary.droidPermissionMode === "auto-high") return "full-auto";
-    if (summary.droidPermissionMode === "auto-low" || summary.droidPermissionMode === "auto-medium") return "edit";
-    if (summary.droidPermissionMode === "read-only") return "plan";
-    return null;
-  }
-  if (summary.provider === "muse") {
-    return legacyPermissionModeFromMusePermissionMode(summary.musePermissionMode) ?? null;
-  }
-  if (summary.provider === "cursor") {
-    if (summary.cursorModeId === "full-auto") return "full-auto";
-    if (summary.cursorModeId === "agent") return "edit";
-    if (summary.cursorModeId === "ask" || summary.cursorModeId === "plan") return "plan";
-    return null;
-  }
-  if (summary.opencodePermissionMode === "full-auto") return "full-auto";
-  if (summary.opencodePermissionMode === "edit") return "edit";
-  if (summary.opencodePermissionMode === "plan") return "plan";
-  if (summary.opencodePermissionMode === "config-toml") return "config-toml";
-  return null;
-}
-
-function mapExternalResolverStatusToPrAi(status: string): PrAiResolutionSessionStatus {
-  if (status === "completed") return "completed";
-  if (status === "failed" || status === "blocked") return "failed";
-  if (status === "canceled") return "cancelled";
-  return "running";
-}
-
-function buildPrAiDisplayText(context: PrAiResolutionContext): string {
-  if (context.sourceTab === "rebase") return "Resolve this rebase with AI.";
-  if (context.sourceTab === "integration") {
-    return context.proposalId
-      ? "Resolve this integration proposal with AI."
-      : "Resolve this integration PR with AI.";
-  }
-  return "Resolve this PR with AI.";
-}
-
-function buildPrAiSessionInfo(args: {
-  context: PrAiResolutionContext;
-  contextKey: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  model: string | null;
-  modelId: string | null;
-  reasoning: string | null;
-  permissionMode: PrAgentPermissionMode | null;
-  status: PrAiResolutionSessionStatus;
-}): PrAiResolutionSessionInfo {
-  return {
-    contextKey: args.contextKey,
-    sessionId: args.sessionId,
-    provider: args.provider,
-    model: args.model,
-    modelId: args.modelId,
-    reasoning: args.reasoning,
-    permissionMode: args.permissionMode,
-    context: args.context,
-    status: args.status,
-  };
-}
-
-type PrAiRuntimeSession = {
-  sessionId: string;
-  ptyId: string | null;
-  runId: string;
-  provider: "codex" | "claude";
-  contextKey: string;
-  context: PrAiResolutionContext;
-  modelId: string;
-  reasoning: string | null;
-  permissionMode: PrAgentPermissionMode;
-  pollTimer: ReturnType<typeof setInterval> | null;
-  finalizing: boolean;
-};
-
-type PrAiRuntimeState = {
-  sessions: Map<string, PrAiRuntimeSession>;
-  sessionsByContextKey: Map<string, string>;
-};
-
-function clearPrAiSession(state: PrAiRuntimeState, sessionId: string): void {
-  const runtime = state.sessions.get(sessionId);
-  if (!runtime) return;
-  if (runtime.pollTimer) clearInterval(runtime.pollTimer);
-  if (state.sessionsByContextKey.get(runtime.contextKey) === sessionId) {
-    state.sessionsByContextKey.delete(runtime.contextKey);
-  }
-  state.sessions.delete(sessionId);
-}
-
-async function finalizePrAiSession(
-  args: SyncRemoteCommandServiceArgs,
-  state: PrAiRuntimeState,
-  sessionId: string,
-  opts: { forceStatus?: "cancelled" | "completed" | "failed"; message?: string } = {},
-): Promise<void> {
-  const runtime = state.sessions.get(sessionId);
-  if (!runtime || runtime.finalizing) return;
-  runtime.finalizing = true;
-  const conflictService = requireService(args.conflictService, "Conflict service not available.");
-  try {
-    const detail = args.sessionService.get(sessionId);
-    const derivedExitCode = opts.forceStatus === "cancelled"
-      ? 130
-      : (detail?.exitCode ?? (detail?.status === "completed" ? 0 : 1));
-    try {
-      await conflictService.finalizeResolverSession({
-        runId: runtime.runId,
-        exitCode: derivedExitCode,
-      });
-    } catch (error) {
-      args.logger.debug("sync.prs_ai_resolution_finalize_failed", {
-        sessionId,
-        runId: runtime.runId,
-        error: getErrorMessage(error),
-      });
-    }
-  } finally {
-    clearPrAiSession(state, sessionId);
-  }
-}
-
-async function getRemotePrAiResolutionSession(
-  args: SyncRemoteCommandServiceArgs,
-  state: PrAiRuntimeState,
-  payload: Record<string, unknown>,
-): Promise<PrAiResolutionGetSessionResult> {
-  const context = parseGetPrAiResolutionSessionArgs(payload).context;
-  const contextKey = buildPrAiResolutionContextKey(context);
-  const liveSessionId = state.sessionsByContextKey.get(contextKey);
-  const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-  const conflictService = requireService(args.conflictService, "Conflict service not available.");
-  const sessionSummaries = await agentChatService.listSessions();
-
-  if (liveSessionId) {
-    const runtime = state.sessions.get(liveSessionId);
-    if (runtime) {
-      const summary = sessionSummaries.find((entry) => entry.sessionId === liveSessionId) ?? null;
-      return buildPrAiSessionInfo({
-        context: runtime.context,
-        contextKey,
-        sessionId: liveSessionId,
-        provider: runtime.provider,
-        model: summary?.model ?? runtime.modelId,
-        modelId: summary?.modelId ?? runtime.modelId,
-        reasoning: summary?.reasoningEffort ?? runtime.reasoning,
-        permissionMode: deriveAiPermissionModeFromSummary(summary) ?? runtime.permissionMode,
-        status: "running",
-      });
-    }
-    state.sessionsByContextKey.delete(contextKey);
-  }
-
-  const persistedRun = conflictService
-    .listExternalResolverRuns({ limit: 200 })
-    .find((entry) => entry.resolverContextKey === contextKey && entry.sessionId);
-  if (!persistedRun?.sessionId) return null;
-
-  const summary = sessionSummaries.find((entry) => entry.sessionId === persistedRun.sessionId) ?? null;
-  return buildPrAiSessionInfo({
-    context,
-    contextKey,
-    sessionId: persistedRun.sessionId,
-    provider: persistedRun.provider,
-    model: summary?.model ?? persistedRun.model ?? null,
-    modelId: summary?.modelId ?? persistedRun.model ?? null,
-    reasoning: summary?.reasoningEffort ?? persistedRun.reasoningEffort ?? null,
-    permissionMode: deriveAiPermissionModeFromSummary(summary) ?? persistedRun.permissionMode ?? null,
-    status: mapExternalResolverStatusToPrAi(persistedRun.status),
-  });
-}
-
-async function startRemotePrAiResolution(
-  args: SyncRemoteCommandServiceArgs,
-  state: PrAiRuntimeState,
-  payload: Record<string, unknown>,
-): Promise<PrAiResolutionStartResult> {
-  const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
-  const conflictService = requireService(args.conflictService, "Conflict service not available.");
-  const parsed = parseStartPrAiResolutionArgs(payload);
-  const context = parsed.context;
-  const model = parsed.model.trim();
-  const targetLaneId = typeof context.targetLaneId === "string" ? context.targetLaneId.trim() : "";
-  const sourceLaneIds = collectPrAiSourceLaneIds(context);
-  const permissionMode: PrAgentPermissionMode = parsed.permissionMode ?? "default";
-  const reasoning = typeof parsed.reasoning === "string" && parsed.reasoning.trim().length > 0
-    ? parsed.reasoning.trim()
-    : null;
-  const additionalInstructions = typeof parsed.additionalInstructions === "string" && parsed.additionalInstructions.trim().length > 0
-    ? parsed.additionalInstructions.trim()
-    : null;
-  let runId = "";
-
-  if (!model) {
-    const sessionId = randomUUID();
-    const error = "Model is required to start AI resolution.";
-    return { sessionId, provider: "codex", ptyId: null, status: "failed", error, context };
-  }
-  if (!targetLaneId) {
-    const sessionId = randomUUID();
-    const error = "Target lane is required to start AI resolution.";
-    return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
-  }
-  if (sourceLaneIds.length === 0) {
-    const sessionId = randomUUID();
-    const error = "At least one source lane is required to start AI resolution.";
-    return { sessionId, provider: inferPrAiProvider(model), ptyId: null, status: "failed", error, context };
-  }
-
-  try {
-    const provider = inferPrAiProvider(model);
-    const modelDescriptor = getModelById(model);
-    const prep = await conflictService.prepareResolverSession({
-      provider,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId: typeof context.integrationLaneId === "string" && context.integrationLaneId.trim().length > 0
-        ? context.integrationLaneId.trim()
-        : (typeof context.laneId === "string" && context.laneId.trim().length > 0
-          ? context.laneId.trim()
-          : undefined),
-      proposalId: typeof context.proposalId === "string" && context.proposalId.trim().length > 0
-        ? context.proposalId.trim()
-        : undefined,
-      sourceTab: context.sourceTab,
-      scenario: context.scenario ?? (sourceLaneIds.length > 1 ? "integration-merge" : "single-merge"),
-      model,
-      reasoningEffort: reasoning,
-      permissionMode,
-      additionalInstructions,
-      originSurface:
-        context.sourceTab === "integration" ? "integration"
-          : context.sourceTab === "rebase" ? "rebase"
-            : "manual",
-    });
-    runId = prep.runId;
-    if (prep.status === "blocked") {
-      const sessionId = randomUUID();
-      const reason = prep.contextGaps.length
-        ? prep.contextGaps.map((gap) => gap.message).join(", ")
-        : "Resolver session blocked due to insufficient context.";
-      return { sessionId, provider, ptyId: null, status: "failed", error: reason, context };
-    }
-
-    const session = await agentChatService.createSession({
-      laneId: prep.cwdLaneId,
-      provider,
-      model: modelDescriptor?.shortId ?? model,
-      ...(modelDescriptor?.id ? { modelId: modelDescriptor.id } : {}),
-      ...(reasoning ? { reasoningEffort: reasoning } : {}),
-      ...mapPrAiPermissionModeToNativeFields(permissionMode, provider),
-    });
-    const promptText = fs.readFileSync(prep.promptFilePath, "utf8");
-    const runtimeContext: PrAiResolutionContext = {
-      ...context,
-      laneId: prep.cwdLaneId,
-      targetLaneId,
-      sourceLaneId: sourceLaneIds[0] ?? context.sourceLaneId ?? context.laneId ?? null,
-      sourceLaneIds,
-      integrationLaneId: prep.integrationLaneId ?? context.integrationLaneId ?? null,
-    };
-    const contextKey = buildPrAiResolutionContextKey(runtimeContext);
-    const runtime: PrAiRuntimeSession = {
-      sessionId: session.id,
-      ptyId: null,
-      runId: prep.runId,
-      provider,
-      contextKey,
-      context: runtimeContext,
-      modelId: model,
-      reasoning,
-      permissionMode,
-      pollTimer: null,
-      finalizing: false,
-    };
-    await conflictService.attachResolverSession({
-      runId: prep.runId,
-      ptyId: null,
-      sessionId: session.id,
-      command: [],
-    });
-    runtime.pollTimer = setInterval(() => {
-      const current = state.sessions.get(runtime.sessionId);
-      if (!current || current.finalizing) return;
-      const detail = args.sessionService.get(runtime.sessionId);
-      if (!detail || detail.status === "running") return;
-      void finalizePrAiSession(args, state, runtime.sessionId);
-    }, 1_000);
-    state.sessions.set(runtime.sessionId, runtime);
-    state.sessionsByContextKey.set(contextKey, runtime.sessionId);
-    void agentChatService.sendMessage({
-      sessionId: runtime.sessionId,
-      text: promptText,
-      displayText: buildPrAiDisplayText(runtimeContext),
-      ...(reasoning ? { reasoningEffort: reasoning } : {}),
-    }).catch(async (error: unknown) => {
-      args.logger.warn("sync.prs_ai_resolution_send_failed", {
-        sessionId: runtime.sessionId,
-        runId: prep.runId,
-        error: getErrorMessage(error),
-      });
-      await finalizePrAiSession(args, state, runtime.sessionId, {
-        forceStatus: "failed",
-        message: getErrorMessage(error),
-      });
-    });
-    return {
-      sessionId: runtime.sessionId,
-      provider,
-      ptyId: null,
-      status: "started",
-      error: null,
-      context: runtimeContext,
-    };
-  } catch (error) {
-    if (runId) {
-      try {
-        await conflictService.finalizeResolverSession({ runId, exitCode: 1 });
-      } catch {
-        // Best-effort cleanup mirrors desktop IPC behavior.
-      }
-    }
-    const sessionId = randomUUID();
-    const message = getErrorMessage(error);
-    return {
-      sessionId,
-      provider: inferPrAiProvider(model),
-      ptyId: null,
-      status: "failed",
-      error: message,
-      context,
-    };
-  }
 }
 
 async function getRemoteTurnFileDiff(args: SyncRemoteCommandServiceArgs, payload: Record<string, unknown>) {
@@ -4239,98 +3763,6 @@ function parseReactToCommentArgs(value: Record<string, unknown>): ReactToPrComme
     prId: requirePrId(value, "prs.reactToComment"),
     commentId: requireString(value.commentId, "prs.reactToComment requires commentId."),
     content: content as ReactToPrCommentArgs["content"],
-  };
-}
-
-function parseListIntegrationWorkflowsArgs(value: Record<string, unknown>): ListIntegrationWorkflowsArgs {
-  const view = asTrimmedString(value.view);
-  return view ? { view: view as ListIntegrationWorkflowsArgs["view"] } : {};
-}
-
-function parseSimulateIntegrationArgs(value: Record<string, unknown>): SimulateIntegrationArgs {
-  return {
-    sourceLaneIds: requireStringArray(value.sourceLaneIds, "prs.simulateIntegration requires sourceLaneIds."),
-    baseBranch: requireString(value.baseBranch, "prs.simulateIntegration requires baseBranch."),
-    ...(typeof value.persist === "boolean" ? { persist: value.persist } : {}),
-    ...(typeof value.mergeIntoLaneId === "string" || value.mergeIntoLaneId === null
-      ? { mergeIntoLaneId: value.mergeIntoLaneId }
-      : {}),
-  };
-}
-
-function parseCommitIntegrationArgs(value: Record<string, unknown>): CommitIntegrationArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.commitIntegration requires proposalId."),
-    integrationLaneName: requireString(value.integrationLaneName, "prs.commitIntegration requires integrationLaneName."),
-    title: requireString(value.title, "prs.commitIntegration requires title."),
-    ...(typeof value.body === "string" ? { body: value.body } : {}),
-    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
-    ...(typeof value.pauseOnConflict === "boolean" ? { pauseOnConflict: value.pauseOnConflict } : {}),
-    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
-    ...(typeof value.preferredIntegrationLaneId === "string" || value.preferredIntegrationLaneId === null
-      ? { preferredIntegrationLaneId: value.preferredIntegrationLaneId }
-      : {}),
-  };
-}
-
-function parseUpdateIntegrationProposalArgs(value: Record<string, unknown>): UpdateIntegrationProposalArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.updateIntegrationProposal requires proposalId."),
-    ...(typeof value.title === "string" ? { title: value.title } : {}),
-    ...(typeof value.body === "string" ? { body: value.body } : {}),
-    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
-    ...(typeof value.integrationLaneName === "string" ? { integrationLaneName: value.integrationLaneName } : {}),
-    ...(typeof value.preferredIntegrationLaneId === "string" || value.preferredIntegrationLaneId === null
-      ? { preferredIntegrationLaneId: value.preferredIntegrationLaneId }
-      : {}),
-    ...(typeof value.mergeIntoHeadSha === "string" || value.mergeIntoHeadSha === null
-      ? { mergeIntoHeadSha: value.mergeIntoHeadSha }
-      : {}),
-  };
-}
-
-function parseDeleteIntegrationProposalArgs(value: Record<string, unknown>): DeleteIntegrationProposalArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.deleteIntegrationProposal requires proposalId."),
-    ...(typeof value.deleteIntegrationLane === "boolean" ? { deleteIntegrationLane: value.deleteIntegrationLane } : {}),
-  };
-}
-
-function parseDismissIntegrationCleanupArgs(value: Record<string, unknown>): DismissIntegrationCleanupArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.dismissIntegrationCleanup requires proposalId."),
-  };
-}
-
-function parseCleanupIntegrationWorkflowArgs(value: Record<string, unknown>): CleanupIntegrationWorkflowArgs {
-  const rawLaneIds = Array.isArray(value.archiveSourceLaneIds) ? value.archiveSourceLaneIds : [];
-  const archiveSourceLaneIds = rawLaneIds
-    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
-    .filter((entry) => entry.length > 0);
-  return {
-    proposalId: requireString(value.proposalId, "prs.cleanupIntegrationWorkflow requires proposalId."),
-    ...(typeof value.archiveIntegrationLane === "boolean" ? { archiveIntegrationLane: value.archiveIntegrationLane } : {}),
-    ...(archiveSourceLaneIds.length > 0 ? { archiveSourceLaneIds } : {}),
-  };
-}
-
-function parseCreateIntegrationLaneForProposalArgs(value: Record<string, unknown>): CreateIntegrationLaneForProposalArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.createIntegrationLaneForProposal requires proposalId."),
-  };
-}
-
-function parseStartIntegrationResolutionArgs(value: Record<string, unknown>): StartIntegrationResolutionArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.startIntegrationResolution requires proposalId."),
-    laneId: requireString(value.laneId, "prs.startIntegrationResolution requires laneId."),
-  };
-}
-
-function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): RecheckIntegrationStepArgs {
-  return {
-    proposalId: requireString(value.proposalId, "prs.recheckIntegrationStep requires proposalId."),
-    laneId: requireString(value.laneId, "prs.recheckIntegrationStep requires laneId."),
   };
 }
 
@@ -7673,10 +7105,6 @@ function registerConflictRemoteCommands({ args, register }: RemoteCommandRegistr
 function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register("rebase.scanNeeds", { viewerAllowed: true }, async () =>
     requireService(args.conflictService, "Conflict service not available.").scanRebaseNeeds());
-  register("rebase.execute", { viewerAllowed: true, queueable: true }, async (payload) =>
-    requireService(args.conflictService, "Conflict service not available.").rebaseLane(
-      payload as Parameters<ReturnType<typeof createConflictService>["rebaseLane"]>[0],
-    ));
   register("history.listOperations", { viewerAllowed: true }, async (payload) =>
     requireService(args.operationService, "Operation service not available.").list(parseListOperationsArgs(payload)));
   register("github.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload): Promise<GitHubStatus> =>
@@ -8334,19 +7762,10 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.getDetailBundle(requirePrId(payload, "prs.getDetailBundle")));
   register("prs.postReviewComment", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.postReviewComment(parsePostPrReviewCommentArgs(payload)));
-  register("prs.getIntegrationResolutionState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.getIntegrationResolutionState(
-      requireString(payload.proposalId, "prs.getIntegrationResolutionState requires proposalId."),
-    ));
   register("prs.delete", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.delete(parseDeletePrArgs(payload)));
   register("prs.cleanupBranch", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.cleanupBranch(parseCleanupPrBranchArgs(payload)));
-  register("prs.listProposals", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listIntegrationProposals());
-  register("prs.getMergeContext", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.getMergeContext(requirePrId(payload, "prs.getMergeContext")));
-  register("prs.getMergeContexts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.getMergeContexts(asStringArray(payload.prIds)));
   register("prs.listWithConflicts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.listWithConflicts({ includeConflictAnalysis: payload.includeConflictAnalysis === true }));
   register("prs.listSnapshots", { viewerAllowed: true, observesAbort: true }, async (payload) => {
@@ -8536,36 +7955,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     await args.prService.reactToComment(parseReactToCommentArgs(payload));
     return { ok: true };
   });
-  register("prs.simulateIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.simulateIntegration(parseSimulateIntegrationArgs(payload)));
-  register("prs.commitIntegration", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.commitIntegration(parseCommitIntegrationArgs(payload)));
-  register("prs.listIntegrationWorkflows", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.prService.listIntegrationWorkflows(parseListIntegrationWorkflowsArgs(payload)));
-  register("prs.updateIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) => {
-    args.prService.updateIntegrationProposal(parseUpdateIntegrationProposalArgs(payload));
-    return { ok: true };
-  });
-  register("prs.deleteIntegrationProposal", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.deleteIntegrationProposal(parseDeleteIntegrationProposalArgs(payload)));
-  register("prs.dismissIntegrationCleanup", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.dismissIntegrationCleanup(parseDismissIntegrationCleanupArgs(payload)));
-  register("prs.cleanupIntegrationWorkflow", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.cleanupIntegrationWorkflow(parseCleanupIntegrationWorkflowArgs(payload)));
-  register("prs.createIntegrationLaneForProposal", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.createIntegrationLaneForProposal(parseCreateIntegrationLaneForProposalArgs(payload)));
-  register("prs.startIntegrationResolution", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.startIntegrationResolution(parseStartIntegrationResolutionArgs(payload)));
-  const prAiState: PrAiRuntimeState = {
-    sessions: new Map(),
-    sessionsByContextKey: new Map(),
-  };
-  register("prs.aiResolutionGetSession", { viewerAllowed: true }, async (payload) =>
-    getRemotePrAiResolutionSession(args, prAiState, payload));
-  register("prs.aiResolutionStart", { viewerAllowed: true }, async (payload) =>
-    startRemotePrAiResolution(args, prAiState, payload));
-  register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 

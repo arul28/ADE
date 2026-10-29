@@ -3138,8 +3138,7 @@ iOS service files (`apps/ios/ADE/Services/`):
   + custom SQLite functions). Offline caches for files workspaces,
   directory listings, file contents, session pin/runtime state, chat
   snapshots, PR mobile snapshot persistence, the CRR-safe
-  `pull_request_chat_sessions` relationship table, and integration proposal
-  fields mirrored from desktop schema.
+  and the `pull_request_chat_sessions` relationship table.
 - `SyncService.swift` — WebSocket client, legacy gzip plus negotiated
   zlib-wrapped deflate envelope encoding, bidirectional bounded chunk framing
   and 30-second reassembly expiry, typed protocol-range mismatch presentation,

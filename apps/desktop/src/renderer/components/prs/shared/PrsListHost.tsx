@@ -4,9 +4,9 @@ import { createPortal } from "react-dom";
 /**
  * The PRs page has one list column. It sits in the project sidebar when there
  * is one, and in a plain left column otherwise. The page owns an empty element
- * in that column and each surface (GitHub, Workflows, a workflow sub-tab)
- * renders its list part into it with `PrsListPortal`. A surface can nest its
- * own host below its controls, so a sub-tab's list lands under them.
+ * in that column and the GitHub surface renders its list part into it with
+ * `PrsListPortal`. A surface can nest its own host below its controls, so its
+ * list lands under them.
  *
  * The context value means:
  * - `undefined`: no host above. The surface was rendered on its own (tests)

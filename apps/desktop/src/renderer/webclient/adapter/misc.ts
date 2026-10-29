@@ -948,10 +948,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const rebase: Record<string, unknown> = {
     scanNeeds: () => call("rebase.scanNeeds", {}, []),
-    dismiss: async (laneId: string) => {
-      await call("rebase.dismiss", { laneId }, undefined, false);
-    },
-    execute: (args: unknown) => call("rebase.execute", args, { ok: false, error: "unsupported" }, false),
     onEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
   };
 

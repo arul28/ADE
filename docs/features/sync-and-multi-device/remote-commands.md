@@ -654,10 +654,7 @@ a boolean.
   comments reads while preserving successful sidecars on partial failure
 - `getChecks`, `getReviews`, `getComments`, `getFiles`
 - `postReviewComment`, `delete`, `cleanupBranch`
-- `getIntegrationResolutionState`, `aiResolutionGetSession`,
-  `aiResolutionStart`
-- `listProposals`, `getMergeContext`, `getMergeContexts`,
-  `listWithConflicts`, `listSnapshots`
+- `listWithConflicts`, `listSnapshots`
 - `createFromLane`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
 - `setDraft` (`{ prId, draft: boolean }`) and `setAutoMerge`
@@ -665,13 +662,9 @@ a boolean.
   convert a PR to draft or mark it ready, and arm or disarm GitHub
   auto-merge. Both are `viewerAllowed` and queueable. They are
   **optional** mobile capabilities (see the compatibility note above)
-- `simulateIntegration`, `commitIntegration`,
-  `listIntegrationWorkflows`, `updateIntegrationProposal`,
-  `deleteIntegrationProposal`, `startIntegrationResolution`,
-  `recheckIntegrationStep`
 - `getMobileSnapshot` — aggregate read that returns
   `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
-  create-PR eligibility, workflow cards). Consumed by the iOS PRs
+  create-PR eligibility). Consumed by the iOS PRs
   tab; see `ios-companion.md` for the shape.
 
 **CTO** (`cto.*`)
@@ -967,11 +960,8 @@ A handful have more logic:
   with 4001.
 - **`prs.getMobileSnapshot`** — calls `prService.getMobileSnapshot`,
   which builds GitHub PR stacks, classifies each
-  PR's action capabilities, resolves per-lane create-PR eligibility
-  against the compare base, and collects queue /
-  integration / rebase workflow cards from the DB and
-  `conflictService.scanRebaseNeeds()` (the same source the desktop
-  Rebase tab consumes).
+  PR's action capabilities, and resolves per-lane create-PR eligibility
+  against the compare base.
 - **`lanes.presence.announce` / `lanes.presence.release`** — handled
   in `syncHostService` directly (not in the remote command registry);
   the brain upserts a per-lane `DeviceMarker` map and

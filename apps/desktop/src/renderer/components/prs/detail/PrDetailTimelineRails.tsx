@@ -76,14 +76,12 @@ export function buildTimelineVisibleEventSearch(args: {
   prId: string;
   eventId: string | null;
 }): string {
-  const tab = args.current.tab === "github" || args.current.tab === "normal" ? args.current.tab : "normal";
   return buildPrsRouteSearch({
-    activeTab: tab,
+    activeTab: args.current.tab ?? "normal",
     selectedPrId: args.current.prId ?? (args.current.prNumber != null ? null : args.prId),
     selectedPrNumber: args.current.prNumber,
     repoOwner: args.current.repoOwner,
     repoName: args.current.repoName,
-    selectedRebaseItemId: null,
     eventId: args.eventId,
     threadId: args.current.threadId,
     commitSha: args.current.commitSha,
@@ -1118,7 +1116,6 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
               selectedPrNumber: number,
               repoOwner: pr.repoOwner,
               repoName: pr.repoName,
-              selectedRebaseItemId: null,
             }),
           });
         },

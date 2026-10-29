@@ -1,6 +1,5 @@
 import type {
   ListGitHubPrFilterOptionsResult,
-  PrMergeContext,
   SearchGitHubPrsResult,
   SetPrAssigneesResult,
   PrMobileGithubDetailSnapshot,
@@ -43,18 +42,6 @@ const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
   delete: 1,
   land: 1,
   updateBranch: 1,
-  simulateIntegration: 1,
-  commitIntegration: 1,
-  listProposals: 0,
-  updateProposal: 1,
-  deleteProposal: 1,
-  createIntegrationLaneForProposal: 1,
-  recheckIntegrationStep: 1,
-  getIntegrationResolutionState: 1,
-  aiResolutionStart: 1,
-  aiResolutionGetSession: 1,
-  onAiResolutionEvent: 1,
-  getMergeContext: 1,
   listSnapshots: 1,
   linkChatSession: 1,
   unlinkChatSession: 1,
@@ -64,7 +51,6 @@ const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
   linkChatStack: 1,
   listChatSessionsForPr: 1,
   getStackLinkOffer: 1,
-  listIntegrationWorkflows: 1,
   onEvent: 1,
   getDetail: 1,
   getFiles: 1,
@@ -85,8 +71,6 @@ const PINNED_METHOD_ARG_INDEX: Record<string, number> = {
   setDraft: 1,
   setAutoMerge: 1,
   rerunChecks: 1,
-  dismissIntegrationCleanup: 1,
-  cleanupIntegrationWorkflow: 1,
   getDeployments: 1,
   reactToComment: 1,
   cleanupBranch: 1,
@@ -104,7 +88,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     stacks: [],
     capabilities: {},
     createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
-    workflowCards: [],
     live: false,
   });
 
@@ -344,26 +327,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     openInGitHub: async (prId: string) => {
       if (/^https?:\/\//.test(prId) && typeof window !== "undefined") window.open(prId, "_blank", "noopener,noreferrer");
     },
-    simulateIntegration: (args: unknown) => call("prs.simulateIntegration", args, null),
-    commitIntegration: (args: unknown) => call("prs.commitIntegration", args, null, false),
-    listProposals: () => call("prs.listProposals", {}, []),
-    updateProposal: async (args: unknown) => {
-      await call("prs.updateIntegrationProposal", args, undefined, false);
-    },
-    deleteProposal: (args: unknown) => call("prs.deleteIntegrationProposal", args, { deleted: false }, false),
-    createIntegrationLaneForProposal: (args: unknown) => call("prs.createIntegrationLaneForProposal", args, null, false),
-    startIntegrationResolution: (args: unknown) => call("prs.startIntegrationResolution", args, null, false),
-    recheckIntegrationStep: (args: unknown) => call("prs.recheckIntegrationStep", args, null, false),
-    getIntegrationResolutionState: (proposalId: string) => call("prs.getIntegrationResolutionState", { proposalId }, null),
-    aiResolutionStart: (args: unknown) => call("prs.aiResolutionStart", args, { ok: false, error: "unsupported" }, false),
-    aiResolutionGetSession: (args: unknown) => call("prs.aiResolutionGetSession", args, null),
-    onAiResolutionEvent: () => () => {},
-    getMergeContext: (prId: string) => read("prs.getMergeContext", { prId }, null),
-    getMergeContexts: (prIds: string[]) => read(
-      "prs.getMergeContexts",
-      { prIds },
-      Object.fromEntries(prIds.map((prId) => [prId, emptyMergeContext(prId)])),
-    ),
     listWithConflicts: async (args?: unknown) => {
       // With analysis off this is a bare DB read host-side; only the analysed
       // form pays for the per-lane merge-tree sweep.
@@ -472,7 +435,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return await read<ResolvePrMediaResult>("prs.resolveMedia", args, unavailable);
     },
     getStackLinkOffer: (args: unknown) => read("prs.getStackLinkOffer", args, null),
-    listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: RuntimePinArg) => {
       assertWebRuntimePinRoutable("prs.onEvent", pin, infra);
       return events.on("prsEvent", listener as never);
@@ -577,8 +539,6 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     rerunChecks: async (args: unknown) => {
       await call("prs.rerunChecks", args, undefined, false);
     },
-    dismissIntegrationCleanup: (args: unknown) => call("prs.dismissIntegrationCleanup", args, null, false),
-    cleanupIntegrationWorkflow: (args: unknown) => call("prs.cleanupIntegrationWorkflow", args, null, false),
     getDeployments: (prId: string) => call("prs.getDeployments", { prId }, []),
     postReviewComment: (args: unknown) => call("prs.postReviewComment", args, null, false),
     setReviewThreadResolved: (args: unknown) => call("prs.setReviewThreadResolved", args, null, false),
@@ -600,16 +560,4 @@ function arrayField<T>(result: unknown, key: string): T[] {
   if (!result || typeof result !== "object") return [];
   const value = (result as Record<string, unknown>)[key];
   return Array.isArray(value) ? (value as T[]) : [];
-}
-
-function emptyMergeContext(prId: string): PrMergeContext {
-  return {
-    prId,
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: [],
-    targetLaneId: null,
-    integrationLaneId: null,
-    members: [],
-  };
 }

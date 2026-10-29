@@ -79,16 +79,6 @@ function createMockPrService() {
     replyToReviewThread: vi.fn().mockResolvedValue({ id: "comment-2" }),
     setReviewThreadResolved: vi.fn().mockResolvedValue({ threadId: "thread-1", isResolved: true }),
     reactToComment: vi.fn().mockResolvedValue(undefined),
-    simulateIntegration: vi.fn().mockResolvedValue({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" }),
-    commitIntegration: vi.fn().mockResolvedValue({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] }),
-    listIntegrationWorkflows: vi.fn().mockResolvedValue([]),
-    updateIntegrationProposal: vi.fn().mockResolvedValue(undefined),
-    deleteIntegrationProposal: vi.fn().mockResolvedValue({ proposalId: "proposal-1", integrationLaneId: null, deletedIntegrationLane: false }),
-    dismissIntegrationCleanup: vi.fn().mockResolvedValue({ proposalId: "proposal-1", cleanupState: "declined" }),
-    cleanupIntegrationWorkflow: vi.fn().mockResolvedValue({ proposalId: "proposal-1", archivedLaneIds: [], skippedLaneIds: [], workflowDisplayState: "history", cleanupState: "completed" }),
-    createIntegrationLaneForProposal: vi.fn().mockResolvedValue({ integrationLaneId: "lane-int", mergedCleanLanes: [], conflictingLanes: [] }),
-    startIntegrationResolution: vi.fn().mockResolvedValue({ conflictFiles: [], mergedClean: true, integrationLaneId: "lane-int" }),
-    recheckIntegrationStep: vi.fn().mockResolvedValue({ resolution: "resolved", remainingConflictFiles: [], allResolved: true, message: null }),
     getGithubSnapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-04-01T00:00:00Z", repoPullRequests: [], externalPullRequests: [], live: true }),
     getReviewThreads: vi.fn().mockResolvedValue([]),
     getActionRuns: vi.fn().mockResolvedValue([]),
@@ -100,7 +90,6 @@ function createMockPrService() {
       stacks: [],
       capabilities: {},
       createCapabilities: { canCreateAny: false, defaultBaseBranch: null, lanes: [] },
-      workflowCards: [],
       live: true,
     }),
   } as any;
@@ -276,8 +265,6 @@ function createMockConflictService() {
     getLaneStatus: vi.fn().mockResolvedValue(null),
     listOverlaps: vi.fn().mockResolvedValue([]),
     getBatchAssessment: vi.fn().mockResolvedValue({ lanes: [] }),
-    dismissRebase: vi.fn(),
-    deferRebase: vi.fn(),
   } as any;
 }
 
@@ -993,46 +980,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ id: "comment-1", body: "Looks good" });
     });
 
-    it("prs.simulateIntegration parses source lanes, base branch, and merge target", async () => {
-      const result = await service.execute(makePayload("prs.simulateIntegration", {
-        sourceLaneIds: ["lane-a", "lane-b"],
-        baseBranch: "main",
-        persist: true,
-        mergeIntoLaneId: "lane-int",
-      }));
-      expect(prService.simulateIntegration).toHaveBeenCalledWith({
-        sourceLaneIds: ["lane-a", "lane-b"],
-        baseBranch: "main",
-        persist: true,
-        mergeIntoLaneId: "lane-int",
-      });
-      expect(result).toEqual({ proposalId: "proposal-1", status: "proposed", overallOutcome: "clean" });
-    });
-
-    it("prs.commitIntegration parses proposal metadata and options", async () => {
-      const result = await service.execute(makePayload("prs.commitIntegration", {
-        proposalId: "proposal-1",
-        integrationLaneName: "Mobile integration",
-        title: "Integration PR",
-        body: "Body",
-        draft: true,
-        pauseOnConflict: true,
-        allowDirtyWorktree: false,
-        preferredIntegrationLaneId: null,
-      }));
-      expect(prService.commitIntegration).toHaveBeenCalledWith({
-        proposalId: "proposal-1",
-        integrationLaneName: "Mobile integration",
-        title: "Integration PR",
-        body: "Body",
-        draft: true,
-        pauseOnConflict: true,
-        allowDirtyWorktree: false,
-        preferredIntegrationLaneId: null,
-      });
-      expect(result).toEqual({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] });
-    });
-
     it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
       const policy = service.getPolicy("prs.getMobileSnapshot");
       expect(policy).not.toBeNull();
@@ -1044,7 +991,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toHaveProperty("stacks");
       expect(result).toHaveProperty("capabilities");
       expect(result).toHaveProperty("createCapabilities");
-      expect(result).toHaveProperty("workflowCards");
       expect(result).toHaveProperty("live", true);
     });
   });

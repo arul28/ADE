@@ -1135,46 +1135,13 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "simulate_integration",
-    description: "Dry-merge N lanes sequentially using git merge-tree, returning per-step conflict analysis without creating any branches or PRs",
-    inputSchema: {
-      type: "object",
-      required: ["sourceLaneIds", "baseBranch"],
-      additionalProperties: false,
-      properties: {
-        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
-        baseBranch: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "create_integration",
-    description: "Create an integration lane, merge source lanes into it, and create a single integration PR",
-    inputSchema: {
-      type: "object",
-      required: ["sourceLaneIds", "integrationLaneName", "baseBranch", "title"],
-      additionalProperties: false,
-      properties: {
-        sourceLaneIds: { type: "array", items: { type: "string", minLength: 1 } },
-        integrationLaneName: { type: "string", minLength: 1 },
-        baseBranch: { type: "string", minLength: 1 },
-        title: { type: "string", minLength: 1 },
-        body: { type: "string" },
-        draft: { type: "boolean" }
-      }
-    }
-  },
-  {
     name: "rebase_lane",
-    description: "Rebase a lane onto its base branch, optionally using AI to resolve conflicts",
+    description: "Rebase a lane onto its base branch",
     inputSchema: {
       type: "object",
       additionalProperties: false,
       properties: {
-        laneId: { type: "string", minLength: 1 },
-        aiAssisted: { type: "boolean" },
-        provider: { type: "string" },
-        autoApplyThreshold: { type: "number", minimum: 0, maximum: 1 }
+        laneId: { type: "string", minLength: 1 }
       }
     }
   },
@@ -1670,7 +1637,6 @@ const READ_ONLY_TOOLS = new Set([
   "git_get_user_identity",
   "prs_list_open",
   "list_stashes",
-  "simulate_integration",
   "get_pr_health",
   "pr_get_checks",
   "pr_get_review_comments",
@@ -1716,7 +1682,6 @@ const MUTATION_TOOLS = new Set([
   "stash_drop",
   "stash_clear",
   "run_tests",
-  "create_integration",
   "create_pr_from_lane",
   "pr_update_title",
   "pr_update_body",
@@ -8118,56 +8083,9 @@ async function runTool(args: {
     return { action };
   }
 
-  if (name === "simulate_integration") {
-    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
-      ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
-      : [];
-    if (!sourceLaneIds.length) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
-    }
-    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
-    const prSvc = requirePrService(runtime);
-    const result = await prSvc.simulateIntegration({ sourceLaneIds, baseBranch });
-    return result;
-  }
-
-  if (name === "create_integration") {
-
-    const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
-      ? toolArgs.sourceLaneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
-      : [];
-    if (!sourceLaneIds.length) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "sourceLaneIds is required and must be non-empty");
-    }
-    const integrationLaneName = assertNonEmptyString(toolArgs.integrationLaneName, "integrationLaneName");
-    const baseBranch = assertNonEmptyString(toolArgs.baseBranch, "baseBranch");
-    const title = assertNonEmptyString(toolArgs.title, "title");
-    const body = asOptionalTrimmedString(toolArgs.body);
-    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : undefined;
-    const prSvc = requirePrService(runtime);
-    const result = await prSvc.createIntegrationPr({
-      sourceLaneIds,
-      integrationLaneName,
-      baseBranch,
-      title,
-      ...(body ? { body } : {}),
-      ...(draft !== undefined ? { draft } : {})
-    });
-    return result;
-  }
-
   if (name === "rebase_lane") {
     const laneId = requireLaneIdForTool(runtime, session, toolArgs, "rebase_lane");
-
-    const aiAssisted = typeof toolArgs.aiAssisted === "boolean" ? toolArgs.aiAssisted : undefined;
-    const provider = asOptionalTrimmedString(toolArgs.provider);
-    const autoApplyThreshold = typeof toolArgs.autoApplyThreshold === "number" ? toolArgs.autoApplyThreshold : undefined;
-    const result = await runtime.conflictService.rebaseLane({
-      laneId,
-      ...(aiAssisted !== undefined ? { aiAssisted } : {}),
-      ...(provider ? { provider: provider as "codex" | "claude" | undefined } : {}),
-      ...(autoApplyThreshold !== undefined ? { autoApplyThreshold } : {})
-    });
+    const result = await runtime.conflictService.rebaseLane({ laneId });
     if (
       !result.success
       && typeof result.error === "string"

@@ -96,7 +96,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Work execution
 
 - [**Lanes**](./features/lanes/README.md) — Worktree isolation, stacking, lane runtime, OAuth redirect, diagnostics. Each lane is a sandbox. Stacks are dependency chains. Lane runtime covers ports, env initialization, proxy routing, and health checks.
-- [**Pull Requests**](./features/pull-requests/README.md) — Stacked PRs, merge queue, conflict simulation, integration merge plans, and merge-into-lane workflows. Backed by lanes; dependencies rebase automatically.
+- [**Pull Requests**](./features/pull-requests/README.md) — GitHub PRs for lanes: list, detail, checks, reviews, GitHub stacks, and merging. Backed by lanes.
 - [**Conflicts**](./features/conflicts/README.md) — Pre-flight detection (full pairwise matrix up to 15 lanes, prefilter above), live simulation via `git merge-tree`, AI-assisted resolution, external CLI resolver flow.
 ### Agents and chat
 

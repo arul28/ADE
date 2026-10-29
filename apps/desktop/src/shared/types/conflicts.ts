@@ -206,7 +206,6 @@ export type ConflictExternalResolverRunSummary = {
   originSurface: ConflictResolverOriginSurface;
   originRunId: string | null;
   originLabel: string | null;
-  resolverContextKey?: string | null;
   ptyId: string | null;
   sessionId: string | null;
   committedAt?: string | null;
@@ -396,8 +395,6 @@ export type PrepareResolverSessionArgs = {
   sourceLaneIds: string[];
   cwdLaneId?: string;
   integrationLaneName?: string;
-  proposalId?: string | null;
-  sourceTab?: "rebase" | "normal" | "integration" | "conflicts" | null;
   scenario?: ResolverSessionScenario;
   model?: string | null;
   reasoningEffort?: string | null;
@@ -460,31 +457,11 @@ export type ResolutionConfig = {
 };
 
 // --------------------------------
-// Conflicts Tab Multi-Merge State
-// --------------------------------
-
-export type MultiMergeMode = "integration";
-
-export type MultiMergeLaneEntry = {
-  laneId: string;
-  laneName: string;
-  position: number;
-  predictedConflict: boolean;
-  overlapFileCount: number;
-};
-
-// --------------------------------
 // Rebase Types
 // --------------------------------
 
 export type RebaseLaneArgs = {
   laneId: string;
-  aiAssisted?: boolean;
-  provider?: "codex" | "claude";
-  modelId?: string | null;
-  reasoningEffort?: string | null;
-  permissionMode?: PrAgentPermissionMode;
-  autoApplyThreshold?: number;
 };
 
 export type RebaseResult = {
@@ -492,8 +469,6 @@ export type RebaseResult = {
   success: boolean;
   conflictingFiles: string[];
   error?: string;
-  resolvedByAi?: boolean;
-  agentSessionId?: string;
 };
 
 export type RebaseEventPayload =

@@ -68,7 +68,6 @@ function githubPr(overrides: Partial<GitHubPrListItem> = {}): GitHubPrListItem {
     createdAt: "2026-07-30T11:00:00Z",
     updatedAt: "2026-07-30T12:00:00Z",
     linkedPrId: null,
-    linkedGroupId: null,
     linkedLaneId: null,
     linkedLaneName: null,
     adeKind: null,

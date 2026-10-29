@@ -12,7 +12,6 @@ import { DEFAULT_SCENE_PREFERENCES } from "./scene/scenePreferences";
  *
  * This mock populates the PR surfaces with realistic data:
  *   Normal  – 5 PRs (open/draft/merged/closed, varied checks/reviews)
- *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
  *
  * when a snapshot is exported; otherwise a built-in multi-command / groups / runtime demo is used.
@@ -1910,8 +1909,6 @@ function mockBrowserLaneHealth(laneId: string) {
 const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
 const yesterday = new Date(Date.now() - 86400000).toISOString();
 const twoDaysAgo = new Date(Date.now() - 172800000).toISOString();
-const threeDaysAgo = new Date(Date.now() - 259200000).toISOString();
-const fourHoursFromNow = new Date(Date.now() + 4 * 3600000).toISOString();
 
 // ── Lane defaults (fields required by LaneSummary) ────────────
 function makeLane(
@@ -1972,7 +1969,7 @@ const BUILTIN_MOCK_LANES: any[] = [
     "feature/onboarding-wizard",
     "refs/heads/feature/onboarding-wizard",
   ),
-  // Integration PR lanes
+  // More feature lanes
   makeLane("lane-search", "feature/search-v2", "refs/heads/feature/search-v2"),
   makeLane(
     "lane-analytics",
@@ -3116,72 +3113,6 @@ const NORMAL_PRS: any[] = [
   ),
 ];
 
-// ── Integration PRs (2 PRs) ──────────────────────────────────
-//
-// pr-i1: Merges search + analytics into main (multi-source)
-// pr-i2: Merges i18n + a11y into main (multi-source)
-const INTEGRATION_PRS: any[] = [
-  makePr("pr-i1", "lane-search", 180, "Search & Analytics integration branch", {
-    state: "open",
-    checksStatus: "passing",
-    reviewStatus: "approved",
-    headBranch: "integration/search-analytics",
-    additions: 2400,
-    deletions: 300,
-    createdAt: twoDaysAgo,
-    conflictAnalysis: {
-      prId: "pr-i1",
-      laneId: "lane-search",
-      riskLevel: "medium",
-      overlapCount: 2,
-      conflictPredicted: false,
-      peerConflicts: [
-        {
-          peerId: "pr-i2",
-          peerName: "i18n + a11y integration",
-          riskLevel: "low",
-          overlapFiles: ["src/App.tsx"],
-        },
-      ],
-      analyzedAt: now,
-    },
-  }),
-  makePr(
-    "pr-i2",
-    "lane-i18n",
-    185,
-    "Internationalization & accessibility bundle",
-    {
-      state: "open",
-      checksStatus: "failing",
-      reviewStatus: "changes_requested",
-      headBranch: "integration/i18n-a11y",
-      additions: 1800,
-      deletions: 420,
-      createdAt: yesterday,
-      conflictAnalysis: {
-        prId: "pr-i2",
-        laneId: "lane-i18n",
-        riskLevel: "high",
-        overlapCount: 7,
-        conflictPredicted: true,
-        peerConflicts: [
-          {
-            peerId: "pr-2",
-            peerName: "Dashboard v2",
-            riskLevel: "medium",
-            overlapFiles: [
-              "src/components/Dashboard.tsx",
-              "src/styles/global.css",
-            ],
-          },
-        ],
-        analyzedAt: now,
-      },
-    },
-  ),
-];
-
 /**
  * The exported snapshot only carries PRs of lanes that are long gone, so the
  * Lanes dashboard would never show a live PR. Three live lanes get stand-in
@@ -3283,7 +3214,7 @@ function mockLiveLanePrs(): any[] {
 // ── All PRs combined ──────────────────────────────────────────
 const ALL_PRS = USE_ADE_DB_SNAPSHOT
   ? [...(Array.isArray(ADE_DB_SNAPSHOT?.prs) ? ADE_DB_SNAPSHOT.prs : []), ...mockLiveLanePrs()]
-  : [...NORMAL_PRS, ...INTEGRATION_PRS];
+  : NORMAL_PRS;
 
 function getAdeDbPrSnapshotByGithubCoordinates(args: any): any | null {
   const repoOwner = String(args?.repoOwner ?? "").trim().toLowerCase();
@@ -3298,130 +3229,6 @@ function getAdeDbPrSnapshotByGithubCoordinates(args: any): any | null {
   );
   return pr ? ADE_DB_PR_SNAPSHOT_BY_ID.get(String(pr.id)) ?? null : null;
 }
-
-// ── Merge Contexts ────────────────────────────────────────────
-const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
-  // Normal PRs — no group
-  "pr-1": {
-    prId: "pr-1",
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: ["lane-auth"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [],
-  },
-  "pr-2": {
-    prId: "pr-2",
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: ["lane-dashboard"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [],
-  },
-  "pr-3": {
-    prId: "pr-3",
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: ["lane-api"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [],
-  },
-  "pr-4": {
-    prId: "pr-4",
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: ["lane-perf"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [],
-  },
-  "pr-5": {
-    prId: "pr-5",
-    groupId: null,
-    groupType: null,
-    sourceLaneIds: ["lane-onboard"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [],
-  },
-
-  // Integration PRs — multi-source
-  "pr-i1": {
-    prId: "pr-i1",
-    groupId: "integration-search-analytics",
-    groupType: "integration",
-    sourceLaneIds: ["lane-search", "lane-analytics"],
-    targetLaneId: "lane-main",
-    integrationLaneId: "lane-search",
-    members: [
-      {
-        prId: "pr-i1",
-        laneId: "lane-search",
-        laneName: "integration/search-analytics",
-        prNumber: 180,
-        position: 0,
-        role: "integration",
-      },
-      {
-        prId: "pr-i1",
-        laneId: "lane-search",
-        laneName: "feature/search-v2",
-        prNumber: 180,
-        position: 0,
-        role: "source",
-      },
-      {
-        prId: "pr-i1",
-        laneId: "lane-analytics",
-        laneName: "feature/analytics",
-        prNumber: null,
-        position: 1,
-        role: "source",
-      },
-    ],
-  },
-  "pr-i2": {
-    prId: "pr-i2",
-    groupId: "integration-i18n-a11y",
-    groupType: "integration",
-    sourceLaneIds: ["lane-i18n", "lane-a11y"],
-    targetLaneId: "lane-main",
-    integrationLaneId: "lane-i18n",
-    members: [
-      {
-        prId: "pr-i2",
-        laneId: "lane-i18n",
-        laneName: "integration/i18n-a11y",
-        prNumber: 185,
-        position: 0,
-        role: "integration",
-      },
-      {
-        prId: "pr-i2",
-        laneId: "lane-i18n",
-        laneName: "feature/i18n",
-        prNumber: 185,
-        position: 0,
-        role: "source",
-      },
-      {
-        prId: "pr-i2",
-        laneId: "lane-a11y",
-        laneName: "feature/accessibility",
-        prNumber: null,
-        position: 1,
-        role: "source",
-      },
-    ],
-  },
-};
-
-const MOCK_MERGE_CONTEXTS: Record<string, any> = USE_ADE_DB_SNAPSHOT
-  ? (ADE_DB_SNAPSHOT?.prMergeContexts ?? {})
-  : BUILTIN_MOCK_MERGE_CONTEXTS;
 
 // ── Per-PR detail data (keyed by prId) ────────────────────────
 const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
@@ -3886,9 +3693,6 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
       "src/styles/dashboard.css",
     ],
     prId: "pr-2",
-    groupContext: null,
-    dismissedAt: null,
-    deferredUntil: null,
   },
   {
     laneId: "lane-i18n",
@@ -3899,10 +3703,7 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     mergedPr: null,
     conflictPredicted: true,
     conflictingFiles: ["src/i18n/translations.json", "src/App.tsx"],
-    prId: "pr-i2",
-    groupContext: "integration-i18n-a11y",
-    dismissedAt: null,
-    deferredUntil: null,
+    prId: null,
   },
   // Clean rebase: behind but no conflicts
   {
@@ -3915,9 +3716,6 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-3",
-    groupContext: null,
-    dismissedAt: null,
-    deferredUntil: null,
   },
   {
     laneId: "lane-onboard",
@@ -3929,9 +3727,6 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-5",
-    groupContext: null,
-    dismissedAt: null,
-    deferredUntil: null,
   },
   // Up to date (behind 0)
   {
@@ -3944,11 +3739,7 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     conflictPredicted: false,
     conflictingFiles: [],
     prId: "pr-1",
-    groupContext: null,
-    dismissedAt: null,
-    deferredUntil: null,
   },
-  // Deferred (still behind but snoozed — categorized as upToDate)
   {
     laneId: "lane-search",
     laneName: "feature/search-v2",
@@ -3958,10 +3749,7 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     mergedPr: null,
     conflictPredicted: false,
     conflictingFiles: [],
-    prId: "pr-i1",
-    groupContext: "integration-search-analytics",
-    dismissedAt: null,
-    deferredUntil: fourHoursFromNow,
+    prId: null,
   },
 ];
 
@@ -3970,179 +3758,6 @@ const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT
     ? ADE_DB_SNAPSHOT.rebaseNeeds
     : []
   : BUILTIN_MOCK_REBASE_NEEDS;
-
-// ── Integration simulation result ─────────────────────────────
-const BUILTIN_MOCK_INTEGRATION_SIMULATION: any = {
-  proposalId: "sim-mock-1",
-  sourceLaneIds: ["lane-search", "lane-analytics"],
-  baseBranch: "main",
-  overallOutcome: "conflict",
-  steps: [
-    {
-      laneId: "lane-search",
-      laneName: "feature/search-v2",
-      position: 0,
-      outcome: "clean",
-      conflictingFiles: [],
-      diffStat: { insertions: 1420, deletions: 180, filesChanged: 22 },
-    },
-    {
-      laneId: "lane-analytics",
-      laneName: "feature/analytics",
-      position: 1,
-      outcome: "conflict",
-      conflictingFiles: [
-        { path: "src/lib/analytics.ts", conflictMarkers: "<<<<<<< HEAD..." },
-        { path: "src/App.tsx", conflictMarkers: "<<<<<<< HEAD..." },
-      ],
-      diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
-    },
-  ],
-  createdAt: now,
-};
-
-const MOCK_INTEGRATION_SIMULATION: any = USE_ADE_DB_SNAPSHOT
-  ? {
-      proposalId: "empty",
-      sourceLaneIds: [] as string[],
-      baseBranch: "main",
-      overallOutcome: "clean",
-      steps: [] as any[],
-      createdAt: now,
-    }
-  : BUILTIN_MOCK_INTEGRATION_SIMULATION;
-
-const BUILTIN_MOCK_INTEGRATION_WORKFLOWS: any[] = [
-  {
-    proposalId: "workflow-int-active",
-    sourceLaneIds: ["lane-search", "lane-analytics"],
-    baseBranch: "main",
-    pairwiseResults: [],
-    laneSummaries: [
-      {
-        laneId: "lane-search",
-        laneName: "feature/search-v2",
-        outcome: "clean",
-        commitHash: "abc1234",
-        commitCount: 4,
-        conflictsWith: [],
-        diffStat: { insertions: 1420, deletions: 180, filesChanged: 22 },
-      },
-      {
-        laneId: "lane-analytics",
-        laneName: "feature/analytics",
-        outcome: "clean",
-        commitHash: "def5678",
-        commitCount: 3,
-        conflictsWith: [],
-        diffStat: { insertions: 980, deletions: 120, filesChanged: 14 },
-      },
-    ],
-    steps: BUILTIN_MOCK_INTEGRATION_SIMULATION.steps,
-    overallOutcome: "clean",
-    createdAt: twoDaysAgo,
-    title: "Search & Analytics integration branch",
-    body: "This integration workflow bundles search and analytics for a shared release train.",
-    draft: false,
-    integrationLaneName: "integration/search-analytics",
-    status: "committed",
-    integrationLaneId: "lane-search",
-    linkedGroupId: "integration-search-analytics",
-    linkedPrId: "pr-i1",
-    workflowDisplayState: "active",
-    cleanupState: "none",
-    closedAt: null,
-    mergedAt: null,
-    completedAt: null,
-    cleanupDeclinedAt: null,
-    cleanupCompletedAt: null,
-    resolutionState: null,
-  },
-  {
-    proposalId: "workflow-int-history",
-    sourceLaneIds: ["lane-i18n", "lane-a11y"],
-    baseBranch: "main",
-    pairwiseResults: [],
-    laneSummaries: [
-      {
-        laneId: "lane-i18n",
-        laneName: "feature/i18n",
-        outcome: "conflict",
-        commitHash: "ghi9012",
-        commitCount: 6,
-        conflictsWith: ["lane-a11y"],
-        diffStat: { insertions: 1100, deletions: 220, filesChanged: 19 },
-      },
-      {
-        laneId: "lane-a11y",
-        laneName: "feature/accessibility",
-        outcome: "conflict",
-        commitHash: "jkl3456",
-        commitCount: 2,
-        conflictsWith: ["lane-i18n"],
-        diffStat: { insertions: 700, deletions: 90, filesChanged: 9 },
-      },
-    ],
-    steps: [
-      {
-        laneId: "lane-i18n",
-        laneName: "feature/i18n",
-        position: 0,
-        outcome: "conflict",
-        conflictingFiles: [
-          {
-            path: "src/App.tsx",
-            conflictMarkers: "<<<<<<< HEAD...",
-            oursExcerpt: null,
-            theirsExcerpt: null,
-            diffHunk: null,
-          },
-        ],
-        diffStat: { insertions: 1100, deletions: 220, filesChanged: 19 },
-      },
-      {
-        laneId: "lane-a11y",
-        laneName: "feature/accessibility",
-        position: 1,
-        outcome: "conflict",
-        conflictingFiles: [
-          {
-            path: "src/App.tsx",
-            conflictMarkers: "<<<<<<< HEAD...",
-            oursExcerpt: null,
-            theirsExcerpt: null,
-            diffHunk: null,
-          },
-        ],
-        diffStat: { insertions: 700, deletions: 90, filesChanged: 9 },
-      },
-    ],
-    overallOutcome: "conflict",
-    createdAt: threeDaysAgo,
-    title: "Internationalization & accessibility bundle",
-    body: "Closed after validation. Cleanup was declined so the workflow lives in history.",
-    draft: false,
-    integrationLaneName: "integration/i18n-a11y",
-    status: "committed",
-    integrationLaneId: "lane-i18n",
-    linkedGroupId: "integration-i18n-a11y",
-    linkedPrId: "pr-i2",
-    workflowDisplayState: "history",
-    cleanupState: "declined",
-    closedAt: yesterday,
-    mergedAt: null,
-    completedAt: yesterday,
-    cleanupDeclinedAt: yesterday,
-    cleanupCompletedAt: null,
-    resolutionState: null,
-  },
-];
-
-const MOCK_INTEGRATION_WORKFLOWS: any[] = USE_ADE_DB_SNAPSHOT
-  ? Array.isArray(ADE_DB_SNAPSHOT?.integrationWorkflows)
-    ? ADE_DB_SNAPSHOT.integrationWorkflows
-    : []
-  : BUILTIN_MOCK_INTEGRATION_WORKFLOWS;
 
 function isBotGitHubAuthor(author: unknown): boolean {
   if (typeof author !== "string" || !author.trim()) return false;
@@ -4230,10 +3845,6 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
   syncedAt: now,
   repoPullRequests: [
     ...ALL_PRS.map((pr: any) => {
-      const ctx = MOCK_MERGE_CONTEXTS[pr.id] ?? null;
-      const workflow =
-        MOCK_INTEGRATION_WORKFLOWS.find((item) => item.linkedPrId === pr.id) ??
-        null;
       return {
         id: pr.id,
         scope: "repo",
@@ -4250,14 +3861,11 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
         createdAt: pr.createdAt,
         updatedAt: pr.updatedAt,
         linkedPrId: pr.id,
-        linkedGroupId: workflow?.linkedGroupId ?? ctx?.groupId ?? null,
         linkedLaneId: pr.laneId,
         linkedLaneName:
           MOCK_LANES.find((lane: any) => lane.id === pr.laneId)?.name ??
           pr.laneId,
-        adeKind: workflow ? "integration" : (ctx?.groupType ?? "single"),
-        workflowDisplayState: workflow?.workflowDisplayState ?? null,
-        cleanupState: workflow?.cleanupState ?? null,
+        adeKind: "single",
       };
     }),
     {
@@ -4276,12 +3884,9 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       createdAt: oneHourAgo,
       updatedAt: now,
       linkedPrId: null,
-      linkedGroupId: null,
       linkedLaneId: null,
       linkedLaneName: null,
       adeKind: null,
-      workflowDisplayState: null,
-      cleanupState: null,
     },
     // Merged history, spread across period boundaries so the day/week group headers
     // and their aggregates have something real to render.
@@ -4317,12 +3922,9 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
         checkpoints: 7,
       },
       linkedPrId: null,
-      linkedGroupId: null,
       linkedLaneId: null,
       linkedLaneName: null,
       adeKind: null,
-      workflowDisplayState: null,
-      cleanupState: null,
     },
     {
       id: "repo-merged-cleanup-187",
@@ -4347,13 +3949,10 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       commitCount: 4,
       changedFiles: 3,
       linkedPrId: null,
-      linkedGroupId: null,
       linkedLaneId: null,
       linkedLaneName: null,
       adeKind: null,
-      workflowDisplayState: null,
       // The one honest amber left in the merged list: the remote branch still exists.
-      cleanupState: "required",
     },
     {
       id: "repo-closed-unmapped-186",
@@ -4371,12 +3970,9 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       createdAt: new Date(Date.now() - 40 * 86_400_000).toISOString(),
       updatedAt: new Date(Date.now() - 38 * 86_400_000).toISOString(),
       linkedPrId: null,
-      linkedGroupId: null,
       linkedLaneId: null,
       linkedLaneName: null,
       adeKind: null,
-      workflowDisplayState: null,
-      cleanupState: null,
     },
   ],
   externalPullRequests: [
@@ -4396,12 +3992,9 @@ const BUILTIN_MOCK_GITHUB_SNAPSHOT: any = {
       createdAt: yesterday,
       updatedAt: now,
       linkedPrId: null,
-      linkedGroupId: null,
       linkedLaneId: null,
       linkedLaneName: null,
       adeKind: null,
-      workflowDisplayState: null,
-      cleanupState: null,
     },
   ],
 };
@@ -9944,41 +9537,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       },
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
-      createIntegration: resolvedArg({}),
-      simulateIntegration: resolvedArg(MOCK_INTEGRATION_SIMULATION),
-      commitIntegration: resolvedArg({
-        groupId: "group-int-mock",
-        integrationLaneId: "lane-search",
-        pr: USE_ADE_DB_SNAPSHOT ? null : (INTEGRATION_PRS[0] ?? null),
-        mergeResults: [],
-      }),
       getHealth: resolvedArg({}),
       getConflictAnalysis: resolvedArg({}),
-      getMergeContext: async (prId: string) =>
-        MOCK_MERGE_CONTEXTS[prId] ?? {
-          prId,
-          groupId: null,
-          groupType: null,
-          sourceLaneIds: [],
-          targetLaneId: null,
-          integrationLaneId: null,
-          members: [],
-        },
-      getMergeContexts: async (prIds: string[]) =>
-        Object.fromEntries(
-          prIds.map((prId) => [
-            prId,
-            MOCK_MERGE_CONTEXTS[prId] ?? {
-              prId,
-              groupId: null,
-              groupType: null,
-              sourceLaneIds: [],
-              targetLaneId: null,
-              integrationLaneId: null,
-              members: [],
-            },
-          ]),
-        ),
       // Fresh copies, so a refresh after a mock merge re-renders the rows.
       listWithConflicts: async () => ALL_PRS.map(browserMockPrSummaryWithStack),
       listSnapshots: async (args?: { prId?: string; prIds?: string[] }) => {
@@ -10091,18 +9651,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       linkChatStack: async () => ({ ok: true, linked: 0 }),
       listChatSessionsForPr: async () => [],
       getStackLinkOffer: async () => null,
-      listIntegrationWorkflows: resolved(MOCK_INTEGRATION_WORKFLOWS),
-      aiResolutionStart: async () => ({
-        sessionId: "mock-pr-ai-session",
-        provider: "codex" as const,
-        ptyId: null,
-        status: "started" as const,
-        error: null,
-        context: { sourceTab: "normal" as const, laneId: "lane-1" },
-      }),
-      aiResolutionInput: resolvedArg(undefined),
-      aiResolutionStop: resolvedArg(undefined),
-      onAiResolutionEvent: noop,
       onEvent: noop,
       getDetail: async (prId: string) => withMockAssignees(prId,
         ADE_DB_PR_SNAPSHOT_BY_ID.get(prId)?.detail ?? {
@@ -10132,7 +9680,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setReviewThreadResolved: resolvedArg(undefined),
       reactToComment: resolvedArg(undefined),
       cleanupBranch: resolvedArg({ deleted: false, reason: "browser-mock" }),
-      aiResolutionGetSession: resolvedArg(null),
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),
       addComment: resolvedArg({
@@ -10175,36 +9722,10 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setDraft: resolvedArg(undefined),
       setAutoMerge: resolvedArg(undefined),
       rerunChecks: resolvedArg(undefined),
-      listProposals: resolved([]),
-      dismissIntegrationCleanup: resolvedArg(
-        USE_ADE_DB_SNAPSHOT
-          ? undefined
-          : (BUILTIN_MOCK_INTEGRATION_WORKFLOWS[1] ?? undefined),
-      ),
-      cleanupIntegrationWorkflow: resolvedArg({
-        proposalId: "workflow-int-active",
-        archivedLaneIds: ["lane-search"],
-        skippedLaneIds: [],
-        workflowDisplayState: "history",
-        cleanupState: "completed",
-      }),
-      updateProposal: resolvedArg(undefined),
-      deleteProposal: resolvedArg(undefined),
-      createIntegrationLaneForProposal: resolvedArg({
-        integrationLaneId: "lane-search",
-        mergedCleanLanes: [],
-        conflictingLanes: [],
-      }),
-      startIntegrationResolution: resolvedArg({}),
-      getIntegrationResolutionState: resolvedArg(null),
-      recheckIntegrationStep: resolvedArg({}),
     },
     rebase: {
       scanNeeds: resolved(MOCK_REBASE_NEEDS),
       getNeed: resolvedArg(null),
-      dismiss: resolvedArg(undefined),
-      defer: resolvedArg2(undefined),
-      execute: resolvedArg({}),
       onEvent: noop,
     },
     history: {

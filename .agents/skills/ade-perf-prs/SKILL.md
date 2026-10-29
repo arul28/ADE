@@ -15,17 +15,17 @@ metadata:
 
 Use this as engineering guidance for keeping the PRs tab fast while adding
 features. The PRs tab combines external GitHub search, local lane links,
-mergeability, GitHub stacks, integration workflows, merge readiness, review threads,
+mergeability, GitHub stacks, merge readiness, review threads,
 files, CI, and activity. Keep first paint local and defer expensive live GitHub
 or Git operations until the visible surface needs them.
 
 ## Measurement posture
 
 - Test the real Electron `/prs` route against a private `perf-pass` GitHub repo
-  with enough PRs to cover single, stacked, integration, and rebase/merge flows.
+  with enough PRs to cover single and stacked flows.
 - Drive visible UI actions with Computer Use and mark important spans with
   `window.ade.perf.recordEvent({ kind: "manualStep", ... })`.
-- Do not measure only one PR forever. Seed several lanes and PRs per workflow
+- Do not measure only one PR forever. Seed several lanes and PRs per PR
   type, then optimize the batched path users actually hit.
 - Separate stale-cache/no-op refreshes from true GitHub refreshes. If the UI
   returns instantly because nothing is stale, also measure the explicit preload
@@ -33,9 +33,8 @@ or Git operations until the visible surface needs them.
 
 ## Startup and GitHub tab rules
 
-- Opening the GitHub tab must not run conflict analysis, rebase scans, or
-  per-PR merge-context calls. First paint should use local PR rows and cached
-  GitHub snapshot data.
+- Opening the GitHub tab must not run conflict analysis or rebase scans. First
+  paint should use local PR rows and cached GitHub snapshot data.
 - Default GitHub snapshot search should fetch open external PRs only. Closed,
   merged, and all-history views may opt into external closed PR history when
   the user asks for that surface.
@@ -46,21 +45,16 @@ or Git operations until the visible surface needs them.
   hydration and avoid separate status/checks/reviews/comments/files calls before
   the cached view is visible.
 
-## Workflow and merge-context rules
+## Lane and conflict-analysis rules
 
-- Use bulk merge-context APIs for workflow surfaces. `getMergeContexts(prIds)`
-  should replace N calls to `getMergeContext(prId)` whenever a queue,
-  integration, or rebase/merge view renders multiple PRs.
-- Merge-context and conflict-analysis reads should use lane metadata only:
+- Conflict-analysis reads should use lane metadata only:
   `laneService.list({ includeArchived: false, includeStatus: false })` unless
   the UI is explicitly displaying fresh Git status.
-- PR workflow context should also keep lane reads status-light. Use
-  `window.ade.lanes.list({ includeStatus: false })` for workflow rendering and
-  fetch fresh lane Git status only inside flows that actually inspect dirty,
-  ahead, behind, or rebase-in-progress state.
-- The normal GitHub list should call `listWithConflicts({ includeConflictAnalysis: false })`.
-  Queue, integration, and rebase/merge workflows may request conflict analysis
-  because their UI depends on it.
+- PR rendering keeps lane reads status-light too. Use
+  `window.ade.lanes.list({ includeStatus: false })` and fetch fresh lane Git
+  status only inside flows that inspect dirty, ahead, behind, or
+  rebase-in-progress state.
+- The GitHub list calls `listWithConflicts()` without conflict analysis.
 - `listWithConflicts` must batch conflict assessment with lane inputs instead of
   asking the conflict service one PR at a time.
 
@@ -74,16 +68,15 @@ or Git operations until the visible surface needs them.
   tab open.
 - Do not reintroduce "syncing to GitHub" as a blocking first-open state. The tab
   should remain usable while refreshes run.
-- Rebase diagnostics are useful workflow data, but they are not a reason to run
-  queue-target `git fetch` on every poll. Keep queue target tracking refreshes
-  best-effort and TTL-bound.
+- Rebase diagnostics are not a reason to run `git fetch` on every poll. Keep
+  target tracking refreshes best-effort and TTL-bound.
 
 ## Proven PRs patterns
 
 ### Keep GitHub first open-only and local-first
 
 - **Why it helped**: The original PRs open path spent seconds fetching external
-  GitHub history and doing local workflow work before the list felt usable.
+  GitHub history and doing local work before the list felt usable.
 - **Apply when**: Editing `GitHubTab`, GitHub snapshot fetching, or first-load
   PR state.
 - **Avoid**: Loading closed/merged external PRs or conflict analysis before the
@@ -91,46 +84,32 @@ or Git operations until the visible surface needs them.
 - **Verification**: `prs-ui-baseline-20260512-051124` had
   `ade.prs.getGitHubSnapshot` at `5941ms`. After the open-only snapshot and
   local-first hydration, `prs-ui-lane-metadata-fast-inproc-20260512-060555`
-  showed first-load `getGitHubSnapshot` at `1146ms`, `listWithConflicts` at
-  `1ms`, and `getMergeContexts` at `52ms`.
-
-### Batch merge contexts and keep lane reads metadata-only
-
-- **Why it helped**: Workflow pages previously fanned out merge-context calls
-  and each one could pay for lane status work.
-- **Apply when**: Queue, integration, rebase/merge, or merge-rail surfaces
-  need per-PR merge context.
-- **Avoid**: Looping over `getMergeContext` or using bare `laneService.list()`
-  from merge-context helpers.
-- **Verification**: In `prs-ui-lane-metadata-fast-inproc-20260512-060555`,
-  workflow `getMergeContexts` calls measured `28-72ms`; the prior workflow pass
-  had repeated merge-context batches around `1.2-1.4s`.
+  showed first-load `getGitHubSnapshot` at `1146ms` and `listWithConflicts` at
+  `1ms`.
 
 ### Bound explicit refresh with parallel workers
 
-- **Why it helped**: Refreshing PRs one at a time made workflow refresh feel
-  stuck even when the UI was otherwise local-first.
+- **Why it helped**: Refreshing PRs one at a time made refresh feel stuck even
+  when the UI was otherwise local-first.
 - **Apply when**: Changing `prService.refresh`, refresh buttons, or explicit
   refresh actions from automations.
 - **Avoid**: Serial `for await` refresh of PR detail/status/check/files for
   multiple PRs.
-- **Verification**: Before parallel refresh, the measured workflow refresh span
+- **Verification**: Before parallel refresh, the measured refresh span
   had `ade.prs.refresh` at `12284ms`. After bounded parallel refresh, an
   explicit all-18 preload/IPC refresh in
   `prs-ui-lane-metadata-fast-inproc-20260512-060555` completed in `3800ms`.
 
-### Keep workflow lane reads status-light
+### Keep PR lane reads status-light
 
-- **Why it helped**: Workflow reloads still paid full lane Git status and
-  workflow status cleanup even though the visible workflow cards only needed
-  lane identity, branch, color, rebase needs, and merge context.
-- **Apply when**: Editing `PrsContext`, workflow tabs, or workflow status
-  hydration for PRs.
-- **Avoid**: `window.ade.lanes.list({ includeStatus: true })` on PR workflow
+- **Why it helped**: PR reloads paid full lane Git status even though the
+  visible rows only needed lane identity, branch, and color.
+- **Apply when**: Editing `PrsContext` or PR status hydration.
+- **Avoid**: `window.ade.lanes.list({ includeStatus: true })` on PRs-tab
   startup or background PR refreshes that do not display lane dirty/ahead/behind
   state.
 - **Verification**: In
-  `prs-ui-rebase-fetch-ttl-20260512-062130`, queue reload lane reads dropped
+  `prs-ui-rebase-fetch-ttl-20260512-062130`, PR reload lane reads dropped
   from `1393ms` to `47-80ms`.
 
 ### Share reads, cap concurrency, and keep what cannot change (2026-10-26)

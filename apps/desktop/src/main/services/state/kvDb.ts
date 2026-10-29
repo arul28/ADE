@@ -73,6 +73,19 @@ const RETIRED_REVIEW_TABLES = [
  */
 const RETIRED_PR_AI_SUMMARY_TABLES = ["pull_request_ai_summaries"] as const;
 
+/**
+ * The retired PRs "Workflows" area: integration groups and proposals, and the
+ * rebase suggestion dismiss/defer state. All were CRRs. Members go before
+ * their groups (foreign key).
+ */
+const RETIRED_PR_WORKFLOW_TABLES = [
+  "pr_group_members",
+  "pr_groups",
+  "integration_proposals",
+  "rebase_dismissed",
+  "rebase_deferred",
+] as const;
+
 /** CRDT tables removed from the schema; inbound tombstones are ignored. */
 const SYNC_RETIRED_TABLES = new Set([
   "unified_memories",
@@ -81,6 +94,7 @@ const SYNC_RETIRED_TABLES = new Set([
   ...RETIRED_EXECUTION_TABLES,
   ...RETIRED_REVIEW_TABLES,
   ...RETIRED_PR_AI_SUMMARY_TABLES,
+  ...RETIRED_PR_WORKFLOW_TABLES,
 ]);
 
 function isRetiredIncomingSyncTable(tableName: string): boolean {
@@ -1620,13 +1634,6 @@ function removeLegacyQueueStorage(db: DatabaseSyncType, logger?: Logger): void {
     deleteAllRowsWithoutCrrReplication(db, "queue_landing_state", logger);
     runStatement(db, "drop table if exists queue_landing_state");
   }
-  if (rawHasTable(db, "pr_group_members") && rawHasTable(db, "pr_groups")) {
-    runStatement(
-      db,
-      "delete from pr_group_members where group_id in (select id from pr_groups where group_type = 'queue')",
-    );
-    runStatement(db, "delete from pr_groups where group_type = 'queue'");
-  }
   if (rawHasTable(db, "kv")) {
     runStatement(db, "delete from kv where key = 'queue_landing_state.wiped_for_stacked_overhaul.v1'");
   }
@@ -1831,6 +1838,13 @@ function dropRetiredPrAiSummarySchema(db: DatabaseSyncType, logger?: Logger): vo
   const presentTables = dropRetiredTables(db, RETIRED_PR_AI_SUMMARY_TABLES, "retired-pr-ai-summary-schema", logger);
   if (presentTables.length === 0) return;
   logger?.info("db.retired_pr_ai_summary_schema_cleaned", { tables: presentTables });
+}
+
+/** Remove the retired PR workflow tables (integration, rebase dismiss/defer) from upgraded databases. */
+function dropRetiredPrWorkflowSchema(db: DatabaseSyncType, logger?: Logger): void {
+  const presentTables = dropRetiredTables(db, RETIRED_PR_WORKFLOW_TABLES, "retired-pr-workflow-schema", logger);
+  if (presentTables.length === 0) return;
+  logger?.info("db.retired_pr_workflow_schema_cleaned", { tables: presentTables });
 }
 
 function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
@@ -4031,96 +4045,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   }
   db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
 
-  // Integration workflow groups.
-  db.run(`
-    create table if not exists pr_groups (
-      id text primary key,
-      project_id text not null,
-      group_type text not null,
-      name text,
-      auto_rebase integer not null default 0,
-      ci_gating integer not null default 0,
-      target_branch text,
-      created_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_pr_groups_project on pr_groups(project_id)");
-
-  db.run(`
-    create table if not exists pr_group_members (
-      id text primary key,
-      group_id text not null,
-      pr_id text not null,
-      lane_id text not null,
-      position integer not null,
-      role text not null,
-      foreign key(group_id) references pr_groups(id),
-      foreign key(pr_id) references pull_requests(id),
-      foreign key(lane_id) references lanes(id)
-    )
-  `);
-  db.run("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)");
-  db.run("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)");
-
-  // Integration proposals table (dry-merge simulation results)
-  db.run(`
-    create table if not exists integration_proposals (
-      id text primary key,
-      project_id text not null,
-      source_lane_ids_json text not null,
-      base_branch text not null,
-      steps_json text not null,
-      title text default '',
-      body text default '',
-      draft integer not null default 0,
-      integration_lane_name text default '',
-      status text not null default 'proposed',
-      integration_lane_id text,
-      resolution_state_json text,
-      pairwise_results_json text not null default '[]',
-      lane_summaries_json text not null default '[]',
-      overall_outcome text not null,
-      created_at text not null,
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)");
-  safeAddColumn(db, "alter table integration_proposals add column linked_group_id text");
-  safeAddColumn(db, "alter table integration_proposals add column linked_pr_id text");
-  safeAddColumn(db, "alter table integration_proposals add column workflow_display_state text not null default 'active'");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_state text not null default 'none'");
-  safeAddColumn(db, "alter table integration_proposals add column closed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column merged_at text");
-  safeAddColumn(db, "alter table integration_proposals add column completed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_declined_at text");
-  safeAddColumn(db, "alter table integration_proposals add column cleanup_completed_at text");
-  safeAddColumn(db, "alter table integration_proposals add column preferred_integration_lane_id text");
-  safeAddColumn(db, "alter table integration_proposals add column merge_into_head_sha text");
-
-  // Rebase dismiss/defer persistence
-  db.run(`
-    create table if not exists rebase_dismissed (
-      lane_id text not null,
-      project_id text not null,
-      dismissed_at text not null,
-      primary key(lane_id, project_id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_rebase_dismissed_project on rebase_dismissed(project_id)");
-  db.run(`
-    create table if not exists rebase_deferred (
-      lane_id text not null,
-      project_id text not null,
-      deferred_until text not null,
-      primary key(lane_id, project_id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_rebase_deferred_project on rebase_deferred(project_id)");
-
-
   db.run(`
     create table if not exists computer_use_artifacts (
       id text primary key,
@@ -5111,6 +5035,11 @@ export async function openKvDb(
     }
     try {
       dropRetiredPrAiSummarySchema(db, logger);
+    } catch (error) {
+      if (!isReadonlyDatabaseError(error)) throw error;
+    }
+    try {
+      dropRetiredPrWorkflowSchema(db, logger);
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }

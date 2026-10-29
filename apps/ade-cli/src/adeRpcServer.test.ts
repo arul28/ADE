@@ -356,8 +356,6 @@ function createRuntime() {
       getLogTail: vi.fn(() => "")
     },
     prService: {
-      simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
-      createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       createFromLane: vi.fn(async () => ({
         id: "pr-new",
         laneId: "lane-1",
@@ -8209,46 +8207,6 @@ describe("adeRpcServer", () => {
     );
   });
 
-  it("routes simulate_integration as a read-only dry-merge", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler);
-    const response = await callTool(handler, "simulate_integration", {
-      sourceLaneIds: ["lane-1", "lane-2"],
-      baseBranch: "main"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.simulateIntegration).toHaveBeenCalledWith({
-      sourceLaneIds: ["lane-1", "lane-2"],
-      baseBranch: "main"
-    });
-  });
-
-  it("routes create_integration with authorization", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "coord-1", role: "agent" });
-    const response = await callTool(handler, "create_integration", {
-      sourceLaneIds: ["lane-1"],
-      integrationLaneName: "integration-branch",
-      baseBranch: "main",
-      title: "Integration PR"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.createIntegrationPr).toHaveBeenCalledWith(
-      expect.objectContaining({
-        sourceLaneIds: ["lane-1"],
-        integrationLaneName: "integration-branch",
-        baseBranch: "main",
-        title: "Integration PR"
-      })
-    );
-  });
-
   it("routes rebase_lane with authorization", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -8256,13 +8214,10 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
-      aiAssisted: true
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith(
-      expect.objectContaining({ laneId: "lane-1", aiAssisted: true })
-    );
+    expect(fixture.runtime.conflictService.rebaseLane).toHaveBeenCalledWith({ laneId: "lane-1" });
   });
 
   it("suggests stash or commit tools when rebase_lane is blocked by a dirty worktree", async () => {
@@ -8278,7 +8233,6 @@ describe("adeRpcServer", () => {
     await initialize(handler, { callerId: "coord-1", role: "agent" });
     const response = await callTool(handler, "rebase_lane", {
       laneId: "lane-1",
-      aiAssisted: true,
     });
 
     expect(response?.isError).toBeUndefined();

@@ -2,14 +2,12 @@ import React from "react";
 import { Plus } from "@phosphor-icons/react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { EmptyState } from "../ui/EmptyState";
-import { cn } from "../ui/cn";
 import { PrsProvider, usePrs } from "./state/PrsContext";
 import { CreatePrModal, type CreatePrModalInitialValues } from "./CreatePrModal";
 import { selectActiveProjectRoot, useAppStore } from "../../state/appStore";
 import { useDialogBus } from "../../lib/useDialogBus";
 import { GitHubTab } from "./tabs/GitHubTab";
 import type { GitHubTabSort } from "./tabs/prBlockedSort";
-import { WorkflowsTab, type WorkflowCategory } from "./tabs/WorkflowsTab";
 import { PrsListHostProvider } from "./shared/PrsListHost";
 import { ProjectSidebarSlot, useHasProjectSidebar } from "../app/projectSidebar/ProjectSidebarSlot";
 import { SANS_FONT, fgTint } from "../lanes/laneDesignTokens";
@@ -19,41 +17,13 @@ import {
   prRouteCoordinatesMatch,
   prRouteSelectionTarget,
   prRouteTargetsEqual,
-  resolvePrsActiveTab,
   writeStoredPrsRoute,
   type PrDetailRouteTab,
   type PrRouteSelectionTarget,
 } from "./prsRouteState";
-import { resolveRouteRebaseSelection } from "./shared/rebaseNeedUtils";
 import type { PrSummary } from "../../../shared/types";
 
-type SurfaceMode = "github" | "workflows";
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
-
-const LAST_WORKFLOW_TAB_KEY = "ade:prs:lastWorkflowTab";
-
-function scopedLastWorkflowTabKey(projectRoot?: string | null): string {
-  const root = projectRoot?.trim();
-  return root ? `${LAST_WORKFLOW_TAB_KEY}:${root}` : LAST_WORKFLOW_TAB_KEY;
-}
-
-function readLastWorkflowTab(projectRoot?: string | null): WorkflowCategory {
-  try {
-    const value = window.localStorage.getItem(scopedLastWorkflowTabKey(projectRoot));
-    if (value === "integration" || value === "rebase") return value;
-  } catch {
-    /* ignore */
-  }
-  return "integration";
-}
-
-function writeLastWorkflowTab(projectRoot: string | null, tab: WorkflowCategory): void {
-  try {
-    window.localStorage.setItem(scopedLastWorkflowTabKey(projectRoot), tab);
-  } catch {
-    /* ignore */
-  }
-}
 
 function parseParams(search: string): URLSearchParams {
   return new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
@@ -114,16 +84,11 @@ function PRsPageInner({ active }: { active: boolean }) {
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
   const {
-    activeTab,
-    setActiveTab,
     prs,
     lanes,
     mergeMethod,
     selectedPrId,
     setSelectedPrId,
-    rebaseNeeds,
-    selectedRebaseItemId,
-    setSelectedRebaseItemId,
     loading,
     error,
     refresh,
@@ -132,8 +97,6 @@ function PRsPageInner({ active }: { active: boolean }) {
   const [createPrOpen, setCreatePrOpen] = React.useState(false);
   const [createPrInitialValues, setCreatePrInitialValues] = React.useState<CreatePrModalInitialValues | null>(null);
   const consumedCreateRouteKeyRef = React.useRef<string | null>(null);
-  const [lastWorkflowTab, setLastWorkflowTab] = React.useState<WorkflowCategory>(() => readLastWorkflowTab(projectRoot));
-  const [integrationRefreshNonce, setIntegrationRefreshNonce] = React.useState(0);
   const hasProjectSidebar = useHasProjectSidebar();
   const [listHost, setListHost] = React.useState<HTMLElement | null>(null);
   const lastRouteLocationKeyRef = React.useRef<string | null>(null);
@@ -164,26 +127,12 @@ function PRsPageInner({ active }: { active: boolean }) {
   });
   const visibleLanes = lanes;
 
-  React.useEffect(() => {
-    if (activeTab !== "normal") {
-      setLastWorkflowTab(activeTab);
-      writeLastWorkflowTab(projectRoot, activeTab);
-    }
-  }, [activeTab, projectRoot]);
-
-  React.useEffect(() => {
-    if (activeTab === "normal") {
-      setLastWorkflowTab(readLastWorkflowTab(projectRoot));
-    }
-  }, [activeTab, projectRoot]);
-
   const handleRefresh = React.useCallback(async (args: PrRefreshArgs = {}) => {
     const targeted = Boolean(args.prId || (args.prIds?.length ?? 0) > 0);
     await Promise.all([
       refresh(args),
       targeted ? Promise.resolve() : refreshLanes({ includeStatus: false, includeSnapshots: false }).catch(() => {}),
     ]);
-    if (!targeted) setIntegrationRefreshNonce((prev) => prev + 1);
   }, [refresh, refreshLanes]);
 
   const handleSelectPr = React.useCallback((id: string | null, target: PrRouteSelectionTarget | null) => {
@@ -211,7 +160,6 @@ function PRsPageInner({ active }: { active: boolean }) {
     await handleRefresh();
     const first = created[0];
     if (!first) return;
-    setActiveTab("normal");
     setSelectedPrId(first.id);
     setSelectedPrTarget({
       prId: first.id,
@@ -219,7 +167,7 @@ function PRsPageInner({ active }: { active: boolean }) {
       repoOwner: first.repoOwner,
       repoName: first.repoName,
     });
-  }, [handleRefresh, setActiveTab, setSelectedPrId, setSelectedPrTarget]);
+  }, [handleRefresh, setSelectedPrId, setSelectedPrTarget]);
 
   React.useEffect(() => {
     if (!active || location.pathname !== "/prs") return;
@@ -232,68 +180,48 @@ function PRsPageInner({ active }: { active: boolean }) {
           search: location.search,
           hash: window.location.hash,
         });
-        const resolved = resolvePrsActiveTab(routeState);
         const createRequest = readCreatePrRouteRequest({
           search: location.search,
           hash: window.location.hash,
         });
-        const routeRebaseItemId = resolveRouteRebaseSelection({
-          rebaseNeeds,
-          routeItemId: routeState.laneId,
-        });
-
-        // Only a new location moves the surface. This effect also re-runs when
-        // the PR list or workflow data reloads, and switching surfaces is what
-        // triggers that reload: re-applying the not-yet-updated URL then put
-        // the previous surface back, and the two bounced forever (Workflows
-        // never stayed selected).
-        if (locationChanged) setActiveTab(resolved.activeTab);
-
-        if (!resolved.isWorkflowRoute) {
-          const routeTarget = prRouteSelectionTarget(routeState);
-          const hasExplicitPrSelection = routeTarget !== null;
-          const prNumberMatch = routeState.prNumber == null
-            ? null
-            : prs.find((pr) => prRouteCoordinatesMatch(
-              {
-                prNumber: pr.githubPrNumber,
-                repoOwner: pr.repoOwner,
-                repoName: pr.repoName,
-              },
-              routeState,
-            ))?.id ?? null;
-          const localRouteId = routeState.prId && (
-            loading || prs.some((pr) => pr.id === routeState.prId)
-          )
-            ? routeState.prId
-            : null;
-          // Re-applied only when the URL or what it resolves to changes (the
-          // ADE row arriving after load). A plain reload of the PR list must
-          // not put the URL's previous PR back over a row the user just picked
-          // (the list then highlighted one PR while the detail showed another).
-          const selectionKey = `${locationKey}|${localRouteId ?? prNumberMatch ?? ""}`;
-          const selectionChanged = lastAppliedSelectionKeyRef.current !== selectionKey;
-          lastAppliedSelectionKeyRef.current = selectionKey;
-          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
-            // A coordinate route is still valid without an ADE row. Keep the
-            // route target alive, but only hand a local id to PrsContext once
-            // that row is actually present.
-            setSelectedPrId(localRouteId ?? prNumberMatch);
-            setSelectedPrTarget((previous) => (
-              prRouteTargetsEqual(previous, routeTarget) ? previous : routeTarget
-            ));
-          }
-          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
-            setSelectedDetailTab(routeState.detailTab);
-          }
-          if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
-            setGithubSort(routeState.githubSort);
-          }
-        } else {
-          setSelectedPrTarget((previous) => previous === null ? previous : null);
+        const routeTarget = prRouteSelectionTarget(routeState);
+        const hasExplicitPrSelection = routeTarget !== null;
+        const prNumberMatch = routeState.prNumber == null
+          ? null
+          : prs.find((pr) => prRouteCoordinatesMatch(
+            {
+              prNumber: pr.githubPrNumber,
+              repoOwner: pr.repoOwner,
+              repoName: pr.repoName,
+            },
+            routeState,
+          ))?.id ?? null;
+        const localRouteId = routeState.prId && (
+          loading || prs.some((pr) => pr.id === routeState.prId)
+        )
+          ? routeState.prId
+          : null;
+        // Re-applied only when the URL or what it resolves to changes (the
+        // ADE row arriving after load). A plain reload of the PR list must
+        // not put the URL's previous PR back over a row the user just picked
+        // (the list then highlighted one PR while the detail showed another).
+        const selectionKey = `${locationKey}|${localRouteId ?? prNumberMatch ?? ""}`;
+        const selectionChanged = lastAppliedSelectionKeyRef.current !== selectionKey;
+        lastAppliedSelectionKeyRef.current = selectionKey;
+        if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
+          // A coordinate route is still valid without an ADE row. Keep the
+          // route target alive, but only hand a local id to PrsContext once
+          // that row is actually present.
+          setSelectedPrId(localRouteId ?? prNumberMatch);
+          setSelectedPrTarget((previous) => (
+            prRouteTargetsEqual(previous, routeTarget) ? previous : routeTarget
+          ));
         }
-        if (resolved.effectiveWorkflow === "rebase") {
-          setSelectedRebaseItemId(routeRebaseItemId);
+        if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
+          setSelectedDetailTab(routeState.detailTab);
+        }
+        if ((hasExplicitPrSelection && selectionChanged) || locationChanged) {
+          setGithubSort(routeState.githubSort);
         }
         if (createRequest && consumedCreateRouteKeyRef.current !== createRequest.key) {
           consumedCreateRouteKeyRef.current = createRequest.key;
@@ -314,7 +242,7 @@ function PRsPageInner({ active }: { active: boolean }) {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [active, location.hash, location.pathname, location.search, loading, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
+  }, [active, location.hash, location.pathname, location.search, loading, prs, setSelectedPrId]);
 
   React.useEffect(() => {
     if (!active || location.pathname !== "/prs") return;
@@ -349,32 +277,27 @@ function PRsPageInner({ active }: { active: boolean }) {
       && current.prNumber != null
       && prRouteCoordinatesMatch(routeTarget, current),
     );
-    const preserveDeepLinks =
-      activeTab === "normal"
-      && (current.prId === routePrId || sameCoordinateTarget);
+    const preserveDeepLinks = current.prId === routePrId || sameCoordinateTarget;
     const deepLinks = preserveDeepLinks
       ? { eventId: current.eventId, threadId: current.threadId, commitSha: current.commitSha }
       : { eventId: null, threadId: null, commitSha: null };
     const nextSearch = buildPrsRouteSearch({
-      activeTab,
+      activeTab: "normal",
       selectedPrId: routePrId,
       selectedPrNumber: hasPrNumber ? routeTarget?.prNumber ?? null : null,
       repoOwner: hasCoordinates ? routeTarget?.repoOwner ?? null : null,
       repoName: hasCoordinates ? routeTarget?.repoName ?? null : null,
-      selectedRebaseItemId,
-      detailTab: activeTab === "normal" ? selectedDetailTab : null,
-      githubSort: activeTab === "normal" ? githubSort : null,
+      detailTab: selectedDetailTab,
+      githubSort,
       ...deepLinks,
     });
     if (location.search === nextSearch) return;
     void navigate({ pathname: location.pathname, search: nextSearch }, { replace: true });
   }, [
     active,
-    activeTab,
     prs,
     selectedPrId,
     selectedPrTarget,
-    selectedRebaseItemId,
     selectedDetailTab,
     githubSort,
     location.pathname,
@@ -390,8 +313,6 @@ function PRsPageInner({ active }: { active: boolean }) {
     const hashRoute = hash.startsWith("#/prs") ? hash.slice(1) : null;
     writeStoredPrsRoute(hashRoute ?? `${location.pathname}${location.search}`, projectRoot);
   }, [location.hash, location.pathname, location.search, projectRoot]);
-
-  const activeMode: SurfaceMode = activeTab === "normal" ? "github" : "workflows";
 
   const errorContent = error && prs.length === 0 ? (
     <EmptyState title="PRs" description={`Failed to load PRs: ${error}`}>
@@ -440,51 +361,12 @@ function PRsPageInner({ active }: { active: boolean }) {
     </div>
   ) : null;
 
-  // The list column: the surface switch and Create PR on top, then an empty
-  // host that the active surface fills with its own controls and list.
+  // The list column: Create PR on top, then an empty host that the GitHub
+  // view fills with its own controls and list.
   const listColumn = (
     <div className="flex min-h-0 flex-1 flex-col" data-testid="prs-list-column" data-tour="prs.list">
       <div className="flex shrink-0 items-center gap-1.5 px-2.5 pb-2 pt-1">
-        <div
-          role="tablist"
-          aria-label="PR surfaces"
-          className="flex min-w-0 flex-1 items-center gap-0.5 rounded-lg p-0.5"
-          style={{ background: fgTint(3), border: `1px solid ${fgTint(5)}` }}
-        >
-          {([
-            { id: "github", label: "GitHub" },
-            { id: "workflows", label: "Workflows" },
-          ] as Array<{ id: SurfaceMode; label: string }>).map((surface) => {
-            const selected = activeMode === surface.id;
-            return (
-              <button
-                key={surface.id}
-                type="button"
-                role="tab"
-                aria-selected={selected}
-                className={cn(
-                  "flex h-6 min-w-0 flex-1 items-center justify-center rounded-md px-2 transition-colors duration-150",
-                  selected ? "text-fg" : "text-muted-fg hover:text-secondary-fg",
-                )}
-                style={{
-                  fontFamily: SANS_FONT,
-                  fontSize: 11.5,
-                  fontWeight: selected ? 600 : 500,
-                  background: selected ? fgTint(8) : "transparent",
-                }}
-                onClick={() => {
-                  if (surface.id === "github") {
-                    setActiveTab("normal");
-                  } else {
-                    setActiveTab(lastWorkflowTab);
-                  }
-                }}
-              >
-                <span className="truncate">{surface.label}</span>
-              </button>
-            );
-          })}
-        </div>
+        <div className="min-w-0 flex-1" />
         <button
           type="button"
           data-tour="prs.createBtn"
@@ -513,7 +395,7 @@ function PRsPageInner({ active }: { active: boolean }) {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col">
         <PrsListHostProvider host={listHost}>
-          {errorContent ?? loadingContent ?? (activeMode === "github" ? (
+          {errorContent ?? loadingContent ?? (
             <GitHubTab
               lanes={visibleLanes}
               mergeMethod={mergeMethod}
@@ -526,26 +408,8 @@ function PRsPageInner({ active }: { active: boolean }) {
               onSortChange={handleGithubSortChange}
               onRefreshAll={handleRefresh}
               active={active}
-              onOpenRebaseTab={(laneId) => {
-                if (laneId) setSelectedRebaseItemId(laneId);
-                setActiveTab("rebase");
-              }}
             />
-          ) : (
-            <WorkflowsTab
-              activeCategory={activeTab === "normal" ? lastWorkflowTab : activeTab}
-              onChangeCategory={(category) => setActiveTab(category)}
-              onRefreshAll={handleRefresh}
-              selectedPrId={selectedPrId}
-              onSelectPr={setSelectedPrId}
-              onOpenGitHubTab={(prId) => {
-                setSelectedPrId(prId);
-                setActiveTab("normal");
-              }}
-              integrationRefreshNonce={integrationRefreshNonce}
-              active={active}
-            />
-          ))}
+          )}
         </PrsListHostProvider>
       </div>
 

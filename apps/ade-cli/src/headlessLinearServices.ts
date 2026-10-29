@@ -13,7 +13,6 @@ import type { createLaneService } from "../../desktop/src/main/services/lanes/la
 import type { createOperationService } from "../../desktop/src/main/services/history/operationService";
 import type { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import type { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
-import type { LaneWorktreeLockService } from "../../desktop/src/main/services/lanes/laneWorktreeLockService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { createPrService } from "../../desktop/src/main/services/prs/prService";
 import type { createLinearClient } from "../../desktop/src/main/services/cto/linearClient";
@@ -200,7 +199,6 @@ type HeadlessLinearDeps = {
   laneService: ReturnType<typeof createLaneService>;
   operationService: ReturnType<typeof createOperationService>;
   conflictService: ReturnType<typeof createConflictService>;
-  laneWorktreeLockService?: LaneWorktreeLockService | null;
   openExternal?: (url: string) => Promise<void>;
   onGitHubStatusChanged?: (status: HeadlessGitHubStatus) => void;
   getAccountAccessToken?: () => Promise<string | null>;
@@ -3153,9 +3151,6 @@ export function createHeadlessLinearServices(
     githubService,
     projectConfigService: args.projectConfigService,
     conflictService: args.conflictService,
-    // The same lane service desktop main passed: PR-driven lane mutations
-    // take the worktree lease (which auto-pull and other mutators honor).
-    laneWorktreeLockService: args.laneWorktreeLockService ?? null,
     openExternal: args.openExternal ?? (async () => {}),
     // Posts the "PR opened" card (and, through the published hook, proof) onto
     // the lane's Linear issues. Without it the brain skipped Linear entirely.

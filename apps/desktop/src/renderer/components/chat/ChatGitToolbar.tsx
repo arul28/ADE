@@ -385,7 +385,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         repoOwner: pr.repoOwner,
         repoName: pr.repoName,
         selectedLaneId: laneId,
-        selectedRebaseItemId: null,
       })}`,
     });
   }, [laneId, navigate, runtimePin]);
@@ -403,7 +402,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       repoOwner: pr.repoOwner,
       repoName: pr.repoName,
       selectedLaneId: runtimePin ? null : laneId,
-      selectedRebaseItemId: null,
     })}`);
   }, [laneId, navigate, runtimePin]);
 
@@ -628,7 +626,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                   activeTab: "normal",
                   selectedPrId: null,
                   selectedLaneId: laneId,
-                  selectedRebaseItemId: null,
                 })}`);
               }}
             >

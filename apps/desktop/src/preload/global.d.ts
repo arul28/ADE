@@ -660,27 +660,8 @@ import type {
   CreatePrFromLaneArgs,
   AddGitHubPrStackPullRequestsArgs,
   CreateGitHubPrStackArgs,
-  SimulateIntegrationArgs,
-  IntegrationProposal,
-  IntegrationResolutionState,
-  CreateIntegrationLaneForProposalArgs,
-  CreateIntegrationLaneForProposalResult,
-  StartIntegrationResolutionArgs,
-  StartIntegrationResolutionResult,
-  RecheckIntegrationStepArgs,
-  RecheckIntegrationStepResult,
-  PrAiResolutionStartArgs,
-  PrAiResolutionStartResult,
-  PrAiResolutionGetSessionArgs,
-  PrAiResolutionGetSessionResult,
-  PrAiResolutionInputArgs,
-  PrAiResolutionStopArgs,
-  PrAiResolutionEventPayload,
-  CommitIntegrationArgs,
   PrHealth,
   RebaseNeed,
-  RebaseLaneArgs,
-  RebaseResult,
   RebaseEventPayload,
   RebaseStartArgs,
   RebaseStartResult,
@@ -689,15 +670,8 @@ import type {
   RebaseAbortArgs,
   RebaseRun,
   RebaseRunEventPayload,
-  CleanupIntegrationWorkflowArgs,
-  CleanupIntegrationWorkflowResult,
-  CreateIntegrationPrArgs,
-  CreateIntegrationPrResult,
-  DeleteIntegrationProposalArgs,
-  DeleteIntegrationProposalResult,
   DeletePrArgs,
   DeletePrResult,
-  DismissIntegrationCleanupArgs,
   GitHubPrSnapshot,
   GitHubPrStack,
   LandPrArgs,
@@ -706,7 +680,6 @@ import type {
   UpdateBranchResult,
   LinkPrToLaneArgs,
   ListGitHubPrStacksArgs,
-  ListIntegrationWorkflowsArgs,
   PrActionRun,
   PrActivityEvent,
   PrWorkflowGraph,
@@ -724,7 +697,6 @@ import type {
   PrDetailBundle,
   PrEventPayload,
   PrFile,
-  PrMergeContext,
   PrReview,
   PrReviewThread,
   PrReviewThreadComment,
@@ -766,7 +738,6 @@ import type {
   SetPrDraftArgs,
   RerunPrChecksArgs,
   PrAgentPermissionMode,
-  UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   ListOverlapsArgs,
   LaneGitHubIssue,
@@ -4731,58 +4702,8 @@ declare global {
           baseBranch: string;
         }) => Promise<void>;
         openInGitHub: (prId: string) => Promise<void>;
-        createIntegration: (
-          args: CreateIntegrationPrArgs,
-        ) => Promise<CreateIntegrationPrResult>;
-        simulateIntegration: (
-          args: SimulateIntegrationArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<IntegrationProposal>;
-        commitIntegration: (
-          args: CommitIntegrationArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<CreateIntegrationPrResult>;
-        listProposals(pin?: OpenProjectBinding | null): Promise<IntegrationProposal[]>;
-        updateProposal(args: UpdateIntegrationProposalArgs, pin?: OpenProjectBinding | null): Promise<void>;
-        deleteProposal(
-          args: DeleteIntegrationProposalArgs,
-          pin?: OpenProjectBinding | null,
-        ): Promise<DeleteIntegrationProposalResult>;
-        createIntegrationLaneForProposal(
-          args: CreateIntegrationLaneForProposalArgs,
-          pin?: OpenProjectBinding | null,
-        ): Promise<CreateIntegrationLaneForProposalResult>;
-        startIntegrationResolution(
-          args: StartIntegrationResolutionArgs,
-        ): Promise<StartIntegrationResolutionResult>;
-        recheckIntegrationStep(
-          args: RecheckIntegrationStepArgs,
-          pin?: OpenProjectBinding | null,
-        ): Promise<RecheckIntegrationStepResult>;
-        getIntegrationResolutionState(
-          proposalId: string,
-          pin?: OpenProjectBinding | null,
-        ): Promise<IntegrationResolutionState | null>;
-        aiResolutionStart(
-          args: PrAiResolutionStartArgs,
-          pin?: OpenProjectBinding | null,
-        ): Promise<PrAiResolutionStartResult>;
-        aiResolutionGetSession(
-          args: PrAiResolutionGetSessionArgs,
-          pin?: OpenProjectBinding | null,
-        ): Promise<PrAiResolutionGetSessionResult>;
-        aiResolutionInput(args: PrAiResolutionInputArgs): Promise<void>;
-        aiResolutionStop(args: PrAiResolutionStopArgs): Promise<void>;
-        onAiResolutionEvent: (
-          cb: (ev: PrAiResolutionEventPayload) => void,
-          pin?: OpenProjectBinding | null,
-        ) => () => void;
         getHealth: (prId: string) => Promise<PrHealth>;
         getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis | null>;
-        getMergeContext: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrMergeContext>;
-        getMergeContexts: (
-          prIds: string[],
-        ) => Promise<Record<string, PrMergeContext>>;
         listWithConflicts: (args?: {
           includeConflictAnalysis?: boolean;
         }) => Promise<PrWithConflicts[]>;
@@ -4827,10 +4748,6 @@ declare global {
           sessionId: string;
           prId?: string | null;
         }, pin?: OpenProjectBinding | null) => Promise<StackLinkOffer | null>;
-        listIntegrationWorkflows: (
-          args?: ListIntegrationWorkflowsArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<IntegrationProposal[]>;
         onEvent: (
           cb: (ev: PrEventPayload) => void,
           pin?: OpenProjectBinding | null,
@@ -4886,14 +4803,6 @@ declare global {
         setDraft: (args: SetPrDraftArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         setAutoMerge: (args: SetPrAutoMergeArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         rerunChecks: (args: RerunPrChecksArgs, pin?: OpenProjectBinding | null) => Promise<void>;
-        dismissIntegrationCleanup: (
-          args: DismissIntegrationCleanupArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<IntegrationProposal>;
-        cleanupIntegrationWorkflow: (
-          args: CleanupIntegrationWorkflowArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<CleanupIntegrationWorkflowResult>;
         getDeployments: (prId: string, pin?: OpenProjectBinding | null) => Promise<PrDeployment[]>;
         postReviewComment: (
           args: PostPrReviewCommentArgs,
@@ -4910,9 +4819,6 @@ declare global {
       rebase: {
         scanNeeds: (pin?: OpenProjectBinding | null) => Promise<RebaseNeed[]>;
         getNeed: (laneId: string, pin?: OpenProjectBinding | null) => Promise<RebaseNeed | null>;
-        dismiss: (laneId: string, pin?: OpenProjectBinding | null) => Promise<void>;
-        defer: (laneId: string, until: string, pin?: OpenProjectBinding | null) => Promise<void>;
-        execute: (args: RebaseLaneArgs, pin?: OpenProjectBinding | null) => Promise<RebaseResult>;
         onEvent: (cb: (ev: RebaseEventPayload) => void, pin?: OpenProjectBinding | null) => () => void;
       };
       history: {

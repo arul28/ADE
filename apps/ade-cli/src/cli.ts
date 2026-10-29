@@ -1338,7 +1338,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
                                                     Send a push to the phones on your ADE account
     $ ade mcp status | on | off | token create | activity
                                                     ADE MCP: let AI apps (claude.ai, ChatGPT, Cursor) use this computer
-    $ ade prs list | create | show | checks          Manage PRs, queues, and GitHub integration
+    $ ade prs list | create | show | checks          Manage PRs and their GitHub state
     $ ade shell start | write | resize | close      Launch and control tracked shell sessions
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
@@ -2338,7 +2338,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade git user-identity --lane <lane> --text    Read lane checkout's git user.name/email
     $ ade git stash push|list|apply|pop|drop        Use ADE lane stash actions
                                                     pop/drop resolve the saved stash OID before changing it
-    $ ade git rebase --lane <lane> --ai             Rebase with ADE conflict support
+    $ ade git rebase --lane <lane>                  Rebase the lane onto its base
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
     $ ade git merge --lane <lane>                   Merge origin/<base> into the lane; undone on conflict
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
@@ -8228,11 +8228,7 @@ function buildGitPlan(args: string[]): CliPlan {
       kind: "execute",
       label: "rebase lane",
       steps: [
-        actionCallStep(
-          "result",
-          "rebase_lane",
-          withLane({ aiAssisted: readFlag(args, ["--ai", "--ai-assisted"]) }),
-        ),
+        actionCallStep("result", "rebase_lane", withLane()),
       ],
     };
   }
@@ -9007,7 +9003,6 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
     deployments: "getDeployments",
     github: "openInGitHub",
     "conflict-analysis": "getConflictAnalysis",
-    "merge-context": "getMergeContext",
   };
   if (scalarPrActions[sub]) {
     const id = requireValue(prId ?? firstPositional(args), "prId");
@@ -9447,82 +9442,12 @@ function buildPrPlan(args: string[], explicitProjectRoot: string | null = null):
         label: "PR conflicts list",
         steps: [actionArgsListStep("result", "pr", "listWithConflicts", [])],
       };
+    if (mode !== "analysis") throw new CliUsageError("prs conflicts supports list and analysis.");
     const id = requireValue(prId ?? firstPositional(args), "prId");
-    const action =
-      mode === "analysis" ? "getConflictAnalysis" : "getMergeContext";
     return {
       kind: "execute",
-      label: `PR conflicts ${mode}`,
-      steps: [actionArgsListStep("result", "pr", action, [id])],
-    };
-  }
-
-  if (sub === "integration") {
-    const mode = firstPositional(args) ?? "simulate";
-    const integrationMap: Record<string, string> = {
-      proposals: "listIntegrationProposals",
-      workflows: "listIntegrationWorkflows",
-      update: "updateIntegrationProposal",
-      delete: "deleteIntegrationProposal",
-      commit: "commitIntegration",
-      "resolve-start": "startIntegrationResolution",
-      "resolve-state": "getIntegrationResolutionState",
-      "recheck-step": "recheckIntegrationStep",
-    };
-    if (integrationMap[mode]) {
-      return {
-        kind: "execute",
-        label: `integration ${mode}`,
-        steps: [
-          actionStep(
-            "result",
-            "pr",
-            integrationMap[mode]!,
-            collectGenericObjectArgs(args),
-          ),
-        ],
-      };
-    }
-    if (mode === "lane") {
-      const laneMode = firstPositional(args) ?? "create";
-      if (laneMode !== "create")
-        throw new CliUsageError("prs integration lane supports create.");
-      return {
-        kind: "execute",
-        label: "integration lane create",
-        steps: [
-          actionStep(
-            "result",
-            "pr",
-            "createIntegrationLane",
-            collectGenericObjectArgs(args),
-          ),
-        ],
-      };
-    }
-    if (mode === "cleanup") {
-      const cleanupMode = firstPositional(args) ?? "run";
-      return {
-        kind: "execute",
-        label: `integration cleanup ${cleanupMode}`,
-        steps: [
-          actionStep(
-            "result",
-            "pr",
-            cleanupMode === "dismiss"
-              ? "dismissIntegrationCleanup"
-              : "cleanupIntegrationWorkflow",
-            collectGenericObjectArgs(args),
-          ),
-        ],
-      };
-    }
-    const tool =
-      mode === "create" ? "create_integration" : "simulate_integration";
-    return {
-      kind: "execute",
-      label: `integration ${mode}`,
-      steps: [actionCallStep("result", tool, collectGenericObjectArgs(args))],
+      label: "PR conflicts analysis",
+      steps: [actionArgsListStep("result", "pr", "getConflictAnalysis", [id])],
     };
   }
 

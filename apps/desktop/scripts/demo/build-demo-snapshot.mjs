@@ -431,8 +431,6 @@ const snapshot = {
   lanes,
   prs: [realPr],
   prSnapshots: [realPrSnapshot],
-  prMergeContexts: [],
-  integrationWorkflows: [],
   rebaseNeeds: [],
   githubSnapshot: null,
   operations: [],

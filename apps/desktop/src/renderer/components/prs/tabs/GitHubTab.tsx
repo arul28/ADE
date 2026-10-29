@@ -81,7 +81,6 @@ export type GitHubTabProps = {
   selectedSort?: GitHubTabSort | null;
   onSortChange?: (sort: GitHubTabSort) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
-  onOpenRebaseTab?: (laneId?: string) => void;
   /** False while the PRs tab is hidden; other machines are only read while it shows. */
   active?: boolean;
 };
@@ -97,7 +96,6 @@ export function GitHubTab({
   selectedSort = null,
   onSortChange,
   onRefreshAll,
-  onOpenRebaseTab,
   active = true,
 }: GitHubTabProps) {
   const navigate = useNavigate();
@@ -856,7 +854,6 @@ export function GitHubTab({
       requestCrossMachineLanesForMachine(selectedForeignRuntime.machine.machineId);
     },
     onNavigate: navigate,
-    onOpenRebaseTab,
     initialDetailTab: selectedDetailTab,
     onDetailTabChange,
     unmapped: false,
@@ -883,7 +880,6 @@ export function GitHubTab({
     mergeMethod,
     onRefresh: handleSync,
     onNavigate: navigate,
-    onOpenRebaseTab,
     initialDetailTab: selectedDetailTab,
     onDetailTabChange,
     // No Unmap button: unmapping is not a user task. The link is plumbing that

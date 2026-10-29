@@ -104,13 +104,13 @@ fix it. So:
 ## Rebase and conflicts
 
 ```bash
-ade git rebase --lane <lane> --ai --text
+ade git rebase --lane <lane> --text
 ade git conflict show --lane <lane> --text
 ade git rebase continue --lane <lane> --text
 ```
 
-`--ai` runs the rebase with ADE's AI-assisted conflict support;
-`ade git conflict show` prints ADE's view of the conflicted files.
+`ade git conflict show` prints ADE's view of the conflicted files. Resolve
+them yourself, then `ade git rebase continue`.
 
 A branch that is already pushed should not be rebased (that rewrites it).
 Merge its base in instead:

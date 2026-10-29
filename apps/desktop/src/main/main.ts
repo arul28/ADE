@@ -4423,7 +4423,6 @@ app.whenReady().then(async () => {
       githubService,
       projectConfigService,
       conflictService,
-      laneWorktreeLockService,
       getLinearIssueTracker: () => linearIssueTrackerRef,
       getLinearLiveStatusService: () => linearLiveStatusServiceRef,
       onHotRefreshChanged: () => {

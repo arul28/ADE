@@ -559,8 +559,6 @@ import type {
   CreatePrFromLaneArgs,
   DeletePrArgs,
   DeletePrResult,
-  DeleteIntegrationProposalArgs,
-  DeleteIntegrationProposalResult,
   LinkPrToLaneArgs,
   PrEventPayload,
   PrCheck,
@@ -609,7 +607,6 @@ import type {
   SetPrAutoMergeArgs,
   SetPrDraftArgs,
   RerunPrChecksArgs,
-  UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
   LandResult,
@@ -838,30 +835,7 @@ import type {
   SuggestResolverTargetResult,
   AddGitHubPrStackPullRequestsArgs,
   CreateGitHubPrStackArgs,
-  CreateIntegrationPrArgs,
-  CreateIntegrationPrResult,
-  SimulateIntegrationArgs,
-  IntegrationProposal,
-  IntegrationResolutionState,
   ListGitHubPrStacksArgs,
-  ListIntegrationWorkflowsArgs,
-  CreateIntegrationLaneForProposalArgs,
-  CreateIntegrationLaneForProposalResult,
-  StartIntegrationResolutionArgs,
-  StartIntegrationResolutionResult,
-  RecheckIntegrationStepArgs,
-  RecheckIntegrationStepResult,
-  DismissIntegrationCleanupArgs,
-  CleanupIntegrationWorkflowArgs,
-  CleanupIntegrationWorkflowResult,
-  PrAiResolutionStartArgs,
-  PrAiResolutionStartResult,
-  PrAiResolutionGetSessionArgs,
-  PrAiResolutionGetSessionResult,
-  PrAiResolutionInputArgs,
-  PrAiResolutionStopArgs,
-  PrAiResolutionEventPayload,
-  CommitIntegrationArgs,
   GitHubPrSnapshot,
   GitHubPrStack,
   UnstackGitHubPrStackArgs,
@@ -872,14 +846,11 @@ import type {
   PrChatSessionLink,
   StackLinkOffer,
   PrConflictAnalysis,
-  PrMergeContext,
   PrHealth,
   PrDetailBundle,
   PrSnapshotHydration,
   PrWithConflicts,
   RebaseNeed,
-  RebaseLaneArgs,
-  RebaseResult,
   RebaseEventPayload,
   RebaseStartArgs,
   RebaseStartResult,
@@ -3029,12 +3000,6 @@ const remotePrEventFanout = createRemoteRuntimeFanout<PrEventPayload>({
   label: "PR",
   onSubscribe: () => ensureRemoteRuntimeEventPump(),
 });
-const remotePrAiResolutionEventFanout =
-  createRemoteRuntimeFanout<PrAiResolutionEventPayload>({
-    eventType: "pr_ai_resolution_event",
-    label: "PR AI resolution",
-    onSubscribe: () => ensureRemoteRuntimeEventPump(),
-  });
 const remoteProjectStateEventFanout = createRemoteRuntimeFanout<AdeProjectEvent>({
   eventType: "project_state_event",
   label: "project state",
@@ -3153,7 +3118,6 @@ export const REMOTE_RUNTIME_FANOUTS: readonly RemoteRuntimeFanoutEntry[] = [
   remoteTestEventFanout,
   remoteFileChangeEventFanout,
   remotePrEventFanout,
-  remotePrAiResolutionEventFanout,
   remoteProjectStateEventFanout,
   remoteSyncStatusEventFanout,
   remoteUsageUpdateEventFanout,
@@ -3816,12 +3780,6 @@ function subscribeRemoteFileChangeEvents(
   cb: (payload: FileChangeEvent) => void,
 ): () => void {
   return remoteFileChangeEventFanout.subscribe(cb);
-}
-
-function subscribeRemotePrAiResolutionEvents(
-  cb: (payload: PrAiResolutionEventPayload) => void,
-): () => void {
-  return remotePrAiResolutionEventFanout.subscribe(cb);
 }
 
 function subscribeRemotePrEvents(
@@ -13070,49 +13028,6 @@ const adeBridge = {
       }
       await ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId });
     },
-    createIntegration: (
-      args: CreateIntegrationPrArgs,
-    ): Promise<CreateIntegrationPrResult> =>
-      callProjectRuntimeActionOr("pr", "createIntegrationPr", { args }, () =>
-        ipcRenderer.invoke(IPC.prsCreateIntegration, args),
-      ),
-    simulateIntegration: (
-      args: SimulateIntegrationArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<IntegrationProposal> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "simulateIntegration", { args }, () =>
-        ipcRenderer.invoke(IPC.prsSimulateIntegration, args),
-      ),
-    commitIntegration: (
-      args: CommitIntegrationArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<CreateIntegrationPrResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "commitIntegration", { args }, () =>
-        ipcRenderer.invoke(IPC.prsCommitIntegration, args),
-      ),
-    listProposals: (pin?: OpenProjectBinding | null): Promise<IntegrationProposal[]> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "listIntegrationProposals", {}, () =>
-        ipcRenderer.invoke(IPC.prsListProposals),
-      ),
-    updateProposal: (args: UpdateIntegrationProposalArgs, pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "updateIntegrationProposal",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsUpdateProposal, args),
-      ),
-    deleteProposal: (
-      args: DeleteIntegrationProposalArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<DeleteIntegrationProposalResult> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "deleteIntegrationProposal",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsDeleteProposal, args),
-      ),
     getHealth: (prId: string): Promise<PrHealth> =>
       callProjectRuntimeActionOr("pr", "getPrHealth", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
@@ -13123,17 +13038,6 @@ const adeBridge = {
         "getConflictAnalysis",
         { arg: prId },
         () => ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
-      ),
-    getMergeContext: (prId: string, pin?: OpenProjectBinding | null): Promise<PrMergeContext> =>
-      callPrReadRuntimeActionOr(pin, "getMergeContext", { arg: prId }, () =>
-        ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
-      ),
-    getMergeContexts: (prIds: string[]): Promise<Record<string, PrMergeContext>> =>
-      callPrReadRuntimeActionOr(
-        null,
-        "getMergeContexts",
-        { argsList: [prIds] },
-        () => ipcRenderer.invoke(IPC.prsGetMergeContexts, { prIds }),
       ),
     listWithConflicts: (args: { includeConflictAnalysis?: boolean } = {}): Promise<PrWithConflicts[]> =>
       callPrReadRuntimeActionOr(null, "listWithConflicts", { args }, () =>
@@ -13275,100 +13179,6 @@ const adeBridge = {
         { args },
         () => ipcRenderer.invoke(IPC.prsGetStackLinkOffer, args),
       ),
-    listIntegrationWorkflows: (
-      args: ListIntegrationWorkflowsArgs = {},
-      pin?: OpenProjectBinding | null,
-    ): Promise<IntegrationProposal[]> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "listIntegrationWorkflows",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsListIntegrationWorkflows, args),
-      ),
-    createIntegrationLaneForProposal: (
-      args: CreateIntegrationLaneForProposalArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<CreateIntegrationLaneForProposalResult> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "createIntegrationLaneForProposal",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsCreateIntegrationLaneForProposal, args),
-      ),
-    startIntegrationResolution: (
-      args: StartIntegrationResolutionArgs,
-    ): Promise<StartIntegrationResolutionResult> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "startIntegrationResolution",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsStartIntegrationResolution, args),
-      ),
-    getIntegrationResolutionState: (
-      proposalId: string,
-      pin?: OpenProjectBinding | null,
-    ): Promise<IntegrationResolutionState | null> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "getIntegrationResolutionState",
-        { arg: proposalId },
-        () =>
-          ipcRenderer.invoke(IPC.prsGetIntegrationResolutionState, {
-            proposalId,
-          }),
-      ),
-    recheckIntegrationStep: (
-      args: RecheckIntegrationStepArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<RecheckIntegrationStepResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "recheckIntegrationStep", { args }, () =>
-        ipcRenderer.invoke(IPC.prsRecheckIntegrationStep, args),
-      ),
-    aiResolutionStart: (
-      args: PrAiResolutionStartArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<PrAiResolutionStartResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "aiResolutionStart", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiResolutionStart, args),
-      ),
-    aiResolutionGetSession: (
-      args: PrAiResolutionGetSessionArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<PrAiResolutionGetSessionResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "pr", "aiResolutionGetSession", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiResolutionGetSession, args),
-      ),
-    aiResolutionInput: (args: PrAiResolutionInputArgs): Promise<void> =>
-      callProjectRuntimeActionOr("pr", "aiResolutionInput", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiResolutionInput, args),
-      ),
-    aiResolutionStop: (args: PrAiResolutionStopArgs): Promise<void> =>
-      callProjectRuntimeActionOr("pr", "aiResolutionStop", { args }, () =>
-        ipcRenderer.invoke(IPC.prsAiResolutionStop, args),
-      ),
-    onAiResolutionEvent: (cb: (ev: PrAiResolutionEventPayload) => void, pin?: OpenProjectBinding | null) => {
-      // A resolver on another machine reports from that machine's runtime.
-      const removePinned = subscribePinnedProjectRuntimeEvents(
-        pin,
-        (payload) => toWrappedEvent<PrAiResolutionEventPayload>(payload, "pr_ai_resolution_event"),
-        cb,
-        "PR AI resolution",
-      );
-      if (removePinned) return removePinned;
-      const listener = (
-        _event: Electron.IpcRendererEvent,
-        payload: PrAiResolutionEventPayload,
-      ) => cb(payload);
-      ipcRenderer.on(IPC.prsAiResolutionEvent, listener);
-      const unsubscribeRemote = subscribeRemotePrAiResolutionEvents(cb);
-      return () => {
-        unsubscribeRemote();
-        ipcRenderer.removeListener(IPC.prsAiResolutionEvent, listener);
-      };
-    },
     onEvent: (cb: (ev: PrEventPayload) => void, pin?: OpenProjectBinding | null) => {
       // A pinned surface reads its PRs from the lane's machine, so it must hear
       // that machine's `prs-updated` too — the bound runtime's feed describes a
@@ -13543,28 +13353,6 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr(pin, "pr", "rerunChecks", { args }, () =>
         ipcRenderer.invoke(IPC.prsRerunChecks, args),
       ),
-    dismissIntegrationCleanup: async (
-      args: DismissIntegrationCleanupArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<IntegrationProposal> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "dismissIntegrationCleanup",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsDismissIntegrationCleanup, args),
-      ),
-    cleanupIntegrationWorkflow: async (
-      args: CleanupIntegrationWorkflowArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<CleanupIntegrationWorkflowResult> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "pr",
-        "cleanupIntegrationWorkflow",
-        { args },
-        () => ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
-      ),
     getDeployments: async (prId: string, pin?: OpenProjectBinding | null): Promise<PrDeployment[]> =>
       callPrReadRuntimeActionOr(pin, "getDeployments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
@@ -13608,26 +13396,6 @@ const adeBridge = {
         "getRebaseNeed",
         { arg: laneId },
         () => ipcRenderer.invoke(IPC.rebaseGetNeed, { laneId }),
-      ),
-    dismiss: async (laneId: string, pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "conflicts",
-        "dismissRebase",
-        { arg: laneId },
-        () => ipcRenderer.invoke(IPC.rebaseDismiss, { laneId }),
-      ).then(() => undefined),
-    defer: async (laneId: string, until: string, pin?: OpenProjectBinding | null): Promise<void> =>
-      callPinnedOrBoundRuntimeActionOr(
-        pin,
-        "conflicts",
-        "deferRebase",
-        { argsList: [laneId, until] },
-        () => ipcRenderer.invoke(IPC.rebaseDefer, { laneId, until }),
-      ).then(() => undefined),
-    execute: async (args: RebaseLaneArgs, pin?: OpenProjectBinding | null): Promise<RebaseResult> =>
-      callPinnedOrBoundRuntimeActionOr(pin, "conflicts", "rebaseLane", { args }, () =>
-        ipcRenderer.invoke(IPC.rebaseExecute, args),
       ),
     onEvent: (cb: (ev: RebaseEventPayload) => void, pin?: OpenProjectBinding | null) => {
       const removePinned = subscribePinnedProjectRuntimeEvents(

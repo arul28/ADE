@@ -5,16 +5,10 @@ import type { PrChatWatchSummary } from "../prWatch";
 // PR types
 // ---------------------------------------------------------------------------
 
-import type {
-  ConflictFileType,
-  ConflictResolverOriginSurface,
-  ConflictResolverPermissionMode,
-  ConflictRiskLevel,
-  ExternalConflictResolverProvider,
-} from "./conflicts";
+import type { ConflictRiskLevel } from "./conflicts";
 import type { AgentChatPermissionMode } from "./chat";
 import type { GitHubRepoRef } from "./git";
-import type { LaneSummary, RebaseTargetCommit } from "./lanes";
+import type { LaneSummary } from "./lanes";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
 /**
@@ -435,12 +429,9 @@ export type GitHubPrListItem = {
   createdAt: string;
   updatedAt: string;
   linkedPrId: string | null;
-  linkedGroupId: string | null;
   linkedLaneId: string | null;
   linkedLaneName: string | null;
-  adeKind: "single" | "integration" | null;
-  workflowDisplayState: IntegrationWorkflowDisplayState | null;
-  cleanupState: IntegrationCleanupState | null;
+  adeKind: "single" | null;
   labels: PrLabel[];
   isBot: boolean;
   commentCount: number;
@@ -593,42 +584,6 @@ export type PrEventPayload =
       repoName: string;
       headBranch: string;
       githubUrl: string;
-    }
-  | {
-      type: "integration-step";
-      groupId: string;
-      laneId: string;
-      outcome: IntegrationProposalStep["outcome"];
-      position: number;
-      timestamp: string;
-    }
-  | {
-      type: "integration-state";
-      groupId: string;
-      flowState: IntegrationFlowState;
-      timestamp: string;
-    }
-  | {
-      type: "rebase-status";
-      laneId: string;
-      behindBy: number;
-      conflictPredicted: boolean;
-      timestamp: string;
-    }
-  | {
-      type: "resolution-progress";
-      laneId: string;
-      provider: "codex" | "claude";
-      confidence: number;
-      filesResolved: number;
-      filesTotal: number;
-      timestamp: string;
-    }
-  | {
-      type: "proposal-stale";
-      proposalId: string;
-      reason: string;
-      timestamp: string;
     }
   | {
       // Emitted by prService.reconcileOnFocus around a catch-up reconcile so the
@@ -838,330 +793,8 @@ export type DeletePrResult = {
   laneArchiveError: string | null;
 };
 
-// --------------------------------
-// PR Tab Enhancement (Phase 8+)
-// --------------------------------
-
-export type PrGroupType = "integration";
-export type PrGroupMemberRole = "source" | "integration" | "target";
-
-export type PrGroup = {
-  id: string;
-  projectId: string;
-  groupType: PrGroupType;
-  createdAt: string;
-};
-
-export type PrGroupMember = {
-  groupId: string;
-  prId: string;
-  laneId: string;
-  position: number;
-  role: PrGroupMemberRole;
-};
-
-export type PrGroupContextMember = {
-  prId: string;
-  laneId: string;
-  laneName: string;
-  prNumber: number | null;
-  position: number;
-  role: PrGroupMemberRole;
-};
-
-export type PrMergeContext = {
-  prId: string;
-  groupId: string | null;
-  groupType: PrGroupType | null;
-  sourceLaneIds: string[];
-  targetLaneId: string | null;
-  integrationLaneId: string | null;
-  members: PrGroupContextMember[];
-};
-
-export type CreateIntegrationPrArgs = {
-  sourceLaneIds: string[];
-  integrationLaneName: string;
-  baseBranch: string;
-  title: string;
-  body?: string;
-  draft?: boolean;
-  allowDirtyWorktree?: boolean;
-  /** When set, merges sources into this existing lane instead of creating a new lane. */
-  existingIntegrationLaneId?: string | null;
-};
-
-export type CreateIntegrationPrResult = {
-  groupId: string;
-  integrationLaneId: string;
-  pr: PrSummary;
-  mergeResults: Array<{ laneId: string; success: boolean; error?: string }>;
-};
-
-// --------------------------------
-// Integration Proposal Types
-// --------------------------------
-
-export type IntegrationProposalStep = {
-  laneId: string;
-  laneName: string;
-  position: number;
-  outcome: "clean" | "conflict" | "blocked" | "pending";
-  conflictingFiles: Array<{
-    path: string;
-    conflictType?: ConflictFileType | null;
-    conflictMarkers: string;
-    oursExcerpt: string | null;
-    theirsExcerpt: string | null;
-    diffHunk: string | null;
-  }>;
-  diffStat: { insertions: number; deletions: number; filesChanged: number };
-};
-
-export type IntegrationPairwiseResult = {
-  laneAId: string;
-  laneAName: string;
-  laneBId: string;
-  laneBName: string;
-  outcome: "clean" | "conflict";
-  conflictingFiles: Array<{
-    path: string;
-    conflictType?: ConflictFileType | null;
-    conflictMarkers: string;
-    oursExcerpt: string | null;
-    theirsExcerpt: string | null;
-    diffHunk: string | null;
-  }>;
-};
-
-export type IntegrationLaneSummary = {
-  laneId: string;
-  laneName: string;
-  outcome: "clean" | "conflict" | "blocked";
-  commitHash: string;
-  commitCount: number;
-  conflictsWith: string[];
-  diffStat: { insertions: number; deletions: number; filesChanged: number };
-};
-
-export type IntegrationLaneOrigin = "ade-created" | "adopted";
-export type IntegrationWorkflowDisplayState = "active" | "history";
-export type IntegrationCleanupState = "none" | "required" | "declined" | "completed";
-
-export type IntegrationProposal = {
-  proposalId: string;
-  sourceLaneIds: string[];
-  baseBranch: string;
-  pairwiseResults: IntegrationPairwiseResult[];
-  laneSummaries: IntegrationLaneSummary[];
-  // Kept for backward compatibility with existing consumers.
-  steps: IntegrationProposalStep[];
-  overallOutcome: "clean" | "conflict" | "blocked";
-  createdAt: string;
-  title?: string;
-  body?: string;
-  draft?: boolean;
-  integrationLaneName?: string;
-  /** Preferred integration lane when none exists yet (merge sources here instead of a new lane). */
-  preferredIntegrationLaneId?: string | null;
-  /** Git HEAD of preferred merge-into lane at last simulation (for drift warnings). */
-  mergeIntoHeadSha?: string | null;
-  status: "proposed" | "committed";
-  integrationLaneId?: string | null;
-  integrationLaneOrigin?: IntegrationLaneOrigin | null;
-  linkedGroupId?: string | null;
-  linkedPrId?: string | null;
-  workflowDisplayState?: IntegrationWorkflowDisplayState;
-  cleanupState?: IntegrationCleanupState;
-  closedAt?: string | null;
-  mergedAt?: string | null;
-  completedAt?: string | null;
-  cleanupDeclinedAt?: string | null;
-  cleanupCompletedAt?: string | null;
-  resolutionState?: IntegrationResolutionState | null;
-};
-
-export type IntegrationLaneSnapshot = {
-  headSha: string | null;
-  dirty: boolean;
-};
-
-export type IntegrationLaneChangeStatus = "unchanged" | "changed" | "unknown" | "missing";
-
-export type UpdateIntegrationProposalArgs = {
-  proposalId: string;
-  title?: string;
-  body?: string;
-  draft?: boolean;
-  integrationLaneName?: string;
-  preferredIntegrationLaneId?: string | null;
-  /** When clearing preferred lane, also clears stored simulation HEAD (optional; omit to leave unchanged). */
-  mergeIntoHeadSha?: string | null;
-  /**
-   * Clears integration_lane_id and resolution_state_json so the next prepare step can use a new or different lane.
-   * Does not delete lanes in Git.
-   */
-  clearIntegrationBinding?: boolean;
-};
-
-export type ListIntegrationWorkflowsArgs = {
-  view?: IntegrationWorkflowDisplayState | "all";
-};
-
-export type SimulateIntegrationArgs = {
-  sourceLaneIds: string[];
-  baseBranch: string;
-  persist?: boolean;
-  /**
-   * When set, sequential merge preview starts at this lane's current HEAD and extra merge-tree checks run
-   * (integration head vs each source). Child-vs-child pairwise simulation still uses `baseBranch` as the merge base.
-   */
-  mergeIntoLaneId?: string | null;
-};
-
-export type CommitIntegrationArgs = {
-  proposalId: string;
-  integrationLaneName: string;
-  title: string;
-  body?: string;
-  draft?: boolean;
-  pauseOnConflict?: boolean;
-  allowDirtyWorktree?: boolean;
-  /** Override stored preference; omit to use the proposal row. */
-  preferredIntegrationLaneId?: string | null;
-};
-
-export type IntegrationStepResolution = "pending" | "merged-clean" | "resolving" | "resolved" | "failed";
-
-export type IntegrationResolutionState = {
-  integrationLaneId: string;
-  stepResolutions: Record<string, IntegrationStepResolution>; // keyed by laneId
-  activeWorkerStepId: string | null;
-  activeLaneId: string | null;
-  createdSnapshot?: IntegrationLaneSnapshot | null;
-  currentSnapshot?: IntegrationLaneSnapshot | null;
-  laneChangeStatus?: IntegrationLaneChangeStatus;
-  updatedAt: string;
-};
-
-export type DeleteIntegrationProposalArgs = {
-  proposalId: string;
-  deleteIntegrationLane?: boolean;
-};
-
-export type DeleteIntegrationProposalResult = {
-  proposalId: string;
-  integrationLaneId: string | null;
-  deletedIntegrationLane: boolean;
-};
-
-export type DismissIntegrationCleanupArgs = {
-  proposalId: string;
-};
-
-export type CleanupIntegrationWorkflowArgs = {
-  proposalId: string;
-  archiveIntegrationLane?: boolean;
-  archiveSourceLaneIds?: string[];
-};
-
-export type CleanupIntegrationWorkflowResult = {
-  proposalId: string;
-  archivedLaneIds: string[];
-  skippedLaneIds: string[];
-  workflowDisplayState: IntegrationWorkflowDisplayState;
-  cleanupState: IntegrationCleanupState;
-};
-
-export type CreateIntegrationLaneForProposalArgs = {
-  proposalId: string;
-  allowDirtyWorktree?: boolean;
-};
-
-export type CreateIntegrationLaneForProposalResult = {
-  integrationLaneId: string;
-  mergedCleanLanes: string[];
-  conflictingLanes: string[];
-};
-
-export type StartIntegrationResolutionArgs = {
-  proposalId: string;
-  laneId: string; // the conflicting source lane to resolve
-};
-
-export type StartIntegrationResolutionResult = {
-  conflictFiles: string[];
-  mergedClean: boolean;
-  integrationLaneId: string;
-};
-
 export type AiPermissionMode = "read_only" | "guarded_edit" | "full_edit";
 export type PrAgentPermissionMode = AiPermissionMode | AgentChatPermissionMode;
-
-export type PrAiResolutionContext = {
-  sourceTab: "rebase" | "normal" | "integration" | "conflicts";
-  sourceLaneId?: string | null;
-  sourceLaneIds?: string[];
-  targetLaneId?: string | null;
-  proposalId?: string | null;
-  integrationLaneId?: string | null;
-  laneId?: string | null;
-  scenario?: "single-merge" | "sequential-merge" | "integration-merge";
-};
-
-export type PrAiResolutionSessionStatus = "idle" | "running" | "completed" | "failed" | "cancelled";
-
-export type PrAiResolutionSessionInfo = {
-  contextKey: string;
-  sessionId: string;
-  provider: "codex" | "claude";
-  model: string | null;
-  modelId: string | null;
-  reasoning: string | null;
-  permissionMode: PrAgentPermissionMode | null;
-  context: PrAiResolutionContext;
-  status: PrAiResolutionSessionStatus;
-};
-
-export type PrAiResolutionStartArgs = {
-  context: PrAiResolutionContext;
-  model: string;
-  reasoning?: string | null;
-  permissionMode?: PrAgentPermissionMode;
-  /** Appended to the generated resolver prompt (integration, merge conflicts, etc.). */
-  additionalInstructions?: string | null;
-};
-
-export type PrAiResolutionStartResult = {
-  sessionId: string;
-  provider: "codex" | "claude";
-  ptyId: string | null;
-  status: "started" | "failed";
-  error: string | null;
-  context: PrAiResolutionContext;
-};
-
-export type PrAiResolutionInputArgs = {
-  sessionId: string;
-  text: string;
-};
-
-export type PrAiResolutionStopArgs = {
-  sessionId: string;
-};
-
-export type PrAiResolutionEventPayload = {
-  sessionId: string;
-  status: "running" | "completed" | "failed" | "cancelled";
-  message: string | null;
-  timestamp: string;
-};
-
-export type PrAiResolutionGetSessionArgs = {
-  context: PrAiResolutionContext;
-};
-
-export type PrAiResolutionGetSessionResult = PrAiResolutionSessionInfo | null;
 
 export type PrIssueResolutionScope = "checks" | "comments" | "both";
 
@@ -1187,20 +820,6 @@ export type PrIssueResolutionPromptPreviewResult = {
   prompt: string;
 };
 
-export type RebaseResolutionStartArgs = {
-  laneId: string;
-  modelId: string;
-  reasoning?: string | null;
-  permissionMode?: PrAgentPermissionMode;
-  forcePushAfterRebase?: boolean;
-};
-
-export type RebaseResolutionStartResult = {
-  sessionId: string;
-  laneId: string;
-  href: string;
-};
-
 export type ReplyToPrReviewThreadArgs = {
   prId: string;
   threadId: string;
@@ -1210,58 +829,6 @@ export type ReplyToPrReviewThreadArgs = {
 export type ResolvePrReviewThreadArgs = {
   prId: string;
   threadId: string;
-};
-
-export function normalizePrAiResolutionContext(context: PrAiResolutionContext): PrAiResolutionContext {
-  const sourceLaneId = context.sourceLaneId?.trim() || null;
-
-  const sourceLaneIdSet = new Set(
-    (context.sourceLaneIds ?? []).map((v) => v.trim()).filter(Boolean),
-  );
-  if (sourceLaneId) sourceLaneIdSet.add(sourceLaneId);
-  const sourceLaneIds = Array.from(sourceLaneIdSet).sort((a, b) => a.localeCompare(b));
-
-  const targetLaneId = context.targetLaneId?.trim() || null;
-  const proposalId = context.proposalId?.trim() || null;
-  const integrationLaneId = context.integrationLaneId?.trim() || null;
-  const laneId = context.laneId?.trim() || null;
-
-  return {
-    sourceTab: context.sourceTab,
-    ...(sourceLaneId ? { sourceLaneId } : {}),
-    ...(sourceLaneIds.length ? { sourceLaneIds } : {}),
-    ...(targetLaneId ? { targetLaneId } : {}),
-    ...(proposalId ? { proposalId } : {}),
-    ...(integrationLaneId ? { integrationLaneId } : {}),
-    ...(laneId ? { laneId } : {}),
-    ...(context.scenario ? { scenario: context.scenario } : {}),
-  };
-}
-
-export function buildPrAiResolutionContextKey(context: PrAiResolutionContext): string {
-  const normalized = normalizePrAiResolutionContext(context);
-  return JSON.stringify({
-    sourceTab: normalized.sourceTab,
-    sourceLaneId: normalized.sourceLaneId ?? null,
-    sourceLaneIds: normalized.sourceLaneIds ?? [],
-    targetLaneId: normalized.targetLaneId ?? null,
-    proposalId: normalized.proposalId ?? null,
-    integrationLaneId: normalized.integrationLaneId ?? null,
-    laneId: normalized.laneId ?? null,
-    scenario: normalized.scenario ?? null,
-  });
-}
-
-export type RecheckIntegrationStepArgs = {
-  proposalId: string;
-  laneId: string;
-};
-
-export type RecheckIntegrationStepResult = {
-  resolution: IntegrationStepResolution;
-  remainingConflictFiles: string[];
-  allResolved: boolean;
-  message: string | null;
 };
 
 // --------------------------------
@@ -1289,16 +856,8 @@ export type RebaseNeed = {
   conflictingFiles: string[];
   /** The lane's own open PR, when it has one. */
   prId: string | null;
-  groupContext: string | null;
-  dismissedAt: string | null;
-  deferredUntil: string | null;
 };
 
-// --------------------------------
-// Integration State Types
-// --------------------------------
-
-export type IntegrationFlowState = "proposal" | "creating" | "merging" | "conflict" | "resolving" | "completed" | "failed";
 // --------------------------------
 // PrHealth Unified Type
 // --------------------------------
@@ -1312,7 +871,6 @@ export type PrHealth = {
   conflictAnalysis: PrConflictAnalysis | null;
   rebaseNeeded: boolean;
   behindBy: number;
-  mergeContext: PrMergeContext | null;
 };
 
 export type PrConflictAnalysis = {
@@ -2181,78 +1739,10 @@ export type PrCreateCapabilities = {
   lanes: PrCreateLaneEligibility[];
 };
 
-/** Workflow card rendered on the mobile PRs surface. */
-export type PrWorkflowCardKind = "integration" | "rebase";
-
-export type PrIntegrationWorkflowCard = {
-  kind: "integration";
-  id: string;
-  proposalId: string;
-  title: string | null;
-  baseBranch: string;
-  overallOutcome: "clean" | "conflict" | "blocked";
-  status: "proposed" | "committed";
-  laneCount: number;
-  conflictLaneCount: number;
-  lanes: Array<{
-    laneId: string;
-    laneName: string;
-    outcome: "clean" | "conflict" | "blocked";
-  }>;
-  workflowDisplayState: IntegrationWorkflowDisplayState;
-  cleanupState: IntegrationCleanupState;
-  linkedPrId: string | null;
-  integrationLaneId: string | null;
-  preferredIntegrationLaneId?: string | null;
-  mergeIntoHeadSha?: string | null;
-  integrationLaneOrigin?: IntegrationLaneOrigin | null;
-  createdAt: string;
-};
-
-export type PrRebaseWorkflowCard = {
-  kind: "rebase";
-  id: string;
-  laneId: string;
-  laneName: string;
-  baseBranch: string;
-  behindBy: number;
-  /** Why the lane needs a rebase (`RebaseNeed.kind`). Older hosts omit it: read as "behind". */
-  needKind?: RebaseNeed["kind"];
-  /** The merged PR the lane was built on, when `needKind` is `built_on_merged`. */
-  mergedPr?: RebaseNeed["mergedPr"];
-  conflictPredicted: boolean;
-  prId: string | null;
-  prNumber: number | null;
-  /** Null when the suggestion has not been dismissed. */
-  dismissedAt: string | null;
-  /** Null when the suggestion has not been deferred. */
-  deferredUntil: string | null;
-  /** Commits the rebase would pull in. Undefined when unavailable or computed by an older host. */
-  targetCommits?: RebaseTargetCommit[];
-  /**
-   * Rebase mode for the lane's most-recent open/draft PR. "auto" means drift
-   * can be fixed by auto-rebase (`pr_target` strategy or no linked PR);
-   * "manual" means the PR carries an immutable base (`lane_base` strategy) so
-   * drift must be surfaced and rebased manually. Undefined on older hosts
-   * (treat as "auto").
-   */
-  rebaseMode?: "auto" | "manual";
-  /**
-   * The stored `creation_strategy` for the lane's most-recent open/draft PR,
-   * or null when no PR is linked. Lets the client render strategy-specific
-   * copy without re-deriving the mode.
-   */
-  creationStrategy?: PrCreationStrategy | null;
-};
-
-export type PrWorkflowCard =
-  | PrIntegrationWorkflowCard
-  | PrRebaseWorkflowCard;
-
 /**
  * One-shot mobile snapshot that aggregates the data the iOS PRs tab
- * needs to render list, detail, workflow cards, stack visibility, and
- * per-PR capability gates in a single payload.
+ * needs to render list, detail, stack visibility, and per-PR capability
+ * gates in a single payload.
  */
 export type PrMobileSnapshot = {
   generatedAt: string;
@@ -2260,7 +1750,6 @@ export type PrMobileSnapshot = {
   stacks: PrStackInfo[];
   capabilities: Record<string, PrActionCapabilities>;
   createCapabilities: PrCreateCapabilities;
-  workflowCards: PrWorkflowCard[];
   /** Mobile clients should surface a "host offline" banner when this is false. */
   live: boolean;
 };

@@ -1,6 +1,6 @@
 ---
 title: "Pull requests"
-description: "Open, review, and merge GitHub PRs from inside ADE — with stacked PRs, a merge queue, and auto-merge."
+description: "Open, review, and merge GitHub PRs from inside ADE — with stacked PRs and auto-merge."
 icon: "code-pull-request"
 ---
 
@@ -38,7 +38,7 @@ The Overview renders as a **Timeline + Rails** layout: a central event timeline 
 
 You can reply to review threads, resolve them, react to comments, request reviewers, and submit your own review — approve, request changes, or comment — without leaving ADE.
 
-The GitHub tab lists every PR in the repository — including ones opened outside ADE — with filters for label, author, and assignee, CI badges, review indicators, and the linked lane's color, so a glance correlates a PR with the lane that produced it. Each PR's size is split into code, tests, and docs, so you can tell a large change from a large test suite.
+The PRs tab lists every PR in the repository — including ones opened outside ADE — with filters for label, author, and assignee, CI badges, review indicators, and the linked lane's color, so a glance correlates a PR with the lane that produced it. Each PR's size is split into code, tests, and docs, so you can tell a large change from a large test suite.
 
 ## Merge it
 
@@ -68,25 +68,9 @@ For a GitHub stack, each lane has its own PR targeting the branch below it. Use 
 
 Each lane in the stack works on its own branch.
 
-## Merge queue
-
-For landing several PRs in sequence, a **merge queue** runs each one through an explicit state machine with visibility into every step.
-
-<AccordionGroup>
-  <Accordion title="How the queue lands PRs" icon="list-check">
-    The queue picks the next pending entry, optionally rebases it if it's behind, waits for CI when **CI gating** is on, then merges it with your chosen method. Each entry moves through `pending` → `rebasing` → `landing` → `landed` (or pauses for attention), and the tab shows where it's stuck and why.
-  </Accordion>
-  <Accordion title="Auto-resolve conflicts" icon="wand-magic-sparkles">
-    With auto-resolve on, a merge conflict during landing launches a Codex or Claude CLI resolver in the lane's worktree. ADE commits and pushes the resolution, then retries the land — so a conflict mid-queue doesn't stall the whole stack.
-  </Accordion>
-  <Accordion title="Pause, resume, cancel, reorder" icon="sliders">
-    A paused queue waits for you; resume it when ready. Cancelling force-fails any in-flight entry cleanly rather than leaving it half-landed, and you can reorder entries before they land.
-  </Accordion>
-</AccordionGroup>
-
 ## Conflict simulation
 
-Before you hit Merge, ADE predicts whether the PR lands cleanly on its base by running `git merge-tree` locally — no actual merge required. A predicted conflict disables the merge button (unless you opt into bypass) and surfaces the conflicting files. The same engine powers integration (merge-plan) proposals and the Rebase view.
+Before you hit Merge, ADE predicts whether the PR lands cleanly on its base by running `git merge-tree` locally — no actual merge required. A predicted conflict disables the merge button (unless you opt into bypass) and surfaces the conflicting files. When updating a PR branch hits conflicts, ADE puts a resolve prompt in the lane's chat.
 
 <Note>
 ADE uses your GitHub authentication. If PR data is missing, check GitHub access in Settings.

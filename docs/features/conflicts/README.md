@@ -11,8 +11,7 @@ is projected into the surfaces where it matters:
   merge simulation, rebase banner.
 - **Graph**: project-wide `RiskMatrix`, pairwise overlap tooltips,
   edge-click merge simulation.
-- **PRs**: blocked/manual rebase UIs, integration (merge-plan)
-  pairwise simulation, issue resolution.
+- **PRs**: conflict analysis on PR rows and issue resolution.
 
 ## Where this runs
 
@@ -245,18 +244,17 @@ External resolver (Codex/Claude CLI):
 | `ade.conflicts.runExternalResolver` | Spawn CLI session, attach/track via session service |
 | `ade.conflicts.listExternalResolverRuns` | Run history for a lane |
 | `ade.conflicts.commitExternalResolverRun` | Stage + commit the resolver's changes |
-| `ade.conflicts.prepareResolverSession` | Build scenario, cwd, integration lane selection |
+| `ade.conflicts.prepareResolverSession` | Build scenario, cwd, and (multi-source) merge lane selection |
 | `ade.conflicts.attachResolverSession`, `.finalizeResolverSession`, `.cancelResolverSession` | Session lifecycle |
 | `ade.conflicts.suggestResolverTarget` | Heuristic target lane suggestion |
 
-Rebase needs / AI rebase:
+Rebase needs:
 
 | Channel | Description |
 |---------|-------------|
 | `ade.conflicts.scanRebaseNeeds` | Compute rebase needs for all lanes |
 | `ade.conflicts.getRebaseNeed` | Single-lane rebase need |
-| `ade.conflicts.dismissRebase` / `.deferRebase` | Suppress a rebase need |
-| `ade.conflicts.rebaseLane` | Run AI-assisted rebase |
+| `ade.conflicts.rebaseLane` | Rebase a lane onto its base (`ade git rebase --lane`) |
 
 ## Surface split
 
@@ -265,9 +263,8 @@ Conflict intelligence lives where it's useful:
 - **Lanes**: status badges, overlap counts, "Open in Graph" jump.
 - **Graph**: `RiskMatrix` with animated transitions, cell tooltips
   with overlap file lists, merge simulation from edge clicks.
-- **PRs > Rebase**: rebase continue/abort, manual attention surface
-  for rebase operations.
-- **PRs > Integration**: pairwise matrix for merge-plan proposals.
+- **PRs**: per-PR conflict analysis; an update that hits conflicts
+  hands a resolve prompt to the lane's chat.
 
 All surfaces consume the same service. Keeping prediction,
 simulation, and proposals behind a single service means the

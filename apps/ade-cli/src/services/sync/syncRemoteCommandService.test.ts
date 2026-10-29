@@ -2219,10 +2219,9 @@ describe("createSyncRemoteCommandService", () => {
     ).rejects.toThrow(/Unsupported remote command/);
   });
 
-  it("keeps destructive PR commands controller-only and rebase.execute queueable", () => {
+  it("keeps destructive PR commands controller-only", () => {
     const { service } = createService();
 
-    expect(service.getDescriptor("rebase.execute")?.policy).toEqual({ viewerAllowed: true, queueable: true });
     expect(service.getDescriptor("prs.delete")?.policy).toEqual({ viewerAllowed: false, queueable: true });
     expect(service.getDescriptor("prs.cleanupBranch")?.policy).toEqual({ viewerAllowed: false, queueable: true });
   });

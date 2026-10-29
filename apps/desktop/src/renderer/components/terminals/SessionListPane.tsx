@@ -2776,7 +2776,6 @@ export const SessionListPane = React.memo(function SessionListPane({
               activeTab: "normal",
               selectedPrId: null,
               selectedLaneId: lane.id,
-              selectedRebaseItemId: null,
             })}`)
           : undefined,
       machineMarker: markersByLaneId.get(markerKey) ?? null,
@@ -3202,7 +3201,6 @@ export const SessionListPane = React.memo(function SessionListPane({
           activeTab: "normal",
           selectedPrId: null,
           selectedLaneId: lane.id,
-          selectedRebaseItemId: null,
         })}`)}
       />
     ) : null;
@@ -3297,7 +3295,6 @@ export const SessionListPane = React.memo(function SessionListPane({
                 activeTab: "normal",
                 selectedPrId: null,
                 selectedLaneId: lane.id,
-                selectedRebaseItemId: null,
               })}`),
               machineMarker,
               laneAppleDevice,

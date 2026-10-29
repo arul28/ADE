@@ -4896,9 +4896,6 @@ export function createLaneService({
       });
     }
 
-    db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
-
     // Soft-detach rather than delete: the PR outlives the lane, and deleting the row is
     // what made every merged PR show up as `unmapped` once its lane was cleaned up.
     // Runs before the session/artifact/checkpoint deletes below, because it counts them.
@@ -5046,8 +5043,6 @@ export function createLaneService({
     db.run("delete from operations where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from packs_index where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from test_runs where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from rebase_deferred where lane_id = ? and project_id = ?", [laneId, projectId]);
-    db.run("delete from rebase_dismissed where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_state_snapshots where lane_id = ?", [laneId]);
     db.run("delete from lane_branch_profiles where lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("delete from lane_worktree_locks where lane_id = ?", [laneId]);
@@ -5278,17 +5273,6 @@ export function createLaneService({
       throw new Error("Primary lane cannot be archived");
     }
     if (row.status === "archived") return null;
-
-    const activeGroupMember = db.get<{ group_id: string }>(
-      `select m.group_id from pr_group_members m
-       join pr_groups g on g.id = m.group_id
-       where m.lane_id = ? and g.project_id = ?
-       limit 1`,
-      [laneId, projectId]
-    );
-    if (activeGroupMember) {
-      throw new Error("Cannot archive a lane that is part of a PR group. Remove from the group first.");
-    }
     return row;
   };
 

@@ -58,11 +58,7 @@ import type {
   RebaseNeed,
   RebaseLaneArgs,
   RebaseResult,
-  IntegrationPairwiseResult,
-  IntegrationProposalStep,
-  IntegrationResolutionState
 } from "../../../shared/types";
-import { buildPrAiResolutionContextKey } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
 import { branchNameFromLaneRef } from "../../../shared/laneBaseResolution";
 import type { Logger } from "../logging/logger";
@@ -148,7 +144,6 @@ type ExternalResolverRunRecord = {
   originSurface: ConflictResolverOriginSurface;
   originRunId: string | null;
   originLabel: string | null;
-  resolverContextKey: string | null;
   command: string[];
   changedFiles: string[];
   summary: string | null;
@@ -181,16 +176,6 @@ type ResolverSessionContext = {
   peerLaneId: string | null;
   preview: ConflictProposalPreview;
   conflictContext: Record<string, unknown> | null;
-};
-
-type IntegrationProposalResolverRow = {
-  id: string;
-  source_lane_ids_json: string;
-  base_branch: string;
-  steps_json: string | null;
-  pairwise_results_json: string | null;
-  resolution_state_json: string | null;
-  integration_lane_id: string | null;
 };
 
 const RISK_SCORE: Record<ConflictRiskLevel, number> = {
@@ -612,28 +597,8 @@ export function createConflictService({
   const pairLocks = new Map<string, Promise<void>>();
   const pairQueued = new Set<string>();
 
-  // Rebase tracking state
-  // Rebase dismiss/defer: persisted to DB, loaded into cache for fast reads
-  const rebaseDismissed = new Map<string, string>(); // laneId -> ISO timestamp
-  const rebaseDeferred = new Map<string, string>();  // laneId -> ISO timestamp (until)
-  const activeRebaseLanes = new Set<string>(); // concurrency guard
-
-  // Load persisted dismiss/defer from DB on init
-  try {
-    const dismissRows = db.all<{ lane_id: string; dismissed_at: string }>(
-      `select lane_id, dismissed_at from rebase_dismissed where project_id = ?`,
-      [projectId]
-    );
-    for (const row of dismissRows) rebaseDismissed.set(row.lane_id, row.dismissed_at);
-
-    const deferRows = db.all<{ lane_id: string; deferred_until: string }>(
-      `select lane_id, deferred_until from rebase_deferred where project_id = ?`,
-      [projectId]
-    );
-    for (const row of deferRows) rebaseDeferred.set(row.lane_id, row.deferred_until);
-  } catch {
-    // Tables may not exist yet — will be created lazily
-  }
+  // Rebase concurrency guard: one rebase per lane at a time.
+  const activeRebaseLanes = new Set<string>();
 
   const runSerializedPairTask = async (pairId: string, task: () => Promise<void>): Promise<void> => {
     const active = pairLocks.get(pairId);
@@ -717,37 +682,6 @@ export function createConflictService({
   };
 
   const externalRunsRootDir = path.join(resolvedPacksRootDir, "external-resolver-runs");
-
-  const resolveResolverSourceTab = (
-    originSurface: ConflictResolverOriginSurface | null | undefined,
-    sourceTab: PrepareResolverSessionArgs["sourceTab"] | null | undefined,
-  ): NonNullable<PrepareResolverSessionArgs["sourceTab"]> => {
-    if (sourceTab) return sourceTab;
-    if (originSurface === "integration") return "integration";
-    if (originSurface === "rebase") return "rebase";
-    return "normal";
-  };
-
-  const buildResolverContextKey = (args: {
-    originSurface?: ConflictResolverOriginSurface | null;
-    sourceTab?: PrepareResolverSessionArgs["sourceTab"] | null;
-    targetLaneId: string;
-    sourceLaneIds: string[];
-    cwdLaneId: string;
-    integrationLaneId: string | null;
-    proposalId?: string | null;
-    scenario: ResolverSessionScenario;
-  }): string =>
-    buildPrAiResolutionContextKey({
-      sourceTab: resolveResolverSourceTab(args.originSurface, args.sourceTab),
-      sourceLaneId: args.sourceLaneIds[0] ?? null,
-      sourceLaneIds: args.sourceLaneIds,
-      targetLaneId: args.targetLaneId,
-      proposalId: args.proposalId ?? null,
-      integrationLaneId: args.integrationLaneId,
-      laneId: args.cwdLaneId,
-      scenario: args.scenario,
-    });
 
   const extractConflictJobContext = (value: Record<string, unknown> | null): ConflictJobContextV1 | null => {
     const candidate =
@@ -1046,7 +980,6 @@ export function createConflictService({
     originSurface: run.originSurface,
     originRunId: run.originRunId ?? null,
     originLabel: run.originLabel ?? null,
-    resolverContextKey: run.resolverContextKey ?? null,
     ptyId: run.ptyId ?? null,
     sessionId: run.sessionId ?? null,
     committedAt: run.committedAt ?? null,
@@ -2227,26 +2160,6 @@ export function createConflictService({
     );
   };
 
-  const getIntegrationProposalResolverRow = (proposalId: string): IntegrationProposalResolverRow | null => {
-    return db.get<IntegrationProposalResolverRow>(
-      `
-        select
-          id,
-          source_lane_ids_json,
-          base_branch,
-          steps_json,
-          pairwise_results_json,
-          resolution_state_json,
-          integration_lane_id
-        from integration_proposals
-        where id = ?
-          and project_id = ?
-        limit 1
-      `,
-      [proposalId, projectId]
-    );
-  };
-
   const listProposals = async (args: { laneId: string }): Promise<ConflictProposal[]> => {
     const rows = db.all<ConflictProposalRow>(
       `
@@ -3032,247 +2945,6 @@ export function createConflictService({
     });
   };
 
-  const buildProposalResolverContexts = async (args: {
-    proposalId: string;
-    sourceLaneIds: string[];
-    requestedCwdLaneId: string;
-    lanesById: Map<string, LaneSummary>;
-  }): Promise<{
-    contexts: ResolverSessionContext[];
-    contextGaps: ConflictExternalResolverContextGap[];
-    integrationLane: LaneSummary | null;
-    sourceLaneIds: string[];
-  }> => {
-    const row = getIntegrationProposalResolverRow(args.proposalId);
-    if (!row) throw new Error(`Integration proposal not found: ${args.proposalId}`);
-
-    const storedSourceLaneIds = uniqueSorted(safeJsonArray<string>(row.source_lane_ids_json ?? null));
-    const requestedSourceLaneIds = args.sourceLaneIds.length > 0 ? args.sourceLaneIds : storedSourceLaneIds;
-    const sourceLaneIds = uniqueSorted(
-      requestedSourceLaneIds.filter((laneId) => storedSourceLaneIds.includes(laneId))
-    );
-    const pairwiseResults = safeJsonArray<IntegrationPairwiseResult>(row.pairwise_results_json ?? null);
-    const steps = safeJsonArray<IntegrationProposalStep>(row.steps_json ?? null);
-    const resolutionState = safeJsonParse(row.resolution_state_json ?? null, null) as IntegrationResolutionState | null;
-    const stepByLaneId = new Map(steps.map((step) => [step.laneId, step] as const));
-    const integrationLaneId = args.requestedCwdLaneId || (row.integration_lane_id?.trim() ?? "");
-    const integrationLane = integrationLaneId ? (args.lanesById.get(integrationLaneId) ?? null) : null;
-
-    let integrationLaneStatus: Record<string, unknown> | null = null;
-    if (integrationLane) {
-      const status = await runGit(["status", "--porcelain"], {
-        cwd: integrationLane.worktreePath,
-        timeoutMs: 10_000
-      });
-      integrationLaneStatus = {
-        exitCode: status.exitCode,
-        porcelain: status.stdout,
-        stderr: status.stderr.trim() || null
-      };
-    }
-
-    const relevantPairs = pairwiseResults.filter((pair) =>
-      sourceLaneIds.includes(pair.laneAId) && sourceLaneIds.includes(pair.laneBId)
-    );
-    const contextGaps: ConflictExternalResolverContextGap[] = [];
-    if (integrationLaneId && !integrationLane) {
-      contextGaps.push({
-        code: "insufficient_context",
-        message: `proposal ${args.proposalId}: integration lane not found (${integrationLaneId})`
-      });
-    }
-    if (sourceLaneIds.length > 1 && relevantPairs.length === 0) {
-      contextGaps.push({
-        code: "insufficient_context",
-        message: `proposal ${args.proposalId}: missing pairwise integration conflict context`
-      });
-    }
-
-    const laneDetails = new Map<string, {
-      touchedFiles: string[];
-      intent: ConflictBranchIntentV1 | null;
-    }>();
-    await Promise.all(
-      sourceLaneIds.map(async (laneId) => {
-        const lane = args.lanesById.get(laneId) ?? null;
-        if (!lane) {
-          laneDetails.set(laneId, { touchedFiles: [], intent: null });
-          return;
-        }
-        const headRef = await readHeadSha(lane.worktreePath, lane.branchRef || "HEAD").catch(() => lane.branchRef || "HEAD");
-        const mergeBaseRef = await readMergeBase(projectRoot, row.base_branch, headRef).catch(() => row.base_branch);
-        const touchedFiles = mergeBaseRef && headRef
-          ? Array.from(await readTouchedFiles(projectRoot, mergeBaseRef, headRef)).sort((a, b) => a.localeCompare(b))
-          : [];
-        laneDetails.set(laneId, {
-          touchedFiles,
-          intent: await buildBranchIntent({
-            cwd: projectRoot,
-            laneId,
-            laneName: lane.name,
-            branchRef: lane.branchRef,
-            role: "source",
-            headRef,
-            mergeBaseRef,
-          }),
-        });
-      })
-    );
-    const targetIntent = integrationLane
-      ? await buildBranchIntent({
-          cwd: projectRoot,
-          laneId: integrationLane.id,
-          laneName: integrationLane.name,
-          branchRef: integrationLane.branchRef,
-          role: "target",
-          headRef: integrationLane.branchRef,
-          mergeBaseRef: row.base_branch,
-        })
-      : null;
-    const mergeTimeline = steps
-      .map((step) => ({
-        laneId: step.laneId,
-        laneName: step.laneName,
-        position: step.position,
-        outcome: step.outcome,
-        resolution: resolutionState?.stepResolutions?.[step.laneId] ?? null,
-        touchedFiles: laneDetails.get(step.laneId)?.touchedFiles ?? [],
-      }))
-      .sort((a, b) => a.position - b.position);
-
-    const contexts = relevantPairs.map<ResolverSessionContext>((pair) => {
-      const files = pair.conflictingFiles.map((file) => ({
-        path: file.path,
-        includeReason: "conflicted" as const,
-        conflictType: file.conflictType ?? null,
-        markerPreview: file.conflictMarkers || null,
-        laneDiff: file.oursExcerpt ?? file.diffHunk ?? "",
-        peerDiff: file.theirsExcerpt ?? null
-      }));
-      const fileContexts: ConflictFileContextV1[] = pair.conflictingFiles.map((file) => ({
-        path: file.path,
-        selectedBecause: "pairwise_conflict_file",
-        conflictType: file.conflictType ?? null,
-        hunks: [
-          ...parseHunksFromDiff(file.diffHunk ?? "", "base_left"),
-          ...parseHunksFromDiff(file.diffHunk ?? "", "base_right"),
-        ],
-        base: null,
-        left: makeContextSide({
-          side: "left",
-          ref: pair.laneAId,
-          blobSha: null,
-          excerpt: file.oursExcerpt ?? file.diffHunk ?? "",
-          fallbackReason: "omitted:pairwise_left_excerpt_unavailable",
-        }),
-        right: makeContextSide({
-          side: "right",
-          ref: pair.laneBId,
-          blobSha: null,
-          excerpt: file.theirsExcerpt ?? "",
-          fallbackReason: "omitted:pairwise_right_excerpt_unavailable",
-        }),
-        markerPreview: file.conflictMarkers || null,
-      }));
-      const conflictJobContext: ConflictJobContextV1 = {
-        schema: "ade.conflictJobContext.v1",
-        relevantFilesForConflict: files.map((file) => ({
-          path: file.path,
-          includeReason: file.includeReason,
-          selectedBecause: "pairwise_conflict_file",
-          conflictType: file.conflictType ?? null,
-        })),
-        fileContexts,
-        relationship: "peer-vs-peer",
-        intent: {
-          source: laneDetails.get(pair.laneAId)?.intent ?? {
-            laneId: pair.laneAId,
-            laneName: pair.laneAName,
-            branchRef: args.lanesById.get(pair.laneAId)?.branchRef ?? null,
-            role: "source",
-            mergeBaseRef: row.base_branch,
-            commitMessages: [],
-          },
-          peer: laneDetails.get(pair.laneBId)?.intent
-            ? { ...laneDetails.get(pair.laneBId)!.intent!, role: "peer" }
-            : {
-                laneId: pair.laneBId,
-                laneName: pair.laneBName,
-                branchRef: args.lanesById.get(pair.laneBId)?.branchRef ?? null,
-                role: "peer",
-                mergeBaseRef: row.base_branch,
-                commitMessages: [],
-              },
-          ...(targetIntent ? { target: targetIntent } : {}),
-        },
-        mergeTimeline,
-      };
-      const conflictContext = redactSecretsDeep({
-        proposalId: args.proposalId,
-        baseBranch: row.base_branch,
-        pairwiseOutcome: pair.outcome,
-        pairwiseResult: pair,
-        stepA: stepByLaneId.get(pair.laneAId) ?? null,
-        stepB: stepByLaneId.get(pair.laneBId) ?? null,
-        resolutionState,
-        integrationLaneId: integrationLane?.id ?? row.integration_lane_id ?? null,
-        integrationLaneStatus,
-        relevantFilesForConflict: conflictJobContext.relevantFilesForConflict,
-        fileContexts: conflictJobContext.fileContexts,
-        relationship: conflictJobContext.relationship,
-        intent: conflictJobContext.intent,
-        mergeTimeline: conflictJobContext.mergeTimeline,
-        conflictContext: conflictJobContext,
-      }) as Record<string, unknown>;
-      const preparedAt = new Date().toISOString();
-      const contextDigest = sha256(JSON.stringify(conflictContext));
-      return {
-        laneId: pair.laneAId,
-        peerLaneId: pair.laneBId,
-        preview: {
-          laneId: pair.laneAId,
-          peerLaneId: pair.laneBId,
-          provider: "subscription",
-          preparedAt,
-          contextDigest,
-          activeConflict: {
-            laneId: integrationLane?.id ?? pair.laneAId,
-            kind: "merge",
-            inProgress: Boolean(integrationLaneStatus),
-            conflictedFiles: pair.conflictingFiles.map((file) => file.path),
-            canContinue: false,
-            canAbort: false
-          },
-          laneExportLite: null,
-          peerLaneExportLite: null,
-          conflictExportStandard: JSON.stringify({
-            proposalId: args.proposalId,
-            baseBranch: row.base_branch,
-            pairwiseOutcome: pair.outcome
-          }),
-          files,
-          stats: {
-            approxChars: JSON.stringify(conflictContext).length,
-            laneExportChars: 0,
-            peerLaneExportChars: 0,
-            conflictExportChars: JSON.stringify(pair).length,
-            fileCount: files.length
-          },
-          warnings: [],
-          existingProposalId: row.id
-        },
-        conflictContext
-      };
-    });
-
-    return {
-      contexts,
-      contextGaps,
-      integrationLane,
-      sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : storedSourceLaneIds
-    };
-  };
-
   type PromptBuilderArgs = {
     targetLaneId: string;
     sourceLaneIds: string[];
@@ -3987,7 +3659,7 @@ export function createConflictService({
 
   const prepareResolverSession = async (args: PrepareResolverSessionArgs): Promise<PrepareResolverSessionResult> => {
     const targetLaneId = args.targetLaneId.trim();
-    let sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
+    const sourceLaneIds = uniqueSorted((args.sourceLaneIds ?? []).map((value) => value.trim()).filter(Boolean));
     if (!targetLaneId) throw new Error("targetLaneId is required");
     if (!sourceLaneIds.length) throw new Error("sourceLaneIds is required");
 
@@ -4003,24 +3675,10 @@ export function createConflictService({
           ? "integration-merge"
           : "sequential-merge");
     const requestedCwdLaneId = typeof args.cwdLaneId === "string" ? args.cwdLaneId.trim() : "";
-    const useProposalContext = args.originSurface === "integration" && typeof args.proposalId === "string" && args.proposalId.trim().length > 0;
-    const proposalContext = useProposalContext
-      ? await buildProposalResolverContexts({
-          proposalId: args.proposalId!.trim(),
-          sourceLaneIds,
-          requestedCwdLaneId,
-          lanesById: laneByIdMap
-        })
-      : null;
-    if (proposalContext) {
-      sourceLaneIds = proposalContext.sourceLaneIds;
-    }
 
-    const integrationLane = proposalContext?.integrationLane ?? (
-      scenario === "integration-merge" && (!requestedCwdLaneId || !laneByIdMap.has(requestedCwdLaneId))
-        ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
-        : null
-    );
+    const integrationLane = scenario === "integration-merge" && (!requestedCwdLaneId || !laneByIdMap.has(requestedCwdLaneId))
+      ? await ensureIntegrationLane({ targetLaneId, integrationLaneName: args.integrationLaneName })
+      : null;
     if (integrationLane) laneByIdMap.set(integrationLane.id, integrationLane);
     const defaultCwdLaneId = sourceLaneIds.length === 1 ? sourceLaneIds[0]! : (integrationLane?.id ?? sourceLaneIds[0]!);
     let cwdLaneId = defaultCwdLaneId;
@@ -4039,41 +3697,39 @@ export function createConflictService({
     const cwdLane = laneByIdMap.get(cwdLaneId) ?? (integrationLane && integrationLane.id === cwdLaneId ? integrationLane : null);
     if (!cwdLane) throw new Error(`Execution lane not found: ${cwdLaneId}`);
 
-    const contexts: ResolverSessionContext[] = proposalContext?.contexts ?? [];
-    const contextGaps: ConflictExternalResolverContextGap[] = [...(proposalContext?.contextGaps ?? [])];
-    if (!proposalContext) {
-      for (const sourceLaneId of sourceLaneIds) {
-        const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
-        const prepared = preparedContexts.get(preview.contextDigest);
-        const conflictContext = prepared?.conflictContext ?? null;
-        const cc =
-          isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
-            ? conflictContext.conflictContext
-            : conflictContext;
-        const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
-        if (insufficient) {
-          const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
-          if (!reasons.length) {
+    const contexts: ResolverSessionContext[] = [];
+    const contextGaps: ConflictExternalResolverContextGap[] = [];
+    for (const sourceLaneId of sourceLaneIds) {
+      const preview = await prepareProposal({ laneId: sourceLaneId, peerLaneId: targetLaneId });
+      const prepared = preparedContexts.get(preview.contextDigest);
+      const conflictContext = prepared?.conflictContext ?? null;
+      const cc =
+        isRecord(conflictContext) && isRecord(conflictContext.conflictContext)
+          ? conflictContext.conflictContext
+          : conflictContext;
+      const insufficient = isRecord(cc) && Boolean(cc.insufficientContext);
+      if (insufficient) {
+        const reasons = Array.isArray(cc.insufficientReasons) ? cc.insufficientReasons.map((value) => String(value)) : [];
+        if (!reasons.length) {
+          contextGaps.push({
+            code: "insufficient_context",
+            message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
+          });
+        } else {
+          for (const reason of reasons) {
             contextGaps.push({
               code: "insufficient_context",
-              message: `${sourceLaneId} -> ${targetLaneId}: insufficient_context_flagged`
+              message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
             });
-          } else {
-            for (const reason of reasons) {
-              contextGaps.push({
-                code: "insufficient_context",
-                message: `${sourceLaneId} -> ${targetLaneId}: ${reason}`
-              });
-            }
           }
         }
-        contexts.push({
-          laneId: sourceLaneId,
-          peerLaneId: targetLaneId,
-          preview,
-          conflictContext: prepared?.conflictContext ?? null
-        });
       }
+      contexts.push({
+        laneId: sourceLaneId,
+        peerLaneId: targetLaneId,
+        preview,
+        conflictContext: prepared?.conflictContext ?? null
+      });
     }
 
     const runId = randomUUID();
@@ -4114,16 +3770,6 @@ export function createConflictService({
     fs.writeFileSync(promptPath, prompt, "utf8");
 
     const startedAt = new Date().toISOString();
-    const resolverContextKey = buildResolverContextKey({
-      originSurface: args.originSurface ?? "manual",
-      sourceTab: args.sourceTab,
-      targetLaneId,
-      sourceLaneIds,
-      cwdLaneId,
-      integrationLaneId: integrationLane?.id ?? null,
-      proposalId: args.proposalId ?? null,
-      scenario,
-    });
     const runRecord: ExternalResolverRunRecord = {
       schema: "ade.conflictExternalRun.v1",
       runId,
@@ -4142,7 +3788,6 @@ export function createConflictService({
       originSurface: args.originSurface ?? "manual",
       originRunId: args.originRunId ?? null,
       originLabel: args.originLabel ?? null,
-      resolverContextKey,
       command: [],
       changedFiles: [],
       summary: status === "blocked" ? "Insufficient context blocked external resolver execution." : null,
@@ -4288,90 +3933,6 @@ export function createConflictService({
   // Rebase tracking methods
   // ---------------------------------------------------------------------------
 
-  const simulateChainedMerge = async (args: {
-    sourceLaneIds: string[];
-    baseBranch: string;
-  }): Promise<IntegrationProposalStep[]> => {
-    const lanes = await listActiveLanes();
-    const laneMap = new Map(lanes.map((l) => [l.id, l]));
-    const steps: IntegrationProposalStep[] = [];
-
-    // Start from the base branch HEAD
-    let accumulatedSha = await readHeadSha(projectRoot, args.baseBranch);
-
-    for (let i = 0; i < args.sourceLaneIds.length; i++) {
-      const laneId = args.sourceLaneIds[i];
-      const lane = laneMap.get(laneId);
-      if (!lane) {
-        steps.push({
-          laneId,
-          laneName: laneId,
-          position: i,
-          outcome: "blocked",
-          conflictingFiles: [],
-          diffStat: { insertions: 0, deletions: 0, filesChanged: 0 }
-        });
-        continue;
-      }
-
-      const laneHeadSha = await readHeadSha(lane.worktreePath, "HEAD");
-      const mergeBase = await readMergeBase(projectRoot, accumulatedSha, laneHeadSha);
-
-      const merge = await runGitMergeTree({
-        cwd: projectRoot,
-        mergeBase,
-        branchA: accumulatedSha,
-        branchB: laneHeadSha,
-        timeoutMs: 60_000
-      });
-
-      const conflictingFiles = merge.conflicts.map((c) => ({
-        path: c.path,
-        conflictMarkers: c.markerPreview,
-        oursExcerpt: null as string | null,
-        theirsExcerpt: null as string | null,
-        diffHunk: null as string | null
-      }));
-
-      const outcome: IntegrationProposalStep["outcome"] =
-        conflictingFiles.length > 0 ? "conflict" : merge.exitCode === 0 ? "clean" : "blocked";
-
-      // Parse diffStat from the numstat between mergeBase and laneHead
-      const numstat = await readDiffNumstat(projectRoot, mergeBase, laneHeadSha);
-
-      steps.push({
-        laneId,
-        laneName: lane.name,
-        position: i,
-        outcome,
-        conflictingFiles,
-        diffStat: {
-          insertions: numstat.insertions,
-          deletions: numstat.deletions,
-          filesChanged: numstat.files.size
-        }
-      });
-
-      // If the merge was clean and we got a write-tree sha, advance the accumulated tree.
-      // The first line of stdout from --write-tree is the resulting tree sha on success.
-      if (outcome === "clean" && merge.usedWriteTree && merge.stdout.trim()) {
-        const firstLine = merge.stdout.trim().split(/\r?\n/)[0].trim();
-        if (/^[0-9a-f]{40}$/.test(firstLine)) {
-          accumulatedSha = firstLine;
-        } else {
-          // fallback: use the lane head (sequential simulation approximation)
-          accumulatedSha = laneHeadSha;
-        }
-      } else if (outcome === "clean") {
-        accumulatedSha = laneHeadSha;
-      }
-      // On conflict, keep the current accumulated sha so subsequent steps simulate
-      // from the last known-good state.
-    }
-
-    return steps;
-  };
-
   /**
    * Where a lane rebases onto: its compare base, read from `origin/<base>`
    * when that exists (what the PR merges into), else the local branch.
@@ -4514,9 +4075,6 @@ export function createConflictService({
       conflictPredicted: conflictingFiles.length > 0,
       conflictingFiles,
       prId,
-      groupContext: null,
-      dismissedAt: rebaseDismissed.get(lane.id) ?? null,
-      deferredUntil: rebaseDeferred.get(lane.id) ?? null
     };
   };
 
@@ -4551,35 +4109,6 @@ export function createConflictService({
     } catch (err) {
       logger.warn(`getRebaseNeed: failed for lane ${laneId}`, { error: err });
       return null;
-    }
-  };
-
-  const dismissRebase = (laneId: string): void => {
-    const now = new Date().toISOString();
-    rebaseDismissed.set(laneId, now);
-    try {
-      db.run(
-        `insert into rebase_dismissed(lane_id, project_id, dismissed_at)
-         values (?, ?, ?)
-         on conflict(lane_id, project_id) do update set dismissed_at = excluded.dismissed_at`,
-        [laneId, projectId, now]
-      );
-    } catch {
-      // Table may not exist yet — in-memory fallback
-    }
-  };
-
-  const deferRebase = (laneId: string, until: string): void => {
-    rebaseDeferred.set(laneId, until);
-    try {
-      db.run(
-        `insert into rebase_deferred(lane_id, project_id, deferred_until)
-         values (?, ?, ?)
-         on conflict(lane_id, project_id) do update set deferred_until = excluded.deferred_until`,
-        [laneId, projectId, until]
-      );
-    } catch {
-      // Table may not exist yet — in-memory fallback
     }
   };
 
@@ -4622,16 +4151,6 @@ export function createConflictService({
         };
       }
 
-      if (args.aiAssisted) {
-        logger.info(`rebaseLane: AI-assisted rebase requested for lane ${args.laneId}`, {
-          provider: args.provider ?? "codex",
-          modelId: args.modelId ?? null,
-          reasoningEffort: args.reasoningEffort ?? null,
-          permissionMode: args.permissionMode ?? null,
-          autoApplyThreshold: args.autoApplyThreshold
-        });
-      }
-
       if (onEvent) {
         onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
       }
@@ -4648,14 +4167,6 @@ export function createConflictService({
       );
 
       if (rebaseRes.exitCode === 0) {
-        // Clear any dismissal/deferral on successful rebase
-        rebaseDismissed.delete(args.laneId);
-        rebaseDeferred.delete(args.laneId);
-        try {
-          db.run(`delete from rebase_dismissed where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
-          db.run(`delete from rebase_deferred where lane_id = ? and project_id = ?`, [args.laneId, projectId]);
-        } catch { /* table may not exist */ }
-
         if (onEvent) {
           onEvent({ type: "rebase-completed", laneId: args.laneId, success: true, timestamp: new Date().toISOString() });
         }
@@ -4664,7 +4175,6 @@ export function createConflictService({
           laneId: args.laneId,
           success: true,
           conflictingFiles: [],
-          resolvedByAi: false
         };
       }
 
@@ -4694,7 +4204,6 @@ export function createConflictService({
         success: false,
         conflictingFiles,
         error: rebaseRes.stderr.trim() || "Rebase failed with conflicts",
-        resolvedByAi: false
       };
     } finally {
       activeRebaseLanes.delete(args.laneId);
@@ -4721,11 +4230,8 @@ export function createConflictService({
     finalizeResolverSession,
     cancelResolverSession,
     suggestResolverTarget,
-    simulateChainedMerge,
     scanRebaseNeeds,
     getRebaseNeed,
-    dismissRebase,
-    deferRebase,
     rebaseLane
   };
 }
