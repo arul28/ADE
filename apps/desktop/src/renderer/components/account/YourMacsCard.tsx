@@ -921,12 +921,7 @@ export function YourMacsCard({
   const thisComputerListed = !thisMachineMissing;
   const versionText = thisComputerVersion?.text ?? null;
   useEffect(() => {
-    if (!onThisComputer) return;
-    // The hosted web client is a browser, not a computer on the account.
-    if (webMode) {
-      onThisComputer(null);
-      return;
-    }
+    if (!onThisComputer || webMode) return;
     onThisComputer({
       name: thisComputerName,
       version: versionText,

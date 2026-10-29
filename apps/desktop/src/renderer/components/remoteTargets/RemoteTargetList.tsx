@@ -557,14 +557,6 @@ export function RemoteTargetList({
     };
   }, []);
 
-  const openAddMachine = useCallback(() => {
-    setSelectedId(null);
-    setFormPrefill(null);
-    setError(null);
-    setHostKeyTrust(null);
-    setPairingPrefill(null);
-    setAddMode((current) => (current ? null : "choose"));
-  }, []);
 
   const toggleTest = useCallback((rowId: string) => {
     setTestingId((current) => (current === rowId ? null : rowId));
@@ -1379,6 +1371,10 @@ export function RemoteTargetList({
     if (mode === "nearby") void loadDiscoveredMachines();
     setAddMode(mode);
   }, [loadDiscoveredMachines]);
+  const openAddMachine = useCallback(() => {
+    if (addMode) setAddMode(null);
+    else startAdd("choose");
+  }, [addMode, startAdd]);
 
   // The other ways in, after the account (which the sheet leads with).
   const otherWays: Array<{
@@ -1418,6 +1414,7 @@ export function RemoteTargetList({
   };
 
   const showEmptyState = !loading
+    && !loadingDiscovered
     && totalRows === 0
     && !accountMachinesLoadFailed
     && !addMode;

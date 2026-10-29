@@ -23,6 +23,7 @@ import {
   PhoneConnectionsTab,
   ThisComputerPairingCode,
   ThisMacCard,
+  canShowPairingCode,
   WebConnectionsTab,
   useSyncConnections,
   type RevokeConfirm,
@@ -44,7 +45,7 @@ import {
 import type { ConnectionsPanelTab } from "../../lib/connectionsPanel";
 import { flashRowHighlight } from "../../lib/flashRowHighlight";
 import { RoutePills } from "../account/MachineRoutes";
-import { machineRouteItems } from "../account/machineRouteModel";
+import { machineReachHeadline, machineRouteItems } from "../account/machineRouteModel";
 import { routesAvailable } from "../account/useMachineRoutes";
 import { rgbCss, useProfilePalette } from "../account/useProfilePalette";
 import "../remoteTargets/connections.css";
@@ -175,13 +176,10 @@ function ThisComputerRouteBadges({ accountMachines }: { accountMachines: AdeAcco
   const machine = accountMachines?.find((entry) => entry.machineKey === localKey) ?? null;
   const items = useMemo(() => machineRouteItems(machine, routes), [machine, routes]);
   if (!routes && !machine) return <span className="ade-cx-reach-label">Can other devices reach this computer?</span>;
-  const on = items.filter((item) => item.tone === "on").length;
   return (
     <span className="ade-cx-reach">
       <RoutePills items={items} />
-      <span className="ade-cx-reach-label">
-        {on === 0 ? "Not reachable yet" : `Reachable ${on} of ${items.length} ways`}
-      </span>
+      <span className="ade-cx-reach-label">{machineReachHeadline(items)}</span>
     </span>
   );
 }
@@ -367,7 +365,7 @@ export function ConnectionsPanel({
             onAccountRequested={goToAccount}
             onAccountMachinesChanged={reloadAccountMachines}
             accountEmail={accountStatus.email ?? null}
-            thisComputerCode={sync.isRemoteBound ? null : <ThisComputerPairingCode sync={sync} />}
+            thisComputerCode={sync.isRemoteBound || !canShowPairingCode(sync) ? null : <ThisComputerPairingCode sync={sync} />}
           />
         ) : null}
         {tab === "mobile" ? (

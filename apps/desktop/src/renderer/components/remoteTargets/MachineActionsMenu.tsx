@@ -1,4 +1,4 @@
-import { useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { DotsThree } from "@phosphor-icons/react";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { Z_LAYERS } from "../ui/zLayers";
@@ -23,6 +23,18 @@ export type MachineAction = {
 export function MachineActionsMenu({ label, actions }: { label: string; actions: MachineAction[] }) {
   const [open, setOpen] = useState(false);
   const anchorRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (open) menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [open]);
+  // Escape closes the menu, not the popover around it, and hands focus back.
+  const closeOnEscape = (event: KeyboardEvent) => {
+    if (event.key !== "Escape" || !open) return;
+    event.preventDefault();
+    event.stopPropagation();
+    setOpen(false);
+    anchorRef.current?.focus();
+  };
   if (actions.length === 0) return null;
   const safe = actions.filter((action) => !action.danger);
   const danger = actions.filter((action) => action.danger);
@@ -55,6 +67,7 @@ export function MachineActionsMenu({ label, actions }: { label: string; actions:
         aria-haspopup="menu"
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
+        onKeyDown={closeOnEscape}
       >
         <DotsThree size={18} weight="bold" />
       </button>
@@ -67,10 +80,13 @@ export function MachineActionsMenu({ label, actions }: { label: string; actions:
         aria-label={label}
         className="ade-cx-menu"
         zIndex={Z_LAYERS.contextMenu}
+        onKeyDown={closeOnEscape}
       >
+        <div ref={menuRef} style={{ display: "contents" }}>
         {safe.map(item)}
         {safe.length > 0 && danger.length > 0 ? <div className="ade-cx-menu-rule" /> : null}
         {danger.map(item)}
+        </div>
       </AnchoredMenu>
     </>
   );

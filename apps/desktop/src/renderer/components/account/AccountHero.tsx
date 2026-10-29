@@ -1,9 +1,10 @@
 import type { CSSProperties } from "react";
 import type { AdeAccountStatus } from "../../../shared/types";
 import { accountInitials } from "../../lib/account";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { WorkToolPickerBackdrop } from "../terminals/WorkToolPickerBackdrop";
 import { RouteIcon } from "./MachineRoutes";
-import type { MachineRouteItem } from "./machineRouteModel";
+import { machineReachHeadline, type MachineRouteItem } from "./machineRouteModel";
 import { rgbCss, useProfilePalette } from "./useProfilePalette";
 
 /** What the banner says about the computer this window runs on. */
@@ -57,15 +58,9 @@ function FloatingAvatar({
   );
 }
 
-/** The headline for this computer's connections: how many ways in work right now. */
-function reachHeadline(routes: MachineRouteItem[]): string {
-  const on = routes.filter((route) => route.tone === "on").length;
-  if (routes.length === 0) return "Checking connections…";
-  if (on === 0) return "Not reachable from your other devices";
-  return `Reachable ${on} of ${routes.length} ways`;
-}
-
 function ThisComputerCard({ computer }: { computer: AccountThisComputer | null }) {
+  // The hosted web client is a browser, not a computer on the account.
+  if (isWebClientMode()) return null;
   if (!computer) {
     return (
       <div className="ade-ah-panel" aria-busy>
@@ -87,7 +82,7 @@ function ThisComputerCard({ computer }: { computer: AccountThisComputer | null }
         </span>
       </div>
       <div className="ade-ah-panel-meta">
-        {[computer.version, reachHeadline(computer.routes)].filter(Boolean).join(" · ")}
+        {[computer.version, machineReachHeadline(computer.routes)].filter(Boolean).join(" · ")}
       </div>
       <ul className="ade-ah-routes" aria-label="How other devices reach this computer">
         {computer.routes.map((route) => (

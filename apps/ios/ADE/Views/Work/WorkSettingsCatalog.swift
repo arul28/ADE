@@ -16,7 +16,7 @@ enum WorkSettingsCatalog {
 
   static let settings: [String: Setting] = [
     "account.profile": Setting(path: "You › Account", locked: true),
-    "account.privateNetwork": Setting(path: "You › Account › Private network", locked: true),
+    "account.privateNetwork": Setting(path: "You › Account › Connections", locked: true),
     "account.computers": Setting(path: "You › Account › Your computers", locked: true),
     "mcp.servers": Setting(path: "You › MCP servers", locked: true),
     "mcp.found": Setting(path: "You › MCP servers › Import MCP servers from this computer", locked: true),

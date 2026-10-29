@@ -215,18 +215,12 @@ export function ThisMacCard({
   sync,
   sessionState,
   statusSlot = null,
-  onOpenYourComputers,
   hidePairing = false,
 }: {
   sync: SyncConnections;
   sessionState: AdeAccountSessionState;
   /** The popover offers the pairing code under Add computer instead (`ThisComputerPairingCode`). */
   hidePairing?: boolean;
-  /**
-   * Opens Settings > Account > Your computers. The Connections popover passes
-   * it; the settings page itself does not need a link to the page it is on.
-   */
-  onOpenYourComputers?: () => void;
   /**
    * The Connections popover puts this computer's account standing and its one
    * button here (`ThisComputerStatus`), in place of the summary line, so the
@@ -507,31 +501,6 @@ export function ThisMacCard({
                 <span style={{ ...helperTextStyle, fontSize: 11, whiteSpace: "nowrap" }}>This computer</span>
                 {runningVersion ? <VersionChip version={runningVersion} /> : null}
               </div>
-              {onOpenYourComputers ? (
-                <button
-                  type="button"
-                  onClick={onOpenYourComputers}
-                  title="Open Settings > Account > Your computers"
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    gap: 4,
-                    height: 24,
-                    padding: "0 6px",
-                    border: "none",
-                    borderRadius: 6,
-                    background: "transparent",
-                    color: COLORS.textMuted,
-                    fontFamily: SANS_FONT,
-                    fontSize: 11.5,
-                    cursor: "pointer",
-                    flexShrink: 0,
-                  }}
-                >
-                  All computers
-                  <ArrowSquareOut size={12} />
-                </button>
-              ) : null}
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
               {!hideDirectorySummary && accountSignedIn ? (
@@ -726,9 +695,13 @@ function PairingCodeControls({ sync }: { sync: SyncConnections }) {
  * (it doesn't host sync, or sync storage is unavailable).
  */
 export function ThisComputerPairingCode({ sync }: { sync: SyncConnections }) {
+  return canShowPairingCode(sync) ? <PairingCodeControls sync={sync} /> : null;
+}
+
+/** Whether this computer can take a pairing right now: it hosts sync and its sync storage works. */
+export function canShowPairingCode(sync: SyncConnections): boolean {
   const status = sync.status;
-  if (!status || !isSyncHost(status) || isCrdtSyncUnavailable(status)) return null;
-  return <PairingCodeControls sync={sync} />;
+  return Boolean(status && isSyncHost(status) && !isCrdtSyncUnavailable(status));
 }
 
 /**

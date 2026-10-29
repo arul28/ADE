@@ -140,3 +140,10 @@ export function machineRouteItems(
 
   return [lan, tailscale, https, relay];
 }
+
+/** "Reachable 3 of 4 ways": how many of a computer's routes work right now. */
+export function machineReachHeadline(routes: MachineRouteItem[]): string {
+  if (routes.length === 0) return "Checking connections…";
+  const on = routes.filter((route) => route.tone === "on").length;
+  return on === 0 ? "Not reachable from your other devices yet" : `Reachable ${on} of ${routes.length} ways`;
+}
