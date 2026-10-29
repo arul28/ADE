@@ -37,36 +37,6 @@ struct PrActionAvailability: Equatable {
   }
 }
 
-enum PrRootSurface: String, CaseIterable, Identifiable {
-  case github
-  case workflows
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .github: return "GitHub"
-    case .workflows: return "Workflows"
-    }
-  }
-}
-
-enum PrWorkflowKindFilter: String, CaseIterable, Identifiable {
-  case all
-  case integration
-  case rebase
-
-  var id: String { rawValue }
-
-  var title: String {
-    switch self {
-    case .all: return "All"
-    case .integration: return "Integration"
-    case .rebase: return "Rebase"
-    }
-  }
-}
-
 enum PrGitHubStatusFilter: String, CaseIterable, Identifiable {
   case open
   case draft
@@ -357,11 +327,6 @@ enum PrDetailTab: String, CaseIterable, Identifiable {
   }
 }
 
-struct PrStackPresentation: Identifiable {
-  let id: String
-  let groupName: String?
-}
-
 enum PrCleanupChoice {
   case archive
   case deleteBranch
@@ -394,7 +359,6 @@ struct PrDetailWarmEntry {
   var actionRuns: [PrActionRun]
   var activityEvents: [PrActivityEvent]
   var deployments: [PrDeployment]
-  var groupMembers: [PrGroupMemberSummary]
   var capabilities: PrActionCapabilities?
   var unavailableParts: [String]
   var loadedAt: Date

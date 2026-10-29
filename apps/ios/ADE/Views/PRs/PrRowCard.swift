@@ -581,7 +581,7 @@ extension PrRowCard {
       self.checksStatus = pr.checksStatus == "none" ? nil : pr.checksStatus
       self.checksReason = pr.checksReason
       self.reviewStatus = pr.reviewStatus == "none" ? nil : pr.reviewStatus
-      self.warnMessage = Self.warnMessage(workflowDisplayState: pr.workflowDisplayState, checksStatus: pr.checksStatus, baseBranch: pr.baseBranch)
+      self.warnMessage = Self.warnMessage(checksStatus: pr.checksStatus)
       self.additions = pr.additions
       self.deletions = pr.deletions
       self.isTerminal = pr.state == "merged" || pr.state == "closed"
@@ -617,7 +617,7 @@ extension PrRowCard {
       self.reviewStatus = linkedPr?.reviewStatus == "none" ? nil : linkedPr?.reviewStatus
       self.warnMessage = unmapped
         ? nil
-        : Self.warnMessage(workflowDisplayState: item.workflowDisplayState, checksStatus: linkedPr?.checksStatus, baseBranch: item.baseBranch)
+        : Self.warnMessage(checksStatus: linkedPr?.checksStatus)
       // The live linked row first; the list item's own values keep a detached
       // PR's stats after its lane is gone.
       self.additions = linkedPr?.additions ?? item.additions
@@ -625,19 +625,9 @@ extension PrRowCard {
       self.isTerminal = terminal
       self.detached = item.detached ?? linkedPr?.detached
       self.mergedAt = item.mergedAt ?? linkedPr?.mergedAt
-      // The only actionable thing left on a merged PR: its remote branch still exists.
-      self.needsBranchCleanup = terminal && item.cleanupState == "required"
     }
 
-    private static func warnMessage(workflowDisplayState: String?, checksStatus: String?, baseBranch: String?) -> String? {
-      if let state = workflowDisplayState {
-        switch state {
-        case "rebase-needed": return "Rebase against \(baseBranch ?? "base")"
-        case "conflict", "merge-conflict": return "Merge conflict detected"
-        case "queued": return "In queue"
-        default: break
-        }
-      }
+    private static func warnMessage(checksStatus: String?) -> String? {
       if checksStatus == "failing" { return "CI failing" }
       // "not_run" is stated by the hollow ring; it is not a warning.
       return nil

@@ -1503,9 +1503,7 @@ struct WorkSessionDestinationView: View {
       lanes: lanes,
       createCapabilities: prCreateCapabilities,
       initialLaneId: laneId.isEmpty ? nil : laneId,
-      singleModeOnly: true,
-      onCreateSingle: handleChatCreateSinglePr,
-      onCreateIntegration: { _ in false }
+      onCreateSingle: handleChatCreateSinglePr
     )
     wizard.embedded = embedded
     return wizard

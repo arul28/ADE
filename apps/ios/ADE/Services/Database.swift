@@ -186,52 +186,6 @@ final class DatabaseService {
     let linkedWorkflowGroupId: String?
   }
 
-  private struct PrGroupMemberRow {
-    let groupId: String
-    let groupType: String
-    let groupName: String?
-    let targetBranch: String?
-    let prId: String
-    let laneId: String
-    let laneName: String
-    let title: String
-    let state: String
-    let githubPrNumber: Int
-    let githubUrl: String
-    let baseBranch: String
-    let headBranch: String
-    let position: Int
-  }
-
-  private struct IntegrationProposalRow {
-    let proposalId: String
-    let sourceLaneIdsJson: String
-    let baseBranch: String
-    let pairwiseResultsJson: String
-    let laneSummariesJson: String
-    let stepsJson: String
-    let overallOutcome: String
-    let createdAt: String
-    let title: String?
-    let body: String?
-    let draft: Bool
-    let integrationLaneName: String?
-    let status: String
-    let integrationLaneId: String?
-    let linkedGroupId: String?
-    let linkedPrId: String?
-    let workflowDisplayState: String?
-    let cleanupState: String?
-    let closedAt: String?
-    let mergedAt: String?
-    let completedAt: String?
-    let cleanupDeclinedAt: String?
-    let cleanupCompletedAt: String?
-    let preferredIntegrationLaneId: String?
-    let mergeIntoHeadSha: String?
-    let resolutionStateJson: String?
-  }
-
   // Serializes ALL public DatabaseService access (one raw SQLite connection,
   // FULLMUTEX) so the off-main SyncService apply Task and every @MainActor
   // read/write are mutually exclusive. Without this, concurrent BEGIN/commit on
@@ -2362,15 +2316,6 @@ final class DatabaseService {
 
   private func fetchPullRequestListItemsLocked(forLane laneId: String?) -> [PullRequestListItem] {
     guard let projectId = currentProjectIdLocked() else { return [] }
-    let hasPrGroupContext = hasTable(named: "pr_group_members")
-      && hasTable(named: "pr_groups")
-      && tableHasColumn(tableName: "pr_group_members", columnName: "group_id")
-      && tableHasColumn(tableName: "pr_group_members", columnName: "pr_id")
-      && tableHasColumn(tableName: "pr_group_members", columnName: "position")
-      && tableHasColumn(tableName: "pr_groups", columnName: "id")
-      && tableHasColumn(tableName: "pr_groups", columnName: "group_type")
-      && tableHasColumn(tableName: "pr_groups", columnName: "name")
-
     // The chat-link table arrived with the multi-PR-per-chat work; a phone
     // synced against an older host simply has no rows (or no table), and every
     // PR then falls back to the branch rule exactly as it did before.
@@ -2389,40 +2334,6 @@ final class DatabaseService {
       && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "pr_id")
       && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "session_id")
       && tableHasColumn(tableName: "pull_request_chat_session_dismissals", columnName: "project_id")
-
-    let hasIntegrationWorkflowContext = hasTable(named: "integration_proposals")
-      && tableHasColumn(tableName: "integration_proposals", columnName: "linked_pr_id")
-      && tableHasColumn(tableName: "integration_proposals", columnName: "workflow_display_state")
-      && tableHasColumn(tableName: "integration_proposals", columnName: "cleanup_state")
-      && tableHasColumn(tableName: "integration_proposals", columnName: "linked_group_id")
-
-    let prGroupSelect = hasPrGroupContext
-      ? """
-             gm.group_id,
-             g.group_type,
-             g.name,
-             gm.position,
-             coalesce(group_counts.member_count, 0),
-      """
-      : """
-             null as group_id,
-             null as group_type,
-             null as group_name,
-             null as position,
-             0 as member_count,
-      """
-
-    let integrationSelect = hasIntegrationWorkflowContext
-      ? """
-             ip.workflow_display_state,
-             ip.cleanup_state,
-             ip.linked_group_id,
-      """
-      : """
-             null as workflow_display_state,
-             null as cleanup_state,
-             null as linked_group_id,
-      """
 
     // A correlated scalar subquery rather than a join: `pr_group_members` above
     // already fans a PR out into one row per group member, and joining a second
@@ -2471,26 +2382,6 @@ final class DatabaseService {
              null as cross_lane_chat_session_ids
       """
 
-    let prGroupJoins = hasPrGroupContext
-      ? """
-        left join pr_group_members gm
-          on gm.pr_id = pr.id
-         and gm.group_id in (
-           select id from pr_groups where group_type = 'integration'
-         )
-        left join pr_groups g on g.id = gm.group_id
-        left join (
-          select group_id, count(*) as member_count
-            from pr_group_members
-           group by group_id
-        ) group_counts on group_counts.group_id = gm.group_id
-      """
-      : ""
-
-    let integrationJoin = hasIntegrationWorkflowContext
-      ? "left join integration_proposals ip on ip.linked_pr_id = pr.id"
-      : ""
-
     let sql = """
       select pr.id,
              pr.lane_id,
@@ -2515,15 +2406,12 @@ final class DatabaseService {
              pr.checks_reason,
              pr.checks_missing_required,
     \(chatSessionSelect)
-    \(prGroupSelect)
-    \(integrationSelect)
+             null, null, null, null, 0, null, null, null,
     \(dismissedSessionSelect)
     \(crossLaneSessionSelect)
         from pull_requests pr
         left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
         left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
-    \(prGroupJoins)
-    \(integrationJoin)
     """
     let filteredSQL: String
     if laneId == nil {
@@ -2570,15 +2458,6 @@ final class DatabaseService {
         linkedWorkflowGroupId: stringValue(statement, index: 30)
       )
 
-      let adeKind: String?
-      if row.workflowDisplayState != nil || row.cleanupState != nil {
-        adeKind = "integration"
-      } else if row.groupType == "integration" {
-        adeKind = "integration"
-      } else {
-        adeKind = "single"
-      }
-
       return PullRequestListItem(
         id: row.id,
         laneId: row.laneId,
@@ -2599,7 +2478,7 @@ final class DatabaseService {
         lastSyncedAt: row.lastSyncedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
-        adeKind: adeKind,
+        adeKind: "single",
         linkedGroupId: row.linkedWorkflowGroupId ?? row.groupId,
         linkedGroupType: row.groupType,
         linkedGroupName: row.groupName,
@@ -2618,177 +2497,6 @@ final class DatabaseService {
         crossLaneChatSessionIds: newlineSeparatedIds(statement, index: 32)
       )
     }
-  }
-
-  func fetchPullRequestGroupMembers(groupId: String) -> [PrGroupMemberSummary] {
-    withLock { fetchPullRequestGroupMembersLocked(groupId: groupId) }
-  }
-
-  private func fetchPullRequestGroupMembersLocked(groupId: String) -> [PrGroupMemberSummary] {
-    guard let projectId = currentProjectIdLocked() else { return [] }
-    let sql = """
-      select gm.group_id,
-             g.group_type,
-             g.name,
-             g.target_branch,
-             pr.id,
-             pr.lane_id,
-             coalesce(l.name, pr.lane_id),
-             pr.title,
-             pr.state,
-             pr.github_pr_number,
-             pr.github_url,
-             pr.base_branch,
-             pr.head_branch,
-             gm.position
-        from pr_group_members gm
-        join pr_groups g on g.id = gm.group_id
-        join pull_requests pr on pr.id = gm.pr_id
-        left join lanes l on l.id = pr.lane_id and l.project_id = pr.project_id
-       where gm.group_id = ?
-         and g.project_id = ?
-         and pr.project_id = ?
-         and g.group_type = 'integration'
-       order by gm.position asc, pr.updated_at desc
-    """
-
-    return query(sql, bind: { [self] statement in
-      try self.bindText(groupId, to: statement, index: 1)
-      try self.bindText(projectId, to: statement, index: 2)
-      try self.bindText(projectId, to: statement, index: 3)
-    }, map: { statement in
-      PrGroupMemberSummary(
-        groupId: stringValue(statement, index: 0) ?? "",
-        groupType: stringValue(statement, index: 1) ?? "single",
-        groupName: stringValue(statement, index: 2),
-        targetBranch: stringValue(statement, index: 3),
-        prId: stringValue(statement, index: 4) ?? "",
-        laneId: stringValue(statement, index: 5) ?? "",
-        laneName: stringValue(statement, index: 6) ?? "",
-        title: stringValue(statement, index: 7) ?? "",
-        state: stringValue(statement, index: 8) ?? "open",
-        githubPrNumber: Int(sqlite3_column_int64(statement, 9)),
-        githubUrl: stringValue(statement, index: 10) ?? "",
-        baseBranch: stringValue(statement, index: 11) ?? "",
-        headBranch: stringValue(statement, index: 12) ?? "",
-        position: Int(sqlite3_column_int64(statement, 13))
-      )
-    })
-  }
-
-  func fetchIntegrationProposals() -> [IntegrationProposal] {
-    withLock { fetchIntegrationProposalsLocked() }
-  }
-
-  private func fetchIntegrationProposalsLocked() -> [IntegrationProposal] {
-    guard let projectId = currentProjectIdLocked() else { return [] }
-    let sql = """
-      select id,
-             source_lane_ids_json,
-             base_branch,
-             pairwise_results_json,
-             lane_summaries_json,
-             steps_json,
-             overall_outcome,
-             created_at,
-             title,
-             body,
-             draft,
-             integration_lane_name,
-             status,
-             integration_lane_id,
-             linked_group_id,
-             linked_pr_id,
-             workflow_display_state,
-             cleanup_state,
-             closed_at,
-             merged_at,
-             completed_at,
-             cleanup_declined_at,
-             cleanup_completed_at,
-             preferred_integration_lane_id,
-             merge_into_head_sha,
-             resolution_state_json
-        from integration_proposals
-       where project_id = ?
-       order by created_at desc
-    """
-
-    return query(sql, bind: { [self] statement in
-      try self.bindText(projectId, to: statement, index: 1)
-    }, map: { statement in
-      IntegrationProposalRow(
-        proposalId: stringValue(statement, index: 0) ?? "",
-        sourceLaneIdsJson: stringValue(statement, index: 1) ?? "[]",
-        baseBranch: stringValue(statement, index: 2) ?? "",
-        pairwiseResultsJson: stringValue(statement, index: 3) ?? "[]",
-        laneSummariesJson: stringValue(statement, index: 4) ?? "[]",
-        stepsJson: stringValue(statement, index: 5) ?? "[]",
-        overallOutcome: stringValue(statement, index: 6) ?? "pending",
-        createdAt: stringValue(statement, index: 7) ?? "",
-        title: stringValue(statement, index: 8),
-        body: stringValue(statement, index: 9),
-        draft: sqlite3_column_int(statement, 10) == 1,
-        integrationLaneName: stringValue(statement, index: 11),
-        status: stringValue(statement, index: 12) ?? "proposed",
-        integrationLaneId: stringValue(statement, index: 13),
-        linkedGroupId: stringValue(statement, index: 14),
-        linkedPrId: stringValue(statement, index: 15),
-        workflowDisplayState: stringValue(statement, index: 16),
-        cleanupState: stringValue(statement, index: 17),
-        closedAt: stringValue(statement, index: 18),
-        mergedAt: stringValue(statement, index: 19),
-        completedAt: stringValue(statement, index: 20),
-        cleanupDeclinedAt: stringValue(statement, index: 21),
-        cleanupCompletedAt: stringValue(statement, index: 22),
-        preferredIntegrationLaneId: stringValue(statement, index: 23),
-        mergeIntoHeadSha: stringValue(statement, index: 24),
-        resolutionStateJson: stringValue(statement, index: 25)
-      )
-    }).map { row in
-      IntegrationProposal(
-        proposalId: row.proposalId,
-        sourceLaneIds: decodeJson(row.sourceLaneIdsJson, as: [String].self) ?? [],
-        baseBranch: row.baseBranch,
-        pairwiseResults: decodeJson(row.pairwiseResultsJson, as: [IntegrationPairwiseResult].self) ?? [],
-        laneSummaries: decodeJson(row.laneSummariesJson, as: [IntegrationLaneSummary].self) ?? [],
-        steps: decodeJson(row.stepsJson, as: [IntegrationProposalStep].self) ?? [],
-        overallOutcome: row.overallOutcome,
-        createdAt: row.createdAt,
-        title: row.title,
-        body: row.body,
-        draft: row.draft,
-        integrationLaneName: row.integrationLaneName,
-        status: row.status,
-        integrationLaneId: row.integrationLaneId,
-        integrationLaneOrigin: integrationLaneOrigin(
-          integrationLaneId: row.integrationLaneId,
-          preferredIntegrationLaneId: row.preferredIntegrationLaneId
-        ),
-        linkedGroupId: row.linkedGroupId,
-        linkedPrId: row.linkedPrId,
-        workflowDisplayState: row.workflowDisplayState,
-        cleanupState: row.cleanupState,
-        closedAt: row.closedAt,
-        mergedAt: row.mergedAt,
-        completedAt: row.completedAt,
-        cleanupDeclinedAt: row.cleanupDeclinedAt,
-        cleanupCompletedAt: row.cleanupCompletedAt,
-        preferredIntegrationLaneId: row.preferredIntegrationLaneId,
-        mergeIntoHeadSha: row.mergeIntoHeadSha,
-        resolutionState: decodeJson(row.resolutionStateJson, as: IntegrationResolutionState.self)
-      )
-    }
-  }
-
-  private func integrationLaneOrigin(
-    integrationLaneId: String?,
-    preferredIntegrationLaneId: String?
-  ) -> String? {
-    let integration = integrationLaneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    guard !integration.isEmpty else { return nil }
-    let preferred = preferredIntegrationLaneId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-    return preferred == integration ? "adopted" : "ade-created"
   }
 
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
@@ -2890,7 +2598,6 @@ final class DatabaseService {
       "pull_request_snapshots",
       "pull_request_chat_sessions",
       "pull_request_chat_session_dismissals",
-      "pr_group_members",
     ] where hasTable(named: tableName) && tableHasColumn(tableName: tableName, columnName: "pr_id") {
       try exec("""
         delete from \(tableName)
@@ -3119,17 +2826,6 @@ final class DatabaseService {
       try ensureColumn(tableName: "linear_workflow_runs", columnName: col, definition: "text")
     }
 
-    try ensureColumn(tableName: "integration_proposals", columnName: "linked_group_id", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "linked_pr_id", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "workflow_display_state", definition: "text not null default 'active'")
-    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_state", definition: "text not null default 'none'")
-    try ensureColumn(tableName: "integration_proposals", columnName: "closed_at", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "merged_at", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "completed_at", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_declined_at", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "cleanup_completed_at", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "preferred_integration_lane_id", definition: "text")
-    try ensureColumn(tableName: "integration_proposals", columnName: "merge_into_head_sha", definition: "text")
 
     try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
@@ -3244,63 +2940,6 @@ final class DatabaseService {
     """)
     // The desktop no longer writes AI PR summaries; drop the old empty cache.
     try exec("drop table if exists pull_request_ai_summaries")
-    try exec("""
-      create table if not exists pr_groups (
-        id text primary key,
-        project_id text not null,
-        group_type text not null,
-        name text,
-        auto_rebase integer not null default 0,
-        ci_gating integer not null default 0,
-        target_branch text,
-        created_at text not null
-      )
-    """)
-    try exec("create index if not exists idx_pr_groups_project on pr_groups(project_id)")
-    try exec("""
-      create table if not exists pr_group_members (
-        id text primary key,
-        group_id text not null,
-        pr_id text not null,
-        lane_id text not null,
-        position integer not null,
-        role text not null
-      )
-    """)
-    try exec("create index if not exists idx_pr_group_members_group on pr_group_members(group_id)")
-    try exec("create index if not exists idx_pr_group_members_pr on pr_group_members(pr_id)")
-    try exec("""
-      create table if not exists integration_proposals (
-        id text primary key,
-        project_id text not null,
-        source_lane_ids_json text not null default '[]',
-        base_branch text not null default '',
-        steps_json text not null default '[]',
-        title text default '',
-        body text default '',
-        draft integer not null default 0,
-        integration_lane_name text default '',
-        status text not null default 'proposed',
-        integration_lane_id text,
-        resolution_state_json text,
-        pairwise_results_json text not null default '[]',
-        lane_summaries_json text not null default '[]',
-        overall_outcome text not null default 'pending',
-        created_at text not null default '',
-        linked_group_id text,
-        linked_pr_id text,
-        workflow_display_state text not null default 'active',
-        cleanup_state text not null default 'none',
-        closed_at text,
-        merged_at text,
-        completed_at text,
-        cleanup_declined_at text,
-        cleanup_completed_at text,
-        preferred_integration_lane_id text,
-        merge_into_head_sha text
-      )
-    """)
-    try exec("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)")
   }
 
   private func ensureColumn(tableName: String, columnName: String, definition: String) throws {
@@ -3328,7 +2967,6 @@ final class DatabaseService {
       "pull_request_stack_snapshots",
       "pull_request_chat_sessions",
       "pull_request_chat_session_dismissals",
-      "pr_group_members",
     ]
 
     if prIds.isEmpty {

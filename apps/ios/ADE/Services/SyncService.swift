@@ -6993,11 +6993,8 @@ final class SyncService: ObservableObject {
     return [
       "pull_requests",
       "pull_request_snapshots",
-      "pr_groups",
-      "pr_group_members",
       "pull_request_chat_sessions",
       "pull_request_chat_session_dismissals",
-      "integration_proposals",
       "lanes",
       "lane_list_snapshots",
     ].contains(table)
@@ -12493,21 +12490,13 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func fetchPullRequestGroupMembers(groupId: String) async throws -> [PrGroupMemberSummary] {
-    database.fetchPullRequestGroupMembers(groupId: groupId)
-  }
-
-  func fetchIntegrationProposals() async throws -> [IntegrationProposal] {
-    database.fetchIntegrationProposals()
-  }
-
   func fetchPullRequestSnapshot(prId: String) async throws -> PullRequestSnapshot? {
     database.fetchPullRequestSnapshot(prId: prId)
   }
 
   /// Fetches the aggregated mobile PR snapshot from the paired host. This
   /// payload drives the iOS PRs surface: stack visibility, create-PR
-  /// eligibility, workflow cards, and per-PR capability gates. Live-only;
+  /// eligibility and per-PR capability gates. Live-only;
   /// callers should fall back to cached list/snapshots when offline.
   func fetchPrMobileSnapshot() async throws -> PrMobileSnapshot {
     try await sendDecodableCommand(action: "prs.getMobileSnapshot", as: PrMobileSnapshot.self)
@@ -14571,18 +14560,6 @@ final class SyncService: ObservableObject {
       "pushMode": pushMode,
       "aiAssisted": aiAssisted,
     ])
-  }
-
-  func pushLaneRebase(runId: String, laneIds: [String]) async throws {
-    _ = try await sendCommand(action: "lanes.rebasePush", args: ["runId": runId, "laneIds": laneIds])
-  }
-
-  func rollbackLaneRebase(runId: String) async throws {
-    _ = try await sendCommand(action: "lanes.rebaseRollback", args: ["runId": runId])
-  }
-
-  func abortLaneRebase(runId: String) async throws {
-    _ = try await sendCommand(action: "lanes.rebaseAbort", args: ["runId": runId])
   }
 
   func listBranches(laneId: String) async throws -> [GitBranchSummary] {
@@ -17653,109 +17630,6 @@ final class SyncService: ObservableObject {
       "threadId": threadId,
       "resolved": resolved,
     ])
-  }
-
-  @discardableResult
-  func createIntegrationLaneForProposal(proposalId: String) async throws -> CreateIntegrationLaneForProposalResult {
-    try await sendDecodableCommand(action: "prs.createIntegrationLaneForProposal", args: ["proposalId": proposalId], as: CreateIntegrationLaneForProposalResult.self)
-  }
-
-  @discardableResult
-  func startIntegrationResolution(proposalId: String, laneId: String) async throws -> StartIntegrationResolutionResult {
-    try await sendDecodableCommand(action: "prs.startIntegrationResolution", args: [
-      "proposalId": proposalId,
-      "laneId": laneId,
-    ], as: StartIntegrationResolutionResult.self)
-  }
-
-  @discardableResult
-  func recheckIntegrationStep(proposalId: String, laneId: String) async throws -> RecheckIntegrationStepResult {
-    try await sendDecodableCommand(action: "prs.recheckIntegrationStep", args: [
-      "proposalId": proposalId,
-      "laneId": laneId,
-    ], as: RecheckIntegrationStepResult.self)
-  }
-
-  @discardableResult
-  func deleteIntegrationProposal(proposalId: String, deleteIntegrationLane: Bool = false) async throws -> DeleteIntegrationProposalResult {
-    try await sendDecodableCommand(action: "prs.deleteIntegrationProposal", args: [
-      "proposalId": proposalId,
-      "deleteIntegrationLane": deleteIntegrationLane,
-    ], as: DeleteIntegrationProposalResult.self)
-  }
-
-  func dismissIntegrationCleanup(proposalId: String) async throws {
-    _ = try await sendCommand(action: "prs.dismissIntegrationCleanup", args: ["proposalId": proposalId])
-  }
-
-  func cleanupIntegrationWorkflow(proposalId: String, archiveIntegrationLane: Bool = true, archiveSourceLaneIds: [String] = []) async throws {
-    _ = try await sendCommand(action: "prs.cleanupIntegrationWorkflow", args: [
-      "proposalId": proposalId,
-      "archiveIntegrationLane": archiveIntegrationLane,
-      "archiveSourceLaneIds": archiveSourceLaneIds,
-    ])
-  }
-
-  func updateIntegrationProposal(
-    proposalId: String,
-    title: String? = nil,
-    body: String? = nil,
-    draft: Bool? = nil,
-    integrationLaneName: String? = nil,
-    preferredIntegrationLaneId: String? = nil,
-    mergeIntoHeadSha: String? = nil
-  ) async throws {
-    var args: [String: Any] = ["proposalId": proposalId]
-    if let title { args["title"] = title }
-    if let body { args["body"] = body }
-    if let draft { args["draft"] = draft }
-    if let integrationLaneName { args["integrationLaneName"] = integrationLaneName }
-    if let preferredIntegrationLaneId { args["preferredIntegrationLaneId"] = preferredIntegrationLaneId }
-    if let mergeIntoHeadSha { args["mergeIntoHeadSha"] = mergeIntoHeadSha }
-    _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
-  }
-
-  func simulateIntegration(
-    sourceLaneIds: [String],
-    baseBranch: String? = nil,
-    persist: Bool? = nil,
-    mergeIntoLaneId: String? = nil
-  ) async throws -> IntegrationProposal {
-    var args: [String: Any] = ["sourceLaneIds": sourceLaneIds]
-    if let baseBranch, !baseBranch.isEmpty { args["baseBranch"] = baseBranch }
-    if let persist { args["persist"] = persist }
-    if let mergeIntoLaneId, !mergeIntoLaneId.isEmpty { args["mergeIntoLaneId"] = mergeIntoLaneId }
-    return try await sendDecodableCommand(action: "prs.simulateIntegration", args: args, as: IntegrationProposal.self)
-  }
-
-  @discardableResult
-  func commitIntegration(
-    proposalId: String,
-    integrationLaneName: String? = nil,
-    title: String? = nil,
-    body: String? = nil,
-    draft: Bool? = nil,
-    pauseOnConflict: Bool? = nil,
-    allowDirtyWorktree: Bool? = nil,
-    preferredIntegrationLaneId: String? = nil
-  ) async throws -> CreateIntegrationPrResult {
-    var args: [String: Any] = ["proposalId": proposalId]
-    if let integrationLaneName, !integrationLaneName.isEmpty { args["integrationLaneName"] = integrationLaneName }
-    if let title, !title.isEmpty { args["title"] = title }
-    if let body { args["body"] = body }
-    if let draft { args["draft"] = draft }
-    if let pauseOnConflict { args["pauseOnConflict"] = pauseOnConflict }
-    if let allowDirtyWorktree { args["allowDirtyWorktree"] = allowDirtyWorktree }
-    if let preferredIntegrationLaneId, !preferredIntegrationLaneId.isEmpty {
-      args["preferredIntegrationLaneId"] = preferredIntegrationLaneId
-    }
-    return try await sendDecodableCommand(action: "prs.commitIntegration", args: args, as: CreateIntegrationPrResult.self)
-  }
-
-  func listIntegrationWorkflows(view: String? = nil) async throws -> [IntegrationProposal] {
-    var args: [String: Any] = [:]
-    if let view, !view.isEmpty { args["view"] = view }
-    return try await sendDecodableCommand(action: "prs.listIntegrationWorkflows", args: args, as: [IntegrationProposal].self)
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {
