@@ -3,17 +3,22 @@ import path from "node:path";
 import {
   createAccountCacheStore,
   createStoreRegistry,
+  type AccountCacheHealth,
   type AccountCacheLogger,
   type AccountCacheSyncListener,
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
+import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
+import { uploadAccountItems } from "./accountCacheUpload";
 import { EncryptedFileCredentialStore } from "../credentials/credentialStore";
 import {
   NEWER_VAULT_KINDS,
   isAccountVaultItemKind,
+  type AccountStaleDelete,
   type AccountVaultItem,
   type AccountVaultItemKind,
   type AccountVaultWrite,
+  type AccountWriteResult,
 } from "../push/accountRelayRows";
 import type { AccountVaultWriteOptions } from "../../../../desktop/src/shared/types/accountVault";
 
@@ -41,6 +46,8 @@ const LEGACY_CACHE_FILE = "account-vault.json";
 const CACHE_VERSION = 1;
 const DEFAULT_SYNC_INTERVAL_MS = 30_000;
 const CACHE_PAYLOAD_KEY = "account.vault.cache.v1";
+/** The Worker's `MAX_ITEMS_PER_WRITE`; a longer batch is refused whole (413). */
+const MAX_ITEMS_PER_PUT = 100;
 
 /** Separator for the composite cache key. NUL cannot occur in any of the three. */
 const KEY_SEPARATOR = "\u0000";
@@ -65,6 +72,9 @@ type PendingWrite = {
   refreshOwner: string | null;
   /** Monotonic per cache; see `AccountCachePending` for why it is not a time. */
   seq: number;
+  /** Cache-owned; see `AccountCachePending`. */
+  queuedAt?: string;
+  parked?: { reason: string; at: string };
 };
 
 type AccountVaultStoreWriteOptions = AccountVaultWriteOptions & {
@@ -150,16 +160,28 @@ function splitCacheKey(
 }
 
 export type AccountVaultRelay = {
+  /**
+   * Where the relay lives (the push relay client's `baseUrl`). What the cache
+   * learned about the relay is kept against it, so a different relay is asked
+   * again.
+   */
+  baseUrl?: string;
   getAccountVault(options?: { since?: string | null; scope?: string | null }): Promise<{
     items: AccountVaultItem[];
     cursor: string | null;
     truncated: boolean;
   } | null>;
+  /** `results` only from a relay that answers per item; see `AccountWriteResult`. */
   putAccountVault(
     items: AccountVaultWrite[],
     deviceId: string | null,
-  ): Promise<{ updatedAt: string | null } | null>;
-  deleteAccountVaultItem(scope: string, kind: string, key: string): Promise<boolean | null>;
+  ): Promise<{ updatedAt: string | null; results?: AccountWriteResult<AccountVaultItem>[] } | null>;
+  deleteAccountVaultItem(
+    scope: string,
+    kind: string,
+    key: string,
+    options?: { writtenAt?: string | null; deviceId?: string | null },
+  ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null>;
 };
 
 export function createAccountVaultStore(args: {
@@ -242,6 +264,7 @@ export function createAccountVaultStore(args: {
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     changeMarkKind: "vault",
     flushOnWrite: true,
+    now,
     events: {
       writeFailed: "account.vault_cache_write_failed",
       mutationDropped: "account.vault_mutation_dropped",
@@ -250,10 +273,13 @@ export function createAccountVaultStore(args: {
       pullTruncated: "account.vault_pull_truncated",
       cacheEntryDropped: "account.vault_cache_entry_dropped",
       purgeFailed: "account.vault_purge_failed",
+      itemsParked: "account.vault_items_parked",
+      writesSuperseded: "account.vault_writes_superseded",
     },
     readFile: readCacheFile,
     writeFile: writeCacheFile,
     hasRelay: () => args.relay !== null,
+    relayId: () => args.relay?.baseUrl ?? null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope
       && existing.kind === write.kind
@@ -264,67 +290,35 @@ export function createAccountVaultStore(args: {
     decodePending: decodePendingWrite,
     async upload(pending) {
       const relay = args.relay!;
+      const deviceId = args.getDeviceId?.() ?? null;
       const allWrites = pending.filter((entry) => !entry.deleted && entry.value != null);
-      const completedSeqs: number[] = [];
-      let uploadedAt: string | null = null;
-      const put = (batch: typeof allWrites) => relay.putAccountVault(
-        batch.map((entry) => ({
-          scope: entry.scope,
-          kind: entry.kind,
-          key: entry.key,
-          value: entry.value!,
-          refreshOwner: entry.refreshOwner,
-        })),
-        args.getDeviceId?.() ?? null,
-      );
-      // The Worker refuses a whole batch for one kind it does not know. Kinds
-      // newer than some deployed Workers go in their own batch, so an older
-      // Worker holds back only those rows, never every other credential.
-      const writes = allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind));
-      const newerWrites = allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind));
-      if (writes.length) {
-        const result = await put(writes);
-        // `null` means there was no token to ask with. The queue stays.
-        if (result === null) return null;
-        uploadedAt = result.updatedAt;
-        completedSeqs.push(...writes.map((entry) => entry.seq));
-      }
-      if (newerWrites.length) {
-        try {
-          const result = await put(newerWrites);
-          if (result === null) return { updatedAt: uploadedAt, completedSeqs };
-          // Keep the first batch's stamp: a later one would make this machine
-          // win over a remote edit that landed between the two PUTs.
-          uploadedAt ??= result.updatedAt;
-          completedSeqs.push(...newerWrites.map((entry) => entry.seq));
-        } catch (error) {
-          // They stay queued and go up once the Worker knows the kind.
-          logger.warn("account.vault_newer_kind_upload_failed", {
-            kinds: [...new Set(newerWrites.map((entry) => entry.kind))],
-            error: error instanceof Error ? error.message : String(error ?? ""),
-          });
-        }
-      }
-      for (const entry of pending.filter((item) => item.deleted)) {
-        let deleted: boolean | null;
-        try {
-          deleted = await relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key);
-        } catch (error) {
-          // An older Worker refuses a kind it does not know; that delete waits
-          // without holding back the deletes queued behind it.
-          if (NEWER_VAULT_KINDS.has(entry.kind)) {
-            logger.warn("account.vault_newer_kind_delete_failed", {
-              kind: entry.kind,
-              error: error instanceof Error ? error.message : String(error ?? ""),
-            });
-            continue;
-          }
-          return { updatedAt: uploadedAt, completedSeqs };
-        }
-        if (deleted === null) return { updatedAt: uploadedAt, completedSeqs };
-        completedSeqs.push(entry.seq);
-      }
-      return { updatedAt: uploadedAt, completedSeqs };
+      // Kinds newer than some deployed Workers go in their own batch, so an
+      // older Worker refuses only those rows, never every other credential.
+      // Within a group, one item a Worker will not take is set aside on its
+      // own, never held against the rest.
+      return await uploadAccountItems<PendingWrite, AccountVaultItem>({
+        groups: [
+          allWrites.filter((entry) => !NEWER_VAULT_KINDS.has(entry.kind)),
+          allWrites.filter((entry) => NEWER_VAULT_KINDS.has(entry.kind)),
+        ],
+        deletes: pending.filter((entry) => entry.deleted),
+        maxBatch: MAX_ITEMS_PER_PUT,
+        put: (batch) => relay.putAccountVault(
+          batch.map((entry) => ({
+            scope: entry.scope,
+            kind: entry.kind,
+            key: entry.key,
+            value: entry.value!,
+            refreshOwner: entry.refreshOwner,
+            ...(entry.queuedAt ? { writtenAt: entry.queuedAt } : {}),
+          })),
+          deviceId,
+        ),
+        del: (entry) => relay.deleteAccountVaultItem(entry.scope, entry.kind, entry.key, {
+          writtenAt: entry.queuedAt ?? null,
+          deviceId,
+        }),
+      });
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountVault({ since: cursor });
@@ -458,6 +452,15 @@ export function createAccountVaultStore(args: {
         : cache.sync();
     },
 
+    /**
+     * How this machine's vault sync is doing, without the network. ADE MCP's
+     * status and Settings show it: a vault that cannot sync never receives the
+     * account's ADE MCP secret.
+     */
+    health(): AccountCacheHealth {
+      return cache.health();
+    },
+
     /** Keys in one scope and kind whose write from this machine has not reached the account yet. */
     pendingKeys(scope: string, kind: AccountVaultItemKind): string[] {
       return cache.pendingKeys()
@@ -488,6 +491,11 @@ export function createAccountVaultStore(args: {
       logger.info("account.vault_purged", {});
     },
 
+    /** Also log to `logger`; see `getSharedAccountVaultStore`. */
+    attachLogger(logger: AccountVaultLogger): void {
+      cache.attachLogger(logger);
+    },
+
     cachePathForTests(): string {
       return cache.cachePath;
     },
@@ -502,7 +510,13 @@ export function getSharedAccountVaultStore(
   adeDir: string,
   create: () => AccountVaultStore,
 ): AccountVaultStore {
-  return registry.get(adeDir, create);
+  return registry.get(adeDir, () => {
+    const store = create();
+    // Machine-shared: its failures belong in the machine's log, whoever built it.
+    const machineLogger = machineAccountStoreLogger(adeDir);
+    if (machineLogger) store.attachLogger(machineLogger);
+    return store;
+  });
 }
 
 export function resetSharedAccountVaultStoresForTests(): void {

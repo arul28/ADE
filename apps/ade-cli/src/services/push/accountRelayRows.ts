@@ -55,7 +55,48 @@ export type AccountSettingWrite = {
   key: string;
   value: unknown;
   changedAt?: string;
+  /** When this machine made the write, on its clock; see `AccountWriteResult`. */
+  writtenAt?: string;
 };
+
+/**
+ * One item's answer from a relay that answers per item (the client sends
+ * `itemResults: true`). `rejected`: the relay will not store this item as it
+ * is (a reason, never a value). `stale`: the stored row is newer than this
+ * write, so it was not applied; `current` is that row, to adopt.
+ *
+ * An older relay answers the whole batch instead, so `results` is absent.
+ */
+export type AccountWriteResult<TRow> =
+  | { status: "written" }
+  | { status: "rejected"; reason: string }
+  | { status: "stale"; current: TRow | null };
+
+/** A delete the relay refused because the stored row is newer than it. */
+export type AccountStaleDelete<TRow> = { stale: true; current: TRow | null };
+
+/** Per-item answers in request order, or undefined when the relay sent none (or an unreadable list). */
+export function decodeAccountWriteResults<TRow>(
+  value: unknown,
+  expected: number,
+  decodeRow: (row: unknown) => TRow | null,
+): AccountWriteResult<TRow>[] | undefined {
+  if (!Array.isArray(value) || value.length !== expected) return undefined;
+  const results: AccountWriteResult<TRow>[] = [];
+  for (const entry of value) {
+    if (!isRecord(entry)) return undefined;
+    if (entry.status === "written") results.push({ status: "written" });
+    else if (entry.status === "rejected") {
+      const reason = typeof entry.reason === "string" && entry.reason.trim() ? entry.reason.slice(0, 120) : "refused";
+      results.push({ status: "rejected", reason });
+    } else if (entry.status === "stale") {
+      results.push({ status: "stale", current: entry.current == null ? null : decodeRow(entry.current) });
+    } else {
+      return undefined;
+    }
+  }
+  return results;
+}
 
 export type AccountSettingsPage = {
   settings: AccountSettingRecord[];
@@ -165,6 +206,8 @@ export type AccountVaultWrite = {
   value: string;
   /** The machine allowed to exchange a rotating credential; null if it never rotates. */
   refreshOwner?: string | null;
+  /** When this machine made the write, on its clock; see `AccountWriteResult`. */
+  writtenAt?: string;
 };
 
 export type AccountVaultPage = {

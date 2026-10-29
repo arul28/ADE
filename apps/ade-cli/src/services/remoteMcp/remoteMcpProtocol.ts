@@ -8,6 +8,7 @@ import type {
   RemoteMcpConnectionSummary,
   RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
+import { readProjectFolderStates, type ProjectFolderState } from "../projects/projectFolderPresence";
 import { listAgentSkills, readAgentSkill } from "../skills/agentSkillCatalogService";
 import { remoteMcpAdeVersion } from "./remoteMcpAccount";
 import { checkRemoteAdeCommand, redactedCommandForLog, splitCommandLine } from "./remoteMcpCommandPolicy";
@@ -31,6 +32,8 @@ import {
 } from "./remoteMcpTools";
 import {
   REMOTE_MCP_DEFAULT_PROTOCOL_VERSION,
+  rosterStateWords,
+  servingStateKnown,
   toolError,
   withMachineLabel,
   type RemoteMcpCallContext,
@@ -82,6 +85,8 @@ const CHAT_ID_TOOL_NAMES: ReadonlySet<string> = new Set(["chat_read", "chat_stat
 const CHAT_LOCATE_TIMEOUT_MS = 20_000;
 
 const MAX_CHAT_HOMES = 500;
+/** A run longer than this is logged with where its time went (unless the tool waits on purpose). */
+const SLOW_RUN_MS = 20_000;
 
 /** A chat tool's answer that says this computer has no such chat. */
 function isChatMiss(tool: string, result: RemoteMcpToolResult): boolean {
@@ -122,10 +127,10 @@ function failedRun(message: string): RemoteRunResult {
   return { exitCode: null, stdout: "", stderr: message, timedOut: false, truncated: false, durationMs: 0 };
 }
 
-/** Why a connection from before accounts can't reach this computer, or the one it named. */
+/** Why a connection kept to one computer can't reach this computer, or the one it named. */
 function onlyMachineRefusal(only: NonNullable<RemoteMcpConnectionSummary["onlyMachine"]>): string {
-  return `This connection was made for ${only.name} before ADE MCP covered your account. `
-    + "Reconnect the app in ADE Settings → ADE MCP to reach every computer.";
+  return `This connection reaches only ${only.name}. `
+    + "To reach every computer, connect the app with your account's address from ADE Settings → ADE MCP.";
 }
 
 export function createRemoteMcpProtocol(deps: {
@@ -144,40 +149,102 @@ export function createRemoteMcpProtocol(deps: {
 
   // ── Projects ──────────────────────────────────────────────────────────────
 
+  /**
+   * The registered projects with their folder's state, newest first. A
+   * registry keeps projects whose folder was deleted (test projects in a temp
+   * folder) or sits on a drive that is not plugged in; neither may win a name
+   * or a default.
+   */
+  const projectsByState = async (projects: readonly RemoteMcpProject[]) => {
+    const states = await readProjectFolderStates(projects);
+    const stateOf = new Map<RemoteMcpProject, ProjectFolderState>(projects.map((project, index) => [project, states[index]!]));
+    return { stateOf, ordered: byLastOpened([...projects]) };
+  };
+  /**
+   * The projects a call may run in, newest first: those whose folder is
+   * confirmed there, or, only when none is, those that could not be checked
+   * in time (a hung network mount). Never a deleted folder or an unplugged drive.
+   */
+  const usableProjects = (ordered: readonly RemoteMcpProject[], stateOf: ReadonlyMap<RemoteMcpProject, ProjectFolderState>): RemoteMcpProject[] => {
+    const present = ordered.filter((project) => stateOf.get(project) === "present");
+    return present.length ? present : ordered.filter((project) => stateOf.get(project) === "unknown");
+  };
+  const byLastOpened = (projects: RemoteMcpProject[]): RemoteMcpProject[] =>
+    projects.sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+
   /** The projects an every-project sweep reads: opened in the last 30 days, at most six. */
-  const recentProjects = (): RemoteMcpProject[] => {
-    const projects = [...deps.listProjects()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  const recentProjects = async (): Promise<RemoteMcpProject[]> => {
+    const { stateOf, ordered } = await projectsByState(deps.listProjects());
+    const projects = usableProjects(ordered, stateOf);
     const cutoff = Date.now() - EVERY_PROJECT_WINDOW_MS;
     const recent = projects.filter((project) => project.lastOpenedAt >= cutoff);
     return (recent.length ? recent : projects.slice(0, 1)).slice(0, EVERY_PROJECT_MAX);
   };
 
+  const describeCandidate = (project: RemoteMcpProject): string => `${project.displayName} (id ${project.projectId}, ${project.rootPath})`;
+  const driveNotConnected = (project: RemoteMcpProject): string =>
+    `${project.displayName}'s drive isn't connected on ${deps.machineName()} (${project.rootPath}). `
+    + "Connect it, or pick another project.";
+  const folderGone = (project: RemoteMcpProject): string =>
+    `${project.displayName}'s folder is gone (${project.rootPath}). Clone it again with projects_clone, `
+    + "or remove the stale entry with [\"projects\",\"prune\"].";
+  /**
+   * What a run says when its folder vanished between the pick and the start,
+   * from a fresh look at the folder: a deleted folder on a drive that is
+   * plugged in is gone, not disconnected.
+   */
+  const missingFolderMessage = async (project: RemoteMcpProject | null, cwd: string): Promise<string> => {
+    if (!project) return `The folder ${cwd} isn't on ${deps.machineName()}.`;
+    const [state] = await readProjectFolderStates([project], { fresh: true });
+    if (state === "driveMissing") return driveNotConnected(project);
+    if (state === "gone") return folderGone(project);
+    return `${project.displayName}'s folder (${project.rootPath}) can't be read on ${deps.machineName()} right now. Try again shortly.`;
+  };
+
   /**
    * The project a call runs in. Without `project`, the most recently opened
-   * one, which changes when the person opens another: every result names it,
-   * so a call never lands in a different repo unnoticed.
+   * one whose folder is there, which changes when the person opens another:
+   * every result names it, so a call never lands in a different repo
+   * unnoticed. An id or path picks exactly; a name picks among the projects
+   * whose folder is there, and two with the same name are refused with both.
    */
-  const resolveProject = (requested: unknown): ResolvedProject | { error: string } => {
-    const projects = deps.listProjects();
+  const resolveProject = async (requested: unknown): Promise<ResolvedProject | { error: string }> => {
+    const all = deps.listProjects();
+    const { stateOf, ordered } = await projectsByState(all);
     const found = (project: RemoteMcpProject): ResolvedProject => ({ cwd: project.rootPath, project });
+    const refusal = (project: RemoteMcpProject) => ({
+      error: stateOf.get(project) === "driveMissing" ? driveNotConnected(project) : folderGone(project),
+    });
+    const usable = usableProjects(ordered, stateOf);
     if (typeof requested !== "string" || !requested.trim()) {
-      const recent = [...projects].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt)[0];
+      const recent = usable[0];
       // No project at all: machine-wide commands (`projects list`, `doctor`) still work.
       return recent ? found(recent) : { cwd: os.homedir(), project: null };
     }
     const wanted = requested.trim();
     const lower = wanted.toLowerCase();
-    const exact = projects.filter((project) =>
+    // Asked for by id or path: run there unless it is known to be unreachable.
+    const reachable = (project: RemoteMcpProject) => {
+      const state = stateOf.get(project);
+      return state === "present" || state === "unknown";
+    };
+    const exact = all.filter((project) =>
       project.projectId === wanted
       || (path.isAbsolute(wanted) && samePathOnPlatform(project.rootPath, wanted)));
-    if (exact.length === 1) return found(exact[0]!);
-    const named = projects.filter((project) =>
+    if (exact.length === 1) return reachable(exact[0]!) ? found(exact[0]!) : refusal(exact[0]!);
+    const named = ordered.filter((project) =>
       project.displayName.toLowerCase() === lower || path.basename(project.rootPath).toLowerCase() === lower);
-    if (named.length === 1) return found(named[0]!);
-    const known = projects.map((project) => project.displayName).join(", ") || "none";
-    return named.length > 1
-      ? { error: `More than one project is called "${wanted}". Pass its id or path instead (see ["projects","list","--text"]).` }
-      : { error: `No project "${wanted}" on this computer. Projects: ${known}.` };
+    const namedPresent = named.filter((project) => stateOf.get(project) === "present");
+    const liveNamed = namedPresent.length ? namedPresent : named.filter((project) => stateOf.get(project) === "unknown");
+    if (liveNamed.length === 1) return found(liveNamed[0]!);
+    if (liveNamed.length > 1) {
+      return {
+        error: `More than one project is called "${wanted}": ${liveNamed.map(describeCandidate).join("; ")}. Pass its id or path as \`project\`.`,
+      };
+    }
+    if (named.length > 0) return refusal(named.find((project) => stateOf.get(project) === "driveMissing") ?? named[0]!);
+    const known = usable.map((project) => project.displayName).join(", ") || "none";
+    return { error: `No project "${wanted}" on this computer. Projects: ${known}. A new repository can be added with projects_clone.` };
   };
 
   // ── MCP ───────────────────────────────────────────────────────────────────
@@ -308,7 +375,7 @@ export function createRemoteMcpProtocol(deps: {
     }
     const input = asRecord(params.arguments);
     const logBase = logBaseFor(connection, typed?.name ?? TOOL_NAME);
-    const resolved = resolveProject(input.project);
+    const resolved = await resolveProject(input.project);
     if ("error" in resolved) return refuse(logBase, resolved.error);
     const projectName = resolved.project?.displayName;
     // A refusal still names the project, like every other result.
@@ -353,9 +420,10 @@ export function createRemoteMcpProtocol(deps: {
       return toolError(`This app already has ${MAX_CONCURRENT_RUNS_PER_CONNECTION} commands running. Wait for one to finish, then retry.`);
     }
     const timeoutMs = typed?.timeoutMs ? typed.timeoutMs(input) : clampTimeoutSeconds(input.timeout_seconds) * 1000;
-    const runIn = (cwd: string) => runAdeForRemote({
+    const runIn = (cwd: string, project: RemoteMcpProject | null) => runAdeForRemote({
       argv: verdict.args,
       cwd,
+      missingCwdMessage: () => missingFolderMessage(project, cwd),
       timeoutMs,
       connectionId: connection.id,
       connectionLabel: connection.label,
@@ -363,7 +431,7 @@ export function createRemoteMcpProtocol(deps: {
       stdin,
       ...(typed?.maxOutputBytes ? { maxOutputBytes: typed.maxOutputBytes } : {}),
     });
-    const everyProject = typed?.everyProject && !nonEmptyString(input.project) ? recentProjects() : null;
+    const everyProject = typed?.everyProject && !nonEmptyString(input.project) ? await recentProjects() : null;
     activeRuns += 1;
     runsByConnection.set(connection.id, connectionRuns + 1);
     let result: RemoteRunResult;
@@ -372,7 +440,7 @@ export function createRemoteMcpProtocol(deps: {
         // One slot for the whole sweep, so a sweep cannot take every run this computer has.
         return await sweepProjects(typed, input, everyProject, runIn, logBase, loggedCommand);
       }
-      result = await runIn(resolved.cwd);
+      result = await runIn(resolved.cwd, resolved.project);
     } catch (error) {
       const message = getErrorMessage(error);
       deps.record({ ...logged, outcome: "failed", exitCode: null, durationMs: 0, detail: message });
@@ -385,6 +453,17 @@ export function createRemoteMcpProtocol(deps: {
     }
     const answered = (typed?.okExitCodes ?? [0]).includes(result.exitCode ?? -1);
     const outcome: RemoteMcpActivityOutcome = result.timedOut ? "timeout" : answered ? "ok" : "failed";
+    // `ade help` once ran past a minute on a computer where it takes half a
+    // second; a slow run says where its time went.
+    if (result.timedOut || (result.durationMs > SLOW_RUN_MS && !typed?.timeoutMs)) {
+      deps.warn?.("remote_mcp.slow_run", {
+        command: loggedCommand,
+        durationMs: result.durationMs,
+        launchMs: result.launchMs ?? null,
+        timedOut: result.timedOut,
+        exitCode: result.exitCode,
+      });
+    }
     deps.record({ ...logged, outcome, exitCode: result.exitCode, durationMs: result.durationMs });
     const headLine = projectLine(resolved);
     if (typed) return buildTypedToolResult(typed, input, result, { headLine, project: projectSummary(resolved) });
@@ -403,14 +482,14 @@ export function createRemoteMcpProtocol(deps: {
     tool: TypedTool,
     input: Record<string, unknown>,
     projects: readonly RemoteMcpProject[],
-    runIn: (cwd: string) => Promise<RemoteRunResult>,
+    runIn: (cwd: string, project: RemoteMcpProject) => Promise<RemoteRunResult>,
     logBase: ActivityBase,
     command: string,
   ): Promise<RemoteMcpToolResult> => {
     const parts = await mapWithLimit(projects, EVERY_PROJECT_PARALLEL, async (project) => {
       let run: RemoteRunResult;
       try {
-        run = await runIn(project.rootPath);
+        run = await runIn(project.rootPath, project);
       } catch (error) {
         // Settle like a failed run, so the slot is held until every sibling is done.
         run = failedRun(getErrorMessage(error));
@@ -456,7 +535,7 @@ export function createRemoteMcpProtocol(deps: {
   };
 
   const readCommandCatalog = async (scope: RemoteMcpScope): Promise<string> => {
-    const resolved = resolveProject(undefined);
+    const resolved = await resolveProject(undefined);
     const result = await runAdeForRemote({
       argv: ["help", "--json"],
       cwd: "error" in resolved ? os.homedir() : resolved.cwd,
@@ -480,8 +559,8 @@ export function createRemoteMcpProtocol(deps: {
    * another one gets the same `tools/call` through the relay (remoteMcpForward.ts)
    * and its answer comes back marked `[machine: …]`. List tools take "all".
    *
-   * A connection from before accounts (`onlyMachine`) reaches only the
-   * computer it was made on: on the account address its calls go there, and
+   * A connection kept to one computer (`onlyMachine`: made before accounts,
+   * or signed in on that computer's own address) reaches only that computer: on the account address its calls go there, and
    * anywhere else they are refused, whatever they name.
    */
   const routeToolCall = async (
@@ -702,23 +781,27 @@ export function createRemoteMcpProtocol(deps: {
 
   const machinesListResult = async (logBase: ActivityBase): Promise<RemoteMcpToolResult> => {
     const started = Date.now();
-    const machines = (await deps.machines.roster()).map((machine) => ({
+    const roster = await deps.machines.roster();
+    const machines = roster.map((machine) => ({
       name: machine.name,
       key: machine.machineKey,
       online: machine.online,
       included: machine.included,
-      serving: machine.serving,
+      // null: its ADE never reported, so whether it serves is unknown.
+      serving: servingStateKnown(machine) ? machine.serving : null,
+      notServingReason: machine.notServingReason,
+      reportedAt: machine.reportedAt,
       supported: machine.supported,
       isThisMachine: machine.isThisMachine,
     }));
     deps.record({ ...logBase, command: "", outcome: "ok", exitCode: null, durationMs: Date.now() - started });
-    const describe = (machine: (typeof machines)[number]) => [
+    const describe = (machine: (typeof roster)[number]) => [
       machine.isThisMachine ? `${machine.name} (answering)` : machine.name,
       machine.online === null ? "online unknown" : machine.online ? "online" : "offline",
-      !machine.supported ? "not joined yet (open the latest ADE on it)" : !machine.included ? "left out" : machine.serving ? "serving" : "not serving",
+      rosterStateWords(machine),
     ].join(" · ");
     return {
-      content: [{ type: "text", text: machines.map(describe).join("\n") || "No computers found." }],
+      content: [{ type: "text", text: roster.map(describe).join("\n") || "No computers found." }],
       structuredContent: { view: MACHINES_TOOL_NAME, machines },
       isError: false,
     };
@@ -736,7 +819,7 @@ export function createRemoteMcpProtocol(deps: {
   const machinesToolDefinition = () => ({
     name: MACHINES_TOOL_NAME,
     title: "List computers",
-    description: "The computers on this ADE account: online, included, serving, and which one is answering.",
+    description: "The computers on this ADE account: online, serving or why not, and which one answers.",
     inputSchema: { type: "object", properties: {} as Record<string, unknown> },
     annotations: { readOnlyHint: true, openWorldHint: false },
   });
@@ -828,7 +911,7 @@ export function createRemoteMcpProtocol(deps: {
       case "prompts/list": {
         // Prompt names must be unique, so the list is the default project's;
         // prompts/get takes `project` for another one.
-        const resolved = resolveProject(undefined);
+        const resolved = await resolveProject(undefined);
         const skills = "error" in resolved || !resolved.project ? [] : listAgentSkills({ cwd: resolved.cwd, includeUser: false, onError: skillUnreadable });
         return reply({
           prompts: skills.slice(0, MAX_PROMPTS).map((skill) => ({
@@ -843,7 +926,7 @@ export function createRemoteMcpProtocol(deps: {
       case "prompts/get": {
         const name = typeof params.name === "string" ? params.name : "";
         const promptArgs = asRecord(params.arguments);
-        const resolved = resolveProject(promptArgs.project);
+        const resolved = await resolveProject(promptArgs.project);
         if ("error" in resolved) return fail(-32602, resolved.error);
         if (!resolved.project) return fail(-32602, "No project is open on this computer, so it has no skills to show.");
         // Personal skills in the home folder never leave this computer.

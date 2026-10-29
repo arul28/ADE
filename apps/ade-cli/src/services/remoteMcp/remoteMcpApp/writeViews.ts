@@ -19,8 +19,9 @@ export function startLine(r: Partial<StartResult>): WriteLine {
   if (r.phase === "failed" || r.phase === "cancelled") {
     return { line: (r.phase === "failed" ? "Could not start " : "Cancelled ") + chat, tone: "crit", note: str(r.error) ?? lane, link: safeLink(r.link) };
   }
-  const running = r.phase === "running";
-  return { line: (running ? "Starting " : "Started ") + chat, tone: running ? "info" : "ok", note: lane, link: safeLink(r.link) };
+  // "running" is the chat working on its prompt; "setting_up" is its lane still being made.
+  const settingUp = r.phase === "setting_up";
+  return { line: (settingUp ? "Starting " : "Started ") + chat, tone: settingUp ? "info" : "ok", note: lane, link: safeLink(r.link) };
 }
 export function sendLine(r: Partial<SendResult>): WriteLine {
   const chat = chatName(null, r.sessionId);

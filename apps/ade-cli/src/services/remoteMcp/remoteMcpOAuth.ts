@@ -1,5 +1,6 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remoteMcp";
+import { recogniseRemoteMcpApp, type RecognisedRemoteMcpApp } from "./remoteMcpKnownApps";
 import { cleanRemoteMcpLabel } from "./remoteMcpStore";
 
 /**
@@ -166,7 +167,14 @@ export type AuthorizeRequest = {
   codeChallenge: string;
   state: string | null;
   requestedScope: RemoteMcpScope;
+  /** The app ADE recognised from the redirect URI (and name); null when it is not one ADE knows. */
+  app: RecognisedRemoteMcpApp | null;
 };
+
+/** What the pages and the connection call the app: the recognised name, else the name it registered. */
+export function authorizeAppName(request: Pick<AuthorizeRequest, "app" | "client">): string {
+  return request.app?.name ?? request.client.clientName;
+}
 
 type AuthorizeParse =
   | { ok: true; request: AuthorizeRequest }
@@ -225,6 +233,7 @@ export function parseAuthorizeRequest(params: URLSearchParams): AuthorizeParse {
       codeChallenge,
       state,
       requestedScope: scopeFromOAuth(params.get("scope")),
+      app: recogniseRemoteMcpApp(redirectUri, client.clientName),
     },
   };
 }
@@ -258,6 +267,8 @@ type PendingSignIn = {
   request: AuthorizeRequest;
   /** PKCE verifier for the ADE (Clerk) leg. Never leaves this computer. */
   accountVerifier: string;
+  /** Began on the account address; false on this computer's own (what its pages promise). */
+  accountMount: boolean;
   expiresAt: number;
   /** Set once the ADE sign-in checked out; the accept form must echo it. */
   consent: { csrf: string; account: SignedInAccount } | null;
@@ -268,7 +279,15 @@ type PendingAuthCode = {
   redirectUri: string;
   codeChallenge: string;
   scope: RemoteMcpScope;
+  /** The connection's label: the recognised app's name, else the registered one. */
   clientName: string;
+  app: RecognisedRemoteMcpApp | null;
+  /**
+   * The sign-in began on this computer's own address (`/m/<endpointKey>`),
+   * whose pages say it uses ADE on this computer: the connection reaches
+   * only this computer. False on the account address.
+   */
+  thisMachineOnly: boolean;
   expiresAt: number;
 };
 
@@ -291,7 +310,7 @@ export function createRemoteMcpAuthorizationState() {
 
   return {
     /** Starts the ADE account leg. The oldest unfinished sign-in is dropped past the cap. */
-    beginSignIn(request: AuthorizeRequest): { nonce: string; accountChallenge: string } {
+    beginSignIn(request: AuthorizeRequest, accountMount: boolean): { nonce: string; accountChallenge: string } {
       sweep();
       while (signIns.size >= MAX_PENDING_SIGN_INS) {
         const oldest = signIns.keys().next().value;
@@ -300,15 +319,17 @@ export function createRemoteMcpAuthorizationState() {
       }
       const nonce = randomBytes(24).toString("base64url");
       const accountVerifier = randomBytes(48).toString("base64url");
-      signIns.set(nonce, { request, accountVerifier, expiresAt: now() + SIGN_IN_TTL_MS, consent: null });
+      signIns.set(nonce, { request, accountVerifier, accountMount, expiresAt: now() + SIGN_IN_TTL_MS, consent: null });
       return { nonce, accountChallenge: pkceChallengeFor(accountVerifier) };
     },
 
     /** The sign-in waiting on the ADE account step, or null. */
-    pendingAccountStep(nonce: string): { request: AuthorizeRequest; accountVerifier: string } | null {
+    pendingAccountStep(nonce: string): { request: AuthorizeRequest; accountVerifier: string; accountMount: boolean } | null {
       sweep();
       const pending = signIns.get(nonce);
-      return pending && !pending.consent ? { request: pending.request, accountVerifier: pending.accountVerifier } : null;
+      return pending && !pending.consent
+        ? { request: pending.request, accountVerifier: pending.accountVerifier, accountMount: pending.accountMount }
+        : null;
     },
 
     /** The ADE account checked out: the person may now accept. Returns the form's CSRF value. */
@@ -326,12 +347,12 @@ export function createRemoteMcpAuthorizationState() {
     },
 
     /** Single use: the accept form spends the sign-in whatever happens next. */
-    takeConsent(nonce: string, csrf: string): { request: AuthorizeRequest; account: SignedInAccount } | null {
+    takeConsent(nonce: string, csrf: string): { request: AuthorizeRequest; account: SignedInAccount; accountMount: boolean } | null {
       sweep();
       const pending = signIns.get(nonce);
       signIns.delete(nonce);
       if (!pending?.consent || !sameSecret(pending.consent.csrf, csrf)) return null;
-      return { request: pending.request, account: pending.consent.account };
+      return { request: pending.request, account: pending.consent.account, accountMount: pending.accountMount };
     },
 
     issueAuthCode(pending: Omit<PendingAuthCode, "expiresAt">): string {
@@ -418,22 +439,46 @@ function hidden(name: string, value: string | null): string {
   return value === null ? "" : `<input type="hidden" name="${name}" value="${escapeHtml(value)}">`;
 }
 
-function appLine(request: AuthorizeRequest, machineName: string): string {
-  const appName = escapeHtml(request.client.clientName);
+/**
+ * What the app gets: the whole account (the account address: every computer
+ * the person includes, now and later) or one computer (its own address).
+ */
+export type SignInTarget =
+  | { kind: "account"; machineNames: readonly string[] }
+  | { kind: "machine"; name: string };
+
+const MAX_LISTED_MACHINES = 6;
+
+function computerList(names: readonly string[]): string {
+  const shown = names.slice(0, MAX_LISTED_MACHINES).map((name) => `<strong>${escapeHtml(name)}</strong>`);
+  const more = names.length - shown.length;
+  if (more > 0) shown.push(`${more} more`);
+  if (shown.length <= 1) return shown.join("");
+  return `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}`;
+}
+
+function appLine(request: AuthorizeRequest, target: SignInTarget): string {
+  const appName = escapeHtml(authorizeAppName(request));
   const host = escapeHtml(redirectDisplayHost(request.redirectUri));
-  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use ADE on <strong>${escapeHtml(machineName)}</strong>.</p>`;
+  if (target.kind === "machine") {
+    return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use ADE on <strong>${escapeHtml(target.name)}</strong>.</p>`;
+  }
+  const names = [...new Set(target.machineNames.filter((name) => name.trim()))];
+  const which = names.length ? `: ${computerList(names)}` : "";
+  return `<p class="sub"><strong>${appName}</strong> (${host}) wants to use your <strong>ADE account</strong>, on every computer you include in ADE MCP${which}.</p>`;
 }
 
 /** Step 1: the app sent the person here. Signing in to ADE is the only way on. */
-export function renderSignInPage(args: { request: AuthorizeRequest; machineName: string; error?: string | null }): string {
+export function renderSignInPage(args: { request: AuthorizeRequest; target: SignInTarget; error?: string | null }): string {
   const { request } = args;
+  const appName = authorizeAppName(request);
   const fields = hidden("response_type", "code") + hidden("client_id", request.clientId)
     + hidden("redirect_uri", request.redirectUri) + hidden("code_challenge", request.codeChallenge)
     + hidden("code_challenge_method", "S256") + hidden("state", request.state)
     + hidden("scope", request.requestedScope === "read" ? "ade:read" : null);
-  return page(`Connect ${request.client.clientName} to ADE`, `
-<h1>Connect ${escapeHtml(request.client.clientName)}</h1>
-${appLine(request, args.machineName)}
+  return page(`Connect ${appName} to ADE`, `
+<h1>Connect ${escapeHtml(appName)}</h1>
+${appLine(request, args.target)}
 ${args.error ? `<div class="notice" role="alert">${escapeHtml(args.error)}</div>` : ""}
 <form method="post" class="actions">${fields}
 <button class="primary" type="submit" name="decision" value="signin">Continue with ADE</button>
@@ -444,18 +489,19 @@ ${args.error ? `<div class="notice" role="alert">${escapeHtml(args.error)}</div>
 /** Step 2: signed in as the computer's account. Choose the access, then accept. */
 export function renderConsentPage(args: {
   request: AuthorizeRequest;
-  machineName: string;
+  target: SignInTarget;
   account: SignedInAccount;
   nonce: string;
   csrf: string;
   consentPath: string;
 }): string {
   const { request } = args;
+  const appName = authorizeAppName(request);
   const who = escapeHtml(args.account.email ?? args.account.name ?? "your ADE account");
   const readOnly = request.requestedScope === "read";
-  return page(`Connect ${request.client.clientName} to ADE`, `
-<h1>Allow ${escapeHtml(request.client.clientName)}?</h1>
-${appLine(request, args.machineName)}
+  return page(`Connect ${appName} to ADE`, `
+<h1>Allow ${escapeHtml(appName)}?</h1>
+${appLine(request, args.target)}
 <div class="who">Signed in as ${who}</div>
 <form method="post" action="${escapeHtml(args.consentPath)}">${hidden("nonce", args.nonce)}${hidden("csrf", args.csrf)}
 <div class="choices" role="radiogroup" aria-label="Access">

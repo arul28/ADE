@@ -179,19 +179,20 @@ export function checkRemoteAdeCommand(
       reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
     };
   }
-  // ADE MCP is switched on per computer. Forwarding to another machine would
-  // reach one whose owner may have it off.
+  // Another computer is reached through the tools' own `machine` input, which
+  // goes through that computer's token check and policy, never through the
+  // CLI's agent bridge.
   if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
     return {
       ok: false,
-      reason: "ADE MCP reaches only this computer. Connect to another computer's own ADE MCP server to work there.",
+      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine.",
     };
   }
   const words = positionalWords(args);
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
-    return { ok: false, reason: "ADE MCP reaches only this computer. The chat tools find a chat's computer by themselves." };
+    return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };

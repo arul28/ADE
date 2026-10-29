@@ -2128,8 +2128,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Manage the machine-scoped ADE project registry used by the ADE runtime.
 
-    $ ade projects list --text
+    $ ade projects list --text                      Projects whose folder is gone are hidden; --include-missing lists them
     $ ade projects add /path/to/project
+    $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
+                                                    Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
+    $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>
     $ ade projects touch <project-id>
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
@@ -2462,6 +2465,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   active owner session automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
+    $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
     $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
     $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
@@ -9476,11 +9480,28 @@ function buildShellPlan(args: string[]): CliPlan {
       rows: readIntOption(args, ["--rows"], 36),
       tracked: !readFlag(args, ["--untracked"]),
     });
+    // A tracked shell belongs to a lane. Without --lane, the shell's own lane
+    // (an agent's), else the project's primary lane: its main checkout. So an
+    // app or script can run a command in a project without making a lane.
+    const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
+    const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create" } as const;
+    if (ownLane) {
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
+    }
     return {
-      kind: "execute",
-      label: "shell start",
-      formatter: "pty-create",
-      steps: [actionStep("result", "pty", "create", input)],
+      ...shellStart,
+      steps: [
+        actionCallStep("lanes", "list_lanes", {}),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          params: (values) => ({
+            name: "run_ade_action",
+            arguments: { domain: "pty", action: "create", args: { ...input, laneId: primaryLaneId(values.lanes) } },
+          }),
+          unwrapToolResult: true,
+        },
+      ],
     };
   }
   if (sub === "write")
@@ -9546,6 +9567,18 @@ function buildShellPlan(args: string[]): CliPlan {
     label: `shell ${sub}`,
     steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))],
   };
+}
+
+/** The primary lane (the project's main checkout) in a `list_lanes` answer. */
+function primaryLaneId(value: unknown): string {
+  const unwrapped = isRecord(value) && Array.isArray(value.lanes) ? value.lanes : value;
+  const lanes = Array.isArray(unwrapped) ? unwrapped.filter(isRecord) : [];
+  const primary = lanes.find((lane) => lane.laneType === "primary");
+  const id = primary ? asString(primary.id) : null;
+  if (!id) {
+    throw new CliUsageError("This project has no primary lane to run the shell in. Pass --lane <id> (see `ade lanes list --text`).");
+  }
+  return id;
 }
 
 function buildCliSessionStartPlan(
@@ -21892,7 +21925,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -22078,7 +22111,7 @@ function buildCliPlan(
     return { kind: "init", targetPath: firstPositional(args) };
   }
   if (primary === "projects" || primary === "project") {
-    return buildProjectsPlan(args);
+    return buildProjectsPlan(args, { remote: Boolean(options.machine?.trim()) });
   }
   if (primary === "machines" || primary === "machine") {
     return buildMachinesPlan(args);
@@ -24533,7 +24566,22 @@ Usage:
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }
 
-function buildProjectsPlan(args: string[]): CliPlan {
+/** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
+const HIDDEN_MISSING_PROJECTS = Symbol("hiddenMissingProjects");
+
+/** The listed projects whose folder is not known to be gone, carrying how many were hidden. */
+function withoutMissingProjects(result: unknown): unknown {
+  if (!Array.isArray(result)) return result;
+  const kept = result.filter((project) => !isRecord(project) || project.exists !== false);
+  return Object.defineProperty(kept, HIDDEN_MISSING_PROJECTS, { value: result.length - kept.length, enumerable: false });
+}
+
+function hiddenMissingProjects(result: unknown): number {
+  const hidden = Array.isArray(result) ? (result as { [HIDDEN_MISSING_PROJECTS]?: unknown })[HIDDEN_MISSING_PROJECTS] : 0;
+  return typeof hidden === "number" ? hidden : 0;
+}
+
+function buildProjectsPlan(args: string[], target: { remote: boolean } = { remote: false }): CliPlan {
   const sub = firstPositional(args) ?? "list";
   // The registry lives only in the machine brain, so these never fall back to
   // a headless single-project runtime.
@@ -24543,12 +24591,69 @@ function buildProjectsPlan(args: string[]): CliPlan {
     machineAutoStart: true,
   };
   if (sub === "list" || sub === "ls") {
+    // Projects whose folder is gone (a deleted temp project, a drive that is
+    // not plugged in) are hidden unless asked for; the text says how many.
+    const includeMissing = readFlag(args, ["--include-missing", "--all"]);
     return {
       ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
+      shapeResult: (values) => (includeMissing ? values.result : withoutMissingProjects(values.result)),
+      formatText: (result) => {
+        const table = formatProjectsList(result);
+        const hidden = hiddenMissingProjects(result);
+        if (hidden === 0) return table;
+        return `${table}\n${hidden} project${hidden === 1 ? " whose folder is" : "s whose folders are"} gone ${hidden === 1 ? "is" : "are"} hidden: `
+          + "`ade projects list --include-missing` lists them, `ade projects prune` removes them from ADE (it never deletes folders).";
+      },
+    };
+  }
+  if (sub === "clone") {
+    // Clones with this computer's own GitHub sign-in (the brain's), then
+    // registers the folder as a project. `--path` is the folder to clone
+    // into; without it, beside the other projects. On another machine
+    // (`--machine`) the path is that machine's, sent as typed: it resolves
+    // and checks it, in its own OS's format (`C:\work` from a Mac).
+    const parentDir = readValue(args, ["--path", "--parent", "--parent-dir", "--into"]);
+    const name = readValue(args, ["--name"]);
+    const repo = requireValue(readValue(args, ["--repo", "--url"]) ?? firstPositional(args), "repository (GitHub URL or owner/name)");
+    return {
+      ...base,
+      label: "projects clone",
+      formatter: "projects-list",
+      // git clone runs up to five minutes in the brain.
+      minTimeoutMs: 6 * 60_000,
+      steps: [{
+        key: "result",
+        method: "projects.clone",
+        params: {
+          url: githubCloneUrl(repo),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(name ? { name } : {}),
+          catalogVisibility: "recent",
+          registrationSource: "cli-explicit",
+        },
+      }],
+    };
+  }
+  if (sub === "prune") {
+    // Registry entries only: a project's folder is never touched.
+    const dryRun = readFlag(args, ["--dry-run"]);
+    return {
+      ...base,
+      label: "projects prune",
+      steps: [{ key: "result", method: "projects.pruneMissing", params: { dryRun } }],
+      formatText: (result) => {
+        const removed = isRecord(result) && Array.isArray(result.removed) ? result.removed.filter(isRecord) : [];
+        if (removed.length === 0) return "Every registered project's folder is there. Nothing to prune.";
+        const verb = dryRun ? "Would remove" : "Removed";
+        return [
+          `${verb} ${removed.length} project${removed.length === 1 ? "" : "s"} whose folder is gone (folders are never deleted):`,
+          ...removed.map((project) => `  ${String(project.displayName ?? "")}  ${String(project.rootPath ?? "")}  ${String(project.projectId ?? "")}`),
+        ].join("\n");
+      },
     };
   }
   if (sub === "add" || sub === "register") {
@@ -24616,8 +24721,16 @@ function buildProjectsPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    `projects supports list, add, remove, touch, or inspect; got '${sub}'.`,
+    `projects supports list, add, clone, remove, prune, touch, or inspect; got '${sub}'.`,
   );
+}
+
+/** `owner/name` → its GitHub URL; anything else (a URL, an ssh address) as given. */
+function githubCloneUrl(repo: string): string {
+  const trimmed = repo.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(trimmed)
+    ? `https://github.com/${trimmed.replace(/\.git$/, "")}.git`
+    : trimmed;
 }
 
 function withProjectId(

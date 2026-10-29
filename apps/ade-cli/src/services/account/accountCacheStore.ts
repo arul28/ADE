@@ -6,6 +6,7 @@ import {
   subscribeAccountChangeMarks,
   type AccountChangeMarkKind,
 } from "./accountChangeMarks";
+import { describeSyncFailure, relayUnhealthy } from "./accountCacheDiagnostics";
 
 /** Marks older than this mean the heartbeat stopped carrying them: poll. */
 const CHANGE_MARK_FRESH_MS = 90_000;
@@ -21,6 +22,27 @@ const FAILURE_BACKOFF_BASE_MS = 30_000;
 const FAILURE_BACKOFF_MAX_MS = 10 * 60_000;
 /** A relay that answered 429 asked to be left alone for at least this long. */
 const RATE_LIMITED_BACKOFF_MIN_MS = 60_000;
+/**
+ * A write the relay refused for itself (not the batch) is parked: kept on this
+ * machine with its reason and retried this often, in case a newer relay takes
+ * it. A new local write to the same key replaces it and goes up at once.
+ */
+const PARKED_RETRY_MS = 60 * 60_000;
+/**
+ * A queued write older than this may predate rows another machine wrote while
+ * this one could not sync. Before sending one to a relay that does not check
+ * that itself, the store reads what changed since and drops the writes a newer
+ * row supersedes. A write flushed right after it was made never waits this long.
+ */
+const STALE_WRITE_CHECK_AGE_MS = 60_000;
+/**
+ * That check compares the relay's stamps with this machine's clock, so it only
+ * calls a write superseded when the row is newer by more than this. A relay
+ * that checks itself corrects for the clock exactly (`sentAt`).
+ */
+const STALE_WRITE_CLOCK_TOLERANCE_MS = 2 * 60_000;
+/** The same failure is logged once per this window, with a count of repeats. */
+const FAILURE_LOG_REPEAT_MS = 10 * 60_000;
 
 /**
  * The machine-local half of an account-synced store.
@@ -68,7 +90,53 @@ export type AccountCacheRow = {
  * user made while the previous upload was still in flight. A counter has no
  * resolution to run out of.
  */
-export type AccountCachePending = { seq: number; deleted: boolean };
+export type AccountCachePending = {
+  seq: number;
+  deleted: boolean;
+  /**
+   * When this machine queued the write, on its own clock. Stamped by the cache;
+   * entries queued before it existed fall back to their row's local stamp. It
+   * is what lets the relay (or this store, for an older relay) refuse a write
+   * that a newer row on the account has already replaced.
+   */
+  queuedAt?: string;
+  /** Set when the relay refused this one write; see `PARKED_RETRY_MS`. */
+  parked?: AccountCacheParked;
+};
+
+/** Why and when the relay refused a write. The reason is the relay's, never a value. */
+export type AccountCacheParked = { reason: string; at: string };
+
+/** What a store's `upload` reports back; see `AccountCacheStoreConfig.upload`. */
+export type AccountCacheUploadResult<TRemote> = {
+  updatedAt: string | null;
+  completedSeqs?: readonly number[];
+  /** Writes the relay refused for themselves: parked with the reason. */
+  rejected?: ReadonlyArray<{ seq: number; reason: string }>;
+  /** Writes a newer row on the account replaced: dropped, and `current` adopted. */
+  superseded?: ReadonlyArray<{ seq: number; current: TRemote | null }>;
+  /**
+   * Whether the relay checked each write against newer rows itself: true when
+   * it answered per item, false when a batch landed without per-item answers
+   * (an older relay), absent when no batch landed to tell.
+   */
+  checkedConflicts?: boolean;
+  /** A request failed partway, for a reason not one item's. The rest stays queued. */
+  error?: unknown;
+};
+
+/** How this machine's account sync is doing, for Settings, ADE MCP and `ade doctor`. */
+export type AccountCacheHealth = {
+  state: "ok" | "failing" | "unavailable";
+  /** When the last full sync (upload and pull) finished, in this process. */
+  lastSyncedAt: string | null;
+  /** Local changes still waiting to reach the account. */
+  pendingChanges: number;
+  /** Local changes the account service refused; kept here and retried hourly. */
+  parked: number;
+  /** One plain sentence when not ok. Never a value or a key. */
+  lastError: string | null;
+};
 
 /** Result of a cache pass, including whether the remote authority answered. */
 export type AccountCacheSyncStatus = "ready" | "unavailable" | "failed";
@@ -81,6 +149,30 @@ const MAX_PULL_PAGES = 50;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error ?? "");
+}
+
+function hasUnparked(pending: readonly AccountCachePending[]): boolean {
+  return pending.some((entry) => !entry.parked);
+}
+
+function isIsoTime(value: unknown): value is string {
+  return typeof value === "string" && value.length <= 64 && !Number.isNaN(Date.parse(value));
+}
+
+/** Restores the cache-owned fields a store's own decoder does not know about. */
+function withQueueMetadata<TPending extends AccountCachePending>(decoded: TPending, raw: unknown): TPending {
+  if (!isRecord(raw)) return decoded;
+  const next = { ...decoded };
+  if (isIsoTime(raw.queuedAt)) next.queuedAt = raw.queuedAt;
+  const parked = raw.parked;
+  if (isRecord(parked) && typeof parked.reason === "string" && isIsoTime(parked.at)) {
+    next.parked = { reason: parked.reason.slice(0, 120), at: parked.at };
+  }
+  return next;
 }
 
 export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends AccountCachePending> = {
@@ -97,6 +189,13 @@ export type AccountCacheFile<TRow extends AccountCacheRow, TPending extends Acco
   cursor: string | null;
   rows: Record<string, TRow>;
   pending: TPending[];
+  /**
+   * The relay (`relayId`) known to answer per item and to refuse a write a
+   * newer row replaced. Kept on disk so a restart does not run the stale-write
+   * pre-check against it again (that check judges by this machine's clock).
+   * A different relay, or none recorded, is checked as before.
+   */
+  conflictCheckingRelay: string | null;
 };
 
 export type AccountCacheStoreConfig<
@@ -138,9 +237,17 @@ export type AccountCacheStoreConfig<
     cacheEntryDropped: string;
     /** Only the vault deletes its file, so only the vault needs this. */
     purgeFailed?: string;
+    /** The relay refused writes for themselves; they are parked. */
+    itemsParked?: string;
+    /** Queued writes a newer row on the account replaced; they were dropped. */
+    writesSuperseded?: string;
   };
+  /** Clock for `queuedAt` and parking. */
+  now?: () => number;
   /** True when there is a relay to sync against at all. */
   hasRelay(): boolean;
+  /** Which relay this is (its address), so what was learned about one is not applied to another. */
+  relayId?: () => string | null;
   /** One queue entry per key: which existing entries a new write supersedes. */
   pendingMatches(existing: TPending, write: Omit<TPending, "seq">): boolean;
   /** Cache key for a queued intent, so a pull can skip keys we still owe. */
@@ -153,17 +260,18 @@ export type AccountCacheStoreConfig<
   decodePending(value: unknown): TPending | null;
   /**
    * Flush the queue. `null` means "could not ask" — the queue stays and the
-   * pull is skipped. Throwing means the same, and is logged.
+   * pull is skipped. Throwing means nothing landed, and is logged; the pull
+   * still runs unless the relay itself is down or rate-limiting.
    *
-   * `completedSeqs` is what actually landed. A PUT that succeeded followed by
-   * a DELETE that could not be sent must drop the PUT seqs immediately, or the
-   * next pass replays them with a fresh Worker timestamp and last-writer-wins
-   * over a newer remote edit.
+   * Each entry arrives with `queuedAt` filled in where it is known.
+   *
+   * `completedSeqs` is what actually landed (all of them when absent, minus
+   * `rejected` and `superseded`). A PUT that succeeded followed by a DELETE
+   * that could not be sent must drop the PUT seqs immediately, or the next pass
+   * replays them with a fresh Worker timestamp and last-writer-wins over a
+   * newer remote edit.
    */
-  upload(pending: TPending[]): Promise<{
-    updatedAt: string | null;
-    completedSeqs?: readonly number[];
-  } | null>;
+  upload(pending: TPending[]): Promise<AccountCacheUploadResult<TRemote> | null>;
   pull(cursor: string | null): Promise<
     { rows: TRemote[]; cursor: string | null; truncated: boolean } | null
   >;
@@ -198,8 +306,16 @@ export type AccountCacheStore<
    * on another machine moments ago (an agent asking for a secret by name).
    */
   syncIfStale(maxAgeMs: number): Promise<AccountCacheSyncStatus>;
-  /** Cache keys of local writes that have not reached the Worker yet. */
+  /** Cache keys of local writes that have not reached the Worker yet (parked ones included). */
   pendingKeys(): string[];
+  /** How this machine's sync is doing; reads the cache, never the network. */
+  health(): AccountCacheHealth;
+  /**
+   * Also send this store's log events to `logger`. The store is one per
+   * machine and built by whichever caller comes first; this is how its
+   * failures reach the machine's own log whoever that was.
+   */
+  attachLogger(logger: AccountCacheLogger): void;
   startPeriodicSync(
     intervalMs?: number,
     onSync?: AccountCacheSyncListener,
@@ -218,7 +334,44 @@ export function createAccountCacheStore<
   TRemote extends { updatedAt: string; deleted?: boolean },
 >(config: AccountCacheStoreConfig<TRow, TPending, TRemote>): AccountCacheStore<TRow, TPending> {
   const cachePath = path.join(config.adeDir, config.cacheFileName);
-  const { logger, rowsField } = config;
+  const { rowsField } = config;
+  const now = config.now ?? Date.now;
+  /** The creator's logger plus any attached since (the machine log). */
+  const loggers = new Set<AccountCacheLogger>([config.logger]);
+  const log: AccountCacheLogger = {
+    info: (message, meta) => {
+      for (const target of loggers) target.info(message, meta);
+    },
+    warn: (message, meta) => {
+      for (const target of loggers) target.warn(message, meta);
+    },
+  };
+  /**
+   * A failure that repeats every backoff would fill the log with one line; it
+   * is logged once per window per event and reason, with the repeats counted.
+   */
+  const failureLogs = new Map<string, { atMs: number; repeated: number }>();
+  const warnLimited = (event: string, meta: Record<string, unknown>, reason: string): void => {
+    const id = `${event}\u0000${reason}`;
+    const nowMs = now();
+    const previous = failureLogs.get(id);
+    if (previous && nowMs - previous.atMs < FAILURE_LOG_REPEAT_MS) {
+      previous.repeated += 1;
+      return;
+    }
+    if (failureLogs.size > 64) failureLogs.clear();
+    failureLogs.set(id, { atMs: nowMs, repeated: 0 });
+    log.warn(event, previous?.repeated ? { ...meta, repeated: previous.repeated } : meta);
+  };
+  /** The last failure, as a sentence for `health()`; cleared by a clean pass. */
+  let lastError: string | null = null;
+  const relayKey = (): string => config.relayId?.() ?? "";
+  /**
+   * The relay answered per item and checked writes against newer rows itself
+   * (`itemResults`). Until it has, an old queued write is checked here first.
+   */
+  const relayChecksConflicts = (current: AccountCacheFile<TRow, TPending>): boolean =>
+    current.conflictCheckingRelay === relayKey();
   let cache: AccountCacheFile<TRow, TPending> | null = null;
   let corruptEntryLogged = false;
   let syncInFlight: Promise<AccountCacheSyncStatus> | null = null;
@@ -295,7 +448,7 @@ export function createAccountCacheStore<
   const logCorruptEntry = (kind: "row" | "pending"): void => {
     if (corruptEntryLogged) return;
     corruptEntryLogged = true;
-    logger.warn(config.events.cacheEntryDropped, { kind, rowsField });
+    log.warn(config.events.cacheEntryDropped, { kind, rowsField });
   };
 
   function emptyCache(accountUserId: string | null): AccountCacheFile<TRow, TPending> {
@@ -306,6 +459,7 @@ export function createAccountCacheStore<
       cursor: null,
       rows: {},
       pending: [],
+      conflictCheckingRelay: null,
     };
   }
 
@@ -370,7 +524,7 @@ export function createAccountCacheStore<
     if (Array.isArray(loaded.pending)) {
       for (const value of loaded.pending) {
         const decoded = config.decodePending(value);
-        if (decoded) pending.push(decoded);
+        if (decoded) pending.push(withQueueMetadata(decoded, value));
         else logCorruptEntry("pending");
       }
     } else if (loaded.pending !== undefined) {
@@ -387,6 +541,7 @@ export function createAccountCacheStore<
       cursor: typeof loaded.cursor === "string" ? loaded.cursor : null,
       rows,
       pending,
+      conflictCheckingRelay: typeof loaded.conflictCheckingRelay === "string" ? loaded.conflictCheckingRelay : null,
     };
     return cache;
   }
@@ -401,6 +556,7 @@ export function createAccountCacheStore<
       cursor: current.cursor,
       rows: { ...current.rows },
       pending: current.pending.map((entry) => ({ ...entry })),
+      conflictCheckingRelay: current.conflictCheckingRelay,
     };
   }
 
@@ -419,7 +575,7 @@ export function createAccountCacheStore<
       }
       return true;
     } catch (error) {
-      logger.warn(config.events.writeFailed, {
+      log.warn(config.events.writeFailed, {
         error: error instanceof Error ? error.message : String(error ?? ""),
       });
       return false;
@@ -431,7 +587,9 @@ export function createAccountCacheStore<
     write: Omit<TPending, "seq">,
   ): void {
     current.seqCounter += 1;
-    const entry = { ...write, seq: current.seqCounter } as TPending;
+    // `queuedAt` and `parked` are the cache's own: a new write is never parked.
+    const { parked: _parked, ...fresh } = write as Omit<TPending, "seq"> & { parked?: unknown };
+    const entry = { ...fresh, seq: current.seqCounter, queuedAt: new Date(now()).toISOString() } as TPending;
     // One entry per key: only the newest local intent is worth uploading, and
     // replaying an older one would resurrect a value the user already replaced.
     current.pending = current.pending.filter((existing) => !config.pendingMatches(existing, write));
@@ -439,7 +597,7 @@ export function createAccountCacheStore<
   }
 
   function dropMutation(reason: "signed_out" | "owner_changed" | "epoch_changed"): void {
-    logger.warn(config.events.mutationDropped, { reason });
+    log.warn(config.events.mutationDropped, { reason });
   }
 
   function mutate(
@@ -491,7 +649,7 @@ export function createAccountCacheStore<
       cache = before;
       return false;
     }
-    if (config.flushOnWrite && current.pending.length > 0) scheduleFlush();
+    if (config.flushOnWrite && hasUnparked(current.pending)) scheduleFlush();
     return true;
   }
 
@@ -579,7 +737,9 @@ export function createAccountCacheStore<
     const accountUserId = config.getAccountUserId();
     if (!accountUserId) return true;
     if (!lastSyncWasReadyFor(accountUserId)) return true;
-    if (readCache().pending.length > 0) return true;
+    // Parked writes do not count: they retry on their own hourly cadence, and
+    // counting them would pull on every tick for as long as one is parked.
+    if (hasUnparked(readCache().pending)) return true;
     if (nowMs - lastReadySyncAtMs >= CHANGE_MARK_SAFETY_SYNC_MS) return true;
     const entry = readAccountChangeMarks(accountUserId);
     if (!entry || nowMs - entry.receivedAtMs > CHANGE_MARK_FRESH_MS) return true;
@@ -620,51 +780,84 @@ export function createAccountCacheStore<
       epoch !== entryEpoch || config.getAccountUserId() !== entryAccountUserId;
 
     const current = readCache();
+    const nowMs = now();
+    // Entries queued before `queuedAt` existed carry their write time on the
+    // row: a pull never replaces a row whose key is still queued.
+    const writtenAtOf = (entry: TPending): string | undefined => {
+      if (entry.queuedAt) return entry.queuedAt;
+      const stamp = current.rows[config.pendingKey(entry)]?.updatedAt;
+      return isIsoTime(stamp) ? stamp : undefined;
+    };
+    let due = current.pending
+      .filter((entry) => !entry.parked || nowMs - Date.parse(entry.parked.at) >= PARKED_RETRY_MS)
+      .map((entry) => {
+        const queuedAt = writtenAtOf(entry);
+        return (queuedAt ? { ...entry, queuedAt } : { ...entry }) as TPending;
+      });
+    let appliedRemoteRows = false;
+    let uploadFailure: unknown = undefined;
+
+    // A write that waited (offline, a backoff, a stuck queue) may be older
+    // than rows other machines wrote meanwhile. Until the relay is known to
+    // refuse those itself, read what changed since and drop what is replaced.
+    if (!relayChecksConflicts(current) && due.some((entry) => isOldWrite(entry, nowMs))) {
+      let checked: { superseded: Array<{ seq: number; current: TRemote }> } | "unavailable" | "abandoned";
+      try {
+        checked = await findSupersededWrites(due, abandoned);
+      } catch (error) {
+        noteError(error);
+        lastError = describeSyncFailure(error, "pull");
+        warnLimited(config.events.pullFailed, { phase: "stale_check", error: errorText(error) }, errorText(error));
+        return "failed";
+      }
+      if (checked === "abandoned") return "unavailable";
+      if (checked === "unavailable") return "unavailable";
+      if (checked.superseded.length) {
+        const dropped = new Set(checked.superseded.map((entry) => entry.seq));
+        appliedRemoteRows = applySuperseded(checked.superseded) || appliedRemoteRows;
+        if (!persist()) return "failed";
+        due = due.filter((entry) => !dropped.has(entry.seq));
+      }
+    }
 
     // Push first. A pull that ran first would hand back the server's older
     // value for a key this machine has already changed, and the user would
     // watch their own edit revert.
-    const pending = current.pending.slice();
-    if (pending.length) {
-      let uploadedAt: string | null = null;
-      let completedSeqs: ReadonlySet<number> = new Set(pending.map((entry) => entry.seq));
+    if (due.length) {
+      let result: AccountCacheUploadResult<TRemote> | null = null;
       try {
-        const result = await config.upload(pending);
+        result = await config.upload(due);
         // `null` means there was no token to ask with. The queue stays.
         if (result === null) return "unavailable";
-        uploadedAt = result.updatedAt;
-        if (result.completedSeqs) completedSeqs = new Set(result.completedSeqs);
       } catch (error) {
         // Keep the queue. An upload that failed is work still to do, and
         // dropping it would silently lose a change the user believes is saved.
-        noteError(error);
-        logger.warn(config.events.uploadFailed, {
-          pending: pending.length,
-          error: error instanceof Error ? error.message : String(error ?? ""),
-        });
-        return "failed";
+        uploadFailure = error;
       }
       if (abandoned()) return "unavailable";
-      // Clear only what was actually sent, matched by sequence rather than by
-      // key: an edit made while the upload was in flight carries a newer seq
-      // for the same key, and dropping it would lose a change the user believes
-      // is saved. Persist immediately so a later pull failure cannot resurrect
-      // a PUT the Worker already accepted.
-      const after = readCache();
-      after.pending = after.pending.filter((entry) => !completedSeqs.has(entry.seq));
-      // Adopt the server's stamp for everything that landed. Without this the
-      // cached row still carries a local provisional time, and the pull below —
-      // which asks from a cursor taken BEFORE this upload — would hand back the
-      // older server row and revert the user's own edit.
-      if (uploadedAt) {
-        for (const entry of pending) {
-          if (entry.deleted || !completedSeqs.has(entry.seq)) continue;
-          const cached = after.rows[config.pendingKey(entry)];
-          if (cached) cached.updatedAt = uploadedAt;
-        }
+      if (result) {
+        appliedRemoteRows = applyUploadResult(due, result) || appliedRemoteRows;
+        // Persist immediately so a later pull failure cannot resurrect a PUT
+        // the Worker already accepted.
+        if (!persist()) return "failed";
+        if (result.error !== undefined) uploadFailure = result.error;
       }
-      if (!persist()) return "failed";
+      if (uploadFailure !== undefined) {
+        noteError(uploadFailure);
+        lastError = describeSyncFailure(uploadFailure, "upload");
+        warnLimited(config.events.uploadFailed, {
+          pending: due.length,
+          error: errorText(uploadFailure),
+        }, errorText(uploadFailure));
+        // Still pull, unless the relay itself is down or rate-limiting: one
+        // write the relay keeps refusing must never stop this machine from
+        // receiving everything else (a stuck queue once cost a machine eight
+        // days of the account's changes). A pull skips keys still queued, so
+        // it cannot revert them.
+        if (relayUnhealthy(uploadFailure)) return "failed";
+      }
     }
+    if (appliedRemoteRows) notifyRemoteRowsApplied();
 
     // Then pull, page by page. A truncated page is not a finished cache:
     // migration starts on `ready`, and treating a partial vault as complete
@@ -680,7 +873,7 @@ export function createAccountCacheStore<
         if (abandoned()) return "unavailable";
         const after = readCache();
         const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
-        let appliedRemoteRows = false;
+        appliedRemoteRows = false;
         for (const remote of page.rows) {
           const key = config.remoteKey(remote);
           // A key this machine has queued is not the server's to answer yet.
@@ -709,29 +902,153 @@ export function createAccountCacheStore<
         }
         if (page.cursor) after.cursor = page.cursor;
         if (!persist()) return "failed";
-        if (appliedRemoteRows) {
-          for (const listener of [...remoteRowsAppliedListeners]) {
-            try {
-              listener();
-            } catch (error) {
-              logger.warn(config.events.pullFailed, {
-                error: error instanceof Error ? error.message : String(error ?? ""),
-              });
-            }
-          }
+        if (appliedRemoteRows) notifyRemoteRowsApplied();
+        if (!page.truncated) {
+          if (uploadFailure !== undefined) return "failed";
+          lastError = null;
+          return "ready";
         }
-        if (!page.truncated) return "ready";
-        logger.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
+        log.info(config.events.pullTruncated, { cursor: after.cursor, page: pageIndex + 1 });
         if ((page.cursor ?? null) === (cursorAtPull ?? null)) return "unavailable";
       }
       return "unavailable";
     } catch (error) {
       noteError(error);
-      logger.warn(config.events.pullFailed, {
-        error: error instanceof Error ? error.message : String(error ?? ""),
-      });
+      lastError = describeSyncFailure(error, "pull");
+      warnLimited(config.events.pullFailed, { error: errorText(error) }, errorText(error));
       return "failed";
     }
+  }
+
+  function notifyRemoteRowsApplied(): void {
+    for (const listener of [...remoteRowsAppliedListeners]) {
+      try {
+        listener();
+      } catch (error) {
+        log.warn(config.events.pullFailed, { error: errorText(error) });
+      }
+    }
+  }
+
+  function isOldWrite(entry: TPending, nowMs: number): boolean {
+    return entry.queuedAt !== undefined && nowMs - Date.parse(entry.queuedAt) > STALE_WRITE_CHECK_AGE_MS;
+  }
+
+  /**
+   * The queued writes a newer row on the account replaces, for a relay that
+   * does not refuse them itself. Reads every row changed since the oldest
+   * queued write (a legacy bare-stamp `since`, which such a relay accepts),
+   * without moving the cache's own cursor. Writes with no known time are left
+   * to upload as before.
+   */
+  async function findSupersededWrites(
+    due: TPending[],
+    abandoned: () => boolean,
+  ): Promise<{ superseded: Array<{ seq: number; current: TRemote }> } | "unavailable" | "abandoned"> {
+    const byKey = new Map<string, TPending>();
+    let oldestMs = Number.POSITIVE_INFINITY;
+    for (const entry of due) {
+      const writtenMs = entry.queuedAt ? Date.parse(entry.queuedAt) : Number.NaN;
+      if (Number.isNaN(writtenMs)) continue;
+      byKey.set(config.pendingKey(entry), entry);
+      oldestMs = Math.min(oldestMs, writtenMs);
+    }
+    const superseded: Array<{ seq: number; current: TRemote }> = [];
+    if (!byKey.size) return { superseded };
+    let since: string | null = new Date(oldestMs - STALE_WRITE_CLOCK_TOLERANCE_MS).toISOString();
+    for (let pageIndex = 0; pageIndex < MAX_PULL_PAGES; pageIndex += 1) {
+      const page = await config.pull(since);
+      if (!page) return "unavailable";
+      if (abandoned()) return "abandoned";
+      for (const remote of page.rows) {
+        const key = config.remoteKey(remote);
+        const entry = byKey.get(key);
+        if (!entry) continue;
+        if (Date.parse(remote.updatedAt) > Date.parse(entry.queuedAt!) + STALE_WRITE_CLOCK_TOLERANCE_MS) {
+          superseded.push({ seq: entry.seq, current: remote });
+          byKey.delete(key);
+        }
+      }
+      if (!page.truncated || !page.cursor || page.cursor === since) break;
+      since = page.cursor;
+    }
+    return { superseded };
+  }
+
+  /**
+   * Drops writes a newer row replaced and adopts that row, so the consumers
+   * on this machine see what the account holds. The row is adopted here
+   * because the pull will not bring it: the key was skipped while queued, and
+   * the cursor has moved past it. True when a row was applied.
+   */
+  function applySuperseded(superseded: ReadonlyArray<{ seq: number; current: TRemote | null }>): boolean {
+    if (!superseded.length) return false;
+    const after = readCache();
+    const seqs = new Set(superseded.map((entry) => entry.seq));
+    const dropped = after.pending.filter((entry) => seqs.has(entry.seq));
+    after.pending = after.pending.filter((entry) => !seqs.has(entry.seq));
+    // A write to the same key queued after the stale one is still owed to the
+    // account and is newer than the row it lost to; adopting that row here
+    // would leave this machine showing a value the account is about to replace.
+    const stillPending = new Set(after.pending.map((entry) => config.pendingKey(entry)));
+    let applied = false;
+    for (const { current } of superseded) {
+      if (!current) continue;
+      const key = config.remoteKey(current);
+      if (stillPending.has(key)) continue;
+      const next = config.toRow(current, after.rows[key]);
+      if (next === null) continue;
+      after.rows[key] = next;
+      applied = true;
+    }
+    log.info(config.events.writesSuperseded ?? config.events.uploadFailed, {
+      superseded: dropped.length,
+      deletes: dropped.filter((entry) => entry.deleted).length,
+    });
+    return applied;
+  }
+
+  /** Clears what landed, parks what the relay refused, adopts what a newer row replaced. */
+  function applyUploadResult(due: TPending[], result: AccountCacheUploadResult<TRemote>): boolean {
+    const rejected = new Map((result.rejected ?? []).map((entry) => [entry.seq, entry.reason]));
+    const superseded = result.superseded ?? [];
+    const supersededSeqs = new Set(superseded.map((entry) => entry.seq));
+    const completed = new Set(
+      (result.completedSeqs ?? due.map((entry) => entry.seq))
+        .filter((seq) => !rejected.has(seq) && !supersededSeqs.has(seq)),
+    );
+    const after = readCache();
+    if (result.checkedConflicts !== undefined) {
+      after.conflictCheckingRelay = result.checkedConflicts ? relayKey() : null;
+    }
+    // Matched by sequence rather than by key: an edit made while the upload
+    // was in flight carries a newer seq for the same key, and dropping it
+    // would lose a change the user believes is saved.
+    const parkedAt = new Date(now()).toISOString();
+    after.pending = after.pending.flatMap((entry) => {
+      if (completed.has(entry.seq)) return [];
+      const reason = rejected.get(entry.seq);
+      return reason === undefined ? [entry] : [{ ...entry, parked: { reason, at: parkedAt } }];
+    });
+    // Adopt the server's stamp for everything that landed. Without this the
+    // cached row still carries a local provisional time, and the pull — which
+    // asks from a cursor taken BEFORE this upload — would hand back the older
+    // server row and revert the user's own edit.
+    if (result.updatedAt) {
+      for (const entry of due) {
+        if (entry.deleted || !completed.has(entry.seq)) continue;
+        const cached = after.rows[config.pendingKey(entry)];
+        if (cached) cached.updatedAt = result.updatedAt;
+      }
+    }
+    if (rejected.size) {
+      const reasons = [...new Set(rejected.values())].sort();
+      warnLimited(config.events.itemsParked ?? config.events.uploadFailed, {
+        parked: rejected.size,
+        reasons,
+      }, reasons.join(","));
+    }
+    return applySuperseded(superseded);
   }
 
   const store: AccountCacheStore<TRow, TPending> = {
@@ -775,7 +1092,7 @@ export function createAccountCacheStore<
           syncInFlight = null;
           if (flushAfterInFlight) {
             flushAfterInFlight = false;
-            if (readCache().pending.length > 0) scheduleFlush();
+            if (hasUnparked(readCache().pending)) scheduleFlush();
           }
         });
       return syncInFlight;
@@ -791,7 +1108,7 @@ export function createAccountCacheStore<
       if (
         accountUserId
         && lastSyncWasReadyFor(accountUserId)
-        && readCache().pending.length === 0
+        && !hasUnparked(readCache().pending)
         && Date.now() - lastReadySyncAtMs <= Math.max(0, maxAgeMs)
       ) {
         return "ready";
@@ -801,6 +1118,44 @@ export function createAccountCacheStore<
 
     pendingKeys(): string[] {
       return readCache().pending.map((entry) => config.pendingKey(entry));
+    },
+
+    health(): AccountCacheHealth {
+      const accountUserId = config.getAccountUserId();
+      const pending = accountUserId ? readCache().pending : [];
+      const parked = pending.filter((entry) => entry.parked).length;
+      const pendingChanges = pending.length - parked;
+      const synced = accountUserId !== null
+        && lastSyncedAccountUserId === accountUserId
+        && lastSyncedEpoch === epoch;
+      const status = synced ? lastSyncStatus : null;
+      const lastSyncedAt = synced && lastReadySyncAtMs > 0 ? new Date(lastReadySyncAtMs).toISOString() : null;
+      const base = { lastSyncedAt, pendingChanges, parked };
+      if (!config.hasRelay()) {
+        return { ...base, state: "unavailable", lastError: "This computer has no account service to sync with." };
+      }
+      if (!accountUserId) return { ...base, state: "unavailable", lastError: "This computer is signed out of its ADE account." };
+      if (status === "failed") {
+        return { ...base, state: "failing", lastError: lastError ?? "Syncing with your account failed. It retries on its own." };
+      }
+      if (parked > 0) {
+        const reasons = [...new Set(pending.flatMap((entry) => (entry.parked ? [entry.parked.reason] : [])))].sort();
+        return {
+          ...base,
+          state: "failing",
+          lastError: `Your account service refused ${parked === 1 ? "1 change" : `${parked} changes`} from this computer (${reasons.join(", ")}). `
+            + "ADE keeps them on this computer and tries again every hour.",
+        };
+      }
+      if (status === "ready") return { ...base, state: "ok", lastError: null };
+      if (status === "unavailable") {
+        return { ...base, state: "unavailable", lastError: "ADE couldn't ask your account service yet (no sign-in token, or the service can't store secrets right now)." };
+      }
+      return { ...base, state: "unavailable", lastError: "ADE hasn't synced with your account yet." };
+    },
+
+    attachLogger(extra: AccountCacheLogger): void {
+      loggers.add(extra);
     },
 
     /**
@@ -884,7 +1239,7 @@ export function createAccountCacheStore<
       try {
         fs.rmSync(cachePath, { force: true });
       } catch (error) {
-        logger.warn(config.events.purgeFailed ?? config.events.writeFailed, {
+        log.warn(config.events.purgeFailed ?? config.events.writeFailed, {
           error: error instanceof Error ? error.message : String(error ?? ""),
         });
       }

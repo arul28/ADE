@@ -8,8 +8,13 @@
  * ADE MCP is the same service.
  */
 
-import type { RemoteMcpAction, RemoteMcpScope } from "../../desktop/src/shared/types/remoteMcp";
+import {
+  isRemoteMcpNotServingReason,
+  type RemoteMcpAction,
+  type RemoteMcpScope,
+} from "../../desktop/src/shared/types/remoteMcp";
 import { CliUsageError, isRecord, readFlag, readValue, type CliPlan } from "./cli";
+import { rosterStateWords } from "./services/remoteMcp/remoteMcpForward";
 
 export const REMOTE_MCP_HELP = `
   ADE MCP
@@ -134,23 +139,37 @@ function scopeLabel(value: unknown): string {
 }
 
 function machineLine(machine: Record<string, unknown>): string {
-  const name = `${String(machine.name)}${machine.isThisMachine === true ? " (this computer)" : ""}`;
+  const isThisMachine = machine.isThisMachine === true;
+  const name = `${String(machine.name)}${isThisMachine ? " (this computer)" : ""}`;
   const online = machine.online === true ? "online" : machine.online === false ? "offline" : "online unknown";
-  const state = machine.supported !== true
-    ? "not joined yet: open the latest ADE on it"
-    : machine.included === false
-      ? "left out"
-      : machine.serving === true ? "serving" : "not serving";
-  return `  ${name}  ${online}  ${state}`;
+  const row = {
+    isThisMachine,
+    serving: machine.serving === true,
+    reportedAt: typeof machine.reportedAt === "string" ? machine.reportedAt : null,
+    notServingReason: machine.supported !== true
+      ? "older_ade" as const
+      : isRemoteMcpNotServingReason(machine.notServingReason) ? machine.notServingReason : null,
+  };
+  const reported = !isThisMachine && row.reportedAt ? `  (as of ${row.reportedAt})` : "";
+  return `  ${name}  ${online}  ${rosterStateWords(row)}${reported}`;
+}
+
+function vaultLine(vault: Record<string, unknown>): string {
+  const synced = typeof vault.lastSyncedAt === "string" ? `last synced ${vault.lastSyncedAt}` : "never synced";
+  const pending = typeof vault.pendingChanges === "number" && vault.pendingChanges > 0 ? `, ${vault.pendingChanges} waiting to upload` : "";
+  const state = vault.state === "ok" ? "ok" : vault.state === "failing" ? "FAILING" : "unavailable";
+  const message = typeof vault.message === "string" && vault.message ? `\n  ${vault.message}` : "";
+  return `Account vault on this computer: ${state} (${synced}${pending})${message}`;
 }
 
 function connectionLine(connection: Record<string, unknown>): string {
   const kind = connection.kind === "token" ? "token" : "app";
   const host = typeof connection.redirectHost === "string" && connection.redirectHost ? ` (${connection.redirectHost})` : "";
+  const app = typeof connection.app === "string" ? ` [${connection.app}]` : "";
   const used = typeof connection.lastUsedAt === "string" ? `last used ${connection.lastUsedAt}` : "never used";
   const hint = typeof connection.tokenHint === "string" && connection.tokenHint ? ` …${connection.tokenHint}` : "";
   const only = isRecord(connection.onlyMachine) ? `  ${String(connection.onlyMachine.name)} only` : "";
-  return `  ${String(connection.id)}  ${String(connection.label)}${host}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
+  return `  ${String(connection.id)}  ${String(connection.label)}${host}${app}  ${kind}${hint}  ${scopeLabel(connection.scope)}${only}  ${used}`;
 }
 
 /** `--text` output for every `ade mcp` result. */
@@ -191,8 +210,9 @@ export function formatRemoteMcpResult(value: unknown): string {
     const thisServing = result.thisMachineServing === true;
     const lines = [
       `ADE MCP for your ADE account: ${accountOn ? "ON" : "off"}`,
-      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not available yet (this computer has no relay address)" : "made when you turn it on"}`,
+      `Server URL: ${result.serverUrl ? String(result.serverUrl) : accountOn ? "not on this computer yet (no relay address, or the account's ADE MCP key hasn't arrived: see below)" : "made when you turn it on"}`,
       `This computer (${String(result.machineName)}): ${thisServing ? "serving" : "not serving"}, relay ${result.relayConnected === true ? "connected" : "not connected"}`,
+      ...(isRecord(result.vault) ? [vaultLine(result.vault)] : []),
     ];
     const machines = Array.isArray(result.machines) ? result.machines.filter(isRecord) : [];
     if (machines.length) {

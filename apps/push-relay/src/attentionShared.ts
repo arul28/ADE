@@ -229,6 +229,119 @@ export function preferenceNumber(
 export const ACCOUNT_SCOPE_KEY_MAX_LENGTH = 512;
 
 /**
+ * Stale-write protection for account settings and vault writes.
+ *
+ * A machine that was offline (or stuck) for days still holds the writes it
+ * queued then. Sent now, last-to-arrive-wins would let an eight-day-old value
+ * replace a newer one, and for a rotating credential (Linear's refresh token)
+ * that signs every machine out. So a client that opts in (`itemResults: true`)
+ * tells the Worker when each write was made (`writtenAt`) and when it sent the
+ * request (`sentAt`), both on its own clock; the Worker moves `writtenAt` onto
+ * its clock by the difference between `sentAt` and its own time, and refuses
+ * that one item (never the batch) when the stored row is newer.
+ *
+ * Correcting by `sentAt` instead of trusting `writtenAt` keeps a machine with a
+ * wrong date from losing (or winning) every conflict. The tolerance absorbs the
+ * request's own latency: two edits that close together still resolve as before,
+ * by arrival.
+ */
+export const WRITE_CONFLICT_TOLERANCE_MS = 5_000;
+
+/** A threshold no stored stamp reaches: the write is never refused as stale. */
+const NO_CONFLICT_CHECK = "9999-12-31T23:59:59.999Z";
+
+export type WriteClock = { nowMs: number; offsetMs: number };
+
+function parseClientTime(value: unknown): number | null {
+  if (typeof value !== "string" || value.length > 64) return null;
+  const parsed = Date.parse(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/** This request's correction from the client's clock to the Worker's. */
+export function writeClock(sentAt: unknown, nowMs = Date.now()): WriteClock {
+  const sent = parseClientTime(sentAt);
+  return { nowMs, offsetMs: sent === null ? 0 : nowMs - sent };
+}
+
+/**
+ * The newest stored `updated_at` a write made at `writtenAt` may still replace.
+ * A stored row stamped later than this was written after this write was made.
+ * Without a `writtenAt`, nothing is refused (the behaviour before the check).
+ */
+export function staleWriteThreshold(clock: WriteClock, writtenAt: unknown): string {
+  const written = parseClientTime(writtenAt);
+  if (written === null) return NO_CONFLICT_CHECK;
+  const onWorkerClock = Math.min(clock.nowMs, written + clock.offsetMs);
+  return new Date(onWorkerClock + WRITE_CONFLICT_TOLERANCE_MS).toISOString();
+}
+
+/** `decodeURIComponent` that answers null for a malformed escape instead of throwing. */
+export function decodePathSegment(value: string | undefined): string | null {
+  try {
+    return decodeURIComponent(value ?? "");
+  } catch {
+    return null;
+  }
+}
+
+/** One item's verdict in an account write: what to write, or a plain reason it cannot be. */
+export type AccountItemVerdict<TWrite> = { ok: true; write: TWrite } | { ok: false; reason: string };
+
+/**
+ * One item's outcome in an `itemResults` write, in request order. `stale`
+ * carries the stored row so the client can adopt it: the client skipped that
+ * key while its own write was queued, so its pull cursor is already past it.
+ */
+export type AccountWriteResult<TRow> =
+  | { status: "written" }
+  | { status: "rejected"; reason: string }
+  | { status: "stale"; current: TRow | null };
+
+/** The answer for an item that never reached the database: refused, or (when ok) written. */
+export function accountRefusalResult<TWrite>(
+  verdict: AccountItemVerdict<TWrite>,
+): { status: "written" } | { status: "rejected"; reason: string } {
+  return verdict.ok ? { status: "written" } : { status: "rejected", reason: verdict.reason };
+}
+
+function changesOf(outcome: unknown): number {
+  const changes = isRecord(outcome) && isRecord(outcome.meta) ? outcome.meta.changes : undefined;
+  return typeof changes === "number" ? changes : 0;
+}
+
+/**
+ * Per-item answers for an `itemResults` write. `outcomes` are the batch's
+ * results for the accepted writes, in order; an upsert that changed nothing
+ * lost its `where` to a newer stored row, so that item is `stale` and carries
+ * the row `readCurrent` returns.
+ */
+export async function accountWriteResults<TWrite, TRow>(
+  verdicts: ReadonlyArray<AccountItemVerdict<TWrite>>,
+  outcomes: readonly unknown[],
+  readCurrent: (write: TWrite) => Promise<TRow | null>,
+): Promise<{ results: AccountWriteResult<TRow>[]; written: number }> {
+  const results: AccountWriteResult<TRow>[] = [];
+  let written = 0;
+  let parsedIndex = 0;
+  for (const verdict of verdicts) {
+    if (!verdict.ok) {
+      results.push(accountRefusalResult(verdict));
+      continue;
+    }
+    const index = parsedIndex;
+    parsedIndex += 1;
+    if (changesOf(outcomes[index]) > 0) {
+      written += 1;
+      results.push({ status: "written" });
+      continue;
+    }
+    results.push({ status: "stale", current: await readCurrent(verdict.write) });
+  }
+  return { results, written };
+}
+
+/**
  * `scope_key` is opaque to this Worker, but not arbitrary: it is either
  * "everything" or a normalized repository identity. Validating the shape stops
  * a client inventing a third axis the rest of ADE cannot read, and keeps the

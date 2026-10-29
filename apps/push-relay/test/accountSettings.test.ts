@@ -228,6 +228,50 @@ describe("account settings store", () => {
     expect(read.body.settings).toHaveLength(0);
   });
 
+  it("answers each setting on its own when asked, and refuses a write older than the stored row", async () => {
+    await put([{ scope: "all", key: "appearance.theme", value: "light" }]);
+    const longAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
+    const result = await call("PUT", "/attention/account/settings", {
+      itemResults: true,
+      sentAt: new Date().toISOString(),
+      settings: [
+        { scope: "all", key: "appearance.theme", value: "dark", writtenAt: longAgo },
+        { scope: "nonsense-scope", key: "appearance.theme", value: "dark" },
+        { scope: "all", key: "editor.font", value: "mono", writtenAt: longAgo },
+      ],
+    });
+    expect(result.body).toMatchObject({
+      ok: true,
+      written: 1,
+      results: [
+        { status: "stale", current: { key: "appearance.theme", value: "light" } },
+        { status: "rejected", reason: "invalid scope" },
+        { status: "written" },
+      ],
+    });
+    const stale = await call(
+      "DELETE",
+      `/attention/account/settings/all/appearance.theme?writtenAt=${encodeURIComponent(longAgo)}`,
+    );
+    expect(stale.status).toBe(409);
+    expect(stale.body).toMatchObject({ code: "stale", current: { value: "light" } });
+
+    // The device that wrote the stored row is never refused by it: its own
+    // earlier write may have been in flight when this one was made.
+    const own = await call("PUT", "/attention/account/settings", {
+      itemResults: true,
+      sentAt: new Date().toISOString(),
+      deviceId: "device-1",
+      settings: [{ scope: "all", key: "appearance.theme", value: "dark", writtenAt: longAgo }],
+    });
+    expect(own.body).toMatchObject({ results: [{ status: "written" }] });
+    const ownDelete = await call(
+      "DELETE",
+      `/attention/account/settings/all/appearance.theme?writtenAt=${encodeURIComponent(longAgo)}&deviceId=device-1`,
+    );
+    expect(ownDelete.body).toMatchObject({ ok: true, deleted: true });
+  });
+
   it("rejects a key that carries structure and a value that is too large", async () => {
     expect((await put([{ scope: "all", key: "../etc/passwd", value: 1 }])).status).toBe(400);
     expect((await put([{ scope: "all", key: "a b", value: 1 }])).status).toBe(400);

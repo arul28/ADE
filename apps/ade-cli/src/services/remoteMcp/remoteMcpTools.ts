@@ -186,19 +186,65 @@ const WAITS_ON_PERSON = "It waits on the person: see inbox.";
 /** Lists the computers of the account; answered by the protocol, not a command. */
 export const MACHINES_TOOL_NAME = "machines_list";
 
+/** How long `projects_clone` lets the clone run: git's own five minutes, plus registering the project. */
+const CLONE_TIMEOUT_MS = 6 * 60_000;
+
 export const TYPED_TOOLS: readonly TypedTool[] = [
-  // result: [{ projectId, displayName, rootPath, lastOpenedAt, exists, gitOriginUrl }]
+  // result: { projects: [{ projectId, displayName, rootPath, lastOpenedAt, exists, gitOriginUrl }], hiddenMissing }
   {
     name: "projects_list",
     title: "List projects",
     description: "Projects on this computer, last opened first.",
     machineWide: true,
     fanOut: true,
-    properties: {},
-    build: () => ({ argv: ["projects", "list", "--json"] }),
-    shape: (value) => records(value)
-      .sort((a, b) => Number(b.lastOpenedAt ?? 0) - Number(a.lastOpenedAt ?? 0))
-      .map((project) => pick(project, PROJECT_FIELDS)),
+    properties: {
+      include_missing: { type: "boolean", description: "Include projects whose folder is gone." },
+    },
+    build: () => ({ argv: ["projects", "list", "--include-missing", "--json"] }),
+    shape: (value, input) => {
+      const all = records(value)
+        .sort((a, b) => Number(b.lastOpenedAt ?? 0) - Number(a.lastOpenedAt ?? 0))
+        .map((project) => pick(project, PROJECT_FIELDS));
+      const projects = input.include_missing === true ? all : all.filter((project) => project.exists !== false);
+      return { projects, hiddenMissing: all.length - projects.length };
+    },
+    next: (result) => {
+      const hidden = isRecord(result) && typeof result.hiddenMissing === "number" ? result.hiddenMissing : 0;
+      return hidden > 0
+        ? `${hidden} project${hidden === 1 ? " whose folder is" : "s whose folders are"} gone ${hidden === 1 ? "is" : "are"} hidden (include_missing lists them).`
+        : null;
+    },
+  },
+  // result: { projectId, displayName, rootPath, lastOpenedAt, gitOriginUrl }
+  {
+    name: "projects_clone",
+    title: "Clone a repository",
+    description: "Clones a GitHub repository here, with this computer's GitHub sign-in, as a new project.",
+    machineWide: true,
+    write: true,
+    properties: {
+      repo: { type: "string", description: "GitHub URL or owner/name." },
+      path: { type: "string", description: "Parent folder. Default: beside other projects." },
+      name: { type: "string", description: "Folder name." },
+    },
+    required: ["repo"],
+    build: (input) => {
+      const repo = word(input, "repo");
+      if ("error" in repo) return repo;
+      const argv = ["projects", "clone", repo.value];
+      const folder = text(input, "path");
+      if (folder) argv.push(freeText("--path", folder));
+      const name = optionalWord(input, "name");
+      if ("error" in name) return name;
+      if (name.value) argv.push(freeText("--name", name.value));
+      return { argv: [...argv, "--json"] };
+    },
+    timeoutMs: () => CLONE_TIMEOUT_MS,
+    shape: (value) => pick(isRecord(unwrap(value)) ? unwrap(value) as Record<string, unknown> : {}, PROJECT_FIELDS),
+    next: (result) => {
+      const id = isRecord(result) ? nonEmptyString(result.projectId) : null;
+      return id ? `Pass project "${id}" to the other tools; chat_start starts an agent in it.` : null;
+    },
   },
   // result: the CLI's lane rows (id, name, branchRef, baseRef, status, …)
   {
@@ -659,7 +705,8 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
     },
     next: () => "Sent. chat_wait returns when the chat is done.",
   },
-  // result: { sessionId, laneId, lane, title, phase: "completed"|"running"|"failed"|"cancelled", error?, link }
+  // result: { sessionId, laneId, lane, title, phase: "running"|"setting_up"|"failed"|"cancelled", error?, link }
+  //   `phase` is the chat's, not the launch's: "running" means the agent started and works on the prompt.
   {
     name: "chat_start",
     title: "Start a chat",
@@ -702,19 +749,30 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
         laneId,
         lane: nonEmptyString(launch.laneName),
         title: nonEmptyString(launch.title),
-        phase: nonEmptyString(record.phase) ?? nonEmptyString(launch.phase),
+        phase: chatPhaseOfLaunch(nonEmptyString(record.phase) ?? nonEmptyString(launch.phase)),
         ...(error ? { error } : {}),
         link: chatLink(sessionId, laneId),
       };
     },
     next: (result) => {
       const record = isRecord(result) ? result : {};
-      if (record.phase === "completed") return "Started. chat_wait returns when it is done; give the person the link.";
+      if (record.phase === "running") return "The agent is working on it. chat_wait returns when it is done; give the person the link.";
       if (record.phase === "failed" || record.phase === "cancelled") return null;
       return "ADE is still setting up its lane; the agent starts after. Call chat_wait in a minute.";
     },
   },
 ];
+
+/**
+ * A launch's phase as the chat's state. The launch "completes" when the agent
+ * has started, which is when the chat starts running: reported as
+ * "completed", apps read the chat as finished while it was still working.
+ */
+function chatPhaseOfLaunch(phase: string | null): string | null {
+  if (phase === "completed") return "running";
+  if (phase === "running" || phase === "awaiting-client") return "setting_up";
+  return phase;
+}
 
 export function findTypedTool(name: unknown): TypedTool | null {
   return TYPED_TOOLS.find((tool) => tool.name === name) ?? null;

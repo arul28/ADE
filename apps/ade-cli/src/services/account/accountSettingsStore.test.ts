@@ -213,16 +213,24 @@ describe("account settings store", () => {
   });
 
   // A key queued while an upload is in flight is newer than what the server now
-  // holds, so clearing the whole queue on success would lose it.
-  it("does not clear a write that was queued during the upload", async () => {
+  // holds, so clearing the whole queue on success (or adopting the row that
+  // replaced the earlier write) would lose it.
+  it.each([
+    ["lands", { updatedAt: "2026-09-16T00:00:00.000Z" }],
+    ["is refused as stale", {
+      updatedAt: null,
+      results: [{ status: "stale", current: record("all", "appearance.theme", "from-another-machine", "2026-09-16T00:00:00.000Z") }],
+    }],
+  ])("does not clear a write that was queued while the earlier one %s", async (_label, answer) => {
     const store = makeStore();
     store.set("all", "appearance.theme", "dark");
     relay.putAccountSettings.mockImplementation(async () => {
       store.set("all", "appearance.theme", "system");
-      return { updatedAt: "2026-09-16T00:00:00.000Z" };
+      return answer;
     });
 
     await store.sync();
+    expect(store.get("all", "appearance.theme")).toBe("system");
 
     relay.putAccountSettings.mockClear();
     relay.putAccountSettings.mockResolvedValue({ updatedAt: "2026-09-16T00:01:00.000Z" });
@@ -253,7 +261,7 @@ describe("account settings store", () => {
     expect(store.get("all", "appearance.theme")).toBeUndefined();
 
     await store.sync();
-    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "appearance.theme");
+    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "appearance.theme", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   it("keeps pulling truncated pages until the relay says the view is complete", async () => {
@@ -306,7 +314,7 @@ describe("account settings store", () => {
     await store.sync();
 
     expect(relay.putAccountSettings).not.toHaveBeenCalled();
-    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "editor.minimap");
+    expect(relay.deleteAccountSetting).toHaveBeenCalledWith("all", "editor.minimap", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   // One user's theme appearing after another signs in is a leak, not a

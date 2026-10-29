@@ -124,12 +124,14 @@ async function makeService(
   account = fakeAccountRelay(),
   machine = { name: "Test Mac", machineKey: MACHINE_KEY, endpointKey: ENDPOINT_KEY },
   legacyFile?: object,
+  fetchImpl?: typeof fetch,
 ) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-mcp-service-"));
   tempDirs.push(dir);
   const stores = { adeDir: dir, getAccountUserId: () => OWNER, getDeviceId: () => machine.machineKey };
   if (legacyFile) fs.writeFileSync(path.join(dir, "remote-mcp.json"), JSON.stringify(legacyFile));
   const vault = createAccountVaultStore({ ...stores, relay: account.vaultRelay });
+  const settings = createAccountSettingsStore({ ...stores, relay: account.settingsRelay });
   const service = createRemoteMcpService({
     legacyStorePath: path.join(dir, "remote-mcp.json"),
     activityPath: path.join(dir, "activity.jsonl"),
@@ -141,12 +143,13 @@ async function makeService(
       attestation: () => ({ issuer, jwksUrl: `${issuer}/jwks`, oauthClientId: CLIENT_ID }),
     },
     vault,
-    settings: createAccountSettingsStore({ ...stores, relay: account.settingsRelay }),
+    settings,
     listAccountMachines: async () => null,
+    ...(fetchImpl ? { fetchImpl } : {}),
   });
   service.attachRelayEndpoint(() => ({ relayUrl: RELAY, machineKey: machine.machineKey, endpointKey: machine.endpointKey, connected: true }));
   await service.setEnabled({ enabled: true });
-  return Object.assign(service, { vault });
+  return Object.assign(service, { vault, settings });
 }
 
 const SECOND = { name: "Mac mini", machineKey: "c".repeat(32), endpointKey: "d".repeat(40) };
@@ -188,25 +191,28 @@ function formValue(html: string, name: string): string {
   return match![1]!;
 }
 
-/** Registers an app and walks it to the ADE sign-in callback. */
-async function signIn(service: Awaited<ReturnType<typeof makeService>>) {
+/** Registers an app and walks it to the ADE sign-in callback, starting on this computer's address or (with `accountKey`) the account's. */
+async function signIn(service: Awaited<ReturnType<typeof makeService>>, app = { redirect: REDIRECT, name: "Test app" }, accountKey?: string) {
   const registered = await service.handleHttp(request("POST", "/oauth/register", {
-    redirect_uris: [REDIRECT],
-    client_name: "Test app",
+    redirect_uris: [app.redirect],
+    client_name: app.name,
   }, true));
   expect(registered.status).toBe(201);
   const clientId = (JSON.parse(registered.body) as { client_id: string }).client_id;
   const verifier = randomBytes(48).toString("base64url");
   const challenge = createHash("sha256").update(verifier).digest("base64url");
-  const start = await service.handleHttp(request("POST", "/oauth/authorize", {
-    response_type: "code",
-    client_id: clientId,
-    redirect_uri: REDIRECT,
-    code_challenge: challenge,
-    code_challenge_method: "S256",
-    state: "app-state",
-    decision: "signin",
-  }));
+  const start = await service.handleHttp({
+    ...request("POST", "/oauth/authorize", {
+      response_type: "code",
+      client_id: clientId,
+      redirect_uri: app.redirect,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      state: "app-state",
+      decision: "signin",
+    }),
+    ...(accountKey ? { mount: { kind: "account" as const, key: accountKey } } : {}),
+  });
   expect(start.status).toBe(302);
   const toAde = new URL(start.headers.location!);
   expect(`${toAde.origin}${toAde.pathname}`).toBe(`${issuer}/oauth/authorize`);
@@ -255,6 +261,57 @@ describe("ADE MCP sign-in", () => {
     expect((await service.getStatus()).connections).toEqual([expect.objectContaining({ kind: "app", scope: "read", label: "Test app" })]);
   });
 
+  it.each([
+    // Any website can register any name: only the address it returns to names a hosted app.
+    { redirect: "https://evil.example/cb", name: "Claude helper", shown: "Claude helper", app: null },
+    { redirect: "https://claude.ai/api/mcp/auth_callback", name: "Some name", shown: "Claude", app: "claude" },
+    { redirect: "http://127.0.0.1:33418/callback", name: "Claude Code", shown: "Claude Code", app: "claude-code" },
+  ])("names the app signing in from $redirect as $shown", async ({ redirect, name, shown, app }) => {
+    const service = await makeService();
+    const { clientId, verifier, callback } = await signIn(service, { redirect, name });
+    expect(callback.status).toBe(200);
+    // The allow page names the app and shows the host it really returns to.
+    expect(callback.body).toContain(`Allow ${shown}?`);
+    expect(callback.body).toContain(`(${new URL(redirect).host})`);
+    const consent = { nonce: formValue(callback.body, "nonce"), csrf: formValue(callback.body, "csrf") };
+    const allowed = await service.handleHttp(request("POST", "/oauth/consent", { ...consent, decision: "allow", access: "read" }));
+    const code = new URL(allowed.headers.location!).searchParams.get("code")!;
+    const token = await service.handleHttp(request("POST", "/oauth/token", {
+      grant_type: "authorization_code", code, redirect_uri: redirect, client_id: clientId, code_verifier: verifier,
+    }));
+    expect(token.status).toBe(200);
+    // Settings shows the same name, and a logo only for an app ADE recognised.
+    expect((await service.getStatus()).connections).toEqual([
+      expect.objectContaining({ label: shown, app, redirectHost: new URL(redirect).host }),
+    ]);
+  });
+
+  it.each([
+    // The pages say "use ADE on Test Mac": the token must reach only it.
+    { address: "this computer's own", onAccount: false, onlyMachine: { machineKey: MACHINE_KEY, name: "Test Mac" } },
+    { address: "the account", onAccount: true, onlyMachine: null },
+  ])("grants a sign-in on $address address what its pages said", async ({ onAccount, onlyMachine }) => {
+    const account = fakeAccountRelay();
+    const studio = await makeService(account);
+    const mini = await makeService(account, SECOND);
+    const { clientId, verifier, callback } = await signIn(studio, undefined, onAccount ? await accountKeyOf(studio) : undefined);
+    const consent = { nonce: formValue(callback.body, "nonce"), csrf: formValue(callback.body, "csrf") };
+    const allowed = await studio.handleHttp(request("POST", "/oauth/consent", { ...consent, decision: "allow", access: "read" }));
+    const code = new URL(allowed.headers.location!).searchParams.get("code")!;
+    const exchanged = await studio.handleHttp(request("POST", "/oauth/token", {
+      grant_type: "authorization_code", code, redirect_uri: REDIRECT, client_id: clientId, code_verifier: verifier,
+    }));
+    const token = (JSON.parse(exchanged.body) as { access_token: string }).access_token;
+    await studio.vault.sync();
+    await mini.vault.sync();
+    expect((await mini.getStatus()).connections).toEqual([expect.objectContaining({ onlyMachine })]);
+
+    const call = { method: "tools/call", params: { name: "machines_list", arguments: {} } };
+    expect((await mcp(studio, token, call)).body?.result.isError).not.toBe(true);
+    // The other computer knows the token; it answers only an account-wide one.
+    expect((await mcp(mini, token, call)).body?.result.isError === true).toBe(onlyMachine !== null);
+  });
+
   it("refuses an ADE sign-in as another account, and the sign-in cannot be finished afterwards", async () => {
     signedInAs = "user_someone_else";
     const service = await makeService();
@@ -294,6 +351,51 @@ describe("ADE MCP across the account's computers", () => {
     expect((await mcp(studio, created.token, { method: "tools/list" }, key)).status).toBe(401);
   });
 
+  /** A fetch failure the way undici reports one: "fetch failed" with the socket's code as its cause. */
+  const networkError = (code: string) =>
+    Object.assign(new TypeError("fetch failed"), { cause: Object.assign(new Error(code), { code }) });
+
+  it.each([
+    // Nothing left this computer: always tried again.
+    { what: "a write the relay refused", send: "chat_send", code: "ECONNREFUSED", tries: 2 },
+    { what: "a token exchange the relay refused", send: "token", code: "ECONNREFUSED", tries: 2 },
+    // It may have arrived: only a read is sent twice.
+    { what: "a read after a reset", send: "lanes_list", code: "UND_ERR_SOCKET", tries: 2 },
+    { what: "a write after a reset", send: "chat_send", code: "UND_ERR_SOCKET", tries: 1 },
+    { what: "an ade command after a reset", send: "ade", code: "ECONNRESET", tries: 1 },
+    { what: "a token exchange after a reset", send: "token", code: "ECONNRESET", tries: 1 },
+  ])("sends $what through the relay $tries time(s)", async ({ send, code, tries }) => {
+    const account = fakeAccountRelay();
+    const relayCalls: string[] = [];
+    // The relay is the network edge: the first try fails, a second one would be answered.
+    const relayFetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (!url.startsWith(RELAY)) return await fetch(input, init);
+      relayCalls.push(url);
+      if (relayCalls.length === 1) throw networkError(code);
+      return url.endsWith("/oauth/token")
+        ? Response.json({ access_token: "ade_mcp_x", token_type: "Bearer" })
+        : Response.json({ jsonrpc: "2.0", id: 1, result: { content: [{ type: "text", text: "done" }] } });
+    }) as typeof fetch;
+    const studio = await makeService(account, undefined, undefined, relayFetch);
+    const mini = await makeService(account, SECOND);
+    await mini.settings.sync();
+    await studio.settings.sync();
+    const { token } = studio.createToken({ label: "Script", scope: "write" });
+
+    if (send === "token") {
+      const answer = await studio.handleHttp(request("POST", "/oauth/token", {
+        grant_type: "authorization_code", code: `${SECOND.endpointKey}.abc`, client_id: "c", code_verifier: "v",
+      }));
+      expect(answer.status).toBe(tries === 2 ? 200 : 503);
+    } else {
+      const args = send === "ade" ? { args: ["status"] } : send === "chat_send" ? { session: "chat-1", text: "hi" } : {};
+      const answer = await mcp(studio, token, { method: "tools/call", params: { name: send, arguments: { ...args, machine: SECOND.name } } });
+      expect(answer.body?.result.isError === true).toBe(tries === 1);
+    }
+    expect(relayCalls).toHaveLength(tries);
+  });
+
   it("keeps a token from before accounts to the computer it was made on", async () => {
     const token = `ade_mcp_${randomBytes(32).toString("base64url")}`;
     const legacy = {
@@ -321,9 +423,9 @@ describe("ADE MCP across the account's computers", () => {
     // On the other computer the token is known, and refused for everything.
     const there = await mcp(mini, token, call);
     expect(there.body?.result.isError).toBe(true);
-    expect(JSON.stringify(there.body?.result.content)).toContain("Reconnect the app");
+    expect(JSON.stringify(there.body?.result.content)).toContain("reaches only Test Mac");
     const catalog = await mcp(mini, token, { method: "resources/read", params: { uri: "ade://commands" } });
-    expect(catalog.body?.error?.message).toContain("Reconnect the app");
+    expect(catalog.body?.error?.message).toContain("reaches only Test Mac");
     expect((await mcp(mini, token, { method: "prompts/list" })).body?.result.prompts).toEqual([]);
   });
 });

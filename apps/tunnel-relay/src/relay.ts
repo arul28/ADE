@@ -140,6 +140,8 @@ type WaitUntil = { waitUntil(promise: Promise<unknown>): void };
 
 const MCP_ACCOUNT_OFF_DESCRIPTION =
   "ADE MCP is off for this account. Turn it on in ADE Settings → ADE MCP on one of your computers.";
+const MCP_ACCOUNT_UNKNOWN_DESCRIPTION =
+  "No computer answers this ADE MCP address. It may be an old address: copy the Server URL from ADE Settings → ADE MCP.";
 const MCP_ACCOUNT_OFFLINE_DESCRIPTION =
   "None of your computers with ADE MCP on are online. Open ADE on one of them, or try again shortly.";
 
@@ -183,15 +185,23 @@ async function handleAccountMcp(
   headers.delete("transfer-encoding");
   headers.set(MCP_MOUNT_HEADER, `a/${accountKey}`);
   let sawOffline = false;
+  let sawOff = false;
   for (const machineKey of candidates) {
     if (!validKey(machineKey)) continue;
     const id = env.TUNNEL.idFromName(machineKey);
-    const forwarded = new Request(request.url, { method: request.method, headers, body });
+    // `manual`: a brain's 302 (the OAuth authorize form's redirect to sign-in)
+    // goes back to the client as is. The default, `follow`, made the Worker
+    // follow it itself and answer the client with whatever that page said.
+    const forwarded = new Request(request.url, { method: request.method, headers, body, redirect: "manual" });
     // May reach a brain: never sent twice, whatever its method.
     const response = await fetchDurableObject(() => env.TUNNEL.get(id), forwarded, { retry: "never" });
     const undelivered = response.headers.get(MCP_UNDELIVERED_HEADER);
-    if ((response.status === 503 && undelivered === "offline") || (response.status === 404 && undelivered === "ade_mcp_off")) {
+    if (
+      (response.status === 503 && undelivered === "offline")
+      || (response.status === 404 && (undelivered === "ade_mcp_off" || undelivered === "not_member"))
+    ) {
       if (undelivered === "offline") sawOffline = true;
+      if (undelivered === "ade_mcp_off") sawOff = true;
       await response.body?.cancel().catch(() => undefined);
       continue;
     }
@@ -220,9 +230,16 @@ async function handleAccountMcp(
     }
     return response;
   }
-  return sawOffline
-    ? mcpErrorResponse(503, "offline", MCP_ACCOUNT_OFFLINE_DESCRIPTION, { "retry-after": "30" })
-    : mcpErrorResponse(404, "ade_mcp_off", MCP_ACCOUNT_OFF_DESCRIPTION);
+  if (sawOffline) return mcpErrorResponse(503, "offline", MCP_ACCOUNT_OFFLINE_DESCRIPTION, { "retry-after": "30" });
+  // Both stay `404 ade_mcp_off` for clients that read the code; `reason` says
+  // which. "Off" needs evidence: a computer that answered it is off, or one
+  // that left the account because ADE MCP was turned off there. An address
+  // nothing ever served, or whose computers all moved to another account (its
+  // secret changed), is an old or wrong address.
+  if (sawOff || (state.off?.length ?? 0) > 0) {
+    return mcpErrorResponse(404, "ade_mcp_off", MCP_ACCOUNT_OFF_DESCRIPTION, {}, { reason: "off" });
+  }
+  return mcpErrorResponse(404, "ade_mcp_off", MCP_ACCOUNT_UNKNOWN_DESCRIPTION, {}, { reason: "unknown_address" });
 }
 
 /**
@@ -269,6 +286,12 @@ async function routeRequest(request: Request, env: TunnelRelayEnv, ctx?: WaitUnt
     const headers = new Headers(request.headers);
     headers.delete(MCP_MOUNT_HEADER);
     request = new Request(request, { headers });
+  }
+  // A brain's redirect goes back to the client as is. An incoming request is
+  // already `manual`; one built inside the Worker (or a test) defaults to
+  // `follow`, which would follow the redirect here instead.
+  if (isMcpRoute(route) && request.redirect !== "manual") {
+    request = new Request(request, { redirect: "manual" });
   }
   if (route.kind === "mcp-account") return await handleAccountMcp(request, env, route.accountKey, ctx);
   if (route.kind === "mcp") {

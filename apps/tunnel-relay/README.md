@@ -108,9 +108,14 @@ socket, no session object.
   minutes → `504`; a control socket that closes or is replaced fails its
   pending requests with `503` at once.
 - Only `authorization`, `content-type`, `accept`, `mcp-protocol-version`,
-  `mcp-session-id`, `user-agent` and `x-ade-mcp-via` (set by a brain that
-  forwards a call to another computer; the target refuses a second hop) go to
-  the brain; only a fixed list of response headers comes back. Every answer carries permissive CORS, and
+  `mcp-session-id`, `user-agent`, `x-ade-mcp-via` (set by a brain that
+  forwards a call to another computer; the target refuses a second hop) and
+  `x-ade-mcp-call-id` (that forwarded call's id, so a retried forward is not run
+  twice; dropped above 128 characters, the others above 8 KiB) go to the brain;
+  only a fixed list of response headers comes back. A brain's redirect (a 3xx
+  with `location`, e.g. the OAuth authorize form sending the browser to sign-in)
+  goes back to the client unchanged on both addresses: every request the
+  Worker forwards is `redirect: "manual"`, never followed by the Worker. Every answer carries permissive CORS, and
   `OPTIONS` is answered by the Worker.
 - `GET /oauth/callback` is ADE sign-in's one registered return address. The
   `state` names the machine before the dot; the request goes to that brain as
@@ -151,10 +156,13 @@ computer holding the pending sign-in.
   on leaves that account (or, when it is the one its brain asked for, retries
   the join).
 - **The account object** stores `members` (machine relay keys, at most 32, most
-  recent registration last; the oldest drops out past 32) and `front` (the
-  machine that last answered). Internal paths, never routed publicly:
-  `GET /__mcp-account` → `{members, front}`;
-  `PUT /__mcp-account` `{machineKey, op: "add"|"remove"}`;
+  recent registration last; the oldest drops out past 32), `front` (the
+  machine that last answered) and `off` (machines that left because ADE MCP was
+  turned off there, as opposed to moving to another account; absent from
+  objects written before it). Internal paths, never routed publicly:
+  `GET /__mcp-account` → `{members, front, off?}`;
+  `PUT /__mcp-account` `{machineKey, op: "add"|"remove", reason?: "off"|"moved"}`
+  (`add` and any non-`off` remove clear the machine from `off`);
   `POST /__mcp-account/front` `{machineKey}` (members only).
 - **Failover.** The Worker reads the account object and tries the front first,
   then the others newest-first. Each try goes to that machine's object with the
@@ -166,17 +174,27 @@ computer holding the pending sign-in.
   control socket); a machine still listed on an account it has left refuses.
   When the machine object refuses **before** the brain could see the request
   (`503 offline`: no control socket or the send failed; `404 ade_mcp_off`: off
-  there, or not on this account), it marks the answer with the internal
-  `x-ade-mcp-undelivered` header and the Worker tries the next machine. The
+  there; `404` with `not_member`: not on this account), it marks the answer with
+  the internal `x-ade-mcp-undelivered` header (`offline`, `ade_mcp_off`,
+  `not_member`) and the Worker tries the next machine. A machine that leaves an
+  account with ADE MCP off says `reason: "off"`; it leaves with `moved` for
+  anything else, and joining a different account later tells the one it was
+  off on that it moved (the machine object keeps `mcpAccountLeftOff` for that). The
   body is buffered (1 MiB cap, `413` above it) so it can be sent again. Any
   other answer is final and returned as is, including a `503` for a request
   whose brain went away mid-call and a `429`: a request a brain may have
   received is never sent to a second one, and a Durable Object failure on that
   hop is not retried either (`fetchDurableObject`, `retry: "never"`). If the
   machine that answered is not the front, it becomes the front (`waitUntil`).
-  No members, or every machine off → `404 ade_mcp_off` ("ADE MCP is off for
-  this account…"); at least one offline and none answering → `503 offline`
-  ("None of your computers with ADE MCP on are online…", `Retry-After: 30`).
+  At least one offline and none answering → `503 offline` ("None of your
+  computers with ADE MCP on are online…", `Retry-After: 30`). Otherwise
+  `404 ade_mcp_off` with a `reason`: `off` when a member answered that ADE MCP
+  is off or the account's `off` list is not empty ("ADE MCP is off for this
+  account…"); `unknown_address` when nothing ever served the address or every
+  computer moved to another account, which is what an address left behind by a
+  changed account secret looks like ("No computer answers this ADE MCP
+  address. It may be an old address: copy the Server URL from ADE Settings →
+  ADE MCP."). The code stays `ade_mcp_off` for clients that read it.
   Rate limits and the other limits above stay per machine object.
 - **Trust.** The account address adds no authority to the relay. Account
   tokens, OAuth and the sign-in check still live on the brains, which check the

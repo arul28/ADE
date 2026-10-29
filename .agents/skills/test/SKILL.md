@@ -362,7 +362,7 @@ Fix until passing before moving to the next.
 
 ---
 
-## Parity Passes (4–8)
+## Parity Passes (4–9)
 
 After the test-suite work above, the parity passes keep docs, iOS, the CLI, the TUI, and the published SDK packages in lockstep with the changes on this branch. They are independent of one another and of Passes 1–3.
 
@@ -774,6 +774,44 @@ Report:
 - typecheck/test/preflight/validate-docs results
 ```
 
+## Pass 9: ADE MCP parity
+
+ADE MCP lets outside agents (claude.ai, Claude desktop, ChatGPT, Grok, Cursor,
+VS Code, scripts) use ADE on every computer of the account
+(`docs/features/ade-mcp/README.md`). Its main tool runs the real `ade` CLI, so
+a feature with CLI commands (Pass 6) is usually reachable already. This pass
+decides whether that is enough. Most branches end it in one line: "ADE MCP:
+nothing needed — <reason>".
+
+**Triggers:** a new or changed user-facing capability, a new `ade` command, a
+change to chat/lane/PR/machine state an outside agent would read, or anything
+under `apps/ade-cli/src/services/remoteMcp/**`. Do it yourself; it rarely
+needs an agent.
+
+Answer, in order, and act on each "yes":
+
+1. **Reachable?** Every new command is classified in
+   `remoteMcpCommandPolicy.ts` (`/quality` rule 12). Read-only connections get
+   the reads.
+2. **Is the `ade` tool enough?** Yes, unless outside agents will do this often
+   and need named inputs or a trimmed result. Then add a typed tool in
+   `remoteMcpTools.ts` (one CLI command, `structuredContent`, a `next` hint),
+   and only then.
+3. **Does a person watch it?** Status, progress, a PR or CI state, something
+   waiting on the person: add or update its MCP App view (`remoteMcpApp/`),
+   so the card in the chat app shows it instead of JSON.
+4. **Another computer?** The capability works through the tools' `machine`
+   input, and refusals name the computer.
+5. **Text and budget.** Tool descriptions, `next` hints and the `initialize`
+   instructions still describe the behavior; growth is recorded in
+   `remoteMcpContextBudget.json`; add an `evals/ade-mcp` case when a new tool
+   changes how models choose tools.
+6. **Docs.** `docs/features/ade-mcp/README.md` says what changed.
+
+Record the answers in the summary's Parity block. A capability that should
+reach ADE MCP but can't on this branch (it needs a design call, such as a
+live card) is listed for the user, not silently skipped.
+
 Wait for every parity agent you started to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
@@ -928,6 +966,7 @@ Parity:
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
 - CLI: <apps/ade-cli files changed, or "none required"> — typecheck + tests PASS / blocked
 - TUI: <apps/ade-cli/src/tuiClient files changed, or "none required"> — typecheck + tests PASS / blocked
+- ADE MCP: <typed tools / views / routing / budget changes, or "nothing needed — <reason>"> — PASS / listed for user
 - SDK: <packages/sdk + packages/chat-ui files changed + version bump, or "no mirrored surface touched", with any "not mirrored — out of SDK scope" items listed> — typecheck + tests + preflight PASS / blocked
 - Breaking flag/command/slash renames: <list, or "none">
 

@@ -218,6 +218,36 @@ classification is Low; a credential- or machine-reaching subcommand left
 runnable is High. `remoteMcpCommandPolicy.test.ts` fails for any command in
 `HELP_BY_COMMAND` that is in neither list.
 
+## 13. ADE MCP surface drift
+
+**Class:** A change that moves what an outside agent sees through ADE MCP
+(claude.ai, ChatGPT, Grok, Cursor and other connected apps) without moving
+ADE MCP with it. Classification (rule 12) only decides whether a command runs;
+this rule checks that what runs still makes sense from outside.
+
+**Check:** when the diff touches a command a typed tool wraps
+(`remoteMcpTools.ts`: chat, lanes, files, diff, git, prs, projects, usage,
+machines, inbox), its JSON output, a chat or launch state, the machine roster,
+or `apps/ade-cli/src/services/remoteMcp/**` itself:
+
+- **Typed tools** still build valid argv, trim the new output shape, and their
+  `next` hint and description still say what the command now does. A tool
+  that changes anything is marked `write: true`, so read-only connections
+  neither list it nor can call it.
+- **MCP App views** (`remoteMcpApp/`) still render the result shape; a renamed
+  or removed field shows as an empty card, not an error.
+- **Across computers** a new action reaches the right computer through the
+  tool's `machine` input (forwarding, `chat locate`), and its refusal text
+  names the computer.
+- **Budget**: tool text or instruction growth is deliberate and recorded in
+  `remoteMcpContextBudget.json`; `evals/ade-mcp` cases still match.
+
+By default a typed tool that now fails or misdescribes its command is
+Medium, and a stale `next` hint or view field is Low; raise either by impact
+(a mutating tool listed to read-only apps is High, and so is a view that
+silently shows "nothing" where there is data, like an empty computer list). Whether a NEW capability deserves its own
+typed tool or view is `/test`'s ADE MCP parity pass, not a finding here.
+
 ---
 
 ## Output

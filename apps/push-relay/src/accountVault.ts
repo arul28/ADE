@@ -28,13 +28,19 @@
  */
 import {
   accountPageResult,
+  accountRefusalResult,
+  accountWriteResults,
   buildAccountPageQuery,
   countAndGuard,
+  decodePathSegment,
   isRecord,
   json,
   parseAccountScopeKey,
   parseSinceParam,
   requiredString,
+  staleWriteThreshold,
+  writeClock,
+  type AccountItemVerdict,
   type AttentionRelayEnv,
 } from "./attentionShared";
 
@@ -175,28 +181,95 @@ type ParsedVaultWrite = {
   key: string;
   value: string;
   refreshOwner: string | null;
+  /** Client clock; see `staleWriteThreshold`. */
+  writtenAt: unknown;
 };
+
+/**
+ * Item keys: one or more `/`-separated segments. The first is the original
+ * vocabulary (`anthropic`, `ADE_API_KEY`, `repo-scoped:name`); later ones carry
+ * the MCP server registry's `mcp/<server>/<env|header|oauth>/<name>`. No
+ * segment is empty or starts with a dot, so a key never holds `..`, `//`, or a
+ * leading or trailing `/`, and nothing reading one as a path can be walked out
+ * of it.
+ */
+const ITEM_KEY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*(?:\/[A-Za-z0-9_-][A-Za-z0-9._:-]*)*$/;
 
 function parseItemKey(value: unknown): string | null {
   const key = requiredString(value, MAX_ITEM_KEY_LENGTH);
   if (!key) return null;
-  return /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key) ? key : null;
+  return ITEM_KEY_PATTERN.test(key) ? key : null;
 }
 
-function parseWriteItem(value: unknown): ParsedVaultWrite | null {
-  if (!isRecord(value)) return null;
-  const scope = parseAccountScopeKey(value.scope);
-  const key = parseItemKey(value.key);
-  const kind = requiredString(value.kind, 32);
-  if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) return null;
-  const plaintext = typeof value.value === "string" ? value.value : "";
-  if (!plaintext || plaintext.length > MAX_VALUE_CHARS) return null;
+type ItemVerdict = AccountItemVerdict<ParsedVaultWrite>;
+
+function checkWriteItem(value: unknown): ItemVerdict {
+  if (!isRecord(value)) return { ok: false, reason: "invalid item" };
   // One field carries the credential. A caller offering pre-sealed bytes is
   // assuming an encryption model this Worker does not implement, and accepting
   // it would store something no reader here can ever open.
-  if ("ciphertext" in value) return null;
+  if ("ciphertext" in value) return { ok: false, reason: "invalid item" };
+  const scope = parseAccountScopeKey(value.scope);
+  if (!scope) return { ok: false, reason: "invalid scope" };
+  const kind = requiredString(value.kind, 32);
+  if (!kind || !ITEM_KINDS.has(kind)) return { ok: false, reason: "unknown kind" };
+  const key = parseItemKey(value.key);
+  if (!key) return { ok: false, reason: "invalid key" };
+  const plaintext = typeof value.value === "string" ? value.value : "";
+  if (!plaintext) return { ok: false, reason: "empty value" };
+  if (plaintext.length > MAX_VALUE_CHARS) return { ok: false, reason: "value too large" };
   const refreshOwner = requiredString(value.refreshOwner, 128);
-  return { scope, kind, key, value: plaintext, refreshOwner };
+  return { ok: true, write: { scope, kind, key, value: plaintext, refreshOwner, writtenAt: value.writtenAt } };
+}
+
+type VaultRowRecord = {
+  scope_key: string;
+  item_kind: string;
+  item_key: string;
+  ciphertext: string;
+  updated_at: string;
+  writer_device_id: string | null;
+  refresh_owner: string | null;
+  deleted: number;
+};
+
+const VAULT_ROW_COLUMNS =
+  "scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted";
+
+async function rowToVaultItem(key: CryptoKey, row: VaultRowRecord): Promise<AccountVaultRow> {
+  if (row.deleted) {
+    return {
+      scope: row.scope_key,
+      kind: row.item_kind,
+      key: row.item_key,
+      value: null,
+      updatedAt: row.updated_at,
+      writerDeviceId: row.writer_device_id,
+      refreshOwner: row.refresh_owner,
+      deleted: true,
+    };
+  }
+  return {
+    scope: row.scope_key,
+    kind: row.item_kind,
+    key: row.item_key,
+    value: await openValue(key, row.ciphertext),
+    updatedAt: row.updated_at,
+    writerDeviceId: row.writer_device_id,
+    refreshOwner: row.refresh_owner,
+  };
+}
+
+async function readVaultRow(
+  env: VaultEnv,
+  userId: string,
+  item: { scope: string; kind: string; key: string },
+): Promise<VaultRowRecord | null> {
+  return await env.DB.prepare(`
+    select ${VAULT_ROW_COLUMNS}
+    from account_vault_items
+    where user_id = ? and scope_key = ? and item_kind = ? and item_key = ?
+  `).bind(userId, item.scope, item.kind, item.key).first<VaultRowRecord>();
 }
 
 async function handleRead(
@@ -221,21 +294,12 @@ async function handleRead(
     limit: MAX_ITEMS_PER_READ,
   });
   const rows = await env.DB.prepare(`
-    select scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
+    select ${VAULT_ROW_COLUMNS}
     from account_vault_items
     where ${query.where}
     order by ${query.orderBy}
     limit ?
-  `).bind(...query.bindings).all<{
-    scope_key: string;
-    item_kind: string;
-    item_key: string;
-    ciphertext: string;
-    updated_at: string;
-    writer_device_id: string | null;
-    refresh_owner: string | null;
-    deleted: number;
-  }>();
+  `).bind(...query.bindings).all<VaultRowRecord>();
 
   const paged = accountPageResult(rows.results, {
     limit: MAX_ITEMS_PER_READ,
@@ -243,30 +307,7 @@ async function handleRead(
     cursor,
   });
   const items: AccountVaultRow[] = [];
-  for (const row of paged.page) {
-    if (row.deleted) {
-      items.push({
-        scope: row.scope_key,
-        kind: row.item_kind,
-        key: row.item_key,
-        value: null,
-        updatedAt: row.updated_at,
-        writerDeviceId: row.writer_device_id,
-        refreshOwner: row.refresh_owner,
-        deleted: true,
-      });
-      continue;
-    }
-    items.push({
-      scope: row.scope_key,
-      kind: row.item_kind,
-      key: row.item_key,
-      value: await openValue(key, row.ciphertext),
-      updatedAt: row.updated_at,
-      writerDeviceId: row.writer_device_id,
-      refreshOwner: row.refresh_owner,
-    });
-  }
+  for (const row of paged.page) items.push(await rowToVaultItem(key, row));
   return json({
     ok: true,
     items,
@@ -295,17 +336,34 @@ async function handleWrite(
     return json({ ok: false, error: "too many items in one write" }, { status: 413 });
   }
   const writerDeviceId = requiredString(body.deviceId, 128);
+  // Per-item answers are opt-in. A client that does not ask treats a 200 as
+  // "every item landed", so it keeps the all-or-nothing answer: a partial
+  // success it could not see would drop the refused items from its queue.
+  const itemResults = body.itemResults === true;
+  const clock = writeClock(body.sentAt);
 
-  const parsed: ParsedVaultWrite[] = [];
-  for (const item of body.items) {
-    const write = parseWriteItem(item);
+  const verdicts = body.items.map(checkWriteItem);
+  const firstRefusal = verdicts.find((verdict) => !verdict.ok);
+  if (firstRefusal && !itemResults) {
     // All or nothing, same reasoning as settings: a caller that believes its
     // credential landed, when one silently did not, has a machine that will
-    // fail later for no visible reason.
-    if (!write) return json({ ok: false, error: "invalid item" }, { status: 400 });
-    parsed.push(write);
+    // fail later for no visible reason. `index` and `reason` say which item, so
+    // a client can set it aside instead of resending the batch forever.
+    const index = verdicts.indexOf(firstRefusal);
+    return json(
+      { ok: false, error: "invalid item", index, reason: (firstRefusal as { reason: string }).reason },
+      { status: 400 },
+    );
   }
-  if (!parsed.length) return json({ ok: true, written: 0, updatedAt: null });
+  const parsed = verdicts.flatMap((verdict) => (verdict.ok ? [verdict.write] : []));
+  if (!parsed.length) {
+    return json({
+      ok: true,
+      written: 0,
+      updatedAt: null,
+      ...(itemResults ? { results: verdicts.map(accountRefusalResult) } : {}),
+    });
+  }
 
   if (await countAndGuard({
     env,
@@ -318,11 +376,17 @@ async function handleWrite(
     return json({ ok: false, error: "account vault limit reached" }, { status: 507 });
   }
 
-  const updatedAt = new Date().toISOString();
+  const updatedAt = new Date(clock.nowMs).toISOString();
   // Indexed by position, not by a recomputed composite key: the batch below
   // walks the same array in the same order, so position is already the join.
   const sealed = await Promise.all(parsed.map((write) => sealValue(key, write.value)));
-  await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
+  // The conflict check is the upsert's own `where`: atomic per row, so a write
+  // racing another machine's newer one cannot slip between a read and a write.
+  // Without `itemResults` (or `writtenAt`) the threshold is never reached.
+  // A row this same device wrote last is never "newer" than its own write:
+  // its earlier write may still have been in flight when this one was made.
+  // (No `deviceId`: SQL's `= null` is never true, so the full check holds.)
+  const outcomes = await env.DB.batch(parsed.map((write, index) => env.DB.prepare(`
     insert into account_vault_items(
       user_id, scope_key, item_kind, item_key, ciphertext, updated_at, writer_device_id, refresh_owner, deleted
     )
@@ -333,6 +397,7 @@ async function handleWrite(
       writer_device_id = excluded.writer_device_id,
       refresh_owner = excluded.refresh_owner,
       deleted = 0
+    where account_vault_items.updated_at <= ? or account_vault_items.writer_device_id = ?
   `).bind(
     userId,
     write.scope,
@@ -342,21 +407,36 @@ async function handleWrite(
     updatedAt,
     writerDeviceId,
     write.refreshOwner,
+    itemResults ? staleWriteThreshold(clock, write.writtenAt) : staleWriteThreshold(clock, null),
+    writerDeviceId,
   )));
 
-  return json({ ok: true, written: parsed.length, updatedAt });
+  if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
+
+  const { results, written } = await accountWriteResults(verdicts, outcomes, async (write): Promise<AccountVaultRow | null> => {
+    const row = await readVaultRow(env, userId, write);
+    return row ? await rowToVaultItem(key, row) : null;
+  });
+  return json({ ok: true, written, updatedAt: written > 0 ? updatedAt : null, results });
 }
 
 /**
  * Revoking a credential has to be possible from anywhere, including a machine
  * the user no longer has. A vault you can only add to is not a vault.
+ *
+ * With `?writtenAt=` (and `sentAt`), a delete made before the stored row was
+ * last written is refused with `409 stale` and the stored row, the same rule as
+ * a write: a machine back after days offline must not delete a value another
+ * machine set since. A row the deleting device (`?deviceId=`) wrote last is
+ * not refused: its own earlier write may have landed after this delete was made.
  */
 async function handleDelete(
   env: VaultEnv,
   userId: string,
-  scopeRaw: string,
-  kindRaw: string,
-  keyRaw: string,
+  url: URL,
+  scopeRaw: string | null,
+  kindRaw: string | null,
+  keyRaw: string | null,
 ): Promise<Response> {
   const scope = parseAccountScopeKey(scopeRaw);
   const key = parseItemKey(keyRaw);
@@ -364,13 +444,29 @@ async function handleDelete(
   if (!scope || !key || !kind || !ITEM_KINDS.has(kind)) {
     return json({ ok: false, error: "invalid item" }, { status: 400 });
   }
-  const updatedAt = new Date().toISOString();
+  const clock = writeClock(url.searchParams.get("sentAt"));
+  const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
+  const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
+  const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_vault_items
-    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = null, refresh_owner = null
+    set deleted = 1, ciphertext = '', updated_at = ?, writer_device_id = ?, refresh_owner = null
     where user_id = ? and scope_key = ? and item_kind = ? and item_key = ? and deleted = 0
-  `).bind(updatedAt, userId, scope, kind, key).run();
-  return json({ ok: true, deleted: (result.meta?.changes ?? 0) > 0 });
+      and (updated_at <= ? or writer_device_id = ?)
+  `).bind(updatedAt, deviceId, userId, scope, kind, key, threshold, deviceId).run();
+  const deleted = (result.meta?.changes ?? 0) > 0;
+  if (!deleted && url.searchParams.has("writtenAt")) {
+    const row = await readVaultRow(env, userId, { scope, kind, key });
+    if (row && !row.deleted && row.updated_at > threshold) {
+      const sealKey = await vaultKey(env);
+      if (!sealKey) return vaultUnavailable();
+      return json(
+        { ok: false, error: "a newer value exists", code: "stale", current: await rowToVaultItem(sealKey, row) },
+        { status: 409 },
+      );
+    }
+  }
+  return json({ ok: true, deleted });
 }
 
 /**
@@ -396,13 +492,18 @@ export async function handleAccountVaultRoute(
   if (route.length === 1 && request.method === "PUT") {
     return await handleWrite(request, env, userId);
   }
-  if (route.length === 4 && request.method === "DELETE") {
+  // `/vault/<scope>/<kind>/<key>`. A key with `/` in it arrives encoded
+  // (`%2F`) and stays one segment; one a proxy decoded on the way arrives as
+  // several, and joining them gives back the same key.
+  if (route.length >= 4 && request.method === "DELETE") {
+    const keySegments = route.slice(3).map(decodePathSegment);
     return await handleDelete(
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
-      decodeURIComponent(route[2] ?? ""),
-      decodeURIComponent(route[3] ?? ""),
+      url,
+      decodePathSegment(route[1]),
+      decodePathSegment(route[2]),
+      keySegments.some((segment) => segment === null) ? null : keySegments.join("/"),
     );
   }
   return null;
