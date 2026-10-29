@@ -7,7 +7,7 @@ import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPicker";
 import { useModelRecents } from "../shared/ModelPicker/useModelRecents";
-import { permissionControlsForModel, patchPermissionConfig, selectedPermissionMode } from "../automations/permissionControls";
+import { RulePermissionPicker } from "../automations/RulePermissionPicker";
 import { navigateToAppTarget } from "../../lib/openExternal";
 import { confirmDialog } from "../ui/dialog";
 import { Banner } from "../ui/notice/Banner";
@@ -81,7 +81,6 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
   const effectiveModelId = modelId || suggestedModelId;
   const descriptor = effectiveModelId ? getModelById(effectiveModelId) : undefined;
   const hasReasoning = (descriptor?.reasoningTiers?.length ?? 0) > 0;
-  const permissionMeta = effectiveModelId ? permissionControlsForModel(effectiveModelId) : null;
 
   const load = useCallback(async () => {
     const cto = window.ade?.cto;
@@ -299,18 +298,11 @@ export function LinearAgentSection({ connected, pin = null }: { connected: boole
               </Field>
             ) : null}
             <Field label="Permissions">
-              <select
-                className="ade-settings-input"
-                style={{ height: 32 }}
-                disabled={!permissionMeta}
-                value={permissionMeta ? selectedPermissionMode(permissionConfig, effectiveModelId) : ""}
-                onChange={(event) => setPermissionConfig(patchPermissionConfig(permissionConfig, effectiveModelId, event.target.value))}
-              >
-                <option value="">Rule default</option>
-                {(permissionMeta?.options ?? []).map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
+              <RulePermissionPicker
+                modelId={effectiveModelId}
+                permissionConfig={permissionConfig}
+                onChange={setPermissionConfig}
+              />
             </Field>
           </div>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>

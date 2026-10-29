@@ -8,10 +8,8 @@
 
 .ade-home-edit-bar { display: flex; gap: 8px; align-items: center; }
 .ade-home-look-anchor { position: relative; }
+/* Placed by AnchoredMenu (position, offset and stacking). */
 .ade-home-look {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
   width: 300px;
   display: flex;
   flex-direction: column;

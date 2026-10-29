@@ -40,6 +40,7 @@ import {
 } from "../../lib/nativeLaunchControls";
 import type { NativeControlState } from "../../lib/draftLaunchJobs";
 import { getPermissionOptions } from "../shared/permissionOptions";
+import { toPermissionPickerOption } from "../shared/permissionModePickerOptions";
 import {
   PermissionModePicker,
   type PermissionModeIconKind,
@@ -60,7 +61,6 @@ import {
   CheckRow,
   forkFallbackReasonForPrepareError,
   providerDisplayLabel,
-  toPermissionPickerOption,
   type HandoffMode,
   type ModalStage,
 } from "./crossMachineHandoffPresentation";
