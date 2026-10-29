@@ -404,7 +404,7 @@ The canonical service is `apps/desktop/src/main/services/analytics/productAnalyt
 
 Machine analytics state lives under the active channel home at `secrets/product-analytics.json`, with a sibling `.disabled` marker for fail-closed opt-out during lock contention. It is not project state and never enters cr-sqlite replication. The project-local `usage_events` mutation ledger is also excluded from CRR sync; its analytics export marker prevents pre-analytics, opted-out, expired, or already-handled rows from being uploaded later.
 
-The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The allowed events are:
+The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. Every event carries one `surface`: `desktop`, `mobile`, `cli` (the `ade` command line), `web`, or `api`. Builds before ADE Code was removed called the command line `tui`; `normalizeAdeUsageClientSurface` (`shared/types/usage.ts`) reads that as `cli` at every intake, and the `usage_events` ledger rewrites stored `tui` rows to `cli` when the database opens. PostHog history from before the rename keeps `surface: "tui"`. The allowed events are:
 
 - `ade_app_installed`
 - `ade_app_opened`

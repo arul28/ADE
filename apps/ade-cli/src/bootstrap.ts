@@ -788,6 +788,35 @@ export function cleanupLegacyBundledAdeSkillsForCli(): void {
   }
 }
 
+let adeCodeHomeLeftoversRemoved = false;
+
+/**
+ * Delete what the removed ADE Code terminal client left on disk: its state
+ * file under `~/.ade` (once per process) and the per-project heartbeat and
+ * clipboard caches. Nothing reads these any more. Fire-and-forget so it never
+ * delays a runtime start.
+ */
+function removeAdeCodeLeftovers(projectRoot: string, logger: Logger): void {
+  if (process.env.VITEST) return;
+  const targets = [
+    path.join(projectRoot, ".ade", "cache", "ade-code"),
+    path.join(projectRoot, ".ade", "cache", "ade-code-clipboard"),
+  ];
+  if (!adeCodeHomeLeftoversRemoved) {
+    adeCodeHomeLeftoversRemoved = true;
+    const homeAde = path.join(os.homedir(), ".ade");
+    targets.push(path.join(homeAde, "ade-code-state.json"), path.join(homeAde, "ade-code-state.json.lock"));
+  }
+  for (const target of targets) {
+    void fs.promises.rm(target, { recursive: true, force: true }).catch((error: unknown) => {
+      logger.warn("runtime.ade_code_leftover_remove_failed", {
+        target,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+}
+
 export function createHeadlessAdeCliAgentEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
   options: {
@@ -971,6 +1000,7 @@ export async function createAdeRuntime(args: {
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
+  if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, machineRuntimeLayout.adeDir],
   });
