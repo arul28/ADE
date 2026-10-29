@@ -971,6 +971,7 @@ export type CliPlan =
        */
       kind: "chat-launch";
       launchArgs: JsonObject;
+      startOverrides?: { from?: string; bring?: string };
       wait: boolean;
       timeoutMs: number;
       pollIntervalMs: number;
@@ -2128,6 +2129,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     --lane-name <name>     Explicit name for an auto-created lane.
     --from <default|primary|branch>  Start source for an auto-created lane.
     --bring <pushed|local|uncommitted>  Work to bring into the new lane.
+    --existing-branch <branch>  Work directly on an existing branch.
     --type <subagent|peer>  Required for a parented agent spawn. Use subagent
                            whenever you will need, join, or review the result;
                            use peer only for fire-and-forget work.
@@ -2508,7 +2510,9 @@ export const HELP_BY_COMMAND: Record<string, string> = {
                                                     the default lane template, then creates the chat and sends the prompt.
                                                     Returns at once with the reserved launch/lane/chat ids; --wait polls
                                                     until it completes (exit 0) or fails/cancels/times out (exit 1),
-                                                    printing a stage line to stderr with --text. Also: --base <ref>,
+                                                    printing a stage line to stderr with --text. Choose a start with
+                                                    --from default|primary|<branch> and --bring pushed|local|uncommitted,
+                                                    or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
                                                     use 'ade new chat --lane auto --type ...' for a parented child.
@@ -7079,7 +7083,11 @@ function resolveNewChatLaneArgs(args: string[], prompt: string | null): {
   maybePut(createLaneArgs, "description", readValue(args, ["--description", "--desc"]));
   const startFlags = readLaneStartFlags(args);
   if (startFlags.from || startFlags.bring) createLaneArgs._startFlags = startFlags;
-  maybePut(createLaneArgs, "branchName", readValue(args, ["--branch-name"]));
+  const branchName = readValue(args, ["--branch-name"]);
+  const existingBranch = readValue(args, ["--existing-branch"]);
+  if (existingBranch && (startFlags.from || startFlags.bring || branchName)) throw new CliUsageError("--existing-branch cannot be combined with --from, --bring, or --branch-name.");
+  if (existingBranch) createLaneArgs.branchRef = existingBranch;
+  maybePut(createLaneArgs, "branchName", branchName);
   if (findFlagName(args, ["--parent-lane", "--parent-lane-id", "--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   return { laneId: null, autoCreateLane: true, createLaneArgs };
 }
@@ -7246,7 +7254,7 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
     const flags = isRecord(create._startFlags) ? create._startFlags as { from?: string; bring?: string } : null;
     delete create._startFlags;
     if (flags) steps.push(actionStep("laneDefaults", "lane", "getNewLaneDefaults"));
-    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: "create_lane", arguments: { ...create, ...(flags ? { start: mergeLaneStart(flags, isRecord(values.laneDefaults) && isRecord(values.laneDefaults.defaults) ? values.laneDefaults.defaults.start : null) } : {}) } }) });
+    steps.push({ key: "lane", method: "ade/actions/call", unwrapToolResult: true, params: values => ({ name: create.branchRef ? "import_lane" : "create_lane", arguments: { ...create, ...(flags ? { start: mergeLaneStart(flags, isRecord(values.laneDefaults) && isRecord(values.laneDefaults.defaults) ? values.laneDefaults.defaults.start : null) } : {}) } }) });
   }
   // The new lane's template setup runs inside `create_lane`.
   const laneSetupTimeoutMs = lane.autoCreateLane ? newLaneSetupTimeoutMs() : null;
@@ -10107,7 +10115,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const laneName = readValue(args, ["--lane-name", "--name"]);
-  const baseBranch = readValue(args, ["--base", "--base-branch"]);
+  const startOverrides = readLaneStartFlags(args);
+  const existingBranch = readValue(args, ["--existing-branch"]);
+  if (existingBranch && (startOverrides.from || startOverrides.bring)) throw new CliUsageError("--existing-branch cannot be combined with --from or --bring.");
+  if (findFlagName(args, ["--base", "--base-branch"])) throw new CliUsageError("Unsupported lane creation flag.");
   const launchIdFlag = readValue(args, ["--launch-id"]);
   const laneIdFlag = readValue(args, ["--lane-id"]);
   const foreground = readFlag(args, ["--foreground"]);
@@ -10150,7 +10161,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     chat: { create, message: mergeRemoteMcpTurnMetadata({ text: prompt }) },
   };
   maybePut(launchArgs, "laneName", laneName);
-  maybePut(launchArgs, "baseBranch", baseBranch);
+  const needsDefaults = Boolean(!existingBranch && (startOverrides.from || startOverrides.bring) && !(startOverrides.from && startOverrides.bring));
+  launchArgs.laneConfig = existingBranch
+    ? { mode: "existing", branchRef: existingBranch }
+    : { mode: "new", ...(!needsDefaults && startOverrides.from && startOverrides.bring ? { start: mergeLaneStart(startOverrides, null) } : {}) };
   maybePut(launchArgs, "modelId", modelArg);
   maybePut(launchArgs, "title", title);
   // `--arg` / `--input-json` escape hatch (dotted keys reach chat.create.*).
@@ -10192,10 +10206,10 @@ function buildChatLaunchPlan(args: string[]): CliPlan {
     return {
       kind: "static",
       formatter: "action-result",
-      value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs },
+      value: { ok: true, dryRun: true, action: "chat.startLaunch", input: launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides, note: "The missing start choice is filled from project defaults at launch." } : {}) },
     };
   }
-  return { kind: "chat-launch", launchArgs, wait, timeoutMs, pollIntervalMs };
+  return { kind: "chat-launch", launchArgs, ...(needsDefaults && !("laneConfig" in input) ? { startOverrides } : {}), wait, timeoutMs, pollIntervalMs };
 }
 
 function requireCliUuid(value: string, flag: string): string {
@@ -10231,7 +10245,18 @@ async function runChatLaunchCommand(
   };
 
   try {
-    const started = await callChat("startLaunch", plan.launchArgs);
+    let launchArgs = plan.launchArgs;
+    if (plan.startOverrides) {
+      const raw = await connection.request("ade/actions/call", {
+        name: "run_ade_action", arguments: { domain: "lane", action: "getNewLaneDefaults", args: {} },
+      });
+      const snapshot = unwrapActionEnvelope(unwrapToolResult(raw));
+      if (!isRecord(snapshot) || !isRecord(snapshot.defaults) || !isRecord(snapshot.defaults.start)) {
+        throw new CliExecutionError("Could not load new-lane defaults.", { result: snapshot });
+      }
+      launchArgs = { ...launchArgs, laneConfig: { mode: "new", start: mergeLaneStart(plan.startOverrides, snapshot.defaults.start) } };
+    }
+    const started = await callChat("startLaunch", launchArgs);
     if (!isRecord(started) || typeof started.launchId !== "string") {
       throw new CliExecutionError("chat.startLaunch returned an unexpected result.", { result: started });
     }
@@ -21309,6 +21334,8 @@ const VALUE_CARRIER_FLAGS: ValueCarrierFlags = new Set([
   "--scale-factor",
   "--compression-quality",
   "--from",
+  "--bring",
+  "--existing-branch",
   "--from-file",
   // `chat create|send|message|steer`: the text's file, or `-` for stdin.
   "--prompt-file",
