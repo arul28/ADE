@@ -1779,28 +1779,20 @@ function dropRetiredExecutionSchema(db: DatabaseSyncType, logger?: Logger): void
 }
 
 /**
- * Remove the retired AI review schema from upgraded databases. The previous
- * release created these CRR tables, so a database upgraded across this change
- * still holds them (and their changesets) until this pass runs.
+ * Retired CRR schemas with no data of their own to clean up first: each is
+ * dropped whole from upgraded databases. The release that created them left
+ * the tables (and their changesets) behind until this pass runs.
  */
-function dropRetiredReviewSchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_REVIEW_TABLES, "retired-review-schema", logger);
-  if (presentTables.length === 0) return;
-  logger?.info("db.retired_review_schema_cleaned", { tables: presentTables });
-}
+const RETIRED_TABLE_DROPS = [
+  { tables: RETIRED_REVIEW_TABLES, tag: "retired-review-schema", event: "db.retired_review_schema_cleaned" },
+  { tables: RETIRED_PR_AI_SUMMARY_TABLES, tag: "retired-pr-ai-summary-schema", event: "db.retired_pr_ai_summary_schema_cleaned" },
+  { tables: RETIRED_PROJECT_NOTES_TABLES, tag: "retired-project-notes-schema", event: "db.retired_project_notes_schema_cleaned" },
+] as const;
 
-/** Remove the retired AI PR summary cache from upgraded databases. */
-function dropRetiredPrAiSummarySchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_PR_AI_SUMMARY_TABLES, "retired-pr-ai-summary-schema", logger);
+function dropRetiredSchema(db: DatabaseSyncType, drop: (typeof RETIRED_TABLE_DROPS)[number], logger?: Logger): void {
+  const presentTables = dropRetiredTables(db, drop.tables, drop.tag, logger);
   if (presentTables.length === 0) return;
-  logger?.info("db.retired_pr_ai_summary_schema_cleaned", { tables: presentTables });
-}
-
-/** Remove the retired project notes table from upgraded databases. */
-function dropRetiredProjectNotesSchema(db: DatabaseSyncType, logger?: Logger): void {
-  const presentTables = dropRetiredTables(db, RETIRED_PROJECT_NOTES_TABLES, "retired-project-notes-schema", logger);
-  if (presentTables.length === 0) return;
-  logger?.info("db.retired_project_notes_schema_cleaned", { tables: presentTables });
+  logger?.info(drop.event, { tables: presentTables });
 }
 
 function existingRetiredTables(db: DatabaseSyncType, tableNames: readonly string[]): string[] {
@@ -5049,20 +5041,12 @@ export async function openKvDb(
     } catch (error) {
       if (!isReadonlyDatabaseError(error)) throw error;
     }
-    try {
-      dropRetiredReviewSchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
-    }
-    try {
-      dropRetiredPrAiSummarySchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
-    }
-    try {
-      dropRetiredProjectNotesSchema(db, logger);
-    } catch (error) {
-      if (!isReadonlyDatabaseError(error)) throw error;
+    for (const drop of RETIRED_TABLE_DROPS) {
+      try {
+        dropRetiredSchema(db, drop, logger);
+      } catch (error) {
+        if (!isReadonlyDatabaseError(error)) throw error;
+      }
     }
 
     // Clear any orphaned rebuild staging table before the retrofit passes issue

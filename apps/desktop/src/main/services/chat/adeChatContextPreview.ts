@@ -8,7 +8,7 @@ import type { ProviderContextItemKind, ProviderContextTiming } from "../../../sh
  * render.
  */
 export type AdeChatContextPart = {
-  /** Stable id: `ade-prompt`, `ade-cli-guidance`, `ade-project-notes`, ... */
+  /** Stable id: `ade-prompt`, `ade-cli-guidance`, `ade-skill-listing`, ... */
   id: string;
   label: string;
   kind: ProviderContextItemKind;
