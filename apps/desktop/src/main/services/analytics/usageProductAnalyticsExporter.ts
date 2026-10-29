@@ -163,6 +163,18 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
             source: "mutation",
           },
         }));
+        // Chat activation comes from a completed turn. An agent CLI has no
+        // turns ADE can see, so starting one is its activation; the service
+        // keeps ade_activated to one per installation either way.
+        if (started.feature === "cli") {
+          args.analytics.captureInternal({
+            event: "ade_activated",
+            surface: row.client_surface,
+            projectId: row.project_id,
+            sessionId: row.session_id,
+            properties: { trigger: "cli_session_started" },
+          });
+        }
       }
       if (results.some((result) => result.accepted)) {
         accepted.push(row.id);

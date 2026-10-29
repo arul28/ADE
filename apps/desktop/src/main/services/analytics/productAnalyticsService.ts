@@ -12,6 +12,7 @@ import {
   type ProductAnalyticsCaptureResult,
   type ProductAnalyticsEventName,
   type ProductAnalyticsStatus,
+  type ProductAnalyticsSurface,
 } from "../../../shared/types/productAnalytics";
 import {
   DEDUPE_CACHE_LIMIT,
@@ -23,6 +24,7 @@ import {
   MAX_HISTORICAL_EVENT_AGE_MS,
   MAX_LOCAL_IDENTIFIER_LENGTH,
   PROCESS_INGRESS_LIMIT_PER_MINUTE,
+  productAnalyticsEventContext,
   safeProductAnalyticsString,
   sanitizeProductAnalyticsProperties,
 } from "./productAnalyticsPolicy";
@@ -35,6 +37,21 @@ const IDENTIFY_DAILY_BUDGET = 3;
 const IDENTIFY_MINUTE_BUDGET = 2;
 const STATE_LOCK_STALE_MS = 5_000;
 const RANDOM_UUID_VALUE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/**
+ * A once-only milestone counts as sent only after delivery is confirmed. One
+ * still unconfirmed after this long (the process died, or the network failed)
+ * may be sent again, with the same uuid and timestamp so PostHog keeps one.
+ */
+const MILESTONE_RETRY_AFTER_MS = 2 * 60_000;
+const MILESTONE_CONFIRM_ATTEMPTS = 5;
+
+type MilestoneEvent = "ade_app_installed" | "ade_activated";
+const PRODUCT_ANALYTICS_SURFACE_LIST: ProductAnalyticsSurface[] = ["desktop", "mobile", "tui", "web", "api"];
+type PendingMilestone = { uuid: string; atMs: number };
+
+function isMilestoneEvent(event: ProductAnalyticsEventName): event is MilestoneEvent {
+  return event === "ade_app_installed" || event === "ade_activated";
+}
 
 type PendingBudgetSummary = {
   sentCount: number;
@@ -64,6 +81,10 @@ type ProductAnalyticsState = {
   installedAtMs: number;
   installCapturedAtMs: number | null;
   activatedAtMs: number | null;
+  /** Milestones sent but not yet confirmed delivered. */
+  pendingMilestones: Partial<Record<MilestoneEvent, PendingMilestone>>;
+  /** Clients (surfaces) whose first ade_app_opened has been sent. */
+  openedSurfaces: ProductAnalyticsSurface[];
   enabled: boolean;
   /** Oldest usage-ledger timestamp that may be exported under current consent. */
   enabledSinceMs: number | null;
@@ -235,6 +256,8 @@ function createInitialState(nowMs: number): ProductAnalyticsState {
     installedAtMs: nowMs,
     installCapturedAtMs: null,
     activatedAtMs: null,
+    pendingMilestones: {},
+    openedSurfaces: [],
     enabled: true,
     enabledSinceMs: nowMs,
     quota: freshQuotaState(nowMs),
@@ -283,6 +306,16 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
     typeof candidate === "number" && Number.isFinite(candidate)
       ? Math.max(installedAtMs, Math.min(nowMs, Math.floor(candidate)))
       : null;
+  const pendingMilestones: Partial<Record<MilestoneEvent, PendingMilestone>> = {};
+  if (!migratedLegacyState && parsed.pendingMilestones && typeof parsed.pendingMilestones === "object") {
+    for (const event of ["ade_app_installed", "ade_activated"] as const) {
+      const pending = parsed.pendingMilestones[event];
+      const atMs = milestone(pending?.atMs);
+      if (pending && typeof pending.uuid === "string" && RANDOM_UUID_VALUE.test(pending.uuid) && atMs != null) {
+        pendingMilestones[event] = { uuid: pending.uuid.toLowerCase(), atMs };
+      }
+    }
+  }
   return {
     version: 2,
     installationId: parsed.installationId,
@@ -296,6 +329,12 @@ function normalizeState(value: unknown, nowMs: number): ProductAnalyticsState | 
     // newly activated merely because they upgraded to the v2 analytics state.
     installCapturedAtMs: migratedLegacyState ? nowMs : milestone(parsed.installCapturedAtMs),
     activatedAtMs: migratedLegacyState ? nowMs : milestone(parsed.activatedAtMs),
+    pendingMilestones,
+    // A state written before first opens were tracked belongs to an install
+    // that has opened before; it reports no first open on any client.
+    openedSurfaces: Array.isArray(parsed.openedSurfaces)
+      ? PRODUCT_ANALYTICS_SURFACE_LIST.filter((surface) => parsed.openedSurfaces?.includes(surface))
+      : [...PRODUCT_ANALYTICS_SURFACE_LIST],
     enabled,
     enabledSinceMs: enabled
       ? (typeof parsed.enabledSinceMs === "number" && Number.isFinite(parsed.enabledSinceMs)
@@ -559,6 +598,16 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
   let ingressTimestamps: number[] = [];
   let pendingIngressDrops = 0;
   const optOutMarkerPath = `${args.stateFilePath}.disabled`;
+  // Team installs mark themselves with ADE_ANALYTICS_INTERNAL=1 or an empty
+  // `<state file>.internal` marker, so dashboards can leave them out.
+  let internalInstall: boolean | null = null;
+  const isInternalInstall = (): boolean => {
+    if (internalInstall == null) {
+      internalInstall = process.env.ADE_ANALYTICS_INTERNAL === "1"
+        || fs.existsSync(`${args.stateFilePath}.internal`);
+    }
+    return internalInstall;
+  };
   let volatileOptOut = false;
   let optOutCanRecoverFromPersistedOptIn = false;
   let optOutWatcherStarted = false;
@@ -689,6 +738,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         event: "ade_analytics_budget",
         properties: {
           surface: "api",
+          ...productAnalyticsEventContext("ade_analytics_budget", "api", null),
+          is_internal: isInternalInstall(),
           sent_count: summary.sentCount,
           dropped_count: summary.droppedCount,
           drop_reason: summary.dropReason,
@@ -846,6 +897,33 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
     }
   };
 
+  const confirmMilestone = (event: MilestoneEvent, uuid: string, attempt: number): void => {
+    let release: (() => void) | null = null;
+    try {
+      release = tryAcquireStateLock(args.stateFilePath);
+      if (!release) {
+        if (attempt + 1 < MILESTONE_CONFIRM_ATTEMPTS) {
+          setTimeout(() => confirmMilestone(event, uuid, attempt + 1), 500).unref?.();
+        }
+        return;
+      }
+      const current = readExistingState(args.stateFilePath, now());
+      const pending = current?.pendingMilestones[event];
+      if (!current || !pending || pending.uuid !== uuid) return;
+      if (event === "ade_app_installed") current.installCapturedAtMs = pending.atMs;
+      else current.activatedAtMs = pending.atMs;
+      delete current.pendingMilestones[event];
+      writeState(args.stateFilePath, current);
+      state = rollQuotaDay(current, now());
+    } catch (error) {
+      args.logger.debug("product_analytics.milestone_confirm_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      });
+    } finally {
+      release?.();
+    }
+  };
+
   const captureImpl = (
     input: ProductAnalyticsCapture,
     allowInternal: boolean,
@@ -896,6 +974,10 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       if (input.event === "ade_activated" && state.activatedAtMs != null) {
         return { accepted: false, reason: "duplicate" };
       }
+      const pendingMilestone = isMilestoneEvent(input.event) ? state.pendingMilestones[input.event] : undefined;
+      if (pendingMilestone && now() - pendingMilestone.atMs < MILESTONE_RETRY_AFTER_MS) {
+        return { accepted: false, reason: "duplicate" };
+      }
 
       const posthog = ensureClient(state);
       if (!posthog) return { accepted: false, reason: "disabled" };
@@ -938,6 +1020,8 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
       const properties: Record<string, unknown> = {
         ...sanitizeProductAnalyticsProperties(input.event, input.properties),
         surface,
+        ...productAnalyticsEventContext(input.event, surface, input.properties?.feature),
+        is_internal: isInternalInstall(),
         app_version: appVersion,
         runtime_mode: safeProductAnalyticsString(args.runtimeMode) ?? "unknown",
         platform: process.platform,
@@ -945,12 +1029,16 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         $process_person_profile: false,
         $geoip_disable: true,
       };
+      // A retried milestone keeps its first attempt's moment.
+      const milestoneAtMs = pendingMilestone?.atMs ?? nowMs;
       if (input.event === "ade_activated") {
         properties.time_since_install_seconds = Math.max(
           0,
-          Math.floor((nowMs - state.installedAtMs) / 1_000),
+          Math.floor((milestoneAtMs - state.installedAtMs) / 1_000),
         );
       }
+      const firstOpen = input.event === "ade_app_opened" && !state.openedSurfaces.includes(surface);
+      if (firstOpen) properties.first_open = true;
       const projectId = opaqueId("project", input.projectId);
       const sessionId = opaqueId("session", input.sessionId);
       if (projectId) properties.project_id = projectId;
@@ -963,13 +1051,14 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
           timestamp = new Date(parsed);
         }
       }
-      const uuid = input.clientEventId?.length === 36 && RANDOM_UUID_VALUE.test(input.clientEventId)
-        ? input.clientEventId.toLowerCase()
-        : randomUUID();
-      const previousInstallCapturedAtMs = state.installCapturedAtMs;
-      const previousActivatedAtMs = state.activatedAtMs;
-      if (input.event === "ade_app_installed") state.installCapturedAtMs = nowMs;
-      if (input.event === "ade_activated") state.activatedAtMs = nowMs;
+      if (pendingMilestone) timestamp = new Date(pendingMilestone.atMs);
+      const uuid = pendingMilestone?.uuid
+        ?? (input.clientEventId?.length === 36 && RANDOM_UUID_VALUE.test(input.clientEventId)
+          ? input.clientEventId.toLowerCase()
+          : randomUUID());
+      const milestoneEvent = isMilestoneEvent(input.event) ? input.event : null;
+      if (milestoneEvent) state.pendingMilestones[milestoneEvent] = { uuid, atMs: milestoneAtMs };
+      if (firstOpen) state.openedSurfaces.push(surface);
       state.quota.accepted += 1;
       state.quota.acceptedByEvent[input.event] = (state.quota.acceptedByEvent[input.event] ?? 0) + 1;
       recent.push(nowMs);
@@ -1008,11 +1097,24 @@ export function createProductAnalyticsService(args: ProductAnalyticsServiceArgs)
         recent.pop();
         if (recent.length === 0) delete state.quota.minuteWindows[input.event]; else state.quota.minuteWindows[input.event] = recent;
         if (dedupeKey) delete state.quota.dedupe[dedupeKey];
-        state.installCapturedAtMs = previousInstallCapturedAtMs;
-        state.activatedAtMs = previousActivatedAtMs;
+        if (milestoneEvent) {
+          if (pendingMilestone) state.pendingMilestones[milestoneEvent] = pendingMilestone;
+          else delete state.pendingMilestones[milestoneEvent];
+        }
+        if (firstOpen) state.openedSurfaces = state.openedSurfaces.filter((opened) => opened !== surface);
         incrementDrop(state.quota, "transport_error");
         writeState(args.stateFilePath, state);
         return { accepted: false, reason: "transport_error" };
+      }
+      if (milestoneEvent) {
+        // Send it now rather than in the next batch: a chat runtime can be
+        // reclaimed before a batch timer fires.
+        Promise.resolve().then(() => posthog.flush()).then(
+          () => confirmMilestone(milestoneEvent, uuid, 0),
+          () => {
+            args.logger.debug("product_analytics.milestone_unconfirmed", { event: milestoneEvent });
+          },
+        );
       }
       return { accepted: true, reason: "accepted" };
     } catch (error) {

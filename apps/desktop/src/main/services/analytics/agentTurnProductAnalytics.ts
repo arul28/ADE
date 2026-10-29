@@ -4,6 +4,7 @@ import type { ChatAutoResumeAnalyticsProperties } from "../chat/chatAutoResumeCo
 import type { CrossMachineMoveOutcome } from "../chat/crossMachineHandoffOrchestrator";
 import type { MacDesktopAnalyticsProperties } from "../macDesktop/macDesktopService";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
+import { detectInstallSource } from "./installSource";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
@@ -421,7 +422,14 @@ export function captureAgentTurnSettledAnalytics(args: {
       event: "ade_app_installed",
       surface: "api",
       properties: {
-        install_source: "unknown",
+        // The brain can be the first to record the install (a brain-only
+        // machine, or a desktop whose own attempt lost the state lock), so it
+        // reads its own location rather than reporting "unknown".
+        install_source: detectInstallSource({
+          isPackaged: true,
+          execPath: process.execPath,
+          configuredSource: process.env.ADE_INSTALL_SOURCE,
+        }),
       },
     });
     analytics.captureInternal({

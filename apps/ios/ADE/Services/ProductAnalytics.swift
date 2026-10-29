@@ -19,6 +19,21 @@ enum ADEAnalyticsAppEntryPoint: String, CaseIterable {
   case foreground = "foreground"
 }
 
+/// How this build reached the phone, read from the App Store receipt name.
+enum ADEAnalyticsDistribution: String, CaseIterable {
+  case testFlight = "testflight"
+  case appStore = "app_store"
+  case development
+
+  static var current: ADEAnalyticsDistribution {
+    #if DEBUG
+    return .development
+    #else
+    return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" ? .testFlight : .appStore
+    #endif
+  }
+}
+
 enum ADEAnalyticsScreen: String, CaseIterable {
   case hub
   case work
@@ -253,6 +268,8 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
 
       privateProperties["surface"] = "mobile"
       privateProperties["platform"] = "ios"
+      privateProperties["client"] = "ios"
+      privateProperties["interactive"] = event != ADEAnalyticsEventName.analyticsBudget.rawValue
       privateProperties["$process_person_profile"] = false
       privateProperties["$geoip_disable"] = true
 
@@ -393,7 +410,14 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       guard let entryPoint = enumString("entry_point", as: ADEAnalyticsAppEntryPoint.self) else {
         return nil
       }
-      return ["entry_point": entryPoint]
+      var sanitized: [String: Any] = ["entry_point": entryPoint]
+      if let distribution = enumString("distribution", as: ADEAnalyticsDistribution.self) {
+        sanitized["distribution"] = distribution
+      }
+      if properties["first_open"] as? Bool == true {
+        sanitized["first_open"] = true
+      }
+      return sanitized
 
     case .screenViewed:
       guard let screen = enumString("screen", as: ADEAnalyticsScreen.self) else { return nil }
@@ -527,6 +551,7 @@ final class ProductAnalytics {
 
   static let enabledDefaultsKey = "ade.analytics.enabled"
   static let identifiedAccountHashDefaultsKey = "ade.analytics.identified-account-hash.v1"
+  static let firstOpenSentDefaultsKey = "ade.analytics.first-open-sent.v1"
   static let allowedEventNames = Set(ADEAnalyticsEventName.allCases.map(\.rawValue))
   static let dailyEventLimit = 20
 
@@ -624,14 +649,27 @@ final class ProductAnalytics {
     }
   }
 
-  func captureAppOpened(_ entryPoint: ADEAnalyticsAppEntryPoint) {
+  func captureAppOpened(
+    _ entryPoint: ADEAnalyticsAppEntryPoint,
+    distribution: ADEAnalyticsDistribution = .current
+  ) {
     lock.withLock {
       foregroundDeduplicationKeys.removeAll(keepingCapacity: true)
     }
-    capture(
-      .appOpened,
-      properties: ["entry_point": entryPoint.rawValue]
-    )
+    var properties: [String: Any] = [
+      "entry_point": entryPoint.rawValue,
+      "distribution": distribution.rawValue,
+    ]
+    // The first open of this install (a TestFlight or App Store download)
+    // rides on the app-open event once, instead of being an event of its own.
+    // An install that already counted events before this build is not new.
+    if sink.canCapture, !defaults.bool(forKey: Self.firstOpenSentDefaultsKey) {
+      defaults.set(true, forKey: Self.firstOpenSentDefaultsKey)
+      if defaults.data(forKey: Self.budgetDefaultsKey) == nil {
+        properties["first_open"] = true
+      }
+    }
+    capture(.appOpened, properties: properties)
   }
 
   func captureColdStart(afterReconcilingAccount userId: String?) {

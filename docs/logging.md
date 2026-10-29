@@ -431,6 +431,58 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. Ever
 - `ade_account_session_unreadable`
 - `ade_brain_action_failed`
 
+#### Properties on every event, milestones, and first opens
+
+The service adds three properties to every event it sends, so active-user
+counts can be cut by app and stripped of activity no person caused. None
+adds an event.
+
+- `client` — the app a person used: `desktop`, `web`, `tui`, `ios` (a
+  host-recorded mutation from the phone, surface `mobile`), or `runtime` (the
+  brain or CLI, surface `api`, which cannot see a client). `platform` stays
+  the OS of the machine that sent the event, so a phone action recorded by a
+  Mac still says `darwin`; filter phone use with `client = ios`.
+- `interactive` — `false` for events no person caused: `ade_daily_usage_summary`,
+  `ade_analytics_budget`, the `ade_update_*` events, `ade_brain_recovered`,
+  `ade_renderer_recovered`, `ade_publish_failing`, `ade_relay_suppressed`,
+  `ade_account_session_unreadable`, `ade_tool_fetched`,
+  `ade_brain_action_failed`, and an automation's work session. `true`
+  otherwise (`productAnalyticsEventContext` in `productAnalyticsPolicy.ts`).
+  A monthly-active count filters `interactive != false` (events sent before
+  this property existed have none).
+- `is_internal` — `true` on an ADE team install, marked with
+  `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
+  `secrets/product-analytics.json.internal` file beside the state file. Read
+  once per process. It is an event property only; `$identify` still sets only
+  plan, platform, and app version.
+
+`ade_app_installed` and `ade_activated` are once per installation, and a
+milestone counts as sent only once delivery is confirmed. The service sends it
+at once instead of in the next ten-second batch (a chat runtime can be
+reclaimed before the batch timer fires) and records it as pending with its
+uuid and moment. When the send is confirmed the milestone is final. When it is
+not (the network failed or the process died), the next trigger after two
+minutes sends it again with the same uuid and timestamp, so PostHog keeps one;
+the one-per-day event cap means a retry lands the next UTC day at the latest.
+`ade_activated` fires on the first completed chat turn
+(`trigger: "work_session_completed"`) or the first agent CLI session started
+or imported (`trigger: "cli_session_started"`), since ADE sees no turns inside
+a CLI.
+
+`install_source` is `direct_download` (the Mac app in an `Applications`
+folder, the Windows installer's `ADE.exe`, or an AppImage), `homebrew` (a
+Homebrew path, or the Mac app with a `Caskroom/ade` entry, since the cask copies
+the app to `/Applications`), `install_script` (the standalone brain from
+`install.sh` / `install.ps1` in `~/.ade/bin`), `development`, or `unknown`
+(including a brain run by a plain `node`). The brain reads its own location
+for this, because on a brain-only machine it is the first to record the
+install.
+
+The first `ade_app_opened` from each client carries `first_open: true`, once
+per installation per client (`openedSurfaces` in the state file), so a first
+TUI or hosted-web open is visible without a new event. A state file written
+before this existed reports no first open on any client.
+
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
 `productAnalyticsPolicy.ts`:
@@ -1557,6 +1609,8 @@ untouched — no card asks that question yet.
 ### Native iOS
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
+
+Every native event carries `client: "ios"` and `interactive` (`false` only for `ade_mobile_analytics_budget`). The app-open event carries `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), and the first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
 
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
