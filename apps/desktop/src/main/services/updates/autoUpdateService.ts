@@ -739,8 +739,11 @@ export function createAutoUpdateService({
   function isMissingBetaFeed(error: unknown): boolean {
     if (feedTargetTrack() !== "beta" || overrideFeedUrl) return false;
     const code = (error as { code?: unknown } | null)?.code;
+    // The feed file itself is missing: only a check reads it.
     if (code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND") return true;
-    return /\b404\b/.test(formatErrorMessage(error));
+    // A bare 404 counts only while checking. During a download it means a
+    // beta's own file is gone, which is a real failure to show.
+    return currentPhase === "check" && /\b404\b/.test(formatErrorMessage(error));
   }
 
   function trackState(): AutoUpdateSnapshot["track"] {
@@ -1307,7 +1310,7 @@ export function createAutoUpdateService({
       return;
     }
     ignoredDownloadVersion = null;
-    if (currentPhase === "check" && isMissingBetaFeed(err)) {
+    if (isMissingBetaFeed(err)) {
       logger.info("autoUpdate.beta_feed_missing", { message });
       if (snapshot.status === "checking") patchSnapshot(preservedOrIdlePatch("idle"));
       return;
@@ -1618,7 +1621,7 @@ export function createAutoUpdateService({
         }
       })
       .catch((error) => {
-        if (currentPhase === "check" && isMissingBetaFeed(error)) {
+        if (isMissingBetaFeed(error)) {
           if (snapshot.status === "checking") patchSnapshot(preservedOrIdlePatch("idle"));
           return;
         }
