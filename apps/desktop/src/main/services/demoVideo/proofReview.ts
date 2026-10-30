@@ -15,6 +15,7 @@ import type { DemoArtifactMetadata, DemoContactSheetRequest, DemoEngine } from "
 import { DEMO_CONTACT_SHEET_MAX_FRAMES, DEMO_CONTACT_SHEET_TILE_WIDTH } from "../../../shared/demoVideo/demoContract";
 import { readProofProvenance } from "../../../shared/proofProvenance";
 import { gifDimensions, jpegDimensions, pngDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
+import type { Logger } from "../logging/logger";
 import { readDemoMp4 } from "./demoMp4Source";
 
 /** Sheets kept per project; older ones are removed as new ones are written. */
@@ -61,6 +62,7 @@ const VIDEO_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".webm"]);
 
 type ReviewArgs = {
   artifact: ProofReviewInput;
+  logger?: Pick<Logger, "warn">;
   filePath: string;
   projectRoot: string;
   engines: DemoEngine[];
@@ -147,7 +149,7 @@ async function reviewVideo(args: ReviewArgs, findings: string[]): Promise<ProofR
         await maker.contactSheet(request, { signal: args.signal });
         sheetPath = output;
         sheetError = null;
-        pruneSheets(dir);
+        pruneSheets(dir, args.logger);
         break;
       } catch (error) {
         if (args.signal?.aborted) throw error;
@@ -198,12 +200,13 @@ function round2(value: number): number {
   return Math.round(value * 100) / 100;
 }
 
-function pruneSheets(dir: string): void {
+function pruneSheets(dir: string, logger?: Pick<Logger, "warn">): void {
   try {
     const sheets = fs.readdirSync(dir).filter((entry) => entry.startsWith("review-") && entry.endsWith(".png")).sort();
     for (const stale of sheets.slice(0, Math.max(0, sheets.length - SHEET_KEEP))) fs.rmSync(path.join(dir, stale), { force: true });
-  } catch {
+  } catch (error) {
     // Pruning is housekeeping; the sheet itself is written.
+    logger?.warn("proof_review.prune_failed", { error: error instanceof Error ? error.message : String(error) });
   }
 }
 

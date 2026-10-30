@@ -454,6 +454,10 @@ file and its record: under 3 s, over 90 s, no captions, a plain or fallback
 recording, recorded before the request, a picture under 700 px on its shorter side or a thin
 strip. It reads the caller's own proof only (the listing's owner rule), and a
 machine-targeted CLI reviews the proof on its own machine, where it was filed.
+Every command that files proof prints a `next:` line under its `cite:` lines
+naming `ade proof review <id>`; the ids come from the result's proof fields,
+never from its text, so a command that passes text through (a file read) is
+not changed.
 
 ### Limits every recording shares
 

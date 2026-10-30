@@ -7728,6 +7728,7 @@ async function runTool(args: {
     }
     return await reviewProofFile({
       artifact: { id: artifact.id, kind: artifact.kind, metadata: artifact.metadata ?? null },
+      logger: runtime.logger,
       filePath,
       projectRoot: runtime.projectRoot,
       engines: createDemoEngineSet({ logger: runtime.logger }).engines(),

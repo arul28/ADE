@@ -727,6 +727,8 @@ ade proof attach shots/result.png --caption "Checkout complete"
 ade proof publish --pr 123 --heading "Proof" --note "Checkout flow" artifact-id [artifact-id ...]
 ade proof publish --pr 123 --in-body                                             # upload the proof the PR text cites, in place
                                                       # one PR comment; gh 2.99+ --attach uploads the chosen proof, then a github_pr link is added
+ade proof publish --pr 123 --replace artifact-id    # post the new proof comment, then delete this account's earlier ADE proof comments
+ade proof review artifact-id --text                  # contact sheet of a video (or the picture) plus findings, before a person sees it
 ade proof rm artifact-id
 ade proof broken --text                              # list missing/unimported proof records
 ade proof recover artifact-id                       # re-import when the original capture still exists
