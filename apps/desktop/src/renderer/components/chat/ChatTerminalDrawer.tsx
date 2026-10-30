@@ -4,7 +4,8 @@ import { cn } from "../ui/cn";
 import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
 import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { PlatformGlyph, useRemoteWorkPinResolver } from "./RemoteWorkHeaderButton";
+import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import {
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
@@ -542,9 +543,12 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
     if (!open || !remoteTargetsKey) return undefined;
     let cancelled = false;
     void Promise.all(remoteTargetsRef.current.map(async ({ use, pin: remotePin }) => {
-      const rows = await window.ade.terminal.list({ limit: 200 }, remotePin).catch(() => [] as ChatTerminalSession[]);
-      const wanted = new Set(use.terminalIds);
-      return rows.filter((row) => wanted.has(row.terminalId) && row.ptyId).map((row): TabEntry => ({
+      // An unreachable or older machine shows none of its shells; the header mark still names it.
+      const rows = await listRemoteWorkShells(use, remotePin).catch((error: unknown) => {
+        console.warn(`[remote-work] could not list the shells on ${use.machineName}`, error);
+        return [] as ChatTerminalSession[];
+      });
+      return rows.filter((row) => row.ptyId).map((row): TabEntry => ({
         id: `remote-term-${use.machineKey}-${row.terminalId}`,
         ptyId: row.ptyId!,
         sessionId: row.terminalId,
@@ -554,8 +558,8 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       }));
     })).then((lists) => {
       if (cancelled) return;
-      // Running commands first, so the strip opens on one that is working.
-      const remoteTabs = lists.flat().sort((a, b) => Number(a.exited) - Number(b.exited));
+      // Running commands first (per machine), so the strip opens on one that is working.
+      const remoteTabs = lists.flat();
       setTabs((prev) => {
         const local = prev.filter((tab) => !tab.remote);
         return [...local, ...remoteTabs];
@@ -665,7 +669,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       >
         {tab.remote ? (
           <span aria-hidden className={cn("inline-flex shrink-0", tabIconColorClass(tab.exited, null))}>
-            <PlatformGlyph platform={tab.remote.platform} size={12} />
+            <MachinePlatformLogo platform={tab.remote.platform} size={12} weight="bold" fallback />
           </span>
         ) : (
           <TerminalIcon

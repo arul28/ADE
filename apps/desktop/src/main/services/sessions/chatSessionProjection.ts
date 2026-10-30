@@ -151,6 +151,7 @@ export function projectChatOntoSession(
    */
   parentIdentityKey?: string | null,
 ): TerminalSessionSummary {
+  const activeMachineKeys = activeRemoteWork(chat).map((use) => use.machineKey);
   const base: TerminalSessionSummary = {
     ...session,
     currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
@@ -205,9 +206,7 @@ export function projectChatOntoSession(
     // Recent commands on other machines (their shells), and which machines the
     // current turn uses right now (the card's mark).
     ...(chat.remoteWork?.length ? { remoteWork: chat.remoteWork } : {}),
-    ...(activeRemoteWork(chat).length
-      ? { remoteWorkActiveMachineKeys: activeRemoteWork(chat).map((use) => use.machineKey) }
-      : {}),
+    ...(activeMachineKeys.length ? { remoteWorkActiveMachineKeys: activeMachineKeys } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),

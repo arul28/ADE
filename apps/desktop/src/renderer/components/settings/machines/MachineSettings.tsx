@@ -31,7 +31,8 @@ import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMa
 import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
-import { MachineCapabilitiesArea, MachinePreferenceRow, MachineWorkCopies } from "./machineSeams";
+import { MachineCapabilitiesArea, MachinePreferenceRow } from "./machineSeams";
+import { MachineWorkCopies } from "./MachineWorkCopies";
 
 /**
  * Everything Settings knows or can change about one machine, in four groups

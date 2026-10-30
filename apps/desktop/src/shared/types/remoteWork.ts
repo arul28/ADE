@@ -1,3 +1,6 @@
+/** Largest uncommitted patch a chat sends with a command on another machine. Bigger changes go through git. */
+export const REMOTE_WORK_MAX_PATCH_BYTES = 16 * 1024 * 1024;
+
 /**
  * `remote_work.list` answers for the whole machine: every project's copies.
  *
@@ -19,8 +22,8 @@ export type RemoteWorkCopyListing = {
   path: string;
   createdAt: string;
   lastUsedAt: string;
-  /** A command still runs in the copy (delete waits until it ends); null when that project is not running here. */
-  running: boolean | null;
+  /** A command runs in the copy, or one is starting; delete is refused until it ends. */
+  running: boolean;
   /** Bytes on disk with installed deps and build output; null when too large to count quickly. */
   sizeBytes: number | null;
 };

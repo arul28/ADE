@@ -76157,12 +76157,12 @@ export function createAgentChatService(args: {
     sessionId: string;
     machineKey: string;
     machineName: string;
-    machinePlatform?: string | null;
+    machinePlatform: string | null;
     projectId: string | null;
     projectRootPath: string | null;
     terminalId: string | null;
-    workCopyLaneId?: string | null;
-    usesSimulator?: boolean;
+    workCopyLaneId: string | null;
+    usesSimulator: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;

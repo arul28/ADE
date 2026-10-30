@@ -84,30 +84,44 @@ with the chat's uncommitted changes applied as one binary patch. It is created
 on the first command; nothing is installed in advance, and ignored files
 (installed deps, build output) survive between runs.
 
-- **Git moves code.** The CLI (`cliMachineTargeting.ts`, `readLocalWorkSource`)
-  sends the commit, the remote branch that holds it, and the patch (16 MiB at
-  most). A commit that is not on origin is refused here: "Push it first".
+- **Git moves code.** The CLI (`cliRemoteWork.ts`, `readLocalWorkSource`)
+  sends the commit, the remote branch that holds it, and the patch as bytes
+  (base64, 16 MiB at most), made with fixed diff options so the user's diff
+  settings cannot break it. A commit that is not on origin is refused here:
+  "Push it first". `--no-sync` and `--discard` are read only for a shell start
+  or an Apple build with `--machine` and no `--lane`.
 - **Never lose work there.** Before a sync the copy is compared with what the
   last sync wrote and with its checked-out commit. Unpushed commits, or files
   changed there and not committed, refuse the sync and name the files.
   `--no-sync` runs in the copy as it is (to commit and push from there);
   `--discard` resets anyway.
-- **One command at a time.** A sync waits for no one: while a shell still runs
-  in the copy the next synced command is refused; `--no-sync` runs beside it.
+- **One command at a time.** A copy is busy from its sync until the command
+  it was readied for has started (an Apple build: until the call returns), and
+  while a shell runs in it. A synced command is refused while it is busy;
+  `--no-sync` runs beside it. Another chat on the machine cannot read, type
+  into or stop such a shell, and lane-wide terminal lists leave it out.
 - **Limits.** Submodules are not initialised in a copy. Untracked files that
   are not ignored travel in the patch, so a large one must be committed or
   ignored. The copy follows the chat's commit, not a branch: commit and push
   from there with `git push origin HEAD:<branch>`.
-- **The run.** The command runs in that machine's own shell, not interactive
-  (`$SHELL -c`; PowerShell `-Command` on Windows), so the output is the
-  command's and the shell ends with its exit code. `--wait` streams the output
+- **The run.** The command runs once in that machine's shell, started clean
+  and not interactive (`remoteRunOnceShellLaunch` in `ptyService.ts`: the
+  saved terminal shell or Automatic, `-c` on macOS and Linux; on Windows
+  PowerShell with `-EncodedCommand`, or Git Bash when that is the saved shell,
+  never cmd.exe). The CLI sends ADE's canonical POSIX line, which Windows
+  turns back into argv and writes for PowerShell. The shell ends with the
+  command's exit code. `--wait` streams the output
   and exits with that code. The shell is owned by the caller's foreign id, so
   only that chat reads, writes or stops it (`ade terminal … --machine`).
 - **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
-  chat deleted or archived on its own machine (the sweep asks it with
-  `chats.locate`, which now says `archived` when the project is running there,
-  and never acts on silence); a low disk deletes other idle copies, oldest
-  first, before a new copy is refused.
+  chat deleted or archived on its own machine; a low disk deletes other idle
+  copies, oldest first, before a new copy is refused. The brain sweeps every
+  project in `<ADE_HOME>/remote-work/projects.json` a minute after it starts
+  and then hourly (`sweepMachineRemoteWork`), asking the chat's machine with
+  `chats.locate` (which says `archived` when the project is running there);
+  silence never deletes. The week-unused and low-disk cleanups keep a copy
+  that holds work nobody pushed. A copy in use is never deleted. An unreadable
+  `copies.json` stops every change rather than being read as empty.
 - **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
   work copy as its lane there: the lane id is `remote-work-<hash>`
   (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry

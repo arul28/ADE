@@ -315,7 +315,7 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane, takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { SideChatHeaderButton } from "./SideChatBadge";
-import { RemoteWorkHeaderButton } from "./RemoteWorkHeaderButton";
+import { RemoteWorkHeaderButton } from "./RemoteWorkMarks";
 import {
   noteSideChat,
   noteSideChatStartFailed,

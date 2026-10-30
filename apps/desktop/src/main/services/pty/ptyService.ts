@@ -1199,6 +1199,51 @@ function shellSpecForInstalledShell(file: string, mode: WindowsShellLaunchMode):
   return { file, args: [] };
 }
 
+/**
+ * How to run one command line once, for a chat on another machine
+ * (`ade shell start --machine`): this machine's shell, started clean (no rc
+ * files, as for every command ADE runs), not interactive, so the output is the
+ * command's and the process ends with its exit code. `line` is ADE's canonical
+ * POSIX rendering; plain argv is re-rendered for the shell that runs it, and
+ * a line with shell syntax (pipes, `&&`) goes to it as written.
+ *
+ * `preferredShellPath` is the machine's saved terminal shell, when it has one.
+ * On Windows, PowerShell runs it (pwsh when that is the saved shell) with
+ * `-EncodedCommand`, so no quoting is lost on the way; Git Bash runs it when
+ * that is the saved shell. cmd.exe is never used: its quoting cannot carry an
+ * arbitrary line.
+ */
+export function remoteRunOnceShellLaunch(
+  line: string,
+  preferredShellPath: string | null,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[]; env?: Record<string, string> } {
+  const preferred = preferredShellPath ? shellSpecForInstalledShell(preferredShellPath, "clean") : null;
+  if (platform !== "win32") {
+    const spec = preferred ?? resolveShellCandidates("clean")[0] ?? { file: "/bin/sh", args: [] };
+    return { command: spec.file, args: [...spec.args, "-c", line], ...(spec.env ? { env: spec.env } : {}) };
+  }
+  const preferredKind = preferred ? resolveWindowsShellKind(preferred.file) : null;
+  if (preferred && preferredKind === "git-bash") {
+    return { command: preferred.file, args: [...preferred.args, "-c", line], ...(preferred.env ? { env: preferred.env } : {}) };
+  }
+  const usePwsh = Boolean(preferred && /pwsh(\.exe)?$/i.test(preferred.file));
+  const shellPath = usePwsh ? preferred!.file : "powershell.exe";
+  const canonical = resolveCanonicalCommandLineLaunch(line);
+  const body = canonical
+    ? [
+      ...Object.entries(canonical.env ?? {}).map(([name, value]) => `$env:${name} = '${value.replace(/'/g, "''")}'`),
+      commandArrayToWindowsShellLine([canonical.command, ...canonical.args], { kind: "powershell", shellPath }),
+    ].join("; ")
+    : line;
+  // A command that never ran leaves $LASTEXITCODE null; fall back to $?.
+  const script = `${body}; if ($null -eq $LASTEXITCODE) { exit [int](-not $?) }; exit $LASTEXITCODE`;
+  return {
+    command: shellPath,
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+  };
+}
+
 function quotePosixShellArg(value: string): string {
   if (!value.length) return "''";
   if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
@@ -8568,6 +8613,8 @@ export function createPtyService({
         terminalId,
         data,
         nextSince: since + data.length,
+        status: session.status,
+        exitCode: session.exitCode ?? null,
       };
     },
 

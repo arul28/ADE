@@ -1,8 +1,7 @@
-import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { withRemoteAppleArgs, withRemoteShellArgs } from "./cliRemoteWork";
 import { THIS_MACHINE_NAME } from "../../desktop/src/shared/machineIdentity";
 import { pickLiveCheckout } from "../../desktop/src/shared/crossMachineHandoff";
 import { gitRemoteIdentity } from "../../desktop/src/main/services/github/githubSshAlias";
@@ -46,6 +45,9 @@ import {
    plan that declares `machineFanOut` can run on several at once.
    See docs/features/sync-and-multi-device/cross-machine-agents.md.
    ────────────────────────────────────────────────────────────────────────── */
+
+/** `ade apple` verbs that build the app: with --machine and no --lane they sync the work copy first. */
+const APPLE_BUILD_VERBS: ReadonlySet<string> = new Set(["launch", "open", "install", "install-app", "test", "tests"]);
 
 /** Commands that can run on another machine with `--machine`. */
 const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
@@ -139,6 +141,14 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   let machineClone = false;
   let workCopySync: "none" | "discard" | null = null;
   const command = parsed.command;
+  // A shell start or an Apple build with --machine runs in this chat's work
+  // copy there unless --lane names a lane there; only those take --no-sync
+  // and --discard (`ade apple record-stop --discard` keeps its own meaning).
+  const commandFlags = flagNamesOutsideFreeText(command);
+  const subcommand = command[1]?.toLowerCase() ?? "";
+  const workCopyVerb = commandFlags.has("--machine")
+    && ((primary === "shell" && (subcommand === "start" || subcommand === "create"))
+      || (primary === "apple" && APPLE_BUILD_VERBS.has(subcommand)));
   for (let index = 0; index < command.length; index += 1) {
     const token = command[index]!;
     if (token === "--") {
@@ -165,7 +175,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
     if (flag === "--machine-project") { machineProject = takeValue(); continue; }
     if (flag === "--all-machines" && inline == null) { allMachines = true; continue; }
     if (flag === "--clone" && inline == null && primary === "chat") { machineClone = true; continue; }
-    if ((flag === "--no-sync" || flag === "--discard") && inline == null && primary === "apple") {
+    if ((flag === "--no-sync" || flag === "--discard") && inline == null && workCopyVerb) {
       if (workCopySync) throw new CliUsageError("Use --no-sync or --discard, not both.");
       workCopySync = flag === "--no-sync" ? "none" : "discard";
       continue;
@@ -181,7 +191,10 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   }
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
-  if (workCopySync && !machine) throw new CliUsageError("--no-sync and --discard are for this chat's work copy on another machine: add --machine <name>.");
+  const usesWorkCopy = workCopyVerb && !commandFlags.has("--lane") && !commandFlags.has("--lane-id");
+  if (workCopySync && !usesWorkCopy) {
+    throw new CliUsageError("--no-sync and --discard are for this chat's work copy there; leave out --lane to use it.");
+  }
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
@@ -202,7 +215,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       allMachines,
       machineProject: machineProject ?? projectAlias,
       machineClone,
-      machineWorkCopySync: workCopySync,
+      ...(usesWorkCopy ? { machineWorkCopy: { sync: workCopySync } } : {}),
     },
   };
 }
@@ -438,7 +451,7 @@ export async function createMachineRemoteConnection(
         return await fileRemoteAppControlProofHere(params);
       }
       if (method === "ade/actions/call" && params && isShellOrTerminalAction(params)) {
-        const shellParams = withRemoteShellArgs(params, process.cwd());
+        const shellParams = withRemoteShellArgs(params, process.cwd(), options.machineWorkCopy ?? null);
         try {
           return await callRemote(method, shellParams);
         } catch (error) {
@@ -448,7 +461,7 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        return await callRemote(method, withRemoteAppleArgs(params, process.cwd(), options.machineWorkCopySync ?? null));
+        return await callRemote(method, withRemoteAppleArgs(params, process.cwd(), options.machineWorkCopy ?? null));
       }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
@@ -464,134 +477,6 @@ export async function createMachineRemoteConnection(
 function isShellOrTerminalAction(params: JsonObject): boolean {
   const toolArgs = isRecord(params.arguments) ? params.arguments : null;
   return params.name === "run_ade_action" && (toolArgs?.domain === "pty" || toolArgs?.domain === "terminal");
-}
-
-/** Apple actions that build the app from the lane's code: they sync the work copy first. */
-const APPLE_BUILD_ACTIONS: ReadonlySet<string> = new Set(["launch", "installApp", "runTests"]);
-
-/**
- * `ade apple … --machine` with no `--lane`: the simulator there works for
- * this chat's work copy. A build syncs it to this checkout; any other verb
- * uses it as it is (and makes it at this commit when it does not exist yet).
- */
-function withRemoteAppleArgs(params: JsonObject, workspaceRoot: string, sync: "none" | "discard" | null = null): JsonObject {
-  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
-  if (toolArgs.domain !== "ios_simulator" || !isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
-  const action = asString(toolArgs.action) ?? "";
-  if (action === "getStatus" || action === "runtimeList" || action === "listDevices") return params;
-  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
-  return {
-    ...params,
-    arguments: {
-      ...toolArgs,
-      args: {
-        ...args,
-        remoteWork: APPLE_BUILD_ACTIONS.has(action) && sync !== "none"
-          ? { ...readLocalWorkSource(workspaceRoot), ...(sync ? { sync } : {}) }
-          : { ...readLocalWorkSource(workspaceRoot, { withChanges: false }), sync: "none" },
-      },
-    },
-  };
-}
-
-/**
- * A shell or terminal call bound for another machine. A chat id from here
- * means nothing there (the other machine knows this chat by the identity the
- * bridge carries), so it is dropped. A new shell with no `--lane` runs in
- * this chat's work copy there: the commit and the uncommitted changes of the
- * checkout this command runs in go along (remoteWorkCopyService.ts).
- */
-function withRemoteShellArgs(params: JsonObject, workspaceRoot: string): JsonObject {
-  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
-  const { chatSessionId: _chatSessionId, workCopy, laneDefaulted, ...args } = isRecord(toolArgs.args) ? toolArgs.args : {};
-  let nextArgs: JsonObject = args;
-  // A lane filled in by default (this shell's lane here, or the primary lane)
-  // is not a lane the caller chose there: use the work copy instead.
-  if (toolArgs.domain === "pty" && toolArgs.action === "create" && (laneDefaulted === true || !asString(args.laneId))) {
-    const { laneId: _laneId, ...rest } = args;
-    nextArgs = {
-      ...rest,
-      remoteWork: {
-        ...readLocalWorkSource(workspaceRoot),
-        ...(isRecord(workCopy) ? workCopy : {}),
-        // A command there ends its shell, so the next command can sync.
-        ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
-      },
-    };
-  } else if (isRecord(workCopy) && Object.keys(workCopy).length && toolArgs.action === "create") {
-    throw new CliUsageError("--no-sync, --discard and --wait are for this chat's work copy; leave out --lane to use it.");
-  }
-  return { ...params, arguments: { ...toolArgs, args: nextArgs } };
-}
-
-/** The most uncommitted change a command sends along; bigger changes go through git. */
-const MAX_WORK_PATCH_BYTES = 16 * 1024 * 1024;
-
-function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
-  const result = spawnSync("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: MAX_WORK_PATCH_BYTES * 2,
-    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(env ?? {}) },
-    windowsHide: true,
-  });
-  if (result.error || result.status !== 0) {
-    const detail = (result.stderr || result.error?.message || "").trim().split("\n").slice(-2).join(" ");
-    throw new CliUsageError(`git ${args[0]} failed in ${cwd}${detail ? `: ${detail}` : ""}`);
-  }
-  return result.stdout;
-}
-
-/**
- * What the other machine needs to reproduce this checkout: the commit (which
- * must be on origin), the remote branch that holds it, and every uncommitted
- * change as one binary patch, untracked files included. The checkout's own
- * index is never touched: the patch is staged in a copy of it.
- */
-function readLocalWorkSource(cwd: string, options: { withChanges?: boolean } = {}): JsonObject {
-  const top = gitHere(cwd, ["rev-parse", "--show-toplevel"]).trim();
-  const head = gitHere(top, ["rev-parse", "HEAD"]).trim();
-  const branch = gitHere(top, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
-  if (options.withChanges === false) {
-    // A tap or a screenshot: the copy is used as it is, so only what makes a
-    // missing copy (the commit and its branch) is read. No index, no diff.
-    return { head, fetchRef: branch === "HEAD" ? null : branch, branch: branch === "HEAD" ? null : branch };
-  }
-  const remoteRefs = gitHere(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
-    .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
-  if (!remoteRefs.length) {
-    throw new CliUsageError(
-      `Commit ${head.slice(0, 12)} is not on origin yet, so the other machine cannot check it out. `
-      + "Push it first (git push); uncommitted changes travel by themselves.",
-    );
-  }
-  const preferred = remoteRefs.find((ref) => ref === `origin/${branch}`) ?? remoteRefs[0]!;
-  const indexPath = gitHere(top, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim();
-  const tempIndex = path.join(os.tmpdir(), `ade-work-patch-${randomUUID()}`);
-  let patch: string;
-  try {
-    try {
-      fs.copyFileSync(indexPath, tempIndex);
-    } catch {
-      // No index yet; git builds one.
-    }
-    const env = { GIT_INDEX_FILE: tempIndex };
-    gitHere(top, ["add", "-A"], env);
-    patch = gitHere(top, ["diff", "--cached", "--binary", "HEAD"], env);
-  } finally {
-    fs.rmSync(tempIndex, { force: true });
-  }
-  if (Buffer.byteLength(patch) > MAX_WORK_PATCH_BYTES) {
-    throw new CliUsageError(
-      `The uncommitted changes are over ${MAX_WORK_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
-    );
-  }
-  return {
-    head,
-    fetchRef: preferred.slice("origin/".length),
-    branch: branch === "HEAD" ? null : branch,
-    ...(patch.trim() ? { patch } : {}),
-  };
 }
 
 function isAppControlCaptureProof(params: JsonObject | undefined): boolean {

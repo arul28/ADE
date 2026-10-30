@@ -520,24 +520,27 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       // The copy goes when its chat is archived on A: B asks A at its next sweep.
       const again = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "true"]);
       expect(again.status).toBe(0);
-      const { createRemoteWorkCopyService, setRemoteWorkOwnerProbe } = await import("../../../../desktop/src/main/services/remoteWork/remoteWorkCopyService");
+      const { createRemoteWorkCopyService } = await import("../../../../desktop/src/main/services/remoteWork/remoteWorkCopyService");
       const { externalChatContext } = await import("../../../../desktop/src/main/services/chat/externalChats");
       const { parseForeignCallerSessionId } = await import("../../../../desktop/src/shared/runtimeClientNames");
-      setRemoteWorkOwnerProbe(async (machineKey, chatSessionId) => {
-        net.dialingFrom = "B";
-        try { return await B.bridge.locateChat(machineKey, chatSessionId); } finally { net.dialingFrom = null; }
-      });
-      const originOf = (owner: string) => {
-        const parsed = parseForeignCallerSessionId(owner);
+      // What the brain's hourly sweep asks: the chat's own machine, over B's bridge.
+      const ownerGone = async (owner: string) => {
+        const chatSessionId = parseForeignCallerSessionId(owner)?.chatSessionId ?? null;
         const machineKey = externalChatContext(owner)?.machineKey ?? null;
-        return parsed?.chatSessionId && machineKey ? { machineKey, chatSessionId: parsed.chatSessionId } : null;
+        if (!chatSessionId || !machineKey) return null;
+        net.dialingFrom = "B";
+        try {
+          const answer = await B.bridge.locateChat(machineKey, chatSessionId);
+          return answer ? { gone: !answer.found || answer.archived, archived: answer.archived } : null;
+        } finally {
+          net.dialingFrom = null;
+        }
       };
       const sweeper = createRemoteWorkCopyService({ projectRoot: B.projectRoot });
-      expect(await sweeper.sweep(undefined, originOf)).toBe(0);
+      expect(await sweeper.sweep({ ownerGone })).toBe(0);
       await A.runtime.agentChatService.archiveSession({ sessionId: parent.id });
-      expect(await sweeper.sweep(undefined, originOf)).toBe(1);
+      expect(await sweeper.sweep({ ownerGone })).toBe(1);
       expect(sweeper.list()).toHaveLength(0);
-      setRemoteWorkOwnerProbe(null);
     } finally {
       server.close();
       fs.rmSync(socketPath, { force: true });

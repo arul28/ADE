@@ -828,6 +828,10 @@ export type ChatTerminalReadResult = {
   terminalId: string;
   data: string;
   nextSince: number;
+  /** The terminal's state when read (older brains omit it). */
+  status?: TerminalSessionStatus;
+  /** Its exit code once it ended; null while it runs or when unknown. */
+  exitCode?: number | null;
 };
 
 export type ChatTerminalWriteArgs = {
