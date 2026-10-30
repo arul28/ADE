@@ -514,8 +514,10 @@ export type TerminalSessionSummary = {
   spawnKind?: AgentChatSpawnKind;
   /** The chat's side chat (`shared/sideChat.ts`), while it has one. Drives the session card's side-chat mark. */
   sideChatSessionId?: string;
-  /** Other machines the chat's current turn runs commands on (`shared/chatRemoteWork.ts`). Drives the card's machine mark. */
+  /** Other machines the chat ran commands on (`ade shell start --machine`); their shells join the terminal tool. */
   remoteWork?: AgentChatRemoteWorkUse[];
+  /** Of those, the machines the current turn uses right now (`shared/chatRemoteWork.ts`). Drives the card's mark. */
+  remoteWorkActiveMachineKeys?: string[];
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
    * session rather than an ordinary chat (today the only one is the CTO, whose

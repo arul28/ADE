@@ -1405,7 +1405,10 @@ export const SessionCard = memoWithLatestHandlers(function SessionCard({
         size={11}
       />
       <SideChatBadge mainSessionId={session.id} rowSideChatSessionId={session.sideChatSessionId ?? null} size={11} />
-      <RemoteWorkBadge uses={session.remoteWork} size={11} />
+      <RemoteWorkBadge
+        uses={session.remoteWork?.filter((use) => session.remoteWorkActiveMachineKeys?.includes(use.machineKey))}
+        size={11}
+      />
     </>
   );
   const gridIndicator = gridBadge ? (

@@ -217,6 +217,7 @@ function WorkTerminalTool({
       chatSessionId={terminalOwnerSessionId}
       runtimePin={runtimePin}
       runtimeScopeKey={mountScope}
+      remoteWork={activeSession?.remoteWork ?? null}
     />
   );
 }

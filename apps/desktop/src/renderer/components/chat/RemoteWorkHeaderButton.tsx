@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppleLogo, Desktop, LinuxLogo, Stop, WindowsLogo } from "@phosphor-icons/react";
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "../../../shared/types/chat";
 import { activeRemoteWork } from "../../../shared/chatRemoteWork";
@@ -21,12 +21,14 @@ export function PlatformGlyph({ platform, size }: { platform: string | null | un
   }
 }
 
+export type RemoteWorkPin = OpenProjectBinding | "unreachable";
+
 /**
- * The pin that reaches `use`'s project on its machine: the desktop's paired
- * connection to it, or this computer's own checkout. Null when this window
- * has no connection to that machine; nothing is sent then.
+ * Finds the pin that reaches a use's project on its machine: the desktop's
+ * paired connection to it, or this computer's own checkout. "unreachable"
+ * when this window has no connection to that machine; nothing is sent then.
  */
-function useRemoteWorkPin(use: AgentChatRemoteWorkUse | null, active: boolean): OpenProjectBinding | null | "unreachable" {
+export function useRemoteWorkPinResolver(active: boolean): (use: AgentChatRemoteWorkUse) => RemoteWorkPin {
   const { snapshot } = useRemoteConnectionSnapshot(active);
   const [localMachineKey, setLocalMachineKey] = useState<string | null>(null);
   useEffect(() => {
@@ -37,8 +39,8 @@ function useRemoteWorkPin(use: AgentChatRemoteWorkUse | null, active: boolean): 
       .catch(() => {});
     return () => { cancelled = true; };
   }, [active]);
-  return useMemo(() => {
-    if (!use?.projectId || !use.projectRootPath) return "unreachable";
+  return useCallback((use: AgentChatRemoteWorkUse): RemoteWorkPin => {
+    if (!use.projectId || !use.projectRootPath) return "unreachable";
     if (localMachineKey && use.machineKey === localMachineKey) {
       return { kind: "local", key: use.projectRootPath, rootPath: use.projectRootPath, displayName: use.machineName };
     }
@@ -56,7 +58,12 @@ function useRemoteWorkPin(use: AgentChatRemoteWorkUse | null, active: boolean): 
       rootPath: use.projectRootPath,
       displayName: use.machineName,
     };
-  }, [use, snapshot, localMachineKey]);
+  }, [snapshot, localMachineKey]);
+}
+
+function useRemoteWorkPin(use: AgentChatRemoteWorkUse, active: boolean): RemoteWorkPin {
+  const resolve = useRemoteWorkPinResolver(active);
+  return useMemo(() => resolve(use), [resolve, use]);
 }
 
 /**

@@ -202,8 +202,12 @@ export function projectChatOntoSession(
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.sideChatSessionId ? { sideChatSessionId: chat.sideChatSessionId } : {}),
-    // Only while the current turn runs commands on another machine.
-    ...(activeRemoteWork(chat).length ? { remoteWork: activeRemoteWork(chat) } : {}),
+    // Recent commands on other machines (their shells), and which machines the
+    // current turn uses right now (the card's mark).
+    ...(chat.remoteWork?.length ? { remoteWork: chat.remoteWork } : {}),
+    ...(activeRemoteWork(chat).length
+      ? { remoteWorkActiveMachineKeys: activeRemoteWork(chat).map((use) => use.machineKey) }
+      : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),

@@ -17395,6 +17395,7 @@ export function AgentChatPane({
         revealRequest={terminalRevealRequest}
         runtimePin={chatRuntimePin}
         runtimeScopeKey={workRuntimeScopeKey(chatRuntimePin, projectBinding)}
+        remoteWork={selectedSession?.remoteWork ?? null}
       />
     </Suspense>
   ) : null;
