@@ -950,27 +950,26 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   const heldNow = (udid: string): boolean => readAllHeld().some((device) => device.udid === udid);
 
   /**
-   * A free simulator for a work-copy lane: no lane holds it, and it is either
-   * ADE's own kept device or the user's own. Kept ADE devices first (no user
-   * data), shut-down ones before booted ones (a booted one may be in use),
-   * this project's usual model first. Attached, so ADE never deletes it: the
-   * lane's end gives it back and uninstalls only what ADE put on it.
+   * A free simulator for a work-copy lane: one of the user's own that no lane
+   * holds (never an ADE device: attaching one makes it the lane's ADE device,
+   * deleted when the lane ends, and a kept one must stay). Shut-down ones
+   * before booted ones (a booted one may be in use), this project's usual
+   * model first. Attached, so ADE never deletes it: the lane's end gives it
+   * back and uninstalls only what ADE put on it.
    */
   const borrowFreeDevice = async (laneId: string): Promise<AppleLaneDevice | null> => {
     const installed = (await deps.listInstalledSimulators()).filter((sim) => sim.isAvailable);
     const ownership = new Map(ownershipFor(installed).map((info) => [info.udid, info]));
     const preferredType = lastDeviceType();
     const rank = (sim: AppleInstalledSimulator): number => {
-      const info = ownership.get(sim.udid);
-      return (info?.ownership === "ade-kept" ? 0 : 4)
-        + (sim.state.toLowerCase() === "shutdown" ? 0 : 2)
+      return (sim.state.toLowerCase() === "shutdown" ? 0 : 2)
         + (preferredType && sim.deviceTypeIdentifier === preferredType ? 0 : 1);
     };
     const candidates = installed
       .filter((sim) => {
         const info = ownership.get(sim.udid);
         if (!info || heldNow(sim.udid)) return false;
-        return info.ownership === "ade-kept" || (info.ownership === "unknown" && !info.looksLikeAde);
+        return info.ownership === "unknown" && !info.looksLikeAde;
       })
       .sort((a, b) => rank(a) - rank(b));
     for (const sim of candidates) {

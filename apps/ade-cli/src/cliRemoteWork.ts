@@ -88,6 +88,11 @@ function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Buffer {
     env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(env ?? {}) },
     windowsHide: true,
   });
+  if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") {
+    throw new CliUsageError(
+      `The uncommitted changes are over ${REMOTE_WORK_MAX_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
+    );
+  }
   if (result.error || result.status !== 0) {
     const detail = (result.stderr?.toString("utf8") || result.error?.message || "").trim().split("\n").slice(-2).join(" ");
     throw new CliUsageError(`git ${args[0]} failed in ${cwd}${detail ? `: ${detail}` : ""}`);

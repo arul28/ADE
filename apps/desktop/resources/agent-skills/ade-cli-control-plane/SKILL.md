@@ -743,6 +743,7 @@ ade shell clean --machine "Windows PC"            # delete the work copy when do
 - The simulator works the same way: `ade apple launch --machine "Mac Studio"`
   with no `--lane` builds this chat's work copy there and runs it on a free
   simulator that machine already has (a new one only when none is free).
+  `--no-sync` builds the copy as it is; `--discard` throws away unpushed work there first.
   `launch`, `install` and `test` sync the copy first; taps and screenshots use it as it is.
 - Git moves code between the machines. To keep work you did there, commit and
   push from there (`ade shell start --machine … --no-sync -- git push origin HEAD:<branch>`),

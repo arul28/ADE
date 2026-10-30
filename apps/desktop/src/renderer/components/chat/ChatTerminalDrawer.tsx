@@ -540,28 +540,37 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const remoteTargetsRef = useRef(remoteTargets);
   remoteTargetsRef.current = remoteTargets;
   useEffect(() => {
-    if (!open || !remoteTargetsKey) return undefined;
+    if (!open) return undefined;
+    if (!remoteTargetsKey) {
+      // No machine to reach any more (disconnected, or the work is gone): drop its tabs.
+      setTabs((prev) => (prev.some((tab) => tab.remote) ? prev.filter((tab) => !tab.remote) : prev));
+      return undefined;
+    }
     let cancelled = false;
     void Promise.all(remoteTargetsRef.current.map(async ({ use, pin: remotePin }) => {
-      // An unreachable or older machine shows none of its shells; the header mark still names it.
-      const rows = await listRemoteWorkShells(use, remotePin).catch((error: unknown) => {
+      let rows: ChatTerminalSession[];
+      try {
+        rows = await listRemoteWorkShells(use, remotePin);
+      } catch (error) {
+        // A failed read keeps what the strip already shows for that machine.
         console.warn(`[remote-work] could not list the shells on ${use.machineName}`, error);
-        return [] as ChatTerminalSession[];
-      });
-      return rows.filter((row) => row.ptyId).map((row): TabEntry => ({
+        return { machineKey: use.machineKey, tabs: null };
+      }
+      return { machineKey: use.machineKey, tabs: rows.filter((row) => row.ptyId).map((row): TabEntry => ({
         id: `remote-term-${use.machineKey}-${row.terminalId}`,
         ptyId: row.ptyId!,
         sessionId: row.terminalId,
         label: row.title || "Command",
         exited: row.status !== "running",
         remote: { pin: remotePin, machineKey: use.machineKey, machineName: use.machineName, platform: use.machinePlatform ?? null },
-      }));
+      })) };
     })).then((lists) => {
       if (cancelled) return;
-      // Running commands first (per machine), so the strip opens on one that is working.
-      const remoteTabs = lists.flat();
       setTabs((prev) => {
         const local = prev.filter((tab) => !tab.remote);
+        // Running commands first (per machine), so the strip opens on one that is working.
+        const remoteTabs = lists.flatMap(({ machineKey, tabs: loaded }) =>
+          loaded ?? prev.filter((tab) => tab.remote?.machineKey === machineKey));
         return [...local, ...remoteTabs];
       });
     });

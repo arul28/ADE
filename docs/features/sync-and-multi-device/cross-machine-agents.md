@@ -125,10 +125,10 @@ on the first command; nothing is installed in advance, and ignored files
 - **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
   work copy as its lane there: the lane id is `remote-work-<hash>`
   (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry
-  treats it as live while the copy exists. Its first device is a free
-  simulator that machine already has (an ADE device kept free first, then the
-  user's own, shut-down ones first), attached so ADE never deletes it; only
-  when none is free does ADE make one. `launch`, `installApp` and `runTests`
+  treats it as live while the copy exists. Its first device is one of the
+  user's own simulators on that machine that no lane holds (shut-down ones
+  first; never an ADE device, which a lane's end would delete), attached so
+  ADE never deletes it; only when none is free does ADE make one. `launch`, `installApp` and `runTests`
   sync the copy first; other verbs use it as it is. When the copy goes, the
   cleanup pass gives the device back.
 - **Where it shows.** The chat's own brain records each shell and each

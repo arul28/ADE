@@ -3091,7 +3091,9 @@ export function createMultiProjectRpcRequestHandler(
         // A shell this chat started in its work copy there: the chat's views
         // show which machine it is working on.
         const remoteWorkKind = callerChat ? remoteWorkCallKind(forwardMethod, forwardParams) : null;
-        if (callerChat && remoteWorkKind) {
+        // Bookkeeping for the chat's views: the call already ran there, so a
+        // failure here is logged and never turns it into a failed call.
+        if (callerChat && remoteWorkKind) try {
           located?.runtime.agentChatService?.noteRemoteWork({
             terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
             workCopyLaneId: remoteWorkCopyLaneId(answer.result),
@@ -3103,6 +3105,8 @@ export function createMultiProjectRpcRequestHandler(
             projectId: answer.project?.projectId ?? null,
             projectRootPath: answer.project?.rootPath ?? null,
           });
+        } catch (error) {
+          console.warn("[remote-work] could not record the chat's work on another machine", error);
         }
         // A child this chat started there: remember it, so that machine's
         // report of its finished turns is accepted here and nowhere else.

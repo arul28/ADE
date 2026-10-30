@@ -443,10 +443,17 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    * use. With `keepUnsynced` (the automatic cleanups that run on a guess), a
    * copy holding work nobody pushed is kept: false.
    */
-  const release = async (owner: string, releaseOptions: { keepUnsynced?: boolean } = {}): Promise<boolean> =>
+  const release = async (
+    owner: string,
+    releaseOptions: { keepUnsynced?: boolean; onlyIfUnusedBefore?: number } = {},
+  ): Promise<boolean> =>
     await withLock(owner, async () => {
       if (inUse(owner)) throw busyError();
       const copy = get(owner);
+      // Re-read in the lock: a command may have used the copy since the sweep chose it.
+      if (copy && releaseOptions.onlyIfUnusedBefore != null && Date.parse(copy.lastUsedAt) >= releaseOptions.onlyIfUnusedBefore) {
+        return false;
+      }
       const copyPath = copy?.path ?? pathFor(owner);
       if (copy && releaseOptions.keepUnsynced && fs.existsSync(copyPath)) {
         const reason = await unsyncedWork(copy).catch((error: unknown) => {
@@ -466,7 +473,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     });
 
   /** Release, but a copy that is busy now is skipped rather than an error. */
-  const releaseIfIdle = async (owner: string, releaseOptions: { keepUnsynced?: boolean } = {}): Promise<boolean> => {
+  const releaseIfIdle = async (owner: string, releaseOptions: Parameters<typeof release>[1] = {}): Promise<boolean> => {
     try {
       return await release(owner, releaseOptions);
     } catch (error) {
@@ -626,7 +633,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
       for (const copy of readRegistry().copies) {
         if (inUse(copy.owner)) continue;
         if (Date.parse(copy.lastUsedAt) < cutoff) {
-          if (await releaseIfIdle(copy.owner, { keepUnsynced: true })) released += 1;
+          if (await releaseIfIdle(copy.owner, { keepUnsynced: true, onlyIfUnusedBefore: cutoff })) released += 1;
           continue;
         }
         const answer = sweepOptions.ownerGone

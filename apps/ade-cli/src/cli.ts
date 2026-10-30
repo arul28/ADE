@@ -9451,7 +9451,8 @@ function buildShellPlan(args: string[]): CliPlan {
           },
           exitCodeFromResult: (result: unknown) => {
             const code = isRecord(result) ? result.exitCode : null;
-            return typeof code === "number" ? Math.min(Math.max(code, 0), 255) : 1;
+            // A negative code (killed, disposed) is a failure, never success.
+            return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
           },
         }
       : {};
