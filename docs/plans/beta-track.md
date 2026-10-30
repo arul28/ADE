@@ -98,6 +98,79 @@ Asset `release-manifest.json`:
   be read (T3 #26288).
 - Before the first open by a new app version, ADE copies each database with
   SQLite's online backup (`<db>.pre-<version>-from-<previous>.bak`, last 3 kept, disk checked first).
+- Settings › Advanced › Database copies lists them (This computer only) with
+  Reveal and Delete. It has no restore: "Go back" in the "ADE could not
+  start" window restores, after the brain has stopped.
+
+### Startup recovery
+
+Code: `apps/desktop/src/main/services/startupRecovery/`.
+
+The "ADE could not start" window opens once per launch, from failure
+signals ADE already had:
+
+| Trigger | Signal | Needs an update |
+|---|---|---|
+| `database` | Before any project opened this launch, a project open fails with `db_integrity`, `migration_incomplete` or `migration_unknown_state` (from the error's code, or `classifySqliteOpenError` for a raw SQLite error), or the brain wrote a `project_db_open` last-failure record during this launch | yes |
+| `brain` | A project open fails with `brain_crash_looping`, or the post-update transaction fails at `service`, `restart` or `health` and the brain recorded a `brain_startup` or `project_db_open` failure during this launch | yes |
+| `window_crashed` | The main window's renderer crashed until its recovery budget ran out | no |
+| `window_load_failed` | The main window's renderer never loaded | no |
+
+"Needs an update" means the update record (`recentlyInstalledUpdate`) names
+the running version, or a database copy names a move into it. Without one,
+the project recovery screen handles the failure. A database whose compat
+record says the running version already opened it cleanly does not count
+either (for `brain_crash_looping`, the machine database): that failure came
+later, and going back would drop what was done since. Problems the person can fix
+(disk full, a cloud folder, moved data, macOS blocking the service) never
+open the window.
+
+The window says what failed in one line and offers Try again (ADE's normal
+restart, with its quit prompt), Go back to `<version>`, Open logs folder
+(`~/.ade/runtime`) and Copy details. It is its own small page and preload, so
+it opens when the app's renderer is what broke.
+
+**Which version and which copies** (`goBackPlan.ts`, tested): the copies
+whose name moves into the running version (`pre-<running>-from-<V>`) from a
+release version. `unknown` and `before-1.2.127` are not versions. The update
+record's `fromVersion` wins when a copy for that move exists; otherwise the
+newest copy's `<V>` does. Each database restores its newest copy for that
+move; the others stay as they are.
+
+**Going back**:
+
+1. Read the target's `release-manifest.json`. A database that is not
+   restored must be at or below its `dbCompat` (T3 #4374); a 404 is a
+   pre-manifest stable at level 1.
+2. Point the updater at that release (`/releases/download/v<V>/`, generic
+   provider, `allowDowngrade`) and accept only `<V>`. A track switch is
+   refused meanwhile.
+3. When it is downloaded, the ordinary `quitAndInstall` runs. Its prepare
+   step stops the service brain, then the go-back stops the app's own brain
+   child and closes the open projects, then moves each current database
+   (with its `-wal`, `-shm`, `-journal`) to `pre-<V>-from-<running>.bak`
+   (`_2` on a repeat) and moves the copy into place. Moves only: nothing is
+   overwritten or decrypted (T3 #20906), a file ADE cannot open is kept as
+   it is, and renames need no free space. A failed move puts that database
+   back and stops the install; ADE stays open and the service comes back.
+4. The compat record is rewritten for `<V>`, `wentBackFrom` is saved so
+   ordinary checks never offer that build again, and
+   `startupRecovery.went_back` is logged (a release-health event the beta
+   gate can read). Then the existing installer runs: Squirrel on macOS, the
+   NSIS installer on Windows (`%LOCALAPPDATA%\Programs\ADE`).
+
+Open:
+
+- Tried in a dev app (window, Copy details, Open logs folder, Try again, the
+  Settings list) and with the real controller and restore code on temp
+  files. The download and install of an older release have not run on a
+  packaged build, on macOS or Windows.
+- A build older than this feature ignores `wentBackFrom`, so it may offer
+  the build it just left. It needs automatic install to take it unasked.
+- A project database restored this way syncs with other machines; its
+  changes since the copy come back from peers that have them.
+- A desktop main process that crashes before its first window is not
+  caught: no existing signal records it.
 
 ## Work list
 
@@ -127,7 +200,7 @@ Asset `release-manifest.json`:
 | #4374, #13282 | Downgrade never installed; old stable crash-looped on newer data | DB compat guard before any switch; old builds already skip unknown tables and columns |
 | #25175, #26830 | A nightly migration later removed; machines bricked | ADE migrations are idempotent "ensure" steps; compat level rule; never remove a merged migration |
 | #15017 | Stale per-track DB reused | One shared `~/.ade`; no per-track DB |
-| #20906, #22219, #23917 | Rename changed safeStorage key; connections lost | App name fixed as `ADE`; never overwrite an undecryptable file |
+| #20906, #22219, #23917 | Rename changed safeStorage key; connections lost | App name fixed as `ADE`; never overwrite an undecryptable file (going back moves files, never overwrites) |
 | #20103 | `.app` rename failed relaunch | App file name fixed |
 | #20345, #25450 | Windows update stuck on quit | Existing quit hard deadline; real Windows test |
 | #11753, #9138 | Changelog mixed tracks | What's new filters by track |
@@ -213,7 +286,8 @@ Open (updated 2026-10-29):
   check on the real-machine test: queued messages survive an update
   (T3 #20240).
 - "ADE could not start" window with "go back to the previous version", and a
-  Settings list of database copies: not built. The copies exist on disk.
+  Settings list of database copies: built on `feat/startup-recovery`. See
+  "Startup recovery" below. Not yet tried on a packaged build or on Windows.
 - Tests broken on purpose by the channel removal
   (`packagedSyncHostLaunchGate.test.ts` and any others that pass "beta" as a
   channel) are left for `/test`.
