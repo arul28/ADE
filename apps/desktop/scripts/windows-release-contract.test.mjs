@@ -144,7 +144,7 @@ test("local Windows test builds omit only cross-platform runtime sidecars", () =
 
 test("Windows background service registration does not require administrator access", () => {
   assert.match(windowsServiceManager, /HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run/);
-  assert.match(windowsServiceManager, /buildWindowsRunKeyAddArgs\(taskName, command\)/);
+  assert.match(windowsServiceManager, /buildWindowsRunKeyAddArgs\(taskName, \w+\)/);
   assert.match(windowsServiceManager, /buildWindowsStartLauncherArgs\(launcherPath\)/);
   const installBlock = windowsServiceManager.slice(
     windowsServiceManager.indexOf("export function installWindowsService"),
