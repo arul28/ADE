@@ -127,8 +127,11 @@ try {
     const key = `${row.thread === 0 ? "event loop" : "worker"} ${sqlKind(row)}`;
     sqlCounts[key] = (sqlCounts[key] ?? 0) + 1;
   }
-  const writes = new Map<string, number>();
-  for (const row of sql) if (row.thread === 0 && sqlKind(row) === "write") writes.set((row.sql ?? "").slice(0, 70), (writes.get((row.sql ?? "").slice(0, 70)) ?? 0) + 1);
+  const topStatements = (kind: string) => {
+    const counts = new Map<string, number>();
+    for (const row of sql) if (row.thread === 0 && sqlKind(row) === kind) counts.set((row.sql ?? "").slice(0, 70), (counts.get((row.sql ?? "").slice(0, 70)) ?? 0) + 1);
+    return Object.fromEntries([...counts].sort((a, b) => b[1] - a[1]).slice(0, 8));
+  };
 
   summary = {
     bench: "brain-idle",
@@ -139,7 +142,8 @@ try {
     processStartsByCommand: Object.fromEntries(Object.entries(byCommand).sort((a, b) => b[1] - a[1])),
     sqlStatements: sql.filter((row) => row.kind !== "txn").length,
     sqlByKind: sqlCounts,
-    topWrites: Object.fromEntries([...writes].sort((a, b) => b[1] - a[1]).slice(0, 8)),
+    topWrites: topStatements("write"),
+    topReads: topStatements("read"),
     dbVersionsAdded: version1 - version0,
     brainCpuSeconds: +(cpu1 - cpu0).toFixed(2),
   };
