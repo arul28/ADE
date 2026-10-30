@@ -31,8 +31,10 @@ export type SettleTurnCheckDeps = {
   /**
    * Whether a turn is running right now. `null` for a session the chat service
    * does not own (a plain terminal), which has no turn to wait for.
+   * `"unknown"` when this host cannot see the turn (another brain runs the
+   * chat): refused like a read that never answered.
    */
-  readTurnRunning: (sessionId: string) => Promise<boolean | null>;
+  readTurnRunning: (sessionId: string) => Promise<boolean | null | "unknown">;
   logger?: { warn: (message: string, meta?: Record<string, unknown>) => void };
 };
 
@@ -41,7 +43,7 @@ export function createSettleTurnCheck(
 ): (sessionId: string) => Promise<SettleCheckOutcome> {
   return async (sessionId) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
-    let read: { ok: true; running: boolean | null } | { ok: false };
+    let read: { ok: true; running: boolean | null | "unknown" } | { ok: false };
     try {
       read = await Promise.race([
         deps.readTurnRunning(sessionId).then((running) => ({ ok: true, running }) as const),
@@ -63,7 +65,7 @@ export function createSettleTurnCheck(
     }
     // A read that never answered is not evidence the chat is at rest; settling
     // it could file a working chat. Refuse, and let the caller try again.
-    if (!read.ok) return { abortedBy: "status_unknown" };
+    if (!read.ok || read.running === "unknown") return { abortedBy: "status_unknown" };
     if (read.running) return { abortedBy: "turn_running" };
     return {};
   };

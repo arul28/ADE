@@ -227,7 +227,11 @@ export function sessionIsMidFlight(session: SessionCanonicalUiInput): boolean {
   // today". Both call sites carried it before this was hoisted, and iOS's
   // mirror still does; dropping it would make the predicate quietly wrong the
   // day something starts producing it.
-  if (state.phase === "starting" || state.phase === "stale") return true;
+  if (state.phase === "starting") return true;
+  // Stale is two things: a live turn silent for hours (mid-flight), or a turn
+  // that ended long ago with background work still claiming to run. The
+  // second is at rest and can be settled; its work keeps running.
+  if (state.phase === "stale") return session.runtimeState !== "idle";
   return state.phase === "running" && (state.liveness ?? "turn") === "turn";
 }
 

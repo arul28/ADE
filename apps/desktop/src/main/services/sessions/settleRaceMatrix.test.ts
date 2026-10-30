@@ -142,8 +142,8 @@ describe("settle race matrix", () => {
    *
    * Through the real wiring the hosts use: a running turn and a turn accepted
    * but not yet started both refuse with `turn_running`; a read that never
-   * answers refuses with `status_unknown` rather than filing a chat it could
-   * not see; a resting chat settles.
+   * answers, or a chat another brain runs, refuses with `status_unknown` rather
+   * than filing a chat it could not see; a resting chat settles.
    */
   it.each([
     ["user", { status: "active" }, "turn_running"],
@@ -152,6 +152,7 @@ describe("settle race matrix", () => {
     ["user", { status: "idle", turnAcceptedAt: "2026-08-11T00:02:00.000Z" }, "turn_running"],
     ["pr_merge", { status: "idle", turnAcceptedAt: "2026-08-11T00:02:00.000Z" }, "turn_running"],
     ["user", "never", "status_unknown"],
+    ["pr_merge", { status: "idle", runtimeOwnedElsewhere: { pid: 4242 } }, "status_unknown"],
     ["user", { status: "idle" }, null],
     ["pr_merge", { status: "idle" }, null],
   ] as const)("a %s settle of a chat reading %j is refused with %s", async (source, summary, reason) => {

@@ -17,7 +17,11 @@ export type SubagentLink = { sessionId: string; parentSessionId: string };
 
 /** Only what the settle path needs, so neither caller has to hand over a whole service. */
 export type SettleChatService = {
-  getSessionSummary: (sessionId: string) => Promise<{ status: string; turnAcceptedAt?: string | null } | null>;
+  getSessionSummary: (sessionId: string) => Promise<{
+    status: string;
+    turnAcceptedAt?: string | null;
+    runtimeOwnedElsewhere?: unknown;
+  } | null>;
   /** Subagents of these sessions, so a settled parent can settle its subagents. */
   listSubagentLinks?: (parentSessionIds: readonly string[]) => Promise<SubagentLink[]>;
 };
@@ -48,10 +52,14 @@ export function createSettleWiring(deps: SettleWiringDeps): SettleWiring {
   const checkSettle = createSettleTurnCheck({
     readTurnRunning: async (sessionId) => {
       const summary = await deps.agentChatService.getSessionSummary(sessionId);
+      if (!summary) return null;
+      // Another live brain runs this chat; its turn is invisible here and the
+      // summary reads idle either way. The owner can settle it.
+      if (summary.runtimeOwnedElsewhere) return "unknown";
       // An accepted turn the provider has not started yet is still a turn: the
       // chat reads idle until then, and a settle landing in that gap would fire
       // its automations and cascade only for the turn start to undo it.
-      return summary ? summary.status === "active" || Boolean(summary.turnAcceptedAt) : null;
+      return summary.status === "active" || Boolean(summary.turnAcceptedAt);
     },
     ...(deps.logger ? { logger: deps.logger } : {}),
   });

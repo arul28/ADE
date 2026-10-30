@@ -24,7 +24,7 @@ export function settleAbortMessage(sessionId: string, abortedBy?: string): strin
     case "turn_running":
       return `Session '${sessionId}' is still working, so it was not settled. Settle it once its turn ends.`;
     case "status_unknown":
-      return `ADE could not tell whether session '${sessionId}' is still working, so it was not settled.`;
+      return `ADE could not tell whether session '${sessionId}' is still working (it may run on another ADE brain), so it was not settled.`;
     case "joined_in_flight":
       return `Session '${sessionId}' is already being settled.`;
     default:

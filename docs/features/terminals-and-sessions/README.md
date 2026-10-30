@@ -2896,8 +2896,9 @@ sliding window, not an absolute offset).
 - **Wake path:** `agentChatService.messageSession({ kind: "wake" })` with
   `metadata.terminalWatchWake` (a `terminal_watch_wake` card), the same path
   PR watch uses. While the chat is mid-turn the output is held and coalesced
-  into one wake at the turn's end; a settled or moved-away chat holds until it
-  is back. Archived/deleted chats end the watch.
+  into one wake at the turn's end; a moved-away chat holds until it is back. A
+  settled chat is still woken (settle stops nothing), and the wake's turn
+  takes it out of settled. Archived/deleted chats end the watch.
 - **Caps:** 5 watches per chat, 100 per brain, lifetime 2 h default (1 min to
   24 h), 20 wakes an hour. The lifetime or wake cap, and the terminal exiting
   (with its exit code), end the watch with one final wake. Stop/unwatch is
