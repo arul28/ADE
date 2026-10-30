@@ -195,9 +195,11 @@ Open (updated 2026-10-29):
   main"). The code is the promoted beta's; notes are text the app shows. The
   release skill pushes the notes before it dispatches the release.
 - `scripts/package-channel.mjs` takes its base with `--exclude 'v*-*'`: done.
-- The packaged launch check with an old database (T3 #25928, #25840) is not
-  built yet. `smoke-mac-x64` launches the packaged app; it does not yet open
-  a database from the last stable release.
+- The packaged launch check with an old database (T3 #25928, #25840): done.
+  `apps/desktop/scripts/old-database-launch-check.mjs` runs in `smoke-mac-x64`
+  and in `build-win-release`. The last stable release's runtime makes a
+  project database; the new app's own brain must open it, list the same lane,
+  write its compat record and copy the old file first.
 - iOS TestFlight from CI (work item 8) is not built; the skill still uses
   `ios-testflight.sh`.
 - iOS: a change for a column the phone does not have is kept in the phone's
@@ -206,8 +208,12 @@ Open (updated 2026-10-29):
   column, existing rows get the value only when that cell changes again.
   Follow-up: replay stored changes for a newly added column on open.
 - iOS "Beta" chip on a machine that runs Beta: not built.
-- What's new on a beta build shows no notes for the beta itself (there is no
-  `changelog/v<beta>.mdx`); the PR list is on the GitHub release. Follow-up.
+- What's new on a beta build: done. `beta.yml` passes the beta's GitHub
+  release notes to `release-core.yml`, whose packaging jobs write them as
+  `changelog/v<beta>.mdx` in the runner's checkout
+  (`scripts/beta/write-beta-changelog.mjs`); the bundler takes it with the
+  stable notes before it. A beta links to its GitHub release, not to the
+  website changelog.
 - Resume: a chat whose turn waited for the user's answer or approval when
   ADE restarted is not resumed (persisted `awaitingInput`): done. Still to
   check on the real-machine test: queued messages survive an update

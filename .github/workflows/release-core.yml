@@ -683,6 +683,12 @@ jobs:
           $repeat = if ("${{ inputs.windows_proof }}" -eq "true") { 10 } else { 0 }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName -FreshInstallRepeat $repeat
 
+      # See the equivalent step in smoke-mac-x64.
+      - name: Open the last stable release's database
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/win-unpacked
+
       - name: Upload validated Windows release artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -1190,6 +1196,13 @@ jobs:
 
       - name: Validate x64 release on x64 hardware
         run: cd apps/desktop && node scripts/validate-mac-artifacts.mjs --skip-dmg
+
+      # The last stable release makes a project database; this build's own
+      # brain must open it (T3 #25928, #25840). See the script header.
+      - name: Open the last stable release's database
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node apps/desktop/scripts/old-database-launch-check.mjs --app apps/desktop/release/mac/ADE.app
 
   build-results:
     # This workflow deliberately holds no job that can write to the repository,
