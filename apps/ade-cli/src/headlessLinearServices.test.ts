@@ -1454,6 +1454,32 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("reads an edited origin on the next repository lookup", async () => {
+    // The origin is cached by the repository's config file as it is now, so the
+    // lookups the relay poll makes every 30 s start no git, and an edit to the
+    // remote (which rewrites that file) is seen at once.
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-origin-edit-", {
+      emptyGhConfig: true,
+    });
+    const projectRoot = path.join(process.env.ADE_HOME!, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    execFileSync("git", ["init", projectRoot]);
+    execFileSync("git", ["-C", projectRoot, "remote", "add", "origin", "https://github.com/acme/ade.git"]);
+    const service = createHeadlessGitHubService(
+      projectRoot,
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+
+    try {
+      await expect(service.detectRepo()).resolves.toEqual({ owner: "acme", name: "ade" });
+      await expect(service.detectRepo()).resolves.toEqual({ owner: "acme", name: "ade" });
+      execFileSync("git", ["-C", projectRoot, "remote", "set-url", "origin", "https://github.com/acme/renamed.git"]);
+      await expect(service.detectRepo()).resolves.toEqual({ owner: "acme", name: "renamed" });
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("does not cache a generic headless repo-probe 403 as repository denial", async () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-generic-403-", {
       emptyGhConfig: true,

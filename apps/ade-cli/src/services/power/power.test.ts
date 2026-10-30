@@ -215,6 +215,18 @@ describe("readMachinePower", () => {
       readDir: () => null,
       readTextFile: () => null,
     })).resolves.toBeNull();
+    // A battery that is there but whose charge cannot be read is not a desktop:
+    // "no battery" would also slow the monitor to its desktop rate.
+    const files: Record<string, string> = {
+      "/sys/class/power_supply/AC/type": "Mains\n",
+      "/sys/class/power_supply/AC/online": "1\n",
+      "/sys/class/power_supply/BAT0/type": "Battery\n",
+    };
+    await expect(readMachinePower({
+      platform: "linux",
+      readDir: () => ["AC", "BAT0"],
+      readTextFile: (filePath) => files[filePath] ?? null,
+    })).resolves.toBeNull();
   });
 
   it("hides the console window on every Windows spawn", async () => {
