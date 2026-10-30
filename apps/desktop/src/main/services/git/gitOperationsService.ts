@@ -2,7 +2,7 @@ import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { runGitPushOrThrow } from "./gitPushFailure";
-import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import type {
@@ -1714,10 +1714,19 @@ export function createGitOperationsService({
         "%(authorname)",
         "%(subject)",
       ].join("\t");
-      const out = await runGitOrThrow(
-        ["for-each-ref", "--sort=refname", `--format=${FORMAT}`, "refs/heads", "refs/remotes"],
-        { cwd: lane.worktreePath, timeoutMs: 15_000 }
-      );
+      // Kept while the refs, HEAD and config it reads are unchanged: the History
+      // page waits on this list each time it opens, and the read is ~80 ms on
+      // Windows. Lane ownership below is read fresh every time.
+      const refArgs = ["for-each-ref", "--sort=refname", `--format=${FORMAT}`, "refs/heads", "refs/remotes"];
+      const refOpts = { cwd: lane.worktreePath, timeoutMs: 15_000 };
+      const refsIdentity = await gitBranchRefsIdentity(lane.worktreePath);
+      const out = refsIdentity
+        ? gitStdoutOrThrow(
+          await runGitRepoCached(refArgs, refOpts, { key: `branches:${lane.worktreePath}:${refsIdentity}`, cacheClass: "stable" }),
+          refArgs,
+          refOpts,
+        )
+        : await runGitOrThrow(refArgs, refOpts);
       const branchProfiles = new Set<string>();
       try {
         for (const profile of laneService.listBranchProfiles(args.laneId)) {

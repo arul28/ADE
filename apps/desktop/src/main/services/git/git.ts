@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import type { ConflictFileType } from "../../../shared/types";
@@ -850,6 +851,62 @@ export async function resolveWorktreeIndexPath(worktreePath: string): Promise<st
   ).catch(() => null);
   // Relative to the worktree (`--path-format=absolute` needs git 2.31).
   return res && res.exitCode === 0 && res.stdout.trim() ? path.resolve(worktreePath, res.stdout.trim()) : "";
+}
+
+/**
+ * A key that changes whenever the answer of a branch listing (`for-each-ref
+ * refs/heads refs/remotes` with HEAD and upstream fields) can change: every
+ * folder under `refs/heads` and `refs/remotes` (git updates a loose ref by
+ * renaming a lock file into place, which moves its folder's mtime),
+ * `packed-refs`, this worktree's `HEAD`, and the repository and worktree config. Null when
+ * the layout is not the plain one git writes (or the environment redirects
+ * git), so the caller asks git as before.
+ */
+export async function gitBranchRefsIdentity(worktreePath: string): Promise<string | null> {
+  if (process.env.GIT_DIR || process.env.GIT_COMMON_DIR) return null;
+  try {
+    const dotGit = path.join(worktreePath, ".git");
+    const stat = await fs.promises.lstat(dotGit);
+    let gitDir: string | null = null;
+    if (stat.isDirectory()) gitDir = dotGit;
+    else if (stat.isFile()) {
+      const match = /^gitdir: (.+)$/.exec((await fs.promises.readFile(dotGit, "utf8")).trim());
+      if (match?.[1] && !match[1].includes("\n")) gitDir = path.resolve(worktreePath, match[1].trim());
+    }
+    const commonDir = await gitCommonDirFor(worktreePath);
+    if (!gitDir || !commonDir) return null;
+    const parts: string[] = [];
+    const stamp = async (file: string, required: boolean): Promise<boolean> => {
+      try {
+        const s = await fs.promises.stat(file, { bigint: true });
+        parts.push(`${s.ino}:${s.size}:${s.mtimeNs}`);
+        return true;
+      } catch {
+        parts.push("-");
+        return !required;
+      }
+    };
+    if (!(await stamp(path.join(gitDir, "HEAD"), true))) return null;
+    await stamp(path.join(commonDir, "config"), false);
+    await stamp(path.join(gitDir, "config.worktree"), false);
+    await stamp(path.join(commonDir, "packed-refs"), false);
+    const walk = async (dir: string): Promise<void> => {
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        parts.push("-");
+        return;
+      }
+      await stamp(dir, false);
+      for (const entry of entries) if (entry.isDirectory()) await walk(path.join(dir, entry.name));
+    };
+    await walk(path.join(commonDir, "refs", "heads"));
+    await walk(path.join(commonDir, "refs", "remotes"));
+    return createHash("sha1").update(parts.join("|")).digest("hex");
+  } catch {
+    return null;
+  }
 }
 
 /** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */
