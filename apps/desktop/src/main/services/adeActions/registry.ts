@@ -224,7 +224,12 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
-import { listMachineRemoteWorkCopies, measureRemoteWorkCopy, remoteWorkCopiesForProject } from "../remoteWork/remoteWorkCopyService";
+import {
+  createRemoteWorkCopyService,
+  isRemoteWorkCopyInUse,
+  listMachineRemoteWorkCopies,
+  measureRemoteWorkCopy,
+} from "../remoteWork/remoteWorkCopyService";
 import type { RemoteWorkCopyListing } from "../../../shared/types/remoteWork";
 import { machineStatsReader } from "../machineStats/machineStatsService";
 import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
@@ -3636,35 +3641,25 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
  * what Settings › Machines lists, and the person's delete.
  */
 function buildRemoteWorkDomainService(runtime: AdeRuntime) {
-  if (!runtime.ptyService) return null;
-  const copies = () => remoteWorkCopiesForProject({
-    projectRoot: runtime.projectRoot,
-    logger: runtime.logger,
-    isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
-  });
-  const inUse = (owner: string) => runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0;
+  const here = () => createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger });
   return {
     /** Every copy on this machine, across its projects; delete each through its own project. */
     async list(): Promise<RemoteWorkCopyListing[]> {
-      copies(); // Registers this project in the machine index if it holds copies.
-      return await Promise.all(listMachineRemoteWorkCopies().map(async (copy) => {
-        const here = path.resolve(copy.projectRoot) === path.resolve(runtime.projectRoot);
-        return {
-          owner: copy.owner,
-          chatSessionId: parseForeignCallerSessionId(copy.owner)?.chatSessionId ?? null,
-          // The machine registry's id, which a pin to that project carries.
-          projectId: deriveProjectId(copy.projectRoot),
-          projectRoot: copy.projectRoot,
-          machineName: copy.machineName,
-          branch: copy.branch,
-          head: copy.head,
-          path: copy.path,
-          createdAt: copy.createdAt,
-          lastUsedAt: copy.lastUsedAt,
-          running: here ? inUse(copy.owner) : null,
-          sizeBytes: await measureRemoteWorkCopy(copy.path),
-        };
-      }));
+      return await Promise.all(listMachineRemoteWorkCopies(undefined, runtime.logger).map(async (copy) => ({
+        owner: copy.owner,
+        chatSessionId: parseForeignCallerSessionId(copy.owner)?.chatSessionId ?? null,
+        // The machine registry's id, which a pin to that project carries.
+        projectId: deriveProjectId(copy.projectRoot),
+        projectRoot: copy.projectRoot,
+        machineName: copy.machineName,
+        branch: copy.branch,
+        head: copy.head,
+        path: copy.path,
+        createdAt: copy.createdAt,
+        lastUsedAt: copy.lastUsedAt,
+        running: isRemoteWorkCopyInUse(copy.projectRoot, copy.owner),
+        sizeBytes: await measureRemoteWorkCopy(copy.path),
+      })));
     },
     async delete(args: unknown): Promise<{ deleted: boolean }> {
       const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
@@ -3673,8 +3668,8 @@ function buildRemoteWorkDomainService(runtime: AdeRuntime) {
       if (projectId && projectId !== deriveProjectId(runtime.projectRoot)) {
         throw new Error("That work copy belongs to another project here; delete it through that project.");
       }
-      if (inUse(owner)) throw new Error("A command is still running in this work copy. Stop it first.");
-      return { deleted: await copies().release(owner) };
+      // Refused while a command runs in it (RemoteWorkError "copy_busy").
+      return { deleted: await here().release(owner) };
     },
   };
 }

@@ -1,70 +1,21 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppleLogo, Desktop, LinuxLogo, Stop, WindowsLogo } from "@phosphor-icons/react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Stop } from "@phosphor-icons/react";
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "../../../shared/types/chat";
-import { activeRemoteWork } from "../../../shared/chatRemoteWork";
-import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatTerminalSession } from "../../../shared/types/sessions";
-import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
+import { activeRemoteWork, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
+import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { showToast } from "../app/toast/toastStore";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
 import { cn } from "../ui/cn";
 import { MENU_ITEM_CLASS, MENU_LABEL_CLASS, MENU_MIN_WIDTH_CLASS, MENU_SCROLL_CLASS, MENU_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
-import { machinePlatform } from "../remoteTargets/MachineIdentity";
-import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 
-export function PlatformGlyph({ platform, size }: { platform: string | null | undefined; size: number }) {
-  switch (machinePlatform(platform)) {
-    case "windows": return <WindowsLogo size={size} weight="bold" />;
-    case "mac": return <AppleLogo size={size} weight="bold" />;
-    case "linux": return <LinuxLogo size={size} weight="bold" />;
-    default: return <Desktop size={size} weight="bold" />;
-  }
-}
-
-export type RemoteWorkPin = OpenProjectBinding | "unreachable";
-
-/**
- * Finds the pin that reaches a use's project on its machine: the desktop's
- * paired connection to it, or this computer's own checkout. "unreachable"
- * when this window has no connection to that machine; nothing is sent then.
+/*
+ * Where a chat's work on another machine shows (`ade shell start --machine`,
+ * `ade apple … --machine`): the chat header's mark with its commands, and the
+ * session card's mark.
  */
-export function useRemoteWorkPinResolver(active: boolean): (use: AgentChatRemoteWorkUse) => RemoteWorkPin {
-  const { snapshot } = useRemoteConnectionSnapshot(active);
-  const [localMachineKey, setLocalMachineKey] = useState<string | null>(null);
-  useEffect(() => {
-    if (!active) return;
-    let cancelled = false;
-    void window.ade?.account?.getLocalMachineIdentity?.()
-      .then((identity) => { if (!cancelled) setLocalMachineKey(identity?.machineKey?.trim() || null); })
-      .catch(() => {});
-    return () => { cancelled = true; };
-  }, [active]);
-  return useCallback((use: AgentChatRemoteWorkUse): RemoteWorkPin => {
-    if (!use.projectId || !use.projectRootPath) return "unreachable";
-    if (localMachineKey && use.machineKey === localMachineKey) {
-      return { kind: "local", key: use.projectRootPath, rootPath: use.projectRootPath, displayName: use.machineName };
-    }
-    const connection = snapshot?.connections.find((entry) =>
-      entry.state === "connected" && entry.target.pairedMachine?.machineKey?.trim() === use.machineKey);
-    if (!connection) return "unreachable";
-    return {
-      kind: "remote",
-      key: remoteProjectBindingKey(connection.target.id, use.projectId),
-      targetId: connection.target.id,
-      runtimeName: connection.target.name,
-      transport: connection.target.transport ?? "paired",
-      hostname: connection.target.hostname,
-      projectId: use.projectId,
-      rootPath: use.projectRootPath,
-      displayName: use.machineName,
-    };
-  }, [snapshot, localMachineKey]);
-}
-
-function useRemoteWorkPin(use: AgentChatRemoteWorkUse, active: boolean): RemoteWorkPin {
-  const resolve = useRemoteWorkPinResolver(active);
-  return useMemo(() => resolve(use), [resolve, use]);
-}
 
 /**
  * One mark in the chat header while the chat runs commands on another
@@ -88,11 +39,11 @@ export function RemoteWorkHeaderButton({ session }: { session: AgentChatSessionS
         aria-expanded={open}
         onClick={() => setOpen((value) => !value)}
       >
-        <PlatformGlyph platform={uses[uses.length - 1]!.machinePlatform} size={16} />
+        <MachinePlatformLogo platform={uses[uses.length - 1]!.machinePlatform} size={16} weight="bold" fallback />
       </button>
       <AnchoredMenu open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} placement="bottom-end" remeasureKey={uses.length}>
         <div className={cn(MENU_SURFACE_CLASS, MENU_MIN_WIDTH_CLASS, MENU_SCROLL_CLASS, "max-w-[340px]")} role="menu">
-          {uses.map((use) => <RemoteWorkMachine key={use.machineKey} use={use} active={open} />)}
+          {uses.map((use) => <RemoteWorkMachine key={remoteWorkUseKey(use)} use={use} active={open} />)}
         </div>
       </AnchoredMenu>
     </>
@@ -100,38 +51,46 @@ export function RemoteWorkHeaderButton({ session }: { session: AgentChatSessionS
 }
 
 function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; active: boolean }) {
-  const pin = useRemoteWorkPin(use, active);
-  const pinKey = pin === "unreachable" ? null : pin?.key ?? null;
+  const resolvePin = useRemoteWorkPinResolver(active);
+  const pin = useMemo(() => resolvePin(use), [resolvePin, use]);
+  const pinKey = pin === "unreachable" ? null : pin.key;
   const [shells, setShells] = useState<ChatTerminalSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const terminalKey = use.terminalIds.join(",");
+  const [readNonce, setReadNonce] = useState(0);
   useEffect(() => {
-    if (!active || pin === "unreachable" || !pin) return;
+    if (!active || pin === "unreachable") return;
     let cancelled = false;
-    void window.ade?.terminal?.list?.({ limit: 200 }, pin)
+    void listRemoteWorkShells(use, pin)
       .then((rows) => {
         if (cancelled) return;
-        const wanted = new Set(use.terminalIds);
-        setShells(rows.filter((row) => wanted.has(row.terminalId)));
+        setShells(rows);
+        setError(null);
       })
       .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
     // Keyed on the pin's key and the terminal ids, not the objects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, pinKey, terminalKey]);
+  }, [active, pinKey, terminalKey, readNonce]);
 
   const stop = (terminalId: string) => {
-    if (pin === "unreachable" || !pin) return;
-    void window.ade?.terminal?.signal?.({ terminalId, signal: "SIGINT" }, pin)
-      .then(() => setShells((rows) => rows?.map((row) => (row.terminalId === terminalId ? { ...row, status: "exited" as ChatTerminalSession["status"] } : row)) ?? rows))
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)));
+    if (pin === "unreachable") return;
+    void window.ade.terminal.signal({ terminalId, signal: "SIGINT" }, pin)
+      // Read the list again rather than assume it stopped: a command may handle SIGINT.
+      // Wait a moment first, so a command that does stop has time to exit.
+      .then(() => { window.setTimeout(() => setReadNonce((value) => value + 1), 750); })
+      .catch((reason: unknown) => showToast({
+        tone: "error",
+        title: `Couldn't stop the command on ${use.machineName}`,
+        message: reason instanceof Error ? reason.message : String(reason),
+      }));
   };
 
   const note = (text: string) => <div className="px-2 pb-1.5 text-muted-fg/70">{text}</div>;
   return (
     <div>
       <div className={cn(MENU_LABEL_CLASS, "flex items-center gap-1.5")}>
-        <PlatformGlyph platform={use.machinePlatform} size={11} />
+        <MachinePlatformLogo platform={use.machinePlatform} size={11} weight="bold" fallback />
         <span>{use.machineName}</span>
       </div>
       {pin === "unreachable" ? note(`This window is not connected to ${use.machineName}.`)
@@ -160,7 +119,7 @@ export function RemoteWorkBadge({ uses, size = 11 }: { uses: AgentChatRemoteWork
   const label = `Working on ${uses.map((use) => use.machineName).join(" and ")}`;
   return (
     <span data-testid="remote-work-badge" role="img" title={label} aria-label={label} className="inline-flex shrink-0 items-center justify-center text-muted-fg/80">
-      <PlatformGlyph platform={uses[uses.length - 1]!.machinePlatform} size={size} />
+      <MachinePlatformLogo platform={uses[uses.length - 1]!.machinePlatform} size={size} weight="bold" fallback />
     </span>
   );
 }

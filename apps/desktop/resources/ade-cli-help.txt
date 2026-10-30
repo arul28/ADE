@@ -36,7 +36,7 @@ Agent-focused command-line interface for ADE.
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -198,7 +198,7 @@ Agent-focused command-line interface for ADE.
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -972,7 +972,7 @@ Agent-focused command-line interface for ADE.
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -1238,7 +1238,7 @@ Agent-focused command-line interface for ADE.
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent
@@ -1999,7 +1999,7 @@ Agent-focused command-line interface for ADE.
     $ ade init [path]                               Register a project with this machine brain
     $ ade projects list                             List projects registered on this machine
     $ ade sync web [--open] [--no-clipboard]        Print (and copy) the web client pairing link + code
-    $ ade sync status | pin generate                Manage machine sync and phone pairing
+    $ ade sync status | devices                     Machine sync and paired devices (pair a phone: ade brain pin generate)
     $ ade doctor [--online]                         Inspect installed app and machine-brain health
     $ ade report-issue [--open] [--send]            Print a redacted diagnostic report; --send hands it to ADE
     $ ade triage [--agent] [--provider <name>]      Build a triage context + playbook and hand the repair to your coding agent

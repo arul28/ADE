@@ -107,6 +107,7 @@ import {
 import { DEMO_STEP_MAX_CHARS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
+import type { MachineWorkCopy } from "./cliRemoteWork";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
 import { SCENE_GUIDE } from "../../desktop/src/shared/sceneGuide";
 import { findSettingsEntries, settingsEntryLabel } from "../../desktop/src/shared/settingsManifest";
@@ -648,8 +649,12 @@ export type GlobalOptions = {
   machineProject?: string | null;
   /** `--clone`: set the repository up on that machine when it is missing. */
   machineClone?: boolean;
-  /** `ade apple … --machine` with `--no-sync` or `--discard`: how a build readies the work copy there. */
-  machineWorkCopySync?: "none" | "discard" | null;
+  /**
+   * Set by `cliMachineTargeting` when a `--machine` shell start or Apple call
+   * runs in this chat's work copy there (no `--lane`): how a sync readies it
+   * (`--no-sync` → "none", `--discard`), or null for a normal sync.
+   */
+  machineWorkCopy?: MachineWorkCopy | null;
 };
 
 async function withAdeDefaultRole<T>(
@@ -9416,18 +9421,10 @@ function buildShellPlan(args: string[]): CliPlan {
     const startupCommand = startupCommandArgs
       ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
-    // Only with --machine (cliMachineTargeting.ts): how to ready the work copy
-    // there, and whether to wait for the command to end.
-    const noSync = readFlag(args, ["--no-sync"]);
-    const discard = readFlag(args, ["--discard"]);
-    if (noSync && discard) throw new CliUsageError("Use --no-sync or --discard, not both.");
+    // Only with --machine (cliMachineTargeting.ts checks): follow the command to its end.
     const wait = readFlag(args, ["--wait"]);
     if (wait && !startupCommand) throw new CliUsageError("--wait needs a command: ade shell start --machine <name> --wait -- <command>.");
-    const workCopy: JsonObject = {
-      ...(noSync ? { sync: "none" } : discard ? { sync: "discard" } : {}),
-    };
     const input = collectGenericObjectArgs(args, {
-      ...(Object.keys(workCopy).length ? { workCopy } : {}),
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
       cwd: readValue(args, ["--cwd"]),
@@ -9441,8 +9438,8 @@ function buildShellPlan(args: string[]): CliPlan {
     // A tracked shell belongs to a lane. Without --lane, the shell's own lane
     // (an agent's), else the project's primary lane: its main checkout. So an
     // app or script can run a command in a project without making a lane.
-    // With --machine the default is not a lane there: the command runs in this
-    // chat's work copy (cliMachineTargeting.ts reads `laneDefaulted`).
+    // With --machine and no --lane the command runs in this chat's work copy
+    // there instead (cliMachineTargeting.ts replaces the lane).
     const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
     const followPlan = wait
       ? {
@@ -9455,14 +9452,14 @@ function buildShellPlan(args: string[]): CliPlan {
           },
           exitCodeFromResult: (result: unknown) => {
             const code = isRecord(result) ? result.exitCode : null;
-            return typeof code === "number" ? Math.min(Math.max(code, 0), 255) : 1;
+            // A negative code (killed, disposed) is a failure, never success.
+            return typeof code === "number" ? (code < 0 ? 1 : Math.min(code, 255)) : 1;
           },
         }
       : {};
     const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
-    const defaulted = laneId ? {} : { laneDefaulted: true };
     if (ownLane) {
-      return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, ...defaulted, laneId: ownLane })] };
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, laneId: ownLane })] };
     }
     return {
       ...shellStart,
@@ -9473,7 +9470,7 @@ function buildShellPlan(args: string[]): CliPlan {
           method: "ade/actions/call",
           params: (values) => ({
             name: "run_ade_action",
-            arguments: { domain: "pty", action: "create", args: { ...input, ...defaulted, laneId: primaryLaneId(values.lanes) } },
+            arguments: { domain: "pty", action: "create", args: { ...input, laneId: primaryLaneId(values.lanes) } },
           }),
           unwrapToolResult: true,
         },
@@ -21931,8 +21928,8 @@ function buildCliPlan(
   if (primary === "brain") {
     const sub = firstStandalonePositional([...args]) ?? "status";
     if (sub === "pin") {
-      firstPositional(args);
-      return buildBrainPinPlan(args);
+      // `brain pin generate`: the plan reads what follows "pin".
+      return buildBrainPinPlan(args.slice(args.indexOf("pin") + 1));
     }
     return { kind: "brain", rest: args };
   }
@@ -28095,11 +28092,32 @@ async function runServe(
     });
     externalChats.setExternalParentRouter(crossScopeChats.router);
     crossScopeChats.start();
-    // Work copies here for chats elsewhere: ask the chat's machine whether it still exists.
-    void import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService").then(({ setRemoteWorkOwnerProbe }) => {
-      setRemoteWorkOwnerProbe(async (machineKey, chatSessionId) =>
-        (await getAgentMachineBridge()).locateChat(machineKey, chatSessionId));
-    });
+    // Work copies here for chats on other machines: a sweep a minute after
+    // start and then hourly deletes copies unused for a week and copies whose
+    // chat its own machine says is deleted or archived.
+    const sweepWorkCopies = async (): Promise<void> => {
+      const [{ sweepMachineRemoteWork }, { parseForeignCallerSessionId }] = await Promise.all([
+        import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService"),
+        import("../../desktop/src/shared/runtimeClientNames"),
+      ]);
+      await sweepMachineRemoteWork({
+        logger: headlessProjectLogger,
+        ownerGone: async (owner) => {
+          const chatSessionId = parseForeignCallerSessionId(owner)?.chatSessionId ?? null;
+          const machineKey = externalChats.externalChatContext(owner)?.machineKey ?? null;
+          if (!chatSessionId || !machineKey) return null;
+          const answer = await (await getAgentMachineBridge()).locateChat(machineKey, chatSessionId);
+          return answer ? { gone: !answer.found || answer.archived, archived: answer.archived } : null;
+        },
+      });
+    };
+    const runWorkCopySweep = () => {
+      void sweepWorkCopies().catch((error) => {
+        headlessProjectLogger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+      });
+    };
+    setTimeout(runWorkCopySweep, 60_000).unref?.();
+    setInterval(runWorkCopySweep, 60 * 60_000).unref?.();
   }
 
   const createHandler = (context?: { peerDeviceId: string | null }) =>
@@ -36783,30 +36801,33 @@ async function followShellToExit(
     unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
   let since: number | undefined;
   let output = "";
-  const readMore = async (): Promise<void> => {
+  const readMore = async (): Promise<JsonObject | null> => {
     const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
-    if (!isRecord(read)) return;
+    if (!isRecord(read)) return null;
     const data = typeof read.data === "string" ? read.data : "";
     if (data) {
       if (options.text) process.stdout.write(data);
       output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
     }
     if (typeof read.nextSince === "number") since = read.nextSince;
+    return read;
   };
   for (;;) {
-    await readMore();
-    const listed = await call("terminal", "list", { limit: 200 });
-    const row = Array.isArray(listed)
-      ? listed.find((entry) => isRecord(entry) && entry.terminalId === terminalId)
-      : null;
-    if (!isRecord(row) || row.status !== "running") {
+    const read = await readMore();
+    // A brain older than the read's status falls back to the terminal list.
+    const state = read && typeof read.status === "string"
+      ? read
+      : await call("terminal", "list", { limit: 200 }).then((listed) => (Array.isArray(listed)
+        ? listed.find((entry) => isRecord(entry) && entry.terminalId === terminalId)
+        : null));
+    if (!isRecord(state) || state.status !== "running") {
       // One last read: output written just before the end.
       await readMore();
-      const exitCode = isRecord(row) && typeof row.exitCode === "number" ? row.exitCode : null;
+      const exitCode = isRecord(state) && typeof state.exitCode === "number" ? state.exitCode : null;
       return {
         ...created,
         terminalId,
-        status: isRecord(row) ? row.status ?? null : "missing",
+        status: isRecord(state) ? state.status ?? null : "missing",
         exitCode,
         ...(options.text ? {} : { output }),
       };

@@ -437,7 +437,11 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       const answer = await pool.request(machine, entry, "chats.locate", "chats.locate", { sessionId }, MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS);
       if (!isRecord(answer) || typeof answer.found !== "boolean") return null;
       return { found: answer.found, archived: answer.archived === true };
-    } catch {
+    } catch (error) {
+      options.logger?.warn("agent_cross_machine.locate_chat_failed", {
+        machineKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return null;
     }
   };

@@ -25,13 +25,13 @@ import {
   type RemoteCallerCaptures,
 } from "./services/proof/remoteCallerCaptures";
 import {
-  remoteWorkCopiesForProject,
+  isRemoteWorkSyncMode,
+  createRemoteWorkCopyService,
   remoteWorkLaneIdFor,
-  remoteWorkRunOnceLaunch,
   RemoteWorkError,
-  type RemoteWorkCopyService,
-  type RemoteWorkSyncMode,
+  type RemoteWorkPrepareResult,
 } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
+import { remoteRunOnceShellLaunch } from "../../desktop/src/main/services/pty/ptyService";
 import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
@@ -2931,82 +2931,13 @@ export async function resolveIngestProvenance(
   };
 }
 
-/** This project's work copies for chats on other machines (`ade shell start --machine`). */
-function remoteWorkCopiesFor(runtime: AdeRuntime): RemoteWorkCopyService {
-  const service = remoteWorkCopiesForProject({
-    projectRoot: runtime.projectRoot,
-    logger: runtime.logger,
-    isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
-  });
-  sweepRemoteWorkCopies(runtime, service);
-  return service;
+/** This project's work copies for chats on other machines (remoteWorkCopyService.ts). */
+function workCopiesFor(runtime: AdeRuntime): ReturnType<typeof createRemoteWorkCopyService> {
+  return createRemoteWorkCopyService({ projectRoot: runtime.projectRoot, logger: runtime.logger });
 }
 
-/**
- * `ade apple … --machine <this machine>` with no `--lane`: ready the caller's
- * work copy (synced for a build, as it is otherwise) and name it as the lane.
- */
-async function prepareRemoteWorkApple(
-  runtime: AdeRuntime,
-  session: SessionState,
-  appleArgs: Record<string, unknown>,
-): Promise<Record<string, unknown>> {
-  const owner = asOptionalTrimmedString(session.identity.chatSessionId);
-  const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = appleArgs;
-  if (!owner || !parseForeignCallerSessionId(owner) || !isRecord(remoteWork)) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "A work copy is for commands sent from another machine.");
-  }
-  const rawMode = asOptionalTrimmedString(remoteWork.sync) ?? "sync";
-  try {
-    await remoteWorkCopiesFor(runtime).prepare(owner, {
-      head: asOptionalTrimmedString(remoteWork.head) ?? "",
-      fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
-      patch: typeof remoteWork.patch === "string" ? remoteWork.patch : null,
-      branch: asOptionalTrimmedString(remoteWork.branch),
-      machineName: externalChatContext(owner)?.machineName ?? null,
-    }, (REMOTE_WORK_SYNC_MODES.has(rawMode) ? rawMode : "sync") as RemoteWorkSyncMode);
-  } catch (error) {
-    if (error instanceof RemoteWorkError) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
-    }
-    throw error;
-  }
-  return { ...rest, laneId: remoteWorkLaneIdFor(owner) };
-}
-
-const REMOTE_WORK_SWEEP_EVERY_MS = 60 * 60_000;
-const remoteWorkLastSweep = new WeakMap<AdeRuntime, number>();
-
-/**
- * At most hourly, while copies are used: delete copies idle for a week and
- * copies whose chat is gone or archived on its own machine.
- */
-function sweepRemoteWorkCopies(runtime: AdeRuntime, service: RemoteWorkCopyService): void {
-  const last = remoteWorkLastSweep.get(runtime) ?? 0;
-  if (Date.now() - last < REMOTE_WORK_SWEEP_EVERY_MS) return;
-  remoteWorkLastSweep.set(runtime, Date.now());
-  const originOf = (owner: string) => {
-    const parsed = parseForeignCallerSessionId(owner);
-    const machineKey = externalChatContext(owner)?.machineKey ?? null;
-    return parsed?.chatSessionId && machineKey ? { machineKey, chatSessionId: parsed.chatSessionId } : null;
-  };
-  void service.sweep(undefined, originOf).catch((error) => {
-    runtime.logger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
-  });
-}
-
-const REMOTE_WORK_SYNC_MODES: ReadonlySet<string> = new Set(["sync", "none", "discard"]);
-
-/**
- * A shell for a chat on another machine: ready that chat's work copy here
- * (see remoteWorkCopyService.ts), then start the shell in it, owned by the
- * caller's foreign session id so only that chat can read, write or stop it.
- */
-async function prepareRemoteWorkShell(
-  runtime: AdeRuntime,
-  session: SessionState,
-  ptyArgs: Record<string, unknown>,
-): Promise<{ args: Record<string, unknown>; workCopy: { path: string; created: boolean; synced: boolean } }> {
+/** The calling chat's owner id for a work copy; only a chat on another machine has one. */
+function workCopyOwner(session: SessionState): string {
   const owner = asOptionalTrimmedString(session.identity.chatSessionId);
   if (!owner || !parseForeignCallerSessionId(owner)) {
     throw new JsonRpcError(
@@ -3014,61 +2945,85 @@ async function prepareRemoteWorkShell(
       "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
     );
   }
-  const primary = runtime.laneService.getPrimaryLane();
-  if (!primary) {
-    throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
-  }
-  const remoteWork = ptyArgs.remoteWork as Record<string, unknown>;
-  const rawMode = asOptionalTrimmedString(remoteWork.sync) ?? "sync";
-  const mode = (REMOTE_WORK_SYNC_MODES.has(rawMode) ? rawMode : "sync") as RemoteWorkSyncMode;
-  let prepared: Awaited<ReturnType<RemoteWorkCopyService["prepare"]>>;
+  return owner;
+}
+
+/**
+ * Ready the calling chat's work copy here for one call (`ade shell start
+ * --machine`, a lane-less `ade apple … --machine`). Only a chat on another
+ * machine has one. The copy stays busy until `done` is called.
+ */
+async function prepareCallerWorkCopy(
+  runtime: AdeRuntime,
+  session: SessionState,
+  remoteWork: Record<string, unknown>,
+): Promise<{ owner: string; laneId: string; prepared: RemoteWorkPrepareResult }> {
+  const owner = workCopyOwner(session);
   try {
-    prepared = await remoteWorkCopiesFor(runtime).prepare(owner, {
+    const prepared = await workCopiesFor(runtime).prepare(owner, {
       head: asOptionalTrimmedString(remoteWork.head) ?? "",
       fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
-      patch: typeof remoteWork.patch === "string" ? remoteWork.patch : null,
+      patchBase64: typeof remoteWork.patchBase64 === "string" ? remoteWork.patchBase64 : null,
       branch: asOptionalTrimmedString(remoteWork.branch),
       machineName: externalChatContext(owner)?.machineName ?? null,
-    }, mode);
+    }, isRemoteWorkSyncMode(remoteWork.sync) ? remoteWork.sync : "sync");
+    return { owner, laneId: remoteWorkLaneIdFor(owner), prepared };
   } catch (error) {
     if (error instanceof RemoteWorkError) {
       throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
     }
     throw error;
   }
-  const {
-    remoteWork: _remoteWork,
-    laneId: _laneId,
-    cwd: _cwd,
-    allowExternalCwd: _allowExternalCwd,
-    chatSessionId: _chatSessionId,
-    sessionId: _sessionId,
-    allowNewSessionId: _allowNewSessionId,
-    runtimeCliLaunch: _runtimeCliLaunch,
-    ...rest
-  } = ptyArgs;
-  const command = typeof rest.startupCommand === "string" ? rest.startupCommand.trim() : "";
-  let runOnce: Record<string, unknown> = {};
+}
+
+/**
+ * A shell for a chat on another machine, in its work copy here, owned by the
+ * caller's foreign session id so only that chat can read, write or stop it.
+ * Only the fields a terminal needs are taken from the caller; ownership,
+ * lineage and launch come from here. With `exitWhenDone` the command runs in
+ * this machine's shell once and the shell ends with its exit code.
+ */
+async function prepareRemoteWorkShell(
+  runtime: AdeRuntime,
+  session: SessionState,
+  ptyArgs: Record<string, unknown>,
+): Promise<{ args: Record<string, unknown>; workCopy: { path: string; created: boolean; synced: boolean; laneId: string }; done: () => void }> {
+  const primary = runtime.laneService.getPrimaryLane();
+  if (!primary) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
+  }
+  const remoteWork = ptyArgs.remoteWork as Record<string, unknown>;
+  const { owner, laneId, prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork);
+  const command = typeof ptyArgs.startupCommand === "string" ? ptyArgs.startupCommand.trim() : "";
+  // The command's argv when the caller had one (`-- npm test`): rendered here,
+  // for this machine's shell.
+  const argv = Array.isArray(remoteWork.argv)
+    && remoteWork.argv.length > 0
+    && remoteWork.argv.length <= 1_000
+    && remoteWork.argv.every((part) => typeof part === "string")
+    ? remoteWork.argv as string[]
+    : null;
+  let launch: Record<string, unknown> = command ? { startupCommand: command } : {};
   if (remoteWork.exitWhenDone === true && command) {
-    let shell: { id: string | null; path: string | null } = { id: null, path: process.env.SHELL ?? null };
+    let preferredShellPath: string | null = null;
     try {
       const settings = await runtime.ptyService.getShellSettings();
-      const chosen = settings.shells.find((option) => option.id === settings.defaultShellId)
-        ?? settings.shells.find((option) => option.path === settings.automaticShell || option.id === settings.automaticShell)
-        ?? null;
-      shell = chosen ? { id: chosen.id, path: chosen.path } : { id: settings.automaticShell, path: settings.automaticShell };
-    } catch {
-      // The platform default below.
+      preferredShellPath = settings.shells.find((shell) => shell.id === settings.defaultShellId)?.path ?? null;
+    } catch (error) {
+      runtime.logger.warn("remote_work.shell_settings_unread", { error: error instanceof Error ? error.message : String(error) });
     }
-    // The command runs directly, not typed into an interactive shell.
-    runOnce = { ...remoteWorkRunOnceLaunch(command, shell), startupCommand: undefined };
+    const runOnce = remoteRunOnceShellLaunch(argv ? { argv } : { line: command }, preferredShellPath);
+    launch = { command: runOnce.command, args: runOnce.args, ...(runOnce.env ? { env: runOnce.env } : {}) };
   }
+  const cols = typeof ptyArgs.cols === "number" ? ptyArgs.cols : 120;
+  const rows = typeof ptyArgs.rows === "number" ? ptyArgs.rows : 36;
   return {
     args: {
-      ...rest,
-      ...runOnce,
+      ...launch,
       // The command names the shell where the chat's views list it.
-      title: asOptionalTrimmedString(rest.title) ?? (command ? command.slice(0, 120) : "Work copy shell"),
+      title: asOptionalTrimmedString(ptyArgs.title) ?? (command ? command.slice(0, 120) : "Work copy shell"),
+      cols,
+      rows,
       laneId: primary.laneId,
       cwd: prepared.path,
       allowExternalCwd: true,
@@ -3076,7 +3031,8 @@ async function prepareRemoteWorkShell(
       toolType: "shell",
       tracked: true,
     },
-    workCopy: prepared,
+    workCopy: { path: prepared.path, created: prepared.created, synced: prepared.synced, laneId },
+    done: prepared.done,
   };
 }
 
@@ -3354,6 +3310,9 @@ function isPtySessionAuthorized(runtime: AdeRuntime, session: SessionState, targ
   ) {
     return true;
   }
+  // A shell a chat on another machine started in its work copy here runs in
+  // the primary lane but belongs to that chat alone, not to the lane.
+  if (parseForeignCallerSessionId(targetChatSessionId)) return false;
   return Boolean(targetLaneId && authorizedPtyLaneIds(runtime, session).has(targetLaneId));
 }
 
@@ -6169,6 +6128,10 @@ async function runTool(args: {
     }
     let scopedResultHandled = false;
     let transformScopedResult: ((value: unknown) => unknown) | null = null;
+    /** Runs once the action has returned or thrown (a work copy's busy mark). */
+    let afterScopedCall: (() => void) | null = null;
+    /** Runs right before the action, after every check (readies a work copy). */
+    let prepareBeforeCall: (() => Promise<void>) | null = null;
     /** Set by the browser branch; fired again once the dispatch has returned. */
     let noteBrowserActivityOnSuccess: (() => void) | null = null;
     /** Set only when the pre-dispatch edge is what opened the presence window. */
@@ -6373,8 +6336,8 @@ async function runTool(args: {
       } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
         const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
         scopedObjectArgs = prepared.args;
-        const laneId = remoteWorkLaneIdFor(asOptionalTrimmedString(session.identity.chatSessionId) ?? "");
-        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: { ...prepared.workCopy, laneId } } : value);
+        afterScopedCall = prepared.done;
+        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: prepared.workCopy } : value);
       } else {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }
@@ -6389,6 +6352,16 @@ async function runTool(args: {
         action,
         requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, scopedObjectArgs),
       );
+      if (action === "list") {
+        // A lane-wide list leaves out shells a chat on another machine owns here.
+        const caller = asOptionalTrimmedString(session.identity.chatSessionId);
+        transformScopedResult = (value) => (Array.isArray(value)
+          ? value.filter((row) => !isRecord(row)
+            || typeof row.chatSessionId !== "string"
+            || row.chatSessionId === caller
+            || !parseForeignCallerSessionId(row.chatSessionId))
+          : value);
+      }
     } else if (
       !callerIsCto
       && domain === "chat"
@@ -6555,10 +6528,18 @@ async function runTool(args: {
       // A chat on another machine with no lane here: its work copy stands in
       // for the lane (build root and device owner).
       if (isRecord(appleArgs.remoteWork)) {
-        appleArgs = await prepareRemoteWorkApple(runtime, session, appleArgs);
+        const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = appleArgs;
+        // Checked first, so a chat on this machine is told why, not refused a lane it never named.
+        const workCopyLaneId = remoteWorkLaneIdFor(workCopyOwner(session));
+        appleArgs = { ...rest, laneId: workCopyLaneId };
+        // Readied last, right before the call, so a refusal on the way leaves
+        // nothing busy; busy until the call returns (a build runs for its length).
+        prepareBeforeCall = async () => {
+          const { prepared } = await prepareCallerWorkCopy(runtime, session, remoteWork as Record<string, unknown>);
+          afterScopedCall = prepared.done;
+        };
         // The caller's machine learns which lane here is its work copy, so its
         // views can show this simulator.
-        const workCopyLaneId = appleArgs.laneId;
         transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: { laneId: workCopyLaneId } } : value);
       }
       scopedObjectArgs = isUserClient
@@ -6710,6 +6691,7 @@ async function runTool(args: {
       const { connectionSignal: _callerSupplied, ...leaseArgs } = scopedObjectArgs;
       scopedObjectArgs = session.connectionSignal ? { ...leaseArgs, connectionSignal: session.connectionSignal } : leaseArgs;
     }
+    if (prepareBeforeCall) await prepareBeforeCall();
     try {
       if (!scopedResultHandled) {
         // Keep in step with `firstDispatchedAdeActionArg`, which guards read.
@@ -6729,6 +6711,8 @@ async function runTool(args: {
       // A stop that failed still ended the recording in the desktop app.
       if (domain === "built_in_browser" && action === "stopRecording") noteBrowserRecording(session, false);
       throw error;
+    } finally {
+      afterScopedCall?.();
     }
     noteBrowserActivityOnSuccess?.();
     // A browser recording runs in the desktop app. The chat's "Recording"
@@ -7648,12 +7632,12 @@ async function runTool(args: {
     if (!owner || !parseForeignCallerSessionId(owner)) {
       throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
     }
-    const copies = remoteWorkCopiesFor(runtime);
-    const copy = copies.get(owner);
-    if (copy && runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "A command is still running in this chat's work copy. Stop it first.");
+    try {
+      return { released: await workCopiesFor(runtime).release(owner) };
+    } catch (error) {
+      if (error instanceof RemoteWorkError) throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, error.message, { code: error.code });
+      throw error;
     }
-    return { released: await copies.release(owner) };
   }
 
   if (name === "read_remote_caller_capture") {

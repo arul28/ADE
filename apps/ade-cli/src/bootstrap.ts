@@ -80,6 +80,7 @@ import {
 import { createOAuthRedirectService } from "../../desktop/src/main/services/lanes/oauthRedirectService";
 import { createRuntimeDiagnosticsService } from "../../desktop/src/main/services/lanes/runtimeDiagnosticsService";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
+import { registerRemoteWorkShellCheck } from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
 import { createStorageInsightsService } from "../../desktop/src/main/services/storage/storageInsightsService";
 import {
   createProjectHealthService,
@@ -1651,6 +1652,10 @@ export async function createAdeRuntime(args: {
       loadPty: ptyBackend ?? (() => nodePty),
       disposePtyBackend: ptyBackend?.dispose
     });
+    // A chat on another machine runs commands in a work copy here; its shells
+    // are this runtime's terminals (remoteWorkCopyService.ts).
+    teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
+      ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0));
     ptyServiceForSessionChanges = ptyService;
     teardown.push(() => ptyService.disposeAll());
 

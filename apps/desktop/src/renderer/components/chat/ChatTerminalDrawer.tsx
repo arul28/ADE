@@ -4,7 +4,9 @@ import { cn } from "../ui/cn";
 import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExitEvent } from "../../../shared/types";
 import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { PlatformGlyph, useRemoteWorkPinResolver } from "./RemoteWorkHeaderButton";
+import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import {
   WORK_TOOL_CHROME_ROW,
   WORK_TOOL_PRIMARY_BUTTON,
@@ -104,7 +106,7 @@ type TabEntry = {
   label: string;
   exited: boolean;
   /** A shell on another machine: its pin (the drawer's own pin otherwise) and machine. */
-  remote?: { pin: OpenProjectBinding; machineKey: string; machineName: string; platform: string | null };
+  remote?: { pin: OpenProjectBinding; useKey: string; machineName: string; platform: string | null };
 };
 
 type DrawerUiState = {
@@ -539,25 +541,37 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
   const remoteTargetsRef = useRef(remoteTargets);
   remoteTargetsRef.current = remoteTargets;
   useEffect(() => {
-    if (!open || !remoteTargetsKey) return undefined;
+    if (!open) return undefined;
+    if (!remoteTargetsKey) {
+      // No machine to reach any more (disconnected, or the work is gone): drop its tabs.
+      setTabs((prev) => (prev.some((tab) => tab.remote) ? prev.filter((tab) => !tab.remote) : prev));
+      return undefined;
+    }
     let cancelled = false;
     void Promise.all(remoteTargetsRef.current.map(async ({ use, pin: remotePin }) => {
-      const rows = await window.ade.terminal.list({ limit: 200 }, remotePin).catch(() => [] as ChatTerminalSession[]);
-      const wanted = new Set(use.terminalIds);
-      return rows.filter((row) => wanted.has(row.terminalId) && row.ptyId).map((row): TabEntry => ({
-        id: `remote-term-${use.machineKey}-${row.terminalId}`,
+      let rows: ChatTerminalSession[];
+      try {
+        rows = await listRemoteWorkShells(use, remotePin);
+      } catch (error) {
+        // A failed read keeps what the strip already shows for that machine.
+        console.warn(`[remote-work] could not list the shells on ${use.machineName}`, error);
+        return { useKey: remoteWorkUseKey(use), tabs: null };
+      }
+      return { useKey: remoteWorkUseKey(use), tabs: rows.filter((row) => row.ptyId).map((row): TabEntry => ({
+        id: `remote-term-${remoteWorkUseKey(use)}-${row.terminalId}`,
         ptyId: row.ptyId!,
         sessionId: row.terminalId,
         label: row.title || "Command",
         exited: row.status !== "running",
-        remote: { pin: remotePin, machineKey: use.machineKey, machineName: use.machineName, platform: use.machinePlatform ?? null },
-      }));
+        remote: { pin: remotePin, useKey: remoteWorkUseKey(use), machineName: use.machineName, platform: use.machinePlatform ?? null },
+      })) };
     })).then((lists) => {
       if (cancelled) return;
-      // Running commands first, so the strip opens on one that is working.
-      const remoteTabs = lists.flat().sort((a, b) => Number(a.exited) - Number(b.exited));
       setTabs((prev) => {
         const local = prev.filter((tab) => !tab.remote);
+        // Running commands first (per machine), so the strip opens on one that is working.
+        const remoteTabs = lists.flatMap(({ useKey, tabs: loaded }) =>
+          loaded ?? prev.filter((tab) => tab.remote?.useKey === useKey));
         return [...local, ...remoteTabs];
       });
     });
@@ -665,7 +679,7 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       >
         {tab.remote ? (
           <span aria-hidden className={cn("inline-flex shrink-0", tabIconColorClass(tab.exited, null))}>
-            <PlatformGlyph platform={tab.remote.platform} size={12} />
+            <MachinePlatformLogo platform={tab.remote.platform} size={12} weight="bold" fallback />
           </span>
         ) : (
           <TerminalIcon

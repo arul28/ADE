@@ -444,8 +444,11 @@ function looksLikeLaunchCommand(text: string): boolean {
 export function terminalStatusLine(
   titles: readonly string[] | null,
   panelCount: number | null = null,
+  /** Shells the chat runs on other machines; a mounted panel already counts them. */
+  remoteCount = 0,
 ): WorkToolStatus {
-  const count = attachedShellCount(titles, panelCount);
+  const attached = attachedShellCount(titles, panelCount);
+  const count = attached == null ? null : attached + (panelCount == null ? remoteCount : 0);
   if (count == null) return IDLE;
   if (count === 0) return statusLine("No shells", false);
   // Shell titles are unbounded ("npm run dev -w apps/desktop"), and appending
@@ -696,12 +699,7 @@ export function useWorkToolStatuses(args: {
         devServerPorts,
       );
     return {
-      terminal: terminalStatusLine(
-        panelShellCount == null && terminalTitles && remoteShellCount
-          ? [...terminalTitles, ...Array.from({ length: remoteShellCount }, () => "")]
-          : terminalTitles,
-        panelShellCount,
-      ),
+      terminal: terminalStatusLine(terminalTitles, panelShellCount, remoteShellCount),
       browser: !offline && remoteChatMachineName
         ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
         : browserLine,

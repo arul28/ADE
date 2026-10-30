@@ -76157,21 +76157,26 @@ export function createAgentChatService(args: {
     sessionId: string;
     machineKey: string;
     machineName: string;
-    machinePlatform?: string | null;
+    machinePlatform: string | null;
     projectId: string | null;
     projectRootPath: string | null;
     terminalId: string | null;
-    workCopyLaneId?: string | null;
-    usesSimulator?: boolean;
+    workCopyLaneId: string | null;
+    usesSimulator: boolean;
   }): void => {
     const sessionId = args.sessionId.trim();
     if (!sessionId || !args.machineKey.trim()) return;
     const uses = remoteWorkBySession.get(sessionId) ?? [];
-    const previous = uses.find((use) => use.machineKey === args.machineKey);
+    // One entry per machine AND project there: a second project on the same
+    // machine keeps its own shells and its own pin.
+    const sameUse = (use: AgentChatRemoteWorkUse) => use.machineKey === args.machineKey && use.projectId === args.projectId;
+    const previous = uses.find(sameUse);
     const terminalIds = [
       ...(previous?.terminalIds ?? []).filter((id) => id !== args.terminalId),
       ...(args.terminalId ? [args.terminalId] : []),
-    ].slice(-5);
+    // The shells the views read and stop there. The chat's own brain cannot
+    // see whether one still runs, so it keeps many, not a few.
+    ].slice(-20);
     const next: AgentChatRemoteWorkUse = {
       machineKey: args.machineKey,
       machineName: args.machineName,
@@ -76183,7 +76188,7 @@ export function createAgentChatService(args: {
       usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
       lastStartedAt: new Date().toISOString(),
     };
-    const list = [...uses.filter((use) => use.machineKey !== args.machineKey), next].slice(-4);
+    const list = [...uses.filter((use) => !sameUse(use)), next].slice(-6);
     remoteWorkBySession.set(sessionId, list);
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
   };

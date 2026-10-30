@@ -1199,9 +1199,67 @@ function shellSpecForInstalledShell(file: string, mode: WindowsShellLaunchMode):
   return { file, args: [] };
 }
 
+/**
+ * How to run one command once, for a chat on another machine
+ * (`ade shell start --machine … --wait`): this machine's shell, started clean
+ * (no rc files, as for every command ADE runs), not interactive, so the output
+ * is the command's and the process ends with its exit code. The command is
+ * its argv when the caller had one (`-- npm test`), rendered for the shell
+ * that runs it, else a line with shell syntax that goes to the shell as written.
+ *
+ * `preferredShellPath` is the machine's saved terminal shell, when it has one.
+ * On Windows, PowerShell runs it (pwsh when that is the saved shell) with
+ * `-EncodedCommand`, so no quoting is lost on the way, and with this run's
+ * execution policy bypassed so npm's `.ps1` shims start; Git Bash runs it when
+ * that is the saved shell. cmd.exe is never used: its quoting cannot carry an
+ * arbitrary line.
+ */
+export function remoteRunOnceShellLaunch(
+  command: { argv: string[] } | { line: string },
+  preferredShellPath: string | null,
+  platform: NodeJS.Platform = process.platform,
+): { command: string; args: string[]; env?: Record<string, string> } {
+  const preferred = preferredShellPath ? shellSpecForInstalledShell(preferredShellPath, "clean") : null;
+  const posixLine = "argv" in command ? command.argv.map(quotePosixShellArg).join(" ") : command.line;
+  if (platform !== "win32") {
+    const spec = preferred ?? resolveShellCandidates("clean")[0] ?? { file: "/bin/sh", args: [] };
+    return { command: spec.file, args: [...spec.args, "-c", posixLine], ...(spec.env ? { env: spec.env } : {}) };
+  }
+  const preferredKind = preferred ? resolveWindowsShellKind(preferred.file) : null;
+  if (preferred && preferredKind === "git-bash") {
+    return { command: preferred.file, args: [...preferred.args, "-c", posixLine], ...(preferred.env ? { env: preferred.env } : {}) };
+  }
+  const usePwsh = Boolean(preferred && /pwsh(\.exe)?$/i.test(preferred.file));
+  const shellPath = usePwsh ? preferred!.file : "powershell.exe";
+  let body: string;
+  if ("argv" in command) {
+    // Leading `NAME=value` words set the command's environment, as in sh.
+    const argv = [...command.argv];
+    const assignments: string[] = [];
+    while (argv.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0]!)) {
+      const word = argv.shift()!;
+      const equals = word.indexOf("=");
+      // PowerShell also ends a single-quoted string at the curly quotes: double them too.
+      assignments.push(`$env:${word.slice(0, equals)} = '${word.slice(equals + 1).replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`);
+    }
+    body = [...assignments, commandArrayToWindowsShellLine(argv, { kind: "powershell", shellPath })].join("\n");
+  } else {
+    body = command.line;
+  }
+  // One statement per line, so a trailing comment in the command cannot
+  // swallow them. `$?` is read before anything else runs: the `if` would reset
+  // it. A command that never ran leaves $LASTEXITCODE null; its success decides then.
+  const script = `${body}\n$adeOk = $?\nif ($null -eq $LASTEXITCODE) { exit [int](-not $adeOk) }\nexit $LASTEXITCODE`;
+  return {
+    command: shellPath,
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
+  };
+}
+
 function quotePosixShellArg(value: string): string {
   if (!value.length) return "''";
-  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value)) return value;
+  // A leading `=` is zsh's `=cmd` expansion: quote it.
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value) && !value.startsWith("=")) return value;
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
@@ -8568,6 +8626,8 @@ export function createPtyService({
         terminalId,
         data,
         nextSince: since + data.length,
+        status: session.status,
+        exitCode: session.exitCode ?? null,
       };
     },
 

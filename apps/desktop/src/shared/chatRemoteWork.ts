@@ -1,5 +1,10 @@
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "./types/chat";
 
+/** One key per remote-work entry: a chat keeps one per machine AND project there. */
+export function remoteWorkUseKey(use: Pick<AgentChatRemoteWorkUse, "machineKey" | "projectId">): string {
+  return `${use.machineKey}:${use.projectId ?? ""}`;
+}
+
 /**
  * The machines a chat is running commands on right now
  * (`ade shell start --machine`): those used since its current turn began.
@@ -21,8 +26,21 @@ export function activeRemoteWork(
  */
 export function remoteSimulatorUses(
   session: { remoteWork?: AgentChatRemoteWorkUse[] | null } | null | undefined,
-): AgentChatRemoteWorkUse[] {
+): Array<AgentChatRemoteWorkUse & { workCopyLaneId: string }> {
   return (session?.remoteWork ?? [])
-    .filter((use) => use.usesSimulator === true && Boolean(use.workCopyLaneId))
+    .filter((use): use is AgentChatRemoteWorkUse & { workCopyLaneId: string } =>
+      use.usesSimulator && typeof use.workCopyLaneId === "string" && use.workCopyLaneId.length > 0)
     .sort((a, b) => Date.parse(b.lastStartedAt) - Date.parse(a.lastStartedAt));
+}
+
+/**
+ * Of a session row's remote work (`TerminalSessionSummary.remoteWork`), the
+ * machines its current turn uses right now (`remoteWorkActiveMachineKeys`).
+ */
+export function activeRemoteWorkOnRow(
+  row: { remoteWork?: AgentChatRemoteWorkUse[]; remoteWorkActiveMachineKeys?: string[] } | null | undefined,
+): AgentChatRemoteWorkUse[] {
+  const active = row?.remoteWorkActiveMachineKeys;
+  if (!active?.length) return [];
+  return (row?.remoteWork ?? []).filter((use) => active.includes(use.machineKey));
 }

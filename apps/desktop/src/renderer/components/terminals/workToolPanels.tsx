@@ -23,10 +23,11 @@ import { SideChatToolPanel } from "../chat/SideChatToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
-import { remoteSimulatorUses } from "../../../shared/chatRemoteWork";
+import { remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
-import { PlatformGlyph, useRemoteWorkPinResolver } from "../chat/RemoteWorkHeaderButton";
-
+import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
+import { Banner } from "../ui/notice/Banner";
 import {
   getAppleMiniPlayerLaneDevice,
   handoffAppleMiniPlayerAsync,
@@ -354,7 +355,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
   const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
   const laneOption = laneId && toolContext.supportsIosSimulator ? "lane" : null;
   const options = [
-    ...remoteUses.map((use) => ({ key: use.machineKey, label: use.machineName, use })),
+    ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneOption ? [{ key: "lane", label: "This lane", use: null }] : []),
   ];
   const [chosenKey, setChosenKey] = useState<string | null>(null);
@@ -370,7 +371,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
           onClick={() => setChosenKey(option.key)}
           className={cn(WORK_TOOL_CHROME_CHIP, option.key === chosen.key ? "bg-fg/[0.08] text-fg" : "")}
         >
-          {option.use ? <PlatformGlyph platform={option.use.machinePlatform} size={12} /> : null}
+          {option.use ? <MachinePlatformLogo platform={option.use.machinePlatform} size={12} weight="bold" fallback /> : null}
           <span>{option.use ? `Simulator · ${option.label}` : option.label}</span>
         </button>
       ))}
@@ -404,9 +405,12 @@ function WorkIosTool(props: WorkToolPanelProps) {
  * The other machine's simulator for this chat's work copy, once that copy
  * has one. Nothing is started from here: with no device yet, it says so.
  */
-function RemoteWorkSimulator(props: WorkToolPanelProps & { use: AgentChatRemoteWorkUse; remotePin: OpenProjectBinding }) {
+function RemoteWorkSimulator(props: WorkToolPanelProps & {
+  use: AgentChatRemoteWorkUse & { workCopyLaneId: string };
+  remotePin: OpenProjectBinding;
+}) {
   const { use, remotePin } = props;
-  const laneId = use.workCopyLaneId!;
+  const laneId = use.workCopyLaneId;
   const [state, setState] = useState<"loading" | "device" | "none" | { error: string }>("loading");
   useEffect(() => {
     let cancelled = false;
@@ -430,7 +434,16 @@ function RemoteWorkSimulator(props: WorkToolPanelProps & { use: AgentChatRemoteW
   }, [laneId]);
   if (state === "loading") return <WorkToolEmptyState title={`Reading ${use.machineName}…`} />;
   if (state === "none") return <WorkToolEmptyState title={`No simulator on ${use.machineName} for this chat right now`} />;
-  if (typeof state === "object") return <WorkToolEmptyState title={`${use.machineName}: ${state.error}`} />;
+  if (typeof state === "object") {
+    return (
+      <div className="p-3">
+        <Banner
+          layout="inline"
+          model={{ id: `remote-simulator-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the simulator on ${use.machineName}`, error: state.error }}
+        />
+      </div>
+    );
+  }
   return <WorkIosDevice {...props} laneId={laneId} laneRoot={null} runtimePin={remotePin} />;
 }
 

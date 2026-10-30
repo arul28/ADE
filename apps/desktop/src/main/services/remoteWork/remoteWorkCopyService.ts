@@ -17,7 +17,10 @@
  *  - Never lose work. A sync resets the copy, so it refuses while the copy
  *    holds changes nobody synced in: unpushed commits, or edits since the last
  *    sync. The caller then runs without a sync (to commit and push them) or
- *    discards them on purpose.
+ *    discards them on purpose. The idle and low-disk cleanups skip such a copy.
+ *  - One thing at a time. A copy is busy from its sync until the command it
+ *    was synced for has started and while that command runs; a second synced
+ *    command is refused rather than resetting files under the first.
  *  - Never clutter. A copy is deleted when its chat asks, when its chat is
  *    deleted or archived on its own machine, after a week unused, and first
  *    when the disk runs low.
@@ -28,7 +31,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { runGit, type GitRunResult } from "../git/git";
+import { pathComparisonKey, pathsEqual } from "../shared/pathCompare";
 import { writeTextAtomic } from "../shared/utils";
+import { REMOTE_WORK_MAX_PATCH_BYTES } from "../../../shared/types/remoteWork";
 
 /** What the calling chat sends with each command. */
 export type RemoteWorkSource = {
@@ -36,8 +41,8 @@ export type RemoteWorkSource = {
   head: string;
   /** Remote branch that holds `head` (e.g. `ade/my-lane`), fetched when the commit is missing here. */
   fetchRef?: string | null;
-  /** `git diff --binary` of the chat's uncommitted changes against `head`, untracked files included. */
-  patch?: string | null;
+  /** The chat's uncommitted changes against `head` (untracked files included) as a binary git patch, base64. */
+  patchBase64?: string | null;
   /** The chat's branch, for people reading the copy list. */
   branch?: string | null;
   /** The machine the chat runs on, for people reading the copy list. */
@@ -51,6 +56,10 @@ export type RemoteWorkSyncMode =
   | "none"
   /** Reset even if the copy holds work nobody synced in. */
   | "discard";
+
+export function isRemoteWorkSyncMode(value: unknown): value is RemoteWorkSyncMode {
+  return value === "sync" || value === "none" || value === "discard";
+}
 
 export type RemoteWorkCopy = {
   /** Foreign caller session id (`remote:<device>:<chat>`) that owns the copy. */
@@ -69,6 +78,12 @@ export type RemoteWorkPrepareResult = {
   path: string;
   created: boolean;
   synced: boolean;
+  /**
+   * Call once the command this copy was readied for has started (its shell is
+   * registered) or, for a call that runs to the end, once it returns. Until
+   * then the copy counts as busy.
+   */
+  done: () => void;
 };
 
 export class RemoteWorkError extends Error {
@@ -80,16 +95,16 @@ export class RemoteWorkError extends Error {
 }
 
 /** A copy unused this long is deleted by the sweep. */
-export const REMOTE_WORK_IDLE_MS = 7 * 24 * 60 * 60_000;
+const REMOTE_WORK_IDLE_MS = 7 * 24 * 60 * 60_000;
 /** Below this much free disk, older copies are deleted before a new one is made. */
-export const REMOTE_WORK_RECLAIM_FREE_BYTES = 20 * 1024 ** 3;
+const REMOTE_WORK_RECLAIM_FREE_BYTES = 20 * 1024 ** 3;
 /** Below this much free disk, no new copy is made. */
-export const REMOTE_WORK_MIN_FREE_BYTES = 5 * 1024 ** 3;
-/** Largest uncommitted patch a chat may send. Bigger changes go through git. */
-export const REMOTE_WORK_MAX_PATCH_BYTES = 16 * 1024 * 1024;
+const REMOTE_WORK_MIN_FREE_BYTES = 5 * 1024 ** 3;
 
 const SHA = /^[0-9a-f]{40}$/i;
 const REGISTRY_FILE = "copies.json";
+const GIT_TIMEOUT_MS = 120_000;
+const FETCH_TIMEOUT_MS = 300_000;
 
 /**
  * A work copy stands in for a lane where a service keys its state by lane,
@@ -110,50 +125,89 @@ export function isRemoteWorkLaneId(laneId: string | null | undefined): boolean {
   return typeof laneId === "string" && laneId.startsWith(REMOTE_WORK_LANE_PREFIX);
 }
 
-/** The work copy a `remote-work-…` lane id names in this project, or null when it is gone. */
+type Registry = { version: 1; copies: RemoteWorkCopy[] };
+
+function registryPathFor(projectRoot: string): string {
+  return path.join(projectRoot, ".ade", "remote-work", REGISTRY_FILE);
+}
+
+/**
+ * A project's copies. A missing file is "none yet"; an unreadable one throws,
+ * so nothing is deleted or rewritten on a guess.
+ */
+function readRegistryAt(projectRoot: string): Registry {
+  let text: string;
+  try {
+    text = fs.readFileSync(registryPathFor(projectRoot), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") return { version: 1, copies: [] };
+    throw new RemoteWorkError("registry_unreadable", `Could not read this project's work copies: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    const parsed = JSON.parse(text) as Partial<Registry>;
+    return { version: 1, copies: Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : [] };
+  } catch (error) {
+    throw new RemoteWorkError("registry_unreadable", `This project's work copy list is damaged (${registryPathFor(projectRoot)}): ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+/** The work copy a `remote-work-…` lane id names in this project, or null when it is gone or unreadable. */
 export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): RemoteWorkCopy | null {
   if (!isRemoteWorkLaneId(laneId)) return null;
   try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(projectRoot, ".ade", "remote-work", REGISTRY_FILE), "utf8")) as Partial<Registry>;
-    const copies = Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : [];
-    return copies.find((copy) => remoteWorkLaneIdFor(copy.owner) === laneId && fs.existsSync(copy.path)) ?? null;
-  } catch {
+    return readRegistryAt(projectRoot).copies
+      .find((copy) => remoteWorkLaneIdFor(copy.owner) === laneId && fs.existsSync(copy.path)) ?? null;
+  } catch (error) {
+    // Unreadable: say "gone" to the lane lookups, and say so in the log.
+    console.warn(`[remote_work] ${error instanceof Error ? error.message : String(error)}`);
     return null;
   }
 }
-const GIT_TIMEOUT_MS = 120_000;
-const FETCH_TIMEOUT_MS = 300_000;
 
-type Registry = { version: 1; copies: RemoteWorkCopy[] };
+export type RemoteWorkLogger = {
+  info(event: string, data?: Record<string, unknown>): void;
+  warn(event: string, data?: Record<string, unknown>): void;
+};
 
 /**
- * Asks a copy's chat machine whether that chat still exists. Set once by the
- * brain, which owns the paired connections. Null answers mean "could not
- * tell" (offline, older ADE): the copy stays, and the idle limit still applies.
+ * What every service for one project shares, whoever made it: one lock per
+ * copy, the copies whose command has not started yet, and the newest way to
+ * ask whether a shell still runs in a copy (from the project's runtime).
  */
-export type RemoteWorkOwnerProbe = (machineKey: string, chatSessionId: string) => Promise<{ found: boolean; archived: boolean } | null>;
-let ownerProbe: RemoteWorkOwnerProbe | null = null;
-export function setRemoteWorkOwnerProbe(probe: RemoteWorkOwnerProbe | null): void {
-  ownerProbe = probe;
+type ProjectState = {
+  locks: Map<string, Promise<unknown>>;
+  starting: Map<string, number>;
+  shellRunsIn: ((owner: string) => boolean) | null;
+};
+const projectStates = new Map<string, ProjectState>();
+
+function projectStateFor(projectRoot: string): ProjectState {
+  // Case-folded where the file system folds case, so the sweep and the runtime share one state.
+  const key = pathComparisonKey(path.resolve(projectRoot));
+  let state = projectStates.get(key);
+  if (!state) {
+    state = { locks: new Map(), starting: new Map(), shellRunsIn: null };
+    projectStates.set(key, state);
+  }
+  return state;
 }
 
 export type RemoteWorkCopyServiceOptions = {
   projectRoot: string;
   /** The ADE home holding the machine index; defaults to $ADE_HOME or ~/.ade. */
   adeHome?: string;
-  logger?: { info(event: string, data?: Record<string, unknown>): void; warn(event: string, data?: Record<string, unknown>): void };
-  /** True while a shell still runs in the copy; a sync then waits for it to end. */
-  isInUse?: (copy: { owner: string; path: string }) => boolean;
+  logger?: RemoteWorkLogger;
   now?: () => number;
   /** Free bytes on the project's disk; null when unknown. */
   freeBytes?: () => number | null;
 };
 
-function defaultFreeBytes(dir: string): number | null {
+function defaultFreeBytes(dir: string, logger?: RemoteWorkLogger): number | null {
   try {
     const stats = fs.statfsSync(dir);
     return Number(stats.bavail) * Number(stats.bsize);
-  } catch {
+  } catch (error) {
+    logger?.warn("remote_work.free_bytes_unknown", { error: error instanceof Error ? error.message : String(error) });
     return null;
   }
 }
@@ -179,60 +233,52 @@ function readMachineIndex(adeHome: string): MachineIndex {
       : [];
     return { version: 1, projects };
   } catch {
+    // Missing (no copies yet) or damaged: the index is rebuilt by the next copy written.
     return { version: 1, projects: [] };
   }
 }
 
 function writeMachineIndexEntry(adeHome: string, projectRoot: string, present: boolean): void {
   const index = readMachineIndex(adeHome);
-  const root = path.resolve(projectRoot);
-  const others = index.projects.filter((entry) => path.resolve(entry.projectRoot) !== root);
-  const next = present ? [...others, { projectRoot: root }] : others;
-  if (next.length === index.projects.length && present === index.projects.some((entry) => path.resolve(entry.projectRoot) === root)) return;
+  const listed = index.projects.some((entry) => pathsEqual(entry.projectRoot, projectRoot));
+  if (listed === present) return;
+  const next = present
+    ? [...index.projects, { projectRoot: path.resolve(projectRoot) }]
+    : index.projects.filter((entry) => !pathsEqual(entry.projectRoot, projectRoot));
   writeTextAtomic(machineIndexPath(adeHome), `${JSON.stringify({ version: 1, projects: next }, null, 2)}\n`);
 }
 
 /** Every work copy on this machine, across its projects, from the index. */
-export function listMachineRemoteWorkCopies(adeHome: string = defaultAdeHome()): Array<RemoteWorkCopy & { projectRoot: string }> {
+export function listMachineRemoteWorkCopies(
+  adeHome: string = defaultAdeHome(),
+  logger?: RemoteWorkLogger,
+): Array<RemoteWorkCopy & { projectRoot: string }> {
   const rows: Array<RemoteWorkCopy & { projectRoot: string }> = [];
   for (const entry of readMachineIndex(adeHome).projects) {
     try {
-      const parsed = JSON.parse(fs.readFileSync(path.join(entry.projectRoot, ".ade", "remote-work", REGISTRY_FILE), "utf8")) as Partial<Registry>;
-      for (const copy of Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : []) {
-        rows.push({ ...copy, projectRoot: entry.projectRoot });
-      }
-    } catch {
-      // A project whose copies are all gone, or whose folder moved.
+      for (const copy of readRegistryAt(entry.projectRoot).copies) rows.push({ ...copy, projectRoot: entry.projectRoot });
+    } catch (error) {
+      logger?.warn("remote_work.registry_unreadable", { projectRoot: entry.projectRoot, error: error instanceof Error ? error.message : String(error) });
     }
   }
   return rows;
 }
 
 export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOptions) {
-  const { projectRoot } = options;
+  const { projectRoot, logger } = options;
   const now = options.now ?? (() => Date.now());
-  const freeBytes = options.freeBytes ?? (() => defaultFreeBytes(projectRoot));
-  const root = path.join(projectRoot, ".ade", "remote-work");
-  const registryPath = path.join(root, REGISTRY_FILE);
-  /** One operation per copy at a time; a second command waits for the first sync. */
-  const locks = new Map<string, Promise<unknown>>();
-
-  const readRegistry = (): Registry => {
-    try {
-      const parsed = JSON.parse(fs.readFileSync(registryPath, "utf8")) as Partial<Registry>;
-      const copies = Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : [];
-      return { version: 1, copies };
-    } catch {
-      return { version: 1, copies: [] };
-    }
-  };
+  const freeBytes = options.freeBytes ?? (() => defaultFreeBytes(projectRoot, logger));
   const adeHome = options.adeHome ?? defaultAdeHome();
+  const root = path.join(projectRoot, ".ade", "remote-work");
+  const state = projectStateFor(projectRoot);
+
+  const readRegistry = (): Registry => readRegistryAt(projectRoot);
   const writeRegistry = (registry: Registry): void => {
-    writeTextAtomic(registryPath, `${JSON.stringify(registry, null, 2)}\n`);
+    writeTextAtomic(registryPathFor(projectRoot), `${JSON.stringify(registry, null, 2)}\n`);
     try {
       writeMachineIndexEntry(adeHome, projectRoot, registry.copies.length > 0);
     } catch (error) {
-      options.logger?.warn("remote_work.index_write_failed", { error: error instanceof Error ? error.message : String(error) });
+      logger?.warn("remote_work.index_write_failed", { error: error instanceof Error ? error.message : String(error) });
     }
   };
   const updateCopy = (owner: string, update: (copy: RemoteWorkCopy | null) => RemoteWorkCopy | null): void => {
@@ -243,20 +289,34 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   const withLock = async <T>(owner: string, run: () => Promise<T>): Promise<T> => {
-    const previous = locks.get(owner) ?? Promise.resolve();
+    const previous = state.locks.get(owner) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(run);
-    locks.set(owner, current);
+    state.locks.set(owner, current);
     try {
       return await current;
     } finally {
-      if (locks.get(owner) === current) locks.delete(owner);
+      if (state.locks.get(owner) === current) state.locks.delete(owner);
     }
   };
 
-  const git = (args: string[], cwd: string, extra: { stdin?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<GitRunResult> =>
-    runGit(args, { cwd, timeoutMs: extra.timeoutMs ?? GIT_TIMEOUT_MS, ...(extra.stdin != null ? { stdin: extra.stdin } : {}), ...(extra.env ? { env: extra.env } : {}) });
+  const inUse = (owner: string): boolean => isRemoteWorkCopyInUse(projectRoot, owner);
 
-  const gitOrThrow = async (args: string[], cwd: string, failure: string, extra?: { stdin?: string; env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<string> => {
+  const markStarting = (owner: string): (() => void) => {
+    state.starting.set(owner, (state.starting.get(owner) ?? 0) + 1);
+    let finished = false;
+    return () => {
+      if (finished) return;
+      finished = true;
+      const left = (state.starting.get(owner) ?? 1) - 1;
+      if (left > 0) state.starting.set(owner, left);
+      else state.starting.delete(owner);
+    };
+  };
+
+  const git = (args: string[], cwd: string, extra: { env?: NodeJS.ProcessEnv; timeoutMs?: number } = {}): Promise<GitRunResult> =>
+    runGit(args, { cwd, timeoutMs: extra.timeoutMs ?? GIT_TIMEOUT_MS, ...(extra.env ? { env: extra.env } : {}) });
+
+  const gitOrThrow = async (args: string[], cwd: string, failure: string, extra?: { env?: NodeJS.ProcessEnv; timeoutMs?: number }): Promise<string> => {
     const result = await git(args, cwd, extra);
     if (result.exitCode !== 0 || result.timedOut) {
       const detail = (result.stderr || result.stdout).trim().split("\n").slice(-3).join(" ");
@@ -272,13 +332,13 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const ensureCommit = async (source: RemoteWorkSource): Promise<void> => {
     if (await hasCommit(source.head)) return;
     const ref = source.fetchRef?.trim();
-    const fetchArgs = ref && /^[A-Za-z0-9._/-]+$/.test(ref) && !ref.startsWith("-")
-      ? ["fetch", "--no-tags", "origin", ref]
+    const fetchArgs = ref && /^[A-Za-z0-9._/-]+$/.test(ref) && !ref.startsWith("-") && !ref.includes("..")
+      ? ["fetch", "--no-tags", "origin", "--", ref]
       : ["fetch", "--no-tags", "origin"];
     await git(fetchArgs, projectRoot, { timeoutMs: FETCH_TIMEOUT_MS });
     if (await hasCommit(source.head)) return;
     // Some hosts serve a reachable commit by id even when no branch was named.
-    await git(["fetch", "--no-tags", "origin", source.head], projectRoot, { timeoutMs: FETCH_TIMEOUT_MS });
+    await git(["fetch", "--no-tags", "origin", "--", source.head], projectRoot, { timeoutMs: FETCH_TIMEOUT_MS });
     if (await hasCommit(source.head)) return;
     throw new RemoteWorkError(
       "commit_not_on_origin",
@@ -314,7 +374,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
    */
   const unsyncedWork = async (copy: RemoteWorkCopy): Promise<string | null> => {
     const head = await gitOrThrow(["rev-parse", "HEAD"], copy.path, "Could not read the work copy");
-    if (head.toLowerCase() !== copy.head.toLowerCase()) {
+    // An adopted copy (never synced here) may hold commits made before it was lost from the list.
+    if (copy.syncedTree === null || head.toLowerCase() !== copy.head.toLowerCase()) {
       const remotes = await git(["branch", "-r", "--contains", "HEAD"], copy.path);
       if (remotes.exitCode !== 0 || !remotes.stdout.trim()) {
         return "it has commits that are not pushed";
@@ -340,20 +401,22 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     return null;
   };
 
-  const syncCopy = async (copy: RemoteWorkCopy, source: RemoteWorkSource): Promise<string> => {
-    await gitOrThrow(["checkout", "--force", "--detach", source.head], copy.path, "Could not check out the chat's commit");
+  const syncCopy = async (copyPath: string, source: RemoteWorkSource, patch: Buffer | null): Promise<string> => {
+    await gitOrThrow(["checkout", "--force", "--detach", source.head], copyPath, "Could not check out the chat's commit");
     // No -x: ignored files (installed deps, build output) survive between runs.
-    await gitOrThrow(["clean", "-fd"], copy.path, "Could not clean the work copy");
-    const patch = source.patch ?? "";
-    if (patch.trim()) {
-      await gitOrThrow(
-        ["apply", "--binary", "--whitespace=nowarn", "-"],
-        copy.path,
-        "Could not apply the chat's uncommitted changes",
-        { stdin: patch.endsWith("\n") ? patch : `${patch}\n` },
-      );
+    await gitOrThrow(["clean", "-fd"], copyPath, "Could not clean the work copy");
+    if (patch && patch.length > 0) {
+      // A file, not a string on stdin: the patch is bytes, and a text file in
+      // another encoding must arrive as it was.
+      const patchFile = path.join(os.tmpdir(), `ade-remote-work-patch-${randomUUID()}.patch`);
+      try {
+        fs.writeFileSync(patchFile, patch);
+        await gitOrThrow(["apply", "--binary", "--whitespace=nowarn", "--", patchFile], copyPath, "Could not apply the chat's uncommitted changes");
+      } finally {
+        fs.rmSync(patchFile, { force: true });
+      }
     }
-    return await workingTree(copy.path);
+    return await workingTree(copyPath);
   };
 
   const removeCopyFiles = async (copyPath: string): Promise<void> => {
@@ -369,34 +432,67 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const get = (owner: string): RemoteWorkCopy | null =>
     readRegistry().copies.find((copy) => copy.owner === owner) ?? null;
 
-  const release = async (owner: string): Promise<boolean> =>
+  const busyError = (): RemoteWorkError => new RemoteWorkError(
+    "copy_busy",
+    "A command still runs in this chat's work copy here. Wait for it to end, or stop it "
+    + "(`ade terminal list --machine <this machine>` shows it).",
+  );
+
+  /**
+   * Delete the copy for `owner`. True when one existed. Refused while it is in
+   * use. With `keepUnsynced` (the automatic cleanups that run on a guess), a
+   * copy holding work nobody pushed is kept: false.
+   */
+  const release = async (
+    owner: string,
+    releaseOptions: { keepUnsynced?: boolean; onlyIfUnusedBefore?: number } = {},
+  ): Promise<boolean> =>
     await withLock(owner, async () => {
+      if (inUse(owner)) throw busyError();
       const copy = get(owner);
+      // Re-read in the lock: a command may have used the copy since the sweep chose it.
+      if (copy && releaseOptions.onlyIfUnusedBefore != null && Date.parse(copy.lastUsedAt) >= releaseOptions.onlyIfUnusedBefore) {
+        return false;
+      }
       const copyPath = copy?.path ?? pathFor(owner);
+      if (copy && releaseOptions.keepUnsynced && fs.existsSync(copyPath)) {
+        const reason = await unsyncedWork(copy).catch((error: unknown) => {
+          logger?.warn("remote_work.unsynced_check_failed", { owner, error: error instanceof Error ? error.message : String(error) });
+          return "its state could not be read";
+        });
+        if (reason) {
+          logger?.info("remote_work.kept_unsynced", { owner, reason });
+          return false;
+        }
+      }
       const existed = Boolean(copy) || fs.existsSync(copyPath);
       if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
       updateCopy(owner, () => null);
-      if (existed) options.logger?.info("remote_work.released", { owner });
+      if (existed) logger?.info("remote_work.released", { owner });
       return existed;
     });
 
-  const releaseWhere = async (match: (copy: RemoteWorkCopy) => boolean): Promise<number> => {
-    let count = 0;
-    for (const copy of readRegistry().copies.filter(match)) {
-      if (await release(copy.owner)) count += 1;
+  /** Release, but a copy that is busy now is skipped rather than an error. */
+  const releaseIfIdle = async (owner: string, releaseOptions: Parameters<typeof release>[1] = {}): Promise<boolean> => {
+    try {
+      return await release(owner, releaseOptions);
+    } catch (error) {
+      if (error instanceof RemoteWorkError && error.code === "copy_busy") return false;
+      throw error;
     }
-    return count;
   };
 
   /** A low disk deletes other chats' idle copies, oldest first, before refusing. */
   const makeRoomForCopy = async (owner: string): Promise<void> => {
     let free = freeBytes();
     if (free == null || free >= REMOTE_WORK_RECLAIM_FREE_BYTES) return;
-    const idle = readRegistry().copies
-      .filter((copy) => copy.owner !== owner && !options.isInUse?.(copy))
+    // A copy another call holds is skipped, never waited for: two prepares
+    // freeing each other's copies would wait on each other's locks.
+    const oldestFirst = readRegistry().copies
+      .filter((copy) => copy.owner !== owner && !state.locks.has(copy.owner))
       .sort((a, b) => Date.parse(a.lastUsedAt) - Date.parse(b.lastUsedAt));
-    for (const copy of idle) {
-      await release(copy.owner);
+    for (const copy of oldestFirst) {
+      await releaseIfIdle(copy.owner, { keepUnsynced: true });
       free = freeBytes();
       if (free == null || free >= REMOTE_WORK_RECLAIM_FREE_BYTES) return;
     }
@@ -408,8 +504,48 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     }
   };
 
+  /**
+   * A copy folder the list lost (a damaged or replaced copies.json): keep it,
+   * list it unsynced, and let the guarded sync take it over rather than
+   * deleting what it holds. Null when there is no such folder.
+   */
+  const adoptUnlistedCopy = async (owner: string, source: RemoteWorkSource, timestamp: string): Promise<RemoteWorkCopy | null> => {
+    const copyPath = pathFor(owner);
+    if (!fs.existsSync(path.join(copyPath, ".git"))) return null;
+    // A folder that is there but unreadable is refused, not replaced: it may hold work.
+    const head = await gitOrThrow(["rev-parse", "HEAD"], copyPath, "Could not read the work copy left in this chat's folder here");
+    logger?.warn("remote_work.adopted_unlisted_copy", { owner, path: copyPath });
+    const copy: RemoteWorkCopy = { owner, path: copyPath, head, branch: source.branch ?? null, machineName: source.machineName ?? null, syncedTree: null, createdAt: timestamp, lastUsedAt: timestamp };
+    updateCopy(owner, () => copy);
+    return copy;
+  };
+
+  /** A new copy for `owner` at the chat's commit, synced. */
+  const createCopy = async (owner: string, source: RemoteWorkSource, patch: Buffer | null, timestamp: string): Promise<RemoteWorkCopy> => {
+    const copyPath = pathFor(owner);
+    await makeRoomForCopy(owner);
+    await ensureCommit(source);
+    if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
+    await git(["worktree", "prune"], projectRoot);
+    fs.mkdirSync(root, { recursive: true });
+    await gitOrThrow(["worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not create the work copy");
+    const syncedTree = await syncCopy(copyPath, source, patch);
+    const copy: RemoteWorkCopy = {
+      owner,
+      path: copyPath,
+      head: source.head,
+      branch: source.branch ?? null,
+      machineName: source.machineName ?? null,
+      syncedTree,
+      createdAt: timestamp,
+      lastUsedAt: timestamp,
+    };
+    updateCopy(owner, () => copy);
+    logger?.info("remote_work.created", { owner, head: source.head });
+    return copy;
+  };
+
   return {
-    pathFor,
     get,
     list(): RemoteWorkCopy[] {
       return readRegistry().copies;
@@ -417,51 +553,39 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
 
     /**
      * Make the copy for `owner` ready for one command: create it on first
-     * use, then sync it to `source` unless `mode` says otherwise.
+     * use, then sync it to `source` unless `mode` says otherwise. The copy is
+     * busy until the result's `done` is called.
      */
     async prepare(owner: string, source: RemoteWorkSource, mode: RemoteWorkSyncMode = "sync"): Promise<RemoteWorkPrepareResult> {
       if (!SHA.test(source.head)) throw new RemoteWorkError("invalid_source", "The chat's commit id is not valid.");
-      if ((source.patch?.length ?? 0) > REMOTE_WORK_MAX_PATCH_BYTES) {
+      const patch = source.patchBase64 ? Buffer.from(source.patchBase64, "base64") : null;
+      if ((patch?.length ?? 0) > REMOTE_WORK_MAX_PATCH_BYTES) {
         throw new RemoteWorkError(
           "patch_too_large",
           `The uncommitted changes are over ${REMOTE_WORK_MAX_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
         );
       }
       return await withLock(owner, async () => {
-        const copyPath = pathFor(owner);
-        const existing = get(owner);
         const timestamp = new Date(now()).toISOString();
-        if (!existing || !fs.existsSync(copyPath)) {
-          // No copy yet: every mode starts by making one at the chat's commit.
-          await makeRoomForCopy(owner);
-          await ensureCommit(source);
-          if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);
-          await git(["worktree", "prune"], projectRoot);
-          fs.mkdirSync(root, { recursive: true });
-          await gitOrThrow(["worktree", "add", "--detach", copyPath, source.head], projectRoot, "Could not create the work copy");
-          const fresh: RemoteWorkCopy = {
-            owner,
-            path: copyPath,
-            head: source.head,
-            branch: source.branch ?? null,
-            machineName: source.machineName ?? null,
-            syncedTree: null,
-            createdAt: timestamp,
-            lastUsedAt: timestamp,
-          };
-          const syncedTree = await syncCopy(fresh, source);
-          updateCopy(owner, () => ({ ...fresh, syncedTree }));
-          options.logger?.info("remote_work.created", { owner, head: source.head });
-          return { path: copyPath, created: true, synced: true };
+        let copy = get(owner);
+        if (!copy || !fs.existsSync(copy.path)) {
+          if (inUse(owner)) throw busyError();
+          // An adopted folder goes through the guarded sync below; a new copy is synced already.
+          const adopted = await adoptUnlistedCopy(owner, source, timestamp);
+          if (!adopted) {
+            const created = await createCopy(owner, source, patch, timestamp);
+            return { path: created.path, created: true, synced: true, done: markStarting(owner) };
+          }
+          copy = adopted;
         }
         if (mode === "none") {
           // Taps and screenshots come many a minute: note the use at most once a minute.
-          if (now() - Date.parse(existing.lastUsedAt) > 60_000) {
-            updateCopy(owner, (copy) => (copy ? { ...copy, lastUsedAt: timestamp } : copy));
+          if (now() - Date.parse(copy.lastUsedAt) > 60_000) {
+            updateCopy(owner, (current) => (current ? { ...current, lastUsedAt: timestamp } : current));
           }
-          return { path: copyPath, created: false, synced: false };
+          return { path: copy.path, created: false, synced: false, done: markStarting(owner) };
         }
-        if (options.isInUse?.({ owner, path: copyPath })) {
+        if (inUse(owner)) {
           throw new RemoteWorkError(
             "copy_busy",
             "A command still runs in this chat's work copy here, so it was not synced. Wait for it to end, or stop it "
@@ -469,7 +593,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           );
         }
         if (mode !== "discard") {
-          const reason = await unsyncedWork(existing);
+          const reason = await unsyncedWork(copy);
           if (reason) {
             throw new RemoteWorkError(
               "copy_has_unsynced_work",
@@ -480,65 +604,104 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
           }
         }
         await ensureCommit(source);
-        const syncedTree = await syncCopy(existing, source);
-        updateCopy(owner, (copy) => (copy ? {
-          ...copy,
+        const syncedTree = await syncCopy(copy.path, source, patch);
+        updateCopy(owner, (current) => (current ? {
+          ...current,
           head: source.head,
-          branch: source.branch ?? copy.branch,
-          machineName: source.machineName ?? copy.machineName,
+          branch: source.branch ?? current.branch,
+          machineName: source.machineName ?? current.machineName,
           syncedTree,
           lastUsedAt: timestamp,
-        } : copy));
-        return { path: copyPath, created: false, synced: true };
+        } : current));
+        return { path: copy.path, created: false, synced: true, done: markStarting(owner) };
       });
     },
 
-    /** Delete the copy for `owner`. True when one existed. */
     release,
 
-    /** Delete every copy that matches; used when a chat is gone. */
-    releaseWhere,
-
     /**
-     * Delete copies unused for `maxIdleMs`, and copies whose chat was deleted
-     * or archived on its own machine (`machineKeyFor` names that machine).
-     * A copy still in use is never deleted.
+     * Delete copies unused for a week (unless they hold unpushed work),
+     * and copies whose chat was deleted or archived on its own machine.
+     * `ownerGone` answers the second; it is never asked about a copy in use,
+     * and silence (null) keeps the copy.
      */
-    async sweep(
-      maxIdleMs: number = REMOTE_WORK_IDLE_MS,
-      machineKeyFor?: (owner: string) => { machineKey: string; chatSessionId: string } | null,
-    ): Promise<number> {
-      const cutoff = now() - maxIdleMs;
-      let released = await releaseWhere((copy) =>
-        Date.parse(copy.lastUsedAt) < cutoff && !options.isInUse?.(copy));
-      const probe = ownerProbe;
-      if (!probe || !machineKeyFor) return released;
+    async sweep(sweepOptions: {
+      ownerGone?: (owner: string) => Promise<{ gone: boolean; archived: boolean } | null>;
+    } = {}): Promise<number> {
+      const cutoff = now() - REMOTE_WORK_IDLE_MS;
+      let released = 0;
       for (const copy of readRegistry().copies) {
-        if (options.isInUse?.(copy)) continue;
-        const origin = machineKeyFor(copy.owner);
-        if (!origin) continue;
-        const answer = await probe(origin.machineKey, origin.chatSessionId).catch(() => null);
-        if (answer && (!answer.found || answer.archived)) {
-          if (await release(copy.owner)) released += 1;
-          options.logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
+        if (inUse(copy.owner)) continue;
+        if (Date.parse(copy.lastUsedAt) < cutoff) {
+          if (await releaseIfIdle(copy.owner, { keepUnsynced: true, onlyIfUnusedBefore: cutoff })) released += 1;
+          continue;
+        }
+        const answer = sweepOptions.ownerGone
+          ? await sweepOptions.ownerGone(copy.owner).catch((error: unknown) => {
+            logger?.warn("remote_work.owner_check_failed", { owner: copy.owner, error: error instanceof Error ? error.message : String(error) });
+            return null;
+          })
+          : null;
+        if (answer?.gone && await releaseIfIdle(copy.owner)) {
+          released += 1;
+          logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
         }
       }
       return released;
-    },
-
-    /** Delete the least recently used copies first, up to `count`; for a low disk. */
-    async releaseOldest(count: number): Promise<number> {
-      const oldest = [...readRegistry().copies]
-        .filter((copy) => !options.isInUse?.(copy))
-        .sort((a, b) => Date.parse(a.lastUsedAt) - Date.parse(b.lastUsedAt))
-        .slice(0, Math.max(0, count));
-      const owners = new Set(oldest.map((copy) => copy.owner));
-      return await releaseWhere((copy) => owners.has(copy.owner));
     },
   };
 }
 
 export type RemoteWorkCopyService = ReturnType<typeof createRemoteWorkCopyService>;
+
+/**
+ * How a project's runtime tells whether a shell still runs in a copy (its
+ * terminals). Registered once when the runtime starts; the returned function
+ * removes it when the runtime is disposed. A project with no runtime has no
+ * running shells.
+ */
+export function registerRemoteWorkShellCheck(projectRoot: string, shellRunsIn: (owner: string) => boolean): () => void {
+  const state = projectStateFor(projectRoot);
+  state.shellRunsIn = shellRunsIn;
+  return () => {
+    if (state.shellRunsIn === shellRunsIn) state.shellRunsIn = null;
+  };
+}
+
+/** A command was readied for this copy and has not started, or a shell still runs in it. */
+export function isRemoteWorkCopyInUse(projectRoot: string, owner: string): boolean {
+  const state = projectStateFor(projectRoot);
+  if ((state.starting.get(owner) ?? 0) > 0) return true;
+  try {
+    return state.shellRunsIn?.(owner) === true;
+  } catch (error) {
+    // The runtime's terminals could not be read: count the copy as in use, so nothing is deleted on a guess.
+    console.warn(`[remote_work] could not tell whether a shell runs in ${owner}'s work copy`, error);
+    return true;
+  }
+}
+
+/**
+ * One sweep of every project on this machine that holds work copies (the
+ * brain runs it on a timer). `ownerGone` names a copy's chat as gone or
+ * archived on its own machine; see `sweep`.
+ */
+export async function sweepMachineRemoteWork(sweepOptions: {
+  adeHome?: string;
+  logger?: RemoteWorkLogger;
+  ownerGone?: (owner: string) => Promise<{ gone: boolean; archived: boolean } | null>;
+} = {}): Promise<number> {
+  let released = 0;
+  for (const entry of readMachineIndex(sweepOptions.adeHome ?? defaultAdeHome()).projects) {
+    try {
+      released += await createRemoteWorkCopyService({ projectRoot: entry.projectRoot, adeHome: sweepOptions.adeHome, logger: sweepOptions.logger })
+        .sweep({ ownerGone: sweepOptions.ownerGone });
+    } catch (error) {
+      sweepOptions.logger?.warn("remote_work.sweep_failed", { projectRoot: entry.projectRoot, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  return released;
+}
 
 function isCopy(value: unknown): value is RemoteWorkCopy {
   if (!value || typeof value !== "object") return false;
@@ -548,43 +711,6 @@ function isCopy(value: unknown): value is RemoteWorkCopy {
     && typeof record.head === "string"
     && typeof record.createdAt === "string"
     && typeof record.lastUsedAt === "string";
-}
-
-/**
- * How to run one command for a caller on another machine: the machine's own
- * shell, not interactive, so the output is the command's alone and the
- * process ends with the command's exit code. `shell` is the terminal shell
- * this machine would start (its path, and on Windows its kind as the id).
- */
-export function remoteWorkRunOnceLaunch(
-  command: string,
-  shell: { id: string | null; path: string | null },
-  platform: NodeJS.Platform = process.platform,
-): { command: string; args: string[] } {
-  if (platform === "win32") {
-    const kind = (shell.id ?? "powershell").toLowerCase();
-    if (kind === "cmd") return { command: shell.path || "cmd.exe", args: ["/d", "/s", "/c", command] };
-    if (kind === "git-bash" && shell.path) return { command: shell.path, args: ["-c", command] };
-    // A command that never ran leaves $LASTEXITCODE null; fall back to $?.
-    return {
-      command: shell.path || (kind === "pwsh" ? "pwsh.exe" : "powershell.exe"),
-      args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", `${command}; if ($null -eq $LASTEXITCODE) { exit [int](-not $?) }; exit $LASTEXITCODE`],
-    };
-  }
-  return { command: shell.path || "/bin/sh", args: ["-c", command] };
-}
-
-/** Each project's work copy service, shared by the RPC server and the action registry. */
-const servicesByProject = new Map<string, RemoteWorkCopyService>();
-
-export function remoteWorkCopiesForProject(options: RemoteWorkCopyServiceOptions): RemoteWorkCopyService {
-  const key = path.resolve(options.projectRoot);
-  let service = servicesByProject.get(key);
-  if (!service) {
-    service = createRemoteWorkCopyService(options);
-    servicesByProject.set(key, service);
-  }
-  return service;
 }
 
 /**

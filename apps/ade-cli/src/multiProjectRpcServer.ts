@@ -1207,26 +1207,26 @@ function remoteWorkCallKind(method: string, params: Record<string, unknown>): "s
   return null;
 }
 
-/** Walk a forwarded answer's envelopes to the record that has `found`. */
-function findInRemoteAnswer(result: unknown, found: (value: Record<string, unknown>) => boolean): Record<string, unknown> | null {
-  let value: unknown = result;
-  for (let depth = 0; depth < 5 && isRecord(value); depth += 1) {
-    if (found(value)) return value;
-    value = "structuredContent" in value ? value.structuredContent : value.result;
+/** The action's own result in a forwarded `ade/actions/call` answer (`{ structuredContent: { result } }`, or older shapes). */
+function remoteActionResult(answer: unknown): Record<string, unknown> | null {
+  const structured = isRecord(answer) && isRecord(answer.structuredContent) ? answer.structuredContent : null;
+  for (const candidate of [structured?.result, isRecord(answer) ? answer.result : null, structured, answer]) {
+    if (isRecord(candidate) && !("structuredContent" in candidate)) return candidate;
   }
   return null;
 }
 
 /** The terminal id in a forwarded pty.create answer. */
-function remoteWorkCreatedTerminalId(result: unknown): string | null {
-  const created = findInRemoteAnswer(result, (value) => typeof value.sessionId === "string" && typeof value.ptyId === "string");
-  return created ? String(created.sessionId) : null;
+function remoteWorkCreatedTerminalId(answer: unknown): string | null {
+  const created = remoteActionResult(answer);
+  return created && typeof created.sessionId === "string" && typeof created.ptyId === "string" ? created.sessionId : null;
 }
 
 /** The work copy's lane id there, which that machine returns with the answer (newer ADE only). */
-function remoteWorkCopyLaneId(result: unknown): string | null {
-  const holder = findInRemoteAnswer(result, (value) => isRecord(value.workCopy) && typeof value.workCopy.laneId === "string");
-  return holder && isRecord(holder.workCopy) ? String(holder.workCopy.laneId) : null;
+function remoteWorkCopyLaneId(answer: unknown): string | null {
+  const result = remoteActionResult(answer);
+  const workCopy = result && isRecord(result.workCopy) ? result.workCopy : null;
+  return workCopy && typeof workCopy.laneId === "string" ? workCopy.laneId : null;
 }
 
 function omitProjectId(
@@ -3091,18 +3091,24 @@ export function createMultiProjectRpcRequestHandler(
         // A shell this chat started in its work copy there: the chat's views
         // show which machine it is working on.
         const remoteWorkKind = callerChat ? remoteWorkCallKind(forwardMethod, forwardParams) : null;
+        // Bookkeeping for the chat's views: the call already ran there, so a
+        // failure here is logged and never turns it into a failed call.
         if (callerChat && remoteWorkKind) {
-          located?.runtime.agentChatService?.noteRemoteWork?.({
-            terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
-            workCopyLaneId: remoteWorkCopyLaneId(answer.result),
-            usesSimulator: remoteWorkKind === "simulator",
-            sessionId: callerChat,
-            machineKey: answer.machine.machineKey,
-            machineName: answer.machine.name,
-            machinePlatform: answer.machine.platform ?? null,
-            projectId: answer.project?.projectId ?? null,
-            projectRootPath: answer.project?.rootPath ?? null,
-          });
+          try {
+            located?.runtime.agentChatService?.noteRemoteWork({
+              terminalId: remoteWorkKind === "shell" ? remoteWorkCreatedTerminalId(answer.result) : null,
+              workCopyLaneId: remoteWorkCopyLaneId(answer.result),
+              usesSimulator: remoteWorkKind === "simulator",
+              sessionId: callerChat,
+              machineKey: answer.machine.machineKey,
+              machineName: answer.machine.name,
+              machinePlatform: answer.machine.platform ?? null,
+              projectId: answer.project?.projectId ?? null,
+              projectRootPath: answer.project?.rootPath ?? null,
+            });
+          } catch (error) {
+            console.warn("[remote-work] could not record the chat's work on another machine", error);
+          }
         }
         // A child this chat started there: remember it, so that machine's
         // report of its finished turns is accepted here and nowhere else.
