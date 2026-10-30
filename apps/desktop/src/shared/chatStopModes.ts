@@ -28,13 +28,6 @@ export type AgentChatStopMode = (typeof AGENT_CHAT_STOP_MODES)[number];
 
 export const DEFAULT_AGENT_CHAT_STOP_MODE: AgentChatStopMode = "stop_and_clear";
 
-/**
- * Settle teardown keeps the user's queued prompts (those are unrecoverable)
- * and still stops background work (the reason settle exists). After the
- * matrix, that combination is `stop_and_background`, not `stop_only`.
- */
-export const SETTLE_TEARDOWN_STOP_MODE: AgentChatStopMode = "stop_and_background";
-
 export function isAgentChatStopMode(value: unknown): value is AgentChatStopMode {
   return typeof value === "string"
     && (AGENT_CHAT_STOP_MODES as readonly string[]).includes(value);

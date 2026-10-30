@@ -1067,11 +1067,11 @@ and a guess should stay bounded.
 
 A merge outranks pending input, background work, and every other ordinary
 settlement blocker. It does **not** outrank a chat turn that is running right
-now, because settle teardown refuses to interrupt one for a machine-initiated
-settle (see
-[`settle-teardown-design.md`](../terminals-and-sessions/settle-teardown-design.md)
-— `mayInterruptActiveTurn`). Attempting anyway would just abort on every poll
-for as long as the turn runs. It also does not settle a chat that still has
+now, because a working chat cannot be settled: the settle check
+(`settleTurnCheck.ts`, see
+[`terminals-and-sessions/README.md`](../terminals-and-sessions/README.md))
+refuses it with `turn_running` for every caller. Attempting anyway would just
+abort on every poll for as long as the turn runs. It also does not settle a chat that still has
 other open or draft linked PRs — fallback unedged PRs do not count.
 
 So `hasActiveChatTurn(sessionId)` and `sessionHasOpenLinkedPrs` are checked
@@ -1092,10 +1092,9 @@ before each `settleSessions…` call. The active-turn gate is deliberately narro
   turns, so reading it would defer forever and no merged PR would ever be
   settled or announced.
 - A **thrown** liveness read counts as active and defers this poll. An
-  unreachable liveness source is not evidence the turn ended, and teardown is
-  not a backstop here — a `readActiveWork` that fails the same way returns
-  `timedOutResidue` with no `abortedBy`, so the settle would slip through
-  unnoticed.
+  unreachable liveness source is not evidence the turn ended. The settle check
+  fails closed the same way (a turn read that does not answer in 10s refuses
+  with `status_unknown`); this gate keeps the deferral cheap.
 
 There is no per-abort-reason bookkeeping and no set of previously-aborted
 sessions. The gate re-reads liveness on every attempt, so *every* abort reason
@@ -2254,8 +2253,8 @@ are how a chat asks to be woken when its PR changes. Source:
   remarks left on the way out), the user or agent
   turning it off, the chat being archived or deleted, 10 comment-only wakes in
   a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
-  with the reason). A settled chat keeps its watch but is not woken until it is
-  unsettled. GitHub rate-limit pauses pause the reactor too.
+  with the reason). A settled chat keeps its watch and is still woken (settle stops
+  nothing); the wake's turn takes it out of settled. GitHub rate-limit pauses pause the reactor too.
 - **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
   the chat on the machine that runs it, and a synced row would let a second
   machine wake its own copy of the chat as well.

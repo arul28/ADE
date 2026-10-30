@@ -21,8 +21,10 @@ export function settleAbortMessage(sessionId: string, abortedBy?: string): strin
       return `Session '${sessionId}' reported a failed turn, so it was not settled.`;
     case "attention_requested":
       return `Session '${sessionId}' asked for attention, so it was not settled.`;
-    case "teardown_failed":
-      return `Session '${sessionId}' could not be stopped cleanly, so it was not settled.`;
+    case "turn_running":
+      return `Session '${sessionId}' is still working, so it was not settled. Settle it once its turn ends.`;
+    case "status_unknown":
+      return `ADE could not tell whether session '${sessionId}' is still working (it may run on another ADE brain), so it was not settled.`;
     case "joined_in_flight":
       return `Session '${sessionId}' is already being settled.`;
     default:

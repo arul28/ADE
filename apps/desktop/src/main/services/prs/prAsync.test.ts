@@ -1283,14 +1283,14 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
-  it("retries a teardown failure on the next pass once the session is at rest", async () => {
+  it("retries a failed settle check on the next pass once the session is at rest", async () => {
     const db = createMemoryDb();
-    // The stop failed. Nothing about that is permanent bookkeeping: the only
+    // The check could not answer. Nothing about that is permanent bookkeeping: the only
     // thing gating the retry is whether the session is running right now, so an
     // at-rest session must be attempted again on the very next pass.
     const settleSessionsReportingAborts = vi.fn((ids: string[]) => ({
       settled: [] as string[],
-      aborted: ids.map((sessionId) => ({ sessionId, reason: "teardown_failed" })),
+      aborted: ids.map((sessionId) => ({ sessionId, reason: "status_unknown" })),
     }));
     const getChatLiveness = vi.fn(async () => ({ status: "idle" as const }));
     const emitEvent = vi.fn();
@@ -1346,7 +1346,7 @@ describe("prMergeAutoSettlementService", () => {
       { toolType: "codex-chat" as const, getChatLiveness: undefined },
     ],
     [
-      "a chat at rest between turns, which is a state teardown accepts",
+      "a chat at rest between turns, which is a state the settle check accepts",
       {
         toolType: "codex-chat" as const,
         getChatLiveness: vi.fn(async () => ({ status: "idle" as const })),
@@ -1405,8 +1405,8 @@ describe("prMergeAutoSettlementService", () => {
    *
    * It used to go straight to the settle, and it is the attempt most likely to
    * land on a running turn — the merge arrives while the agent is still
-   * working. With teardown refusing to cancel a turn for a machine settle,
-   * attempting anyway would abort every poll and file nothing.
+   * working. A working chat cannot be settled, so attempting anyway would
+   * abort every poll and file nothing.
    */
   it("defers the FIRST attempt while the chat is mid-turn, without consulting the row", async () => {
     const db = createMemoryDb();
@@ -1491,11 +1491,9 @@ describe("prMergeAutoSettlementService", () => {
   /**
    * A liveness read that THROWS is not evidence the turn ended.
    *
-   * The gate used to swallow the rejection into `null` and settle, and nothing
-   * downstream catches that: a `readActiveWork` failing the same way returns
-   * `timedOutResidue` with no `abortedBy`, so teardown files the session
-   * without ever noticing it stopped live work. Failing closed costs one
-   * deferred poll; failing open costs the user their running turn.
+   * The gate used to swallow the rejection into `null` and settle. Failing
+   * closed costs one deferred poll; failing open files a chat that is still
+   * working.
    */
   it("defers while chat liveness is unreadable, and settles once it answers", async () => {
     const db = createMemoryDb();
@@ -1603,8 +1601,8 @@ describe("prMergeAutoSettlementService", () => {
     expect(settleSessionsReportingAborts).toHaveBeenCalledTimes(1);
     chatStatus = "active";
 
-    // Still mid-turn: the retry must not fire. With real teardown attached this
-    // is what would otherwise stop the work that won the race, once per poll.
+    // Still mid-turn: the retry must not fire. The settle check would refuse
+    // it anyway, once per poll.
     await service.processSnapshot({ prs: [mergedPr], polledAt: "2026-03-24T12:31:00.000Z" });
     expect(
       settleSessionsReportingAborts,
@@ -1970,10 +1968,10 @@ describe("PR-origin merge lifecycle", () => {
     let completed = false;
     let live: "idle" | "active" = "idle";
     let duringLiveness = () => {};
-    let duringTeardown = () => {};
-    const sessions = createSessionService({ db, runSettleTeardown: async () => {
-      duringTeardown();
-      return { confirmed: true, residue: [] };
+    let duringCheck = () => {};
+    const sessions = createSessionService({ db, checkSettle: async () => {
+      duringCheck();
+      return {};
     } });
     const store = createPrChatLinkStore({ db, projectId: "proj-1", logger: createLogger(), knownStackNumberForPr: () => null });
     const service = createPrMergeAutoSettlementService({
@@ -1990,7 +1988,7 @@ describe("PR-origin merge lifecycle", () => {
       active: () => { live = "active"; },
       idle: () => { live = "idle"; },
       onLiveness: (fn: () => void) => { duringLiveness = fn; },
-      onTeardown: (fn: () => void) => { duringTeardown = fn; },
+      onCheck: (fn: () => void) => { duringCheck = fn; },
       pending: (id = "chat-0") => db.get<{ pending: number }>("select merge_followup_pending as pending from pull_request_lane_chat_origins where claimed_session_id = ?", [id])?.pending,
     };
   }
@@ -2010,12 +2008,12 @@ describe("PR-origin merge lifecycle", () => {
     expect(f.sessions.get("chat-0")?.settledAt).toBeNull();
   });
 
-  it.each(["liveness", "teardown", "other_pr"])("keeps user work when %s changes the live PR relationship", async (race) => {
+  it.each(["liveness", "settle_check", "other_pr"])("keeps user work when %s changes the live PR relationship", async (race) => {
     const f = await fixture(); f.complete();
     const unlink = () => { f.store.unlinkPrFromChatSession({ prId: "pr-0", sessionId: "chat-0" }); };
     if (race === "liveness") f.onLiveness(unlink);
-    else if (race === "teardown") f.onTeardown(unlink);
-    else f.onTeardown(() => {
+    else if (race === "settle_check") f.onCheck(unlink);
+    else f.onCheck(() => {
       f.db.run("insert into pull_requests(id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, state, base_branch, head_branch, created_at, updated_at) values ('other', 'proj-1', 'lane-0', 'acme', 'ade', 999, 'https://github.com/acme/ade/pull/999', 'open', 'main', 'other', '2026-03-24', '2026-03-24')");
       f.store.linkPrToChatSession({ prId: "other", laneId: "lane-0", sessionId: "chat-0" });
     });
@@ -2051,7 +2049,7 @@ describe("PR-origin merge lifecycle", () => {
     const f = await fixture(1, false); f.complete();
     // The claimed chat is moved to another lane (updateMeta({ laneId })) while
     // the origin row keeps the original lane. The commit guard would reject the
-    // mismatch after teardown on every poll, keeping the PR out of handledPrIds
+    // mismatch after the settle check on every poll, keeping the PR out of handledPrIds
     // forever. The lookup must clear the stale binding and settle without it.
     f.db.run(
       "insert into lanes(id, project_id, name, base_ref, branch_ref, worktree_path, status, created_at) values ('lane-elsewhere', 'proj-1', 'moved', 'main', 'moved', ?, 'active', '2026-03-24T12:00:00.000Z')",

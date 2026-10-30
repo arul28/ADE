@@ -653,17 +653,8 @@ OS-driven mechanics that can fire dozens of times a day on a laptop, which is
 exactly the high-frequency shape this document says to aggregate or leave
 untracked. They stay local operational logs.
 
-Settle teardown records two things at the session-service owner boundary, both
-on the existing `ade_feature_used` event with `feature: "work"`.
-
-`action: "settle_teardown_residue"` fires when a settle landed but a stop could
-not be confirmed (the design's 3d option 3). It carries `provider`, a coarse
-`outcome` reason (`no_stop_control`, `timeout`, or `rejected`) and a bucketed
-`count_bucket` (`1`, `2_5`, `6_plus`). **One event per settle, never one per
-failed job** — a fleet that fails to stop must not become a burst — and the
-bucket exists so a large fleet cannot widen the dimension either. No session id,
-task id, command, or error text is recorded; the human-readable residue detail
-stays on the local diagnostics row and never enters the payload.
+Settle records one thing at the session-service owner boundary, on the
+existing `ade_feature_used` event with `feature: "work"`.
 
 `action: "settle_remote_write_reconciled"` fires when an inbound changeset
 carried settle-tuple columns and the session layer re-asserted them through the

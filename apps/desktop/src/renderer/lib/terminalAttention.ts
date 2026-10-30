@@ -207,17 +207,17 @@ export function sessionCanonicalUiState(session: SessionCanonicalUiInput): Canon
  * Is this session mid-flight — work the machine is actively doing, that will
  * change state on its own?
  *
- * The lifecycle actions (Settle in particular) hide behind this: filing away a
- * row the machine is still working in claims an outcome that has not happened.
+ * The lifecycle actions (Settle in particular) hide behind this: a chat that is
+ * working cannot be settled, and the host refuses it too (`settleTurnCheck.ts`).
  *
  * The subtlety it exists to hold in one place: `running` is NOT the same thing
  * as mid-turn. `restingPhaseWithBackgroundWork` promotes a session whose turn
  * has already ended back to `running` while it still owns background jobs, and
- * that row is exactly the one a user needs to be able to settle — settle
- * teardown is what stops the background work and releases the warm agent. Two
- * surfaces read this (the row's hover slot and its right-click menu) and iOS
- * mirrors it; when they each carried their own copy, hover offered Settle on a
- * background-promoted row and right-click on the same row did not.
+ * that row can be settled: settle is a classification, so its background jobs,
+ * scheduled wakes and subagents keep running. Two surfaces read this (the row's
+ * hover slot and its right-click menu) and iOS mirrors it; when they each
+ * carried their own copy, hover offered Settle on a background-promoted row and
+ * right-click on the same row did not.
  */
 export function sessionIsMidFlight(session: SessionCanonicalUiInput): boolean {
   const state = sessionCanonicalUiState(session);
@@ -227,7 +227,11 @@ export function sessionIsMidFlight(session: SessionCanonicalUiInput): boolean {
   // today". Both call sites carried it before this was hoisted, and iOS's
   // mirror still does; dropping it would make the predicate quietly wrong the
   // day something starts producing it.
-  if (state.phase === "starting" || state.phase === "stale") return true;
+  if (state.phase === "starting") return true;
+  // Stale is two things: a live turn silent for hours (mid-flight), or a turn
+  // that ended long ago with background work still claiming to run. The
+  // second is at rest and can be settled; its work keeps running.
+  if (state.phase === "stale") return session.runtimeState !== "idle";
   return state.phase === "running" && (state.liveness ?? "turn") === "turn";
 }
 

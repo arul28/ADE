@@ -979,7 +979,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "get",
     "getDelta",
     "getLifecycleSettings",
-    "getSettleResidue",
     "list",
     "moveOnBoard",
     "readTranscriptTail",

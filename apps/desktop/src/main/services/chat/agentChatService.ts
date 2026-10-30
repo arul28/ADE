@@ -379,7 +379,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
-import type { SubagentLink } from "../sessions/sessionSettleTeardown";
+import type { SubagentLink } from "../sessions/settleWiring";
 import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -1228,6 +1228,7 @@ import {
   classifyBackgroundWorkKind,
   SESSION_STALE_AFTER_MS,
   isPersistedTurnFailureCurrent,
+  isSettleTupleSettled,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -21802,6 +21803,18 @@ export function createAgentChatService(args: {
 
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
+      // A turn starting from anything (a scheduled wake, a cron, a background
+      // job or subagent reporting back, a restart resume) takes a settled chat
+      // out of settled. Settle only classifies a chat at rest. A failed write
+      // must not cost the turn its start.
+      try {
+        sessionService.clearSettleOnTurnStart(managed.session.id);
+      } catch (error) {
+        logger.warn("agent_chat.clear_settle_on_turn_start_failed", {
+          sessionId: managed.session.id,
+          error: getErrorMessage(error),
+        });
+      }
       managed.session.currentTurnStartedAt = nowIso();
       lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
       // A new turn starts: the last turn's id no longer applies. Proof filed
@@ -21962,7 +21975,9 @@ export function createAgentChatService(args: {
       await scheduledWorkReady;
       if (!scheduledWorkScheduler) return;
       const row = sessionService.get(sessionId);
-      if (!row || !isSchedulableAgentSession(row) || row.settledAt || row.archivedAt) return;
+      // Settled chats resume too: settle stops nothing, and the resumed turn
+      // takes the chat out of settled.
+      if (!row || !isSchedulableAgentSession(row) || row.archivedAt) return;
       if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
       const restartResumeStreak = restartResumeStreakFor(managed);
       if (restartResumeStreak > MAX_CONSECUTIVE_RESTART_RESUMES) {
@@ -22052,7 +22067,7 @@ export function createAgentChatService(args: {
       recent,
       awaitingUser,
       capped: restartResumeCapReached(managed),
-      settledOrArchived: Boolean(row?.settledAt || row?.archivedAt),
+      archived: Boolean(row?.archivedAt),
     });
     // Rows the transcript still shows running, plus rows the stale-run sweep
     // closed for this restart: what the dead process took with it. Minus what
@@ -66706,8 +66721,7 @@ export function createAgentChatService(args: {
         if (row.status === "disposed" || row.status === "detached") continue;
         // Mirror canonicalSessionState: an explicit "active" pin overrides a
         // settledAt column, and a settle only counts at rest.
-        const pinnedActive = row.settleOverride === "active";
-        if (!pinnedActive && (row.settleOverride === "settled" || Boolean(row.settledAt))) continue;
+        if (isSettleTupleSettled(row)) continue;
         const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
         if (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs) continue;
       }
@@ -70774,7 +70788,7 @@ export function createAgentChatService(args: {
     const cutoff = Date.now() - RESTART_RESUME_MAX_AGE_MS;
     const rows = sessionService
       .list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES })
-      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt && !row.settledAt)
+      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt)
       .filter((row) => {
         const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
         return Number.isFinite(endedMs) && endedMs >= cutoff;

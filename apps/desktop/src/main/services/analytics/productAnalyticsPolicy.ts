@@ -176,9 +176,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "metadata_regenerated",
   "transaction_failed",
   "scope_selected",
-  // Settle teardown: work a settle could not confirm it stopped, and a peer
-  // settle-tuple write that had to be reconciled through the chokepoint.
-  "settle_teardown_residue",
+  // A peer settle-tuple write that had to be reconciled through the chokepoint.
   "settle_remote_write_reconciled",
   // The chat auto-resume loop after a provider usage limit: whether a resume
   // was scheduled, whether one actually ran, and whether the re-arm cap stopped

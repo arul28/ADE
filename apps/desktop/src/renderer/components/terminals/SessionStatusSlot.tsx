@@ -92,10 +92,10 @@ export function SessionStatusSlot({
   // hover-driven actions would fade out from under the open menu. Pin the slot
   // open for as long as the menu is.
   const [snoozeMenuOpenRaw, setSnoozeMenuOpen] = React.useState(false);
-  // Settle now appears on rows where teardown does real provider work (stopping
-  // background jobs, releasing the agent), so a second click lands inside that
-  // window. The backend answers a joined settle with a raw session id in the
-  // message — never something to show a user — so swallow the double click here.
+  // A settle awaits a turn check on the host, so a second click can land inside
+  // that window. The backend answers a joined settle with a raw session id in
+  // the message — never something to show a user — so swallow the double click
+  // here.
   const [settlePending, setSettlePending] = React.useState(false);
   // Derived, not raw: if the snooze button disappears while its menu is open
   // (the row gets blocked mid-interaction) it unmounts without ever reporting

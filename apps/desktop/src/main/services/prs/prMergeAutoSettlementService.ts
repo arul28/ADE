@@ -181,9 +181,9 @@ export function createPrMergeAutoSettlementService(args: {
   /**
    * True only when a chat turn is verifiably running right now.
    *
-   * Deliberately the sole reason to defer. The gate mirrors teardown's own
-   * refusal, which triggers on `before.active` alone, so anything teardown
-   * would accept must not be held back here: `awaitingInput` is a stable
+   * Deliberately the sole reason to defer. The gate mirrors the settle check's
+   * own refusal (`settleTurnCheck.ts`), which triggers on a running turn alone,
+   * so anything the check would accept must not be held back here: `awaitingInput` is a stable
    * resting state, and no answer to a chat's `terminal_sessions` row is
    * evidence of a turn — that column holds `running` for the life of a tracked
    * CLI terminal and between chat turns, so reading it defers forever and no
@@ -192,14 +192,13 @@ export function createPrMergeAutoSettlementService(args: {
    * No liveness (no `getChatLiveness`, or nothing for this session — every
    * non-chat and tracked-CLI row) leaves ordinary merge handling unchanged.
    * An explicit PR-origin chat separately requires a completed first turn.
-   * Teardown's `mayInterruptActiveTurn` policy remains the backstop for other
-   * chats: if a turn is running it aborts rather than interrupts.
+   * The settle check remains the backstop for other chats: a running turn
+   * refuses the settle, and the poller retries on a later pass.
    *
    * A THROWN read is the one case that is not "no liveness": an unreachable
    * liveness source is not evidence the turn ended, so it counts as active and
-   * defers this poll. Teardown fails the same way closed for a machine settle
-   * (a `readActiveWork` that times out aborts rather than files), so the two
-   * halves agree; this gate is still the one that keeps the deferral cheap.
+   * defers this poll. The settle check fails the same way closed (a turn read
+   * that times out refuses rather than files), so the two halves agree; this gate is still the one that keeps the deferral cheap.
    */
   const readChatLiveness = async (sessionId: string): Promise<ChatLivenessSummary | null> => {
     try {
@@ -261,7 +260,7 @@ export function createPrMergeAutoSettlementService(args: {
    * True when the origin's stored lane still matches the live PR, chat edge,
    * and terminal session. A chat moved by `updateMeta({ laneId })` or a PR
    * remapped to another lane leaves the origin pointing at a lane nothing
-   * occupies; `claimOriginForSettle` would then reject it after teardown on
+   * occupies; `claimOriginForSettle` would then reject it after the settle check on
    * every poll, keeping the merged PR permanently unhandled. A stale binding is
    * cleared here and reported false so both the normal path and the handled
    * follow-up skip it instead of retrying forever.
@@ -410,7 +409,7 @@ export function createPrMergeAutoSettlementService(args: {
       const pr = prsById.get(followup.pr_id);
       if (!pr) continue;
       // A stale binding (chat moved lanes / PR remapped) is cleared here so
-      // `claimOriginForSettle` never rejects it after teardown on every poll.
+      // `claimOriginForSettle` never rejects it after the settle check on every poll.
       if (!originBindingFresh(followup)) continue;
       const state = getPrMergeAutoSettlementState(args.db);
       if (
@@ -555,7 +554,7 @@ export function createPrMergeAutoSettlementService(args: {
         // again, while handledPrIds prevents this PR from filing it twice.
         //
         // The one thing a merge does NOT outrank is a chat turn running right
-        // now: teardown refuses to cancel one for a machine-initiated settle,
+        // now: the settle check refuses a working chat for every caller,
         // so attempting anyway would abort every poll for as long as the turn
         // runs. That — and nothing else — is deferred, on every attempt, with
         // no time cap. A deferral is never an abandonment; the retry costs one

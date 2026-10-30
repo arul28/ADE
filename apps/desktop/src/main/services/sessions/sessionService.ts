@@ -8,8 +8,8 @@ import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNe
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import { createAgentShellCleanup } from "./agentShellCleanup";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./sessionSettleTeardown";
-import { settleSourceMayInterruptActiveTurn } from "./sessionSettleTeardown";
+import type { SettleCheckOutcome } from "./settleTurnCheck";
+import type { SubagentLink } from "./settleWiring";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -41,7 +41,7 @@ import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
 } from "../../../shared/types";
-import { isWakingSessionError } from "../../../shared/sessionCanonicalState";
+import { isSettleTupleSettled, isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
@@ -129,8 +129,8 @@ export const STALE_RUNNING_SESSION_RESCAN_DELAY_MS = Math.max(
   STALE_RUNNING_SESSION_FRESH_ACTIVITY_GRACE_MS,
 ) + 1_000;
 
-/** Bounded so a large sweep cannot open a provider stop per session at once. */
-const SETTLE_TEARDOWN_CONCURRENCY = 4;
+/** Bounded so a large sweep cannot open a chat-service read per session at once. */
+const SETTLE_CHECK_CONCURRENCY = 4;
 /** Set once the one-time archived-lane session backfill has run in this project. */
 const ARCHIVED_LANE_SESSIONS_BACKFILL_KEY = "lane_archive.sessions_backfill.v1";
 
@@ -461,9 +461,8 @@ type SettleCommitGuard = (sessionId: string) => boolean;
 export function createSessionService({
   db,
   logger,
-  runSettleTeardown,
+  checkSettle,
   onRemoteSettleWrite,
-  onSettleResidue,
   onChatSettled,
   listSubagentLinks,
 }: {
@@ -471,23 +470,14 @@ export function createSessionService({
   /** Optional: only the delete cascade's best-effort PR-link purge reports through it. */
   logger?: Logger;
   /**
-   * Stop the session's background work. Injected rather than per-call: teardown
-   * is a service capability, not something a caller decides.
-   *
-   * Step 2 ships with this absent — the settling window, the abort rule, and the
-   * revision guard all land and are tested against a NO-OP, so every race is
-   * exercised before there is any work to lose. Step 3 supplies the real one.
+   * Refuses a settle while the session's turn is running (`settleTurnCheck.ts`).
+   * It stops nothing: settle is a classification, and a settled chat keeps its
+   * background work, scheduled wakes and subagents. Awaited INSIDE the settling
+   * window, which is what makes the suspension point safe: the window is
+   * exclusive (R4), abortable (R1/R6) and in-memory so a crash resolves to
+   * not-settled. Late-bound, because the chat service is built later.
    */
-  /**
-   * Real teardown. Awaited INSIDE the settling window, which is what makes the
-   * suspension point safe: the window is exclusive (R4), abortable (R1/R6) and
-   * in-memory so a crash resolves to not-settled. Step 2 shipped a synchronous
-   * branded seam to forbid exactly this until those semantics were proven.
-   */
-  runSettleTeardown?: (
-    sessionId: string,
-    ctx: SettleTeardownContext,
-  ) => Promise<SettleTeardownOutcome>;
+  checkSettle?: (sessionId: string) => Promise<SettleCheckOutcome>;
   /**
    * Fired when a peer's settle-tuple write had to be reconciled. Telemetry
    * only: post-step-0 this should be zero in the field, and if it is not we
@@ -495,8 +485,6 @@ export function createSessionService({
    * protocol-level token is justified.
    */
   onRemoteSettleWrite?: (args: { columns: string[]; changesetSessionCount: number }) => void;
-  /** Fired only for residue attached to a settle that actually landed. */
-  onSettleResidue?: (args: { provider: string | null; items: SettleResidueItem[] }) => void;
   /**
    * Fired after a chat's settle that this host declared has landed. Not fired
    * for a shell or a tracked CLI session. A subagent that follows its settled
@@ -506,7 +494,7 @@ export function createSessionService({
    */
   onChatSettled?: (chat: SettledChat) => void;
   /**
-   * The subagents of these sessions (not peers). Late-bound like teardown,
+   * The subagents of these sessions (not peers). Late-bound like the check,
    * because the chat service that knows the lineage is built later. A settled
    * parent settles its subagents too, so a lane is not left holding orphan
    * subagents of work the user already filed away; unsettling the parent
@@ -522,6 +510,17 @@ export function createSessionService({
   const settleLifecycle = createSettleLifecycleWriter(db);
   const writeSettleLifecycle = settleLifecycle.write;
   const statusNoteUpdatedAtById = new Map<string, string>();
+
+  /**
+   * The settle-tuple clear a turn start makes. The pending nudge marker
+   * invalidates any Jev answer already in flight: a unique value lets the
+   * eventual write fail its compare-and-set.
+   */
+  const turnStartSettleClear = () => ({
+    kind: "clearOnActivity" as const,
+    cause: "turn_start" as const,
+    settleNudgeTurnId: `pending:${randomUUID()}`,
+  });
 
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
@@ -1135,7 +1134,7 @@ export function createSessionService({
         }
         // The commit guard's write acquires SQLite's write lock. Re-read the
         // shared lifecycle revision while that lock is held so a sibling
-        // process's activity or reopen between teardown and this transaction
+        // process's activity or reopen between the settle check and this transaction
         // cannot be overwritten by this settle.
         if (
           expectedLifecycleRevision !== undefined
@@ -1182,46 +1181,17 @@ export function createSessionService({
     return newlySettled;
   };
 
-  const clearSettleResidue = (sessionId: string): void => {
-    try {
-      db.run("delete from session_settle_residue where session_id = ?", [sessionId]);
-    } catch {
-      // Diagnostics only.
-    }
-  };
-
   /**
-   * Record what teardown could not confirm it stopped (§3d option 3).
+   * Settle through the settling window.
    *
-   * Keyed by session so a re-settle REPLACES the previous record rather than
-   * accumulating history the user has no way to clear. Never throws: the settle
-   * has already landed by this point, and losing a diagnostics row must not
-   * turn a successful settle into a failed one.
+   * Per session: read the revision, open the window, run the settle check
+   * (refuses a running turn), then apply the settle ONLY if nothing moved.
+   * "Nothing moved" is two checks that catch different things — the abort flag
+   * (a human decision arrived and said so) and the revision (anything else
+   * changed the settle tuple, including a change this host did not make
+   * through a caller).
    */
-  const recordSettleResidue = (sessionId: string, items: SettleResidueItem[]): void => {
-    try {
-      db.run(
-        `insert into session_settle_residue (session_id, recorded_at, items) values (?, ?, ?)
-           on conflict(session_id) do update set recorded_at = excluded.recorded_at, items = excluded.items`,
-        [sessionId, new Date().toISOString(), JSON.stringify(items)],
-      );
-    } catch {
-      // Diagnostics only.
-    }
-  };
-
-  /**
-   * Settle through the settling window: the shape a real teardown will run in.
-   *
-   * Per session: read the revision, open the window, run teardown, then apply
-   * the settle ONLY if nothing moved. "Nothing moved" is two checks that catch
-   * different things — the abort flag (a human decision arrived and said so) and
-   * the revision (anything else changed the settle tuple, including a change
-   * this host did not make through a caller).
-   *
-   * Teardown is real from step 3, and it is AWAITED inside the window.
-   */
-  const settleManyWithTeardown = async (
+  const settleManyThroughWindow = async (
     sessionIds: string[],
     options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
     /** Null for subagents that follow a settled parent; see `onChatSettled`. */
@@ -1233,18 +1203,17 @@ export function createSessionService({
     const aborted: SettleAbortedSession[] = [];
 
     // Concurrent, not sequential. Each session takes its own exclusive window,
-    // so two settles never interact — but the confirmation budget is seconds,
-    // and a bulk settle used to pay it once PER SESSION in series. iOS allows a
-    // settle command 30s total, so three busy sessions was already a guaranteed
-    // "the machine took too long to respond" while the settle ran on regardless.
+    // so two settles never interact, and iOS allows a settle command 30s total:
+    // a slow chat-service read must not be paid once per session in series.
     //
-    // Bounded, so a fifty-session sweep cannot open fifty provider stops at once.
+    // Bounded, so a fifty-session sweep cannot open fifty `getSessionSummary`
+    // reads at once.
     const settleOne = async (id: string): Promise<SettleSessionsOutcome> => {
       const outcome: SettleSessionsOutcome = { settled: [], aborted: [] };
 
       const revisionBefore = settleLifecycle.readRevision(id);
-      const begin = settleLifecycle.settling.begin(id, revisionBefore);
-      // Joined an in-flight settle rather than starting a second teardown: R4.
+      const begin = settleLifecycle.settling.begin(id);
+      // Joined an in-flight settle rather than starting a second one: R4.
       // The owner reports the outcome; reporting it twice would double-count.
       if (begin.kind === "joined") {
         // A joiner that returns nothing looks identical to a settle that was
@@ -1256,45 +1225,27 @@ export function createSessionService({
       }
 
       try {
-        let teardown: SettleTeardownOutcome | null = null;
-        let teardownThrew = false;
+        let check: SettleCheckOutcome | null = null;
         try {
-          teardown = runSettleTeardown
-            ? await runSettleTeardown(id, {
-              // Read live, not captured: the whole point is that a clearer can
-              // trip it while teardown is between stop calls. Scoped to OUR
-              // token, so a window that was force-closed and reopened by a
-              // different settle reads as abandoned rather than as healthy.
-              isAborted: () => settleLifecycle.settling.abandoned(id, begin.token),
-              // Derived from WHO asked, not from what the session is doing: a
-              // poller must not inherit the user's right to cancel a turn.
-              mayInterruptActiveTurn: settleSourceMayInterruptActiveTurn(options.source),
-            })
-            : null;
+          check = checkSettle ? await checkSettle(id) : null;
         } catch (error) {
-          // A teardown throw is `teardown_failed` (as is a first-read timeout
-          // inside teardown, which returns it as `abortedBy` — both mean "not
-          // stopped cleanly, safe to retry"). A persistence failure
-          // below must not wear that label: a caller cannot tell "the work is
-          // still running" from "the work stopped but the row did not save",
-          // and the PR poller would retry a stop that already succeeded. Those
-          // propagate, as they did before the settling window existed.
-          teardownThrew = true;
-          void error;
+          // A check that throws could not tell whether a turn is running. A
+          // persistence failure below must not wear this label: those propagate,
+          // as they did before the settling window existed.
+          logger?.warn("session.settle_check_failed", {
+            sessionId: id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          check = { abortedBy: "status_unknown" };
         }
-        if (teardownThrew) {
-          outcome.aborted.push({ sessionId: id, reason: "teardown_failed" });
-          return outcome;
-        }
-        // Teardown refused to stop this session's work (a machine settle over a
-        // running turn). Nothing was stopped, so nothing may be filed either.
-        if (teardown?.abortedBy) {
-          outcome.aborted.push({ sessionId: id, reason: teardown.abortedBy });
+        // A running turn (or one ADE could not rule out). Nothing may be filed.
+        if (check?.abortedBy) {
+          outcome.aborted.push({ sessionId: id, reason: check.abortedBy });
           return outcome;
         }
 
-        // Same scoping after the await: if this window was replaced while
-        // teardown ran, the settle it belonged to is gone and must not land.
+        // Same scoping after the await: if this window was replaced while the
+        // check ran, the settle it belonged to is gone and must not land.
         if (settleLifecycle.settling.abandoned(id, begin.token)) {
           outcome.aborted.push({
             sessionId: id,
@@ -1322,32 +1273,15 @@ export function createSessionService({
         if (commitGuardResult.rejected) {
           outcome.aborted.push({ sessionId: id, reason: "lifecycle_changed" });
         }
-        if (changed.length && teardown?.confirmed && !teardown.residue.length) {
-          // A settle that DID confirm everything must clear the previous
-          // record, or the row keeps reporting "1 job could not be stopped"
-          // from a settle two cycles ago, with a stale timestamp.
-          clearSettleResidue(id);
-        }
-        if (changed.length && teardown?.residue.length) {
-          recordSettleResidue(id, teardown.residue);
-          // Reported HERE, not inside teardown: an abort arriving between
-          // teardown returning and the guards above means the settle never
-          // landed, and analytics must not claim residue for one that does not
-          // exist.
-          onSettleResidue?.({ provider: teardown.provider ?? null, items: teardown.residue });
-        }
         return outcome;
       } finally {
         settleLifecycle.settling.end(id, begin.token);
       }
     };
 
-    // A worker pool, not chunks. Chunking was tried and reverted: a chunk
-    // barrier idles the other workers until its slowest member finishes, and
-    // "every teardown is bounded" is not the same as "every teardown takes the
-    // same time". For a 50-session sweep where a quarter of the rows hold
-    // unstoppable work, chunking costs roughly 65s against the pool's ~20 —
-    // aimed straight at the 30s iOS command budget this exists to protect.
+    // A worker pool, not chunks: a chunk barrier idles the other workers until
+    // its slowest member finishes, and one slow read must not hold the rest of
+    // a sweep against the 30s iOS command budget.
     const perSession = new Map<string, SettleSessionsOutcome>();
     const queue = [...ids];
     // A persistence failure propagates (a SQLite lock is not a settle outcome
@@ -1357,7 +1291,7 @@ export function createSessionService({
     // nothing is abandoned half-written.
     let failure: unknown = null;
     await Promise.all(
-      Array.from({ length: Math.min(SETTLE_TEARDOWN_CONCURRENCY, queue.length) }, async () => {
+      Array.from({ length: Math.min(SETTLE_CHECK_CONCURRENCY, queue.length) }, async () => {
         for (;;) {
           const id = queue.shift();
           if (id === undefined) return;
@@ -1379,7 +1313,7 @@ export function createSessionService({
 
     // Reassembled in request order. `settled` is a changed-id list that callers
     // compare against what they asked for, so it must not come back shuffled by
-    // whichever teardown happened to finish first. `normalizeSessionIds`
+    // whichever check happened to finish first. `normalizeSessionIds`
     // dedupes, so every id has exactly one entry.
     for (const id of ids) {
       const outcome = perSession.get(id);
@@ -1390,7 +1324,7 @@ export function createSessionService({
 
     // Subagents follow a parent that is settled, whether by this call or an
     // earlier one (so a retry reaches a subagent that refused last time). They
-    // are settled through the same window (teardown included), and the
+    // are settled through the same window (a subagent mid-turn refuses), and the
     // recursion reaches grandchildren. A subagent that refuses is left as it is
     // and is not reported as an abort: the caller asked about the parent, and
     // the PR-merge poller must not treat a busy subagent as a failure to file
@@ -1406,10 +1340,10 @@ export function createSessionService({
       }
       // Only subagents still unsettled: that ends the recursion even if
       // lineage ever formed a cycle, and an already-settled subagent does not
-      // get a second teardown.
+      // get settled twice.
       const children = [...new Set(childIds)].filter((childId) => !requested.has(childId) && settledAtMs(childId) == null);
       if (children.length) {
-        const followers = await settleManyWithTeardown(children, options, null);
+        const followers = await settleManyThroughWindow(children, options, null);
         settled.push(...followers.settled);
       }
     }
@@ -1441,7 +1375,7 @@ export function createSessionService({
     // touch `status_note` with hasOwnProperty, so passing `outcome: undefined`
     // writes null and erases the note a previous settle left behind.
     const note = normalizeSessionStatusNote(opts.outcome);
-    const result = await settleManyWithTeardown([trimmed], {
+    const result = await settleManyThroughWindow([trimmed], {
       ...(note ? { outcome: note } : {}),
       settledAt: opts.settledAt,
       source: opts.source,
@@ -1544,7 +1478,6 @@ export function createSessionService({
     // local table with no reaper, and every other session-keyed side table is
     // already cascaded here.
     settleLifecycle.forget(trimmed);
-    clearSettleResidue(trimmed);
     // PR links are routing metadata for one chat; a link outliving its chat
     // pins its lane's PR (the primary lane can never shed those). The row is
     // already gone, so a failed purge must not report the delete as failed —
@@ -2311,7 +2244,7 @@ export function createSessionService({
     },
 
     async settleSessions(sessionIds: string[]): Promise<string[]> {
-      return (await settleManyWithTeardown(sessionIds)).settled;
+      return (await settleManyThroughWindow(sessionIds)).settled;
     },
 
     /**
@@ -2478,8 +2411,7 @@ export function createSessionService({
     ): Promise<boolean> {
       // Through the settling window, like the bulk paths. This is the route a
       // USER takes (row menu -> settleTerminalSession -> here), which is the
-      // "user settle" R4 names — so it has to be joinable and abortable, and it
-      // runs real teardown.
+      // "user settle" R4 names — so it has to be joinable and abortable.
       //
       // Delegates rather than duplicating: the boolean form is exactly the typed
       // form with the reason discarded, and keeping two copies of the existence
@@ -2508,7 +2440,7 @@ export function createSessionService({
      * re-decided them, which left this host's clock permanently behind the peer
      * and made its next genuine decision lose every merge. What the chokepoint
      * contributes is the lifecycle revision: an in-flight settle re-reads it
-     * after its teardown await, sees it moved, and abandons rather than
+     * after its check await, sees it moved, and abandons rather than
      * overwriting the peer's decision.
      *
      * No peer-visible concurrency token is involved; that is a protocol change
@@ -2537,11 +2469,8 @@ export function createSessionService({
           );
           if (!exists) continue;
           writeSettleLifecycle({ intent: { kind: "observeRemote" }, sessionIds: [sessionId] });
-          // Trip the abort too, not just the revision. The revision is only
-          // re-read AFTER teardown finishes, so on its own it would let a
-          // teardown run to completion and interrupt a turn the user has just
-          // started on another device — losing the work AND the settle, which
-          // is the R2 shape 3c exists to prevent.
+          // Trip the abort too, not just the revision: the peer's decision
+          // outranks a settle that is still in its window here.
           settleLifecycle.settling.abort(sessionId, "remote_lifecycle_changed");
           emitChanged({ sessionId, reason: "meta-updated" });
           reconciled.push(...columns);
@@ -2563,31 +2492,6 @@ export function createSessionService({
     },
 
     /**
-     * What the LAST settle could not confirm it stopped, for the diagnostics
-     * surface. Returns null unless the session is currently settled: a stale
-     * record on a row the user has since reactivated is not residue, it is
-     * history, and showing it would re-light a row that is working fine.
-     */
-    getSettleResidue(sessionId: string): { recordedAt: string; items: SettleResidueItem[] } | null {
-      const trimmed = sessionId.trim();
-      if (!trimmed) return null;
-      const row = db.get<{ settled_at: string | null; recorded_at: string; items: string }>(
-        `select s.settled_at as settled_at, r.recorded_at as recorded_at, r.items as items
-           from session_settle_residue r
-           join terminal_sessions s on s.id = r.session_id
-          where r.session_id = ?`,
-        [trimmed],
-      );
-      if (!row || !row.settled_at) return null;
-      try {
-        const items = JSON.parse(row.items) as SettleResidueItem[];
-        return Array.isArray(items) && items.length ? { recordedAt: row.recorded_at, items } : null;
-      } catch {
-        return null;
-      }
-    },
-
-    /**
      * Settle, reporting abandoned sessions explicitly.
      *
      * `settleSessions` leaves an aborted id simply absent from its changed-id
@@ -2601,12 +2505,7 @@ export function createSessionService({
       options: { outcome?: string; settledAt?: string; source?: SessionSettleSource } = {},
       commitGuard?: SettleCommitGuard,
     ): Promise<SettleSessionsOutcome> {
-      return await settleManyWithTeardown(sessionIds, options, onChatSettled ?? null, commitGuard);
-    },
-
-    /** Sessions currently mid-settle, for the visible `Settling…` state. */
-    settlingSessionIds(): string[] {
-      return settleLifecycle.settling.settlingSessionIds();
+      return await settleManyThroughWindow(sessionIds, options, onChatSettled ?? null, commitGuard);
     },
 
     unsettleSessions,
@@ -2924,16 +2823,40 @@ export function createSessionService({
       ));
     },
 
+    /**
+     * Any turn start takes a settled chat out of settled: a scheduled wake, a
+     * cron, a background job reporting back, a subagent result, a restart
+     * resume. Settle is a classification of a chat at rest, so a chat that is
+     * working again is not settled.
+     *
+     * Unlike `clearTurnStartMarkers` this touches only the settle tuple: a
+     * wake must not take down a question the agent raised for the person. A
+     * row that is not settled (including one pinned keep-active) is left
+     * alone, so the common case writes nothing.
+     */
+    clearSettleOnTurnStart(sessionId: string): boolean {
+      const trimmed = sessionId.trim();
+      if (!trimmed) return false;
+      const row = db.get<{ settledAt: string | null; settleOverride: string | null }>(
+        "select settled_at as settledAt, settle_override as settleOverride from terminal_sessions where id = ? limit 1",
+        [trimmed],
+      );
+      if (!row) return false;
+      if (!isSettleTupleSettled(row)) {
+        // A settle still in its window has not written yet: abort it, and
+        // write nothing, so a keep-active pin survives.
+        settleLifecycle.settling.abort(trimmed, "turn_start");
+        return false;
+      }
+      return mutateSessionMeta(trimmed, (id) => {
+        writeSettleLifecycle({ intent: turnStartSettleClear(), sessionIds: [id] });
+      });
+    },
+
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: {
-            kind: "clearOnActivity",
-            cause: "turn_start",
-            // The pending marker invalidates any Jev answer already in flight.
-            // A unique value lets the eventual write fail its compare-and-set.
-            settleNudgeTurnId: `pending:${randomUUID()}`,
-          },
+          intent: turnStartSettleClear(),
           extraSet: {
             last_turn_failed_at: null,
             attention_requested_at: null,

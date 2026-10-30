@@ -320,7 +320,7 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
         endWatch(watch, "chat_gone");
         continue;
       }
-      // An unsettled chat (or any change to it) is a chance to deliver held output.
+      // A chat that moved back (or any change to it) is a chance to deliver held output.
       if (watch.holding && !watch.delivering) void flush(watch);
     }
   }
@@ -330,9 +330,9 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
   const chatGate = async (watch: Watch): Promise<ChatGate> => {
     const row = deps.sessionService.get(watch.chatSessionId);
     if (!row || !isChatToolType(row.toolType) || row.archivedAt) return "gone";
-    // A settled chat is asleep on purpose, and a moved-away one is driven
-    // elsewhere: hold what came in until it is back.
-    if (row.settledAt) return "hold";
+    // A moved-away chat is driven elsewhere: hold what came in until it is
+    // back. A settled chat is still woken: settle stops nothing, and the
+    // wake's turn takes the chat out of settled.
     if (deps.isChatMovedAway?.(watch.chatSessionId)) return "hold";
     if (watch.finalReason) return "deliver";
     // Mid-turn, hold and coalesce: one wake when the turn ends, never a queue
@@ -452,11 +452,10 @@ export function createTerminalWatchService(deps: TerminalWatchServiceDeps) {
       return;
     }
     if (gate === "hold") {
-      // A settled or moved-away chat is not woken to say goodbye either; its
-      // watch just ends when the terminal does.
+      // A moved-away chat is not woken to say goodbye either; its watch just
+      // ends when the terminal does.
       if (watch.finalReason === "terminal_exited" || watch.finalReason === "expired") {
-        const row = deps.sessionService.get(watch.chatSessionId);
-        if (row?.settledAt || deps.isChatMovedAway?.(watch.chatSessionId)) {
+        if (deps.isChatMovedAway?.(watch.chatSessionId)) {
           endWatch(watch, watch.finalReason);
           return;
         }

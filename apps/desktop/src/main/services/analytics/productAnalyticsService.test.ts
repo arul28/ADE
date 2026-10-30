@@ -1885,7 +1885,7 @@ describe("product analytics producers", () => {
     expect(captures).toHaveLength(3);
   });
 
-  it("keeps the settle-teardown properties through the sanitizer", () => {
+  it("keeps the settle reconcile properties through the sanitizer", () => {
     // Both of these were silently dropped when first added: `action` is
     // allowlisted separately from the event's key list, and `count_bucket` was
     // registered in the key list and the value allowlist but never in the
@@ -1894,29 +1894,21 @@ describe("product analytics producers", () => {
     // looks populated.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
-      action: "settle_teardown_residue",
-      outcome: "no_stop_control",
-      provider: "codex",
+      action: "settle_remote_write_reconciled",
+      outcome: "partial",
       count_bucket: "2_5",
     })).toEqual({
       feature: "work",
-      action: "settle_teardown_residue",
-      outcome: "no_stop_control",
-      provider: "codex",
-      count_bucket: "2_5",
-    });
-
-    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-      feature: "work",
       action: "settle_remote_write_reconciled",
       outcome: "partial",
-    })).toMatchObject({ action: "settle_remote_write_reconciled" });
+      count_bucket: "2_5",
+    });
 
     // The bucket is still a closed set: a raw count must not slip through and
     // widen the dimension.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
-      action: "settle_teardown_residue",
+      action: "settle_remote_write_reconciled",
       count_bucket: "37",
     })).not.toHaveProperty("count_bucket");
   });
