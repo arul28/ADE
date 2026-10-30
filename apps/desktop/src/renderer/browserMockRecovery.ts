@@ -7,7 +7,14 @@ import {
   type RecoveryState,
 } from "../shared/types/recovery";
 import type { MachineResetPlan } from "../shared/types/machineReset";
-import type { AppInfo, AutoUpdateSnapshot, LocalRuntimeStatus, UpdateTransactionResult } from "../shared/types";
+import type {
+  AppInfo,
+  AutoUpdateSnapshot,
+  LocalRuntimeStatus,
+  UpdateImpact,
+  UpdateInstallImpact,
+  UpdateTransactionResult,
+} from "../shared/types";
 import { LOCAL_RUNTIME_UPDATE_IN_PROGRESS_MESSAGE } from "../shared/runtimeErrors";
 
 /**
@@ -375,10 +382,158 @@ export function applyBrowserMockBrainDown(ade: {
  * `?adeRuntimeFallback=1` reports
  * the desktop-owned no-sync brain ("Phone sync is off").
  */
-export function applyBrowserMockUpdateAndFallback(ade: {
+type MockUpdateScenario = {
+  snapshot: Partial<AutoUpdateSnapshot>;
+  runningTrack: "stable" | "beta";
+  local: UpdateInstallImpact;
+  machines: Array<{ id: string; name: string; arch: string; version: string; impact: UpdateImpact }>;
+};
+
+function mockChat(sessionId: string, title: string, projectName = "ADE") {
+  return { sessionId, title, projectName, projectRoot: `/Users/arul/Projects/${projectName}` };
+}
+
+/**
+ * `?adeUpdate=` stages the update flow:
+ * - `switch`: this computer on Beta with Stable downloaded (a track switch), a
+ *   chat running here and one on a connected Stable Mac Studio behind;
+ * - `ready`: an ordinary Stable update, the same two machines;
+ * - `beta`: this computer on Beta with nothing downloaded, a Stable Mac Studio
+ *   (no Stable build known here) and a Windows PC behind on Beta.
+ * Then open Settings › ADE service, or press the update control in the top bar.
+ */
+function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
+  const studioChat = { checked: true, chats: [mockChat("mock-studio-chat", "Refactor the sync relay")], cliSessions: 0, terminals: 1 };
+  const localChat = {
+    checked: true,
+    chats: [mockChat("mock-local-chat", "Fix the login flicker on Windows")],
+    cliSessions: 0,
+    terminals: 0,
+    connectedPhones: [{ deviceId: "mock-iphone", deviceName: "Arul's iPhone" }],
+  };
+  if (name === "switch") {
+    return {
+      snapshot: {
+        status: "ready",
+        currentVersion: "1.2.127-beta.1",
+        version: "1.2.127",
+        latestKnownVersion: "1.2.127",
+        track: { selected: "stable", running: "beta", switching: "stable" },
+      },
+      runningTrack: "beta",
+      local: localChat,
+      machines: [{ id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.126", impact: studioChat }],
+    };
+  }
+  if (name === "ready") {
+    return {
+      snapshot: {
+        status: "ready",
+        currentVersion: "1.2.126",
+        version: "1.2.127",
+        latestKnownVersion: "1.2.127",
+        track: { selected: "stable", running: "stable", switching: null },
+      },
+      runningTrack: "stable",
+      local: { ...localChat, connectedPhones: [] },
+      machines: [{ id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.125", impact: studioChat }],
+    };
+  }
+  if (name === "beta") {
+    return {
+      snapshot: {
+        status: "idle",
+        currentVersion: "1.2.127-beta.2",
+        version: null,
+        latestKnownVersion: "1.2.127-beta.2",
+        lastCheckedAt: Date.now() - 4 * 60_000,
+        track: { selected: "beta", running: "beta", switching: null },
+      },
+      runningTrack: "beta",
+      local: localChat,
+      machines: [
+        { id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.126", impact: studioChat },
+        { id: "mock-windows", name: "Arul's Windows PC", arch: "win32-x64", version: "1.2.127-beta.1", impact: { checked: true, chats: [], cliSessions: 0, terminals: 0 } },
+      ],
+    };
+  }
+  return null;
+}
+
+function applyBrowserMockUpdateScenario(ade: MockUpdateAde): void {
+  const scenario = mockUpdateScenario(urlParam("adeUpdate"));
+  if (!scenario) return;
+  const baseGetState = ade.updateGetState;
+  ade.updateGetState = async () => ({ ...(await baseGetState()), ...scenario.snapshot });
+  ade.updateGetInstallImpact = async () => scenario.local;
+  // The About card and the top bar treat a dev build as having no updates.
+  const baseGetInfo = ade.app.getInfo;
+  ade.app.getInfo = async () => ({
+    ...(await baseGetInfo()),
+    appVersion: scenario.snapshot.currentVersion ?? "1.2.126",
+    isPackaged: true,
+  });
+  ade.app.updateTrack = scenario.runningTrack;
+  const now = Date.now();
+  const connections = scenario.machines.map((machine) => {
+    const target = {
+      id: machine.id,
+      name: machine.name,
+      hostname: `${machine.id}.local`,
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: machine.id },
+      sshUser: null,
+      port: null,
+      sshKeyPath: null,
+      lastSeenArch: machine.arch,
+      runtimeBinaryVersion: machine.version,
+      lastConnectedAt: now,
+    };
+    return {
+      target,
+      state: "connected" as const,
+      arch: machine.arch,
+      version: machine.version,
+      appVersion: machine.version,
+      route: { kind: "tailnet" as const, endpoint: "100.64.0.2" },
+      capabilities: { projects: true },
+      projects: [],
+      lastError: null,
+      lastAttemptedAt: now,
+      connectedAt: now,
+    };
+  });
+  const snapshot = { connections, connectedCount: connections.length, updatedAt: now };
+  ade.remoteRuntime.getConnectionSnapshot = async () => snapshot as never;
+  ade.remoteRuntime.listTargets = async () => connections.map((connection) => connection.target) as never;
+  ade.remoteRuntime.getUpdateImpact = async (id: string) =>
+    scenario.machines.find((machine) => machine.id === id)?.impact ?? { checked: false, chats: [], cliSessions: 0, terminals: 0 };
+  ade.remoteRuntime.updateAndRestart = async (id: string, targetVersion?: string | null) => ({
+    ok: true,
+    updateApplied: true,
+    currentVersion: scenario.machines.find((machine) => machine.id === id)?.version ?? null,
+    targetVersion: targetVersion ?? null,
+    steps: [],
+    message: `Updating to ${targetVersion ?? "the newest version"} — reconnecting…`,
+    route: "standalone",
+    pendingVersion: targetVersion ?? null,
+  }) as never;
+}
+
+type MockUpdateAde = {
   updateGetState: () => Promise<AutoUpdateSnapshot>;
-  app: { getInfo: () => Promise<AppInfo>; restartBackgroundService?: () => Promise<void> };
-}): void {
+  updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
+  app: { getInfo: () => Promise<AppInfo>; restartBackgroundService?: () => Promise<void>; updateTrack?: string };
+  remoteRuntime: {
+    getConnectionSnapshot: () => Promise<never>;
+    listTargets: () => Promise<never>;
+    getUpdateImpact: (id: string) => Promise<UpdateImpact>;
+    updateAndRestart: (id: string, targetVersion?: string | null) => Promise<never>;
+  };
+};
+
+export function applyBrowserMockUpdateAndFallback(ade: MockUpdateAde): void {
+  applyBrowserMockUpdateScenario(ade);
   const updateError = urlParam("adeUpdateError");
   if (updateError === "stuck" || updateError === "offline") {
     const baseGetState = ade.updateGetState;

@@ -10,6 +10,7 @@ import {
 } from "./AutoUpdateErrorDialog";
 import { EMPTY_AUTO_UPDATE_SNAPSHOT } from "./useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
+import { updateRestartAction } from "./updateRestartAction";
 import { showToast } from "./toast/toastStore";
 import { Dialog } from "../ui/dialog";
 import { openWhatsNewAfterUpdate } from "../announcements/AnnouncementsHost";
@@ -251,6 +252,9 @@ export function AutoUpdateControl() {
   // cache, so only the first retry can promise the bytes are still local.
   const downloadStillLocal = (snapshot.lastInstallFailed?.attempt ?? 0) < 2;
 
+  // The same name the floating prompt, Settings and the dialog use.
+  const restartAction = updateRestartAction(snapshot);
+
   function indicatorTitle(): string {
     switch (effectiveStatus) {
       case "checking":
@@ -265,7 +269,7 @@ export function AutoUpdateControl() {
             + (downloadStillLocal
               ? "Try again — the download is already on this machine."
               : "Try again — ADE will download it again first.")
-          : `Install ${versionLabel(snapshot.version)}. ADE will quit and reopen automatically.`;
+          : `${restartAction.label} — ${versionLabel(snapshot.version)}. ADE quits and reopens on its own.`;
     }
   }
 
@@ -346,8 +350,9 @@ export function AutoUpdateControl() {
           ) : null}
           {effectiveStatus === "ready" ? (
             <span>
-              {retryAfterFailedInstall ? "Retry install" : "Install update"}
-              {snapshot.version ? ` v${snapshot.version}` : ""}
+              {retryAfterFailedInstall
+                ? `Retry install${snapshot.version ? ` v${snapshot.version}` : ""}`
+                : restartAction.label}
             </span>
           ) : null}
           {effectiveStatus === "installing" ? (

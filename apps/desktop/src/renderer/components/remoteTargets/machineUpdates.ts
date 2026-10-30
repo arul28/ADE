@@ -9,9 +9,10 @@ import {
   machineUpdateAttemptFromResult,
   machineUpdateGraceMs,
   isMachineVersionCurrent,
-  outdatedMachines,
+  machinesBehindOnTheirTrack,
   type ConnectedMachine,
   type MachineUpdateAttempt,
+  type MachineUpdateTarget,
 } from "./remoteMachineModel";
 import { isAdeAvailable } from "../../lib/adeAvailability";
 
@@ -83,21 +84,25 @@ export function isMachineUpdateBusy(
     && describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, nowMs).inFlight;
 }
 
-/** Connected machines running an ADE older than `targetVersion`. Never rejects. */
-export async function listOutdatedConnectedMachines(targetVersion: string | null): Promise<ConnectedMachine[]> {
-  if (!targetVersion || !canUpdateOtherMachines()) return [];
+/**
+ * Connected machines behind the newest build this computer knows on their
+ * own track (`knownAdeVersions`), each with the version it would be sent.
+ * Never rejects.
+ */
+export async function listOutdatedConnectedMachines(known: readonly string[]): Promise<MachineUpdateTarget[]> {
+  if (known.length === 0 || !canUpdateOtherMachines()) return [];
   try {
     const snapshot = await window.ade.remoteRuntime.getConnectionSnapshot();
-    return outdatedMachines(connectedMachinesFromSnapshot(snapshot), targetVersion);
+    return machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), known);
   } catch {
     return [];
   }
 }
 
 /** What an update would stop on each machine. A machine that cannot answer is "unknown". */
-export async function readMachinesUpdateImpact(
-  machines: readonly ConnectedMachine[],
-): Promise<MachineWithImpact[]> {
+export async function readMachinesUpdateImpact<T extends ConnectedMachine>(
+  machines: readonly T[],
+): Promise<Array<T & { impact: MachineWithImpact["impact"] }>> {
   return await Promise.all(machines.map(async (machine) => ({
     ...machine,
     impact: await window.ade.remoteRuntime.getUpdateImpact(machine.id).catch(() => UNKNOWN_UPDATE_IMPACT),
@@ -160,20 +165,24 @@ async function runMachineUpdate(machine: ConnectedMachine, targetVersion: string
 /**
  * Runs an update the person already agreed to, on each machine not already
  * updating, and resolves with each one's outcome once every host has replied.
+ * Each machine is sent its own `targetVersion`, a build on its own track; null
+ * lets that machine take the newest build on its track.
  */
-export async function runMachineUpdates(
-  machines: readonly ConnectedMachine[],
-  targetVersion: string | null,
-): Promise<Array<{ machine: ConnectedMachine; attempt: MachineUpdateAttempt }>> {
+export async function runMachineUpdates<T extends MachineUpdateTarget>(
+  machines: readonly T[],
+): Promise<Array<{ machine: T; attempt: MachineUpdateAttempt }>> {
   // The person already said yes to these machines, so only one whose update
   // call is still running is left out (the host would coalesce it anyway).
   const idle = machines.filter((machine) => !state.updatingIds.has(machine.id));
-  // A machine that already runs the target (the list read a stale version)
+  // A machine that already runs its target (the list read a stale version)
   // is not sent anything: an update it does not need would still restart it
   // on older hosts, stopping whatever runs there. The host refuses too; this
   // is the first of the two guards.
-  const live = targetVersion ? await readLiveVersions() : new Map<string, string | null>();
+  const live = idle.some((machine) => machine.targetVersion)
+    ? await readLiveVersions()
+    : new Map<string, string | null>();
   return await Promise.all(idle.map(async (machine) => {
+    const { targetVersion } = machine;
     const liveVersion = live.get(machine.id) ?? null;
     if (targetVersion && isMachineVersionCurrent(liveVersion, targetVersion)) {
       const attempt = alreadyCurrentAttempt(liveVersion ?? targetVersion);
@@ -188,10 +197,7 @@ export async function runMachineUpdates(
  * "Update & restart" from a machine row or "Update all": names what is
  * running on each machine and waits for a yes before anything restarts.
  */
-export async function requestMachineUpdates(
-  machines: readonly ConnectedMachine[],
-  targetVersion: string | null,
-): Promise<void> {
+export async function requestMachineUpdates(machines: readonly MachineUpdateTarget[]): Promise<void> {
   // A machine already being asked or updated is not asked a second time.
   const idle = machines.filter((machine) => !isMachineUpdateBusy(state, machine));
   if (idle.length === 0 || !canUpdateOtherMachines()) return;
@@ -199,11 +205,11 @@ export async function requestMachineUpdates(
   setState({ checkingIds: withIds(state.checkingIds, ids, true) });
   let confirmed = false;
   try {
-    confirmed = await confirmMachineUpdates(await readMachinesUpdateImpact(idle), targetVersion);
+    confirmed = await confirmMachineUpdates(await readMachinesUpdateImpact(idle));
   } finally {
     setState({ checkingIds: withIds(state.checkingIds, ids, false) });
   }
-  if (confirmed) await runMachineUpdates(idle, targetVersion);
+  if (confirmed) await runMachineUpdates(idle);
 }
 
 /**

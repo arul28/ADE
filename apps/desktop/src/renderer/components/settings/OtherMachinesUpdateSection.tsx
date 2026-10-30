@@ -11,10 +11,14 @@ import {
 import {
   connectedMachinesFromSnapshot,
   describeMachineUpdateAttempt,
-  newestKnownAdeVersion,
-  outdatedMachines,
+  knownAdeVersions,
+  machineUpdateTrack,
+  machinesBehindOnTheirTrack,
+  newestKnownVersionOnTrack,
   type ConnectedMachine,
 } from "../remoteTargets/remoteMachineModel";
+import { MachineAvatar, machineFormFactor, machinePlatform } from "../remoteTargets/MachineIdentity";
+import { UpdateTrackChip } from "../app/ChannelBadge";
 import { ModernRow, ModernRows, ModernSection } from "./primitives";
 import { Banner } from "../ui/notice";
 
@@ -75,17 +79,22 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   const machines = readMachines ?? [];
   const updateSnapshot = useAutoUpdateSnapshot();
   const machineUpdates = useMachineUpdates();
-  const newestVersion = useMemo(
-    () =>
-      newestKnownAdeVersion({
-        currentVersion: updateSnapshot.currentVersion,
-        latestKnownVersion: updateSnapshot.latestKnownVersion,
-      }),
-    [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
+  // Every build this computer knows of, on either track. Each machine is
+  // offered only the newest one on its OWN track: a Stable machine is never
+  // sent this computer's Beta, and a machine whose track has no known build
+  // here is not called behind.
+  const { currentVersion, version: downloadedVersion, latestKnownVersion } = updateSnapshot;
+  const known = useMemo(
+    () => knownAdeVersions({ currentVersion, version: downloadedVersion, latestKnownVersion }),
+    [currentVersion, downloadedVersion, latestKnownVersion],
   );
-  const behind = outdatedMachines(machines, newestVersion);
-  const behindIds = new Set(behind.map((machine) => machine.id));
+  const behind = machinesBehindOnTheirTrack(machines, known);
+  const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = behind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
+  // Name tracks once Beta is anywhere in the picture: here, or on a machine.
+  const showTracks = updateSnapshot.track?.running === "beta"
+    || updateSnapshot.track?.selected === "beta"
+    || machines.some((machine) => machineUpdateTrack(machine) === "beta");
 
   if (compact && machines.length === 0) return null;
 
@@ -102,7 +111,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
           type="button"
           className="ade-modern-btn"
           disabled={anyBusy}
-          onClick={() => void requestMachineUpdates(behind, newestVersion)}
+          onClick={() => void requestMachineUpdates(behind)}
         >
           <ArrowsClockwise size={13} weight="bold" />
           {`Update all ${behind.length}`}
@@ -129,29 +138,48 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
             : null;
           const updating = machineUpdates.updatingIds.has(machine.id) || status?.inFlight === true;
           const checking = machineUpdates.checkingIds.has(machine.id);
+          const track = machineUpdateTrack(machine);
+          const targetVersion = targetById.get(machine.id) ?? null;
+          // Up to date only when this computer knows a build on that track to
+          // compare with; otherwise the version stands alone.
+          const knowsTrack = newestKnownVersionOnTrack(known, track) != null;
           return (
             <ModernRow
               key={machine.id}
-              title={machine.name}
+              leading={(
+                <MachineAvatar
+                  colorKey={machine.colorKey ?? machine.id}
+                  name={machine.name}
+                  platform={machinePlatform(machine.arch)}
+                  formFactor={machineFormFactor({ name: machine.name })}
+                  size={30}
+                />
+              )}
+              title={showTracks ? (
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  {machine.name}
+                  <UpdateTrackChip track={track} />
+                </span>
+              ) : machine.name}
               hint={(
                 <>
                   {machine.version ? <>ADE <span className="kit-num">{machine.versionLabel ?? machine.version}</span></> : "Version unknown"}
-                  {behindIds.has(machine.id) && newestVersion
-                    ? <> · <span className="kit-num">{newestVersion}</span> available</>
+                  {targetVersion
+                    ? <> · <span className="kit-num">{targetVersion}</span> available</>
                     : null}
                 </>
               )}
-              control={behindIds.has(machine.id) ? (
+              control={targetVersion ? (
                 <button
                   type="button"
                   className="ade-modern-btn"
                   disabled={updating || checking}
-                  onClick={() => void requestMachineUpdates([machine], newestVersion)}
+                  onClick={() => void requestMachineUpdates([{ ...machine, targetVersion }])}
                 >
                   <ArrowsClockwise size={13} weight="bold" className={updating ? "animate-spin" : undefined} />
                   {updating ? "Updating…" : checking ? "Checking…" : "Update & restart"}
                 </button>
-              ) : machine.version ? (
+              ) : machine.version && knowsTrack ? (
                 <span className="kit-tag" data-tone="ok">Up to date</span>
               ) : undefined}
             >

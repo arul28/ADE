@@ -1,4 +1,13 @@
-import { useEffect, useId, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  useSyncExternalStore,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { noticeTone, type NoticeTone } from "../notice/noticeTones";
 import { Dialog } from "./Dialog";
@@ -21,8 +30,12 @@ import { isMac } from "../../../lib/platform";
 export type ConfirmDialogOptions = {
   title: string;
   message?: ReactNode;
-  /** Content under the message (e.g. the list a decision affects). */
-  children?: ReactNode;
+  /**
+   * Content under the message (e.g. the list a decision affects). A function
+   * places the checkboxes itself, inside its own rows: each still resolves by
+   * its `key`, and the list under the body is not drawn.
+   */
+  children?: ReactNode | ((choices: ConfirmDialogChoices) => ReactNode);
   /**
    * Optional checkboxes under the body, in order. Present, the confirm
    * resolves each one's state by `key` alongside the yes/no; absent, it is a
@@ -66,6 +79,17 @@ export type ConfirmDialogCheckbox = {
    * consequence the reader has to say they understand before it can run.
    */
   required?: boolean;
+};
+
+/** What a function body gets to place the dialog's checkboxes in its own rows. */
+export type ConfirmDialogChoices = {
+  checked: Readonly<Record<string, boolean>>;
+  /** Spread onto an `<input type="checkbox">`; keeps Return confirming when it has focus. */
+  checkboxProps: (key: string) => {
+    checked: boolean;
+    onChange: (event: ChangeEvent<HTMLInputElement>) => void;
+    onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
+  };
 };
 
 /** A confirm that carries checkboxes: the yes/no, and each box by its key. */
@@ -313,25 +337,34 @@ function ConfirmDialogView({
   const settle = (confirmed: boolean) => onResult({ confirmed, checked });
   const checkboxes = options.checkboxes ?? [];
   const awaitingRequired = checkboxes.some((box) => box.required && !checked[box.key]);
-  const body = options.children != null || checkboxes.length > 0 ? (
+  const checkboxProps: ConfirmDialogChoices["checkboxProps"] = (key) => ({
+    checked: checked[key] ?? false,
+    onChange: (event) => {
+      const next = event.target.checked;
+      setChecked((current) => ({ ...current, [key]: next }));
+    },
+    // Keep the Return hint true when a checkbox has focus.
+    ...(options.returnKeyHint ? {
+      onKeyDown: (event: KeyboardEvent<HTMLInputElement>) => {
+        if (event.key === "Enter" && !awaitingRequired) {
+          event.preventDefault();
+          settle(true);
+        }
+      },
+    } : {}),
+  });
+  const placesOwnCheckboxes = typeof options.children === "function";
+  const content = typeof options.children === "function"
+    ? options.children({ checked, checkboxProps })
+    : options.children;
+  const body = content != null || checkboxes.length > 0 ? (
     <>
-      {options.children != null ? (
-        <div className="ade-dialog-checkbox-content">{options.children}</div>
+      {content != null ? (
+        <div className="ade-dialog-checkbox-content">{content}</div>
       ) : null}
-      {checkboxes.map((box) => (
+      {placesOwnCheckboxes ? null : checkboxes.map((box) => (
         <label key={box.key} className="ade-dialog-checkbox">
-          <input
-            type="checkbox"
-            checked={checked[box.key] ?? false}
-            onChange={(event) => setChecked((current) => ({ ...current, [box.key]: event.target.checked }))}
-            // Keep the Return hint true when a checkbox has focus.
-            onKeyDown={options.returnKeyHint ? (event) => {
-              if (event.key === "Enter" && !awaitingRequired) {
-                event.preventDefault();
-                settle(true);
-              }
-            } : undefined}
-          />
+          <input type="checkbox" {...checkboxProps(box.key)} />
           <span>{box.label}</span>
         </label>
       ))}
@@ -373,7 +406,8 @@ function ConfirmDialogView({
 function ReturnKeyHint({ label }: { label: string }): JSX.Element {
   return (
     <span className="ade-dialog-key-hint">
-      Press <kbd>{isMac ? "Return" : "Enter"}</kbd> to {label.toLowerCase()}
+      {/* Only the first letter drops its capital, so a name in the label keeps it. */}
+      Press <kbd>{isMac ? "Return" : "Enter"}</kbd> to {label.charAt(0).toLowerCase() + label.slice(1)}
     </span>
   );
 }

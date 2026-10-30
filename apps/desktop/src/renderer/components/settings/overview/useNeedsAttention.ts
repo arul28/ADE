@@ -11,8 +11,8 @@ import { MCP_SERVERS_SETTING_KEY, normalizeMcpRegistry } from "../../../../share
 import { humanizeProvider } from "../../usage/usageProviderNames";
 import {
   connectedMachinesFromSnapshot,
-  newestKnownAdeVersion,
-  outdatedMachines,
+  knownAdeVersions,
+  machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
@@ -282,8 +282,9 @@ function machineItems(
       route: settingsRouteFor("account.computers"),
     });
   }
-  const newest = newestKnownAdeVersion({ currentVersion: update?.currentVersion, latestKnownVersion: update?.latestKnownVersion });
-  const behind = outdatedMachines(connectedMachinesFromSnapshot(snapshot), newest);
+  // Behind on its own track only: a Stable machine is not "older" than this
+  // computer's Beta.
+  const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
   if (behind.length > 0) {
     items.push({
       id: "machines-behind",

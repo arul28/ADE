@@ -7,6 +7,7 @@ import { dismissToast, showToast } from "./toast/toastStore";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
+import { updateRestartAction, useUpdateRestartActionInPage } from "./updateRestartAction";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { BrainDownNotice } from "./BrainDownNotice";
 
@@ -144,10 +145,14 @@ export function AutoUpdateBanner() {
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
 
   const showBanner = Boolean(banner) && signature !== dismissedSignature;
+  // Settings › ADE service carries the same button on its version card; the
+  // floating prompt would repeat it and cover that card.
+  const actionInPage = useUpdateRestartActionInPage();
   const showReadyUpdatePrompt =
     snapshot.status === "ready"
     && Boolean(updateVersion)
     && !banner
+    && !actionInPage
     && dismissedReadyVersion !== updateVersion;
 
   useAppBanner(
@@ -178,23 +183,23 @@ export function AutoUpdateBanner() {
     APP_BANNER,
   );
 
-  const switchingTrackLabel = snapshot.track?.switching ? updateTrackLabel(snapshot.track.switching) : null;
+  const restartAction = updateRestartAction(snapshot);
   useAppBanner(
     showReadyUpdatePrompt
       ? {
           id: "auto-update-ready",
           tone: "accent",
-          // A notice mark on the left; the install action on the right keeps
-          // its arrow so the button still reads as "restart and install".
+          // A notice mark on the left; the restart action on the right keeps
+          // its arrow.
           icon: <Bell size={13} weight="bold" />,
           // During a track switch the ready build may be OLDER (Beta back to
           // Stable), so it is named by its track, in the words Settings uses.
-          title: switchingTrackLabel
-            ? `${switchingTrackLabel} ${updateVersion} is ready`
-            : `Update v${updateVersion} is ready to install`,
-          ...(switchingTrackLabel ? { detail: `Restart ADE to finish switching to ${switchingTrackLabel}.` } : {}),
+          // The button says the rest, so there is no detail line.
+          title: restartAction.switchTo
+            ? `${updateTrackLabel(restartAction.switchTo)} ${updateVersion} is ready`
+            : `ADE ${updateVersion} is ready`,
           actions: [{
-            label: installRequested ? "Restarting…" : switchingTrackLabel ? "Restart and switch" : "Restart and install",
+            label: installRequested ? "Restarting…" : restartAction.label,
             icon: <ArrowsClockwise size={12} weight="bold" />,
             variant: "primary",
             busy: installRequested,

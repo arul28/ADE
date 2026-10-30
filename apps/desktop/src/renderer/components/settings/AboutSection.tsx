@@ -2,6 +2,10 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowClockwise, WarningCircle } from "@phosphor-icons/react";
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import { requestDownloadedUpdateInstall } from "../app/autoUpdateInstallAction";
+import { UpdateTrackChip } from "../app/ChannelBadge";
+import { updateRestartAction, useShowsUpdateRestartAction } from "../app/updateRestartAction";
+import { updateTrackLabel } from "../../../shared/updateTrack";
 import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
 import { OtherMachinesUpdateSection } from "./OtherMachinesUpdateSection";
@@ -192,6 +196,25 @@ export function AboutSection() {
     return unsubscribe;
   }, [refreshLatest]);
 
+  // The restart action lives on the version card. While it shows, the
+  // floating prompt stays away (one button for one action, nothing over the
+  // card), so this must be registered before the loading return below.
+  const [restartRequested, setRestartRequested] = useState(false);
+  const restartReady = info != null
+    && info.isPackaged
+    && updateSnapshot.status === "ready"
+    && resolveAboutVersionState(info.appVersion, updateSnapshot).restartPending;
+  useShowsUpdateRestartAction(restartReady);
+  useEffect(() => {
+    if (updateSnapshot.status !== "ready") setRestartRequested(false);
+  }, [updateSnapshot.status, updateSnapshot.version]);
+  const restartToInstall = useCallback(() => {
+    void requestDownloadedUpdateInstall(updateSnapshot, () => setRestartRequested(true))
+      .then((started) => {
+        if (!started) setRestartRequested(false);
+      });
+  }, [updateSnapshot]);
+
   const checkForUpdates = useCallback(() => {
     setChecking(true);
     void window.ade.updateCheckForUpdates()
@@ -259,11 +282,13 @@ export function AboutSection() {
     latestSub = "Newest release ADE knows about";
   }
 
+  const restartAction = updateRestartAction(updateSnapshot);
   let pill: React.ReactNode = null;
   if (isDev) {
     pill = <span className="kit-tag">DEV BUILD</span>;
   } else if (restartPending) {
-    pill = <span className="kit-tag" data-tone="warn">Restart to update</span>;
+    // The button under the version is the state; no second badge for it.
+    pill = null;
   } else if (latest && updateAvailable) {
     pill = <span className="kit-tag" data-tone="warn">Update available</span>;
   } else if (latest) {
@@ -306,19 +331,36 @@ export function AboutSection() {
             <span className="kit-eyebrow">ADE</span>
             <span className="ade-modern-stat-value">
               <span className="kit-stat kit-num">{runningVersion}</span>
-              {updateSnapshot.track?.running === "beta" ? <span className="kit-tag">Beta</span> : null}
+              {updateSnapshot.track?.running === "beta" ? <UpdateTrackChip track="beta" /> : null}
               {pill}
             </span>
             <span className="ade-modern-stat-sub">
-              {restartPending ? (
-                <span style={{ color: "var(--kit-warn)" }}>Restart pending · </span>
-              ) : null}
-              {downloadedVersion ? (
-                <>Installed <span className="kit-num">{installedVersion}</span> · Downloaded <span className="kit-num">{downloadedVersion}</span></>
+              {restartPending && downloadedVersion ? (
+                <>
+                  {restartAction.switchTo ? `${updateTrackLabel(restartAction.switchTo)} ` : ""}
+                  <span className="kit-num">{downloadedVersion}</span> downloaded
+                </>
               ) : installedVersion !== runningVersion ? (
                 <>Installed <span className="kit-num">{installedVersion}</span></>
               ) : null}
             </span>
+            {restartPending && !isDev && updateSnapshot.status === "ready" ? (
+              <span>
+                {/* Not "when the app restarts": a quit installs only with
+                    automatic install on and nothing running (installOnQuit.ts). */}
+                <button
+                  type="button"
+                  className="ade-modern-btn"
+                  data-tone="primary"
+                  disabled={restartRequested}
+                  title="With automatic install on, quitting ADE also installs it when no agent is running."
+                  onClick={restartToInstall}
+                >
+                  <ArrowClockwise size={13} weight="bold" className={restartRequested ? "animate-spin" : undefined} />
+                  {restartRequested ? "Restarting…" : restartAction.label}
+                </button>
+              </span>
+            ) : null}
           </div>
 
           <div className="ade-modern-stat">
@@ -367,16 +409,6 @@ export function AboutSection() {
                 Check again
               </button>
             )}
-          </div>
-        ) : null}
-
-        {restartPending && !checkFailedWithDownload ? (
-          <div className="ade-modern-note" data-tone="warn">
-            <WarningCircle size={14} weight="fill" />
-            {/* Not "when the app restarts": a quit installs only with automatic
-                install on and nothing running (installOnQuit.ts), and saying
-                more let people believe any quit had updated them. */}
-            <span>Downloaded, not installed yet. Use Restart and install. With automatic install on, quitting ADE also installs it when no agent is running.</span>
           </div>
         ) : null}
 
