@@ -522,6 +522,15 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
       "set",
     ],
   },
+  remote_work: {
+    live: "all",
+    read: [
+      "list",
+    ],
+    write: [
+      "delete",
+    ],
+  },
   work_tools: {
     live: "all",
     read: [

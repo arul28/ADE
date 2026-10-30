@@ -219,6 +219,9 @@ import { getTurnFileDiffFromGit } from "../chat/turnFileDiff";
 import { buildComputerUseOwnerSnapshot } from "../computerUse/controlPlane";
 import { buildLaneListSnapshots } from "../lanes/laneListSnapshotService";
 import { getErrorMessage, isRecord, nowIso, resolveWithinAllowedRoots } from "../shared/utils";
+import { measureRemoteWorkCopy, remoteWorkCopiesForProject } from "../remoteWork/remoteWorkCopyService";
+import type { RemoteWorkCopyListing } from "../../../shared/types/remoteWork";
+import { parseForeignCallerSessionId } from "../../../shared/runtimeClientNames";
 import { parseLinearGraphQLInput } from "../cto/linearGraphQLInput";
 import type { CtoMemoryTags } from "../cto/ctoMemoryService";
 import { launchAgentChatCli } from "../chat/agentChatCliLaunch";
@@ -3608,6 +3611,42 @@ function buildTerminalDomainService(runtime: AdeRuntime): TerminalDomainService 
   };
 }
 
+/**
+ * Work copies on this machine for chats elsewhere (remoteWorkCopyService.ts):
+ * what Settings › Machines lists, and the person's delete.
+ */
+function buildRemoteWorkDomainService(runtime: AdeRuntime) {
+  if (!runtime.ptyService) return null;
+  const copies = () => remoteWorkCopiesForProject({
+    projectRoot: runtime.projectRoot,
+    logger: runtime.logger,
+    isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
+  });
+  const inUse = (owner: string) => runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0;
+  return {
+    async list(): Promise<RemoteWorkCopyListing[]> {
+      return await Promise.all(copies().list().map(async (copy) => ({
+        owner: copy.owner,
+        chatSessionId: parseForeignCallerSessionId(copy.owner)?.chatSessionId ?? null,
+        machineName: copy.machineName,
+        branch: copy.branch,
+        head: copy.head,
+        path: copy.path,
+        createdAt: copy.createdAt,
+        lastUsedAt: copy.lastUsedAt,
+        running: inUse(copy.owner),
+        sizeBytes: await measureRemoteWorkCopy(copy.path),
+      })));
+    },
+    async delete(args: unknown): Promise<{ deleted: boolean }> {
+      const owner = isRecord(args) && typeof args.owner === "string" ? args.owner.trim() : "";
+      if (!owner) throw new Error("remote_work.delete requires owner.");
+      if (inUse(owner)) throw new Error("A command is still running in this work copy. Stop it first.");
+      return { deleted: await copies().release(owner) };
+    },
+  };
+}
+
 function requireTerminalWatchService(runtime: AdeRuntime): NonNullable<AdeRuntime["terminalWatchService"]> {
   if (!runtime.terminalWatchService) {
     throw new Error("Terminal watches are not available on this runtime: it does not run chats.");
@@ -3979,6 +4018,7 @@ export function getAdeActionDomainServices(
     terminal: toService(buildTerminalDomainService(runtime)),
     layout: toService(buildLayoutDomainService(runtime)),
     tiling_tree: toService(buildTilingTreeDomainService(runtime)),
+    remote_work: toService(buildRemoteWorkDomainService(runtime)),
     work_tools: toService(runtime.workToolsStateService),
     computer_use_artifacts: toService(buildComputerUseArtifactsDomainService(runtime)),
     ios_simulator: toService(runtime.iosSimulatorService),

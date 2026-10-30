@@ -481,3 +481,50 @@ export function remoteWorkRunOnceLaunch(
   }
   return { command: shell.path || "/bin/sh", args: ["-c", command] };
 }
+
+/** Each project's work copy service, shared by the RPC server and the action registry. */
+const servicesByProject = new Map<string, RemoteWorkCopyService>();
+
+export function remoteWorkCopiesForProject(options: RemoteWorkCopyServiceOptions): RemoteWorkCopyService {
+  const key = path.resolve(options.projectRoot);
+  let service = servicesByProject.get(key);
+  if (!service) {
+    service = createRemoteWorkCopyService(options);
+    servicesByProject.set(key, service);
+  }
+  return service;
+}
+
+/**
+ * Bytes a copy takes on disk, counting what its commands installed and built.
+ * Null when the walk runs past `budgetMs` (a copy with a huge node_modules):
+ * a person sees "size unknown" rather than a list that never loads.
+ */
+export async function measureRemoteWorkCopy(copyPath: string, budgetMs = 3_000): Promise<number | null> {
+  const deadline = Date.now() + budgetMs;
+  let total = 0;
+  const pending = [copyPath];
+  while (pending.length) {
+    if (Date.now() > deadline) return null;
+    const dir = pending.pop()!;
+    let entries: fs.Dirent[];
+    try {
+      entries = await fs.promises.readdir(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        pending.push(full);
+      } else if (entry.isFile()) {
+        try {
+          total += (await fs.promises.lstat(full)).size;
+        } catch {
+          // Gone between the read and the stat.
+        }
+      }
+    }
+  }
+  return total;
+}

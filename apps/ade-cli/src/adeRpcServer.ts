@@ -22,7 +22,7 @@ import {
   type RemoteCallerCaptures,
 } from "./services/proof/remoteCallerCaptures";
 import {
-  createRemoteWorkCopyService,
+  remoteWorkCopiesForProject,
   remoteWorkRunOnceLaunch,
   RemoteWorkError,
   type RemoteWorkCopyService,
@@ -2907,19 +2907,13 @@ export async function resolveIngestProvenance(
   };
 }
 
-const remoteWorkCopyServices = new WeakMap<AdeRuntime, RemoteWorkCopyService>();
-
 /** This project's work copies for chats on other machines (`ade shell start --machine`). */
 function remoteWorkCopiesFor(runtime: AdeRuntime): RemoteWorkCopyService {
-  let service = remoteWorkCopyServices.get(runtime);
-  if (!service) {
-    service = createRemoteWorkCopyService({
-      projectRoot: runtime.projectRoot,
-      logger: runtime.logger,
-      isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
-    });
-    remoteWorkCopyServices.set(runtime, service);
-  }
+  const service = remoteWorkCopiesForProject({
+    projectRoot: runtime.projectRoot,
+    logger: runtime.logger,
+    isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
+  });
   sweepRemoteWorkCopies(runtime, service);
   return service;
 }

@@ -51,6 +51,7 @@ export const ADE_ACTION_DOMAIN_NAMES = [
   "terminal",
   "layout",
   "tiling_tree",
+  "remote_work",
   "work_tools",
   "computer_use_artifacts",
   "ios_simulator",

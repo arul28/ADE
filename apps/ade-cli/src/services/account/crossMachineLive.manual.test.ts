@@ -472,6 +472,18 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       expect(parentSummary?.remoteWork?.[0]?.terminalIds).toContain(shells[0].id);
       expect(parentSummary?.remoteWork?.[0]?.projectId).toBe(B.projectId);
 
+      // Settings › Machines on B lists the copy, as the desktop does.
+      const desktopOnB = B.handlerFor(null);
+      await desktopOnB({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: { clientName: "ade-desktop-local", identity: { role: "cto" } } });
+      const listing = await desktopOnB({
+        jsonrpc: "2.0", id: 2, method: "ade/actions/call",
+        params: { projectId: B.projectId, name: "run_ade_action", arguments: { domain: "remote_work", action: "list", args: {} } },
+      });
+      const rows = JSON.stringify(listing);
+      console.log("[xm-shell] remote_work.list", rows.slice(0, 500));
+      expect(rows).toContain(parent.id);
+      expect(rows).toContain('"machineName":"Machine A"');
+
       const listed = await cli(["terminal", "list", "--machine", "Machine B", "--json"]);
       console.log("[xm-shell] terminal list", listed.status, listed.stdout.slice(0, 300), listed.stderr.slice(-300));
       expect(listed.status).toBe(0);

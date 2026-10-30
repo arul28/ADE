@@ -1,0 +1,21 @@
+/**
+ * A work copy on this machine for a chat on another machine
+ * (`ade shell start --machine`), as Settings › Machines lists it.
+ */
+export type RemoteWorkCopyListing = {
+  /** Foreign owner id (`remote:<device>:<chat>`); pass it to `remote_work.delete`. */
+  owner: string;
+  /** The chat's id on its own machine, when the owner is a chat. */
+  chatSessionId: string | null;
+  /** The machine the chat runs on. */
+  machineName: string | null;
+  branch: string | null;
+  head: string;
+  path: string;
+  createdAt: string;
+  lastUsedAt: string;
+  /** A command still runs in the copy; delete waits until it ends. */
+  running: boolean;
+  /** Bytes on disk with installed deps and build output; null when too large to count quickly. */
+  sizeBytes: number | null;
+};
