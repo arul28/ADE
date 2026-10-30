@@ -746,7 +746,7 @@ snapshots.
 
 ## Final Windows numbers (round 4, 2026-10-30)
 
-Same PC, the same copy of the owner's project (13.3 MB `ade.db`, 5 lanes, the biggest chat 20.7 MB). Each row: median, with the worst run in brackets. An outside target is another coding app's published number for the same measurement. A row wins only when its worst run wins. The PRs named here are merged unless marked open.
+Same PC, the same copy of the owner's project (13.3 MB `ade.db`, 5 lanes, the biggest chat 20.7 MB). Each row: median, with the worst run in brackets. An outside target is another coding app's published number for the same measurement. A row wins only when its worst run wins. Every PR named here is merged.
 
 ### Every row against its target
 
@@ -780,7 +780,7 @@ Same PC, the same copy of the owner's project (13.3 MB `ade.db`, 5 lanes, the bi
 
 `interaction.mjs tabs 4`, a warm-up, then 5 runs; median of the run medians, worst run in brackets.
 
-| Row | `main` before #1987/#1989 | With #1987 and #1989 (open) | Ceiling |
+| Row | `main` before #1987/#1989 | With #1987 and #1989 | Ceiling |
 |---|---|---|---|
 | Tab switch, first changed frame | 31.1 ms (32.3) | 25.8 ms (26.5) | 60 ms |
 | Tab switch, page settled | 64.6 ms (84.7) | 60.6 ms (135.0) | — |
