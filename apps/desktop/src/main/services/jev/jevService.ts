@@ -126,8 +126,8 @@ type Route = { id: JevRoute; urls: readonly string[]; token: string | null; mode
 
 let inFlight = 0;
 const resultCache = new Map<string, { at: number; answers: Record<string, JevAnswer> }>();
-/** Identical questions already on the wire share one call. */
-const pendingByKey = new Map<string, Promise<CallResult>>();
+/** Identical questions already on the wire share one call, and its skip reason. */
+const pendingByKey = new Map<string, Promise<CallResult & { keySkip?: JevKeySkipReason | null }>>();
 
 type CallResult =
   | { ok: true; answers: Record<string, JevAnswer>; latencyMs: number; usage: JevUsage | null }
@@ -556,6 +556,10 @@ export function createJevService(deps: JevServiceDeps): JevService {
           outcome: result.reason,
           status: result.status ?? null,
         });
+      } else if (result.reason === "timeout" || result.reason === "network") {
+        // Usually this machine's network, so a Sentry log rather than an issue;
+        // an account directory nobody can reach shows up as many of these.
+        reportOncePerDay("warn", "jev.key_unreachable", result.reason, { feature, outcome: result.reason });
       }
       return;
     }
@@ -671,7 +675,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
     }
     // Joined a call another caller started: count the outcome, not the breaker.
     const result = await pending;
-    record(feature, result.ok ? "cached" : result.reason);
+    record(feature, result.ok ? "cached" : result.reason, { keySkip: result.ok ? null : result.keySkip ?? null });
     return result.ok ? result.answers : null;
   };
 
