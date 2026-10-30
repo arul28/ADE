@@ -71,6 +71,9 @@ try {
     await sleep(2_000);
     const t0 = Date.now();
     const first = refresh();
+    // A brain that drops during the gap rejects `first` before Promise.all holds it; handle it now so
+    // Node does not exit past the cleanup. Promise.all below still receives the error.
+    first.catch(() => {});
     await sleep(gapMs);
     await Promise.all([first, refresh(), refresh(), refresh(), refresh()]);
     const t1 = Date.now();
