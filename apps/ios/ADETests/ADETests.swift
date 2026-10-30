@@ -9745,6 +9745,63 @@ final class ADETests: XCTestCase {
     upgradedDatabase.close()
   }
 
+  func testDatabaseReplaysStoredChangesForColumnAddedByAppUpdate() throws {
+    let baseURL = makeTemporaryDirectory()
+    let legacySchema = """
+      create table if not exists notes (
+        id text primary key,
+        title text not null
+      );
+    """
+    let upgradedSchema = """
+      create table if not exists notes (
+        id text primary key,
+        title text not null,
+        body text
+      );
+      alter table notes add column body text;
+    """
+    let siteId = "b00e9b92c864a27958669c1595fcb2c3"
+    func change(_ id: String, _ cid: String, _ val: SyncScalarValue, version: Int, seq: Int = 0) -> CrsqlChangeRow {
+      CrsqlChangeRow(table: "notes", pk: packedDesktopTextPrimaryKey(id), cid: cid, val: val, colVersion: 1, dbVersion: version, siteId: siteId, cl: 1, seq: seq)
+    }
+
+    // The old build lacks `body`: the rows land, the body changes are only stored.
+    let legacyDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: legacySchema)
+    XCTAssertNil(legacyDatabase.initializationError)
+    _ = try legacyDatabase.applyChanges([
+      change("kept", "title", .string("Kept"), version: 2),
+      change("kept", "body", .string("first"), version: 2, seq: 1),
+      change("deleted", "title", .string("Deleted"), version: 2, seq: 2),
+      change("deleted", "body", .string("gone"), version: 2, seq: 3),
+    ])
+    _ = try legacyDatabase.applyChanges([
+      change("kept", "body", .string("second"), version: 3),
+      change("deleted", "-1", .null, version: 3, seq: 1),
+    ])
+    XCTAssertEqual(try countRows(in: baseURL, table: "notes"), 1)
+    legacyDatabase.close()
+
+    // The update adds the column; the next open fills it from the stored changes.
+    let upgradedDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: upgradedSchema)
+    XCTAssertNil(upgradedDatabase.initializationError)
+    XCTAssertTrue(
+      upgradedDatabase.exportLocalChangesSince(version: 0, rowLimit: 100).isEmpty,
+      "a replay must not become a local change that is sent back to peers"
+    )
+    XCTAssertEqual(try textValue(in: baseURL, table: "notes", column: "body", id: "kept"), "second")
+    XCTAssertEqual(try countRows(in: baseURL, table: "notes"), 1, "a deleted row must stay deleted")
+
+    // A local edit after the replay survives the next open: the replay ran once.
+    try upgradedDatabase.executeSqlForTesting("update notes set body = 'edited here' where id = 'kept'")
+    upgradedDatabase.close()
+    let reopenedDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: upgradedSchema)
+    XCTAssertNil(reopenedDatabase.initializationError)
+    XCTAssertFalse(reopenedDatabase.exportLocalChangesSince(version: 0, rowLimit: 100).isEmpty)
+    XCTAssertEqual(try textValue(in: baseURL, table: "notes", column: "body", id: "kept"), "edited here")
+    reopenedDatabase.close()
+  }
+
   func testFailedCrrAltersRestoreChangeCapture() throws {
     let database = DatabaseService(baseURL: makeTemporaryDirectory(), bootstrapSQL: """
       create table if not exists alter_rows (
@@ -23693,6 +23750,21 @@ final class ADETests: XCTestCase {
     defer { sqlite3_finalize(statement) }
     XCTAssertEqual(sqlite3_step(statement), SQLITE_ROW)
     return Int(sqlite3_column_int64(statement, 0))
+  }
+
+  private func textValue(in baseURL: URL, table: String, column: String, id: String) throws -> String? {
+    let dbURL = baseURL.appendingPathComponent("ADE", isDirectory: true).appendingPathComponent("ade.db")
+    var handle: OpaquePointer?
+    XCTAssertEqual(sqlite3_open(dbURL.path, &handle), SQLITE_OK)
+    defer { sqlite3_close(handle) }
+
+    var statement: OpaquePointer?
+    XCTAssertEqual(sqlite3_prepare_v2(handle, "select \(column) from \(table) where id = ? limit 1", -1, &statement, nil), SQLITE_OK)
+    defer { sqlite3_finalize(statement) }
+    sqlite3_bind_text(statement, 1, (id as NSString).utf8String, -1, unsafeBitCast(-1, to: sqlite3_destructor_type.self))
+    guard sqlite3_step(statement) == SQLITE_ROW else { return nil }
+    guard let raw = sqlite3_column_text(statement, 0) else { return nil }
+    return String(cString: raw)
   }
 
   private func kvValue(in baseURL: URL, key: String) throws -> String? {

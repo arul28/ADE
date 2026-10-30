@@ -269,6 +269,15 @@ final class DatabaseService {
     } catch {
       close()
       initializationError = error as NSError
+      return
+    }
+    // Off the caller's thread, but first in line on the access queue, so every
+    // read after init sees the replayed values.
+    accessQueue.async { [self] in
+      let touchedTables = replayPendingColumnChangesLocked()
+      if !touchedTables.isEmpty {
+        notifyDidChange(touchedTables: touchedTables)
+      }
     }
   }
 
@@ -2563,6 +2572,15 @@ final class DatabaseService {
     try exec("pragma synchronous = normal")
     try exec("pragma busy_timeout = 5000")
 
+    // Before the bootstrap: its `alter table ... add column` steps record
+    // the columns whose stored changes need a replay.
+    try run("""
+      create table if not exists \(DatabaseService.pendingColumnReplaysTable) (
+        table_name text not null,
+        column_name text not null,
+        primary key (table_name, column_name)
+      )
+    """)
     let bootstrapSQL = try loadBootstrapSQL()
     try executeBootstrapSQL(bootstrapSQL)
     try ensureHydrationProjectionColumns()
@@ -3172,7 +3190,12 @@ final class DatabaseService {
     "lane_detail_snapshots",
     "lane_list_snapshots",
     "pr_auto_link_ignores",
+    DatabaseService.pendingColumnReplaysTable,
   ]
+
+  /// Local bookkeeping: columns an app update added whose stored changes are
+  /// not applied yet (see `replayPendingColumnChangesLocked`).
+  private static let pendingColumnReplaysTable = "sync_pending_column_replays"
 
   /// Tables the phone replaces from explicit hydration commands after connect.
   /// Treating them as CRDT tables is redundant and can break first-connect
@@ -3652,7 +3675,11 @@ final class DatabaseService {
   }
 
   private func exec(_ sql: String) throws {
-    let alterTable = parseAlterTableTarget(sql)
+    let addColumnTarget = parseAlterTableAddColumnTarget(sql)
+    if let addColumnTarget {
+      recordPendingColumnReplay(addColumnTarget)
+    }
+    let alterTable = addColumnTarget?.tableName
     if let alterTable, hasTable(named: "\(alterTable)__crsql_clock") {
       var alterError: Error?
       do {
@@ -4161,37 +4188,9 @@ final class DatabaseService {
             let primaryKeyColumn = tableInfo.primaryKeyColumn
       else { continue }
 
-      let pkColumns = tableInfo.primaryKeyColumns
-      let decodedPkValues: [SyncScalarValue]
-      if pkColumns.count == 1 {
-        decodedPkValues = [decodeCrsqlPk(first.pk)]
-      } else if let multi = decodeCrsqlPkColumns(first.pk), multi.count == pkColumns.count {
-        decodedPkValues = multi
-      } else if pkColumns.count > 1 {
-        // Only a single PK value was recorded (e.g. the sender used a
-        // single-column encoding for a composite-key table).  Try to
-        // recover the full primary key by:
-        //   1. Decode the single value via decodeCrsqlPk.
-        //   2. Map it to the column indicated by primaryKeyColumn.
-        //   3. Fill the remaining PK columns from rowChanges whose cid
-        //      matches the column name.
-        let singleVal = decodeCrsqlPk(first.pk)
-        guard let knownIdx = pkColumns.firstIndex(of: primaryKeyColumn) else { continue }
-        var assembled = [SyncScalarValue](repeating: .null, count: pkColumns.count)
-        assembled[knownIdx] = singleVal
-        for (i, col) in pkColumns.enumerated() where i != knownIdx {
-          if let match = rowChanges.first(where: { $0.cid == col }) {
-            assembled[i] = match.val
-          } else {
-            break
-          }
-        }
-        guard !assembled.contains(.null) else { continue }
-        decodedPkValues = assembled
-      } else {
+      guard let pkPairs = primaryKeyPairs(for: first.pk, rowChanges: rowChanges, in: tableInfo) else {
         continue // can't decode pk — skip
       }
-      let pkPairs = Array(zip(pkColumns, decodedPkValues))
 
       let existingRow = try fetchRow(in: tableInfo, pkPairs: pkPairs)
       let materializationChanges = existingRow == nil
@@ -4243,6 +4242,200 @@ final class DatabaseService {
       } else {
         try updateRow(finalRow!, in: tableInfo)
       }
+    }
+  }
+
+  /// The row's primary key as (column, value) pairs, decoded from a stored
+  /// change's `pk`. Nil when the key cannot be decoded.
+  private func primaryKeyPairs(
+    for pk: SyncScalarValue,
+    rowChanges: [CrsqlChangeRow],
+    in tableInfo: SyncTableInfo
+  ) -> [(String, SyncScalarValue)]? {
+    guard let primaryKeyColumn = tableInfo.primaryKeyColumn else { return nil }
+    let pkColumns = tableInfo.primaryKeyColumns
+    let decodedPkValues: [SyncScalarValue]
+    if pkColumns.count == 1 {
+      decodedPkValues = [decodeCrsqlPk(pk)]
+    } else if let multi = decodeCrsqlPkColumns(pk), multi.count == pkColumns.count {
+      decodedPkValues = multi
+    } else if pkColumns.count > 1 {
+      // Only a single PK value was recorded (e.g. the sender used a
+      // single-column encoding for a composite-key table).  Try to
+      // recover the full primary key by:
+      //   1. Decode the single value via decodeCrsqlPk.
+      //   2. Map it to the column indicated by primaryKeyColumn.
+      //   3. Fill the remaining PK columns from rowChanges whose cid
+      //      matches the column name.
+      let singleVal = decodeCrsqlPk(pk)
+      guard let knownIdx = pkColumns.firstIndex(of: primaryKeyColumn) else { return nil }
+      var assembled = [SyncScalarValue](repeating: .null, count: pkColumns.count)
+      assembled[knownIdx] = singleVal
+      for (i, col) in pkColumns.enumerated() where i != knownIdx {
+        if let match = rowChanges.first(where: { $0.cid == col }) {
+          assembled[i] = match.val
+        } else {
+          break
+        }
+      }
+      guard !assembled.contains(.null) else { return nil }
+      decodedPkValues = assembled
+    } else {
+      return nil
+    }
+    return Array(zip(pkColumns, decodedPkValues))
+  }
+
+  /// Apply the stored changes for columns an app update added (recorded in
+  /// `sync_pending_column_replays` just before the `alter table`). Those
+  /// changes arrived while the column did not exist, so they sit in
+  /// `crsql_changes` but never reached the row. Each pending column runs once:
+  /// its record is deleted in the same transaction as its replay.
+  ///
+  /// The replay only updates rows that exist; it never inserts or resurrects
+  /// one. It takes the newest stored change per row, and skips a change that
+  /// a later delete of that row superseded. Change capture is off, so nothing
+  /// is re-sent to peers. Returns the tables whose rows changed.
+  private func replayPendingColumnChangesLocked() -> Set<String> {
+    guard db != nil,
+          hasTable(named: DatabaseService.pendingColumnReplaysTable),
+          hasTable(named: "crsql_changes")
+    else { return [] }
+    let pending = query("select table_name, column_name from \(DatabaseService.pendingColumnReplaysTable)") { statement in
+      (table: stringValue(statement, index: 0) ?? "", column: stringValue(statement, index: 1) ?? "")
+    }
+    guard !pending.isEmpty else { return [] }
+
+    let previousCaptureState = shouldCaptureLocalChanges
+    shouldCaptureLocalChanges = false
+    defer { shouldCaptureLocalChanges = previousCaptureState }
+    // Same reason as a live apply: the new column may point at a row this
+    // phone never received.
+    let shouldRestoreForeignKeys = (queryInt64("pragma foreign_keys") ?? 0) != 0
+    if shouldRestoreForeignKeys {
+      try? exec("pragma foreign_keys = off")
+    }
+    defer {
+      if shouldRestoreForeignKeys {
+        try? exec("pragma foreign_keys = on")
+      }
+    }
+
+    var touchedTables = Set<String>()
+    for item in pending {
+      // A column whose `alter table` failed stays pending for the next open.
+      if hasTable(named: item.table), !tableHasColumn(tableName: item.table, columnName: item.column) {
+        continue
+      }
+      do {
+        try exec("begin")
+        var updated = 0
+        if hasTable(named: item.table) {
+          syncTableInfoCache.removeValue(forKey: item.table)
+          updated = try replayStoredChanges(table: item.table, column: item.column)
+        }
+        _ = try execute("delete from \(DatabaseService.pendingColumnReplaysTable) where table_name = ? and column_name = ?") { statement in
+          try bindText(item.table, to: statement, index: 1)
+          try bindText(item.column, to: statement, index: 2)
+        }
+        try exec("commit")
+        if updated > 0 {
+          touchedTables.insert(item.table)
+        }
+      } catch {
+        // Keep the record: a locked or full database may work on the next open.
+        try? exec("rollback")
+      }
+    }
+    return touchedTables
+  }
+
+  /// Write the newest stored value of `column` into each existing row.
+  /// Returns how many rows changed.
+  private func replayStoredChanges(table: String, column: String) throws -> Int {
+    guard let tableInfo = syncTableInfo(for: table),
+          !tableInfo.primaryKeyColumns.contains(column)
+    else { return 0 }
+    let changes = query("""
+      select c.[table], c.pk, c.cid, c.val, c.col_version, c.db_version, c.site_id, c.cl, c.seq
+        from crsql_changes c
+       where c.[table] = ? and c.cid = ?
+         and not exists (
+           select 1
+             from crsql_changes d
+            where d.[table] = c.[table]
+              and d.pk = c.pk
+              and d.cid in (?, ?)
+              and (d.db_version > c.db_version
+                or (d.db_version = c.db_version and (d.cl > c.cl or (d.cl = c.cl and d.seq > c.seq))))
+         )
+       order by c.db_version asc, c.cl asc, c.seq asc
+    """, bind: { [self] statement in
+      try self.bindText(table, to: statement, index: 1)
+      try self.bindText(column, to: statement, index: 2)
+      try self.bindText(localDeleteColumnId, to: statement, index: 3)
+      try self.bindText(legacyDeleteColumnId, to: statement, index: 4)
+    }) { statement in
+      CrsqlChangeRow(
+        table: stringValue(statement, index: 0) ?? table,
+        pk: scalarValue(statement, index: 1),
+        cid: stringValue(statement, index: 2) ?? column,
+        val: scalarValue(statement, index: 3),
+        colVersion: Int(sqlite3_column_int64(statement, 4)),
+        dbVersion: Int(sqlite3_column_int64(statement, 5)),
+        siteId: blobHexValue(statement, index: 6) ?? "",
+        cl: Int(sqlite3_column_int64(statement, 7)),
+        seq: Int(sqlite3_column_int64(statement, 8))
+      )
+    }
+    guard !changes.isEmpty else { return 0 }
+
+    // Rows come oldest first, so the last one per row wins.
+    var orderedKeys: [String] = []
+    var newestByRow: [String: CrsqlChangeRow] = [:]
+    for change in changes {
+      let key = scalarStorageKey(change.pk)
+      if newestByRow[key] == nil {
+        orderedKeys.append(key)
+      }
+      newestByRow[key] = change
+    }
+
+    let whereClause = tableInfo.primaryKeyColumns.map { "\(quoteIdentifier($0)) = ?" }.joined(separator: " and ")
+    let sql = """
+      update \(quoteIdentifier(table))
+         set \(quoteIdentifier(column)) = ?
+       where \(whereClause)
+    """
+    var updated = 0
+    for key in orderedKeys {
+      guard let change = newestByRow[key],
+            let pkPairs = primaryKeyPairs(for: change.pk, rowChanges: [change], in: tableInfo)
+      else { continue }
+      updated += try execute(sql) { statement in
+        try bindScalar(change.val, to: statement, index: 1)
+        for (offset, pair) in pkPairs.enumerated() {
+          try bindScalar(pair.1, to: statement, index: Int32(offset + 2))
+        }
+      }
+    }
+    return updated
+  }
+
+  /// Before `alter table ... add column` on a table that has rows, note the
+  /// column so `replayPendingColumnChangesLocked` applies its stored changes.
+  private func recordPendingColumnReplay(_ target: AlterTableAddColumnTarget) {
+    guard hasTable(named: DatabaseService.pendingColumnReplaysTable),
+          hasTable(named: target.tableName),
+          !tableHasColumn(tableName: target.tableName, columnName: target.columnName),
+          queryInt64("select exists(select 1 from \(quoteIdentifier(target.tableName)))") == 1
+    else { return }
+    _ = try? execute("""
+      insert or ignore into \(DatabaseService.pendingColumnReplaysTable)(table_name, column_name)
+      values (?, ?)
+    """) { statement in
+      try bindText(target.tableName, to: statement, index: 1)
+      try bindText(target.columnName, to: statement, index: 2)
     }
   }
 
