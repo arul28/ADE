@@ -21923,22 +21923,11 @@ export function createAgentChatService(args: {
    * this time.
    */
   const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
+  /** No time reads as now: a row with no end time read "running" until the dead owner was detected now. */
   const withinRestartResumeAge = (iso: string | null | undefined): boolean => {
     const ms = iso ? Date.parse(iso) : Number.NaN;
     return !Number.isFinite(ms) || Date.now() - ms <= RESTART_RESUME_MAX_AGE_MS;
   };
-  /**
-   * `restedSince` is when a chat at rest went idle (null for a cut-off turn).
-   * A chat at rest has no end time when a late project open or the stale-run
-   * sweep reaches it first, so without its idle time a chat that sat for days
-   * would read as just cut off and wake by itself.
-   */
-  const cutOffRecently = (
-    row: { endedAt?: string | null } | null | undefined,
-    restedSince: string | null,
-  ): boolean =>
-    // No end time: the row read "running" until the dead owner was detected now.
-    withinRestartResumeAge(row?.endedAt) && withinRestartResumeAge(restedSince);
 
   /**
    * The streak this chat's next automatic resume would have (see
@@ -22057,11 +22046,17 @@ export function createAgentChatService(args: {
     const awaitingUser = managed.awaitingInputAtLoad === true
       || readPersistedState(managed.session.id)?.awaitingInput === true;
     let resumeHold: RestartResumeHold | null = null;
+    // A chat at rest has no end time when a late project open or the stale-run
+    // sweep reaches it first, so it must also have gone quiet recently: one
+    // that sat for days would otherwise read as just cut off and wake by
+    // itself. Its idle time says when; without one, its last transcript event.
+    // A cut-off turn is judged by its end time alone.
+    const restedSince = unsettled
+      ? null
+      : managed.idleSinceBeforeRestartRecovery ?? transcriptEvents.at(-1)?.timestamp ?? null;
     // Read before `reopen` clears the row's end time.
-    const recent = cutOffRecently(
-      sessionService.get(managed.session.id),
-      unsettled ? null : managed.idleSinceBeforeRestartRecovery,
-    );
+    const recent = withinRestartResumeAge(sessionService.get(managed.session.id)?.endedAt)
+      && withinRestartResumeAge(restedSince);
     // One rule for the resume, the lost-work wake and the notice.
     const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
       continueEnabled: continueAfterRestartEnabled(),

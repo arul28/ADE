@@ -14,6 +14,7 @@ import {
   updateTrackOfVersion,
 } from "../../../desktop/src/shared/updateTrack";
 import { compareUpdateVersions } from "../../../desktop/src/shared/updateVersions";
+import { fetchReleaseManifestJson } from "../lib/releaseAssets";
 import type {
   SyncAccountDirectoryHealth,
   SyncRouteHealth,
@@ -708,13 +709,12 @@ async function readLatestDesktopVersionOnline(installedVersion: string | null): 
   const timer = setTimeout(() => controller.abort(), DOCTOR_ONLINE_DEADLINE_MS);
   try {
     if (updateTrackOfVersion(installedVersion) === "beta") {
-      const response = await doctorTimeout(
-        fetch(BETA_FEED_MANIFEST_URL, { signal: controller.signal }),
+      const manifest = parseReleaseManifest(await doctorTimeout(
+        fetchReleaseManifestJson(BETA_FEED_MANIFEST_URL, { signal: controller.signal }),
         DOCTOR_ONLINE_DEADLINE_MS,
         "Latest Beta check",
-      );
-      if (!response.ok) return null;
-      return parseReleaseManifest(await response.json())?.version ?? null;
+      ));
+      return manifest?.track === "beta" ? manifest.version : null;
     }
     const { fetchAdeLatestRelease } = await import(
       "../../../desktop/src/main/services/github/adeReleaseFeed"
@@ -738,7 +738,7 @@ async function readLatestDesktopVersionOnline(installedVersion: string | null): 
 /**
  * `update-status.json` records the last `ade brain update`, not the newest
  * release: once the app updates past it, it is only history. So it counts as
- * "latest" only while it is newer than the installed app.
+ * "latest" only while it is newer than the installed app and on its track.
  */
 function readLatestKnownDesktopVersionFromDisk(runtimeDir: string, installedVersion: string | null): string | null {
   let version: string | null;
@@ -752,17 +752,15 @@ function readLatestKnownDesktopVersionFromDisk(runtimeDir: string, installedVers
   }
   if (!version) return null;
   if (!installedVersion) return version;
+  if (updateTrackOfVersion(version) !== updateTrackOfVersion(installedVersion)) return null;
   const comparison = compareDoctorVersions(version, installedVersion);
   return comparison != null && comparison > 0 ? version : null;
 }
 
-function normalizedVersionParts(value: string): number[] | null {
-  const match = /^v?(\d+(?:\.\d+){0,3})/.exec(value.trim());
-  return match ? match[1]!.split(".").map((part) => Number.parseInt(part, 10)) : null;
-}
+const DOCTOR_VERSION_PATTERN = /^v?\d+(?:\.\d+){0,3}/;
 
 export function compareDoctorVersions(left: string, right: string): number | null {
-  if (!normalizedVersionParts(left) || !normalizedVersionParts(right)) return null;
+  if (!DOCTOR_VERSION_PATTERN.test(left.trim()) || !DOCTOR_VERSION_PATTERN.test(right.trim())) return null;
   // The shared comparator, so `1.2.127-beta.2` is newer than `-beta.1`.
   return Math.sign(compareUpdateVersions(left, right));
 }

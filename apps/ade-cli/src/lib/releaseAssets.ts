@@ -124,12 +124,17 @@ const RELEASE_MANIFEST_FETCH_TIMEOUT_MS = 15_000;
  * Reads a release's `release-manifest.json` (or the Beta feed's `beta.json`).
  * Null for a 404: the file is not there, which callers explain in their own
  * words. Throws on any other failure. The desktop app, the brain and the CLI
- * all read manifests through this one function.
+ * all read manifests through this one function. `signal` lets a caller with a
+ * tighter deadline (`ade doctor`) cancel the read.
  */
-export async function fetchReleaseManifestJson(url: string): Promise<unknown | null> {
+export async function fetchReleaseManifestJson(
+  url: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<unknown | null> {
+  const timeout = AbortSignal.timeout(RELEASE_MANIFEST_FETCH_TIMEOUT_MS);
   const response = await fetch(url, {
     redirect: "follow",
-    signal: AbortSignal.timeout(RELEASE_MANIFEST_FETCH_TIMEOUT_MS),
+    signal: options.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     headers: { accept: "application/json" },
   });
   if (response.status === 404) return null;
