@@ -1,4 +1,5 @@
 import React, { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
+import { useHidesFloatingUpdatePrompt } from "./updateRestartAction";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import type { Icon as PhosphorIcon } from "@phosphor-icons/react";
 import {
@@ -213,6 +214,9 @@ export function SettingsPage({
   standalone = false,
   onClose,
 }: { active?: boolean; standalone?: boolean; onClose?: () => void } = {}) {
+  // The floating "update is ready" prompt covered this page's headers; the
+  // top bar's restart control stays, so the action is still one click away.
+  useHidesFloatingUpdatePrompt(active);
   const location = useLocation();
   const navigate = useNavigate();
   // Read-only: every write to the settings URL goes through `navigate` so the

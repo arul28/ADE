@@ -271,6 +271,7 @@ import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
+import { resolveContinueAfterRestart } from "./services/runtime/continueAfterRestartStore";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
@@ -2455,6 +2456,8 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        // One value per machine: this brain decides its own resumes.
+        readContinueAfterRestart: () => resolveContinueAfterRestart(),
         embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         // The MCP registry's secret values: the generic vault kind, account-wide.

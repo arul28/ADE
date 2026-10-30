@@ -328,7 +328,16 @@ export type UpdateInterruptedChat = {
    * means it can.
    */
   resumable?: boolean;
+  /**
+   * What the restart does to it, by the machine's own rule: null continues by
+   * itself, otherwise why it stops (`RestartResumeHold`: the setting is off,
+   * it is waiting on the user's answer…). Absent from a brain too old to say.
+   */
+  continueHold?: UpdateChatContinueHold | null;
 };
+
+/** Mirrors `RestartResumeHold` in shared/chatAutoResume.ts. */
+export type UpdateChatContinueHold = "disabled" | "stale" | "awaiting_user" | "capped" | "settled";
 
 /**
  * Applying an update is one transaction: the app is swapped, the background
@@ -456,7 +465,16 @@ export type AutoUpdateSnapshot = {
    * switch started in this launch. Optional so existing literals compile.
    */
   track?: AutoUpdateTrackState;
+  /**
+   * The newest published build of each track, whichever one this computer
+   * follows, so another machine can be offered the newest build on ITS track.
+   * A track never read (offline since launch) is null. Absent on builds with
+   * no update feed (dev, Alpha) and on older snapshots.
+   */
+  latestByTrack?: AutoUpdateLatestByTrack;
 };
+
+export type AutoUpdateLatestByTrack = { stable: string | null; beta: string | null };
 
 export type AutoUpdateTrackState = {
   selected: UpdateTrack;
@@ -497,6 +515,11 @@ export type RuntimeUpdateImpact = {
   cliSessions: number;
   /** Other terminals that are open, busy or quiet; a restart closes them too. */
   terminals: number;
+  /**
+   * That machine's "Continue chats after restarts". Absent from a brain too
+   * old to report it.
+   */
+  continueAfterRestart?: boolean;
 };
 
 export type UpdateInstallImpactPhone = {

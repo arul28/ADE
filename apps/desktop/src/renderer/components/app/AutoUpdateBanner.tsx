@@ -7,7 +7,7 @@ import { dismissToast, showToast } from "./toast/toastStore";
 import { APP_BANNER_PRIORITY, useAppBanner } from "../ui/notice";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { requestDownloadedUpdateInstall } from "./autoUpdateInstallAction";
-import { updateRestartAction, useUpdateRestartActionInPage } from "./updateRestartAction";
+import { updateRestartAction, useFloatingUpdatePromptHidden } from "./updateRestartAction";
 import { ReportIssueButton } from "./ReportIssueButton";
 import { BrainDownNotice } from "./BrainDownNotice";
 
@@ -145,9 +145,9 @@ export function AutoUpdateBanner() {
   useEffect(() => () => dismissToast(AUTO_APPLY_TOAST_ID), []);
 
   const showBanner = Boolean(banner) && signature !== dismissedSignature;
-  // Settings › ADE service carries the same button on its version card; the
-  // floating prompt would repeat it and cover that card.
-  const actionInPage = useUpdateRestartActionInPage();
+  // Not over Settings: ADE service carries the same button on its version
+  // card, the top bar has it on every page, and the prompt covered headers.
+  const actionInPage = useFloatingUpdatePromptHidden();
   const showReadyUpdatePrompt =
     snapshot.status === "ready"
     && Boolean(updateVersion)

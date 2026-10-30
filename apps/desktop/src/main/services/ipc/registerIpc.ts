@@ -1,4 +1,8 @@
 import type { NewLaneDefaults } from "../../../shared/laneStart";
+import {
+  resolveContinueAfterRestart,
+  writeSavedContinueAfterRestart,
+} from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import { app, BrowserWindow, clipboard, dialog, globalShortcut, ipcMain, nativeImage, powerMonitor, shell, systemPreferences, webContents } from "electron";
 import { encodeClipboardImageWithinCap } from "../chat/clipboardImageEncoding";
 import { parseGitHubIssueCreateInput, parseGitHubIssueUpdate } from "../../../shared/laneGitHubIssue";
@@ -5638,6 +5642,17 @@ export function registerIpc({
       });
     },
   );
+
+  // "Continue chats after restarts" for This computer: one value per machine,
+  // in ~/.ade, which this computer's brain reads when it decides a resume.
+  ipcMain.handle(IPC.aiGetContinueAfterRestart, async (): Promise<{ enabled: boolean }> => ({
+    enabled: resolveContinueAfterRestart(),
+  }));
+  ipcMain.handle(IPC.aiSetContinueAfterRestart, async (_event, args: { enabled?: unknown }): Promise<{ enabled: boolean }> => {
+    if (typeof args?.enabled !== "boolean") throw new Error("enabled must be true or false.");
+    writeSavedContinueAfterRestart(args.enabled);
+    return { enabled: args.enabled };
+  });
 
   ipcMain.handle(IPC.aiUpdateConfig, async (_event, partial: Partial<AiConfig>): Promise<void> => {
     const ctx = getCtx();

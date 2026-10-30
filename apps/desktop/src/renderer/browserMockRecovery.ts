@@ -403,14 +403,28 @@ function mockChat(sessionId: string, title: string, projectName = "ADE") {
  * Then open Settings › ADE service, or press the update control in the top bar.
  */
 function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
-  const studioChat = { checked: true, chats: [mockChat("mock-studio-chat", "Refactor the sync relay")], cliSessions: 0, terminals: 1 };
+  // The Studio has "Continue chats after restarts" off; this computer has it on
+  // (`?adeContinue=off` turns this computer's off too).
+  const localContinue = urlParam("adeContinue") !== "off";
+  const studioChat = {
+    checked: true,
+    chats: [{ ...mockChat("mock-studio-chat", "Refactor the sync relay"), continueHold: "disabled" as const }],
+    cliSessions: 0,
+    terminals: 1,
+    continueAfterRestart: false,
+  };
   const localChat = {
     checked: true,
-    chats: [mockChat("mock-local-chat", "Fix the login flicker on Windows")],
+    chats: [
+      { ...mockChat("mock-local-chat", "Fix the login flicker on Windows"), continueHold: localContinue ? null : "disabled" as const },
+      { ...mockChat("mock-local-ask", "Pick a name for the release"), continueHold: localContinue ? "awaiting_user" as const : "disabled" as const },
+    ],
     cliSessions: 0,
     terminals: 0,
+    continueAfterRestart: localContinue,
     connectedPhones: [{ deviceId: "mock-iphone", deviceName: "Arul's iPhone" }],
   };
+  const latestByTrack = { stable: "1.2.127", beta: "1.2.128-beta.2" };
   if (name === "switch") {
     return {
       snapshot: {
@@ -418,6 +432,7 @@ function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
         currentVersion: "1.2.127-beta.1",
         version: "1.2.127",
         latestKnownVersion: "1.2.127",
+        latestByTrack,
         track: { selected: "stable", running: "beta", switching: "stable" },
       },
       runningTrack: "beta",
@@ -432,6 +447,7 @@ function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
         currentVersion: "1.2.126",
         version: "1.2.127",
         latestKnownVersion: "1.2.127",
+        latestByTrack,
         track: { selected: "stable", running: "stable", switching: null },
       },
       runningTrack: "stable",
@@ -443,9 +459,11 @@ function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
     return {
       snapshot: {
         status: "idle",
-        currentVersion: "1.2.127-beta.2",
+        currentVersion: "1.2.128-beta.2",
         version: null,
-        latestKnownVersion: "1.2.127-beta.2",
+        latestKnownVersion: "1.2.128-beta.2",
+        // Read from both feeds: this Beta computer still knows the newest Stable.
+        latestByTrack,
         lastCheckedAt: Date.now() - 4 * 60_000,
         track: { selected: "beta", running: "beta", switching: null },
       },
@@ -453,7 +471,7 @@ function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
       local: localChat,
       machines: [
         { id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.126", impact: studioChat },
-        { id: "mock-windows", name: "Arul's Windows PC", arch: "win32-x64", version: "1.2.127-beta.1", impact: { checked: true, chats: [], cliSessions: 0, terminals: 0 } },
+        { id: "mock-windows", name: "Arul's Windows PC", arch: "win32-x64", version: "1.2.128-beta.1", impact: { checked: true, chats: [], cliSessions: 0, terminals: 0 } },
       ],
     };
   }
@@ -466,6 +484,12 @@ function applyBrowserMockUpdateScenario(ade: MockUpdateAde): void {
   const baseGetState = ade.updateGetState;
   ade.updateGetState = async () => ({ ...(await baseGetState()), ...scenario.snapshot });
   ade.updateGetInstallImpact = async () => scenario.local;
+  let continueAfterRestart = scenario.local.continueAfterRestart !== false;
+  ade.ai.getContinueAfterRestart = async () => ({ enabled: continueAfterRestart });
+  ade.ai.setContinueAfterRestart = async (enabled: boolean) => {
+    continueAfterRestart = enabled;
+    return { enabled };
+  };
   // The About card and the top bar treat a dev build as having no updates.
   const baseGetInfo = ade.app.getInfo;
   ade.app.getInfo = async () => ({
@@ -524,6 +548,10 @@ type MockUpdateAde = {
   updateGetState: () => Promise<AutoUpdateSnapshot>;
   updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
   app: { getInfo: () => Promise<AppInfo>; restartBackgroundService?: () => Promise<void>; updateTrack?: string };
+  ai: {
+    getContinueAfterRestart?: () => Promise<{ enabled: boolean }>;
+    setContinueAfterRestart?: (enabled: boolean) => Promise<{ enabled: boolean }>;
+  };
   remoteRuntime: {
     getConnectionSnapshot: () => Promise<never>;
     listTargets: () => Promise<never>;

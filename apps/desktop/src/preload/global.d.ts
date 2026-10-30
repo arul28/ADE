@@ -1650,6 +1650,12 @@ declare global {
         jevDecide: <Q extends JevQuestions>(request: JevDecideRequest<Q>, pin?: OpenProjectBinding | null) => Promise<JevAnswers<Q> | null>;
         /** The helper's availability, breaker and counts; `null` when that machine cannot say. */
         jevStatus: (pin?: OpenProjectBinding | null) => Promise<JevStatus | null>;
+        /**
+         * "Continue chats after restarts", one value per machine. Unpinned:
+         * This computer; with a pin, that machine's brain.
+         */
+        getContinueAfterRestart: (pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
+        setContinueAfterRestart: (enabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;

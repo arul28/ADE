@@ -1142,9 +1142,16 @@ export function RemoteTargetList({
   // track gets "Update & restart"; a track this computer knows no build on
   // gets none, rather than a build from the other track.
   const { currentVersion, version: downloadedVersion, latestKnownVersion } = updateSnapshot;
+  const latestStable = updateSnapshot.latestByTrack?.stable ?? null;
+  const latestBeta = updateSnapshot.latestByTrack?.beta ?? null;
   const knownVersions = useMemo(
-    () => knownAdeVersions({ currentVersion, version: downloadedVersion, latestKnownVersion }),
-    [currentVersion, downloadedVersion, latestKnownVersion],
+    () => knownAdeVersions({
+      currentVersion,
+      version: downloadedVersion,
+      latestKnownVersion,
+      latestByTrack: { stable: latestStable, beta: latestBeta },
+    }),
+    [currentVersion, downloadedVersion, latestKnownVersion, latestStable, latestBeta],
   );
 
   function renderSection(section: MachineSection) {

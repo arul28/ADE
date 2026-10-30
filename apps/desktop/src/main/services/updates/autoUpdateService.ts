@@ -52,6 +52,7 @@ import {
 import { startDownloadStallWatchdog, type DownloadStallWatchdog } from "./downloadStallWatchdog";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import { createTrackFeedPolicy } from "./updateTrackFeed";
+import type { LatestByTrackReader } from "./latestByTrack";
 import type { UpdateTrackSwitchResult } from "../../../shared/types";
 import { InstallOnQuitDeferredError } from "./installOnQuit";
 
@@ -221,6 +222,12 @@ type CreateAutoUpdateServiceArgs = {
   readSelectedTrack?: () => UpdateTrack | null;
   /** Saves the machine's chosen track. Absent: a switch cannot be started. */
   writeSelectedTrack?: (track: UpdateTrack) => void;
+  /**
+   * Reads the newest build of both tracks beside each update check
+   * (`latestByTrack.ts`). Absent: never read, and the snapshot carries no
+   * `latestByTrack` (dev, Alpha, tests).
+   */
+  latestByTrack?: LatestByTrackReader;
 };
 
 type UpdateCheckResultLike = {
@@ -344,6 +351,7 @@ function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
     lastInstallFailed: snapshot.lastInstallFailed ? { ...snapshot.lastInstallFailed } : null,
     autoApplyPending: snapshot.autoApplyPending ? { ...snapshot.autoApplyPending } : null,
     checkFailure: snapshot.checkFailure ? { ...snapshot.checkFailure } : null,
+    ...(snapshot.latestByTrack ? { latestByTrack: { ...snapshot.latestByTrack } } : {}),
     updateTransaction: snapshot.updateTransaction
       ? {
           ...snapshot.updateTransaction,
@@ -601,6 +609,7 @@ export function createAutoUpdateService({
   autoApplyEnabled = autoCheckEnabled && process.env.ADE_DISABLE_AUTO_UPDATE_APPLY !== "1",
   readSelectedTrack,
   writeSelectedTrack,
+  latestByTrack,
 }: CreateAutoUpdateServiceArgs) {
   updater.logger = null;
   // Manual download is required so ADE can preflight the updater cache volume
@@ -718,6 +727,7 @@ export function createAutoUpdateService({
     recentlyInstalled: initialState.recentlyInstalled,
     lastInstallFailed: initialState.failedInstall,
     ...trackPatch(),
+    ...(latestByTrack ? { latestByTrack: { ...latestByTrack.current() } } : {}),
   };
   trackFeed.configure();
   let checkPromise: Promise<unknown> | null = null;
@@ -1642,7 +1652,19 @@ export function createAutoUpdateService({
       userInitiated: options.userInitiated === true,
       status: snapshot.status,
     });
+    refreshLatestByTrack();
     return runUpdateCheck(options.userInitiated === true);
+  }
+
+  /** Beside the check, not inside it: the check never waits on the other track's feed. */
+  function refreshLatestByTrack(): void {
+    if (!latestByTrack) return;
+    void latestByTrack.refresh().then((next) => {
+      if (disposed) return;
+      const known = snapshot.latestByTrack;
+      if (known && known.stable === next.stable && known.beta === next.beta) return;
+      patchSnapshot({ latestByTrack: { ...next } });
+    });
   }
 
   async function refreshReadyUpdateBeforeInstall(): Promise<boolean> {

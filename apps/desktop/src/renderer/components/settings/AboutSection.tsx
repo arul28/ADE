@@ -4,7 +4,7 @@ import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../sh
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { requestDownloadedUpdateInstall } from "../app/autoUpdateInstallAction";
 import { UpdateTrackChip } from "../app/ChannelBadge";
-import { updateRestartAction, useShowsUpdateRestartAction } from "../app/updateRestartAction";
+import { updateRestartAction, useHidesFloatingUpdatePrompt } from "../app/updateRestartAction";
 import { updateTrackLabel } from "../../../shared/updateTrack";
 import { canRestartAde, restartAde } from "../app/restartAde";
 import { AutoUpdatesControls } from "./AutoUpdatesSection";
@@ -204,7 +204,7 @@ export function AboutSection() {
     && info.isPackaged
     && updateSnapshot.status === "ready"
     && resolveAboutVersionState(info.appVersion, updateSnapshot).restartPending;
-  useShowsUpdateRestartAction(restartReady);
+  useHidesFloatingUpdatePrompt(restartReady);
   useEffect(() => {
     if (updateSnapshot.status !== "ready") setRestartRequested(false);
   }, [updateSnapshot.status, updateSnapshot.version]);

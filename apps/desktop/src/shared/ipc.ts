@@ -935,6 +935,8 @@ export const IPC = {
   apiCredentialsGet: "ade.apiCredentials.get",
   aiVerifyApiKey: "ade.ai.verifyApiKey",
   aiUpdateConfig: "ade.ai.updateConfig",
+  aiGetContinueAfterRestart: "ade.ai.getContinueAfterRestart",
+  aiSetContinueAfterRestart: "ade.ai.setContinueAfterRestart",
   /**
    * Binary path, config home, version, last auth verdict, and optionally the
    * vendor's own `doctor`, for one ACP provider. Spawns, so it is called when a

@@ -129,6 +129,28 @@
   gap: 6px;
   color: var(--kit-ok);
 }
+.ade-upd-continue[data-on="false"] {
+  color: var(--kit-text-2);
+}
+.ade-upd-continue[data-on="false"] > svg {
+  color: var(--kit-warn);
+}
+/* "Change": a quiet text link at the end of the continue line. */
+.ade-upd-link {
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--kit-text-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.ade-upd-link:hover,
+.ade-upd-link:focus-visible {
+  color: var(--color-fg);
+}
 .ade-upd-phones {
   display: flex;
   align-items: center;

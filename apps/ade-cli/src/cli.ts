@@ -27141,6 +27141,7 @@ async function runServe(
     { buildProjectlessSyncSnapshot },
     { resolveBrainMachineSyncStores, createProjectlessSyncControls },
     { createMachineUpdateControls },
+    { resolveContinueAfterRestart },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -27155,6 +27156,7 @@ async function runServe(
     import("./services/sync/projectlessSyncSnapshot"),
     import("./services/sync/brainMachineSyncStores"),
     import("./services/runtime/machineUpdateAndRestart"),
+    import("./services/runtime/continueAfterRestartStore"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -28248,6 +28250,7 @@ async function runServe(
       ...(embedded
         ? {}
         : {
+          readContinueAfterRestart: () => resolveContinueAfterRestart(),
           machineUpdateControls: createMachineUpdateControls({
             version: VERSION,
             logger: headlessProjectLogger,

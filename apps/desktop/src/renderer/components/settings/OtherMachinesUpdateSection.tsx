@@ -84,9 +84,16 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // sent this computer's Beta, and a machine whose track has no known build
   // here is not called behind.
   const { currentVersion, version: downloadedVersion, latestKnownVersion } = updateSnapshot;
+  const latestStable = updateSnapshot.latestByTrack?.stable ?? null;
+  const latestBeta = updateSnapshot.latestByTrack?.beta ?? null;
   const known = useMemo(
-    () => knownAdeVersions({ currentVersion, version: downloadedVersion, latestKnownVersion }),
-    [currentVersion, downloadedVersion, latestKnownVersion],
+    () => knownAdeVersions({
+      currentVersion,
+      version: downloadedVersion,
+      latestKnownVersion,
+      latestByTrack: { stable: latestStable, beta: latestBeta },
+    }),
+    [currentVersion, downloadedVersion, latestKnownVersion, latestStable, latestBeta],
   );
   const behind = machinesBehindOnTheirTrack(machines, known);
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));

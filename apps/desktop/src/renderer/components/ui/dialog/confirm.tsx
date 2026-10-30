@@ -90,6 +90,8 @@ export type ConfirmDialogChoices = {
     onChange: (event: ChangeEvent<HTMLInputElement>) => void;
     onKeyDown?: (event: KeyboardEvent<HTMLInputElement>) => void;
   };
+  /** Closes the dialog as a "no", for a link inside it that goes somewhere else. */
+  dismiss: () => void;
 };
 
 /** A confirm that carries checkboxes: the yes/no, and each box by its key. */
@@ -355,7 +357,7 @@ function ConfirmDialogView({
   });
   const placesOwnCheckboxes = typeof options.children === "function";
   const content = typeof options.children === "function"
-    ? options.children({ checked, checkboxProps })
+    ? options.children({ checked, checkboxProps, dismiss: () => settle(false) })
     : options.children;
   const body = content != null || checkboxes.length > 0 ? (
     <>

@@ -1111,6 +1111,20 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Voice",
   },
   {
+    id: "chat.continue-after-restart",
+    label: "Continue chats after restarts",
+    keywords: ["resume", "restart", "update", "crash", "reboot", "pick up", "continue", "auto resume"],
+    tab: "chat",
+    // The same anchor it had under Notifications › Scheduled work, so links
+    // made then still land: a `#hash` names the card and wins over `?tab=`.
+    anchor: "continue-after-restart",
+    // `~/.ade/continue-after-restart.json`: one value per machine, read by
+    // that machine's brain when it decides a resume.
+    scope: "machine",
+    web: "hidden",
+    group: "Restarts",
+  },
+  {
     id: "chat.voice-conversations",
     label: "Voice conversations",
     keywords: ["voice", "talk", "speak", "realtime", "codex voice", "personality", "call", "conversation"],

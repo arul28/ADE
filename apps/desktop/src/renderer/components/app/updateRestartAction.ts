@@ -32,9 +32,10 @@ export function updateRestartAction(snapshot: Pick<AutoUpdateSnapshot, "version"
   };
 }
 
-// A page that shows the restart action itself (Settings › ADE service) says
-// so while it is open, and the floating prompt steps aside: one action, one
-// button on screen, and nothing floating over the page's own cards.
+// Settings says so while it is open, and the floating prompt steps aside:
+// ADE service shows the restart button on its version card, every page sits
+// under the top bar's, and the prompt would float over the page's headers.
+// One action, no extra button over the page.
 let inPageCount = 0;
 const listeners = new Set<() => void>();
 
@@ -48,8 +49,8 @@ function setInPageCount(next: number): void {
   for (const listener of listeners) listener();
 }
 
-/** Mark that this page shows the restart action while `shown` is true. */
-export function useShowsUpdateRestartAction(shown: boolean): void {
+/** Keep the floating update prompt away while `shown` is true (an open Settings page). */
+export function useHidesFloatingUpdatePrompt(shown: boolean): void {
   useEffect(() => {
     if (!shown) return;
     setInPageCount(inPageCount + 1);
@@ -57,7 +58,7 @@ export function useShowsUpdateRestartAction(shown: boolean): void {
   }, [shown]);
 }
 
-/** True while an open page already shows the restart action. */
-export function useUpdateRestartActionInPage(): boolean {
+/** True while an open page keeps the floating update prompt away. */
+export function useFloatingUpdatePromptHidden(): boolean {
   return useSyncExternalStore(subscribe, () => inPageCount > 0, () => false);
 }

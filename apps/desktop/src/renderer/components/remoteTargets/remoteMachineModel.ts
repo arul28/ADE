@@ -873,15 +873,24 @@ export function machineUpdateTrack(machine: Pick<ConnectedMachine, "version" | "
 
 /**
  * Every ADE version this computer knows exists: the one it runs, the one it
- * downloaded, and the newest its update feed named. During a track switch
- * these sit on both tracks (Beta running, Stable downloaded).
+ * downloaded, the newest its own feed named, and the newest build of each
+ * track (`latestByTrack`, read from both feeds whichever track this computer
+ * follows). So a Beta computer still knows the newest Stable build, and the
+ * reverse. Builds with no feed (dev, Alpha) have only the first three.
  */
 export function knownAdeVersions(snapshot: {
   currentVersion?: string | null;
   latestKnownVersion?: string | null;
   version?: string | null;
+  latestByTrack?: { stable: string | null; beta: string | null } | null;
 } | null | undefined): string[] {
-  return [snapshot?.currentVersion, snapshot?.version, snapshot?.latestKnownVersion]
+  return [
+    snapshot?.currentVersion,
+    snapshot?.version,
+    snapshot?.latestKnownVersion,
+    snapshot?.latestByTrack?.stable,
+    snapshot?.latestByTrack?.beta,
+  ]
     .map((version) => version?.trim() || "")
     .filter((version) => comparableVersion(version) != null);
 }

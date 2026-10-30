@@ -57,23 +57,19 @@ function impactNote(impact: UpdateImpact): string | null {
   return null;
 }
 
-/** Chats that continue by themselves after a restart: all but the ones ADE can't queue. */
+/** Chats ADE can queue to continue after a restart: all but personal chats. */
 export function resumableChatCount(impact: UpdateImpact): number {
   return impact.chats.filter((chat) => chat.resumable !== false).length;
 }
 
-/** "Continues on its own after the update", in the same words for every machine. */
-export function continuesAfterUpdateLabel(count: number): string {
-  return count === 1 ? "Continues on its own after the update" : "Continue on their own after the update";
+/** The machine's "Continue chats after restarts", in the same words on every row. */
+export function continueSettingLine(enabled: boolean): string {
+  return enabled ? "Chats continue after the update" : "Chats stop — Continue chats after restarts is off";
 }
 
-/**
- * Restart recovery on that machine resumes a cut-off turn by itself unless the
- * chat was waiting on an answer, the machine's setting is off, or it already
- * resumed three times in a row. That machine's setting is not readable here,
- * so the exceptions are named rather than promised away.
- */
-const REMOTE_CONTINUE_CAVEAT =
+/** For a machine too old to report its setting: what usually happens, and the exceptions. */
+const UNKNOWN_CONTINUE_LINE = "Chats usually continue after the update";
+const UNKNOWN_CONTINUE_CAVEAT =
   "Unless a chat is waiting for your answer, or Continue chats after restarts is off on that machine.";
 
 const MAX_LISTED_CHATS = 4;
@@ -119,7 +115,7 @@ export function MachineUpdateRow({
   row,
   showTracks,
   control,
-  continueControl,
+  settingAction,
   extra,
 }: {
   row: MachineUpdateRowModel;
@@ -127,8 +123,8 @@ export function MachineUpdateRow({
   showTracks: boolean;
   /** Right-aligned control on the name line (another machine's "Update"). */
   control?: ReactNode;
-  /** This computer's "continue" choice; other machines get the plain line. */
-  continueControl?: ReactNode;
+  /** Beside the continue line: where the setting is changed, when it can be from here. */
+  settingAction?: ReactNode;
   /** More lines under the row (connected phones). */
   extra?: ReactNode;
 }) {
@@ -173,19 +169,27 @@ export function MachineUpdateRow({
                   <ChatCircleDots size={12} weight="fill" aria-hidden />
                   <span className="ade-upd-chat-title">{chat.title}</span>
                   {showProject ? <span className="ade-upd-chat-meta">{`— ${chat.projectName}`}</span> : null}
-                  {chat.resumable === false ? <span className="ade-upd-chat-meta">— won't continue</span> : null}
+                  {chat.resumable === false
+                    ? <span className="ade-upd-chat-meta">— won't continue</span>
+                    : chat.continueHold === "awaiting_user"
+                      ? <span className="ade-upd-chat-meta">— waits for your answer</span>
+                      : null}
                 </li>
               ))}
               {unlisted > 0 ? <li className="ade-upd-chat-more">{`${unlisted} more`}</li> : null}
             </ul>
           ) : null}
-          {resumable > 0 ? (
-            continueControl ?? (
-              <div className="ade-upd-continue" title={REMOTE_CONTINUE_CAVEAT}>
-                <ArrowClockwise size={12} weight="bold" aria-hidden />
-                {continuesAfterUpdateLabel(resumable)}
-              </div>
-            )
+          {typeof impact.continueAfterRestart === "boolean" ? (
+            <div className="ade-upd-continue" data-on={impact.continueAfterRestart ? "true" : "false"}>
+              <ArrowClockwise size={12} weight="bold" aria-hidden />
+              <span>{continueSettingLine(impact.continueAfterRestart)}</span>
+              {settingAction}
+            </div>
+          ) : resumable > 0 ? (
+            <div className="ade-upd-continue" title={UNKNOWN_CONTINUE_CAVEAT}>
+              <ArrowClockwise size={12} weight="bold" aria-hidden />
+              <span>{UNKNOWN_CONTINUE_LINE}</span>
+            </div>
           ) : null}
           {note ? <div className="ade-upd-note">{note}</div> : null}
           {extra}

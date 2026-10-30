@@ -1,4 +1,7 @@
 import { ArrowsClockwise } from "@phosphor-icons/react";
+import { useInRouterContext } from "react-router-dom";
+import { settingsRouteFor } from "../../../shared/settingsManifest";
+import { useGoTo } from "../onboarding/spotlight/useGoTo";
 import type { AutoUpdateSnapshot, UpdateInstallImpact } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
@@ -13,7 +16,6 @@ import {
 import {
   MachineUpdateRow,
   PhonesLine,
-  continuesAfterUpdateLabel,
   remoteMachineRowModel,
   resumableChatCount,
   rowsShowTracks,
@@ -27,7 +29,6 @@ import { dismissToast, showToast } from "./toast/toastStore";
 import { updateRestartAction, type UpdateRestartAction } from "./updateRestartAction";
 
 const UPDATING_MACHINES_TOAST_ID = "ade-update-other-machines";
-const RESUME_CHATS = "resumeChats";
 /** One "Update" box per other machine, keyed by its id. */
 const updateMachineKey = (id: string) => `updateMachine:${id}`;
 
@@ -102,7 +103,10 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
     readThisComputerColorKey(),
   ]);
   const { connectedPhones, ...local } = impact;
-  const offerResume = resumableChatCount(local) > 0;
+  // No choice here: the resume follows this computer's "Continue chats after
+  // restarts", and on the launch that lands the update each chat is checked
+  // against the same rule a crash or reboot uses (setting, open question).
+  const resumeChats = resumableChatCount(local) > 0 && local.continueAfterRestart !== false;
   const runningTrack = snapshot.track?.running ?? updateTrackOfVersion(snapshot.currentVersion);
   const thisComputer: MachineUpdateRowModel = {
     key: "this-computer",
@@ -127,21 +131,15 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
     icon: <ArrowsClockwise size={16} weight="bold" />,
     tone: "accent",
     size: "md",
-    checkboxes: [
-      ...(offerResume ? [{ key: RESUME_CHATS, label: continuesAfterUpdateLabel(resumableChatCount(local)) }] : []),
-      ...machines.map((machine) => ({ key: updateMachineKey(machine.id), label: `Update ${machine.name}` })),
-    ],
+    checkboxes: machines.map((machine) => ({ key: updateMachineKey(machine.id), label: `Update ${machine.name}` })),
     children: (choices: ConfirmDialogChoices) => (
       <div className="ade-upd-list">
         <MachineUpdateRow
           row={thisComputer}
           showTracks={showTracks}
-          continueControl={offerResume ? (
-            <label className="ade-upd-check" data-tone="ok">
-              <input type="checkbox" {...choices.checkboxProps(RESUME_CHATS)} />
-              {continuesAfterUpdateLabel(resumableChatCount(local))}
-            </label>
-          ) : undefined}
+          // Settings › Chat edits This computer's value; another machine's
+          // row shows its value only (Settings › Chat has no machine picker).
+          settingAction={<ChangeContinueSettingLink onOpen={choices.dismiss} />}
           extra={<PhonesLine phones={connectedPhones} />}
         />
         {otherRows.map(({ machine, row }) => (
@@ -169,7 +167,6 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
     return false;
   }
 
-  const resumeChats = offerResume && answer.checked[RESUME_CHATS] === true;
   const chosen = machines.filter((machine) => answer.checked[updateMachineKey(machine.id)] === true);
   if (chosen.length > 0) {
     const proceed = await updateOtherMachinesFirst(chosen, action);
@@ -187,6 +184,32 @@ async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => v
   }
   captureUpdatePromptDecision(snapshot, started ? "accepted" : "deferred", { resumeChats });
   return started;
+}
+
+/**
+ * "Change" beside this computer's continue line: closes the dialog and opens
+ * Settings › Chat on the setting, which lights up as a deep link does. Only
+ * inside the app's router (the dialog host); elsewhere the line stands alone.
+ */
+function ChangeContinueSettingLink({ onOpen }: { onOpen: () => void }) {
+  if (!useInRouterContext()) return null;
+  return <ChangeContinueSettingLinkInRouter onOpen={onOpen} />;
+}
+
+function ChangeContinueSettingLinkInRouter({ onOpen }: { onOpen: () => void }) {
+  const goTo = useGoTo();
+  return (
+    <button
+      type="button"
+      className="ade-upd-link"
+      onClick={() => {
+        onOpen();
+        goTo(settingsRouteFor("chat.continue-after-restart") as `/${string}`);
+      }}
+    >
+      Change
+    </button>
+  );
 }
 
 /**
