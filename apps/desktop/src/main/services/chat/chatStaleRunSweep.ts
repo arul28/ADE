@@ -522,6 +522,11 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
             continue;
           }
           if (stopped) return;
+          // The read awaited, so the candidate check is stale: a runtime here or
+          // another brain may own the chat now. Then nothing is decided about it
+          // (no mark), as when sweepSession finds the same after its scan; an
+          // empty read must not retire a chat someone else now drives.
+          if (peekManagedSession(sessionId)?.runtime || !chatRuntimeAdoptable(sessionId, { quiet: true })) continue;
         }
         sweepOne(sessionId, envelopes);
       }

@@ -16,7 +16,7 @@ process.env.ADE_PROJECT_ROOT = root;
 const runs = Number(flag("--runs") ?? 5);
 const chats = Number(flag("--chats") ?? 3);
 
-const { readHistoryFileRange, readHistoryFileSize, readHistoryFileSync } = await import("../../../apps/desktop/src/main/services/storage/historyCompression");
+const { MAX_TRANSPARENT_HISTORY_BYTES, readHistoryFileRange, readHistoryFileSize, readHistoryFileSync } = await import("../../../apps/desktop/src/main/services/storage/historyCompression");
 const { parseAgentChatTranscript } = await import("../../../apps/desktop/src/shared/chatTranscript");
 const { deriveBackgroundItems } = await import("../../../apps/desktop/src/shared/chatScheduledWork");
 const { subagentSnapshotsFromEvents } = await import("../../../apps/desktop/src/shared/chatSubagents");
@@ -48,13 +48,21 @@ async function timed<T>(work: () => Promise<T> | T): Promise<{ value: T; wallMs:
   return { value, wallMs: done - started, blockMs: worst };
 }
 
-async function filteredRead(file: string, sessionId: string): Promise<{ envelopes: Envelope[]; complete: boolean; largestParsedLine: number }> {
+/**
+ * The timer pass's read, as agentChatService does it: the newest 256 MiB in 1 MB async chunks, only lines naming
+ * a stale-relevant type parsed, an oversized line skipped; and, when that saw less than the whole file or the file
+ * grew meanwhile, the full synchronous read instead (`fellBack`), which is then what the timing includes.
+ */
+async function filteredRead(file: string, sessionId: string): Promise<{ envelopes: Envelope[]; fellBack: boolean; largestParsedLine: number }> {
   const size = await readHistoryFileSize(file);
+  const scanStart = Math.max(0, size - MAX_TRANSPARENT_HISTORY_BYTES);
   const envelopes: Envelope[] = [];
-  let complete = true;
+  let complete = scanStart === 0;
   let largestParsedLine = 0;
-  let offset = 0;
+  let offset = scanStart;
   let carry = Buffer.alloc(0);
+  // Skipping the rest of a line: the window cut its start, or it is over the limit.
+  let skipping = scanStart > 0;
   const visit = (line: Buffer) => {
     if (line.length > MAX_LINE_BYTES) complete = false;
     if (line.length === 0 || line.length > MAX_LINE_BYTES) return;
@@ -66,16 +74,31 @@ async function filteredRead(file: string, sessionId: string): Promise<{ envelope
     const chunk = await readHistoryFileRange(file, offset, Math.min(CHUNK_BYTES, size - offset));
     if (chunk.length === 0) break;
     offset += chunk.length;
-    const buffer = carry.length ? Buffer.concat([carry, chunk]) : chunk;
+    let buffer = carry.length ? Buffer.concat([carry, chunk]) : chunk;
+    carry = Buffer.alloc(0);
+    if (skipping) {
+      const newline = buffer.indexOf(0x0a);
+      if (newline < 0) continue;
+      buffer = buffer.subarray(newline + 1);
+      skipping = false;
+    }
     let start = 0;
     for (let newline = buffer.indexOf(0x0a); newline >= 0; newline = buffer.indexOf(0x0a, start)) {
       visit(buffer.subarray(start, newline));
       start = newline + 1;
     }
     carry = buffer.subarray(start);
+    if (carry.length > MAX_LINE_BYTES) {
+      carry = Buffer.alloc(0);
+      skipping = true;
+      complete = false;
+    }
   }
-  if (carry.length) visit(carry);
-  return { envelopes, complete, largestParsedLine };
+  if (!skipping && carry.length) visit(carry);
+  const grew = (await readHistoryFileSize(file)) !== size;
+  if (complete && !grew) return { envelopes, fellBack: false, largestParsedLine };
+  const all = parseAgentChatTranscript(readHistoryFileSync(file).toString("utf8")).filter((e) => e.sessionId === sessionId);
+  return { envelopes: all, fellBack: true, largestParsedLine };
 }
 
 for (const file of largestTranscripts(chats)) {
@@ -83,7 +106,7 @@ for (const file of largestTranscripts(chats)) {
   const full: Array<{ wallMs: number; blockMs: number }> = [];
   const filtered: Array<{ wallMs: number; blockMs: number }> = [];
   let same = true;
-  let complete = true;
+  let fellBack = false;
   let events = 0;
   let kept = 0;
   let largestParsedLine = 0;
@@ -93,7 +116,7 @@ for (const file of largestTranscripts(chats)) {
     full.push(a);
     filtered.push(b);
     same &&= snapshots(a.value) === snapshots(b.value.envelopes);
-    complete &&= b.value.complete;
+    fellBack ||= b.value.fellBack;
     events = a.value.length;
     kept = b.value.envelopes.length;
     largestParsedLine = b.value.largestParsedLine;
@@ -107,7 +130,7 @@ for (const file of largestTranscripts(chats)) {
     events,
     eventsParsedFiltered: kept,
     sameSnapshots: same,
-    filteredSawWholeFile: complete,
+    filteredFellBackToFullRead: fellBack,
     // One matching line is parsed in one go; a long one (a subagent result with a long report) is the
     // filtered read's largest single block.
     largestParsedLineKB: r1(largestParsedLine / 1024),

@@ -410,7 +410,6 @@ export function execFileOffThread(
     const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env, envPatch: options.envPatch });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    let bytes = 0;
     let failure: Error | null = null;
     let settled = false;
     const finish = (exitCode: number | null, error: Error | null) => {
@@ -429,14 +428,19 @@ export function execFileOffThread(
       child.killTree("SIGTERM");
     };
     const timer = setTimeout(() => kill(new Error(`${command} timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
-    const collect = (sink: Buffer[]) => (data: Buffer) => {
-      if (failure) return;
-      bytes += data.length;
-      if (bytes > maxBuffer) {
-        kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
-        return;
-      }
-      sink.push(data);
+    // Per stream, as execFile counts maxBuffer: a quiet stdout must not fail
+    // because stderr was chatty, or the other way round.
+    const collect = (sink: Buffer[]) => {
+      let bytes = 0;
+      return (data: Buffer) => {
+        if (failure) return;
+        bytes += data.length;
+        if (bytes > maxBuffer) {
+          kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
+          return;
+        }
+        sink.push(data);
+      };
     };
     child.stdout.on("data", collect(stdout));
     child.stderr.on("data", collect(stderr));

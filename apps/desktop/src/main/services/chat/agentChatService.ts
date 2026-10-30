@@ -15944,9 +15944,11 @@ export function createAgentChatService(args: {
     signal?: AbortSignal,
     parseLine: (raw: string) => AgentChatEventEnvelope[] = parseAgentChatTranscript,
     lineMayMatch?: (line: Buffer) => boolean,
-  ): Promise<{ complete: boolean }> => {
-    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
-    if (!transcriptPath) return { complete: true };
+    /** Scan this file instead of the cached path (a caller that re-chose the authoritative transcript). */
+    pathOverride?: string,
+  ): Promise<{ complete: boolean; transcriptPath: string | null; scannedBytes: number }> => {
+    const transcriptPath = pathOverride ?? await resolveTranscriptPathForSessionId(sessionId, signal);
+    if (!transcriptPath) return { complete: true, transcriptPath: null, scannedBytes: 0 };
     const logicalSize = await readHistoryFileSize(transcriptPath);
     const scanStart = Math.max(0, logicalSize - MAX_TRANSPARENT_HISTORY_BYTES);
     // False when the scan saw less than the whole file: an older part past the
@@ -16010,7 +16012,7 @@ export function createAgentChatService(args: {
       }
     }
     if (!skipOversizedLine && carry.length > 0) processLine(carry);
-    return { complete };
+    return { complete, transcriptPath, scannedBytes: logicalSize };
   };
 
   const readRecentTranscriptEnvelopesForSessionIdAsync = async (
@@ -16107,17 +16109,25 @@ export function createAgentChatService(args: {
   // lines that name one of them, instead of the whole file at once.
   const staleRunEventNeedles = STALE_RUN_EVENT_TYPES.map((type) => Buffer.from(`"${type}"`));
   const readStaleRunEnvelopesForSessionIdAsync = async (sessionId: string): Promise<AgentChatEventEnvelope[]> => {
+    // The file the full reader would choose, re-chosen each time (not the cached
+    // path): a dedicated transcript created after a legacy one was cached must win.
+    const transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return [];
     const envelopes: AgentChatEventEnvelope[] = [];
-    const { complete } = await scanTranscriptEnvelopesForSessionIdAsync(
+    const scan = await scanTranscriptEnvelopesForSessionIdAsync(
       sessionId,
       (envelope) => envelopes.push(envelope),
       undefined,
       parseAgentChatTranscript,
       (line) => staleRunEventNeedles.some((needle) => line.includes(needle)),
+      transcriptPath,
     );
-    // A skipped line could be the result that ends a subagent; without it the
-    // sweep would stop a finished agent. Read the whole file in that rare case.
-    return complete ? envelopes : readFullTranscriptEnvelopesForSessionId(sessionId);
+    // Read the whole file synchronously instead (one atomic look, as before) when
+    // the scan may have missed something: a skipped line could be the result that
+    // ends a subagent, and an event written while the scan ran (a child finishing)
+    // would be missed too. Either way the sweep would stop a finished agent.
+    const grew = (await readHistoryFileSize(transcriptPath)) !== scan.scannedBytes;
+    return scan.complete && !grew ? envelopes : readFullTranscriptEnvelopesForSessionId(sessionId);
   };
 
   const readSubagentSnapshotsFromTranscript = async (

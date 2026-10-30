@@ -490,6 +490,39 @@ describe("reconcileStaleRuns", () => {
     }
   });
 
+  it("does not retire a chat another brain claims while its timer read is in flight", async () => {
+    vi.useFakeTimers();
+    try {
+      const sessionId = "chat-claimed-mid-read";
+      let foreign = false;
+      const staleReads: string[] = [];
+      const { sweep, emitted } = harness({
+        transcripts: { [sessionId]: [] },
+        adoptable: () => !foreign,
+        readStaleRunEnvelopes: async (id) => {
+          staleReads.push(id);
+          // A sibling brain takes the chat while this read runs; the read finds nothing.
+          foreign = true;
+          return [];
+        },
+      });
+
+      sweep.start();
+      await vi.advanceTimersByTimeAsync(10 * 1000);
+      expect(staleReads).toEqual([sessionId]);
+      expect(emitted).toEqual([]);
+
+      // That brain goes away: the chat is examined again rather than having
+      // been retired by an empty read it no longer owned.
+      foreign = false;
+      await vi.advanceTimersByTimeAsync(60 * 1000);
+      expect(staleReads).toEqual([sessionId, sessionId]);
+      sweep.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips a chat this brain is actively driving", () => {
     const sessionId = "chat-live";
     const { sweep, emitted, managedSessions } = harness({
