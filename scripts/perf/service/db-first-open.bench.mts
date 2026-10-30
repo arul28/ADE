@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { median, requireCopyRoot } from "./bench-kit.mts";
 
 const argv = process.argv.slice(2);
 const read = (name: string, fallback?: string) => {
@@ -33,20 +34,13 @@ if (argv[0] === "--child") {
   process.exit(0);
 }
 
-const project = read("--project");
-if (!project) throw new Error("--project <copy root> is required (a make-real-load-copy copy, never a live project)");
-const source = path.join(path.resolve(project), ".ade", "ade.db");
+const source = path.join(requireCopyRoot(read("--project")), ".ade", "ade.db");
 if (!fs.existsSync(source)) throw new Error(`no database at ${source}`);
 const runs = Number(read("--runs", "5"));
 const perRun = Number(read("--per-run", "7"));
 const self = fileURLToPath(import.meta.url);
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ade-db-first-open-"));
 
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-};
 const r1 = (x: number) => Math.round(x * 10) / 10;
 
 const runMedians: number[] = [];

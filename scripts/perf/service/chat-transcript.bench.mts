@@ -34,13 +34,11 @@ const CHECK_EVERY = 50;
 /** One frame at 240 Hz: a step over this drops a frame on a fast display. */
 const FRAME_MS = 4;
 
-const defaultTranscripts = () => largestTranscripts(5);
-const load = loadTranscript;
 
-const files = process.argv.slice(2).length ? process.argv.slice(2) : defaultTranscripts();
+const files = process.argv.slice(2).length ? process.argv.slice(2) : largestTranscripts(5);
 const rows: Record<string, unknown>[] = [];
 for (const file of files) {
-  const envelopes = load(file);
+  const envelopes = loadTranscript(file);
   if (envelopes.length <= STREAMED_EVENTS) continue;
   const split = envelopes.length - STREAMED_EVENTS;
   let events = mergeAgentChatLiveEvents([], envelopes.slice(0, split));
@@ -295,7 +293,7 @@ function replayAtResidentCap(args: {
   };
 }
 
-const residentSource = load(defaultTranscripts()[0]!);
+const residentSource = loadTranscript(largestTranscripts(5)[0]!);
 const residentScenarios = [
   {
     scenario: "below-cap",

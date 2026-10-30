@@ -16,19 +16,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { connectBrain, releaseCopySyncHost, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
+import { connectBrain, prepareCopyForBrain, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
+import { flag, median, requireCopyRoot } from "./bench-kit.mts";
 
-const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const index = argv.indexOf(name);
-  return index >= 0 ? argv[index + 1] : undefined;
-};
-const project = flag("--project");
-if (!project) throw new Error("--project <copy root> is required");
-const projectRoot = path.resolve(project);
-if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
-  throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
-}
+const projectRoot = requireCopyRoot(flag("--project"));
 const runs = Number(flag("--runs") ?? 5);
 // --cli <built cli.cjs>: measure another build (A/B against a saved perfdist-*/cli.cjs).
 const cli = flag("--cli");
@@ -63,13 +54,8 @@ const verbOf = (spawn: Spawn) => {
   while (args[0] === "-c") args.splice(0, 2);
   return args[0] ?? "";
 };
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-};
 
-await releaseCopySyncHost(projectRoot);
+await prepareCopyForBrain(projectRoot);
 const record = startMeasureBrain({ ...brain, cli, preloads: [spawnTrace], env: { ADE_SPAWN_TRACE_DIR: traceDir } });
 
 const rows: Array<{ run: number; gitProcesses: number; statusRuns: number; trailingGit: number; wallMs: number; byVerb: Record<string, number> }> = [];

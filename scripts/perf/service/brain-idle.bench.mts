@@ -17,19 +17,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { connectBrain, releaseCopySyncHost, startMeasureBrain, stopMeasureBrain } from "../net/brain-rpc.mts";
+import { connectBrain, prepareCopyForBrain, startMeasureBrain, stopMeasureBrain } from "../net/brain-rpc.mts";
+import { flag, requireCopyRoot } from "./bench-kit.mts";
 
-const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const index = argv.indexOf(name);
-  return index >= 0 ? argv[index + 1] : undefined;
-};
-const project = flag("--project");
-if (!project) throw new Error("--project <copy root> is required");
-const projectRoot = path.resolve(project);
-if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
-  throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
-}
+const projectRoot = requireCopyRoot(flag("--project"));
 const minutes = Number(flag("--minutes") ?? 10);
 const settleMs = Number(flag("--settle-s") ?? 60) * 1_000;
 const here = import.meta.dirname;
@@ -65,7 +56,7 @@ function cpuSeconds(pid: number): number {
   return Number(days) * 86_400 + parts[0]! * 3_600 + parts[1]! * 60 + parts[2]!;
 }
 
-await releaseCopySyncHost(projectRoot);
+await prepareCopyForBrain(projectRoot);
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-idle-"));
 const traceDir = path.join(scratch, "trace");
 const sqlFile = path.join(scratch, "sql.jsonl");

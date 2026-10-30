@@ -8,33 +8,19 @@ import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { connectBrain, releaseCopySyncHost, startMeasureBrain, stopMeasureBrain } from "../net/brain-rpc.mts";
+import { connectBrain, prepareCopyForBrain, startMeasureBrain, stopMeasureBrain } from "../net/brain-rpc.mts";
+import { flag, median, requireCopyRoot } from "./bench-kit.mts";
 
-const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const index = argv.indexOf(name);
-  return index >= 0 ? argv[index + 1] : undefined;
-};
-const project = flag("--project");
-if (!project) throw new Error("--project <copy root> is required");
-const projectRoot = path.resolve(project);
-if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
-  throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
-}
+const projectRoot = requireCopyRoot(flag("--project"));
 const runs = Number(flag("--runs") ?? 5);
 const chatCount = Number(flag("--chats") ?? 5);
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-};
 
 const db = new DatabaseSync(path.join(projectRoot, ".ade", "ade.db"), { readOnly: true });
 const chats = (db.prepare("select id from terminal_sessions where tool_type like '%chat%' order by started_at desc limit ?").all(chatCount) as Array<{ id: string }>).map((row) => row.id);
 db.close();
 if (!chats.length) throw new Error("the copy has no chats");
 
-await releaseCopySyncHost(projectRoot);
+await prepareCopyForBrain(projectRoot);
 const brain = { dir: fs.mkdtempSync(path.join(os.tmpdir(), "ade-chat-status-")), n: "cs" };
 const record = startMeasureBrain({ ...brain, cli: flag("--cli") });
 const runMedians: number[] = [];

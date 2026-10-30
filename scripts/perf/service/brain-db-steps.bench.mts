@@ -16,19 +16,10 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { connectBrain, releaseCopySyncHost, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
+import { connectBrain, prepareCopyForBrain, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
+import { flag, median, requireCopyRoot } from "./bench-kit.mts";
 
-const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const index = argv.indexOf(name);
-  return index >= 0 ? argv[index + 1] : undefined;
-};
-const project = flag("--project");
-if (!project) throw new Error("--project <copy root> is required");
-const projectRoot = path.resolve(project);
-if (!fs.existsSync(path.join(projectRoot, ".ade", "real-load-copy.json"))) {
-  throw new Error(`${projectRoot} is not a make-real-load-copy copy; refusing to open it with a brain`);
-}
+const projectRoot = requireCopyRoot(flag("--project"));
 const runs = Number(flag("--runs") ?? 5);
 // --cli <built cli.cjs>: measure another build (A/B against a saved perfdist-*/cli.cjs).
 const cli = flag("--cli");
@@ -37,17 +28,12 @@ const here = import.meta.dirname;
 const phoneBench = path.resolve(here, "../net/phone-sync.bench.mts");
 const sqlTrace = path.resolve(here, "../net/sql-trace.cjs");
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-};
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "ade-brain-db-steps-"));
 const traceFile = path.join(scratch, "sql.jsonl");
 const phoneState = path.join(scratch, "phone.json");
 const brain = { dir: scratch, n: "f2" };
-await releaseCopySyncHost(projectRoot);
+await prepareCopyForBrain(projectRoot);
 const record = startMeasureBrain({ ...brain, cli, preloads: [sqlTrace], env: { ADE_PERF_SQLTRACE_FILE: traceFile } });
 if (!record.syncPort) throw new Error("the measurement brain has no sync port");
 
@@ -84,9 +70,6 @@ try {
     phoneRun.stderr!.on("data", (chunk) => { phoneErr += String(chunk); });
     const phoneDone = new Promise<number>((resolve) => phoneRun.on("exit", (code) => resolve(code ?? 1)));
     let loadDone = false;
-    const lanes = (async () => {
-      for (let i = 0; i < 5; i++) await client!.action("list_lanes", { includeArchived: false });
-    })();
     const waits: number[] = [];
     const probe = (async () => {
       while (!loadDone) {
@@ -96,8 +79,19 @@ try {
         await sleep(10);
       }
     })();
-    const [phoneExit] = await Promise.all([phoneDone, lanes]);
-    loadDone = true;
+    // On a failed run the client closes under an in-flight ping; that rejection is not the error to report.
+    probe.catch(() => {});
+    let phoneExit: number;
+    try {
+      const lanes = (async () => {
+        for (let i = 0; i < 5; i++) await client!.action("list_lanes", { includeArchived: false });
+      })();
+      [phoneExit] = await Promise.all([phoneDone, lanes]);
+    } finally {
+      // A failed lane read ends the run: stop the probe and the phone, so neither outlives the bench.
+      loadDone = true;
+      if (phoneRun.exitCode === null && phoneRun.signalCode === null) phoneRun.kill();
+    }
     await probe;
     const t1 = Date.now();
     await sleep(1_500); // the trace flushes once a second

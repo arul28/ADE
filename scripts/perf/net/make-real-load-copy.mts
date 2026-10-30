@@ -21,7 +21,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { isPathInside } from "../../../apps/desktop/src/main/services/shared/pathCompare";
 import { openKvDb } from "../../../apps/desktop/src/main/services/state/kvDb";
+import { retireCopiedChats } from "./brain-rpc.mts";
 
 const argv = process.argv.slice(2);
 const read = (name: string): string | null => {
@@ -33,7 +35,7 @@ const out = read("--out");
 if (!source || !out) throw new Error("--source <project root> and --out <empty dir> are required");
 const sourceRoot = fs.realpathSync(source);
 const copyRoot = path.resolve(out);
-if (copyRoot.startsWith(`${sourceRoot}${path.sep}`) || copyRoot === sourceRoot) throw new Error("--out must be outside the source project");
+if (isPathInside(copyRoot, sourceRoot)) throw new Error("--out must be outside the source project");
 if (fs.existsSync(copyRoot) && fs.readdirSync(copyRoot).length > 0) throw new Error(`${copyRoot} is not empty`);
 const withWorktrees = !argv.includes("--no-worktrees");
 // --clone: the source is a copy this script made (a "golden" copy no brain opens). The whole tree is
@@ -49,13 +51,10 @@ const cloneTree = (from: string, to: string) => {
   if (isWindows) fs.cpSync(from, to, { recursive: true, preserveTimestamps: true });
   else execFileSync("cp", ["-cR", from, to], { stdio: "inherit" });
 };
+// The copy root itself, or a path under it (whole segments; case-insensitive on Windows).
+const insideCopy = (candidate: string) => isPathInside(candidate, copyRoot);
 // Windows stores a path as C:\x, C:/x and, inside JSON text, C:\\x. Each form of the source root is
-// rewritten to the same form of the copy root.
-// The copy root itself, or a path under it (not a sibling folder that only shares the prefix).
-const insideCopy = (candidate: string) => {
-  const resolved = path.resolve(candidate);
-  return resolved === copyRoot || resolved.startsWith(`${copyRoot}${path.sep}`);
-};
+// rewritten to the same form of the copy root (in any letter case; see rootPatterns).
 const rootForms = (root: string): string[] =>
   isWindows ? [root, root.replaceAll("\\", "/"), JSON.stringify(root).slice(1, -1)] : [root];
 
@@ -113,8 +112,12 @@ const db = await openKvDb(path.join(copyAde, "ade.db"), silentLogger as never);
 let rewrittenCells = 0;
 const copyForms = rootForms(copyRoot);
 const rootPairs = rootForms(sourceRoot).map((form, index) => [form, copyForms[index]] as const);
-const namesSource = (body: string) => rootPairs.some(([from]) => body.includes(from));
-const rewriteText = (body: string) => rootPairs.reduce((text, [from, to]) => text.split(from).join(to), body);
+// A form matches only as whole path segments (`C:\proj` is not in `C:\proj-copy`), and on Windows in any
+// letter case (`c:\users\...` is the same folder). The copy's own form is what gets written.
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const rootPatterns = rootPairs.map(([from, to]) => [new RegExp(`${escapeRegExp(from)}(?![\\w.-])`, isWindows ? "gi" : "g"), to] as const);
+const namesSource = (body: string) => rootPatterns.some(([pattern]) => body.search(pattern) >= 0);
+const rewriteText = (body: string) => rootPatterns.reduce((text, [pattern, to]) => text.replace(pattern, () => to), body);
 const tables = db.all<{ name: string }>(
   "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' and name not like 'crsql_%' and name not like '%__crsql_%' and sql not like '%VIRTUAL TABLE%'",
 );
@@ -124,12 +127,24 @@ for (const { name } of tables) {
     if (column.type && !/text|char|clob|json/i.test(column.type)) continue;
     const quoted = `"${column.name.replaceAll('"', '""')}"`;
     const table = `"${name.replaceAll('"', '""')}"`;
-    for (const [from, to] of rootPairs) {
-      try {
-        rewrittenCells += db.runChanged(`update ${table} set ${quoted} = replace(${quoted}, ?, ?) where typeof(${quoted}) = 'text' and instr(${quoted}, ?) > 0`, [from, to, from]);
-      } catch {
-        // Shadow tables of full-text indexes and similar refuse writes; they hold no live paths.
+    // SQL finds the values that may name the source (lower() on Windows, where case does not matter);
+    // rewriteText changes only whole-segment matches. Every table here has a rowid (only cr-sqlite's
+    // clock tables do not, and they are skipped above).
+    const needles = rootPairs.map(([from]) => (isWindows ? from.toLowerCase() : from));
+    const value = isWindows ? `lower(${quoted})` : quoted;
+    try {
+      const candidates = db.all<{ rid: number; text: string }>(
+        `select rowid as rid, ${quoted} as text from ${table} where typeof(${quoted}) = 'text' and (${needles.map(() => `instr(${value}, ?) > 0`).join(" or ")})`,
+        needles,
+      );
+      for (const { rid, text } of candidates) {
+        const rewritten = rewriteText(text);
+        if (rewritten === text) continue; // only a longer sibling name, such as <source>-old
+        db.run(`update ${table} set ${quoted} = ? where rowid = ?`, [rewritten, rid]);
+        rewrittenCells += 1;
       }
+    } catch {
+      // Shadow tables of full-text indexes and similar refuse writes; they hold no live paths.
     }
   }
 }
@@ -137,44 +152,21 @@ for (const { name } of tables) {
 // following that machine (and refuse to host it). Without a record, the brain that opens the copy
 // becomes its host; it never dials the source machine.
 db.run("delete from sync_cluster_state");
-// Chats the source machine is running are copied as running, and a brain that opens the copy resumes
-// them: on a shared ADE home that relaunched a live chat (this script's own caller once) and appended
-// to its provider session. End them as a stopped brain's reconcile does.
-const endedChats = db.runChanged(
-  "update terminal_sessions set status = 'detached', ended_at = coalesce(ended_at, ?), pty_id = null where status = 'running'",
-  [new Date().toISOString()],
-);
 const sessionsDir = path.join(copyAde, "cache", "chat-sessions");
-// Provider resume ids point at the source's provider sessions; a chat resumed from the copy starts a
-// new one instead of writing into the original's.
-const resumeIdKeys = ["sdkSessionId", "claudeBackgroundResumeSessionId"];
 let rewrittenRecords = 0;
 if (fs.existsSync(sessionsDir)) {
   for (const file of fs.readdirSync(sessionsDir)) {
     const full = path.join(sessionsDir, file);
     if (!fs.statSync(full).isFile()) continue;
-    let body = fs.readFileSync(full, "utf8");
-    let changed = false;
-    if (namesSource(body)) {
-      body = rewriteText(body);
-      changed = true;
-    }
-    if (resumeIdKeys.some((key) => body.includes(`"${key}"`))) {
-      try {
-        const record = JSON.parse(body) as Record<string, unknown>;
-        for (const key of resumeIdKeys) delete record[key];
-        body = JSON.stringify(record);
-        changed = true;
-      } catch {
-        // Not a JSON record (a partial write); the chat row is ended above either way.
-      }
-    }
-    if (!changed) continue;
+    const body = fs.readFileSync(full, "utf8");
+    if (!namesSource(body)) continue;
     fs.rmSync(full); // the clone shares blocks with the original until written; write a new file
-    fs.writeFileSync(full, body);
+    fs.writeFileSync(full, rewriteText(body));
     rewrittenRecords += 1;
   }
 }
+// Any brain that opens the copy would resume the source's running chats (see brain-rpc.mts).
+const { endedChats } = retireCopiedChats(db, copyAde);
 
 // 4. Lanes: one worktree per active lane, on its branch when the clone has it.
 // A lane can live outside the project (another tool's worktree folder). Point it into the copy, so a
@@ -200,7 +192,7 @@ if (cloneMode) {
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
     const body = fs.readFileSync(file, "utf8");
     if (!namesSource(body)) return false;
-    if (!path.resolve(file).startsWith(`${copyRoot}${path.sep}`)) throw new Error(`refusing to write outside the copy: ${file}`);
+    if (!insideCopy(file)) throw new Error(`refusing to write outside the copy: ${file}`);
     // Git for Windows marks a worktree's .git file hidden, and Windows refuses to replace a hidden
     // file (EPERM); rewrite it in place.
     const fd = fs.openSync(file, "r+");

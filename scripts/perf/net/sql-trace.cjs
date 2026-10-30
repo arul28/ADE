@@ -68,6 +68,8 @@ const note = (kind, sql, ms) => {
 };
 
 const statement = sqlite.StatementSync.prototype;
+// `iterate` is logged so its statements are counted, but its time is only the iterator's creation: the
+// rows are read later, as the caller loops.
 for (const method of ["all", "get", "run", "iterate"]) {
   const original = statement[method];
   if (typeof original !== "function") continue;

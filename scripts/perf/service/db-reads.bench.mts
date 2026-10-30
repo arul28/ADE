@@ -20,14 +20,11 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { flag, median as med, requireCopyRoot } from "./bench-kit.mts";
 
 const argv = process.argv.slice(2);
-const flag = (name: string) => {
-  const index = argv.indexOf(name);
-  return index >= 0 ? argv[index + 1] : undefined;
-};
 const projectRoot = flag("--project");
-const source = projectRoot ? path.join(path.resolve(projectRoot), ".ade", "ade.db") : argv[0];
+const source = projectRoot ? path.join(requireCopyRoot(projectRoot), ".ade", "ade.db") : argv[0];
 const rounds = Number(flag("--rounds") ?? (projectRoot ? 9 : argv[1] ?? 9));
 const runs = Number(flag("--runs") ?? (projectRoot ? 5 : 1));
 if (!source || !fs.existsSync(source)) throw new Error("usage: db-reads.bench.mts --project <copy root> [--runs 5] [--rounds 9]");
@@ -129,11 +126,6 @@ const queries: Array<[string, () => unknown, number?, (() => void)?]> = [
   ["F5 startup recovery read", startupRecovery, 21, restoreStaleCandidates],
 ];
 
-const med = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const mid = Math.floor(s.length / 2);
-  return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
-};
 const r2 = (x: number) => Math.round(x * 100) / 100;
 console.log(JSON.stringify({ db: source, bytes: fs.statSync(copy).size, openMs: Math.round(openMs), pragmas: process.env.ADE_BENCH_PRAGMAS ?? "", rss: Math.round(process.memoryUsage().rss / 1e6), f1Counts, f5Counts }));
 for (const [name, run, queryRounds = rounds, beforeEach] of queries) {

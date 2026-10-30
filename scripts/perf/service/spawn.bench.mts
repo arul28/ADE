@@ -20,6 +20,7 @@ import {
 } from "../../../apps/desktop/src/main/services/ai/cliExecutableResolver";
 import { resolveCliSpawnInvocation } from "../../../apps/desktop/src/main/services/shared/processExecution";
 import { resolveGitExecutable, runGit } from "../../../apps/desktop/src/main/services/git/git";
+import { median as med } from "./bench-kit.mts";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? argv[i + 1] : undefined; };
@@ -28,7 +29,6 @@ const repo = path.resolve(flag("--project") ?? positional ?? path.join(import.me
 const runs = Number(flag("--runs") ?? 5);
 if (!Number.isInteger(runs) || runs < 1) throw new Error("--runs must be a positive integer");
 const clis = ["claude", "codex", "copilot", "agent", "cursor-agent", "gemini", "opencode", "droid", "npx", "npm", "node", "git", "gh", "bun"];
-const med = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const r1 = (x: number) => Math.round(x * 10) / 10;
 const time = (fn: () => unknown) => { const t = performance.now(); fn(); return performance.now() - t; };
 

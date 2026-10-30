@@ -558,7 +558,7 @@ What the losses are:
 | `npx --version` through `cmd.exe`, median of 5 | 242-274 ms | 242.8 ms (336.7) | 340 ms |
 | Resolving 14 CLIs, cold / warm | 12.4-12.6 / 4.6-4.8 ms | 12.3 / 4.2 ms | 16 / 6 ms |
 | `git config --get` through Git for Windows' launcher (`cmdgit.exe`, the only git a normal install puts on PATH), 5 alternated rounds of 200 | not measured | p50 37.4 ms, p90 136.2 ms; 2 processes per run | *new* |
-| The same through the real `mingw64ingit.exe` | not measured | p50 26.9 ms, p90 29.2 ms; 1 process | *new* |
+| The same through the real `mingw64\bin\git.exe` | not measured | p50 26.9 ms, p90 29.2 ms; 1 process | *new* |
 
 ### Fixes in this round (A/B on this PC)
 

@@ -42,7 +42,13 @@ if (!dir) throw new Error("--dir <scratch dir> is required");
 const n = read("--n", "1");
 const root = path.resolve(dir);
 const realHome = os.homedir();
-if (root === realHome || root.startsWith(path.join(realHome, ".ade"))) throw new Error("Refusing to use the real home");
+// Windows and macOS paths are case-insensitive, so the check is too (this plain-node script cannot load
+// pathCompare.ts).
+const foldCase = (value) => (process.platform === "win32" || process.platform === "darwin" ? value.toLowerCase() : value);
+const realAde = foldCase(path.join(realHome, ".ade"));
+if (foldCase(root) === foldCase(realHome) || foldCase(root) === realAde || foldCase(root).startsWith(`${realAde}${path.sep}`)) {
+  throw new Error("Refusing to use the real home");
+}
 const home = path.join(root, "home");
 const adeHome = path.join(home, ".ade");
 // The socket name carries a hash of the scratch dir: two lanes that both use the default --n 1 must not
@@ -147,7 +153,33 @@ async function stop() {
   console.log(JSON.stringify({ stopped: true, pid: record.pid, stillAlive: alive(record.pid) }));
 }
 
-function runCli() {
+// A make-real-load-copy copy made before that script ended the copied chats still holds the source's
+// running chats, and the brain resumes them once the project is added (it did, on a Mac and on Windows).
+// Refuse to add one until they are ended.
+async function refuseCopyWithRunningChats() {
+  const at = passthrough.findIndex((arg, index) => arg === "projects" && passthrough[index + 1] === "add");
+  const target = at >= 0 ? passthrough[at + 2] : undefined;
+  if (!target) return;
+  const projectAde = path.join(path.resolve(read("--cwd") ?? root, target), ".ade");
+  if (!fs.existsSync(path.join(projectAde, "real-load-copy.json"))) return;
+  const { DatabaseSync } = await import("node:sqlite");
+  const db = new DatabaseSync(path.join(projectAde, "ade.db"), { readOnly: true });
+  let running = 0;
+  try {
+    running = Number(db.prepare("select count(*) as n from terminal_sessions where status = 'running'").get()?.n ?? 0);
+  } finally {
+    db.close();
+  }
+  if (running > 0) {
+    throw new Error(
+      `${path.dirname(projectAde)} still has ${running} running chat(s) from its source, and this brain would resume them. ` +
+      `End them first: cd apps/ade-cli && npx tsx ../../scripts/perf/net/brain-rpc.mts --prepare ${path.dirname(projectAde)}`,
+    );
+  }
+}
+
+async function runCli() {
+  await refuseCopyWithRunningChats();
   const result = spawn(process.execPath, [cli, "--socket", socket, ...passthrough], {
     cwd: read("--cwd") ?? root,
     env: brainEnv(),
@@ -158,5 +190,5 @@ function runCli() {
 
 if (command === "start") await start();
 else if (command === "stop") await stop();
-else if (command === "cli") runCli();
+else if (command === "cli") await runCli();
 else throw new Error("usage: measure-brain.mjs start|stop|cli --dir <scratch dir> [--n 1]");

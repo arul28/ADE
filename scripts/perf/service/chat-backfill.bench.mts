@@ -38,8 +38,6 @@ import { foldTurnFailureRows } from "../../../apps/desktop/src/renderer/componen
 
 const PAGE_BYTES = CHAT_HISTORY_PAGE_MAX_BYTES;
 
-const defaultTranscripts = () => largestTranscripts(5);
-const load = loadTranscript;
 
 /** A long chat of the shape a real one has, for a run that may not read one. */
 function synthetic(turns: number): AgentChatEventEnvelope[] {
@@ -181,8 +179,8 @@ async function measure(label: string, envelopes: AgentChatEventEnvelope[]) {
 const syntheticAt = process.argv.indexOf("--synthetic");
 const inputs: { label: string; envelopes: AgentChatEventEnvelope[] }[] = syntheticAt >= 0
   ? [{ label: `synthetic-${process.argv[syntheticAt + 1] ?? "1000"}`, envelopes: synthetic(Number(process.argv[syntheticAt + 1] ?? 1000)) }]
-  : (process.argv.slice(2).length ? process.argv.slice(2) : defaultTranscripts())
-    .map((file) => ({ label: path.basename(file), envelopes: load(file) }));
+  : (process.argv.slice(2).length ? process.argv.slice(2) : largestTranscripts(5))
+    .map((file) => ({ label: path.basename(file), envelopes: loadTranscript(file) }));
 
 const rows: Record<string, unknown>[] = [];
 for (const input of inputs) {
