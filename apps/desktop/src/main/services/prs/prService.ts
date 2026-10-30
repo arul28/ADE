@@ -115,7 +115,7 @@ import type {
   ReactToPrCommentArgs,
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
-import type { AdeDb } from "../state/kvDb";
+import type { AdeDb, SqlValue } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
@@ -1122,6 +1122,20 @@ function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): bool
     || (Object.prototype.hasOwnProperty.call(summary, "behindBaseBy") && normalizeBehindBaseBy(row.behind_base_by) !== normalizeBehindBaseBy(summary.behindBaseBy));
 }
 
+/**
+ * With no material change, would an upsert of `summary` rewrite anything but
+ * `last_synced_at`? The columns the upsert writes that `hasMaterialSummaryChange`
+ * does not compare, plus a detached row (its reattach must run).
+ */
+function onlySyncTimeWouldChange(row: PullRequestRow, summary: PrSummary): boolean {
+  return !row.detached_at
+    && row.repo_owner === summary.repoOwner
+    && row.repo_name === summary.repoName
+    && (row.created_at ?? null) === (summary.createdAt ?? null)
+    && (row.updated_at ?? null) === (summary.updatedAt ?? null)
+    && (row.merged_at ?? null) === (summary.mergedAt ?? null);
+}
+
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
   const trimmed = raw.trim();
   if (!trimmed) throw new Error("PR URL or number is required");
@@ -1702,17 +1716,22 @@ export function createPrService({
     const overlay = syncedAtOverlay.get(row.id);
     return overlay && parseIsoMs(overlay) > parseIsoMs(row.last_synced_at) ? { ...row, last_synced_at: overlay } : row;
   };
+  /** Every read of `pull_requests` rows goes through these, so each sees the overlay. */
+  const getPrRow = (sql: string, params: SqlValue[]): PullRequestRow | null => {
+    const row = db.get<PullRequestRow>(sql, params);
+    return row ? withSyncedAtOverlay(row) : null;
+  };
+  const allPrRows = (sql: string, params: SqlValue[]): PullRequestRow[] =>
+    db.all<PullRequestRow>(sql, params).map(withSyncedAtOverlay);
 
-  const getRowById = (prId: string): PullRequestRow | null => {
-    const row = db.get<PullRequestRow>(
+  const getRowById = (prId: string): PullRequestRow | null =>
+    getPrRow(
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
-    return row ? withSyncedAtOverlay(row) : null;
-  };
 
   const getRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+    getPrRow(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -1733,7 +1752,7 @@ export function createPrService({
    * lane was deleted or moved on, so it must never block re-mapping.
    */
   const getLiveRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+    getPrRow(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -1757,7 +1776,7 @@ export function createPrService({
     // No repo context: check for ambiguity across repos in this project. If
     // multiple rows match `github_pr_number`, refuse to guess — the caller
     // must disambiguate with a full URL. If exactly one row matches, accept it.
-    const matches = db.all<PullRequestRow>(
+    const matches = allPrRows(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -2029,7 +2048,7 @@ export function createPrService({
   };
 
   const getRowForLane = (laneId: string): PullRequestRow | null => {
-    const rows = db.all<PullRequestRow>(
+    const rows = allPrRows(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2221,7 +2240,7 @@ export function createPrService({
   const getDisplayCandidateForCurrentLaneBranch = (laneId: string): LanePrDisplayCandidate | null => {
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
-    const mappedRows = db.all<PullRequestRow>(
+    const mappedRows = allPrRows(
       `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ? and ${LIVE_PR_ROWS}`,
       [laneId, projectId],
     );
@@ -2237,7 +2256,7 @@ export function createPrService({
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
 
-    const rows = db.all<PullRequestRow>(
+    const rows = allPrRows(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2263,7 +2282,7 @@ export function createPrService({
     // back to the lane-level lookup. Otherwise the PR row will look "missing"
     // and downstream callers will redundantly create or refetch state.
     if (!normalizedHead) return getRowForLane(laneId);
-    return db.get<PullRequestRow>(
+    return getPrRow(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2279,10 +2298,10 @@ export function createPrService({
   };
 
   const listRows = (): PullRequestRow[] =>
-    db.all<PullRequestRow>(
+    allPrRows(
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
-    ).map(withSyncedAtOverlay);
+    );
 
   /**
    * The next step and the agent reviewers for a lane's PR, from the cached
@@ -5525,13 +5544,7 @@ export function createPrService({
     }
     // Nothing the upsert writes would change except the sync time: keep that in
     // memory (see `syncedAtOverlay`) until the stored one is old.
-    const rowUnchanged = !materiallyChanged
-      && !row.detached_at
-      && row.repo_owner === updated.repoOwner
-      && row.repo_name === updated.repoName
-      && (row.created_at ?? null) === (updated.createdAt ?? null)
-      && (row.updated_at ?? null) === (updated.updatedAt ?? null)
-      && (row.merged_at ?? null) === (updated.mergedAt ?? null);
+    const rowUnchanged = !materiallyChanged && onlySyncTimeWouldChange(row, updated);
     const storedSyncedAtMs = parseIsoMs(
       db.get<{ last_synced_at: string | null }>(
         "select last_synced_at from pull_requests where id = ? and project_id = ?",
@@ -9407,7 +9420,7 @@ export function createPrService({
     if (eventName === "status" && fallbackRepo) {
       const sha = asString(payload.sha).trim();
       if (sha) {
-        const rows = db.all<PullRequestRow>(
+        const rows = allPrRows(
           `select ${PR_COLUMNS}
              from pull_requests
             where project_id = ?
@@ -10437,7 +10450,7 @@ export function createPrService({
       } catch (error) {
         const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
         const candidates = Number.isInteger(number)
-          ? db.all<PullRequestRow>(
+          ? allPrRows(
             `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and ${LIVE_PR_ROWS}`,
             [projectId, number],
           )
