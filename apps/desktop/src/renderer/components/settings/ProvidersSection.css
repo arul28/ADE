@@ -59,7 +59,7 @@
 .ade-pv-folded:hover { border-color: color-mix(in srgb, var(--color-fg) 22%, transparent); color: var(--color-fg); }
 .ade-pv-folded:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .ade-pv-folded-logos { display: inline-flex; align-items: center; gap: 6px; flex: none; opacity: 0.75; }
-.ade-pv-folded-logos > span { display: inline-flex; padding: 3px; border-radius: 6px; background: color-mix(in srgb, var(--color-fg) 6%, transparent); }
+.ade-pv-folded-logos > span { display: inline-flex; }
 
 .ade-pv-grid {
   display: grid;
@@ -216,15 +216,14 @@
   border-radius: 12px;
 }
 .ade-pvl-open:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
-/* The maker's logo on a tile of its colour, as the provider page wears it. */
+/* The maker's logo on its own, large: no tile behind it. */
+/* The bare mark, large, in one 34px column so every name lines up. */
 .ade-pvl-logo {
   display: grid;
   place-items: center;
   width: 34px;
   height: 34px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--pvl-accent) 16%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pvl-accent) 26%, transparent);
+  color: var(--color-fg);
 }
 .ade-pvl-id {
   min-width: 0;
@@ -291,12 +290,17 @@
 }
 .ade-pvl-divider:hover { color: var(--color-fg); }
 .ade-pvl-divider-label { font-weight: 600; }
+/* The folded strip: the same bare marks, smaller, no boxes. */
 .ade-pvl-divider-logos {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
+  gap: 10px;
   min-width: 0;
   overflow: hidden;
-  opacity: 0.8;
+  opacity: 0.85;
+  color: var(--color-fg);
+}
+.ade-pvl-divider-logos > span {
+  display: inline-flex;
 }
 .ade-pvl-divider-caret { margin-left: auto; }

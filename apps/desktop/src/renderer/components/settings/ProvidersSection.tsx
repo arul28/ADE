@@ -29,6 +29,8 @@ import {
 } from "../../../shared/modelRegistry";
 import { CaretDown } from "@phosphor-icons/react";
 import { providerBrand } from "./providers/providerBrand";
+import { ToolLogo } from "../terminals/ToolLogos";
+import { DevinMark } from "../shared/ProviderLogos";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -207,7 +209,7 @@ function ProviderCard({
         aria-label={`Open ${descriptor.label} settings`}
         className="ade-pvl-open"
       >
-        <span className="ade-pvl-logo" aria-hidden>{descriptor.logo(20)}</span>
+        <span className="ade-pvl-logo" aria-hidden>{providerListMark(descriptor, 30)}</span>
         <span className="ade-pvl-id">
           <span className="ade-pvl-name-row">
             <span className="ade-pvl-name" data-testid={`provider-tile-name-${descriptor.id}`}>
@@ -240,6 +242,27 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
 };
 
 type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
+
+/**
+ * The provider's mark with no box around it, for the list: the bare glyph in
+ * its maker's colour (`ToolLogo`'s provider-mark look). The default logos are
+ * app-icon avatars — a filled square or circle — which read as a box in a box
+ * at this size. Devin's tool logo is its boxed app icon, so it takes the bare
+ * Cognition glyph; a provider with no bare mark keeps its own logo.
+ */
+// Muse and Pi are left out: their own logos are already bare images (Meta's
+// mark, the Pi glyph), and their masked provider-marks draw as a solid square.
+const BARE_MARK_TOOLS: ReadonlySet<string> = new Set([
+  "claude", "codex", "cursor", "droid", "copilot", "opencode", "qwen", "kimi", "grok",
+]);
+
+function providerListMark(descriptor: ProviderDescriptor, size: number): React.ReactNode {
+  if (descriptor.id === "devin") return <DevinMark size={size} />;
+  if (BARE_MARK_TOOLS.has(descriptor.id)) {
+    return <ToolLogo toolType={descriptor.id as TerminalToolType} size={size} appearance="provider-mark" />;
+  }
+  return descriptor.logo(size);
+}
 
 /** The order inside the one list: what works, then what asks for something, then the rest. */
 const STATE_ORDER: Record<ProviderDescriptorState, number> = {
@@ -305,7 +328,7 @@ function ProviderGrid({
         <span className="kit-num ade-pvl-divider-count">{unset.length}</span>
         {open ? null : (
           <span className="ade-pvl-divider-logos" aria-hidden>
-            {unset.slice(0, 10).map((row) => <span key={row.descriptor.id}>{row.descriptor.logo(14)}</span>)}
+            {unset.slice(0, 10).map((row) => <span key={row.descriptor.id}>{providerListMark(row.descriptor, 18)}</span>)}
           </span>
         )}
         <CaretDown size={11} weight="bold" className="ade-pvl-divider-caret" style={{ transform: open ? "rotate(180deg)" : undefined }} aria-hidden />
