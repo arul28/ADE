@@ -72,6 +72,13 @@ export type StaleRunSweepOutcome = {
 
 export type StaleRunSweepDeps<TManaged extends StaleRunSweepManagedSession> = {
   readFullTranscriptEnvelopesForSessionId: (sessionId: string) => AgentChatEventEnvelope[];
+  /**
+   * The timer pass's read: only the envelopes whose type is in
+   * `STALE_RUN_EVENT_TYPES` (the stale check reads nothing else), read off the
+   * event loop. Without it the pass reads the full transcript synchronously,
+   * which for a 20 MB chat held the brain ~300 ms.
+   */
+  readStaleRunEnvelopesForSessionIdAsync?: (sessionId: string) => Promise<AgentChatEventEnvelope[]>;
   /** Chat session ids this brain could sweep, newest first. */
   listChatSessionIds: (limit: number) => string[];
   /** One chat session row by id; null when it is gone or is not a chat. */
@@ -148,6 +155,24 @@ type StaleRows = {
   subagents: SubagentSnapshot[];
 };
 
+/**
+ * Every event type `collectStaleRows` reads (`deriveBackgroundItems`,
+ * `subagentSnapshotsFromEvents` and their helpers); it ignores the rest, so a
+ * transcript filtered to these gives the same verdict as the whole one. A new
+ * type those functions start reading must be added here.
+ */
+export const STALE_RUN_EVENT_TYPES = [
+  "scheduled_work_update",
+  "subagent_started",
+  "subagent_progress",
+  "subagent_result",
+  "subagent.started",
+  "subagent.progress",
+  "subagent.completed",
+  "teammate.idle",
+  "task.completed",
+] as const;
+
 function collectStaleRows(envelopes: AgentChatEventEnvelope[]): StaleRows {
   return {
     background: deriveBackgroundItems(envelopes).filter(
@@ -175,6 +200,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
 ): StaleRunSweep<TManaged> {
   const {
     readFullTranscriptEnvelopesForSessionId,
+    readStaleRunEnvelopesForSessionIdAsync,
     listChatSessionIds,
     getChatSessionRow,
     deferChildTerminal,
@@ -342,8 +368,10 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
    * happened to claim for as long as this process runs. A chat that cannot be
    * materialized at all throws instead — that is a fault, not a handoff.
    */
-  const sweepSession = (sessionId: string): StaleRunSweepOutcome | null => {
-    const envelopes = readFullTranscriptEnvelopesForSessionId(sessionId);
+  const sweepSession = (
+    sessionId: string,
+    envelopes: AgentChatEventEnvelope[] = readFullTranscriptEnvelopesForSessionId(sessionId),
+  ): StaleRunSweepOutcome | null => {
     if (envelopes.length === 0) return EMPTY_OUTCOME;
     const stale = collectStaleRows(envelopes);
     // Scan before constructing a managed session: most candidates have nothing
@@ -408,10 +436,23 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     return candidates;
   };
 
-  /** Sweep one candidate and record what was decided about it. */
-  const sweepOne = (sessionId: string): void => {
+  /** A failed look (a read or a sweep that threw): back off with a revisit clock rather than retiring rows that were never examined. */
+  const backOffFailedLook = (sessionId: string, error: unknown): void => {
+    marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
+    logger.warn("agent_chat.stale_run_reconcile_failed", {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  /**
+   * Sweep one candidate and record what was decided about it. `envelopes` are
+   * the timer pass's pre-read stale-relevant events; without them the full
+   * transcript is read here.
+   */
+  const sweepOne = (sessionId: string, envelopes?: AgentChatEventEnvelope[]): void => {
     try {
-      const outcome = sweepSession(sessionId);
+      const outcome = sweepSession(sessionId, envelopes);
       // Nothing was decided about this chat, so leave its mark exactly as it
       // was: a chat another brain claimed mid-pass is examined again next
       // pass, not retired.
@@ -428,13 +469,8 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
           : { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS },
       );
     } catch (error) {
-      // A throw is a failed look, not a clean chat: back off with a revisit
-      // clock rather than retiring rows that were never examined.
-      marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
-      logger.warn("agent_chat.stale_run_reconcile_failed", {
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // A throw is a failed look, not a clean chat.
+      backOffFailedLook(sessionId, error);
     }
   };
 
@@ -477,7 +513,22 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
         if (processed > 0) await new Promise<void>((resolve) => setImmediate(resolve));
         if (stopped) return;
         processed += 1;
-        sweepOne(sessionId);
+        let envelopes: AgentChatEventEnvelope[] | undefined;
+        if (readStaleRunEnvelopesForSessionIdAsync) {
+          try {
+            envelopes = await readStaleRunEnvelopesForSessionIdAsync(sessionId);
+          } catch (error) {
+            backOffFailedLook(sessionId, error);
+            continue;
+          }
+          if (stopped) return;
+          // The read awaited, so the candidate check is stale: a runtime here or
+          // another brain may own the chat now. Then nothing is decided about it
+          // (no mark), as when sweepSession finds the same after its scan; an
+          // empty read must not retire a chat someone else now drives.
+          if (peekManagedSession(sessionId)?.runtime || !chatRuntimeAdoptable(sessionId, { quiet: true })) continue;
+        }
+        sweepOne(sessionId, envelopes);
       }
       trimMarks();
     })()

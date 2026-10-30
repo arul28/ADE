@@ -718,6 +718,32 @@ Not measured here:
   passes after the first). Outside target 0.8 ms; merged 4.0 ms on a 5.5k-item
   thread. Still a win.
 
+## Real load, round 3 (2026-10-30)
+
+Same PC and copy. `brain-db-steps.bench.mts --runs 2 --settle-ms 15000 --cli <build>`, cold
+connect run, 5 fresh measurement brains per build, builds alternated.
+
+| Row | `main` with #1976-#1983 (`f5a42b34f`) | + singleton probes and stale-run sweep off the event loop | Outside target |
+|---|---:|---:|---:|
+| F2: longest event-loop database step | 3.5 ms (4.1) | 3.6 ms (3.8) | 12.7 ms |
+| F2b: worst wait beside a cold phone connect | 241.1 ms (293.4); an earlier set of 5 on `main`: 209.6 ms (257.8) | 197.0 ms (200.8) | 260 ms |
+
+A CPU profile of a cold connect on `main` showed what was left on the event loop: the sync host
+singleton starting three PowerShell probes (about 60 ms) and the chat stale-run sweep reading and
+parsing the biggest chat's whole 20 MB transcript (about 310 ms with the profiler on), 5 s after the
+project opened.
+
+`stale-sweep-read.bench.mts --project <copy> --runs 5`, the three largest transcripts: the
+sweep's timer read, the whole file parsed synchronously against chunked async reads that parse
+only the lines naming a stale-relevant event type. Both give the same background and subagent
+snapshots.
+
+| Chat | Size | Longest block, full read | Longest block, filtered read | Wall, filtered |
+|---|---:|---:|---:|---:|
+| `feb919f2` | 20.7 MB | 99.2 ms (106.0) | 4.9 ms (7.1) | 67.0 ms (165.5) |
+| `5eac6a04` | 18.4 MB, 27k events | 97.6 ms (122.6) | 5.7 ms (7.8) | 95.8 ms (210.5) |
+| `a8a1d9fa` | 16.6 MB | 80.2 ms (95.1) | 6.6 ms (6.7) | 64.6 ms (124.8) |
+
 ## How to measure on Windows
 
 Everything below ran in Git Bash or PowerShell 7 on this PC.

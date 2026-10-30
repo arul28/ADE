@@ -10,6 +10,7 @@ import {
   parseWindowsPortHolders,
 } from "./windowsPortHolders";
 import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout";
 const LOCK_VERSION = 1;
@@ -958,6 +959,13 @@ function execFileText(
   timeout: number,
   maxBuffer: number,
 ): Promise<{ stdout: string; failed: boolean }> {
+  // The child processes no longer block on their answers, but starting them
+  // still did: on Windows CreateProcess runs on the calling thread, and the
+  // three PowerShell starts held the brain ~60 ms while a project opened.
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, { timeoutMs: timeout, maxBuffer })
+      .then((result) => ({ stdout: result.stdout, failed: Boolean(result.error) || result.exitCode !== 0 }));
+  }
   return new Promise((resolve) => {
     execFile(command, args, { encoding: "utf8", timeout, maxBuffer, windowsHide: true }, (error, stdout) => {
       resolve({ stdout: typeof stdout === "string" ? stdout : "", failed: Boolean(error) });
