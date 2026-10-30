@@ -51,6 +51,7 @@ import {
   PACKAGE_CHANNEL_ARGV_PREFIX,
   appPackageChannelDisplayName,
   normalizeAppPackageChannel,
+  resolveReleaseChannel,
 } from "../shared/packageChannel";
 import {
   areAutomationsEnabledForPackagedState,
@@ -98,6 +99,8 @@ import {
   getSharedProductAnalyticsService,
 } from "./services/analytics/productAnalyticsService";
 import { detectInstallSource } from "./services/analytics/installSource";
+import { createSurveyService, defaultSurveyStateFile } from "./services/analytics/surveyService";
+import { registerSurveyIpc } from "./services/analytics/registerSurveyIpc";
 import {
   captureAgentTurnSettledAnalytics,
   captureChatAutoResumeAnalytics,
@@ -2402,8 +2405,19 @@ app.whenReady().then(async () => {
       logger: localRuntimeLogger,
       appVersion: app.getVersion(),
       runtimeMode: app.isPackaged ? "desktop_packaged" : "desktop_development",
+      releaseChannel: resolveReleaseChannel({ env: process.env, packaged: app.isPackaged, version: app.getVersion() }),
     }));
   setSentryUserResolver(() => productAnalyticsService.getDistinctId());
+  // In-app surveys: this computer's own usage days, kept only while analytics
+  // is on. A launch is counted a moment after startup, and a window focus
+  // records the day once (no I/O for any later focus that day).
+  const surveyService = createSurveyService({
+    stateFilePath: defaultSurveyStateFile(productAnalyticsStateFile),
+    analytics: productAnalyticsService,
+    logger: localRuntimeLogger,
+  });
+  setTimeout(() => surveyService.noteLaunch(), 5_000).unref?.();
+  app.on("browser-window-focus", () => surveyService.noteActive());
   /**
    * One reporter for every window: a third `createWindow` site that forgets to
    * wire this would silently stop reporting lost renderers.
@@ -2436,8 +2450,7 @@ app.whenReady().then(async () => {
     properties: {
       entry_point: pendingStartupProjectRoot ? "project_file" : envRoot ? "environment" : "app_icon",
       is_packaged: app.isPackaged,
-      // Beta is a track of the normal install; its builds say so by version.
-      release_channel: !app.isPackaged ? "development" : packagedChannel ?? updateTrackOfVersion(app.getVersion()),
+      // `release_channel` is on every event the service sends.
     },
   });
   const shouldRepairRuntimeServiceOnFallback =
@@ -10193,6 +10206,8 @@ app.whenReady().then(async () => {
   // Whether this Mac's ADE.app is root-owned (a password on every update).
   registerAppBundleOwnershipIpc({ logger: getMachineMainLogger(), analytics: productAnalyticsService });
   registerDatabaseCopiesIpc({ logger: getMachineMainLogger() });
+  // The in-app survey card: this desktop app's user only, so no pin.
+  registerSurveyIpc({ surveyService, logger: getMachineMainLogger() });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),

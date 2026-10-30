@@ -6,6 +6,7 @@ import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } fro
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
+import type { ProductSurveyBridge } from "../shared/types/productSurveys";
 import type { MusicBridge } from "../shared/types/music";
 import type { SetDefaultTerminalShellArgs, TerminalShellSettings } from "../shared/types/terminalShells";
 import type { SmartLinkPreview } from "../shared/smartLinks";
@@ -1143,6 +1144,7 @@ import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
@@ -1164,6 +1166,8 @@ declare global {
         ) => Promise<ProductAnalyticsCaptureResult>;
         getStatus: () => Promise<ProductAnalyticsStatus>;
         setEnabled: (enabled: boolean) => Promise<ProductAnalyticsStatus>;
+        /** This desktop app's in-app survey. Absent on the web client, which shows none. */
+        surveys?: ProductSurveyBridge;
       };
       app: {
         /**
@@ -1451,7 +1455,15 @@ declare global {
          * a button that cannot work, and "Report issue" falls back to
          * `openIssue`. Pass an error screen's context to report about it.
          */
-        sendManual?: (context?: DiagnosticReportRequestPayload) => Promise<DiagnosticsManualSendResult>;
+        sendManual?: (
+          context?: DiagnosticReportRequestPayload,
+          options?: DiagnosticsManualSendOptions,
+        ) => Promise<DiagnosticsManualSendResult>;
+        /**
+         * True when a `userMessage` sent with a report reaches ADE (as Sentry
+         * User Feedback). Absent on older preloads and false where Sentry is off.
+         */
+        userFeedbackAvailable?: boolean;
         getSharing: () => Promise<DiagnosticsSharingStatus>;
         setSharing: (enabled: boolean) => Promise<DiagnosticsSharingStatus>;
         revealReport: (reportPath: string) => Promise<void>;

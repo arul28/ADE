@@ -1,6 +1,7 @@
 /**
- * `POST /webhooks/clerk` — Clerk's `user.created` webhook, turned into one
- * `ade_signed_up` PostHog event per account.
+ * `POST /webhooks/clerk` — Clerk's `user.created` and `user.deleted` webhooks,
+ * turned into one `ade_signed_up` / `ade_account_deleted` PostHog event per
+ * account.
  *
  * Sign-up happens on Clerk's own pages, so no ADE app sees it; this is the one
  * place that sees every sign-up exactly once. The event goes out under the same
@@ -9,9 +10,16 @@
  * ProductAnalytics.swift), so it lands on the person those clients build.
  *
  * Clerk delivers through Svix: the request is signed with
- * `CLERK_WEBHOOK_SIGNING_SECRET`, and a retried delivery keeps its `svix-id`,
- * which becomes the event's uuid so PostHog keeps one copy. Every other Clerk
- * event type is acknowledged and ignored.
+ * `CLERK_WEBHOOK_SIGNING_SECRET`. The event uuid is derived from the Clerk
+ * user id (`signupEventUuid`, `accountDeletedEventUuid`), so a retried
+ * delivery and `scripts/analytics/reconcile-signups.mjs`, which backfills
+ * sign-ups the webhook missed, all produce the same uuid for one account and
+ * PostHog keeps one copy. Every other Clerk event type is acknowledged and
+ * ignored.
+ *
+ * Test and internal accounts carry `ade_internal: true` in their Clerk
+ * private or public metadata; the sign-up then carries `is_internal: true`
+ * (event property and person property) so dashboards can leave them out.
  *
  * Both `CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` must be set;
  * without either the route answers 503 and Clerk keeps retrying for a while.
@@ -94,27 +102,60 @@ export async function accountDistinctId(userId: string): Promise<string> {
   return `ade_user_${(await sha256Hex(`ade-product-analytics-account-v1:${userId}`)).slice(0, 32)}`;
 }
 
-/** A stable v4-shaped uuid from the delivery id, so a retried delivery is one event. */
-async function deliveryUuid(svixId: string): Promise<string> {
-  const chars = (await sha256Hex(`ade-signup:${svixId}`)).slice(0, 32).split("");
+/** A stable v4-shaped uuid from a seed string. */
+async function uuidFromSeed(seed: string): Promise<string> {
+  const chars = (await sha256Hex(seed)).slice(0, 32).split("");
   chars[12] = "4";
   chars[16] = "8";
   const value = chars.join("");
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
 
-type ClerkUserCreated = {
-  type?: unknown;
-  data?: {
-    id?: unknown;
-    created_at?: unknown;
-    external_accounts?: Array<{ provider?: unknown }>;
-    password_enabled?: unknown;
-  };
+/**
+ * The `ade_signed_up` uuid for one account. The webhook, its retries and the
+ * reconcile backfill (`scripts/analytics/reconcile-signups.mjs`, which copies
+ * this) all derive the same one, so PostHog keeps one sign-up per account.
+ * PostHog deduplicates on uuid, distinct id, event and the event's day, so
+ * the timestamp must also stay Clerk's `created_at` everywhere.
+ */
+export function signupEventUuid(userId: string): Promise<string> {
+  return uuidFromSeed(`ade-signed-up-v1:${userId}`);
+}
+
+/** The `ade_account_deleted` uuid for one account, same idea as `signupEventUuid`. */
+export function accountDeletedEventUuid(userId: string): Promise<string> {
+  return uuidFromSeed(`ade-account-deleted-v1:${userId}`);
+}
+
+type ClerkUserData = {
+  id?: unknown;
+  created_at?: unknown;
+  deleted?: unknown;
+  external_accounts?: Array<{ provider?: unknown }>;
+  password_enabled?: unknown;
+  private_metadata?: unknown;
+  public_metadata?: unknown;
 };
 
+type ClerkUserEvent = {
+  type?: unknown;
+  /** When Clerk created the event (ms); the same on every retry. */
+  timestamp?: unknown;
+  data?: ClerkUserData;
+};
+
+/**
+ * Whether an account is ADE's own (tests, smoke users, the team):
+ * `ade_internal: true` in its Clerk private or public metadata.
+ */
+export function isInternalAccount(data: Pick<ClerkUserData, "private_metadata" | "public_metadata"> | undefined): boolean {
+  const flagged = (metadata: unknown): boolean =>
+    typeof metadata === "object" && metadata !== null && (metadata as Record<string, unknown>).ade_internal === true;
+  return flagged(data?.private_metadata) || flagged(data?.public_metadata);
+}
+
 /** `google`, `github`, … for an OAuth sign-up; `email` otherwise. Never the address. */
-export function signupMethod(data: ClerkUserCreated["data"]): string {
+export function signupMethod(data: ClerkUserData | undefined): string {
   const provider = data?.external_accounts?.[0]?.provider;
   if (typeof provider === "string") {
     const name = provider.replace(/^oauth_/, "").toLowerCase();
@@ -179,32 +220,57 @@ export async function handleSignupAnalyticsRequest(
   });
   if (!verified) return json(401, { error: "bad_signature" });
 
-  let payload: ClerkUserCreated;
+  let payload: ClerkUserEvent;
   try {
-    payload = JSON.parse(body) as ClerkUserCreated;
+    payload = JSON.parse(body) as ClerkUserEvent;
   } catch {
     return json(400, { error: "bad_json" });
   }
-  if (payload.type !== "user.created") return json(200, { ignored: true });
+  if (payload.type !== "user.created" && payload.type !== "user.deleted") return json(200, { ignored: true });
   const userId = typeof payload.data?.id === "string" ? payload.data.id.trim() : "";
   if (!userId || userId.length > 512) return json(400, { error: "bad_user" });
 
-  const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : null;
+  const distinctId = await accountDistinctId(userId);
+  let capture: Record<string, unknown>;
+  if (payload.type === "user.created") {
+    const createdAtMs = typeof payload.data?.created_at === "number" ? payload.data.created_at : null;
+    const signedUpAt = createdAtMs ? new Date(createdAtMs).toISOString() : null;
+    const isInternal = isInternalAccount(payload.data);
+    capture = {
+      api_key: token,
+      distinct_id: distinctId,
+      event: "ade_signed_up",
+      uuid: await signupEventUuid(userId),
+      ...(signedUpAt ? { timestamp: signedUpAt } : {}),
+      properties: {
+        signup_method: signupMethod(payload.data),
+        client: "account",
+        interactive: true,
+        is_internal: isInternal,
+        $set: { is_internal: isInternal },
+        $set_once: { clerk_user_id: userId, signed_up_at: signedUpAt },
+        $geoip_disable: true,
+      },
+    };
+  } else {
+    // Clerk's deleted payload is `{ id, object, deleted: true }`: no metadata
+    // and no created_at. The event's own timestamp is the same on a retry, so
+    // the retry lands on the same day and PostHog still keeps one.
+    const eventMs = typeof payload.timestamp === "number" ? payload.timestamp : null;
+    capture = {
+      api_key: token,
+      distinct_id: distinctId,
+      event: "ade_account_deleted",
+      uuid: await accountDeletedEventUuid(userId),
+      ...(eventMs ? { timestamp: new Date(eventMs).toISOString() } : {}),
+      properties: {
+        client: "account",
+        interactive: true,
+        $geoip_disable: true,
+      },
+    };
+  }
   const host = (env.POSTHOG_HOST?.trim() || "https://us.i.posthog.com").replace(/\/+$/, "");
-  const capture = {
-    api_key: token,
-    distinct_id: await accountDistinctId(userId),
-    event: "ade_signed_up",
-    uuid: await deliveryUuid(id),
-    ...(createdAtMs ? { timestamp: new Date(createdAtMs).toISOString() } : {}),
-    properties: {
-      signup_method: signupMethod(payload.data),
-      client: "account",
-      interactive: true,
-      $set_once: { clerk_user_id: userId, signed_up_at: createdAtMs ? new Date(createdAtMs).toISOString() : null },
-      $geoip_disable: true,
-    },
-  };
   const response = await fetch(`${host}/i/v0/e/`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

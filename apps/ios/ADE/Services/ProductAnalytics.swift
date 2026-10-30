@@ -32,6 +32,17 @@ enum ADEAnalyticsDistribution: String, CaseIterable {
     return Bundle.main.appStoreReceiptURL?.lastPathComponent == "sandboxReceipt" ? .testFlight : .appStore
     #endif
   }
+
+  /// The build's `release_channel`, in the desktop's words: TestFlight is the
+  /// beta, the App Store is stable. Every PostHog event and Sentry's
+  /// `release_channel` tag carry it.
+  var releaseChannel: String {
+    switch self {
+    case .testFlight: return "beta"
+    case .appStore: return "stable"
+    case .development: return "development"
+    }
+  }
 }
 
 enum ADEAnalyticsScreen: String, CaseIterable {
@@ -272,6 +283,12 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       privateProperties["platform"] = "ios"
       privateProperties["client"] = "ios"
       privateProperties["interactive"] = event != ADEAnalyticsEventName.analyticsBudget.rawValue
+      // Every event says which build sent it. No `is_internal`: a phone has
+      // no team-install marker to read.
+      privateProperties["app_version"] = Self.appVersion()
+      privateProperties["build_number"] = Self.buildNumber()
+      privateProperties["distribution"] = Self.distribution.rawValue
+      privateProperties["release_channel"] = Self.distribution.releaseChannel
       privateProperties["$process_person_profile"] = false
       privateProperties["$geoip_disable"] = true
 
@@ -527,6 +544,23 @@ final class DirectPostHogProductAnalyticsSink: ProductAnalyticsSink {
       of: #"^ade_user_[0-9a-f]{32}$"#,
       options: .regularExpression
     ) != nil
+  }
+
+  private static let distribution = ADEAnalyticsDistribution.current
+
+  /// `CFBundleVersion`, the TestFlight build number, under the same rules as
+  /// the marketing version.
+  private static func buildNumber(bundle: Bundle = .main) -> String {
+    guard let raw = bundle.object(forInfoDictionaryKey: "CFBundleVersion") as? String else {
+      return "unknown"
+    }
+    let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty,
+          value.count <= 32,
+          value.range(of: #"^[0-9.]+$"#, options: .regularExpression) != nil else {
+      return "unknown"
+    }
+    return value
   }
 
   private static func appVersion(bundle: Bundle = .main) -> String {

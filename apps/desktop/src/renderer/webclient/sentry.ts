@@ -9,8 +9,9 @@
  */
 import * as Sentry from "@sentry/react";
 import { connectSentry } from "../../shared/sentry/capture";
-import { SENTRY_DATA_COLLECTION, SENTRY_DSNS, sentryReleaseName } from "../../shared/sentry/config";
-import { createSentryEventHooks } from "../../shared/sentry/eventFilter";
+import { resolveReleaseChannel } from "../../shared/packageChannel";
+import { SENTRY_DATA_COLLECTION, SENTRY_DSNS, sentryCommonTags, sentryReleaseName } from "../../shared/sentry/config";
+import { createSentryEventHooks, setSentryUserResolver } from "../../shared/sentry/eventFilter";
 import { isAdeUnavailableError } from "../lib/adeAvailability";
 
 declare const __ADE_WEB_VERSION__: string | undefined;
@@ -22,9 +23,10 @@ export function initWebClientSentry(): void {
   // An analytics opt-out recorded in an earlier build covers error tracking too.
   if (window.localStorage?.getItem("ade:web-product-analytics-enabled") === "false") return;
   const hooks = createSentryEventHooks();
+  const version = typeof __ADE_WEB_VERSION__ === "string" ? __ADE_WEB_VERSION__ : null;
   Sentry.init({
     dsn: SENTRY_DSNS.web,
-    release: sentryReleaseName(typeof __ADE_WEB_VERSION__ === "string" ? __ADE_WEB_VERSION__ : null),
+    release: sentryReleaseName(version),
     environment: import.meta.env.PROD ? "production" : "development",
     dist: "web",
     // Errors only. Browser tracing would add about a third to this chunk, and
@@ -42,7 +44,53 @@ export function initWebClientSentry(): void {
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
-  Sentry.setTags({ process: "web-client", surface: "web-client" });
+  // No `is_internal`: a browser has no team-install marker. No `arch`: a
+  // browser does not say it reliably.
+  Sentry.setTags({
+    ...sentryCommonTags({
+      surface: "web",
+      client: "web",
+      releaseChannel: resolveReleaseChannel({ env: {}, packaged: import.meta.env.PROD, version }),
+    }),
+    process: "web-client",
+  });
+  setSentryUserResolver(webAccountUserHash);
+  void refreshAccountHash();
+}
+
+/**
+ * The Sentry user, as on desktop: the same one-way account hash PostHog uses
+ * (`ade_user_` + the first 32 hex of SHA-256 over
+ * `ade-product-analytics-account-v1:<account id>`), never the account id.
+ * Read at send time; hashing is async in a browser, so each send refreshes the
+ * cached hash for the next one, and the first error after a sign-in goes
+ * without a user. Signed out, events carry no user.
+ */
+let cachedAccountHash: { userId: string; hash: string } | null = null;
+
+function webAccountUserHash(): string | null {
+  void refreshAccountHash();
+  return cachedAccountHash?.hash ?? null;
+}
+
+async function refreshAccountHash(): Promise<void> {
+  try {
+    const status = await window.ade?.account?.status?.();
+    const userId = status?.signedIn ? status.userId?.trim() || "" : "";
+    if (!userId) {
+      cachedAccountHash = null;
+      return;
+    }
+    if (cachedAccountHash?.userId === userId) return;
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(`ade-product-analytics-account-v1:${userId}`),
+    );
+    const hex = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+    cachedAccountHash = { userId, hash: `ade_user_${hex.slice(0, 32)}` };
+  } catch {
+    // No user is better than a wrong one.
+  }
 }
 
 function isTranslationDomError(error: unknown): boolean {

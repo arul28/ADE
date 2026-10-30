@@ -10,6 +10,7 @@
  * reports. Off in source checkouts and tests (see `shared/sentry/config.ts`).
  */
 import * as Sentry from "@sentry/node";
+import { resolveReleaseChannel } from "../../../desktop/src/shared/packageChannel";
 import { connectSentry } from "../../../desktop/src/shared/sentry/capture";
 import {
   resolveSentryDsn,
@@ -51,6 +52,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   started = true;
   const version = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__ : null;
   const hooks = createSentryEventHooks();
+  const releaseChannel = resolveReleaseChannel({ env: process.env, packaged, version });
   Sentry.init({
     dsn: resolveSentryDsn("brain", process.env),
     release: sentryReleaseName(version),
@@ -72,7 +74,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   });
   connectSentry(Sentry);
   Sentry.setTags({
-    ...sentryProcessTags("brain"),
+    ...sentryProcessTags({ processName: "brain", surface: "brain", releaseChannel }),
     "brain.mode": args.mode,
     "brain.host": process.env.ELECTRON_RUN_AS_NODE === "1" ? "electron" : "node",
   });

@@ -1,0 +1,721 @@
+{
+  "$comment": "ADE's analytics tracking plan. Every event any ADE surface sends to PostHog is listed here; scripts/check-analytics-tracking-plan.mjs fails CI when code, this file, and scripts/posthog/dashboard-spec.mjs disagree. See docs/analytics/README.md.",
+  "version": 1,
+  "common_properties": {
+    "desktop_policy": [
+      "surface",
+      "client",
+      "interactive",
+      "is_internal",
+      "app_version",
+      "runtime_mode",
+      "platform",
+      "arch",
+      "release_channel",
+      "project_id",
+      "session_id",
+      "first_open"
+    ],
+    "ios": [
+      "surface",
+      "platform",
+      "client",
+      "interactive",
+      "app_version",
+      "build_number",
+      "distribution",
+      "release_channel"
+    ],
+    "marketing": [
+      "$referrer",
+      "$referring_domain",
+      "utm_source",
+      "utm_medium",
+      "utm_campaign"
+    ]
+  },
+  "events": [
+    {
+      "name": "ade_app_installed",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/main.ts",
+      "source": "desktop_policy",
+      "purpose": "A fresh install's first run (once per install), with how it was installed.",
+      "properties": [
+        "install_source"
+      ]
+    },
+    {
+      "name": "ade_app_opened",
+      "platforms": [
+        "desktop",
+        "runtime",
+        "web",
+        "cli"
+      ],
+      "owner": "apps/desktop/src/main/main.ts",
+      "source": "desktop_policy",
+      "purpose": "An ADE client opened; first_open marks a client's first ever open.",
+      "properties": [
+        "entry_point",
+        "source",
+        "release_channel",
+        "mode",
+        "connection_state",
+        "paired",
+        "cached_data",
+        "is_packaged"
+      ]
+    },
+    {
+      "name": "ade_activated",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/agentTurnProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "First completed work session (once per install): the activation milestone.",
+      "properties": [
+        "trigger",
+        "time_since_install_seconds"
+      ]
+    },
+    {
+      "name": "ade_screen_viewed",
+      "platforms": [
+        "desktop",
+        "web",
+        "cli",
+        "mobile"
+      ],
+      "owner": "apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx",
+      "source": "desktop_policy",
+      "purpose": "An allowlisted screen was viewed.",
+      "properties": [
+        "screen",
+        "route_kind",
+        "source",
+        "mode"
+      ]
+    },
+    {
+      "name": "ade_project_opened",
+      "platforms": [
+        "desktop",
+        "web"
+      ],
+      "owner": "apps/desktop/src/renderer/components/analytics/ProductAnalyticsLifecycle.tsx",
+      "source": "desktop_policy",
+      "purpose": "A project was opened.",
+      "properties": [
+        "route_kind",
+        "source",
+        "mode",
+        "connection_state"
+      ]
+    },
+    {
+      "name": "ade_feature_used",
+      "platforms": [
+        "desktop",
+        "runtime",
+        "web",
+        "cli",
+        "mobile"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/featureProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "A product decision or mutation with an allowlisted feature/action/outcome; the main feature-adoption event (also the account_sign_in funnel).",
+      "properties": [
+        "feature",
+        "action",
+        "outcome",
+        "source",
+        "mode",
+        "provider",
+        "model_family",
+        "duration_bucket",
+        "connection_state",
+        "error_kind",
+        "bytes_freed",
+        "files_compressed",
+        "count_bucket",
+        "refusal_code"
+      ]
+    },
+    {
+      "name": "ade_work_session_started",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/usageProductAnalyticsExporter.ts",
+      "source": "desktop_policy",
+      "purpose": "A chat or CLI work session started.",
+      "properties": [
+        "feature",
+        "action",
+        "outcome",
+        "source",
+        "mode",
+        "provider"
+      ]
+    },
+    {
+      "name": "ade_work_session_completed",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/agentTurnProductAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "The first terminal agent turn of a work session and how it ended.",
+      "properties": [
+        "feature",
+        "action",
+        "outcome",
+        "source",
+        "mode",
+        "duration_bucket",
+        "provider"
+      ]
+    },
+    {
+      "name": "ade_error",
+      "platforms": [
+        "desktop",
+        "runtime",
+        "web"
+      ],
+      "owner": "apps/desktop/src/main/services/ipc/registerIpc.ts",
+      "source": "desktop_policy",
+      "purpose": "A coarse product-level failure category; never a message or stack.",
+      "properties": [
+        "feature",
+        "action",
+        "error_kind",
+        "outcome",
+        "recoverable",
+        "source"
+      ]
+    },
+    {
+      "name": "ade_daily_usage_summary",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/dailyUsageAnalytics.ts",
+      "source": "desktop_policy",
+      "purpose": "Locally aggregated daily usage counters (overall, provider, model, jev).",
+      "properties": [
+        "summary_kind",
+        "provider",
+        "model_family",
+        "interaction_count",
+        "session_count",
+        "chat_session_count",
+        "terminal_session_count",
+        "active_lane_count",
+        "lanes_created",
+        "lanes_archived",
+        "commits_created",
+        "push_operations",
+        "pr_landings",
+        "files_changed",
+        "artifacts_captured",
+        "automation_runs",
+        "worker_runs",
+        "active_days",
+        "current_streak_days",
+        "token_count",
+        "input_token_count",
+        "output_token_count",
+        "call_count",
+        "duration_ms",
+        "provider_count",
+        "model_count",
+        "error_count"
+      ]
+    },
+    {
+      "name": "ade_analytics_budget",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/productAnalyticsService.ts",
+      "source": "desktop_policy",
+      "purpose": "Delayed daily rollup of accepted vs dropped analytics events.",
+      "properties": [
+        "sent_count",
+        "dropped_count",
+        "drop_reason"
+      ]
+    },
+    {
+      "name": "ade_update_install_aborted",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/updates/autoUpdateService.ts",
+      "source": "desktop_policy",
+      "purpose": "An update install was aborted, by closed reason.",
+      "properties": [
+        "reason"
+      ]
+    },
+    {
+      "name": "ade_update_quit_escalated",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/updates/autoUpdateService.ts",
+      "source": "desktop_policy",
+      "purpose": "Quitting for an update had to be escalated.",
+      "properties": [
+        "blocked_ms",
+        "escalation_reason",
+        "native_staging_completed"
+      ]
+    },
+    {
+      "name": "ade_update_install_did_not_land",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/updates/autoUpdateService.ts",
+      "source": "desktop_policy",
+      "purpose": "An installed update did not take effect after restart.",
+      "properties": [
+        "attempt"
+      ]
+    },
+    {
+      "name": "ade_update_auto_applied",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/updates/autoUpdateService.ts",
+      "source": "desktop_policy",
+      "purpose": "An update was applied automatically.",
+      "properties": []
+    },
+    {
+      "name": "ade_update_auto_apply_cancelled",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/updates/autoUpdateService.ts",
+      "source": "desktop_policy",
+      "purpose": "An automatic update apply was cancelled.",
+      "properties": []
+    },
+    {
+      "name": "ade_update_prompted",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/renderer/components/app/captureUpdatePromptDecision.ts",
+      "source": "desktop_policy",
+      "purpose": "The person's answer to a downloaded-update prompt.",
+      "properties": [
+        "from_version",
+        "to_version",
+        "user_action",
+        "resume_chats"
+      ]
+    },
+    {
+      "name": "ade_brain_recovered",
+      "platforms": [
+        "runtime"
+      ],
+      "owner": "apps/ade-cli/src/cli.ts",
+      "source": "desktop_policy",
+      "purpose": "The brain (background service) recovered from a wedge.",
+      "properties": [
+        "blocked_ms",
+        "last_command"
+      ]
+    },
+    {
+      "name": "ade_renderer_recovered",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/main.ts",
+      "source": "desktop_policy",
+      "purpose": "A window's renderer process was lost and whether it was reloaded.",
+      "properties": [
+        "crash_reason",
+        "recovered"
+      ]
+    },
+    {
+      "name": "ade_publish_failing",
+      "platforms": [
+        "runtime"
+      ],
+      "owner": "apps/ade-cli/src/services/account/accountMachinePublisherService.ts",
+      "source": "desktop_policy",
+      "purpose": "Sustained failure to publish this machine's route to the account.",
+      "properties": [
+        "failing_minutes",
+        "leg",
+        "code"
+      ]
+    },
+    {
+      "name": "ade_relay_suppressed",
+      "platforms": [
+        "runtime"
+      ],
+      "owner": "apps/ade-cli/src/services/sync/syncTunnelClientService.ts",
+      "source": "desktop_policy",
+      "purpose": "The relay connection was suppressed by a rival process.",
+      "properties": [
+        "attempt",
+        "code"
+      ]
+    },
+    {
+      "name": "ade_account_session_unreadable",
+      "platforms": [
+        "runtime"
+      ],
+      "owner": "apps/ade-cli/src/services/account/accountMachinePublisherService.ts",
+      "source": "desktop_policy",
+      "purpose": "The brain could not read the account session.",
+      "properties": [
+        "code"
+      ]
+    },
+    {
+      "name": "ade_tool_fetched",
+      "platforms": [
+        "desktop",
+        "runtime"
+      ],
+      "owner": "apps/desktop/src/main/services/tools/agentToolsCacheService.ts",
+      "source": "desktop_policy",
+      "purpose": "A pinned agent tool download and its outcome.",
+      "properties": [
+        "provider",
+        "outcome",
+        "duration_bucket",
+        "tool_error_kind"
+      ]
+    },
+    {
+      "name": "ade_brain_action_failed",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/ipc/registerIpc.ts",
+      "source": "desktop_policy",
+      "purpose": "A brain action failed: which domain and the structured error code.",
+      "properties": [
+        "action_domain",
+        "error_code"
+      ]
+    },
+    {
+      "name": "survey shown",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/surveyService.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog survey event: an in-app survey card was on screen.",
+      "properties": [
+        "$survey_id",
+        "$survey_name",
+        "$survey_iteration"
+      ]
+    },
+    {
+      "name": "survey dismissed",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/surveyService.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog survey event: the person chose Not now.",
+      "properties": [
+        "$survey_id",
+        "$survey_name",
+        "$survey_iteration",
+        "$survey_questions",
+        "$survey_partially_completed"
+      ]
+    },
+    {
+      "name": "survey sent",
+      "platforms": [
+        "desktop"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/surveyService.ts",
+      "source": "desktop_policy",
+      "purpose": "PostHog survey event: the person sent answers (free text scrubbed, capped at 2,000 characters).",
+      "properties": [
+        "$survey_id",
+        "$survey_name",
+        "$survey_iteration",
+        "$survey_questions",
+        "$survey_submission_id",
+        "$survey_completed",
+        "$survey_response",
+        "$survey_response_<question_id>"
+      ]
+    },
+    {
+      "name": "ade_mobile_app_opened",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "The iOS app opened (cold start or foreground).",
+      "properties": [
+        "entry_point",
+        "distribution",
+        "first_open"
+      ]
+    },
+    {
+      "name": "ade_mobile_screen_viewed",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "An allowlisted iOS screen was viewed.",
+      "properties": [
+        "screen"
+      ]
+    },
+    {
+      "name": "ade_mobile_feature_used",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "A phone-local control was used, by feature and outcome.",
+      "properties": [
+        "feature",
+        "outcome",
+        "source"
+      ]
+    },
+    {
+      "name": "ade_mobile_sign_in_outcome",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "How an iOS account sign-in ended.",
+      "properties": [
+        "outcome"
+      ]
+    },
+    {
+      "name": "ade_mobile_machine_adoption_outcome",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "How adopting a machine on iOS ended.",
+      "properties": [
+        "outcome"
+      ]
+    },
+    {
+      "name": "ade_mobile_pairing_outcome",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "How pairing the phone with a computer ended.",
+      "properties": [
+        "outcome"
+      ]
+    },
+    {
+      "name": "ade_mobile_quick_connect_used",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "Quick Connect was used, by where it started.",
+      "properties": [
+        "source"
+      ]
+    },
+    {
+      "name": "ade_mobile_error",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "A coarse recoverable iOS error category.",
+      "properties": [
+        "error_kind",
+        "recoverable"
+      ]
+    },
+    {
+      "name": "ade_mobile_analytics_budget",
+      "platforms": [
+        "ios"
+      ],
+      "owner": "apps/ios/ADE/Services/ProductAnalytics.swift",
+      "source": "ios",
+      "purpose": "Delayed daily rollup of the phone's analytics budget.",
+      "properties": [
+        "sent_count",
+        "dropped_count",
+        "drop_reason"
+      ]
+    },
+    {
+      "name": "ade_marketing_app_opened",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "A visit to the public marketing site (once a day per browser).",
+      "properties": [
+        "action",
+        "runtime_mode"
+      ]
+    },
+    {
+      "name": "ade_marketing_screen_viewed",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "A marketing page was viewed.",
+      "properties": [
+        "action",
+        "screen"
+      ]
+    },
+    {
+      "name": "ade_marketing_cta_clicked",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "A call to action was clicked (downloads, get started).",
+      "properties": [
+        "action",
+        "cta_label",
+        "screen",
+        "position"
+      ]
+    },
+    {
+      "name": "ade_marketing_feature_used",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "A marketing-site feature was used.",
+      "properties": [
+        "action",
+        "feature",
+        "screen"
+      ]
+    },
+    {
+      "name": "ade_marketing_error",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "A coarse marketing-site error category.",
+      "properties": [
+        "action",
+        "error_kind"
+      ]
+    },
+    {
+      "name": "ade_marketing_analytics_budget",
+      "platforms": [
+        "marketing"
+      ],
+      "owner": "apps/web/src/lib/marketingAnalytics.ts",
+      "source": "marketing",
+      "purpose": "Delayed daily rollup of the browser's analytics budget.",
+      "properties": [
+        "sent_count",
+        "dropped_count",
+        "drop_reason"
+      ]
+    },
+    {
+      "name": "ade_signed_up",
+      "platforms": [
+        "server"
+      ],
+      "owner": "apps/account-directory/src/signupAnalytics.ts",
+      "source": "server",
+      "purpose": "A new ADE account, from Clerk's user.created webhook. Mirrors Clerk (the source of truth for accounts); reconciled weekly by scripts/analytics/reconcile-signups.mjs.",
+      "properties": [
+        "signup_method",
+        "client",
+        "interactive",
+        "is_internal"
+      ]
+    },
+    {
+      "name": "ade_account_deleted",
+      "platforms": [
+        "server"
+      ],
+      "owner": "apps/account-directory/src/signupAnalytics.ts",
+      "source": "server",
+      "purpose": "An ADE account was deleted, from Clerk's user.deleted webhook.",
+      "properties": [
+        "client",
+        "interactive"
+      ]
+    },
+    {
+      "name": "$identify",
+      "platforms": [
+        "desktop",
+        "runtime",
+        "ios"
+      ],
+      "owner": "apps/desktop/src/main/services/analytics/productAnalyticsService.ts",
+      "source": "system",
+      "purpose": "PostHog identify: merges an install's anonymous id into the account's hashed id after sign-in.",
+      "properties": [
+        "$anon_distinct_id",
+        "$set.clerk_user_id",
+        "$set.is_internal",
+        "$set.plan",
+        "$set.platform",
+        "$set.app_version"
+      ]
+    }
+  ]
+}

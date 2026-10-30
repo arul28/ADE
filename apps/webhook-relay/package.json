@@ -4,7 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
+    "dev": "wrangler dev --var SENTRY_ENVIRONMENT:development",
     "deploy": "npm run d1:migrate:remote && wrangler deploy",
     "d1:migrate:local": "wrangler d1 migrations apply ade-github-relay --local",
     "d1:migrate:remote": "wrangler d1 migrations apply ade-github-relay --remote",

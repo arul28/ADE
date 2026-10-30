@@ -7,6 +7,8 @@
   "workers_dev": true,
   "preview_urls": false,
   "observability": { "enabled": true, "head_sampling_rate": 1 },
+  // The Sentry cron monitor `account-directory-cleanup` repeats this schedule
+  // (CLEANUP_MONITOR_CONFIG in src/index.ts); change both together.
   "triggers": { "crons": ["* * * * *"] },
   // REQUIRED SECRET — DIRECTORY_AUTH_SECRET
   // Not a var: it is a credential, so it is set out of band and never committed.
@@ -34,7 +36,9 @@
   "vars": {
     "ONLINE_WINDOW_MS": "90000",
     // Public Sentry DSN of the ade-workers project. Not a secret (it only lets
-    // events in). SENTRY_RELEASE is set at deploy, not here.
+    // events in). SENTRY_RELEASE is set at deploy, not here. No
+    // SENTRY_ENVIRONMENT here: this development Worker and `wrangler dev`
+    // report as `development`, which src/sentry.ts never sends.
     "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
     // Exact hosted web-client origin allowed to read /account/machines.
     // Set to the production HTTPS origin before deployment.
@@ -124,6 +128,8 @@
         "ONLINE_WINDOW_MS": "90000",
         // Same public DSN as above; vars do not inherit into an environment.
         "SENTRY_DSN": "https://7b05312b178df4f7d294794aa9ff7cde@o4512249455640576.ingest.us.sentry.io/4512249615024128",
+        // The only environment Sentry hears from (src/sentry.ts drops the rest).
+        "SENTRY_ENVIRONMENT": "production",
         "WEB_CLIENT_ORIGIN": "https://app.ade-app.dev",
         "PUSH_RELAY_URL": "https://ade-push-relay.arulsharma1028.workers.dev",
         // Same ceiling as the default environment, and set explicitly: wrangler

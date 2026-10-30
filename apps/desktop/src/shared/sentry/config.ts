@@ -8,8 +8,7 @@
  * in a dev build for testing the wiring, reporting as `development`.
  */
 import { doNotTrackRequested, isTruthyEnvFlag } from "../doNotTrack";
-import { normalizeAppPackageChannel } from "../packageChannel";
-import { updateTrackOfVersion } from "../updateTrack";
+import { normalizeAppPackageChannel, resolveReleaseChannel, type ReleaseChannel } from "../packageChannel";
 
 /**
  * Public DSNs for the `ade-app` organization. A DSN only lets a client submit
@@ -64,10 +63,8 @@ export function resolveSentryEnvironment(args: {
   packaged: boolean;
   version?: string | null;
 }): SentryEnvironment {
-  if (!args.packaged) return "development";
-  const channel = normalizeAppPackageChannel(args.env.ADE_PACKAGE_CHANNEL);
-  if (channel === "alpha") return "alpha";
-  return updateTrackOfVersion(args.version) === "beta" ? "beta" : "production";
+  const channel = resolveReleaseChannel(args);
+  return channel === "stable" ? "production" : channel;
 }
 
 /** One release name across desktop, brain, web client and Workers. */
@@ -102,6 +99,35 @@ export const SENTRY_DATA_COLLECTION = {
 /** The `package.channel` tag: `stable`, `beta` or `alpha`. */
 export function sentryChannelTag(env: Env): string {
   return normalizeAppPackageChannel(env.ADE_PACKAGE_CHANNEL);
+}
+
+/** The surface a Sentry client reports from; one per project, plus iOS. */
+export type SentryTagSurface = "desktop" | "brain" | "web" | "ios";
+
+/**
+ * The tags every ADE Sentry client sets on its scope, so one query cuts every
+ * project the same way: `surface`, `client` (the app a person used, as PostHog
+ * names it; `runtime` for the brain, which serves every client),
+ * `release_channel` (`stable`, `beta`, `alpha`, `development`), `is_internal`
+ * (`true` on a team install; left off where a surface cannot know), and `arch`
+ * where the process knows it. The OS is Sentry's own `os` tag, read from the
+ * event's OS context on every SDK. Swift sets the same keys in
+ * `CrashReporting.swift`.
+ */
+export function sentryCommonTags(args: {
+  surface: SentryTagSurface;
+  client: "desktop" | "runtime" | "web" | "ios";
+  releaseChannel: ReleaseChannel;
+  isInternal?: boolean | null;
+  arch?: string | null;
+}): Record<string, string> {
+  return {
+    surface: args.surface,
+    client: args.client,
+    release_channel: args.releaseChannel,
+    ...(typeof args.isInternal === "boolean" ? { is_internal: String(args.isInternal) } : {}),
+    ...(args.arch ? { arch: args.arch } : {}),
+  };
 }
 
 /** Handed to renderers through `additionalArguments` when main's Sentry client is running. */

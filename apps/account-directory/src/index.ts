@@ -35,6 +35,19 @@ import {
 type WorkerEnv = DiagnosticsEnv & UsageResearchEnv & ModelRegistryEnv & MusicDeveloperTokenEnv & JevBonusEnv
   & SignupAnalyticsEnv & SentryEnv;
 
+const CLEANUP_MONITOR_SLUG = "account-directory-cleanup";
+const CLEANUP_MONITOR_CONFIG = {
+  // Keep in step with `triggers.crons` in wrangler.jsonc.
+  schedule: { type: "crontab", value: "* * * * *" },
+  checkinMargin: 5,
+  maxRuntime: 10,
+  timezone: "UTC",
+  // A minute cron misses the odd tick on a Cloudflare hiccup: open an issue
+  // only after five missed or failed ticks in a row.
+  failureIssueThreshold: 5,
+  recoveryThreshold: 1,
+} satisfies Parameters<typeof Sentry.withMonitor>[2];
+
 function route(request: Request, env: WorkerEnv): Promise<Response> {
   // Diagnostics and usage research are matched before the directory because
   // they are the routes here that are not account-scoped: `handleRequest`
@@ -86,7 +99,13 @@ export default Sentry.withSentry(sentryOptions, {
           () => {},
           (error: unknown) => logScheduledCleanupFailure({ task, error }),
         );
-    ctx.waitUntil(Promise.all([
+    // One Sentry cron monitor (the Team plan includes one; never add
+    // `cronTriggersIntegration`, which makes a billed monitor per trigger).
+    // It is upserted by the check-ins, alerts when a minute's tick goes
+    // missing or runs past `maxRuntime`, and is reached only from
+    // `production` (src/sentry.ts sends nothing else). Each sweep's own
+    // failure is a log line above, not a failed check-in.
+    const sweeps = Sentry.withMonitor(CLEANUP_MONITOR_SLUG, () => Promise.all([
       settle("device_authorizations", () => cleanupExpiredDeviceAuthorizations(env)),
       settle("pairing_grants", () => cleanupExpiredPairingGrants(env)),
       // Only today's budget row is ever read; the rest is kept for a week so a
@@ -101,6 +120,9 @@ export default Sentry.withSentry(sentryOptions, {
       settle("model_registry", () => runModelRegistryCron(env)),
       // Jev bonus: per-account day counts past a week.
       settle("jev_bonus_days", () => cleanupJevBonusDays(env)),
-    ]));
+    ]), CLEANUP_MONITOR_CONFIG);
+    ctx.waitUntil(sweeps);
+    // Awaited too, so the SDK flushes after the closing check-in.
+    await sweeps;
   },
 });

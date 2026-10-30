@@ -10,6 +10,7 @@
  */
 import { app } from "electron";
 import * as Sentry from "@sentry/electron/main";
+import { resolveReleaseChannel } from "../../shared/packageChannel";
 import { connectSentry } from "../../shared/sentry/capture";
 import {
   resolveSentryDsn,
@@ -40,6 +41,7 @@ export function initMainSentry(options: {
   if (!shouldEnableSentry({ env: process.env, packaged, priorOptOut: hasPriorTelemetryOptOut() })) return false;
   started = true;
   const hooks = createSentryEventHooks();
+  const releaseChannel = resolveReleaseChannel({ env: process.env, packaged, version: app.getVersion() });
   Sentry.init({
     dsn: resolveSentryDsn("desktop", process.env),
     release: sentryReleaseName(app.getVersion()),
@@ -61,7 +63,7 @@ export function initMainSentry(options: {
     beforeSendLog: hooks.beforeSendLog,
   });
   connectSentry(Sentry);
-  Sentry.setTags(sentryProcessTags("main"));
+  Sentry.setTags(sentryProcessTags({ processName: "main", surface: "desktop", releaseChannel }));
   Sentry.setContext("machine", { ...sentryMachineContext(), locale: app.getLocale?.() ?? null });
   startNodeSentryDiagnostics();
   registerDesktopSentryDiagnostics();

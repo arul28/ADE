@@ -8,6 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as nodePty from "node-pty";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
+import { resolveReleaseChannel } from "../../desktop/src/shared/packageChannel";
 import { createFileLogger, type Logger } from "../../desktop/src/main/services/logging/logger";
 import { classifySqliteOpenError, openKvDb, type AdeDb } from "../../desktop/src/main/services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "../../desktop/src/main/services/state/syncPeerCompactionGate";
@@ -1147,6 +1148,11 @@ export async function createAdeRuntime(args: {
         logger,
         appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || "0.0.0",
         runtimeMode: syncRuntimeOptions?.runtimeKind ?? (chatOnlyRuntime ? "chat_runtime" : "project_runtime"),
+        releaseChannel: resolveReleaseChannel({
+          env: process.env,
+          packaged: !isSourceCheckoutRuntimeModule(currentModulePath),
+          version: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION,
+        }),
       }));
     setSentryUserResolver(() => productAnalyticsService.getDistinctId());
     productAnalyticsForProxy = productAnalyticsService;

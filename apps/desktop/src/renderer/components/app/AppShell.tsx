@@ -68,6 +68,7 @@ import { ARCHIVE_SETTINGS_ROUTE, useArchiveReminderBanner } from "./useArchiveRe
 import { useDeletedChatsReminderBanner } from "./useDeletedChatsReminderBanner";
 import { useLaneDependencyBanners } from "./useLaneDependencyBanners";
 import { SituationalSuggestions } from "./suggestions/SituationalSuggestions";
+import { SurveyHost } from "./surveys/SurveyHost";
 import { useOnboardingChatImport } from "../onboarding/useOnboardingChatImport";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
 import { useAutoDiagnosticsToast } from "./toast/useAutoDiagnosticsToast";
@@ -1133,6 +1134,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         githubStatus={githubStatus}
         navigate={navigate}
       />
+      {/* One ask a minute after the window opens; the card loads only when a survey is due. */}
+      <SurveyHost />
 
       <div className="flex-1 flex min-h-0">
         <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>

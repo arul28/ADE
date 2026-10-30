@@ -48,6 +48,16 @@ export type DiagnosticsSharingStatus = {
 };
 
 /**
+ * Extra input to a manual send that is not part of the report itself.
+ * `userMessage` is the person's own description: it goes to Sentry as User
+ * Feedback (scrubbed, at most 2,000 characters), never into the R2 report or
+ * PostHog, and only where Sentry runs.
+ */
+export type DiagnosticsManualSendOptions = {
+  userMessage?: string | null;
+};
+
+/**
  * The answer to "Send a report" in Settings, and to "Report issue" on an error
  * screen (which passes that screen's context).
  *

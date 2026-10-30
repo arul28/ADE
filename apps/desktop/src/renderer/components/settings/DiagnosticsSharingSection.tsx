@@ -43,6 +43,10 @@ function ManualDiagnosticsSend() {
   const bridge = window.ade?.diagnostics;
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<DiagnosticsManualSendResult | null>(null);
+  // The person's own words, sent beside the report as Sentry User Feedback.
+  // Offered only where that reaches ADE (main's Sentry client is running).
+  const [note, setNote] = useState("");
+  const noteAvailable = bridge?.userFeedbackAvailable === true;
 
   // An older preload has no `sendManual`; offering a button that cannot work is
   // worse than offering none.
@@ -53,7 +57,10 @@ function ManualDiagnosticsSend() {
     setSending(true);
     setResult(null);
     try {
-      setResult(await bridge.sendManual!());
+      const userMessage = noteAvailable ? note.trim() : "";
+      const sent = await bridge.sendManual!(undefined, userMessage ? { userMessage } : undefined);
+      setResult(sent);
+      if (sent.ok) setNote("");
     } catch {
       setResult({ ok: false, reason: "failed" });
     } finally {
@@ -78,6 +85,27 @@ function ManualDiagnosticsSend() {
         </button>
       )}
     >
+      {noteAvailable ? (
+        <textarea
+          aria-label="What went wrong (optional)"
+          value={note}
+          onChange={(event) => setNote(event.target.value)}
+          maxLength={2000}
+          rows={3}
+          placeholder="What went wrong? (optional) Sent with the report."
+          style={{
+            width: "100%",
+            resize: "vertical",
+            padding: "6px 8px",
+            borderRadius: 6,
+            border: "1px solid var(--kit-panel-edge)",
+            background: "var(--kit-panel-bg)",
+            color: "inherit",
+            font: "inherit",
+            fontSize: 12,
+          }}
+        />
+      ) : null}
       {result ? (
         <p role="status" className={result.ok ? "ade-modern-muted" : "ade-modern-warn"} style={result.ok ? { color: "var(--kit-text-2)" } : undefined}>
           {result.ok

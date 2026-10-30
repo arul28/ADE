@@ -1,4 +1,5 @@
 import { normalizeAdeUsageClientSurface, type AdeUsageClientSurface } from "./usage";
+import type { ProductSurveyEventPayload } from "./productSurveys";
 
 export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_app_installed",
@@ -25,6 +26,11 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_account_session_unreadable",
   "ade_tool_fetched",
   "ade_brain_action_failed",
+  // PostHog's own survey events, spelled exactly as PostHog's survey results
+  // read them. Main-process only (`surveyService.ts`).
+  "survey shown",
+  "survey dismissed",
+  "survey sent",
 ] as const;
 
 export type ProductAnalyticsEventName = (typeof PRODUCT_ANALYTICS_EVENTS)[number];
@@ -50,6 +56,11 @@ export type ProductAnalyticsCapture = {
   dedupeKey?: string | null;
   /** Local-only repeated-event suppression window. */
   minimumIntervalMs?: number | null;
+  /**
+   * Survey events only: the survey and validated answers, built by the main
+   * process. Never read from IPC input (`parseProductAnalyticsCapture` drops it).
+   */
+  survey?: ProductSurveyEventPayload;
 };
 
 export type ProductAnalyticsCaptureResult = {

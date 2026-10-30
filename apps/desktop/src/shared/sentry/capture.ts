@@ -33,6 +33,7 @@ type SentryScope = {
   setExtras(extras: Record<string, unknown>): unknown;
   setFingerprint(fingerprint: string[]): unknown;
   setLevel(level: SentryLevel): unknown;
+  setUser?(user: { id: string } | null): unknown;
 };
 
 type LogAttributes = Record<string, unknown>;
@@ -44,6 +45,14 @@ export type SentryApi = {
   addBreadcrumb(breadcrumb: { category: string; message: string; level: SentryLevel; data?: Record<string, unknown> }): unknown;
   /** Absent in the renderer SDK, whose events leave through main. */
   flush?(timeoutMs?: number): PromiseLike<boolean>;
+  /** User Feedback; used from main only (`main/sentry/userFeedback.ts`). */
+  captureFeedback?(params: {
+    message: string;
+    source?: string;
+    associatedEventId?: string;
+    tags?: Record<string, string>;
+  }): string;
+  lastEventId?(): string | undefined;
   logger: {
     /** Optional: release-health lines only (`logBridge.ts`). */
     info?(message: string, attributes?: LogAttributes): unknown;
@@ -110,6 +119,37 @@ export function sendSentryLog(level: "info" | "warn" | "error", message: string,
   } catch {
     // Logging must never throw into the caller.
   }
+}
+
+/**
+ * Send User Feedback: words a person chose to send. Feedback skips
+ * `beforeSend`, so the caller scrubs `message` and names the user. Returns the
+ * feedback id, or null where Sentry is not running.
+ */
+export function captureUserFeedback(args: {
+  message: string;
+  source: string;
+  userId?: string | null;
+  tags?: Record<string, string>;
+}): string | null {
+  const api = sentry;
+  if (!api?.captureFeedback) return null;
+  let feedbackId: string | null = null;
+  try {
+    api.withScope((scope) => {
+      if (args.userId) scope.setUser?.({ id: args.userId });
+      feedbackId = api.captureFeedback?.({
+        message: args.message,
+        source: args.source,
+        // The newest event this process reported, so the note opens beside it.
+        associatedEventId: api.lastEventId?.() || undefined,
+        tags: args.tags,
+      }) ?? null;
+    });
+  } catch {
+    return null;
+  }
+  return feedbackId;
 }
 
 export async function flushSentry(timeoutMs = 2_000): Promise<boolean> {

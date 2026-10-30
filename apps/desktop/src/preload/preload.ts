@@ -156,6 +156,7 @@ import type {
   DiagnosticReportPayload,
   DiagnosticReportRequestPayload,
   DiagnosticsAutoSentPayload,
+  DiagnosticsManualSendOptions,
   DiagnosticsManualSendResult,
   DiagnosticsSharingStatus,
 } from "../shared/types/diagnostics";
@@ -1244,6 +1245,7 @@ import { HARNESS_PRESETS_SETTING_KEY, normalizeHarnessPresetList } from "../shar
 import { isRoutePresetId } from "../shared/harnessRoutes";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
 import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
+import type { ProductSurveyBridge } from "../shared/types/productSurveys";
 import { HOME_WIDGETS_IPC, type HomeClipboardState, type HomeNowPlayingCommand, type HomeNowPlayingState, type HomeWidgetsBridge } from "../shared/types/homeWidgets";
 
 // Renderer errors reach Sentry through main over this bridge, so the
@@ -4594,6 +4596,11 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.analyticsGetStatus),
     setEnabled: async (enabled: boolean): Promise<ProductAnalyticsStatus> =>
       ipcRenderer.invoke(IPC.analyticsSetEnabled, enabled),
+    // This desktop app's own in-app survey; no pin (see registerSurveyIpc).
+    surveys: {
+      getEligible: () => ipcRenderer.invoke(IPC.analyticsGetEligibleSurvey),
+      record: (input) => ipcRenderer.invoke(IPC.analyticsSurveyEvent, input),
+    } satisfies ProductSurveyBridge,
   },
   app: {
     // Synchronous so renderer platform gates (renderer/lib/platform.ts) can run
@@ -5141,8 +5148,13 @@ const adeBridge = {
       ipcRenderer.invoke(IPC.diagnosticsOpenIssue, context),
     autoReport: (context: DiagnosticReportRequestPayload): Promise<void> =>
       ipcRenderer.invoke(IPC.diagnosticsAutoReport, context),
-    sendManual: (context?: DiagnosticReportRequestPayload): Promise<DiagnosticsManualSendResult> =>
-      ipcRenderer.invoke(IPC.diagnosticsSendManual, context),
+    sendManual: (
+      context?: DiagnosticReportRequestPayload,
+      options?: DiagnosticsManualSendOptions,
+    ): Promise<DiagnosticsManualSendResult> =>
+      ipcRenderer.invoke(IPC.diagnosticsSendManual, context, options),
+    /** Whether a note sent with a report reaches anyone: main's Sentry client is running. */
+    userFeedbackAvailable: process.argv.includes(SENTRY_ENABLED_ARGV),
     getSharing: (): Promise<DiagnosticsSharingStatus> =>
       ipcRenderer.invoke(IPC.diagnosticsGetSharing),
     setSharing: (enabled: boolean): Promise<DiagnosticsSharingStatus> =>
