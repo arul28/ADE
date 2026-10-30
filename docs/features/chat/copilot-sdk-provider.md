@@ -23,6 +23,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/chat/copilotSdkProtocol.ts` | Messages between the app and the worker. |
 | `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to ADE chat events. |
 | `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | The "Allow for this session" rule Copilot can remember for a permission prompt. |
+| `apps/desktop/src/main/services/chat/copilotSlashCommands.ts` | Copilot's own slash commands: the `/` menu rows, which ones ADE owns, and what ADE does with a command's answer. |
 | `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: a dev/test override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version. Never the machine's `copilot`. `resolveCopilotExecutable` in the same file resolves the separate `copilot-cli` pin that terminals run. |
 | `apps/desktop/src/main/services/ai/providerConnectionStatus.ts` (`buildCopilotConnection`) | Copilot's Settings and availability status, from the SDK's live sign-in check. |
 | `apps/desktop/src/main/services/chat/copilotModelsDiscovery.ts` | Model rows, the Auto-only fallback, and the saved model catalog. |
@@ -87,8 +88,14 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
   through the executable's hidden `__ade-copilot-sdk-worker` command
   (`chat/sdkWorkerProcess.ts`). Cursor, Droid and Pi do the same with
   `__ade-cursor-sdk-worker`, `__ade-droid-sdk-worker` and `__ade-pi-sdk-worker`.
+- **Versions.** `@github/copilot-sdk` 1.0.28 with its runtime 1.0.105, and the
+  terminal `copilot-cli` at the same 1.0.105, so a chat and a terminal run the
+  same Copilot. A bump moves all three: `npm install @github/copilot-sdk@<v>`
+  in `apps/desktop`, then `npm run tools:manifest` and
+  `npm run tools:pin -- copilot-cli <runtime version>` in `apps/ade-cli` (the
+  SDK's `package.json` names its runtime as `copilotCliVersion`).
 - **The terminal Copilot CLI** is a separate pin, `copilot-cli` (npm
-  `@github/copilot-<platform>`, 1.0.98), because the SDK runtime is not an
+  `@github/copilot-<platform>`), because the SDK runtime is not an
   interactive CLI. Terminals and sign-in run it by absolute path
   (`resolveCopilotExecutable`, `pty/pinnedProviderCli.ts`) and wait for its
   download. Logins stay in `~/.copilot` (`COPILOT_HOME`), shared with the
@@ -209,7 +216,7 @@ ADE's five levels map onto Copilot's session mode and permission mode:
 |---|---|
 | Plan | Session mode `plan`, with approvals set to manual so a chat that was at Full-auto cannot plan under allow-all. When the agent asks to leave plan mode, ADE's plan-approval card shows the plan with "Approve and continue" and "Reject". Approving picks Copilot's recommended action, never Autopilot, and the chat moves to Ask. |
 | Ask (default) | Every request goes to ADE's approval card: "Allow once", "Allow for this session" or "Deny". The card shows the write diff or the full shell command. |
-| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`promptRequest.assistedApproval.recommendation`). SDK 1.0.22 does not pass `promptRequest` to the permission handler, so the worker reads it from the `permission.requested` event the SDK dispatches with the same request object, and attaches it. ADE approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to ADE's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
+| Assisted | Copilot's assisted mode. A safety model attaches a recommendation to each request (`promptRequest.assistedApproval.recommendation`), which the SDK passes to the permission handler with the request; the worker attaches it. ADE approves a request only when it says `approve`. Every other answer (`requireApproval`, `excluded`, a judge error) goes to ADE's approval card. If the plan does not allow Assisted, the chat drops to Ask and shows a notice: "Assisted isn't available on this Copilot plan; using Ask". This happens on open and when the level is changed. |
 | Auto-edit | Reads and writes inside the lane worktree are approved. Everything else asks. |
 | Full-auto | Each request is approved once. A request that managed policy marks `managedApprovalRequired` still asks. |
 
@@ -277,12 +284,14 @@ when the user chooses to wait.
 | `assistant.message_delta` / `assistant.message` | Assistant text. A full message is skipped when its deltas already streamed. |
 | `assistant.reasoning_delta` / `assistant.reasoning` | Reasoning. |
 | `tool.execution_start`, `tool.execution_progress`, `tool.shell_output`, `tool.execution_partial_result`, `tool.execution_complete` | Tool cards with the MCP server and tool name, shell output, and the result status. |
-| `tool.execution_complete` `fileEdits` | File change rows with the path and the create, modify or delete kind. The diff is not carried here. |
+| `tool.execution_complete` `fileEdits` | File change rows with the path, the create, modify or delete kind, and the file's unified diff from the tool's `result.detailedContent` (one `diff --git` section per file when an edit touched several). |
 | `session.todos_changed` | Triggers a re-read of the todos through `rpc.plan.readSqlTodos()`. |
 | `subagent.started`, `completed`, `failed` | Subagent cards, attributed by the event's `agentId`. |
 | `session.compaction_start` / `complete` | Context compaction events, with `preCompactionTokens` and `postCompactionTokens`. A failed compaction's `error` becomes a warning notice. |
 | `session.usage_info` | The context meter (`currentTokens` over `tokenLimit`), broken down into system, tools and conversation tokens. |
-| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget). Its `remediation` and `url` become the detail. A root `session.error` ends the turn as failed. |
+| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget), then by `errorCode` (a `*rate_limit*` code → rate limit, a quota or billing code → budget) and the HTTP status (401 → auth, 429 → rate limit, 408 and 5xx → network, which the card offers to retry). The detail carries its `remediation`, its `url`, and the diagnostics: the HTTP status, the provider's error type and parameter, the error code, and the two request ids GitHub traces a failure by (`providerCallId`, the `x-github-request-id`, and `serviceRequestId`). The brain logs the same fields as `agent_chat.copilot_session_error`. A root `session.error` ends the turn as failed. |
+| `session.mcp_server_status_changed` | A server that failed to start shows once per chat: "Copilot could not start the MCP server <name>: <first line of the error>". |
+| `session.info` | An info notice with Copilot's message and tip. Cancellation, timing, snapshot and MCP lines are not shown. |
 | `session.warning` | A warning notice. |
 | `model.call_failure` | Not shown: it is per-attempt telemetry and fires for retries that recover. |
 | `abort` | "Copilot turn was interrupted." |
@@ -297,21 +306,26 @@ changes, context usage, errors, idle and abort do not touch the turn, the
 served-model notice or the context meter. Its token usage still counts toward the
 turn's totals.
 
-Diffs for file writes come from the write approval's `diff`, when ADE asks for
-one. The file change rows that follow a tool call carry paths only.
+Diffs for file writes also come from the write approval's `diff`, when ADE asks
+for one.
 
 ## Attachments
 
 - Images go as `{ type: "blob", data, mimeType, displayName }`. Other files go
-  as `{ type: "file", path }`.
-- The Copilot send path does not check the selected model's vision support.
-  Images are sent as they are.
+  as `{ type: "file", path }`. Steering and queued messages take the same path.
+- An image is fitted the way every inline image is
+  (`fitImageForProviderInline`): a Claude model behind Copilot rejects an image
+  over 5 MB of base64 and fails the whole request, so a large screenshot is
+  scaled down first, and one that cannot be fitted is left out.
+- An image goes only to a model whose row says it reads images (`vision`). Auto
+  picks a model that does. An image left out becomes a note in the prompt
+  ("[Image not inlined: <path> (<reason>). …]") instead of a rejected request.
 
 ## MCP servers
 
-- **ADE's own servers** go to the session as `mcpServers`. The MCP
-  registry's servers are not delivered to Copilot yet (`registryMcpSupport`
-  has no Copilot row); its sign-ins are, through the handoff below.
+- **ADE's own servers and the MCP registry's** go to the session as
+  `mcpServers` (stdio, HTTP and SSE; `registryMcpSupport` has a Copilot row).
+  A registry server that needs a sign-in carries its `Authorization` header.
 - **The user's own servers.** Interactive chats keep Copilot's config discovery
   on, so servers from the workspace `.mcp.json` and from the user's Copilot
   config (`mcp-config.json` under `COPILOT_HOME`) run in chats. ADE shows no
@@ -349,8 +363,35 @@ Titles and summaries run on a utility session, not on a chat:
 ## Skills, instructions and commands
 
 - `skillDirectories` is ADE's bundled agent skill roots. Personal chats get none.
-- Copilot's own CLI slash commands are not listed in the composer. ADE's own
-  commands still work.
+- **Copilot's own slash commands** run through its command API
+  (`session.rpc.commands.invoke`), as in its CLI. Sent as a message, a command
+  would reach the model as prose and spend a request.
+  - The `/` menu lists what the runtime reports
+    (`commands.list` with built-ins and skills): `/compact`, `/context`,
+    `/usage`, `/env`, `/review`, `/security-review`, `/plan`, `/init`,
+    `/research`, `/fleet`, `/mcp`, `/skills`, `/memory`, `/session`, `/share`,
+    `/add-dir`, `/list-dirs`, `/reset-allowed-tools`, `/blame`, `/chronicle`,
+    `/plugin`, `/sandbox`, the runtime's own skills, and the skills Copilot
+    loaded. Before a chat's runtime opens, a built-in list plus the project's
+    prompt and skill files stand in.
+  - A command that answers with output (`/context`, `/usage`, `/env`, a list)
+    shows it as the turn's reply, with no model request. A command that builds
+    a prompt (`/review`, `/plan`, `/init`, a skill) sends that prompt as the
+    turn; the chat shows what the person typed.
+  - Commands ADE owns answer with where ADE does it, and are not in the menu:
+    `/model` (the model picker), `/permissions` and `/allow-all` (the
+    permission level), `/autopilot` (`/goal`), `/cwd` (the lane), `/rename`
+    (the chat title), `/every`, `/loop` and `/after` (ADE's scheduled work;
+    they would start turns no ADE turn listens to) and `/remote`.
+  - During a turn, a command Copilot allows then (`/context`, `/usage`, …)
+    runs at once and shows its output as a notice; any other says "Wait for
+    this turn to finish before running /<name>."
+- **Compaction.** The Compact button and `/compact` run Copilot's own
+  compaction; the turn shows its start and result. Settings › Compaction has
+  "Compact at" for Copilot: the token count, as a share of the selected
+  model's window (10–90%), is Copilot's `backgroundCompactionThreshold`
+  (default 80%). It applies when the session next opens; Auto has no fixed
+  window, so it keeps Copilot's default.
 
 ## Usage, context and quota
 
@@ -449,11 +490,25 @@ ADE's chats and the user's Copilot CLI share one session store
 These are deliberately not built yet:
 
 - Per-chat AI-credit budget (`sessionLimits`).
-- Fleet (sub-agent fleet), memory, citations, canvases and workflows.
+- Citations, canvases and workflows. Fleet and memory run only through their
+  commands (`/fleet`, `/memory`).
+- Choosing a custom agent as the chat's main agent (the CLI's `--agent`).
+  Custom agents in `.github/agents` still load, and Copilot can hand work to
+  them as subagents.
 - Remote and cloud sessions.
 - BYOK providers through Copilot.
+- Organisation managed settings fetched by the session itself
+  (`enableManagedSettings` needs an explicit GitHub token, which ADE does not
+  pass); a policy floor on the client version still reaches the chat, as below.
 
 ## Troubleshooting
+
+- **A Copilot request failed.** Open the error's details: they name the HTTP
+  status, the provider's error type, the error code, and the GitHub and Copilot
+  request ids. Those ids are what GitHub support needs to trace the request;
+  the brain log has the same line as `agent_chat.copilot_session_error`. A 5xx
+  or an overload is the service's: retry. A 400 with a schema or image error
+  names the model's limit.
 
 - **"Your organization's GitHub Copilot policy requires Copilot X or newer."**
   The organisation's floor is above ADE's pinned runtime. A newer ADE release

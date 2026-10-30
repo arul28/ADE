@@ -9,7 +9,7 @@ import type {
 export type { ContextCompactFailReason };
 
 /** Providers whose `/compact` slash is a real compact action, not a normal prompt. */
-type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode";
+type ManualCompactProvider = "claude" | "codex" | "pi" | "opencode" | "copilot";
 
 /** Matches the host `/compact` slash, including optional trailing instructions. */
 export function isManualCompactCommand(text: string | null | undefined): boolean {
@@ -25,6 +25,7 @@ export function providerSupportsManualCompact(
     case "codex":
     case "pi":
     case "opencode":
+    case "copilot":
       return true;
     default:
       return false;

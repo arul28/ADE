@@ -184,6 +184,9 @@ const REGISTRY_ONLY_MCP_SUPPORT: Readonly<Record<string, { unsupportedTransports
   // in its `initialize`). The servers in Kimi's own config also load, and a
   // same-named one there wins (`providerOwnMcpServerNames`).
   kimi: { unsupportedTransports: [] },
+  // Copilot: the SDK session's `mcpServers` (stdio, HTTP and SSE). The servers
+  // in Copilot's own `mcp-config.json` and the workspace `.mcp.json` also load.
+  copilot: { unsupportedTransports: [] },
 };
 
 /** Every provider the registry can reach: the caller-MCP table plus the registry-only rows. */
