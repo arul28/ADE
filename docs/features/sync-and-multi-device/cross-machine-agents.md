@@ -120,8 +120,9 @@ on the first command; nothing is installed in advance, and ignored files
   project in `<ADE_HOME>/remote-work/projects.json` a minute after it starts
   and then hourly (`sweepMachineRemoteWork`), asking the chat's machine with
   `chats.locate` (which says `archived` when the project is running there);
-  silence never deletes. The week-unused and low-disk cleanups keep a copy
-  that holds work nobody pushed. A copy in use is never deleted. An unreadable
+  silence never deletes. The week-unused, low-disk and archived-chat cleanups
+  keep a copy that holds work nobody pushed (an archived chat can come back);
+  a deleted chat's copy goes with it. A copy in use is never deleted. An unreadable
   `copies.json` stops every change rather than being read as empty.
 - **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
   work copy as its lane there: the lane id is `remote-work-<hash>`

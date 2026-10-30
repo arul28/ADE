@@ -1655,8 +1655,9 @@ export async function createAdeRuntime(args: {
     });
     // A chat on another machine runs commands in a work copy here; its shells
     // are this runtime's terminals (remoteWorkCopyService.ts).
+    // A row still marked running after its PTY ended does not count: only a live PTY does.
     teardown.push(registerRemoteWorkShellCheck(projectRoot, (owner) =>
-      ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0));
+      ptyService.list({ chatSessionId: owner, status: "running", limit: 20 }).some((row) => ptyService.hasLivePty(row.id))));
     ptyServiceForSessionChanges = ptyService;
     teardown.push(() => ptyService.disposeAll());
 

@@ -36975,6 +36975,8 @@ async function executePlan(
       }
     }
     if (plan.followShell) {
+      // A followed command prints as it runs, so it is text unless --json was asked for.
+      if (!options.json) options.text = true;
       values.result = await followShellToExit(connection, values.result, options);
     }
     const ownerWarning = chatOwnerSocketWarning(values, connection);

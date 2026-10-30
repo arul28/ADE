@@ -23,8 +23,13 @@ export type MachineWorkCopySync = "none" | "discard" | null;
 /** What `cliMachineTargeting` reads for a call that runs in the work copy. */
 export type MachineWorkCopy = { sync: MachineWorkCopySync; argv?: string[] | null };
 
-/** Apple actions about the machine, not a lane: they never need a work copy. */
-const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set(["getStatus", "runtimeList", "listDevices"]);
+/**
+ * Apple actions about the machine, not a lane: they never need a work copy.
+ * The lane-free reads match the brain's (`APPLE_LANE_FREE_ACTIONS` in adeRpcServer.ts).
+ */
+const APPLE_MACHINE_ACTIONS: ReadonlySet<string> = new Set([
+  "getStatus", "runtimeList", "listDevices", "listLaunchTargets", "deviceList", "getStreamStatus",
+]);
 
 /**
  * A shell or terminal call bound for another machine. A chat id from here

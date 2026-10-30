@@ -646,7 +646,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
             return null;
           })
           : null;
-        if (answer?.gone && await releaseIfIdle(copy.owner)) {
+        // An archived chat can come back: its unpushed work stays until a person deletes it.
+        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true } : {})) {
           released += 1;
           logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
         }

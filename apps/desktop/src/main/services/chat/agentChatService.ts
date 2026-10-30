@@ -76194,7 +76194,13 @@ export function createAgentChatService(args: {
       usesSimulator: args.usesSimulator === true || previous?.usesSimulator === true,
       lastStartedAt: new Date().toISOString(),
     };
-    const list = [...uses.filter((use) => !sameUse(use)), next].slice(-6);
+    // At most six. The oldest entry without a simulator goes first, so the iOS
+    // tool keeps a simulator the chat uses; the entry just recorded always stays.
+    const list = [...uses.filter((use) => !sameUse(use)), next];
+    while (list.length > 6) {
+      const withoutSimulator = list.slice(0, -1).findIndex((use) => !use.usesSimulator);
+      list.splice(withoutSimulator >= 0 ? withoutSimulator : 0, 1);
+    }
     remoteWorkBySession.set(sessionId, list);
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
     onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });

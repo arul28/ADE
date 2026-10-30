@@ -418,7 +418,10 @@ function RemoteWorkSimulator(props: WorkToolPanelProps & {
     const read = () => {
       void api?.deviceList?.({ laneId, installed: false }, remotePin)
         .then((listed) => { if (!cancelled) setState(listed?.lane ? "device" : "none"); })
-        .catch((error: unknown) => { if (!cancelled) setState({ error: error instanceof Error ? error.message : String(error) }); });
+        // A failed refresh keeps a simulator already shown: unmounting it would drop its stream.
+        .catch((error: unknown) => {
+          if (!cancelled) setState((current) => (current === "device" ? current : { error: error instanceof Error ? error.message : String(error) }));
+        });
     };
     read();
     // The agent starts or gives back the device there; follow it.
