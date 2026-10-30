@@ -58,7 +58,6 @@ import {
   machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
-  knownAdeVersions,
   type MachineSection,
 } from "./remoteMachineModel";
 import {
@@ -67,8 +66,7 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { MachinesBehindBanner } from "./MachinesBehindBanner";
-import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import { isMachineUpdateBusy, requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
+import { isMachineUpdateBusy, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -236,7 +234,6 @@ export function RemoteTargetList({
   const [saving, setSaving] = useState(false);
   const machineUpdates = useMachineUpdates();
   const { attempts: updateResultByTargetId, nowMs: updateClockMs } = machineUpdates;
-  const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
@@ -1141,18 +1138,7 @@ export function RemoteTargetList({
   // what its feed named. A connected machine behind the newest one on ITS OWN
   // track gets "Update & restart"; a track this computer knows no build on
   // gets none, rather than a build from the other track.
-  const { currentVersion, version: downloadedVersion, latestKnownVersion } = updateSnapshot;
-  const latestStable = updateSnapshot.latestByTrack?.stable ?? null;
-  const latestBeta = updateSnapshot.latestByTrack?.beta ?? null;
-  const knownVersions = useMemo(
-    () => knownAdeVersions({
-      currentVersion,
-      version: downloadedVersion,
-      latestKnownVersion,
-      latestByTrack: { stable: latestStable, beta: latestBeta },
-    }),
-    [currentVersion, downloadedVersion, latestKnownVersion, latestStable, latestBeta],
-  );
+  const knownVersions = useKnownAdeVersions();
 
   function renderSection(section: MachineSection) {
     const rows = sections[section];

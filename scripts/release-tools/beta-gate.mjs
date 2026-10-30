@@ -77,7 +77,8 @@ const token = readToken();
 if (!token) cannotRun("no Sentry token (set SENTRY_AUTH_TOKEN or the ADE secret SENTRY_AUTH_TOKEN)");
 const since = publishedAt();
 if (!since) cannotRun(`no published release ${tag} on ${REPO}`);
-const window = { start: since, end: new Date().toISOString() };
+// Since the beta was published, until now.
+const period = { start: since, end: new Date().toISOString() };
 
 async function get(path, params) {
   const url = new URL(`${API}${path}`);
@@ -110,7 +111,7 @@ async function droppedErrors() {
     category: "error",
     outcome: "rate_limited",
     interval: "1h",
-    ...window,
+    ...period,
   });
   let dropped = 0;
   const reasons = new Set();
@@ -130,7 +131,7 @@ async function logs(query, fields, extra = {}) {
     field: fields,
     query,
     per_page: 100,
-    ...window,
+    ...period,
     ...extra,
   });
   return result.data ?? [];
@@ -170,7 +171,7 @@ async function main() {
     const issues = await get(`/organizations/${ORG}/issues/`, {
       project: ids[slug],
       query: `firstRelease:${release} is:unresolved`,
-      ...window,
+      ...period,
       limit: 25,
     });
     for (const issue of issues) newIssues.push(`${issue.shortId} ${issue.title} (${issue.count} events)`);
@@ -182,7 +183,7 @@ async function main() {
   const stable = await latestStableRelease();
   const stableErrorEvents = new Set();
   if (stable && errorLines.length > 0) {
-    const fortnight = { start: new Date(Date.now() - 14 * 24 * 3_600_000).toISOString(), end: window.end };
+    const fortnight = { start: new Date(Date.now() - 14 * 24 * 3_600_000).toISOString(), end: period.end };
     for (const row of await logs(`release:ade@${stable} severity:[error,fatal]`, ["message", "count()"], fortnight)) {
       stableErrorEvents.add(row.message);
     }
@@ -207,4 +208,10 @@ async function main() {
   process.exit(result === "pass" ? 0 : 1);
 }
 
-await main();
+// Anything unexpected (a reply that is not JSON, a changed response shape)
+// means the gate did not run: exit 2, never the 1 that reads as a real FAIL.
+try {
+  await main();
+} catch (error) {
+  cannotRun(`unexpected error (${error instanceof Error ? error.message : String(error)})`);
+}

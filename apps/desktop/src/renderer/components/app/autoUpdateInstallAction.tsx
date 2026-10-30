@@ -24,6 +24,7 @@ import {
 } from "../remoteTargets/MachineUpdateImpact";
 import { machinePlatform } from "../remoteTargets/MachineIdentity";
 import { knownAdeVersions, type MachineUpdateTarget } from "../remoteTargets/remoteMachineModel";
+import { readThisComputerColorKey } from "../settings/machines/machineFacts";
 import { captureUpdatePromptDecision } from "./captureUpdatePromptDecision";
 import { dismissToast, showToast } from "./toast/toastStore";
 import { updateRestartAction, type UpdateRestartAction } from "./updateRestartAction";
@@ -78,17 +79,6 @@ async function updateOtherMachinesFirst(
     cancelLabel: "Not now",
     returnKeyHint: true,
   });
-}
-
-/** This computer's tile color: its account machine key, like every other device draws it. */
-async function readThisComputerColorKey(): Promise<string> {
-  const account = (window.ade as { account?: { getLocalMachineIdentity?: () => Promise<{ machineKey?: string }> } }).account;
-  try {
-    const identity = await account?.getLocalMachineIdentity?.();
-    return identity?.machineKey?.trim() || "this-computer";
-  } catch {
-    return "this-computer";
-  }
 }
 
 async function runInstallFlow(snapshot: AutoUpdateSnapshot, onAccepted?: () => void): Promise<boolean> {

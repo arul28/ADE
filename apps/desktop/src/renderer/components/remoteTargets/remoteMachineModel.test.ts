@@ -22,7 +22,7 @@ import {
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
   machineUpdateAttemptFromResult,
-  outdatedMachines,
+  machinesBehindOnTheirTrack,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
 
@@ -484,7 +484,7 @@ describe("connected machine versions (brain and desktop app)", () => {
     };
     const machines = connectedMachinesFromSnapshot({ connections: [status], connectedCount: 1, updatedAt: 1 } satisfies RemoteRuntimeConnectionSnapshot);
     expect(machines[0]?.versionLabel).toBe(expectedLabel);
-    expect(outdatedMachines(machines, "1.2.125").length > 0).toBe(expectedBehind);
+    expect(machinesBehindOnTheirTrack(machines, ["1.2.125"]).length > 0).toBe(expectedBehind);
   });
 });
 

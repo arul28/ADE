@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import { ArrowClockwise, ArrowRight, CircleNotch } from "@phosphor-icons/react";
 import type { ProjectMachine } from "../../../state/projectMachines";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
@@ -10,11 +10,11 @@ import {
   canUpdateOtherMachines,
   isMachineUpdateBusy,
   requestMachineUpdates,
+  useKnownAdeVersions,
   useMachineUpdates,
 } from "../../remoteTargets/machineUpdates";
 import {
   describeMachineUpdateAttempt,
-  knownAdeVersions,
   machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
@@ -35,18 +35,7 @@ export function MachineUpdateRows() {
   const snapshot = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, snapshot.currentVersion || null);
   const updates = useMachineUpdates();
-  const { currentVersion, version: downloaded, latestKnownVersion } = snapshot;
-  const latestStable = snapshot.latestByTrack?.stable ?? null;
-  const latestBeta = snapshot.latestByTrack?.beta ?? null;
-  const known = useMemo(
-    () => knownAdeVersions({
-      currentVersion,
-      version: downloaded,
-      latestKnownVersion,
-      latestByTrack: { stable: latestStable, beta: latestBeta },
-    }),
-    [currentVersion, downloaded, latestKnownVersion, latestStable, latestBeta],
-  );
+  const known = useKnownAdeVersions();
   const remoteUpdates = canUpdateOtherMachines();
   const connectedBehind = machinesBehindOnTheirTrack(
     machines.flatMap((machine) => {
@@ -97,18 +86,7 @@ export function MachineUpdateRows() {
 export function SingleMachineUpdateRow({ machine, name }: { machine: ProjectMachine; name: string }) {
   const snapshot = useAutoUpdateSnapshot();
   const facts = useMachineFacts([machine], snapshot.currentVersion || null);
-  const { currentVersion, version: downloaded, latestKnownVersion } = snapshot;
-  const latestStable = snapshot.latestByTrack?.stable ?? null;
-  const latestBeta = snapshot.latestByTrack?.beta ?? null;
-  const known = useMemo(
-    () => knownAdeVersions({
-      currentVersion,
-      version: downloaded,
-      latestKnownVersion,
-      latestByTrack: { stable: latestStable, beta: latestBeta },
-    }),
-    [currentVersion, downloaded, latestKnownVersion, latestStable, latestBeta],
-  );
+  const known = useKnownAdeVersions();
   return (
     <MachineUpdateRow
       machine={machine}

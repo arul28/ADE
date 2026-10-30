@@ -1,7 +1,8 @@
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { extractError } from "../../lib/format";
 import { captureError } from "../../../shared/sentry/capture";
 import { UNKNOWN_UPDATE_IMPACT } from "../../../shared/updateImpact";
+import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
 import { confirmMachineUpdates, type MachineWithImpact } from "./MachineUpdateImpact";
 import {
   connectedMachinesFromSnapshot,
@@ -9,6 +10,7 @@ import {
   machineUpdateAttemptFromResult,
   machineUpdateGraceMs,
   isMachineVersionCurrent,
+  knownAdeVersions,
   machinesBehindOnTheirTrack,
   type ConnectedMachine,
   type MachineUpdateAttempt,
@@ -82,6 +84,22 @@ export function isMachineUpdateBusy(
   const attempt = current.attempts[machine.id];
   return attempt != null
     && describeMachineUpdateAttempt(attempt, { connected: true, version: machine.version }, nowMs).inFlight;
+}
+
+/**
+ * Every ADE build this computer knows of, on either track (`knownAdeVersions`),
+ * from its update snapshot. A machine is offered the newest one on its own
+ * track (`machineUpdateTargetVersion`).
+ */
+export function useKnownAdeVersions(): string[] {
+  const snapshot = useAutoUpdateSnapshot();
+  const { currentVersion, version, latestKnownVersion } = snapshot;
+  const latestStable = snapshot.latestByTrack?.stable ?? null;
+  const latestBeta = snapshot.latestByTrack?.beta ?? null;
+  return useMemo(
+    () => knownAdeVersions({ currentVersion, version, latestKnownVersion, latestByTrack: { stable: latestStable, beta: latestBeta } }),
+    [currentVersion, version, latestKnownVersion, latestStable, latestBeta],
+  );
 }
 
 /**

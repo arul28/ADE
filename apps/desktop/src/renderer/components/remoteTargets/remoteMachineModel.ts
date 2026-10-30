@@ -858,14 +858,6 @@ export function connectedMachinesFromSnapshot(
     });
 }
 
-/** The machines running an ADE older than `newestVersion`. */
-export function outdatedMachines<T extends Pick<ConnectedMachine, "version">>(
-  machines: readonly T[],
-  newestVersion: string | null | undefined,
-): T[] {
-  return machines.filter((machine) => isMachineVersionOutdated(machine.version, newestVersion));
-}
-
 /** The track a machine follows: what it reports, else the track of its version. */
 export function machineUpdateTrack(machine: Pick<ConnectedMachine, "version" | "track">): UpdateTrack {
   return machine.track ?? updateTrackOfVersion(machine.version);

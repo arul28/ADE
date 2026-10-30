@@ -26,14 +26,33 @@ export type MachineFacts = {
   connection: RemoteRuntimeConnectionStatus | null;
 };
 
+/** "macOS", "Windows", "Linux" for a Node platform (`process.platform`). */
+export function osLabel(platform: string | null | undefined): string | null {
+  if (!platform) return null;
+  if (platform === "darwin") return "macOS";
+  if (platform === "win32") return "Windows";
+  if (platform === "linux") return "Linux";
+  return platform;
+}
+
+/** The same words for a machine's tile platform. */
+export function platformWord(platform: MachinePlatform | undefined): string | null {
+  if (platform === "mac") return "macOS";
+  if (platform === "windows") return "Windows";
+  if (platform === "linux") return "Linux";
+  return null;
+}
+
 let thisColorKey: string | null = null;
 let thisColorKeyRead: Promise<string> | null = null;
 
-/** This computer's tile colour: its account machine key, as every device draws it. Read once. */
-function readThisColorKey(): Promise<string> {
+/**
+ * This computer's tile colour: its account machine key, as every device draws
+ * it. Read once. `account` is absent in the hosted web client.
+ */
+export function readThisComputerColorKey(): Promise<string> {
   thisColorKeyRead ??= Promise.resolve()
-    .then(() => (window.ade as { account?: { getLocalMachineIdentity?: () => Promise<{ machineKey?: string }> } })
-      .account?.getLocalMachineIdentity?.())
+    .then(() => window.ade.account?.getLocalMachineIdentity?.())
     .then((identity) => identity?.machineKey?.trim() || THIS_MACHINE_ID)
     .catch(() => THIS_MACHINE_ID)
     .then((key) => {
@@ -47,7 +66,7 @@ export function useThisComputerColorKey(): string {
   const [key, setKey] = useState(thisColorKey ?? THIS_MACHINE_ID);
   useEffect(() => {
     let cancelled = false;
-    void readThisColorKey().then((next) => {
+    void readThisComputerColorKey().then((next) => {
       if (!cancelled) setKey(next);
     });
     return () => {

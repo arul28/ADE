@@ -26,10 +26,9 @@ import { showToast } from "../../app/toast/toastStore";
 import { SettingsSelect, SettingsToggle } from "../primitives";
 import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes, freeSpaceLevel } from "../storage/storageView";
-import { osLabel } from "../general/GeneralPage";
 import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
 import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
-import type { MachineFacts } from "./machineFacts";
+import { osLabel, platformWord, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import type { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineCapabilitiesArea, MachinePreferenceRow, MachineWorkCopies } from "./machineSeams";
@@ -59,7 +58,7 @@ export function MachineSettings({
   // Reachable through its own brain: pinned calls (or unpinned on the tab's own machine).
   const reach = machineSectionAvailable("routed", scope);
   const mac = fact?.platform === "mac";
-  const elsewhere = <RowHint />;
+  const elsewhere = <UnreachableHint isThis={isThis} />;
   const connection = fact?.connection ?? null;
   // "darwin-arm64" from a connection: the platform is already in `os`.
   const rawArch = isThis ? local.info?.arch ?? null : connection?.arch ?? null;
@@ -191,15 +190,17 @@ function RowHint({ children = "Change on that machine" }: { children?: ReactNode
   return <span className="ade-mx-srow-hint">{children}</span>;
 }
 
-function RowValue({ children }: { children: ReactNode }) {
-  return <span className="ade-mx-srow-hint">{children}</span>;
+/**
+ * A row this page cannot reach. Another machine: change it there. This
+ * computer: the project tab is bound to another machine and this computer has
+ * no checkout, so its routed calls have nowhere to go from this tab.
+ */
+function UnreachableHint({ isThis }: { isThis: boolean }) {
+  return <RowHint>{isThis ? "Not from this project tab" : undefined}</RowHint>;
 }
 
-function platformWord(platform: MachineFacts["platform"] | undefined): string | null {
-  if (platform === "mac") return "macOS";
-  if (platform === "windows") return "Windows";
-  if (platform === "linux") return "Linux";
-  return null;
+function RowValue({ children }: { children: ReactNode }) {
+  return <span className="ade-mx-srow-hint">{children}</span>;
 }
 
 function routeWord(kind: string): string {
@@ -318,7 +319,7 @@ function ContinueRow({ scope, reach }: { scope: SettingsMachinePage; reach: bool
       value={value === undefined ? "…" : value === null ? "Unknown" : value.enabled ? "A chat picks up where it stopped" : "Chats stop at a restart"}
       control={value ? (
         <SettingsToggle label="Continue chats after restarts" checked={value.enabled} disabled={saving} onChange={(next) => void save(next)} />
-      ) : value === null ? <RowHint /> : null}
+      ) : value === null && !scope.isThisMachine ? <RowHint /> : null}
     />
   );
 }
@@ -352,7 +353,7 @@ function ShellRow({ scope, reach }: { scope: SettingsMachinePage; reach: boolean
               .finally(() => setSaving(false));
           }}
         />
-      ) : settings === null ? <RowHint /> : null}
+      ) : settings === null ? <UnreachableHint isThis={scope.isThisMachine} /> : null}
     />
   );
 }
@@ -370,7 +371,7 @@ function KeepAwakeRow({ scope, reach, onOpen }: { scope: SettingsMachinePage; re
     return <MachineRow icon={<Coffee size={14} />} title="Keep awake" value="…" />;
   }
   if (snapshot === null || snapshot.platform === "other") {
-    return <MachineRow icon={<Coffee size={14} />} title="Keep awake" value={snapshot ? `Not available on ${scope.isThisMachine ? "this machine" : "that machine"}` : "Unknown"} control={snapshot ? null : <RowHint />} />;
+    return <MachineRow icon={<Coffee size={14} />} title="Keep awake" value={snapshot ? `Not available on ${scope.isThisMachine ? "this machine" : "that machine"}` : "Unknown"} control={snapshot || scope.isThisMachine ? null : <RowHint />} />;
   }
   // The lid-closed level needs the Mac's own password prompt, so it is set
   // from that Mac's page (Behaviour) rather than from a compact row.

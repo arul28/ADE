@@ -416,9 +416,11 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // App → Behaviour: what this computer does on its own. A machine's own page
   // (Machines) shows the sections that reach that machine.
   behaviour: [
-    // Read and set through the machine's own brain (`keep_awake` actions take
-    // the pin); only the Mac's own admin prompt stays on This computer.
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "routed", title: "Keep awake" },
+    // Behaviour is always This computer. `local`, not `routed`: This computer
+    // can have no pin (a tab bound to another machine, no checkout here), and
+    // with none the section's unpinned calls are plain IPC to this computer.
+    // Another machine's keep awake is a row on its Machines page.
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
     // carries that machine's pin.
@@ -526,25 +528,18 @@ export function TabContent({
   tab,
   machine,
   standalone = false,
-  embedded = false,
 }: {
   tab: SettingsTabId;
   /** The machine the page (or the open project) is on. Null for pages with none. */
   machine: SettingsMachinePage | null;
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;
-  /**
-   * Inside another page (a machine's page on Machines): only the sections
-   * that reach the machine, as a plain list, with no rail and nothing at all
-   * when none do.
-   */
-  embedded?: boolean;
 }) {
   // A machine's own page lists every machine, offline ones included, and says
   // so itself.
   if (tab === "machines") return <SettingsColumn wide><MachinesPage machine={machine} /></SettingsColumn>;
   if (machine && !machine.online) {
-    return embedded ? null : <MachineUnavailableNotice machine={machine} />;
+    return <MachineUnavailableNotice machine={machine} />;
   }
   // Integrations routes between its grid and one integration's page off
   // `?integration=`; its sections are the pages.
@@ -579,7 +574,6 @@ export function TabContent({
   // Sections that cannot reach this machine are simply not there: another
   // machine's own settings are on its Machines page, never a note saying
   // "open ADE over there".
-  if (embedded && shown.length === 0) return null;
   const items = shown.map((section) => {
     const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
     return {
@@ -646,7 +640,6 @@ export function TabContent({
       ))}
     </div>
   );
-  if (embedded) return list;
   return (
     <SettingsColumn wide>
       {/* A rail of one is noise, and without one the grid would squeeze the

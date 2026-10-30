@@ -1,4 +1,4 @@
-import { useMemo, type CSSProperties } from "react";
+import type { CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { ArrowRight, CaretRight } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
@@ -8,10 +8,10 @@ import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
 import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes, freeSpaceLevel } from "../storage/storageView";
-import { osLabel } from "../general/GeneralPage";
 import type { SettingsMachinePage } from "../SettingsMachinesNav";
-import { knownAdeVersions, machineUpdateTargetVersion } from "../../remoteTargets/remoteMachineModel";
-import { useMachineFacts, type MachineFacts } from "./machineFacts";
+import { machineUpdateTargetVersion } from "../../remoteTargets/remoteMachineModel";
+import { useKnownAdeVersions } from "../../remoteTargets/machineUpdates";
+import { osLabel, platformWord, useMachineFacts, type MachineFacts } from "./machineFacts";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
 import { MachineSettings } from "./MachineSettings";
@@ -32,18 +32,17 @@ function machineDisplayName(machine: ProjectMachine, thisMachineName: string | n
 }
 
 function MachinesList() {
-  const { machines, thisMachineName, openMachine } = useSettingsMachines();
+  const { machines, thisMachineName, openMachine, openTab } = useSettingsMachines();
   const update = useAutoUpdateSnapshot();
   const facts = useMachineFacts(machines, update.currentVersion || null);
   const local = useThisComputerFacts();
-  const known = useKnownVersions();
+  const known = useKnownAdeVersions();
   const online = machines.filter((machine) => machine.online || machine.isThisMachine).length;
   const onBeta = machines.filter((machine) => facts.get(machine.machineId)?.track === "beta").length;
   const behind = machines.filter((machine) => {
     const connected = facts.get(machine.machineId)?.connected;
     return connected && machine.online && machineUpdateTargetVersion(connected, known) != null;
   }).length;
-  const { openTab } = useSettingsMachines();
   const summary = [
     online === machines.length ? "All online" : `${online} online — ${machines.length - online} offline`,
     onBeta > 0 ? `${machines.length - onBeta} on Stable, ${onBeta} on Beta` : "All on Stable",
@@ -116,18 +115,6 @@ function presence(
   return machine.online ? { state: "ok", word: "Online" } : { state: undefined, word: "Offline" };
 }
 
-/** Every build this computer knows of, on either track (`knownAdeVersions`). */
-function useKnownVersions(): string[] {
-  const snapshot = useAutoUpdateSnapshot();
-  const { currentVersion, version, latestKnownVersion } = snapshot;
-  const latestStable = snapshot.latestByTrack?.stable ?? null;
-  const latestBeta = snapshot.latestByTrack?.beta ?? null;
-  return useMemo(
-    () => knownAdeVersions({ currentVersion, version, latestKnownVersion, latestByTrack: { stable: latestStable, beta: latestBeta } }),
-    [currentVersion, version, latestKnownVersion, latestStable, latestBeta],
-  );
-}
-
 function MachineListRow({
   machine,
   name,
@@ -189,13 +176,6 @@ function MachineListRow({
       <CaretRight size={13} className="ade-mx-row-caret" aria-hidden />
     </button>
   );
-}
-
-function platformWord(platform: MachineFacts["platform"] | undefined): string | null {
-  if (platform === "mac") return "macOS";
-  if (platform === "windows") return "Windows";
-  if (platform === "linux") return "Linux";
-  return null;
 }
 
 /**

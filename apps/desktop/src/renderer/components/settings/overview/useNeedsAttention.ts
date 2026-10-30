@@ -20,7 +20,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
 
 /**
- * Settings → Overview's "Needs attention": every problem ADE can see, from
+ * Settings → General's "Needs attention": every problem ADE can see, from
  * the open project and from this computer, in one list.
  *
  * Read once when the page opens and again on "Check again"; never polled.
@@ -95,7 +95,7 @@ function readFailureItem(failed: string[], recheck: () => Promise<void>): Attent
     severity: "warning",
     title: failed.length === 1 ? `ADE couldn't check ${names}` : `ADE couldn't check ${failed.length} things`,
     detail: `Couldn't read ${names}, so this list may be missing something.`,
-    where: "Overview",
+    where: "General",
     route: settingsRouteFor("overview.attention"),
     fix: { label: "Check again", run: recheck },
   }];

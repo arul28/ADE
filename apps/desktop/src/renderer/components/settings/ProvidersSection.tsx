@@ -159,9 +159,12 @@ function ProviderCard({
   const showModelCount = status.state !== "checking" && status.state !== "disabled"
     && !(status.state === "connected" && models.length === 0);
 
-  // A provider in trouble says what is wrong; a healthy one what it has.
+  // A provider in trouble says what is wrong; a healthy one what it has. A
+  // missing sign-in is a plain status on the tile: the provider's own message
+  // can be a terminal command ("Run: codex login"), which belongs on its page.
   const healthy = status.state === "connected";
-  const problem = status.errorLine ?? (healthy ? null : status.message);
+  const problem = status.errorLine
+    ?? (healthy ? null : status.state === "sign-in" ? "Not signed in" : status.message);
   const metaParts = [
     // Only when there is more than one: "1 account" is noise on every tile.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),

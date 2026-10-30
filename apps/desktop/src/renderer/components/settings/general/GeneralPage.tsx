@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { ArrowClockwise, ArrowRight, CircleNotch, Desktop, UserCircle, Wrench } from "@phosphor-icons/react";
 import type { AppInfo } from "../../../../shared/types";
 import { updateTrackLabel } from "../../../../shared/updateTrack";
-import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { useAppStore } from "../../../state/appStore";
 import { accountSessionShortLabel, accountSessionState, useAccountStatus } from "../../../lib/account";
 import { formatTokens } from "../../../lib/format";
@@ -18,20 +18,11 @@ import { formatBytes, freeSpaceLevel } from "../storage/storageView";
 import { UpdateTrackControls } from "../UpdateTrackControls";
 import { AutoUpdatesControls } from "../AutoUpdatesSection";
 import { useNeedsAttention } from "../overview/useNeedsAttention";
-import { useMachineFacts } from "../machines/machineFacts";
+import { osLabel, useMachineFacts } from "../machines/machineFacts";
 import { useSettingsMachines } from "../machines/settingsMachinesContext";
 import { MachineUpdateRows } from "./MachineUpdateRows";
 import { NeedsAttentionStrip } from "./NeedsAttentionStrip";
 import "./general.css";
-
-/** "macOS", "Windows", "Linux" for a Node platform. */
-export function osLabel(platform: string | null | undefined): string | null {
-  if (!platform) return null;
-  if (platform === "darwin") return "macOS";
-  if (platform === "win32") return "Windows";
-  if (platform === "linux") return "Linux";
-  return platform;
-}
 
 function formatCheckTime(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
@@ -60,7 +51,7 @@ export function GeneralPage() {
 
       <div className="ade-gen-pair" id="at-a-glance" data-settings-anchor="at-a-glance">
         <YouCard sources={sources} onOpen={() => openTab("account")} />
-        <ThisMachineCard info={sources.info} pressure={sources.pressure} onOpen={() => openMachine("this-mac")} />
+        <ThisMachineCard info={sources.info} pressure={sources.pressure} onOpen={() => openMachine(THIS_MACHINE_ID)} />
       </div>
 
       <AdeCard info={sources.info} onOpenAdvanced={() => openTab("advanced")} />
@@ -144,11 +135,10 @@ function ThisMachineCard({
   pressure: Sources["pressure"];
   onOpen: () => void;
 }) {
-  const { machines } = useSettingsMachines();
+  const { machines, thisMachineName } = useSettingsMachines();
   const update = useAutoUpdateSnapshot();
   const thisMachine = machines.find((machine) => machine.isThisMachine) ?? null;
   const facts = useMachineFacts(thisMachine ? [thisMachine] : [], update.currentVersion || null);
-  const { thisMachineName } = useSettingsMachines();
   const name = thisMachineName ?? THIS_MACHINE_NAME;
   const runtime = info?.localRuntime ?? null;
   const serviceOk = runtime ? runtime.connectionState === "connected" && runtime.runtimeMode === "primary" : null;
@@ -160,7 +150,7 @@ function ThisMachineCard({
       <div className="kit-card-body ade-gen-card-body">
         <div className="ade-gen-ident">
           <MachineAvatar
-            colorKey={fact?.colorKey ?? "this-mac"}
+            colorKey={fact?.colorKey ?? THIS_MACHINE_ID}
             name={name}
             platform={fact?.platform ?? "unknown"}
             formFactor={machineFormFactor({ name })}

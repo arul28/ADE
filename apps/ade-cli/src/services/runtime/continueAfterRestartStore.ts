@@ -4,6 +4,7 @@ import path from "node:path";
 import YAML from "yaml";
 
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
+import { captureError } from "../../../../desktop/src/shared/sentry/capture";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../projects/machineLayout";
 import { ProjectRegistry } from "../projects/projectRegistry";
 import { writeJsonAtomic } from "./atomicJson";
@@ -85,15 +86,17 @@ export function resolveContinueAfterRestart(env: NodeJS.ProcessEnv = process.env
   let anyOff = false;
   try {
     anyOff = new ProjectRegistry(resolveMachineAdeLayout(env)).list().some((project) => projectTurnedItOff(project.rootPath));
-  } catch {
-    anyOff = false;
+  } catch (error) {
+    // Unreadable project list: the default (on) is the answer.
+    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_read" }, handled: true, level: "warning" });
   }
-  migratedValue = !anyOff;
+  const value = !anyOff;
   try {
-    writeSavedContinueAfterRestart(!anyOff, env);
-  } catch {
+    writeSavedContinueAfterRestart(value, env);
+  } catch (error) {
     // Read-only home: the value still holds for this process.
+    migratedValue = value;
+    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_write" }, handled: true, level: "warning" });
   }
-  migratedValue = !anyOff;
-  return !anyOff;
+  return value;
 }

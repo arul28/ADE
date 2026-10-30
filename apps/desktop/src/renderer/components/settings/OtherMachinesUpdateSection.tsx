@@ -6,12 +6,12 @@ import {
   canUpdateOtherMachines,
   isMachineUpdateBusy,
   requestMachineUpdates,
+  useKnownAdeVersions,
   useMachineUpdates,
 } from "../remoteTargets/machineUpdates";
 import {
   connectedMachinesFromSnapshot,
   describeMachineUpdateAttempt,
-  knownAdeVersions,
   machineUpdateTrack,
   machinesBehindOnTheirTrack,
   newestKnownVersionOnTrack,
@@ -83,18 +83,7 @@ function OtherMachinesUpdates({ group, anchor, compact = false }: UpdatesProps) 
   // offered only the newest one on its OWN track: a Stable machine is never
   // sent this computer's Beta, and a machine whose track has no known build
   // here is not called behind.
-  const { currentVersion, version: downloadedVersion, latestKnownVersion } = updateSnapshot;
-  const latestStable = updateSnapshot.latestByTrack?.stable ?? null;
-  const latestBeta = updateSnapshot.latestByTrack?.beta ?? null;
-  const known = useMemo(
-    () => knownAdeVersions({
-      currentVersion,
-      version: downloadedVersion,
-      latestKnownVersion,
-      latestByTrack: { stable: latestStable, beta: latestBeta },
-    }),
-    [currentVersion, downloadedVersion, latestKnownVersion, latestStable, latestBeta],
-  );
+  const known = useKnownAdeVersions();
   const behind = machinesBehindOnTheirTrack(machines, known);
   const targetById = new Map(behind.map((machine) => [machine.id, machine.targetVersion]));
   const anyBusy = behind.some((machine) => isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
