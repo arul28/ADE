@@ -744,6 +744,88 @@ snapshots.
 | `5eac6a04` | 18.4 MB, 27k events | 97.6 ms (122.6) | 5.7 ms (7.8) | 95.8 ms (210.5) |
 | `a8a1d9fa` | 16.6 MB | 80.2 ms (95.1) | 6.6 ms (6.7) | 64.6 ms (124.8) |
 
+## Final Windows numbers (round 4, 2026-10-30)
+
+Same PC, the same copy of the owner's project (13.3 MB `ade.db`, 5 lanes, the biggest chat 20.7 MB). Each row: median, with the worst run in brackets. An outside target is another coding app's published number for the same measurement. A row wins only when its worst run wins. The PRs named here are merged unless marked open.
+
+### Every row against its target
+
+| Row | Windows | Target | Result | Where it came from |
+|---|---|---|---|---|
+| E1 project database first open | 36.2 ms (36.2) | 50-66 ms | WIN | round 1 |
+| F1 PR discovery reads, one pass | 1.73 ms (1.74) | 4.32 ms | WIN | round 1 |
+| F2 longest database step on the event loop, cold phone connect | 3.6 ms (3.8) | 12.7 ms | WIN | #1976, #1986 |
+| F2b worst wait beside a cold phone connect | 197.0 ms (200.8) | 260 ms | WIN | #1983, #1986 |
+| F3 one `git rev-parse HEAD` through `runGit` | 28.3 ms (29.2) | 2.7-3.0 ms (macOS/Linux) | LOSS | a bare Windows process start is 26.9 ms here; only fewer git starts help (#1977, #1989) |
+| F4 `git status` runs per burst (1 refresh + 4 overlapping) | 2 (12) | at most 2 | WIN at the median, LOSS on the worst | the worst runs are the lane list cache (10 s) expiring inside the burst: the next refresh rebuilds every lane's status once. See below |
+| F4 git processes per burst | 8 (21) | — | — | 13 (27) before #1989 |
+| F5 startup recovery read, this copy (7 sessions) | 0.18 ms (0.19) | 0.8 ms | WIN | round 2 |
+| F5 at 5,500 session rows, 50 of them stale | 0.93 ms (0.94) | 4.0 ms (a 5.5k-item thread) | WIN | `db-reads --seed-sessions 5500 --seed-running 50`. Cost grows about 30 µs per recovered row: 500 stale 12.9 ms (14.7), all 5,500 stale 174.3 ms (175.7) |
+| PH-cold, 3G cold start to the biggest chat | 1,597 ms (1,607) | 3.6 s | WIN | #1976 |
+| PH-cold bytes before that chat | 15.6 KB (15.7) | 89 KB | WIN | #1976 |
+| PH-reconnect, 3G | 985 ms (990), 5.9 KB | 1.3 s, 17 KB | WIN | round 1 |
+| D4 200 streamed updates at 1,000 items (Electron V8) | 3.1 ms (4.6) | 15.48 ms | WIN | round 1 |
+| S7 one full rebuild of a long chat's rows | 10.6 ms (11.4) | 8.6 ms (other hardware) | LOSS | measured before the Mac side's #1985 changed this path; the Mac side owns the row |
+| S8 one tool completing in that chat | 0.028 ms (0.054) | 0.28 ms | WIN | round 1 |
+| S98 idle brain, 10 minutes | 5-27 process starts, 4.0-4.3 CPU-s | 1,722 processes, 62 CPU-s (about 60 chats) | WIN | #1981; this copy has 7 chats |
+| S99a port polling with no terminals | 0 port scans in 10 idle minutes | 0 work | WIN | round 2 trace |
+| S130 changed-file tree for 1,000 files | 1.12 ms (1.16) lane change list; 1.13 ms (1.23) diff tree | 2.38 ms | WIN | `changed-file-tree.bench.mts` |
+| S136 workspace file search | index build 293 ms (333), slowest lookup 9.0 ms (12.6) | 351 ms | WIN at this copy's size | round 1; the target's workspace size is not matched |
+| S191 PATH x PATHEXT scan per spawn | cached: 14 CLIs 12.3 ms cold, 4.2 ms warm in total | ~22 ms per spawn uncached | WIN | round 1 |
+| S192 `git config --get`, p50 / p90 | 26.9 / 29.2 ms | 31.4 / 46.4 ms | WIN | #1977 |
+| Chat action through the brain (`getChatStatus`) | 2.3 ms (3.0) | — | — | #1980 (was 74.1 ms) |
+| Idle database reads | about 670-750 statements per 10 idle minutes | about 1 poll query | LOSS | mostly the measurement brain's PR poller refreshing every tick, because its relay can never be healthy (a connected install sweeps every 15 minutes), plus a Linear link check; microseconds each. Writer pragmas 11 per 10 minutes against about 3 a minute: WIN |
+
+### The dev app (shared home, own pipe, sync off, copy `c2`, one project tab)
+
+`interaction.mjs tabs 4`, a warm-up, then 5 runs; median of the run medians, worst run in brackets.
+
+| Row | `main` before #1987/#1989 | With #1987 and #1989 (open) | Ceiling |
+|---|---|---|---|
+| Tab switch, first changed frame | 31.1 ms (32.3) | 25.8 ms (26.5) | 60 ms |
+| Tab switch, page settled | 64.6 ms (84.7) | 60.6 ms (135.0) | — |
+| History, warm settle per run | 389, 396, 399, 398, 42 ms (median 396) | 206, 367, 47, 142, 201 ms (median 201) | 420 ms (open item) |
+| Automations, warm settle | 175-181 ms | 175-177 ms | — |
+| `lanes.list` from the renderer | 32.6-34.1 ms | 4.9-6.1 ms | — |
+| `git.listBranches` from the renderer | 31.2-32.8 ms | 3.1-3.4 ms | — |
+| Project tab switch, first frame / settled | 47.6 (48.5) / 103.7 ms (107.7) | not re-measured (needs a second copy as a tab) | 300 ms settled |
+
+Every call from the renderer into the brain used to cost about 32 ms, even when the answer was cached. A main-only IPC is 0.1-0.5 ms and the brain answers `ping` in 0.2 ms; a spawn trace found a git process start per call (a lane list's `git worktree list`, the lane-folder check before every git operation, a commit's files and message). #1989 keys those on file identity.
+
+`process-cpu.mjs 15`, 5 samples, Work idle after a renderer reload and one visit to every tab (`main` `d60747404`):
+
+| Process | Working set, median (private) | macOS ceiling | Result |
+|---|---:|---:|---|
+| Electron main | 222 MB (193) | 200 MB | LOSS |
+| GPU | 173 MB (233) | 150 MB | LOSS |
+| Renderer | 561 MB (485); JS heap 118 MB after a forced GC | 300 MB | LOSS |
+| Brain | 243 MB (250) | 250 MB | WIN |
+
+Most of the renderer is not JavaScript: its heap is 118 MB of the 561. The rest is Chromium's own memory and the code of the dev renderer's separately loaded Vite modules (the resource buffer stops counting at 250). The macOS ceilings were also measured on a dev build, so the comparison holds across the two OSes, but a packaged build loads one bundle. This pass found no leak or fixable hot spot. Tracing Chromium's native memory is the next step, and was not done. The installed app was not measured, by rule.
+
+### Cold start
+
+| Row | Windows | Notes |
+|---|---|---|
+| Brain cold start, `cli.cjs serve` to listening (`brain-start.bench.mts`, 7 pairs) | 798.1 ms (802.4) without the compile cache; 523.3 ms (536.4) with it | `main` `d60747404`; every run stopped gracefully |
+| Installed app: first window / app mounted / settled | 1.11-1.22 s / 1.79-1.91 s / 2.65-5.67 s | last measured 2026-10-19, before the speed work. Not re-measured: it means installing a build over the owner's ADE |
+
+### F4's worst run: cause and two attempts
+
+The worst bursts (12 status runs instead of 2) come from the lane list cache (`LANE_LIST_CACHE_TTL_MS`, 10 s). `get_lane_status` reads the lane summary through `laneService.list`, so when the cache has expired, that one refresh rebuilds every lane's status inside the burst. Two variants were measured on the copy over 16 bursts each and dropped:
+- `getSummary` for the one lane, reusing its status for 10 s: the median got worse (status runs 2 to 3, git processes 13 to 15-20), because each call read that lane's status again.
+- A worktree-root cache key without the `.git` folder's mtime, alone: no change on this path (it is part of #1989, where it does pay off).
+
+The real cost is a few extra git processes at most once per 10 seconds, so lane list freshness is left as it is and the row is recorded as a loss.
+
+### Not measured
+
+- **Chat switch on Windows:** the copy's Work list shows one row. The Mac side measures chat switches on the owner's real data.
+- **Press to content:** the CDP mouse input in `press-to-paint.mjs` no longer switches tabs in this build.
+- **The hosted web client bench:** not re-run.
+
+`changed-file-tree.bench.mts` and `stale-sweep-read.bench.mts` are new; `db-reads.bench.mts` takes `--seed-sessions` / `--seed-running`; `measure-brain.mjs` passes `ADE_DISABLE_OFF_THREAD_SPAWN` through to the brain for attribution runs (spawn traces then show each process's real caller).
+
 ## How to measure on Windows
 
 Everything below ran in Git Bash or PowerShell 7 on this PC.
