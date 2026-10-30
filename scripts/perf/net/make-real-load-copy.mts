@@ -12,6 +12,8 @@
 // to the copy (through ADE's own kvDb, so cr-sqlite's triggers run), so a measurement brain that
 // opens the copy runs git and shells only inside it. Not copied: secrets, ade.yaml / local.yaml
 // (automations and processes), caches other than chat sessions.
+// Chats the source was running are copied as ended, and chat records lose their provider resume ids,
+// so a brain that opens the copy never resumes a live chat or writes into its provider session.
 //
 // Prints the copy's scale as JSON. Never commit, upload or show a copy: numbers only, delete when done.
 import { execFileSync } from "node:child_process";
@@ -135,16 +137,41 @@ for (const { name } of tables) {
 // following that machine (and refuse to host it). Without a record, the brain that opens the copy
 // becomes its host; it never dials the source machine.
 db.run("delete from sync_cluster_state");
+// Chats the source machine is running are copied as running, and a brain that opens the copy resumes
+// them: on a shared ADE home that relaunched a live chat (this script's own caller once) and appended
+// to its provider session. End them as a stopped brain's reconcile does.
+const endedChats = db.runChanged(
+  "update terminal_sessions set status = 'detached', ended_at = coalesce(ended_at, ?), pty_id = null where status = 'running'",
+  [new Date().toISOString()],
+);
 const sessionsDir = path.join(copyAde, "cache", "chat-sessions");
+// Provider resume ids point at the source's provider sessions; a chat resumed from the copy starts a
+// new one instead of writing into the original's.
+const resumeIdKeys = ["sdkSessionId", "claudeBackgroundResumeSessionId"];
 let rewrittenRecords = 0;
 if (fs.existsSync(sessionsDir)) {
   for (const file of fs.readdirSync(sessionsDir)) {
     const full = path.join(sessionsDir, file);
     if (!fs.statSync(full).isFile()) continue;
-    const body = fs.readFileSync(full, "utf8");
-    if (!namesSource(body)) continue;
+    let body = fs.readFileSync(full, "utf8");
+    let changed = false;
+    if (namesSource(body)) {
+      body = rewriteText(body);
+      changed = true;
+    }
+    if (resumeIdKeys.some((key) => body.includes(`"${key}"`))) {
+      try {
+        const record = JSON.parse(body) as Record<string, unknown>;
+        for (const key of resumeIdKeys) delete record[key];
+        body = JSON.stringify(record);
+        changed = true;
+      } catch {
+        // Not a JSON record (a partial write); the chat row is ended above either way.
+      }
+    }
+    if (!changed) continue;
     fs.rmSync(full); // the clone shares blocks with the original until written; write a new file
-    fs.writeFileSync(full, rewriteText(body));
+    fs.writeFileSync(full, body);
     rewrittenRecords += 1;
   }
 }
@@ -262,5 +289,6 @@ console.log(JSON.stringify({
   worktreesFromHead,
   rewrittenCells,
   rewrittenRecords,
+  endedChats,
 }));
 process.exit(0);
