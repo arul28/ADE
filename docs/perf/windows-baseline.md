@@ -493,7 +493,7 @@ merged are in the PR, not here. A row wins only when its worst run wins.
 | F2 | Longest database step on the event loop while a phone reconnects and the lane list is read 5 times | `brain-db-steps.bench.mts --project` | 1.69 ms (31.9) | 12.7 ms | loss on the worst run |
 | F2b | Worst wait of a request sent every 10 ms beside that load (idle: 0.3 ms) | same | 59.9 ms (245.8) in this run; the cold-connect run measured 956-1,134 ms on the same build in the interleaved A/B below (each brain writes to the copy, so only interleaved pairs compare) | 260 ms | loss on the worst run (see **Fixes in this round**) |
 | D4 | 200 streamed updates at 1,000 items, slowest of five chats | `chat-timeline.bench.mts` (Mac branch), esbuild bundle run in Electron 44's V8 (`ELECTRON_RUN_AS_NODE`), 3 rounds | 3.1 ms (4.6) | 15.48 ms | win |
-| S7 | One full rebuild of a long chat's rows (11,649 events) | same | 12.5 ms (13.8); 10.6 ms (11.4) with the Mac branch's row-builder change | 8.6 ms, measured on other hardware | loss |
+| S7 | One full rebuild of a long chat's rows (11,649 events) | `chat-timeline.bench.mts --scenario rebuild --chat 076a90f9` from `main`, same bundle and V8, 3 rounds alternated with the build before #1985 | 10.1 ms (11.4) on `main` `1881d4ca2` (2026-10-30, after #1985); 11.7 ms (13.5) on `f5a42b34f`, just before #1985 | 8.6 ms, measured on other hardware | loss |
 | S8 | One tool completing in that chat | same | 0.028 ms (0.054) | 0.28 ms | win |
 | PH-cold | Phone, 3G (400 kbps, 400 ms RTT): cold start → biggest chat (20.7 MB) | `phone-sync.bench.mts all --profiles 3g,lte,lan --runs 5 --phone new`, measurement brain on the copy | 4,815 ms (4,818); run 1 was 1,611 ms | 3.6 s | loss |
 | PH-cold bytes | Bytes down before that chat | same | 173.7 KB (173.9); run 1 15.6 KB | 89 KB | loss |
@@ -765,7 +765,7 @@ Same PC, the same copy of the owner's project (13.3 MB `ade.db`, 5 lanes, the bi
 | PH-cold bytes before that chat | 15.6 KB (15.7) | 89 KB | WIN | #1976 |
 | PH-reconnect, 3G | 985 ms (990), 5.9 KB | 1.3 s, 17 KB | WIN | round 1 |
 | D4 200 streamed updates at 1,000 items (Electron V8) | 3.1 ms (4.6) | 15.48 ms | WIN | round 1 |
-| S7 one full rebuild of a long chat's rows | 10.6 ms (11.4) | 8.6 ms (other hardware) | LOSS | measured before the Mac side's #1985 changed this path; the Mac side owns the row |
+| S7 one full rebuild of a long chat's rows | 10.1 ms (11.4) | 8.6 ms (other hardware) | LOSS | re-measured 2026-10-30 on `main` `1881d4ca2`; #1985 took it from 11.7 ms (13.5) on this PC. The target was measured on other hardware |
 | S8 one tool completing in that chat | 0.028 ms (0.054) | 0.28 ms | WIN | round 1 |
 | S98 idle brain, 10 minutes | 5-27 process starts, 4.0-4.3 CPU-s | 1,722 processes, 62 CPU-s (about 60 chats) | WIN | #1981; this copy has 7 chats |
 | S99a port polling with no terminals | 0 port scans in 10 idle minutes | 0 work | WIN | round 2 trace |
