@@ -327,13 +327,13 @@ function nameStatusFileChanges(stdout: string): FileChange[] {
 export function createDiffService({ laneService }: { laneService: ReturnType<typeof createLaneService> }) {
   /** The newest read per lane, and whether it has started reading git. */
   type BranchRead = { readingGit: boolean; read: Promise<BranchDiffChanges> };
-  const readChanges = async (worktreePath: string): Promise<DiffChanges> => {
+  const readChanges = async (worktreePath: string, onStart: () => void): Promise<DiffChanges> => {
     // The line counts do not depend on the status, so all three run at once:
     // one process start of wall time instead of two (25-45 ms each on Windows).
     const [res, unstagedStats, stagedStats] = await Promise.all([
-      runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000 }),
-      runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
-      runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024 }),
+      runGit(["status", "--porcelain=v1", "-z"], { cwd: worktreePath, timeoutMs: 12_000, onStart }),
+      runGit(["diff", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024, onStart }),
+      runGit(["diff", "--cached", "--numstat", "--find-renames", "-z"], { cwd: worktreePath, timeoutMs: 12_000, maxOutputBytes: 512 * 1024, onStart }),
     ]);
     if (res.exitCode !== 0) {
       return { unstaged: [], staged: [] };
@@ -349,19 +349,24 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
   /**
    * Reads of one worktree's changes in flight. A refresh fans out to several
    * asks at once (each window, the lane pane, the phone), and each read is
-   * three git processes. An ask that arrives while a read runs cannot take that
-   * read's answer, since it may have read git before the asker's edit, so every
-   * such ask shares one follow-up read that starts when the running one ends.
+   * three git processes. An ask that arrives before the read has started git
+   * shares it: git has read nothing yet, so it sees the asker's edits (asks
+   * that resume together from one lane list land here in one turn). An ask that
+   * arrives once git has started cannot take that read's answer, since it may
+   * have read git before the asker's edit, so every such ask shares one
+   * follow-up read that starts when the running one ends.
    */
-  const changeReads = new Map<string, { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null }>();
-  const startChangesRead = (
-    worktreePath: string,
-    slot: { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null },
-  ): Promise<DiffChanges> => {
-    slot.current = readChanges(worktreePath).finally(() => {
+  type ChangeReadSlot = { current: Promise<DiffChanges>; currentStartedGit: boolean; next: Promise<DiffChanges> | null };
+  const changeReads = new Map<string, ChangeReadSlot>();
+  const startChangesRead = (worktreePath: string, slot: ChangeReadSlot): Promise<DiffChanges> => {
+    slot.currentStartedGit = false;
+    const current = readChanges(worktreePath, () => {
+      if (slot.current === current) slot.currentStartedGit = true;
+    }).finally(() => {
       if (slot.next === null && changeReads.get(worktreePath) === slot) changeReads.delete(worktreePath);
     });
-    return slot.current;
+    slot.current = current;
+    return current;
   };
 
   const branchReads = new Map<string, BranchRead>();
@@ -448,13 +453,15 @@ export function createDiffService({ laneService }: { laneService: ReturnType<typ
       const { worktreePath } = laneService.getLaneBaseAndBranch(laneId);
       const slot = changeReads.get(worktreePath);
       if (!slot) {
-        const fresh: { current: Promise<DiffChanges>; next: Promise<DiffChanges> | null } = {
+        const fresh: ChangeReadSlot = {
           current: Promise.resolve({ unstaged: [], staged: [] }),
+          currentStartedGit: false,
           next: null,
         };
         changeReads.set(worktreePath, fresh);
         return await startChangesRead(worktreePath, fresh);
       }
+      if (!slot.currentStartedGit) return await slot.current;
       if (!slot.next) {
         slot.next = slot.current.then(() => undefined, () => undefined).then(() => {
           slot.next = null;
