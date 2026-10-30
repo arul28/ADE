@@ -88,7 +88,7 @@ export function resolveContinueAfterRestart(env: NodeJS.ProcessEnv = process.env
     anyOff = new ProjectRegistry(resolveMachineAdeLayout(env)).list().some((project) => projectTurnedItOff(project.rootPath));
   } catch (error) {
     // Unreadable project list: the default (on) is the answer.
-    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_read" }, handled: true, level: "warning" });
+    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_read" }, fingerprint: ["continue_after_restart", "migrate_read"], handled: true, level: "warning" });
   }
   const value = !anyOff;
   try {
@@ -96,7 +96,7 @@ export function resolveContinueAfterRestart(env: NodeJS.ProcessEnv = process.env
   } catch (error) {
     // Read-only home: the value still holds for this process.
     migratedValue = value;
-    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_write" }, handled: true, level: "warning" });
+    captureError(error, { tags: { area: "continue_after_restart", step: "migrate_write" }, fingerprint: ["continue_after_restart", "migrate_write"], handled: true, level: "warning" });
   }
   return value;
 }

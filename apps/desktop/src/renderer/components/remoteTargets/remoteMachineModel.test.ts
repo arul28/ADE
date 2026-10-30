@@ -22,6 +22,8 @@ import {
   MACHINE_UPDATE_DOWNLOAD_GRACE_MS,
   MACHINE_UPDATE_INSTALL_GRACE_MS,
   machineUpdateAttemptFromResult,
+  knownAdeVersions,
+  machineUpdateTargetVersion,
   machinesBehindOnTheirTrack,
   type LocalPublishHealth,
 } from "./remoteMachineModel";
@@ -485,6 +487,35 @@ describe("connected machine versions (brain and desktop app)", () => {
     const machines = connectedMachinesFromSnapshot({ connections: [status], connectedCount: 1, updatedAt: 1 } satisfies RemoteRuntimeConnectionSnapshot);
     expect(machines[0]?.versionLabel).toBe(expectedLabel);
     expect(machinesBehindOnTheirTrack(machines, ["1.2.125"]).length > 0).toBe(expectedBehind);
+  });
+});
+
+describe("machineUpdateTargetVersion", () => {
+  // What this computer knows: it runs Beta, downloaded the next Beta, and the
+  // update check read the newest Stable and Beta builds.
+  const known = knownAdeVersions({
+    currentVersion: "1.2.128-beta.1",
+    version: "1.2.128-beta.2",
+    latestKnownVersion: "1.2.128-beta.2",
+    latestByTrack: { stable: "1.2.127", beta: "1.2.128-beta.2" },
+  });
+
+  it.each([
+    // A Stable machine is offered the newest Stable, never this computer's Beta.
+    ["a Stable machine behind Stable", "1.2.126", known, "1.2.127"],
+    ["a Stable machine level with Stable", "1.2.127", known, null],
+    // The Beta number counts: beta.1 is behind beta.2.
+    ["a Beta machine behind on Beta", "1.2.128-beta.1", known, "1.2.128-beta.2"],
+    ["a Beta machine level on Beta", "1.2.128-beta.2", known, null],
+    // No Stable build known here (offline check): not called behind, and never sent a Beta.
+    ["a Stable machine when no Stable build is known", "1.2.120", ["1.2.128-beta.1", "1.2.128-beta.2"], null],
+    ["a machine whose version can't be read", "dev", known, null],
+  ])("%s", (_label, version, versions, expected) => {
+    expect(machineUpdateTargetVersion({ version }, versions)).toBe(expected);
+    const behind = machinesBehindOnTheirTrack([{ id: "m", name: "M", version }], versions);
+    expect(behind.map((machine) => machine.targetVersion)).toEqual(expected ? [expected] : []);
+    // Whatever it is sent stays on its own track.
+    if (expected) expect(expected.includes("-beta.")).toBe(version.includes("-beta."));
   });
 });
 

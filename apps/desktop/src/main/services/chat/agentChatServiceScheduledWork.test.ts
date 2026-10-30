@@ -266,9 +266,14 @@ describe("createAgentChatService", () => {
       service.forceDisposeAll();
     });
 
-    it("arms update resumes only for the sessions it is given, and never reports a paused one", async () => {
+    it("arms update resumes only for the sessions it is given and the continue rule allows, and never reports a paused one", async () => {
       const scheduledWork = createScheduledWorkDb();
-      const { service } = createService({ db: scheduledWork.db });
+      // This machine's "Continue chats after restarts" (one value per machine).
+      let continueAfterRestart = true;
+      const { service } = createService({
+        db: scheduledWork.db,
+        readContinueAfterRestart: () => continueAfterRestart,
+      });
       const first = await service.createSession({
         laneId: "lane-1",
         provider: "codex",
@@ -294,6 +299,18 @@ describe("createAgentChatService", () => {
       expect(pausedArmed.chats).toEqual([]);
       expect((scheduledWork.readState()?.schedules ?? [])
         .find((row) => row.sessionId === second.id)?.status).toBe("paused");
+
+      // The rule a crash or reboot follows: an archived chat is held, and with
+      // the machine's setting off no chat continues by itself.
+      const archived = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      await service.archiveSession({ sessionId: archived.id });
+      expect((await service.armUpdateResume({ sessionIds: [archived.id] })).chats).toEqual([]);
+      continueAfterRestart = false;
+      const third = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4-codex" });
+      expect((await service.armUpdateResume({ sessionIds: [third.id] })).chats).toEqual([]);
+      expect((scheduledWork.readState()?.schedules ?? [])
+        .filter((row) => row.source === "update_restart" && [archived.id, third.id].includes(row.sessionId)))
+        .toEqual([]);
     });
 
     it("resumes an ended tracked CLI session when its durable one-shot becomes due", async () => {

@@ -1875,7 +1875,7 @@ Renderer surfaces:
   PowerShell 7, cmd, or an absolute Git for Windows `bash.exe` path and then
   falls back through PowerShell 5.1, PowerShell 7, and cmd. Bare `bash.exe` and
   `wsl.exe` are rejected so the local runtime never crosses into WSL.
-  **Default shell** (Settings → Computer → Behaviour → Terminal shell,
+  **Default shell** (Settings → App → Behaviour → Terminal shell, or a machine's page under System → Machines,
   `TerminalShellSection.tsx`): `pty/terminalShells.ts` detects the terminal
   machine's shells (`/etc/shells` + `$SHELL`, deduped by realpath; on Windows
   PowerShell 7, Windows PowerShell, cmd and Git Bash from Program Files,

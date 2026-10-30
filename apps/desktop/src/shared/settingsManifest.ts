@@ -1745,14 +1745,17 @@ export function settingsTabForRoute(route: string): SettingsTabId {
 }
 
 /**
- * Whether a route is a machine-scoped settings page: one of the
- * Computer pages (ADE service, Providers and the rest). Those describe one
- * computer, so a project must never remember one as its place to return to.
+ * Whether a route is a machine-scoped settings page: Providers or Machines
+ * (a picked machine), or one of This computer's own pages (Advanced,
+ * Appearance, Behaviour, Apple devices). Those describe one computer, so a
+ * project must never remember one as its place to return to. General is
+ * where Settings opens, as Overview was, so it is remembered like Overview.
  */
 export function isMachineScopedSettingsRoute(route: string): boolean {
   const pathname = route.split(/[?#]/, 1)[0] ?? "";
   if (pathname !== "/settings" && !pathname.startsWith("/settings/")) return false;
-  return isMachineSettingsTab(settingsTabForRoute(route));
+  const tab = settingsTabForRoute(route);
+  return isMachineSettingsTab(tab) || (isThisComputerOnlyTab(tab) && tab !== "general");
 }
 
 /** The route a palette entry or deeplink should navigate to. */

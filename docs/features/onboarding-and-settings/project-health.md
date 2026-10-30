@@ -1,6 +1,6 @@
 # Project health
 
-Project health checks appear in Settings → Overview and Settings → Project →
+Project health checks appear in Settings → General (Needs attention) and Settings → Project →
 Location, and `ade health --text` prints the same report. Checks only read; a
 fix runs when the person presses it. The `project_health.fix` action is
 CTO-only at the action bridge, so agents can read the report and offer fixes

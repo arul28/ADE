@@ -554,7 +554,7 @@ it (`desktop`). It is a deliberate click that waits on a browser, deduplicated
 per outcome for an hour, so the worst case is three events a day inside the
 existing `ade_feature_used` ceilings.
 
-ADE MCP (Settings › Computer › ADE MCP, `ade mcp`) records its decisions in
+ADE MCP (Settings › App › ADE MCP, `ade mcp`) records its decisions in
 the brain, after the change is stored: `server_toggled` when it is switched on
 or off, `token_created` and `connection_removed` from Settings (`desktop`) or
 `ade mcp` (`api`), and `app_connected` when an app finishes signing in

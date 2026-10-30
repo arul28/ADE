@@ -31,11 +31,16 @@ function stubSection(anchors: string[]) {
 
 vi.mock("../settings/ProjectSection", () => ({ ProjectSection: stubSection(["project"]) }));
 vi.mock("../settings/DiagnosticsSharingSection", () => ({ DiagnosticsSharingSection: stubSection(["diagnostics-sharing"]) }));
-vi.mock("../settings/AboutSection", () => ({
-  AboutSection: () => (
-    <section data-settings-anchor="about">
-      <section data-settings-anchor="auto-updates">auto-updates</section>
-    </section>
+// General's ADE card holds the update rows, so it nests them like the real page.
+vi.mock("../settings/general/GeneralPage", () => ({
+  GeneralPage: () => (
+    <>
+      <section data-settings-anchor="needs-attention">needs-attention</section>
+      <section data-settings-anchor="at-a-glance">at-a-glance</section>
+      <section data-settings-anchor="about">
+        <section data-settings-anchor="auto-updates">auto-updates</section>
+      </section>
+    </>
   ),
 }));
 vi.mock("../settings/AppearanceSection", () => ({ AppearanceSection: stubSection(["theme", "chat-font-size"]) }));
@@ -58,7 +63,6 @@ vi.mock("../settings/lanes/LanesSettingsPage", () => ({
   StorageSettingsPage: stubSection(["storage", "archive"]),
 }));
 vi.mock("../settings/location/LocationPage", () => ({ LocationPage: stubSection(["project-location", "project-health"]) }));
-vi.mock("../settings/overview/SettingsOverview", () => ({ SettingsOverview: stubSection(["needs-attention", "at-a-glance"]) }));
 vi.mock("../settings/health/HealthService", () => ({ ServiceStatusSection: stubSection(["diagnostics"]) }));
 vi.mock("../settings/BackgroundServiceSection", () => ({ BackgroundServiceSection: stubSection(["background-service"]) }));
 vi.mock("../settings/ResetAdeSection", () => ({ ResetAdeSection: stubSection(["reset-ade"]) }));
@@ -129,9 +133,9 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("falls back to Overview for a tab id it has never shipped", async () => {
+  it("falls back to General for a tab id it has never shipped", async () => {
     renderSettings("/settings?tab=not-a-real-tab");
-    expect(await screen.findByRole("heading", { name: "Overview", level: 1 })).toBeTruthy();
+    expect(await screen.findByRole("heading", { name: "General", level: 1 })).toBeTruthy();
   });
 
   it("lands a legacy page's link on the card it named, on the page that holds it now", async () => {
@@ -163,8 +167,8 @@ describe("SettingsPage", () => {
   });
 
   it("keeps a parent card visible when a nested setting matches", async () => {
-    const { container } = renderSettings("/settings?tab=service");
-    await screen.findByRole("heading", { name: "ADE service", level: 1 });
+    const { container } = renderSettings("/settings?tab=general");
+    await screen.findByRole("heading", { name: "General", level: 1 });
 
     fireEvent.change(searchBox(), { target: { value: "updates" } });
 
@@ -188,16 +192,16 @@ describe("SettingsPage", () => {
     });
   });
 
-  it("lists Overview, then the You group starting with Account, and renders the account page in place", async () => {
+  it("lists General, then the You group starting with Account, and renders the account page in place", async () => {
     renderSettings("/settings?tab=account");
 
     expect(await screen.findByRole("heading", { name: "Account" })).toBeTruthy();
     expect(screen.getByText("account embedded")).toBeTruthy();
     const nav = screen.getByRole("navigation", { name: "Settings sections" });
     const rows = [...nav.querySelectorAll("button")].map((button) => button.textContent);
-    // Overview sits alone at the top, then the groups (You/Project/Computer).
-    // Appearance and Apple devices are per computer and live under Computer.
-    expect(rows.slice(0, 4)).toEqual(["Overview", "Account", "Chat", "Notifications"]);
+    // General sits alone at the top, then the groups: You (Account, Usage),
+    // then App, which opens on Chat.
+    expect(rows.slice(0, 4)).toEqual(["General", "Account", "Usage", "Chat"]);
   });
 
   it("carries help, zoom, and the identity row above the sections", async () => {

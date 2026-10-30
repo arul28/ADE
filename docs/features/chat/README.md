@@ -1620,16 +1620,24 @@ reports through its held-terminal wake).
 ### Continue chats after restarts
 
 When ADE restarts while a chat's turn is running — a crash, a force quit, a
-reboot — the turn cannot be saved, but the chat can continue. With **Continue
-chats after restarts** on (Settings → Chat, the default; config
-`ai.chat.continueAfterRestart`):
+reboot, or an accepted update — the turn cannot be saved, but the chat can
+continue. With **Continue chats after restarts** on (Settings → Chat ›
+Restarts, the default). It is one value per machine, because each machine's
+brain decides its own resumes: `~/.ade/continue-after-restart.json`
+(`apps/ade-cli/src/services/runtime/continueAfterRestartStore.ts`), read and
+set through that machine's pin (`ai.getContinueAfterRestart` /
+`ai.setContinueAfterRestart`). The first read on a machine without the file
+migrates once from the old per-project `ai.chat.continueAfterRestart`: off
+when any project had turned it off, otherwise on. One rule
+(`continueAfterRestartHold`) decides for every kind of restart, crash and
+accepted update alike, and the update dialog shows its answer per chat:
 
 - `recoverDetachedChatAfterRestart` closes the orphaned turn and returns what
   to arm; for an orphaned turn that is one durable "continue" row
   (`armRestartResume`, `RESTART_RESUME_PROMPT`). It uses the same deterministic
   id and `update_restart` tag as an update resume, so a chat an update already
   armed is not armed twice, and the user typing into the chat cancels it.
-- Settled and archived chats stay asleep. A chat whose turn had already ended,
+- Archived chats stay asleep; a settled chat resumes (settling stops nothing, and the resumed turn takes it out of settled). A chat whose turn had already ended,
   or that the user stopped, has no unsettled turn and is not resumed — unless it
   was waiting on background work the restart (or the shutdown before it)
   stopped: non-monitor work in `collectRestartCancelledWork`, or the persisted
