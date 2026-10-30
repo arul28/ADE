@@ -14,6 +14,12 @@ const { threadId } = require("node:worker_threads");
 
 const out = process.env.ADE_PERF_SQLTRACE_FILE || path.join(os.tmpdir(), `sql-${process.pid}.jsonl`);
 const minMs = process.env.ADE_PERF_SQLTRACE_ALL === "1" ? 0 : 0.2;
+// ADE_PERF_SQLTRACE_STACK=1 also records who ran each statement (the first frames outside this file).
+const withStack = process.env.ADE_PERF_SQLTRACE_STACK === "1";
+const callers = () => (new Error().stack || "").split("\n").slice(3)
+  .map((line) => line.trim().replace(/^at /, ""))
+  .filter((line) => line && !line.includes("sql-trace.cjs") && !line.startsWith("node:"))
+  .slice(0, 6);
 let buf = [];
 const flush = () => {
   if (!buf.length) return;
@@ -58,7 +64,7 @@ const note = (kind, sql, ms) => {
     buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind: "txn", ms: +(now - txnStart).toFixed(2), stmtMs: +txnMs.toFixed(2), n: txnStmts, sql: txnSql }));
     txnStart = null;
   }
-  if (ms >= minMs) buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind, ms: +ms.toFixed(2), sql: text.slice(0, 200) }));
+  if (ms >= minMs) buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind, ms: +ms.toFixed(2), sql: text.slice(0, 200), ...(withStack ? { stack: callers() } : {}) }));
 };
 
 const statement = sqlite.StatementSync.prototype;
