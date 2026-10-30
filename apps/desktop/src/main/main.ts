@@ -79,6 +79,10 @@ import {
 import { registerIpc } from "./services/ipc/registerIpc";
 import { connectBrowserToNowPlaying, registerHomeWidgetsIpc } from "./services/home/registerHomeWidgetsIpc";
 import { registerAppBundleOwnershipIpc } from "./services/updates/registerAppBundleOwnershipIpc";
+import { createDesktopStartupRecovery } from "./services/startupRecovery/desktopStartupRecovery";
+import { registerDatabaseCopiesIpc } from "./services/startupRecovery/registerDatabaseCopiesIpc";
+import type { StartupRecovery } from "./services/startupRecovery/startupRecovery";
+import { isStartupRecoveryWindow } from "./services/startupRecovery/startupRecoveryWindow";
 import { registerMusicIpc } from "./services/music/registerMusicIpc";
 import { createMusicTokenStore } from "./services/music/musicTokenStore";
 import { AttemptedProjectRoots } from "./services/ipc/knownProjectRoots";
@@ -988,6 +992,11 @@ async function createWindow(args: {
    * stays usable before the analytics service exists.
    */
   onRendererRecovery?: (outcome: { crash_reason: string; recovered: boolean }) => void;
+  /**
+   * The renderer is gone for good: it kept crashing until the recovery budget
+   * ran out, or it never loaded. The "ADE could not start" window takes over.
+   */
+  onRendererGaveUp?: (kind: "window_crashed" | "window_load_failed", detail: string) => void;
   onCreated?: (win: BrowserWindow) => void;
   onCloseRequested?: (win: BrowserWindow, event: Electron.Event) => void;
   /**
@@ -1210,6 +1219,7 @@ async function createWindow(args: {
           windowMs: RENDERER_RECOVERY_WINDOW_MS,
         });
         reportRecovery(false);
+        args.onRendererGaveUp?.("window_crashed", `${details.reason} (exit ${details.exitCode}), ${decision.attempts} times`);
       }
       return;
     }
@@ -1486,6 +1496,7 @@ async function createWindow(args: {
         `<p style="margin:0;">Error: ${toErrorMessage(error).replace(/</g, "&lt;")}</p>` +
         `</body></html>`,
     );
+    args.onRendererGaveUp?.("window_load_failed", toErrorMessage(error));
     await win.loadURL(`data:text/html;charset=UTF-8,${fallbackHtml}`);
   }
 
@@ -3403,6 +3414,9 @@ app.whenReady().then(async () => {
   // feed: an Alpha would poll Stable's feed and offer to "update" itself into
   // a Stable installer with a different appId and ADE home.
   const hasUpdateFeed = app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  // The "ADE could not start" window. Built right after the update service,
+  // which its "Go back" drives; the install hook below reads it then.
+  let startupRecovery: StartupRecovery | null = null;
   const autoUpdateService = createAutoUpdateService({
     logger: updateLogger,
     currentVersion: app.getVersion(),
@@ -3429,7 +3443,13 @@ app.whenReady().then(async () => {
           }),
         }
       : {}),
-    beforeQuitAndInstall: prepareAutoUpdateInstall,
+    beforeQuitAndInstall: async (resumeRequested, options) => {
+      const interruptedChats = await prepareAutoUpdateInstall(resumeRequested, options);
+      // A go-back puts the database copies back now: the service brain is
+      // stopped, and nothing has been installed yet. A throw stops the install.
+      await startupRecovery?.beforeInstall();
+      return interruptedChats;
+    },
     stopOwnedRuntimeCooperatively: (options) => localRuntimePool.stopOwnedRuntimeCooperatively(options),
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     onInstallHandoff: process.platform === "win32" && app.isPackaged
@@ -3462,6 +3482,34 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  startupRecovery = createDesktopStartupRecovery({
+    logger: getMachineMainLogger(),
+    runningVersion: app.getVersion(),
+    globalStatePath,
+    releaseRepository: packagedReleaseRepository,
+    install: !app.isPackaged ? "dev_build" : hasUpdateFeed ? "supported" : "unsupported",
+    updates: autoUpdateService,
+    // Called by the install hook after the service brain was uninstalled.
+    // These hold the remaining database handles; a Windows rename fails on
+    // any file still open.
+    releaseDatabases: async () => {
+      await localRuntimePool.stopOwnedRuntimeCooperatively({ closeAdmission: false });
+      for (const root of [...projectContexts.keys()]) {
+        await closeProjectByPath(root).catch((error: unknown) => {
+          getMachineMainLogger().warn("startupRecovery.project_close_failed", {
+            projectRoot: root,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }
+    },
+    // Asked in an app window: the focused one is the recovery window, whose
+    // page has no quit prompt. A crashed app window falls back to the native box.
+    relaunch: () => requestQuitAfterWarnings(
+      BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && !isStartupRecoveryWindow(win)) ?? null,
+      "relaunch",
+    ),
   });
   // Once per launch, to Sentry Logs: how many machines run a build is what
   // the beta gate reads before a beta becomes stable.
@@ -3838,6 +3886,9 @@ app.whenReady().then(async () => {
           failureMessage: result.failureMessage,
           steps: result.steps,
         });
+        // The new brain did not come up: when it also recorded a crash during
+        // this launch, the "ADE could not start" window offers going back.
+        startupRecovery?.noteUpdateTransactionFailed(failedStep);
         // An update that half-landed is the failure people least often report
         // and the one hardest to reconstruct afterwards.
         if (failedStep) {
@@ -8214,8 +8265,11 @@ app.whenReady().then(async () => {
         reusedContext: false,
         durationMs: Date.now() - startedAt,
       });
+      startupRecovery?.noteProjectOpened();
       return ctx.project;
     } catch (error) {
+      const failedRoot = repoRoot ?? normalizeProjectRoot(selectedPath);
+      startupRecovery?.noteProjectOpenFailure({ projectRoot: failedRoot, label: path.basename(failedRoot), error });
       projectOpenLogger.error("project.open.failed", {
         selectedPath,
         repoRoot,
@@ -9394,6 +9448,7 @@ app.whenReady().then(async () => {
       // window opened the ordinary way records its place.
       onWindowStateChange: args.bounds ? undefined : saveMainWindowState,
       onRendererRecovery: reportRendererRecovery,
+      onRendererGaveUp: (kind, detail) => startupRecovery?.noteWindowFailed(kind, detail),
       onCreated: (createdWindow) => {
         attachWheelZoom(createdWindow);
         registerWindowSession(createdWindow, null, restoredRemoteBinding);
@@ -10137,6 +10192,7 @@ app.whenReady().then(async () => {
 
   // Whether this Mac's ADE.app is root-owned (a password on every update).
   registerAppBundleOwnershipIpc({ logger: getMachineMainLogger(), analytics: productAnalyticsService });
+  registerDatabaseCopiesIpc({ logger: getMachineMainLogger() });
   // The home page's clipboard, machine-health and weather widgets.
   registerHomeWidgetsIpc({
     logger: getMachineMainLogger(),
@@ -10504,6 +10560,7 @@ app.whenReady().then(async () => {
     restoreState: readSavedMainWindowState(),
     onWindowStateChange: saveMainWindowState,
     onRendererRecovery: reportRendererRecovery,
+    onRendererGaveUp: (kind, detail) => startupRecovery?.noteWindowFailed(kind, detail),
     onCreated: (createdWindow) => {
       attachWheelZoom(createdWindow);
       registerWindowSession(createdWindow, null, initialRemoteProjectBinding);

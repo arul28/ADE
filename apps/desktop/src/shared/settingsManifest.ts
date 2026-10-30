@@ -451,6 +451,17 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Privacy",
   },
   {
+    id: "advanced.database-copies",
+    label: "Database copies",
+    keywords: ["database", "backup", "copy", "snapshot", "restore", "go back", "downgrade", "previous version", "bak", "data"],
+    tab: "advanced",
+    anchor: "database-copies",
+    scope: "machine",
+    // Files on this computer, listed and deleted by the desktop app here.
+    web: "hidden",
+    group: "Database copies",
+  },
+  {
     id: "general.reset",
     label: "Reset ADE",
     keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],

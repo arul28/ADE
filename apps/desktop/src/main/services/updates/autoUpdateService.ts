@@ -717,6 +717,9 @@ export function createAutoUpdateService({
     overrideFeedUrl,
     releaseRepository,
     readSelectedTrack,
+    skippedVersion: typeof initialState.state.wentBackFrom?.version === "string"
+      ? initialState.state.wentBackFrom.version
+      : null,
     logger,
   });
   const trackPatch = (): Pick<AutoUpdateSnapshot, "track"> =>
@@ -2494,6 +2497,9 @@ export function createAutoUpdateService({
     if (snapshot.status === "downloading" || snapshot.status === "checking") {
       return { ok: false, target, reason: "ADE is checking for or downloading an update. Try again in a moment." };
     }
+    if (trackFeed.goingBackTo()) {
+      return { ok: false, target, reason: "ADE is going back to the version it came from. Switch tracks after it restarts." };
+    }
     // Back to the running track is saved now: it clears a switch that did not
     // finish. A move to the other track is saved by the build it installs,
     // once that install landed (`landedTrackSwitch`), so quitting before the
@@ -2533,9 +2539,40 @@ export function createAutoUpdateService({
     return { ok: true, target };
   }
 
+  /**
+   * Downloads `version`, the build this machine ran before the update that
+   * could not start (`startupRecovery.ts`), from that build's own release.
+   * Only that exact build is accepted, older or not. The install itself is
+   * the ordinary `quitAndInstall`, once the snapshot is `ready` for it; the
+   * caller puts the database copies back in `beforeQuitAndInstall`.
+   */
+  async function startGoBack(version: string): Promise<{ ok: true } | { ok: false; reason: string }> {
+    if (snapshot.status === "installing" || quitAndInstallPromise != null || installQuitArmed) {
+      return { ok: false, reason: "An update is installing. Wait for ADE to restart." };
+    }
+    // A check or download already running finishes first; whatever it staged
+    // is dropped below.
+    if (checkPromise) await checkPromise.catch(() => undefined);
+    if (snapshot.status === "ready" && snapshot.version && snapshot.version !== version) {
+      logger.info("autoUpdate.go_back_discarded_staged_update", { version: snapshot.version, target: version });
+      downloadedFilePath = null;
+      compressedUpdateBytes = null;
+      compressedUpdateVersion = null;
+      cleanupUpdaterCacheDir({ updaterCacheDir, logger, reason: "go_back" });
+      patchSnapshot({ ...createEmptyAutoUpdateSnapshot(currentVersion), recentlyInstalled: snapshot.recentlyInstalled });
+    }
+    trackFeed.beginGoBack(version, `https://github.com/${releaseRepository}/releases/download/v${version}/`);
+    patchSnapshot(trackPatch());
+    logger.info("autoUpdate.go_back_started", { version, currentVersion });
+    if (snapshot.status === "ready" && snapshot.version === version) return { ok: true };
+    void runUpdateCheck(true);
+    return { ok: true };
+  }
+
   return {
     checkForUpdates,
     startTrackSwitch,
+    startGoBack,
     getSnapshot(): AutoUpdateSnapshot {
       return cloneSnapshot(snapshot);
     },

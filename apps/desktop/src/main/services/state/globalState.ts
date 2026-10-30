@@ -120,6 +120,12 @@ export type GlobalState = {
    */
   restoreUpdateWorkspaceOnLaunch?: boolean;
   failedInstallAttempts?: FailedInstallAttempts;
+  /**
+   * The build "Go back" left because it could not start
+   * (`startupRecovery.ts`). Ordinary update checks never offer that build
+   * again; a newer one is offered as usual.
+   */
+  wentBackFrom?: { version: string; toVersion: string; at: string };
   autoUpdatePreferences?: AutoUpdatePreferences;
   /** Whether ADE may hold this machine awake while agents run. Default: never. */
   keepAwakePreferences?: KeepAwakePreferences;
