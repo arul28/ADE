@@ -436,6 +436,15 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
     return candidates;
   };
 
+  /** A failed look (a read or a sweep that threw): back off with a revisit clock rather than retiring rows that were never examined. */
+  const backOffFailedLook = (sessionId: string, error: unknown): void => {
+    marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
+    logger.warn("agent_chat.stale_run_reconcile_failed", {
+      sessionId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
   /**
    * Sweep one candidate and record what was decided about it. `envelopes` are
    * the timer pass's pre-read stale-relevant events; without them the full
@@ -460,13 +469,8 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
           : { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS },
       );
     } catch (error) {
-      // A throw is a failed look, not a clean chat: back off with a revisit
-      // clock rather than retiring rows that were never examined.
-      marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
-      logger.warn("agent_chat.stale_run_reconcile_failed", {
-        sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // A throw is a failed look, not a clean chat.
+      backOffFailedLook(sessionId, error);
     }
   };
 
@@ -514,12 +518,7 @@ export function createStaleRunSweep<TManaged extends StaleRunSweepManagedSession
           try {
             envelopes = await readStaleRunEnvelopesForSessionIdAsync(sessionId);
           } catch (error) {
-            // A failed read is a failed look, as in sweepOne.
-            marks.set(sessionId, { kind: "revisit", dueAt: now() + STALE_RUN_SWEEP_REVISIT_MS });
-            logger.warn("agent_chat.stale_run_reconcile_failed", {
-              sessionId,
-              error: error instanceof Error ? error.message : String(error),
-            });
+            backOffFailedLook(sessionId, error);
             continue;
           }
           if (stopped) return;

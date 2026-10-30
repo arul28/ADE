@@ -48,16 +48,18 @@ async function timed<T>(work: () => Promise<T> | T): Promise<{ value: T; wallMs:
   return { value, wallMs: done - started, blockMs: worst };
 }
 
-async function filteredRead(file: string, sessionId: string): Promise<{ envelopes: Envelope[]; complete: boolean }> {
+async function filteredRead(file: string, sessionId: string): Promise<{ envelopes: Envelope[]; complete: boolean; largestParsedLine: number }> {
   const size = await readHistoryFileSize(file);
   const envelopes: Envelope[] = [];
   let complete = true;
+  let largestParsedLine = 0;
   let offset = 0;
   let carry = Buffer.alloc(0);
   const visit = (line: Buffer) => {
     if (line.length > MAX_LINE_BYTES) complete = false;
     if (line.length === 0 || line.length > MAX_LINE_BYTES) return;
     if (!needles.some((needle) => line.includes(needle))) return;
+    largestParsedLine = Math.max(largestParsedLine, line.length);
     for (const envelope of parseAgentChatTranscript(line.toString("utf8"))) if (envelope.sessionId === sessionId) envelopes.push(envelope);
   };
   while (offset < size) {
@@ -73,7 +75,7 @@ async function filteredRead(file: string, sessionId: string): Promise<{ envelope
     carry = buffer.subarray(start);
   }
   if (carry.length) visit(carry);
-  return { envelopes, complete };
+  return { envelopes, complete, largestParsedLine };
 }
 
 for (const file of largestTranscripts(chats)) {
@@ -84,6 +86,7 @@ for (const file of largestTranscripts(chats)) {
   let complete = true;
   let events = 0;
   let kept = 0;
+  let largestParsedLine = 0;
   for (let run = 0; run < runs; run++) {
     const a = await timed(() => parseAgentChatTranscript(readHistoryFileSync(file).toString("utf8")).filter((e) => e.sessionId === sessionId));
     const b = await timed(() => filteredRead(file, sessionId));
@@ -93,6 +96,7 @@ for (const file of largestTranscripts(chats)) {
     complete &&= b.value.complete;
     events = a.value.length;
     kept = b.value.envelopes.length;
+    largestParsedLine = b.value.largestParsedLine;
   }
   const r1 = (x: number) => Math.round(x * 10) / 10;
   const stat = (rows: Array<{ wallMs: number; blockMs: number }>, key: "wallMs" | "blockMs") =>
@@ -104,6 +108,9 @@ for (const file of largestTranscripts(chats)) {
     eventsParsedFiltered: kept,
     sameSnapshots: same,
     filteredSawWholeFile: complete,
+    // One matching line is parsed in one go; a long one (a subagent result with a long report) is the
+    // filtered read's largest single block.
+    largestParsedLineKB: r1(largestParsedLine / 1024),
     fullWallMs: stat(full, "wallMs"),
     fullBlockMs: stat(full, "blockMs"),
     filteredWallMs: stat(filtered, "wallMs"),
