@@ -24,7 +24,7 @@ function parseChat(raw: unknown): UpdateInterruptedChat | null {
   };
 }
 
-const CONTINUE_HOLDS: ReadonlySet<string> = new Set(["disabled", "stale", "awaiting_user", "capped", "settled"]);
+const CONTINUE_HOLDS: ReadonlySet<string> = new Set(["disabled", "stale", "awaiting_user", "capped", "archived"]);
 
 /**
  * A brain's `runtime.updateImpact` reply, or null when it is not one. The

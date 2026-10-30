@@ -337,7 +337,7 @@ export type UpdateInterruptedChat = {
 };
 
 /** Mirrors `RestartResumeHold` in shared/chatAutoResume.ts. */
-export type UpdateChatContinueHold = "disabled" | "stale" | "awaiting_user" | "capped" | "settled";
+export type UpdateChatContinueHold = "disabled" | "stale" | "awaiting_user" | "capped" | "archived";
 
 /**
  * Applying an update is one transaction: the app is swapped, the background
