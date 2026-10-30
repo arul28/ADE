@@ -401,7 +401,7 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
     const A = sides.A;
     const B = sides.B;
     const { execSync, spawn } = await import("node:child_process");
-    const net = await import("node:net");
+    const netModule = await import("node:net");
     const { startJsonRpcServer } = await import("../../jsonrpc");
     const sh = (cwd: string, command: string) => execSync(command, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 
@@ -426,7 +426,7 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
     });
     const socketPath = path.join(os.tmpdir(), `ade-xm-${process.pid}.sock`);
     fs.rmSync(socketPath, { force: true });
-    const server = net.createServer((socket) => {
+    const server = netModule.createServer((socket) => {
       startJsonRpcServer(A.handlerFor(null), {
         onData: (cb) => socket.on("data", cb),
         write: (data) => { socket.write(data); },
@@ -465,6 +465,13 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       const shells = B.runtime.ptyService.list({ chatSessionId: copies[0].owner });
       expect(shells.length).toBe(1);
 
+      const listed = await cli(["terminal", "list", "--machine", "Machine B", "--json"]);
+      console.log("[xm-shell] terminal list", listed.status, listed.stdout.slice(0, 300), listed.stderr.slice(-300));
+      expect(listed.status).toBe(0);
+      expect(listed.stdout).toContain(shells[0].id);
+      const readBack = await cli(["terminal", "read", shells[0].id, "--machine", "Machine B", "--json"]);
+      expect(readBack.stdout).toContain("uncommitted on A");
+
       const failing = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "sh", "-c", "exit 3"]);
       console.log("[xm-shell] failing", failing.status, failing.stdout.slice(-300), failing.stderr.slice(-300));
       expect(failing.status).toBe(3);
@@ -482,6 +489,35 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       const notOnOrigin = await cli(["shell", "start", "--machine", "Machine B", "--discard", "--wait", "--text", "--", "true"]);
       console.log("[xm-shell] not on origin", notOnOrigin.status, notOnOrigin.stderr.slice(-400));
       expect(notOnOrigin.stderr + notOnOrigin.stdout).toContain("Push it first");
+      sh(A.projectRoot, "git reset -q --hard HEAD~1");
+
+      const cleaned = await cli(["shell", "clean", "--machine", "Machine B", "--text"]);
+      console.log("[xm-shell] clean", cleaned.status, cleaned.stdout, cleaned.stderr.slice(0, 600));
+      expect(cleaned.stdout).toContain("Deleted");
+      expect(fs.existsSync(copies[0].path)).toBe(false);
+
+
+      // The copy goes when its chat is archived on A: B asks A at its next sweep.
+      const again = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "true"]);
+      expect(again.status).toBe(0);
+      const { createRemoteWorkCopyService, setRemoteWorkOwnerProbe } = await import("../../../../desktop/src/main/services/remoteWork/remoteWorkCopyService");
+      const { externalChatContext } = await import("../../../../desktop/src/main/services/chat/externalChats");
+      const { parseForeignCallerSessionId } = await import("../../../../desktop/src/shared/runtimeClientNames");
+      setRemoteWorkOwnerProbe(async (machineKey, chatSessionId) => {
+        net.dialingFrom = "B";
+        try { return await B.bridge.locateChat(machineKey, chatSessionId); } finally { net.dialingFrom = null; }
+      });
+      const originOf = (owner: string) => {
+        const parsed = parseForeignCallerSessionId(owner);
+        const machineKey = externalChatContext(owner)?.machineKey ?? null;
+        return parsed?.chatSessionId && machineKey ? { machineKey, chatSessionId: parsed.chatSessionId } : null;
+      };
+      const sweeper = createRemoteWorkCopyService({ projectRoot: B.projectRoot });
+      expect(await sweeper.sweep(undefined, originOf)).toBe(0);
+      await A.runtime.agentChatService.archiveSession({ sessionId: parent.id });
+      expect(await sweeper.sweep(undefined, originOf)).toBe(1);
+      expect(sweeper.list()).toHaveLength(0);
+      setRemoteWorkOwnerProbe(null);
     } finally {
       server.close();
       fs.rmSync(socketPath, { force: true });

@@ -421,5 +421,26 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       : "failed";
   };
 
-  return { call, listMachines, deliverWake };
+  /**
+   * Whether a chat still exists on its machine: `chats.locate` there, never a
+   * boot. Null when the machine is offline or the answer is lost, so a caller
+   * never mistakes silence for "gone".
+   */
+  const locateChat = async (
+    machineKey: string,
+    sessionId: string,
+  ): Promise<{ found: boolean; archived: boolean } | null> => {
+    try {
+      const machine = await pool.selectMachine(machineKey);
+      if (!machine.online) return null;
+      const entry = await pool.acquire(machine);
+      const answer = await pool.request(machine, entry, "chats.locate", "chats.locate", { sessionId }, MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS);
+      if (!isRecord(answer) || typeof answer.found !== "boolean") return null;
+      return { found: answer.found, archived: answer.archived === true };
+    } catch {
+      return null;
+    }
+  };
+
+  return { call, listMachines, deliverWake, locateChat };
 }

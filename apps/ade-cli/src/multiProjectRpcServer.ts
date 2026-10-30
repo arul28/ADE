@@ -3114,8 +3114,12 @@ export function createMultiProjectRpcRequestHandler(
       if (!scope) return { found: false };
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
+      // Archived only when the project is already running here: never a boot.
+      const booted = await scopeRegistry.getIfBooted(scope.projectId)?.catch(() => null);
+      const summary = await booted?.runtime?.agentChatService?.getSessionSummary?.(sessionId).catch(() => null);
       return {
         found: true,
+        ...(summary?.archivedAt ? { archived: true } : {}),
         scope: { kind: "project", projectId: scope.projectId, name: record?.displayName ?? null, rootPath: record?.rootPath ?? null },
       };
     }

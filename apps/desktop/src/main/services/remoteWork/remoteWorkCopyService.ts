@@ -95,6 +95,17 @@ const FETCH_TIMEOUT_MS = 300_000;
 
 type Registry = { version: 1; copies: RemoteWorkCopy[] };
 
+/**
+ * Asks a copy's chat machine whether that chat still exists. Set once by the
+ * brain, which owns the paired connections. Null answers mean "could not
+ * tell" (offline, older ADE): the copy stays, and the idle limit still applies.
+ */
+export type RemoteWorkOwnerProbe = (machineKey: string, chatSessionId: string) => Promise<{ found: boolean; archived: boolean } | null>;
+let ownerProbe: RemoteWorkOwnerProbe | null = null;
+export function setRemoteWorkOwnerProbe(probe: RemoteWorkOwnerProbe | null): void {
+  ownerProbe = probe;
+}
+
 export type RemoteWorkCopyServiceOptions = {
   projectRoot: string;
   logger?: { info(event: string, data?: Record<string, unknown>): void; warn(event: string, data?: Record<string, unknown>): void };
@@ -396,11 +407,31 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
     /** Delete every copy that matches; used when a chat is gone. */
     releaseWhere,
 
-    /** Delete copies unused for `maxIdleMs`, skipping any still in use. */
-    async sweep(maxIdleMs: number = REMOTE_WORK_IDLE_MS): Promise<number> {
+    /**
+     * Delete copies unused for `maxIdleMs`, and copies whose chat was deleted
+     * or archived on its own machine (`machineKeyFor` names that machine).
+     * A copy still in use is never deleted.
+     */
+    async sweep(
+      maxIdleMs: number = REMOTE_WORK_IDLE_MS,
+      machineKeyFor?: (owner: string) => { machineKey: string; chatSessionId: string } | null,
+    ): Promise<number> {
       const cutoff = now() - maxIdleMs;
-      return await releaseWhere((copy) =>
+      let released = await releaseWhere((copy) =>
         Date.parse(copy.lastUsedAt) < cutoff && !options.isInUse?.(copy));
+      const probe = ownerProbe;
+      if (!probe || !machineKeyFor) return released;
+      for (const copy of readRegistry().copies) {
+        if (options.isInUse?.(copy)) continue;
+        const origin = machineKeyFor(copy.owner);
+        if (!origin) continue;
+        const answer = await probe(origin.machineKey, origin.chatSessionId).catch(() => null);
+        if (answer && (!answer.found || answer.archived)) {
+          if (await release(copy.owner)) released += 1;
+          options.logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
+        }
+      }
+      return released;
     },
 
     /** Delete the least recently used copies first, up to `count`; for a low disk. */

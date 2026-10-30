@@ -9452,6 +9452,20 @@ function buildShellPlan(args: string[]): CliPlan {
   if (sub === "start-cli" || sub === "cli" || sub === "agent-cli") {
     return buildCliSessionStartPlan(args);
   }
+  if (sub === "clean") {
+    // Only with --machine (cliMachineTargeting.ts): delete this chat's work copy there.
+    return {
+      kind: "execute",
+      label: "shell clean",
+      steps: [actionCallStep("result", "release_remote_work_copy", {})],
+      formatText: (result: unknown) => {
+        const value = unwrapActionEnvelope(result);
+        return isRecord(value) && value.released === true
+          ? "Deleted this chat's work copy on that machine."
+          : "This chat had no work copy on that machine.";
+      },
+    };
+  }
   if (sub === "start" || sub === "create") {
     const provider = readValue(args, ["--provider", "--profile"]);
     if (provider) {
@@ -28243,6 +28257,11 @@ async function runServe(
     });
     externalChats.setExternalParentRouter(crossScopeChats.router);
     crossScopeChats.start();
+    // Work copies here for chats elsewhere: ask the chat's machine whether it still exists.
+    void import("../../desktop/src/main/services/remoteWork/remoteWorkCopyService").then(({ setRemoteWorkOwnerProbe }) => {
+      setRemoteWorkOwnerProbe(async (machineKey, chatSessionId) =>
+        (await getAgentMachineBridge()).locateChat(machineKey, chatSessionId));
+    });
   }
 
   const createHandler = (context?: { peerDeviceId: string | null }) =>

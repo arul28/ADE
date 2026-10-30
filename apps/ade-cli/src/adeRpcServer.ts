@@ -1666,6 +1666,8 @@ const READ_ONLY_TOOLS = new Set([
 
 const MUTATION_TOOLS = new Set([
   "saveMemory",
+  // A chat on another machine deleting its own work copy here.
+  "release_remote_work_copy",
   "create_lane",
   "delete_computer_use_artifacts",
   "link_computer_use_artifacts_to_pr",
@@ -2911,13 +2913,30 @@ function remoteWorkCopiesFor(runtime: AdeRuntime): RemoteWorkCopyService {
       isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
     });
     remoteWorkCopyServices.set(runtime, service);
-    // Copies nobody used for a week go when the project's runtime first needs them.
-    const sweeping = service;
-    void sweeping.sweep().catch((error) => {
-      runtime.logger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
-    });
   }
+  sweepRemoteWorkCopies(runtime, service);
   return service;
+}
+
+const REMOTE_WORK_SWEEP_EVERY_MS = 60 * 60_000;
+const remoteWorkLastSweep = new WeakMap<AdeRuntime, number>();
+
+/**
+ * At most hourly, while copies are used: delete copies idle for a week and
+ * copies whose chat is gone or archived on its own machine.
+ */
+function sweepRemoteWorkCopies(runtime: AdeRuntime, service: RemoteWorkCopyService): void {
+  const last = remoteWorkLastSweep.get(runtime) ?? 0;
+  if (Date.now() - last < REMOTE_WORK_SWEEP_EVERY_MS) return;
+  remoteWorkLastSweep.set(runtime, Date.now());
+  const originOf = (owner: string) => {
+    const parsed = parseForeignCallerSessionId(owner);
+    const machineKey = externalChatContext(owner)?.machineKey ?? null;
+    return parsed?.chatSessionId && machineKey ? { machineKey, chatSessionId: parsed.chatSessionId } : null;
+  };
+  void service.sweep(undefined, originOf).catch((error) => {
+    runtime.logger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+  });
 }
 
 const REMOTE_WORK_SYNC_MODES: ReadonlySet<string> = new Set(["sync", "none", "discard"]);
@@ -7552,6 +7571,21 @@ async function runTool(args: {
       toolArgs,
       proof,
     });
+  }
+
+  if (name === "release_remote_work_copy") {
+    // A chat on another machine deleting its own work copy here
+    // (`ade shell clean --machine <this machine>`).
+    const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+    if (!owner || !parseForeignCallerSessionId(owner)) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, `Unsupported tool: ${name}`);
+    }
+    const copies = remoteWorkCopiesFor(runtime);
+    const copy = copies.get(owner);
+    if (copy && runtime.ptyService.list({ chatSessionId: owner, status: "running", limit: 1 }).length > 0) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "A command is still running in this chat's work copy. Stop it first.");
+    }
+    return { released: await copies.release(owner) };
   }
 
   if (name === "read_remote_caller_capture") {

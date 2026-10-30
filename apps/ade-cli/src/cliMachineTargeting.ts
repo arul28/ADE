@@ -174,6 +174,9 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
   if (!machine && primary === "shell") {
     const flags = flagNamesOutsideFreeText(parsed.command);
+    if (parsed.command[1]?.toLowerCase() === "clean") {
+      throw new CliUsageError("ade shell clean deletes this chat's work copy on another machine: add --machine <name>.");
+    }
     const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
     if (workCopyFlag) {
       throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
