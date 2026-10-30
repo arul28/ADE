@@ -904,6 +904,8 @@ export const GITHUB_SNAPSHOT_TTL_MS = 120_000;
 export const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
+/** How old a stored `last_synced_at` may get before an unchanged refresh writes it again. */
+const PR_SYNCED_AT_PERSIST_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
 
 // reconcile-on-focus throttle constants. The min-interval collapses a burst of
@@ -1687,11 +1689,27 @@ export function createPrService({
     return nextBody;
   };
 
-  const getRowById = (prId: string): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+  /**
+   * When a PR was last refreshed by a refresh that changed nothing in its row.
+   * Writing `last_synced_at` for those (open PRs refresh every 2 minutes) was a
+   * synced change, so every idle sweep sent each phone and peer a change per
+   * open PR. The time lives here instead and reaches the row only with a real
+   * change, or once the stored time is PR_SYNCED_AT_PERSIST_MS old. Lost on a
+   * restart: the row then reads as stale and refreshes once.
+   */
+  const syncedAtOverlay = new Map<string, string>();
+  const withSyncedAtOverlay = (row: PullRequestRow): PullRequestRow => {
+    const overlay = syncedAtOverlay.get(row.id);
+    return overlay && parseIsoMs(overlay) > parseIsoMs(row.last_synced_at) ? { ...row, last_synced_at: overlay } : row;
+  };
+
+  const getRowById = (prId: string): PullRequestRow | null => {
+    const row = db.get<PullRequestRow>(
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
+    return row ? withSyncedAtOverlay(row) : null;
+  };
 
   const getRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
     db.get<PullRequestRow>(
@@ -2264,7 +2282,7 @@ export function createPrService({
     db.all<PullRequestRow>(
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
-    );
+    ).map(withSyncedAtOverlay);
 
   /**
    * The next step and the agent reviewers for a lane's PR, from the cached
@@ -5505,13 +5523,33 @@ export function createPrService({
     if (materiallyChanged) {
       invalidateGithubSnapshotCache();
     }
-    upsertRow(updated);
+    // Nothing the upsert writes would change except the sync time: keep that in
+    // memory (see `syncedAtOverlay`) until the stored one is old.
+    const rowUnchanged = !materiallyChanged
+      && !row.detached_at
+      && row.repo_owner === updated.repoOwner
+      && row.repo_name === updated.repoName
+      && (row.created_at ?? null) === (updated.createdAt ?? null)
+      && (row.updated_at ?? null) === (updated.updatedAt ?? null)
+      && (row.merged_at ?? null) === (updated.mergedAt ?? null);
+    const storedSyncedAtMs = parseIsoMs(
+      db.get<{ last_synced_at: string | null }>(
+        "select last_synced_at from pull_requests where id = ? and project_id = ?",
+        [row.id, projectId],
+      )?.last_synced_at ?? null,
+    );
+    if (rowUnchanged && storedSyncedAtMs > 0 && Date.now() - storedSyncedAtMs < PR_SYNCED_AT_PERSIST_MS) {
+      syncedAtOverlay.set(row.id, updated.lastSyncedAt ?? nowIso());
+    } else {
+      syncedAtOverlay.delete(row.id);
+      upsertRow(updated);
+    }
 
     // Keep `head_sha` in sync so downstream features (AI summary cache, deployments)
     // can reliably reference the latest commit on the PR head branch.
     // A failed checks fetch kept the previous rollup on purpose. Writing the
     // new SHA anyway would pair that old red with the new commit.
-    if (headSha && !checkRunsFetchFailed) {
+    if (headSha && !checkRunsFetchFailed && headSha !== (row.head_sha ?? null)) {
       try {
         db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
       } catch (err) {
