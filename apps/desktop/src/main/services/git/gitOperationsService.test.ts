@@ -16,6 +16,8 @@ vi.mock("./git", () => ({
   runGit: (...args: unknown[]) => mockGit.runGit(...args),
   runGitOrThrow: (...args: unknown[]) => mockGit.runGitOrThrow(...args),
   getHeadSha: (...args: unknown[]) => mockGit.getHeadSha(...args),
+  // No refs identity: listBranches reads through runGitOrThrow, as these tests mock.
+  gitBranchRefsIdentity: async () => null,
 }));
 
 import { createGitOperationsService } from "./gitOperationsService";

@@ -13,6 +13,7 @@ import {
   gitSafeDirectorySpec,
   parseGitOwnershipError,
   getHeadSha,
+  gitBranchRefsIdentity,
   runGit,
   runGitMergeTree,
   runGitOrThrow,
@@ -270,6 +271,59 @@ describe("macOS git selection", () => {
   });
 });
 
+
+describe("gitBranchRefsIdentity", () => {
+  // listBranches keeps its answer while this key is unchanged, and the branch
+  // list is what History and the branch switcher show. Every change below is
+  // made with plain git, outside ADE, so no cache invalidation hook helps.
+  it("changes on every kind of ref, HEAD or upstream change, and not on a status", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-refs-identity-"));
+    git(repoRoot, ["init", "-b", "main"]);
+    git(repoRoot, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "one"]);
+    git(repoRoot, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "two"]);
+    let last = await gitBranchRefsIdentity(repoRoot);
+    expect(last, "plain layout yields an identity").toBeTruthy();
+    const changedAfter = async (args: string[]): Promise<boolean> => {
+      git(repoRoot, args);
+      const now = await gitBranchRefsIdentity(repoRoot);
+      const changed = now !== last;
+      last = now;
+      return changed;
+    };
+
+    expect(await changedAfter(["status"])).toBe(false);
+    const changes: Array<[string, string[]]> = [
+      ["new branch", ["branch", "feature"]],
+      ["existing branch moved", ["update-ref", "refs/heads/feature", "HEAD~1"]],
+      ["nested branch", ["branch", "ade/nested/deep"]],
+      ["nested branch moved", ["update-ref", "refs/heads/ade/nested/deep", "HEAD~1"]],
+      ["remote-tracking ref", ["update-ref", "refs/remotes/origin/main", "HEAD"]],
+      ["refs packed", ["pack-refs", "--all"]],
+      ["packed ref moved", ["update-ref", "refs/heads/feature", "HEAD"]],
+      ["checkout", ["checkout", "-q", "feature"]],
+      ["upstream set", ["config", "branch.feature.remote", "origin"]],
+      ["branch deleted", ["branch", "-D", "ade/nested/deep"]],
+    ];
+    const missed = [];
+    for (const [label, args] of changes) if (!(await changedAfter(args))) missed.push(label);
+    expect(missed).toEqual([]);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+
+  // Git before 2.45 cannot make a reftable repository.
+  const reftableProbe = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-reftable-probe-"));
+  const gitHasReftable = spawnSync("git", ["init", "-q", "--ref-format=reftable", reftableProbe]).status === 0;
+  fs.rmSync(reftableProbe, { recursive: true, force: true });
+
+  it.skipIf(!gitHasReftable)("gives no key for a reftable repository, whose refs it cannot see", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-reftable-"));
+    git(repoRoot, ["init", "-q", "--ref-format=reftable"]);
+    git(repoRoot, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "one"]);
+    expect(fs.existsSync(path.join(repoRoot, ".git", "reftable"))).toBe(true);
+    expect(await gitBranchRefsIdentity(repoRoot)).toBeNull();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+});
 
 describe("repo cache invalidation through runGit", () => {
   function scratchRepo(): string {
