@@ -1,4 +1,4 @@
-// cd apps/ade-cli && npx tsx ../../scripts/perf/service/db-reads.bench.mts --project <copy root> [--runs 5] [--rounds 9]
+// cd apps/ade-cli && npx tsx ../../scripts/perf/service/db-reads.bench.mts --project <copy root> [--runs 5] [--rounds 9] [--seed-sessions 5500 --seed-running 500]
 //    (or the older form: db-reads.bench.mts <ade.db> [rounds])
 // The brain's heaviest reads on a copy of a real project database, through
 // ADE's own openKvDb (cr-sqlite loaded, migrations run): the Stats page's usage
@@ -83,6 +83,33 @@ const prDiscoveryPass = () => {
   const prsAgain = db.all("select * from pull_requests where project_id = ? order by updated_at desc", [projectId]);
   return lanes.length + prs.length + groups.length + proposals.length + projections.length + prsAgain.length;
 };
+
+// F5 at an outside target's size: --seed-sessions <n> [--seed-running <m>] adds n chat session rows to the temp
+// copy (never the source), m of them left running with no owner process recorded, which the read recovers (a row
+// whose owner pid the process registry does not know is left alone: it may be another live ADE process). The outside target's larger figure is 4.0 ms on a 5.5k-item thread.
+// An absent flag is 0; a flag with a missing, negative or non-integer operand is an error, not a different workload.
+const seedCount = (name: string): number => {
+  if (!argv.includes(name)) return 0;
+  const raw = flag(name);
+  const value = raw === undefined || raw.startsWith("--") ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} needs a non-negative integer`);
+  return value;
+};
+const seedSessions = seedCount("--seed-sessions");
+const seedRunning = Math.min(seedSessions, seedCount("--seed-running"));
+if (seedSessions > 0) {
+  const laneId = db.get<{ id: string }>("select id from lanes order by created_at limit 1")?.id ?? "lane-seed";
+  db.run("begin");
+  for (let i = 0; i < seedSessions; i++) {
+    const running = i < seedRunning;
+    db.run(
+      "insert into terminal_sessions(id, lane_id, title, started_at, ended_at, transcript_path, status, tool_type, owner_pid) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      // Every row starts before the recovery's fresh-activity grace (2 minutes), so a running one is really stale.
+      [`seed-${i}`, laneId, `seeded ${i}`, new Date(Date.now() - (10 + seedSessions - i) * 60_000).toISOString(), running ? null : new Date().toISOString(), path.join(dir, `seed-${i}.jsonl`), running ? "running" : "detached", "claude-chat", null],
+    );
+  }
+  db.run("commit");
+}
 
 // F5: the startup recovery read, with the brain's own services over the copy.
 const sessionService = createSessionService({ db, logger } as any);

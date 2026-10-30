@@ -77,6 +77,9 @@ function brainEnv() {
   }
   for (const key of Object.keys(process.env)) if (key.startsWith("ADE_PERF_")) env[key] = process.env[key];
   if (process.env.ADE_SPAWN_TRACE_DIR) env.ADE_SPAWN_TRACE_DIR = process.env.ADE_SPAWN_TRACE_DIR;
+  // ADE_DISABLE_OFF_THREAD_SPAWN=1: Windows spawns run on the event loop again, so spawn-trace.cjs records
+  // each process's real caller instead of the off-thread worker (attribution runs only, not timing).
+  if (process.env.ADE_DISABLE_OFF_THREAD_SPAWN) env.ADE_DISABLE_OFF_THREAD_SPAWN = process.env.ADE_DISABLE_OFF_THREAD_SPAWN;
   return env;
 }
 
