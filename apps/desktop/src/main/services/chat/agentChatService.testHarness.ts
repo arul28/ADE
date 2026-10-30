@@ -1716,7 +1716,7 @@ function createMockSessionService() {
       return true;
     }),
     clearTurnStartMarkers: vi.fn(),
-    unsettleOnTurnStart: vi.fn(() => false),
+    clearSettleOnTurnStart: vi.fn(() => false),
     clearSessionActivity: vi.fn(),
     setDetectedSessionActivity: vi.fn((sessionId: string) => Boolean(sessions.get(sessionId))),
     markLastTurnFailed: vi.fn(),

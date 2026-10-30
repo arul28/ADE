@@ -28,8 +28,6 @@ const PR_WATCH_DETAIL_REFRESH_MS = 3 * 60_000;
 const PR_WATCH_DELIVERY_FAILURE_LOG_EVERY = 5;
 
 type PrWatchChatState = {
-  /** Settled chats keep their watch but are not woken until unsettled. */
-  settled: boolean;
   archived: boolean;
 };
 
@@ -49,7 +47,7 @@ export type PrWatchServiceDeps = {
   };
   /** The chat's row; a missing or non-chat row ends its watch. */
   sessionService: {
-    get: (sessionId: string) => { toolType?: string | null; settledAt?: string | null; archivedAt?: string | null } | null;
+    get: (sessionId: string) => { toolType?: string | null; archivedAt?: string | null } | null;
   };
   messageSession: (args: AgentChatMessageSessionArgs) => Promise<unknown>;
   /** Moved-away watches remain armed until the source chat is unlocked. */
@@ -139,7 +137,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
   const chatStateFor = (sessionId: string): PrWatchChatState | null => {
     const row = deps.sessionService.get(sessionId);
     if (!row || !isChatToolType(row.toolType)) return null;
-    return { settled: Boolean(row.settledAt), archived: Boolean(row.archivedAt) };
+    return { archived: Boolean(row.archivedAt) };
   };
 
   /** Clients get the live watch, or null once it has stopped. */
@@ -169,9 +167,8 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
       stopWatch(record, "closed", null);
       return;
     }
-    // A settled chat is asleep on purpose. Its watch resumes, with nothing
-    // lost, when the chat is unsettled.
-    if (chat.settled) return;
+    // A settled chat's watch keeps running: settle stops nothing, and the
+    // wake's turn takes the chat out of settled.
 
     const mem = memory.get(record.id) ?? { lastDetailAtMs: 0, lastPrUpdatedAt: null, lastHeadSha: null, deliveryFailures: 0 };
     memory.set(record.id, mem);

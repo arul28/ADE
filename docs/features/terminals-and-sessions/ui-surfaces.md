@@ -1977,7 +1977,9 @@ settled.
 
 The three column entries are `session.moveOnBoard` — the same action a board
 drag uses — so the menu and the board cannot disagree about what a column means,
-and a refusal ("Answer the question first") reads the same in both. Both go
+and a refusal ("Answer the question first", or "Still working" for a working
+chat dropped on Done, since a working chat cannot be settled) reads the same
+in both. Both go
 through `moveSessionOnBoard` (`sessionBoardMoveUi.ts`) for the toast and its
 5-second Undo; a row on another machine is re-read after the move and after
 any undo answer, refused or not.

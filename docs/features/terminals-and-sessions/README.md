@@ -252,7 +252,7 @@ and in tests.
     the CTO operator and the PR-merge poller; the UI hides Settle on those rows
     (`sessionIsMidFlight`).
   - **Any turn start unsettles.** `agentChatService.setSessionActive` calls
-    `sessionService.unsettleOnTurnStart` on every turn start (a user message,
+    `sessionService.clearSettleOnTurnStart` on every turn start (a user message,
     a scheduled wake, a cron, a background job or subagent reporting back, a
     restart resume). It clears only the settle tuple, never an `ade chat ask`
     hand, and writes nothing for a row that is not settled.

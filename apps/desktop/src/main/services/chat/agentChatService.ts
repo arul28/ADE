@@ -379,7 +379,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
-import type { SubagentLink } from "../sessions/settleTurnCheck";
+import type { SubagentLink } from "../sessions/settleWiring";
 import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -1228,6 +1228,7 @@ import {
   classifyBackgroundWorkKind,
   SESSION_STALE_AFTER_MS,
   isPersistedTurnFailureCurrent,
+  isSettleTupleSettled,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -21807,9 +21808,9 @@ export function createAgentChatService(args: {
       // out of settled. Settle only classifies a chat at rest. A failed write
       // must not cost the turn its start.
       try {
-        sessionService.unsettleOnTurnStart(managed.session.id);
+        sessionService.clearSettleOnTurnStart(managed.session.id);
       } catch (error) {
-        logger.warn("agent_chat.unsettle_on_turn_start_failed", {
+        logger.warn("agent_chat.clear_settle_on_turn_start_failed", {
           sessionId: managed.session.id,
           error: getErrorMessage(error),
         });
@@ -66720,8 +66721,7 @@ export function createAgentChatService(args: {
         if (row.status === "disposed" || row.status === "detached") continue;
         // Mirror canonicalSessionState: an explicit "active" pin overrides a
         // settledAt column, and a settle only counts at rest.
-        const pinnedActive = row.settleOverride === "active";
-        if (!pinnedActive && (row.settleOverride === "settled" || Boolean(row.settledAt))) continue;
+        if (isSettleTupleSettled(row)) continue;
         const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
         if (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs) continue;
       }

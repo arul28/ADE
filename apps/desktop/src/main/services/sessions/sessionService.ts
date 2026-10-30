@@ -8,7 +8,8 @@ import { chatToolProvider, isChatToolType } from "../../../shared/sessionSpawnNe
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
 import { createAgentShellCleanup } from "./agentShellCleanup";
 import type { SettleAbortedReason, SettleAbortedSession, SettleSessionsOutcome } from "./settlingStateRegistry";
-import type { SettleCheckOutcome, SubagentLink } from "./settleTurnCheck";
+import type { SettleCheckOutcome } from "./settleTurnCheck";
+import type { SubagentLink } from "./settleWiring";
 import type {
   ClaudeSessionPointer,
   SessionAttentionSource,
@@ -40,7 +41,7 @@ import {
   parseSessionSettleOverride,
   SESSION_WAKE_REASONS,
 } from "../../../shared/types";
-import { isWakingSessionError } from "../../../shared/sessionCanonicalState";
+import { isSettleTupleSettled, isWakingSessionError } from "../../../shared/sessionCanonicalState";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { readHistoryFileSync } from "../storage/historyCompression";
 import { resolveChatTranscriptReadPath } from "../storage/legacyChatTranscripts";
@@ -509,6 +510,17 @@ export function createSessionService({
   const settleLifecycle = createSettleLifecycleWriter(db);
   const writeSettleLifecycle = settleLifecycle.write;
   const statusNoteUpdatedAtById = new Map<string, string>();
+
+  /**
+   * The settle-tuple clear a turn start makes. The pending nudge marker
+   * invalidates any Jev answer already in flight: a unique value lets the
+   * eventual write fail its compare-and-set.
+   */
+  const turnStartSettleClear = () => ({
+    kind: "clearOnActivity" as const,
+    cause: "turn_start" as const,
+    settleNudgeTurnId: `pending:${randomUUID()}`,
+  });
 
   /**
    * Shared skeleton for the single-session lifecycle mutators: trim, existence
@@ -1194,12 +1206,13 @@ export function createSessionService({
     // so two settles never interact, and iOS allows a settle command 30s total:
     // a slow chat-service read must not be paid once per session in series.
     //
-    // Bounded, so a fifty-session sweep cannot open fifty reads at once.
+    // Bounded, so a fifty-session sweep cannot open fifty `getSessionSummary`
+    // reads at once.
     const settleOne = async (id: string): Promise<SettleSessionsOutcome> => {
       const outcome: SettleSessionsOutcome = { settled: [], aborted: [] };
 
       const revisionBefore = settleLifecycle.readRevision(id);
-      const begin = settleLifecycle.settling.begin(id, revisionBefore);
+      const begin = settleLifecycle.settling.begin(id);
       // Joined an in-flight settle rather than starting a second one: R4.
       // The owner reports the outcome; reporting it twice would double-count.
       if (begin.kind === "joined") {
@@ -1215,10 +1228,14 @@ export function createSessionService({
         let check: SettleCheckOutcome | null = null;
         try {
           check = checkSettle ? await checkSettle(id) : null;
-        } catch {
+        } catch (error) {
           // A check that throws could not tell whether a turn is running. A
           // persistence failure below must not wear this label: those propagate,
           // as they did before the settling window existed.
+          logger?.warn("session.settle_check_failed", {
+            sessionId: id,
+            error: error instanceof Error ? error.message : String(error),
+          });
           check = { abortedBy: "status_unknown" };
         }
         // A running turn (or one ADE could not rule out). Nothing may be filed.
@@ -2491,11 +2508,6 @@ export function createSessionService({
       return await settleManyThroughWindow(sessionIds, options, onChatSettled ?? null, commitGuard);
     },
 
-    /** Sessions currently mid-settle, for the visible `Settling…` state. */
-    settlingSessionIds(): string[] {
-      return settleLifecycle.settling.settlingSessionIds();
-    },
-
     unsettleSessions,
 
     // -----------------------------------------------------------------------
@@ -2819,10 +2831,10 @@ export function createSessionService({
      *
      * Unlike `clearTurnStartMarkers` this touches only the settle tuple: a
      * wake must not take down a question the agent raised for the person. A
-     * row that is not settled is left alone (the guard), so the common case
-     * writes nothing; an explicit keep-active pin is not settled either.
+     * row that is not settled (including one pinned keep-active) is left
+     * alone, so the common case writes nothing.
      */
-    unsettleOnTurnStart(sessionId: string): boolean {
+    clearSettleOnTurnStart(sessionId: string): boolean {
       const trimmed = sessionId.trim();
       if (!trimmed) return false;
       const row = db.get<{ settledAt: string | null; settleOverride: string | null }>(
@@ -2830,27 +2842,21 @@ export function createSessionService({
         [trimmed],
       );
       if (!row) return false;
-      const settled = row.settleOverride === "settled" || (row.settledAt != null && row.settleOverride == null);
-      // A settle still in its window has not written yet; abort it all the same.
-      if (!settled && !settleLifecycle.settling.isSettling(trimmed)) return false;
+      if (!isSettleTupleSettled(row)) {
+        // A settle still in its window has not written yet: abort it, and
+        // write nothing, so a keep-active pin survives.
+        settleLifecycle.settling.abort(trimmed, "turn_start");
+        return false;
+      }
       return mutateSessionMeta(trimmed, (id) => {
-        writeSettleLifecycle({
-          intent: { kind: "clearOnActivity", cause: "turn_start", settleNudgeTurnId: `pending:${randomUUID()}` },
-          sessionIds: [id],
-        });
+        writeSettleLifecycle({ intent: turnStartSettleClear(), sessionIds: [id] });
       });
     },
 
     clearTurnStartMarkers(sessionId: string): boolean {
       const changed = mutateSessionMeta(sessionId, (id) => {
         writeSettleLifecycle({
-          intent: {
-            kind: "clearOnActivity",
-            cause: "turn_start",
-            // The pending marker invalidates any Jev answer already in flight.
-            // A unique value lets the eventual write fail its compare-and-set.
-            settleNudgeTurnId: `pending:${randomUUID()}`,
-          },
+          intent: turnStartSettleClear(),
           extraSet: {
             last_turn_failed_at: null,
             attention_requested_at: null,

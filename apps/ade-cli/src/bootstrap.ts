@@ -37,8 +37,7 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
-import { createSettleWiring } from "../../desktop/src/main/services/sessions/settleWiring";
-import type { SettleCheckOutcome, SubagentLink } from "../../desktop/src/main/services/sessions/settleTurnCheck";
+import { createLateBoundSettle, createSettleWiring } from "../../desktop/src/main/services/sessions/settleWiring";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -1257,21 +1256,15 @@ export async function createAdeRuntime(args: {
     // constructed further down. Without this the brain — which owns phone sync,
     // remote commands and the PR-merge poller in a normal install — would
     // settle chats mid-turn.
-    const settleRef: {
-      check: ((sessionId: string) => Promise<SettleCheckOutcome>) | null;
-      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
-      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
-    } = { check: null, report: null, subagentLinks: null };
+    const lateSettle = createLateBoundSettle();
     const sessionService = createSessionService({
       db,
       logger,
-      // Before the chat service is up no chat has a running turn to refuse.
-      checkSettle: async (sessionId) => (settleRef.check ? await settleRef.check(sessionId) : {}),
-      onRemoteSettleWrite: (args) => settleRef.report?.(args),
+      checkSettle: lateSettle.checkSettle,
+      onRemoteSettleWrite: lateSettle.onRemoteSettleWrite,
+      listSubagentLinks: lateSettle.listSubagentLinks,
       // Read at call time: the automation service is built later.
       onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
-      listSubagentLinks: async (parentSessionIds) =>
-        settleRef.subagentLinks ? await settleRef.subagentLinks(parentSessionIds) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -2751,16 +2744,13 @@ export async function createAdeRuntime(args: {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
       };
-      const settleWiring = createSettleWiring({
+      lateSettle.bind(createSettleWiring({
         agentChatService,
         logger,
         analytics: productAnalyticsService ?? null,
         // The brain is the non-GUI runtime surface, matching its other analytics.
         surface: "api",
-      });
-      settleRef.check = settleWiring.checkSettle;
-      settleRef.report = settleWiring.onRemoteSettleWrite;
-      settleRef.subagentLinks = settleWiring.listSubagentLinks;
+      }));
     }
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");

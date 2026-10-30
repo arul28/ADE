@@ -50,14 +50,19 @@ export function moveSessionOnBoard(args: {
           // the provider's question — so the card would sit there while the
           // toast claimed a move. Say what is actually blocking.
           const pendingCard = result.reason === "pending_input";
+          const working = result.reason === "turn_running";
           showToast({
             id: `session-board-move:${session.id}`,
             title: pendingCard
               ? "Answer the question first"
-              : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
+              : working
+                ? "Still working"
+                : `Already ${WORK_BOARD_COLUMN_LABEL[result.from].toLowerCase()}`,
             message: pendingCard
               ? "This chat is waiting on an answer, so moving it would not change what it needs."
-              : "The PR is what is waiting, not the chat.",
+              : working
+                ? "A chat can be moved to Done once its turn ends."
+                : "The PR is what is waiting, not the chat.",
             durationMs: 4_000,
           });
         }

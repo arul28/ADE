@@ -770,7 +770,7 @@ settled.*
 |---|---|
 | A user settle interrupted the running turn and its background work (`stop_and_background`), waited up to 5s, recorded residue. | `settleTurnCheck.ts` reads whether a turn is running and stops nothing. |
 | A machine settle (`pr_merge`) refused a running turn; a user settle cancelled it. | Every caller is refused while a turn runs (`turn_running`); a turn read that does not answer in 10s refuses with `status_unknown`. |
-| Only a person's message unsettled a chat; a scheduled wake ran the turn and the row re-settled at rest. | Any turn start unsettles (`sessionService.unsettleOnTurnStart`, from `agentChatService.setSessionActive`). It clears the settle tuple only, never an `ade chat ask` hand. |
+| Only a person's message unsettled a chat; a scheduled wake ran the turn and the row re-settled at rest. | Any turn start unsettles (`sessionService.clearSettleOnTurnStart`, from `agentChatService.setSessionActive`). It clears the settle tuple only, never an `ade chat ask` hand. |
 | Settled chats did not resume after a brain restart. | They resume like any other chat; only archive holds a resume. The resumed turn unsettles them. |
 | `session_settle_residue`, `session.getSettleResidue`, the `settle_teardown_residue` analytics action. | Removed; the table is dropped at startup. |
 

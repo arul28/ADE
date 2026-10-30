@@ -1836,6 +1836,9 @@ const RETIRED_TABLE_DROPS = [
   { tables: RETIRED_PR_AI_SUMMARY_TABLES, tag: "retired-pr-ai-summary-schema", event: "db.retired_pr_ai_summary_schema_cleaned" },
   { tables: RETIRED_PR_WORKFLOW_TABLES, tag: "retired-pr-workflow-schema", event: "db.retired_pr_workflow_schema_cleaned" },
   { tables: RETIRED_PROJECT_NOTES_TABLES, tag: "retired-project-notes-schema", event: "db.retired_project_notes_schema_cleaned" },
+  // Settle used to stop a chat's work and record here what it could not stop.
+  // Settle no longer stops anything; the table was always local-only.
+  { tables: ["session_settle_residue"], tag: "retired-settle-residue-schema", event: "db.retired_settle_residue_schema_cleaned" },
 ] as const;
 
 function dropRetiredSchema(db: DatabaseSyncType, drop: (typeof RETIRED_TABLE_DROPS)[number], logger?: Logger): void {
@@ -4773,9 +4776,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
 
-  // Settle used to stop a chat's work and record here what it could not stop.
-  // Settle no longer stops anything, so the table has no writer or reader.
-  db.run("drop table if exists session_settle_residue");
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.

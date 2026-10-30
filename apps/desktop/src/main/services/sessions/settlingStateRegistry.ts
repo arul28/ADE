@@ -2,10 +2,12 @@
  * The `settling` state: the window between deciding to settle a session and the
  * settle landing.
  *
- * The lifecycle revision (step 1) detects that the world moved. It does not say
- * what to do about work already stopped when it moves — that is R2, the one race
- * where both outcomes are bad. This registry is the other half: a short-lived,
- * visible, exclusive, abortable marker that the settle check runs inside.
+ * A settle reads whether the session's turn is running (`settleTurnCheck.ts`)
+ * and only then writes, so a turn that starts during that await must win. The
+ * lifecycle revision detects that the world moved; this registry is the other
+ * half: a short-lived, exclusive, abortable marker the check runs inside, so a
+ * turn start or a peer's decision abandons the settle instead of being
+ * overwritten by it.
  *
  * Deliberately IN MEMORY. The design requires a `settling` row found at startup
  * to resolve to not-settled, because a settle is not resumable across a restart
@@ -47,14 +49,12 @@ export type SettleSessionsOutcome = {
 };
 
 export type SettlingEntry = {
-  /** The revision the settle decision was taken against. */
-  startedAtRevision: number;
   abortedBy: SettleAbortReason | null;
   /**
    * Identifies THIS window. `end` refuses to close a window it did not open, so
-   * an owner whose window was already torn down out from under it (a session
-   * deleted mid-teardown) cannot close the one a newer settle has since opened
-   * for the same id — which would leave two teardowns believing they own it.
+   * an owner whose window was already closed out from under it (a session
+   * deleted mid-settle) cannot close the one a newer settle has since opened
+   * for the same id — which would leave two settles believing they own it.
    */
   token: number;
 };
@@ -64,8 +64,8 @@ export type BeginSettlingResult =
   | { kind: "started"; token: number }
   /**
    * Another settle for this session is already in flight. The caller JOINS it
-   * rather than starting a second teardown — closing R4, where two teardowns
-   * race one session and the second reports against a partially-drained roster.
+   * rather than starting a second settle — closing R4, where two settles race
+   * one session and both report an outcome for it.
    */
   | { kind: "joined" };
 
@@ -73,20 +73,15 @@ export class SettlingStateRegistry {
   private readonly entries = new Map<string, SettlingEntry>();
   private nextToken = 1;
 
-  begin(sessionId: string, startedAtRevision: number): BeginSettlingResult {
+  begin(sessionId: string): BeginSettlingResult {
     if (this.entries.has(sessionId)) return { kind: "joined" };
     const token = this.nextToken++;
-    this.entries.set(sessionId, { startedAtRevision, abortedBy: null, token });
+    this.entries.set(sessionId, { abortedBy: null, token });
     return { kind: "started", token };
   }
 
   isSettling(sessionId: string): boolean {
     return this.entries.has(sessionId);
-  }
-
-  /** Every session currently mid-settle, for the "Settling…" projection. */
-  settlingSessionIds(): string[] {
-    return Array.from(this.entries.keys());
   }
 
   /**
@@ -108,17 +103,13 @@ export class SettlingStateRegistry {
    *
    * A settle that no longer owns the id must stop as surely as an aborted one.
    * `forget` (a deleted session) force-closes the entry, and if the id is then
-   * recreated a new settle opens a fresh window; a stale teardown consulting
-   * `abortedBy` alone would read the replacement, see "not aborted", and keep
-   * issuing provider stops against the new session's work.
+   * recreated a new settle opens a fresh window; a stale settle consulting
+   * `abortedBy` alone would read the replacement, see "not aborted", and file
+   * the new session as settled.
    */
   abandoned(sessionId: string, token: number): boolean {
     const entry = this.entries.get(sessionId);
     return !entry || entry.token !== token || entry.abortedBy !== null;
-  }
-
-  startedAtRevision(sessionId: string): number | null {
-    return this.entries.get(sessionId)?.startedAtRevision ?? null;
   }
 
   /** Closes the window only if `token` still owns it. Omit to force-close. */

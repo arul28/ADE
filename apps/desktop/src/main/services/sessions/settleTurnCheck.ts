@@ -6,7 +6,7 @@ import type { SettleAbortedReason } from "./settlingStateRegistry";
  * Settle is a classification, not a stop. A settled chat keeps its background
  * shells, subagents, cloud runs, scheduled wakes and crons running exactly as
  * before; any of them that starts a new turn takes the chat out of settled
- * again (`sessionService.unsettleOnTurnStart`).
+ * again (`sessionService.clearSettleOnTurnStart`).
  *
  * The one thing a settle refuses is a chat whose turn is running right now: a
  * working chat cannot be settled, and the settle would be undone the moment the
@@ -34,28 +34,32 @@ export type SettleTurnCheckDeps = {
    */
   readTurnRunning: (sessionId: string) => Promise<boolean | null>;
   logger?: { warn: (message: string, meta?: Record<string, unknown>) => void };
-  /** Fires when the read has taken too long. Real timer by default. */
-  expireRead?: () => Promise<void>;
 };
 
 export function createSettleTurnCheck(
   deps: SettleTurnCheckDeps,
 ): (sessionId: string) => Promise<SettleCheckOutcome> {
-  const expireRead = deps.expireRead
-    ?? (() => new Promise<void>((resolve) => { setTimeout(resolve, TURN_READ_TIMEOUT_MS).unref?.(); }));
-
   return async (sessionId) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
     let read: { ok: true; running: boolean | null } | { ok: false };
     try {
       read = await Promise.race([
         deps.readTurnRunning(sessionId).then((running) => ({ ok: true, running }) as const),
-        expireRead().then(() => ({ ok: false }) as const),
+        new Promise<{ ok: false }>((resolve) => {
+          timer = setTimeout(() => {
+            deps.logger?.warn("settle_check.read_timed_out", { sessionId });
+            resolve({ ok: false });
+          }, TURN_READ_TIMEOUT_MS);
+        }),
       ]);
     } catch (error) {
       deps.logger?.warn("settle_check.read_failed", {
+        sessionId,
         error: error instanceof Error ? error.message : String(error),
       });
       read = { ok: false };
+    } finally {
+      clearTimeout(timer);
     }
     // A read that never answered is not evidence the chat is at rest; settling
     // it could file a working chat. Refuse, and let the caller try again.
@@ -64,6 +68,3 @@ export function createSettleTurnCheck(
     return {};
   };
 }
-
-/** A subagent and the parent that spawned it, for the settle cascade. */
-export type SubagentLink = { sessionId: string; parentSessionId: string };

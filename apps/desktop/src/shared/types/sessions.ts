@@ -570,8 +570,11 @@ export type SessionBoardMoveResult = {
    * provider on the user's behalf is not something a drag may do. Present only
    * on a refusal, so a caller can say what happened instead of falling back to
    * the "it is already there" wording that a `changed: false` no-op carries.
+   *
+   * `turn_running`: a drop on Done while the chat is working. A working chat
+   * cannot be settled; it can be once its turn ends.
    */
-  reason?: "pending_input";
+  reason?: "pending_input" | "turn_running";
 };
 
 /**

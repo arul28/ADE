@@ -769,6 +769,24 @@ export function createSessionBoardMoveActions(deps: {
           reason: "pending_input",
         };
       }
+      // A working chat cannot be settled (`settleTurnCheck.ts`), so a drop on
+      // Done would only strip its pin and attention and then bounce back.
+      // Refuse it with the reason instead.
+      if (
+        to === "done"
+        && (chatSummary?.status === "active" || Boolean(chatSummary?.turnAcceptedAt))
+      ) {
+        return {
+          ok: false,
+          sessionId,
+          from: deriveWorkBoardColumn(row, Date.now(), { hasBusySubagent: busySubagent }),
+          to,
+          changed: false,
+          moveId: null,
+          undoExpiresAt: null,
+          reason: "turn_running",
+        };
+      }
       // Checked BEFORE the flush below, so a duplicate drop event — which
       // arrives as a second call to the column the first one just reached —
       // stays a pure no-op instead of cutting the real move's undo short.

@@ -157,8 +157,7 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "./services/sessions/sessionService";
-import type { SettleCheckOutcome, SubagentLink } from "./services/sessions/settleTurnCheck";
-import { createSettleWiring } from "./services/sessions/settleWiring";
+import { createLateBoundSettle, createSettleWiring } from "./services/sessions/settleWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { terminalShellPreferenceStoreFor } from "./services/pty/terminalShells";
@@ -4143,21 +4142,15 @@ app.whenReady().then(async () => {
 
     // Late-bound: the chat service that owns the work does not exist yet at
     // this point, and the settle path must not depend on construction order.
-    const settleRef: {
-      check: ((sessionId: string) => Promise<SettleCheckOutcome>) | null;
-      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
-      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
-    } = { check: null, report: null, subagentLinks: null };
+    const lateSettle = createLateBoundSettle();
     const sessionService = createSessionService({
       db,
       logger,
-      onRemoteSettleWrite: (args) => settleRef.report?.(args),
+      checkSettle: lateSettle.checkSettle,
+      onRemoteSettleWrite: lateSettle.onRemoteSettleWrite,
+      listSubagentLinks: lateSettle.listSubagentLinks,
       // Read at call time: the automation service is built later.
       onChatSettled: (chat) => automationService?.onSessionSettled(chat),
-      listSubagentLinks: async (parentSessionIds) =>
-        settleRef.subagentLinks ? await settleRef.subagentLinks(parentSessionIds) : [],
-      // Before the chat service is up no chat has a running turn to refuse.
-      checkSettle: async (sessionId) => (settleRef.check ? await settleRef.check(sessionId) : {}),
     });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
@@ -5124,17 +5117,12 @@ app.whenReady().then(async () => {
       countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
-    {
-      const wiring = createSettleWiring({
-        agentChatService,
-        logger,
-        analytics: productAnalyticsService ?? null,
-        surface: "desktop",
-      });
-      settleRef.check = wiring.checkSettle;
-      settleRef.report = wiring.onRemoteSettleWrite;
-      settleRef.subagentLinks = wiring.listSubagentLinks;
-    }
+    lateSettle.bind(createSettleWiring({
+      agentChatService,
+      logger,
+      analytics: productAnalyticsService ?? null,
+      surface: "desktop",
+    }));
     setImmediate(() => {
       void Promise.resolve()
         .then(() => agentChatService.cleanupStaleAttachments())

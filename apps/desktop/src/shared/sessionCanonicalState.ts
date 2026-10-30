@@ -296,6 +296,19 @@ export function isPersistedTurnFailureCurrent(args: {
  * has happened in three hours" is the fact worth surfacing regardless of what
  * claims to be alive.
  */
+/**
+ * Whether the settle tuple says "settled": a declared settle or a "settled"
+ * pin, and never while an explicit "active" (keep-active) pin is set. The tuple
+ * only; callers add "and at rest" where it matters.
+ */
+export function isSettleTupleSettled(args: {
+  settledAt?: string | null;
+  settleOverride?: string | null;
+}): boolean {
+  if (args.settleOverride === "active") return false;
+  return args.settleOverride === "settled" || Boolean(args.settledAt);
+}
+
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
   const chat = args.isChatTool?.(args.toolType) ?? false;
@@ -359,9 +372,8 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   // so the row never reads settled while a turn streams, even in the moment
   // before the turn-start clear lands.
   //
-  const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
-  if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
+  if (atRest && isSettleTupleSettled(args)) {
     // The PHASE stays settled: a declared settle is a human judgment call, and
     // re-lighting the row would let a stubborn monitor out-vote the user's
     // explicit "this is done".
@@ -649,10 +661,7 @@ export function sessionStatusBucket(args: {
     || args.attentionSource === "provider_structured"
     || args.pendingInputWaiting === true
   ) return "awaiting-input";
-  const effectiveSettled = args.settleOverride === "active"
-    ? false
-    : args.settleOverride === "settled" || Boolean(args.settledAt);
-  if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
+  if (isSettleTupleSettled(args) && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
   // A live turn outranks a persisted failure marker: chats keep their row
   // "running" between turns, so `runtimeState` is the live signal that says a
   // turn is actually in flight.
