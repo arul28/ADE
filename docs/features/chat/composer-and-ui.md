@@ -2109,7 +2109,7 @@ per hit: path, link, and `[user only: <why>]` for a setting only the user
 changes, plus one line telling the agent not to look for another way.
 
 - **`ade://settings/<id>`** draws a `setting` chip labelled with the
-  manifest's path (`Computer › Studio › Providers › AI connections`), never the
+  manifest's path (`App › Studio › Providers › AI connections`), never the
   agent's text, so a markdown link's own words are dropped. On a Computer page
   that follows a machine, the chat machine's name goes after "Computer"; a link
   that names its own `?machine=` leaves the name out. Appearance and Apple

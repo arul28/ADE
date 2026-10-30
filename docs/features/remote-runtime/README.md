@@ -439,7 +439,8 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   own.
 - `apps/desktop/src/renderer/components/remoteTargets/SavedMachineRow.tsx`,
   `MachineIdentity.tsx`, and `remoteMachineModel.ts` (`accountMachineMatchesTarget`,
-  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `newestKnownAdeVersion`)
+  `isMachineVersionOutdated`, `isMachineVersionCurrent`, `knownAdeVersions`,
+  `machineUpdateTargetVersion`)
   — one machine row. `MachineIdentity.tsx` draws the computer with its platform's
   logo in the machine's own color (`machinePlatform`, `machineFormFactor`), on
   the stable key `machineColorKey` picks, so every device paints the same
@@ -2012,11 +2013,14 @@ machines are behind, a banner above the section header offers **Update all**
 one confirmation with a block per machine, then the same per-machine update in
 parallel.
 
-The same action is offered where this computer's own update lives: **Update
-other machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits
-under Updates in Settings → ADE service and under Your computers on the Account
-page. It lists each connected machine with its version, "Update & restart" for
-the ones behind, and "Update all N". Every place that starts or shows one of
+The same action is offered where this computer's own update lives: General's
+ADE card has an update row for every machine
+(`components/settings/general/MachineUpdateRows.tsx`), and **Update other
+machines** (`components/settings/OtherMachinesUpdateSection.tsx`) sits under
+Your computers on the Account page. Each lists the machines with their version
+and track, "Update" for the ones behind the newest build this computer knows on
+**their own** track (a Stable machine is never sent a Beta build, or the
+reverse), and "Update all N". Every place that starts or shows one of
 these updates, the install dialog below included, goes through one store
 (`components/remoteTargets/machineUpdates.ts`), so an update started in one
 shows as in flight in the others and its outcome survives leaving the page.
@@ -2025,12 +2029,13 @@ The words for what is running live in
 browser client cannot ask a machine to update, so the section is not rendered
 there.
 
-The same blocks appear in this computer's own install dialog
-(`components/app/autoUpdateInstallAction.tsx`) for connected machines older
-than the version being installed, with an "Update … too" checkbox that is on by
-default (the confirm dialog takes several checkboxes, each answered by key). Those machines update first and this computer installs last, because
-its relaunch ends the run. If one refuses, the dialog names it and asks whether
-to install here anyway.
+The same rows appear in this computer's own restart dialog
+(`components/app/autoUpdateInstallAction.tsx`) for connected machines behind on
+their track, each with its own "Update" box (the confirm dialog lets its body
+place the checkboxes in its rows, each still answered by key). The machines
+picked update first and this computer restarts last, because its relaunch ends
+the run. If one refuses, the dialog names it and asks whether to restart here
+anyway.
 
 ### Account state and reachability
 

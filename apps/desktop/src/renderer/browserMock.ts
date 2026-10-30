@@ -1432,6 +1432,8 @@ function browserMockGithubStatus<T extends { credentialStates: Array<Record<stri
   };
 }
 
+let browserMockContinueAfterRestart = true;
+
 function browserMockFlag(name: string): boolean {
   try {
     return new URLSearchParams(window.location.search).has(name);
@@ -6355,6 +6357,14 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       onEvent: () => () => {},
     },
     ai: {
+      // One value per machine; the preview keeps it for the session.
+      // Settings › Chat's Smart decisions asks this; the preview has no Jev.
+      jevStatus: resolved(null),
+      getContinueAfterRestart: async () => ({ enabled: browserMockContinueAfterRestart }),
+      setContinueAfterRestart: async (enabled: boolean) => {
+        browserMockContinueAfterRestart = enabled;
+        return { enabled };
+      },
       getStatus: resolved(BROWSER_MOCK_AI_STATUS),
       getOpenCodeRuntimeDiagnostics: resolved({} as any),
       storeApiKey: resolvedArg(undefined),

@@ -1,4 +1,4 @@
-import type { RuntimeUpdateImpact, UpdateImpact, UpdateInterruptedChat } from "./types";
+import type { RuntimeUpdateImpact, UpdateChatContinueHold, UpdateImpact, UpdateInterruptedChat } from "./types";
 
 /** The answer for a machine that could not say what it is running. */
 export const UNKNOWN_UPDATE_IMPACT: UpdateImpact = Object.freeze({
@@ -18,8 +18,13 @@ function parseChat(raw: unknown): UpdateInterruptedChat | null {
     projectName: typeof chat.projectName === "string" ? chat.projectName : "",
     projectRoot: typeof chat.projectRoot === "string" ? chat.projectRoot : null,
     ...(chat.resumable === false ? { resumable: false } : {}),
+    ...(chat.continueHold === null || (typeof chat.continueHold === "string" && CONTINUE_HOLDS.has(chat.continueHold))
+      ? { continueHold: chat.continueHold as UpdateChatContinueHold | null }
+      : {}),
   };
 }
+
+const CONTINUE_HOLDS: ReadonlySet<string> = new Set(["disabled", "stale", "awaiting_user", "capped", "archived"]);
 
 /**
  * A brain's `runtime.updateImpact` reply, or null when it is not one. The
@@ -34,5 +39,6 @@ export function parseRuntimeUpdateImpact(raw: unknown): RuntimeUpdateImpact | nu
     chats: reply.chats.flatMap((chat) => parseChat(chat) ?? []),
     cliSessions: Number(reply.cliSessions) || 0,
     terminals: Number(reply.terminals) || 0,
+    ...(typeof reply.continueAfterRestart === "boolean" ? { continueAfterRestart: reply.continueAfterRestart } : {}),
   };
 }

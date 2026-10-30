@@ -1,5 +1,5 @@
 import { extractError } from "../../lib/format";
-import { updateTrackOfVersion } from "../../../shared/updateTrack";
+import { updateTrackOfVersion, type UpdateTrack } from "../../../shared/updateTrack";
 import type {
   AdeAccountMachine,
   RemoteRuntimeConnectErrorInfo,
@@ -659,14 +659,15 @@ export type SavedMachineRow = {
 /**
  * Parseability guard, not a comparator: the ordering itself is
  * `compareUpdateVersions`. Anything without a numeric dotted core (or missing)
- * answers "not outdated" so an odd version string can never conjure an update
- * prompt, and the prerelease/build suffix is dropped because "behind this
- * computer" is a release-line question.
+ * answers null so an odd version string can never conjure an update prompt.
+ * The prerelease is kept: every target is on the machine's own track now, so
+ * `1.2.127-beta.1` really is behind `1.2.127-beta.2`.
  */
-function comparableVersionCore(version: string | null | undefined): string | null {
-  const core = version?.trim().replace(/^v/i, "").split(/[-+]/)[0] ?? "";
+function comparableVersion(version: string | null | undefined): string | null {
+  const trimmed = version?.trim().replace(/^v/i, "") ?? "";
+  const core = trimmed.split(/[-+]/)[0] ?? "";
   if (!core) return null;
-  return core.split(".").every((part) => Number.isFinite(Number(part))) ? core : null;
+  return core.split(".").every((part) => part !== "" && Number.isFinite(Number(part))) ? trimmed : null;
 }
 
 /** True when `version` is strictly older than `newestVersion`. */
@@ -674,8 +675,8 @@ export function isMachineVersionOutdated(
   version: string | null | undefined,
   newestVersion: string | null | undefined,
 ): boolean {
-  const left = comparableVersionCore(version);
-  const right = comparableVersionCore(newestVersion);
+  const left = comparableVersion(version);
+  const right = comparableVersion(newestVersion);
   if (!left || !right) return false;
   return compareUpdateVersions(left, right) < 0;
 }
@@ -690,8 +691,8 @@ export function isMachineVersionCurrent(
   version: string | null | undefined,
   targetVersion: string | null | undefined,
 ): boolean {
-  const left = comparableVersionCore(version);
-  const right = comparableVersionCore(targetVersion);
+  const left = comparableVersion(version);
+  const right = comparableVersion(targetVersion);
   if (!left || !right) return false;
   return compareUpdateVersions(left, right) >= 0;
 }
@@ -827,6 +828,14 @@ export type ConnectedMachine = {
   version: string | null;
   /** One version, or both when they drift. */
   versionLabel?: string | null;
+  /**
+   * The update track it follows, read from its brain's version (machines do
+   * not report their saved choice). Absent: the track of `version`.
+   */
+  track?: UpdateTrack;
+  /** What its tile is drawn from (`MachineAvatar`); absent where unknown. */
+  colorKey?: string;
+  arch?: string | null;
 };
 
 /** The machines a connection snapshot says are connected right now. */
@@ -835,31 +844,89 @@ export function connectedMachinesFromSnapshot(
 ): ConnectedMachine[] {
   return (snapshot?.connections ?? [])
     .filter((connection) => connection.state === "connected")
-    .map((connection) => ({
-      id: connection.target.id,
-      name: connection.target.name,
-      ...machineVersionFacts(connection, connection.target),
-    }));
+    .map((connection) => {
+      const facts = machineVersionFacts(connection, connection.target);
+      const brainVersion = connection.version?.trim() || connection.target.runtimeBinaryVersion || facts.version;
+      return {
+        id: connection.target.id,
+        name: connection.target.name,
+        ...facts,
+        track: updateTrackOfVersion(brainVersion),
+        colorKey: machineColorKey(connection.target),
+        arch: connection.arch ?? connection.target.lastSeenArch ?? null,
+      };
+    });
 }
 
-/** The machines running an ADE older than `newestVersion`. */
-export function outdatedMachines<T extends Pick<ConnectedMachine, "version">>(
-  machines: readonly T[],
-  newestVersion: string | null | undefined,
-): T[] {
-  return machines.filter((machine) => isMachineVersionOutdated(machine.version, newestVersion));
+/** The track a machine follows: what it reports, else the track of its version. */
+export function machineUpdateTrack(machine: Pick<ConnectedMachine, "version" | "track">): UpdateTrack {
+  return machine.track ?? updateTrackOfVersion(machine.version);
 }
 
-/** The newest ADE version this computer knows about — running or staged. */
-export function newestKnownAdeVersion(args: {
+/**
+ * Every ADE version this computer knows exists: the one it runs, the one it
+ * downloaded, the newest its own feed named, and the newest build of each
+ * track (`latestByTrack`, read from both feeds whichever track this computer
+ * follows). So a Beta computer still knows the newest Stable build, and the
+ * reverse. Builds with no feed (dev, Alpha) have only the first three.
+ */
+export function knownAdeVersions(snapshot: {
   currentVersion?: string | null;
   latestKnownVersion?: string | null;
-}): string | null {
-  const current = args.currentVersion?.trim() || null;
-  const latest = args.latestKnownVersion?.trim() || null;
-  if (!current) return latest;
-  if (!latest) return current;
-  return isMachineVersionOutdated(current, latest) ? latest : current;
+  version?: string | null;
+  latestByTrack?: { stable: string | null; beta: string | null } | null;
+} | null | undefined): string[] {
+  return [
+    snapshot?.currentVersion,
+    snapshot?.version,
+    snapshot?.latestKnownVersion,
+    snapshot?.latestByTrack?.stable,
+    snapshot?.latestByTrack?.beta,
+  ]
+    .map((version) => version?.trim() || "")
+    .filter((version) => comparableVersion(version) != null);
+}
+
+/**
+ * The newest version this computer knows on `track`, or null when it has seen
+ * none there (a Beta computer knows no Stable build). Never a build from the
+ * other track: "Update" never moves a machine across tracks.
+ */
+export function newestKnownVersionOnTrack(known: readonly string[], track: UpdateTrack): string | null {
+  let newest: string | null = null;
+  for (const version of known) {
+    if (updateTrackOfVersion(version) !== track) continue;
+    if (!newest || isMachineVersionOutdated(newest, version)) newest = version;
+  }
+  return newest;
+}
+
+/**
+ * The version to offer `machine`: the newest this computer knows on the
+ * machine's own track, when the machine is behind it. Null when it is level,
+ * when its version cannot be read, or when this computer knows no build on
+ * that track; it is then not called behind, since nothing here can say so.
+ */
+export function machineUpdateTargetVersion(
+  machine: Pick<ConnectedMachine, "version" | "track">,
+  known: readonly string[],
+): string | null {
+  const target = newestKnownVersionOnTrack(known, machineUpdateTrack(machine));
+  return target && isMachineVersionOutdated(machine.version, target) ? target : null;
+}
+
+/** A machine to update, and the version on its own track it is sent. */
+export type MachineUpdateTarget = ConnectedMachine & { targetVersion: string | null };
+
+/** The machines behind the newest build this computer knows on their own track. */
+export function machinesBehindOnTheirTrack<T extends ConnectedMachine>(
+  machines: readonly T[],
+  known: readonly string[],
+): Array<T & { targetVersion: string }> {
+  return machines.flatMap((machine) => {
+    const targetVersion = machineUpdateTargetVersion(machine, known);
+    return targetVersion ? [{ ...machine, targetVersion }] : [];
+  });
 }
 
 export type DiscoveredMachineRow = {

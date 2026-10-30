@@ -1,4 +1,9 @@
 import { normalizeCompactionSettings } from "../../../shared/compactionSettings";
+import {
+  resolveContinueAfterRestart,
+  writeSavedContinueAfterRestart,
+} from "../../../../../ade-cli/src/services/runtime/continueAfterRestartStore";
+import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import { AdeExpectedError } from "../../../shared/expectedError";
 import fs from "node:fs";
 import os from "node:os";
@@ -2489,6 +2494,20 @@ function buildAiDomainService(runtime: AdeRuntime): OpaqueService | null {
     jevDecide: (args?: JevDecideRequest) =>
       runtime.jevService && args ? runtime.jevService.decide(args) : Promise.resolve(null),
     jevStatus: () => runtime.jevService?.status() ?? null,
+    // "Continue chats after restarts" for the machine this runtime runs on,
+    // one value per machine (Settings › Chat). The brain reads it when it
+    // decides a resume, so the action answers for its own machine.
+    getContinueAfterRestart: () => ({ enabled: resolveContinueAfterRestart() }),
+    // The update track this machine follows (`~/.ade/update-track.json`), for
+    // its page under Settings › Machines. Null: no choice saved, so it follows
+    // the track of the build it runs. Read only: a switch is guarded and runs
+    // on that machine.
+    getMachineUpdateTrack: () => ({ track: readSavedUpdateTrack()?.track ?? null }),
+    setContinueAfterRestart: (args?: { enabled?: boolean }) => {
+      if (typeof args?.enabled !== "boolean") throw new Error("enabled must be true or false.");
+      writeSavedContinueAfterRestart(args.enabled);
+      return { enabled: args.enabled };
+    },
     opencodeAuthMethods: () => listOpenCodeAuthMethods(buildOpenCodeAuthDeps()),
     opencodeOAuthStart: (args?: { providerId?: string; methodIndex?: number; inputs?: Record<string, string> }) =>
       startOpenCodeOAuth(buildOpenCodeAuthDeps(), {

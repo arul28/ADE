@@ -54,10 +54,10 @@ import {
   isMachineVersionOutdated,
   machineUpdateGraceMs,
   machineUpdatePhase,
-  outdatedMachines,
+  machinesBehindOnTheirTrack,
+  machineUpdateTargetVersion,
   isSshOnlyDiscovered,
   machineMatchesSavedTarget,
-  newestKnownAdeVersion,
   type MachineSection,
 } from "./remoteMachineModel";
 import {
@@ -66,8 +66,7 @@ import {
 } from "../../../shared/machinePresence";
 import { SavedMachineRow } from "./SavedMachineRow";
 import { MachinesBehindBanner } from "./MachinesBehindBanner";
-import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
-import { isMachineUpdateBusy, requestMachineUpdates, useMachineUpdates } from "./machineUpdates";
+import { isMachineUpdateBusy, requestMachineUpdates, useKnownAdeVersions, useMachineUpdates } from "./machineUpdates";
 import { DiscoveredMachineRow } from "./DiscoveredMachineRow";
 import { AccountMachineRow } from "./AccountMachineRow";
 import { accountRowKey, useRowActions } from "./useRowActions";
@@ -235,7 +234,6 @@ export function RemoteTargetList({
   const [saving, setSaving] = useState(false);
   const machineUpdates = useMachineUpdates();
   const { attempts: updateResultByTargetId, nowMs: updateClockMs } = machineUpdates;
-  const updateSnapshot = useAutoUpdateSnapshot();
   const [trustingHostKey, setTrustingHostKey] = useState(false);
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
@@ -1136,41 +1134,36 @@ export function RemoteTargetList({
     return labels;
   }, [accountConnectionToasts]);
 
-  // The newest ADE this computer knows about — what it runs today, or a newer
-  // build it has already seen published. A connected machine behind that gets
-  // the "Update & restart" button; a machine that is level with us gets none.
-  const newestKnownVersion = useMemo(
-    () =>
-      newestKnownAdeVersion({
-        currentVersion: updateSnapshot.currentVersion,
-        latestKnownVersion: updateSnapshot.latestKnownVersion,
-      }),
-    [updateSnapshot.currentVersion, updateSnapshot.latestKnownVersion],
-  );
+  // Every ADE build this computer knows of — what it runs, what it downloaded,
+  // what its feed named. A connected machine behind the newest one on ITS OWN
+  // track gets "Update & restart"; a track this computer knows no build on
+  // gets none, rather than a build from the other track.
+  const knownVersions = useKnownAdeVersions();
 
   function renderSection(section: MachineSection) {
     const rows = sections[section];
     if (rows.length === 0) return null;
-    // Connected machines behind the newest ADE this computer knows about.
+    // Connected machines behind the newest ADE this computer knows on their track.
     const behindMachines = section === "connected"
-      ? outdatedMachines(
+      ? machinesBehindOnTheirTrack(
           rows.flatMap((row) =>
             row.kind === "saved" && row.connected
               ? [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }]
               : []),
-          newestKnownVersion,
+          knownVersions,
         )
       : [];
     const updateAllBusy = behindMachines.some((machine) =>
       isMachineUpdateBusy(machineUpdates, machine, machineUpdates.nowMs));
+    const behindTargets = new Set(behindMachines.map((machine) => machine.targetVersion));
     return (
       <div className="ade-cx-section">
         {behindMachines.length > 1 ? (
           <MachinesBehindBanner
             count={behindMachines.length}
-            targetVersion={newestKnownVersion}
+            targetVersion={behindTargets.size === 1 ? behindMachines[0]!.targetVersion : null}
             busy={updateAllBusy}
-            onUpdateAll={() => void requestMachineUpdates(behindMachines, newestKnownVersion)}
+            onUpdateAll={() => void requestMachineUpdates(behindMachines)}
           />
         ) : null}
         <div className="ade-cx-section-head">
@@ -1235,9 +1228,8 @@ export function RemoteTargetList({
                 updateTargetVersion={
                   updatePhase && updateAttempt?.pendingVersion
                     ? updateAttempt.pendingVersion
-                    : row.connected &&
-                        isMachineVersionOutdated(row.version, newestKnownVersion)
-                      ? newestKnownVersion
+                    : row.connected
+                      ? machineUpdateTargetVersion({ version: row.version }, knownVersions)
                       : null
                 }
                 updatePhase={updatePhase}
@@ -1247,8 +1239,7 @@ export function RemoteTargetList({
                 updateStatus={updateStatus ? { ok: updateStatus.ok, message: updateStatus.message } : null}
                 onUpdateAndRestart={(targetVersion) =>
                   void requestMachineUpdates(
-                    [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel }],
-                    targetVersion,
+                    [{ id: row.target.id, name: row.target.name, version: row.version, versionLabel: row.versionLabel, targetVersion }],
                   )
                 }
                 hostKeyTrust={

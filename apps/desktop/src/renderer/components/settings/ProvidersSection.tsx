@@ -27,7 +27,10 @@ import {
   LOCAL_PROVIDER_LABELS,
   type LocalProviderFamily,
 } from "../../../shared/modelRegistry";
-import { CaretDown, CaretRight } from "@phosphor-icons/react";
+import { CaretDown } from "@phosphor-icons/react";
+import { providerBrand } from "./providers/providerBrand";
+import { ToolLogo } from "../terminals/ToolLogos";
+import { DevinMark } from "../shared/ProviderLogos";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -37,7 +40,7 @@ import {
   type ApiKeySource,
   type OpenCodeProviderDetail,
 } from "./OpenCodeProviderDetailModal";
-import { ModernSection, SettingsToggle } from "./primitives";
+import { SettingsToggle } from "./primitives";
 import "./ProvidersSection.css";
 import { CustomProvidersSection } from "./harnesses/CustomProvidersSection";
 import { setUsageHeaderVisible, useUsageHeaderPreferences } from "../usage/usageHeaderPreferences";
@@ -116,20 +119,20 @@ const API_KEY_PROVIDERS: Array<{
 ];
 
 /**
- * The provider list is a grid of tiles: who it is, what state it is in, and
- * what ADE knows about it, with its own page behind each tile. The grid takes
- * as many columns as the page is wide, so a wide window shows the whole roster
- * without scrolling and a narrow one stacks it.
+ * The provider list: one ordered list of small tiles — the maker's logo on a
+ * tile of its colour, the name, the one fact that matters (accounts and
+ * models when it works, what is wrong when it does not), one status chip and,
+ * when it needs one, one action. Each tile opens the provider's own page,
+ * where the rest lives.
  */
 
 /**
- * One provider card.
+ * One provider tile.
  *
- * The whole card is the open button, so its accessible name ("Open Claude Code
- * settings") covers the status tag and the message — a screen reader that lands
- * on it hears the same facts a sighted reader sees. The one quick action
- * (Sign in, Download, Review) is a sibling button laid over the card's corner,
- * never nested inside it.
+ * The whole tile is the open button, so its accessible name ("Open Claude
+ * Code settings") covers the chip and the fact — a screen reader that lands
+ * on it hears what a sighted reader sees. The one quick action (Sign in,
+ * Download, Review) is a sibling button, never nested inside it.
  */
 function ProviderCard({
   descriptor,
@@ -142,7 +145,7 @@ function ProviderCard({
   ctx: ProvidersViewContext;
   /** Local logins for this provider. Only Claude and Codex can exceed one. */
   accountCount?: number;
-  /** Folded away with its group. */
+  /** Folded away with "Not set up". */
   hidden?: boolean;
   onOpen: () => void;
 }) {
@@ -156,20 +159,23 @@ function ProviderCard({
   const showModelCount = status.state !== "checking" && status.state !== "disabled"
     && !(status.state === "connected" && models.length === 0);
 
-  // A provider in trouble gets the real status sentence; a healthy one gets
-  // where its credential came from — the only question a working one raises.
+  // A provider in trouble says what is wrong; a healthy one what it has. A
+  // missing sign-in is a plain status on the tile: the provider's own message
+  // can be a terminal command ("Run: codex login"), which belongs on its page.
   const healthy = status.state === "connected";
-  const problem = status.errorLine ?? (healthy ? null : status.message);
-  const message = healthy ? descriptor.credentialLine?.(ctx) ?? null : problem;
-
+  const problem = status.errorLine
+    ?? (healthy ? null : status.state === "sign-in" ? "Not signed in" : status.message);
   const metaParts = [
-    // Only when there is more than one: "1 account" is noise on every card.
+    // Only when there is more than one: "1 account" is noise on every tile.
     ...(accountCount && accountCount > 1 ? [`${accountCount} accounts`] : []),
     ...(showModelCount ? [`${models.length} model${models.length === 1 ? "" : "s"}`] : []),
-    ...(version ? [version] : []),
+    ...(version && healthy ? [version] : []),
   ];
-  // Every card keeps a second line, so names line up across a row.
-  if (metaParts.length === 0 && healthy) metaParts.push("Signed in");
+  // A provider that is not set up has nothing to say yet beyond its chip.
+  const unset = status.state === "not-installed" || status.state === "disabled";
+  const fact = unset
+    ? null
+    : problem ?? (metaParts.length > 0 ? metaParts.join(" · ") : healthy ? descriptor.credentialLine?.(ctx) ?? "Signed in" : null);
 
   const signInCommand = providerSignIn(descriptor.id)?.command ?? null;
   // A provider that is not set up is one whose pinned copy is not on this
@@ -191,41 +197,37 @@ function ProviderCard({
       : status.state === "attention"
         ? { label: "Review", aria: `Review ${descriptor.label}`, run: onOpen }
         : null;
+  const brand = providerBrand(descriptor.id);
 
   return (
-    <div className="ade-pv-card" data-state={status.state} hidden={hidden}>
+    <div
+      className="ade-pvl-tile"
+      data-state={status.state}
+      hidden={hidden}
+      style={{ "--pvl-accent": brand.neutral ? "var(--color-fg)" : brand.accent } as React.CSSProperties}
+    >
       <button
         type="button"
         onClick={onOpen}
         aria-label={`Open ${descriptor.label} settings`}
-        className="ade-pv-open"
+        className="ade-pvl-open"
       >
-        <span className="ade-pv-top">
-          <span className="ade-pv-logo" aria-hidden>{descriptor.logo(22)}</span>
-          <span className="ade-pv-id">
-            <span className="ade-pv-name-row">
-              <span className="ade-pv-name" data-testid={`provider-tile-name-${descriptor.id}`}>
-                {descriptor.label}
-              </span>
-              {descriptor.preview ? <PreviewChip /> : null}
+        <span className="ade-pvl-logo" aria-hidden>{providerListMark(descriptor, 30)}</span>
+        <span className="ade-pvl-id">
+          <span className="ade-pvl-name-row">
+            <span className="ade-pvl-name" data-testid={`provider-tile-name-${descriptor.id}`}>
+              {descriptor.label}
             </span>
-            {metaParts.length > 0 ? (
-              <span className="ade-pv-meta">{metaParts.join(" · ")}</span>
-            ) : null}
+            {descriptor.preview ? <PreviewChip /> : null}
           </span>
-          <CaretRight size={12} className="ade-pv-caret" aria-hidden />
+          {fact ? <span className="ade-pvl-fact" title={fact}>{fact}</span> : null}
         </span>
-        {message ? (
-          <span className="ade-pv-line" title={message}>{message}</span>
-        ) : null}
-        <span className="ade-pv-foot">
-          <span className="kit-tag" data-tone={PROVIDER_TAG_TONE[status.state]}>
-            {status.label}
-          </span>
+        <span className="kit-tag ade-pvl-chip" data-tone={PROVIDER_TAG_TONE[status.state]}>
+          {status.label}
         </span>
       </button>
       {action ? (
-        <button type="button" className="ade-pv-action" aria-label={action.aria} onClick={action.run}>
+        <button type="button" className="ade-pvl-action" aria-label={action.aria} onClick={action.run}>
           {action.label}
         </button>
       ) : null}
@@ -245,16 +247,36 @@ const PROVIDER_TAG_TONE: Record<ProviderDescriptorState, string | undefined> = {
 type ProviderDescriptorState = ReturnType<typeof providerStatusFor>["state"];
 
 /**
- * Ready first, then the ones asking for something, then the ones that are not
- * set up — folded away while anything above them exists, so the grid opens on
- * what works. Until the first status lands every card says Checking, and the
- * grid stays one flat list rather than shuffling as answers arrive.
+ * The provider's mark with no box around it, for the list: the bare glyph in
+ * its maker's colour (`ToolLogo`'s provider-mark look). The default logos are
+ * app-icon avatars — a filled square or circle — which read as a box in a box
+ * at this size. Devin's tool logo is its boxed app icon, so it takes the bare
+ * Cognition glyph; a provider with no bare mark keeps its own logo.
  */
-const PROVIDER_GROUPS: Array<{ id: string; label: string; states: ProviderDescriptorState[] }> = [
-  { id: "ready", label: "Ready", states: ["connected"] },
-  { id: "action", label: "Action needed", states: ["sign-in", "attention", "checking"] },
-  { id: "unset", label: "Not set up", states: ["not-installed", "disabled"] },
-];
+// Muse and Pi are left out: their own logos are already bare images (Meta's
+// mark, the Pi glyph), and their masked provider-marks draw as a solid square.
+const BARE_MARK_TOOLS: ReadonlySet<string> = new Set([
+  "claude", "codex", "cursor", "droid", "copilot", "opencode", "qwen", "kimi", "grok",
+]);
+
+function providerListMark(descriptor: ProviderDescriptor, size: number): React.ReactNode {
+  if (descriptor.id === "devin") return <DevinMark size={size} />;
+  if (BARE_MARK_TOOLS.has(descriptor.id)) {
+    return <ToolLogo toolType={descriptor.id as TerminalToolType} size={size} appearance="provider-mark" />;
+  }
+  return descriptor.logo(size);
+}
+
+/** The order inside the one list: what works, then what asks for something, then the rest. */
+const STATE_ORDER: Record<ProviderDescriptorState, number> = {
+  connected: 0,
+  attention: 1,
+  "sign-in": 2,
+  checking: 3,
+  "not-installed": 4,
+  disabled: 5,
+};
+const UNSET_STATES: ReadonlySet<ProviderDescriptorState> = new Set(["not-installed", "disabled"]);
 
 function ProviderGrid({
   descriptors,
@@ -278,59 +300,58 @@ function ProviderGrid({
       onOpen={() => onOpen(descriptor.id)}
     />
   );
-  // One flat, keyed list in one parent — headings included — so a card that
-  // changes group when its status lands is moved, not remounted, and keeps
-  // keyboard focus.
+  // Until the first status lands every tile says Checking, and the list stays
+  // in its given order rather than shuffling as answers arrive.
   if (ctx.status == null) {
-    return <div className="ade-pv-grid">{descriptors.map((descriptor) => card(descriptor))}</div>;
+    return <div className="ade-pvl-grid">{descriptors.map((descriptor) => card(descriptor))}</div>;
   }
-  const grouped = PROVIDER_GROUPS.map((group) => ({
-    ...group,
-    items: descriptors.filter((descriptor) => group.states.includes(providerStatusFor(descriptor, ctx).state)),
-  })).filter((group) => group.items.length > 0);
-  const foldable = grouped.length > 1;
-  const children: React.ReactNode[] = [];
-  grouped.forEach((group, index) => {
-    const collapsible = foldable && group.id === "unset";
-    const open = !collapsible || unsetOpen;
+  // One flat, keyed list in one parent — the divider included — so a tile
+  // whose status lands is moved, not remounted, and keeps keyboard focus.
+  const ordered = descriptors
+    .map((descriptor, index) => ({ descriptor, index, state: providerStatusFor(descriptor, ctx).state }))
+    .sort((a, b) => STATE_ORDER[a.state] - STATE_ORDER[b.state] || a.index - b.index);
+  const set = ordered.filter((row) => !UNSET_STATES.has(row.state));
+  const unset = ordered.filter((row) => UNSET_STATES.has(row.state));
+  // With nothing set up yet, there is nothing to fold away behind.
+  const foldable = set.length > 0 && unset.length > 0;
+  const open = !foldable || unsetOpen;
+  // One array, so every tile stays the same element when the divider appears.
+  const children: React.ReactNode[] = set.map((row) => card(row.descriptor));
+  if (foldable) {
     children.push(
-      <div key={`head-${group.id}`} className="ade-pv-group-head" data-first={index === 0 ? "true" : undefined}>
-        <span className="kit-eyebrow">{group.label}</span>
-        <span className="ade-pv-count kit-num">{group.items.length}</span>
-        {collapsible ? (
-          <button
-            type="button"
-            className="ade-pv-fold"
-            aria-expanded={open}
-            onClick={() => setUnsetOpen((value) => !value)}
-          >
-            {open ? "Hide" : "Show"}
-            <CaretDown size={11} weight="bold" style={{ transform: open ? "rotate(180deg)" : undefined }} />
-          </button>
-        ) : null}
-      </div>,
-    );
-    if (collapsible && !open) {
-      children.push(
-        <button
-          key={`folded-${group.id}`}
-          type="button"
-          className="ade-pv-folded"
-          onClick={() => setUnsetOpen(true)}
-          aria-label={`Show ${group.items.length} providers that are not set up`}
-        >
-          <span className="ade-pv-folded-logos" aria-hidden>
-            {group.items.slice(0, 8).map((descriptor) => (
-              <span key={descriptor.id}>{descriptor.logo(16)}</span>
-            ))}
+      <button
+        key="unset-divider"
+        type="button"
+        className="ade-pvl-divider"
+        aria-expanded={open}
+        aria-label={`${open ? "Hide" : "Show"} ${unset.length} providers that are not set up`}
+        onClick={() => setUnsetOpen((value) => !value)}
+      >
+        <span className="ade-pvl-divider-label">Not set up</span>
+        <span className="kit-num ade-pvl-divider-count">{unset.length}</span>
+        {open ? null : (
+          <span className="ade-pvl-divider-logos" aria-hidden>
+            {unset.slice(0, 10).map((row) => <span key={row.descriptor.id}>{providerListMark(row.descriptor, 18)}</span>)}
           </span>
-          <span>{group.items.map((descriptor) => descriptor.label).join(", ")}</span>
-        </button>,
-      );
-    }
-    for (const descriptor of group.items) children.push(card(descriptor, !open));
-  });
-  return <div className="ade-pv-grid">{children}</div>;
+        )}
+        <CaretDown size={11} weight="bold" className="ade-pvl-divider-caret" style={{ transform: open ? "rotate(180deg)" : undefined }} aria-hidden />
+      </button>,
+    );
+  }
+  for (const row of unset) children.push(card(row.descriptor, !open));
+  return <div className="ade-pvl-grid">{children}</div>;
+}
+
+/** "12 coding agents — 3 ready, 2 need you", or "Checking…" before the first answer. */
+function providerSummary(descriptors: ProviderDescriptor[], ctx: ProvidersViewContext): string {
+  if (ctx.status == null) return `${descriptors.length} coding agents — checking…`;
+  const states = descriptors.map((descriptor) => providerStatusFor(descriptor, ctx).state);
+  const ready = states.filter((state) => state === "connected").length;
+  const asking = states.filter((state) => state === "sign-in" || state === "attention").length;
+  return [
+    `${descriptors.length} coding agents`,
+    [`${ready} ready`, asking > 0 ? `${asking} need${asking === 1 ? "s" : ""} you` : null].filter(Boolean).join(", "),
+  ].join(" — ");
 }
 
 function buildLocalProviderDrafts(
@@ -1188,12 +1209,11 @@ export function ProvidersSection({
           />
         </div>
       ) : (
-        <ModernSection
-          group="Connections"
-          anchor="ai-providers"
-          title="Coding agents"
-          hint="Every agent ADE can run. Open one to sign in, choose models, or turn it off."
-          actions={(
+        <section className="ade-pvl" id="ai-providers" data-settings-anchor="ai-providers" data-settings-group="Connections">
+          <header className="ade-pvl-head">
+            <span className="ade-pvl-summary">
+              {providerSummary(descriptors, ctx)}
+            </span>
             <label className="ade-pv-usage-toggle">
               Show usage in header
               <SettingsToggle
@@ -1202,15 +1222,14 @@ export function ProvidersSection({
                 onChange={(next) => setUsageHeaderVisible(next)}
               />
             </label>
-          )}
-        >
+          </header>
           <ProviderGrid
             descriptors={descriptors}
             ctx={ctx}
             accountCounts={accountCounts as Partial<Record<string, number>>}
             onOpen={selectProvider}
           />
-        </ModernSection>
+        </section>
       )}
 
       {selectedDescriptor ? null : <CustomProvidersSection status={status} storedProviders={storedProviders} />}

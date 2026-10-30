@@ -1,0 +1,474 @@
+/* System → Machines: a lineup of the machines, then one row each; a machine's
+   own page is a hero in its own colour, then what reaches it from here. */
+.ade-mx {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.ade-mx-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  border-radius: var(--radius-lg, 14px);
+  border: 1px solid var(--kit-panel-edge);
+  --mx-color: #7c83ff;
+}
+.ade-mx-hero-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(55% 140% at 6% 0%, color-mix(in srgb, var(--mx-color) 26%, transparent), transparent 70%),
+    radial-gradient(45% 120% at 96% 100%, color-mix(in srgb, #2bc4b4 16%, transparent), transparent 72%),
+    var(--kit-panel-bg);
+}
+.ade-mx-hero--machine .ade-mx-hero-wash {
+  background:
+    radial-gradient(60% 150% at 4% 0%, color-mix(in srgb, var(--mx-color) 34%, transparent), transparent 72%),
+    radial-gradient(40% 120% at 100% 100%, color-mix(in srgb, var(--mx-color) 14%, transparent), transparent 72%),
+    var(--kit-panel-bg);
+}
+.ade-mx-hero--list {
+  display: flex;
+  align-items: center;
+  gap: 26px;
+  padding: 24px 28px;
+}
+.ade-mx-lineup {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: none;
+}
+/* The tiles stand in a row, each a little in front of the last. */
+.ade-mx-lineup-tile {
+  display: inline-flex;
+  border-radius: 17px;
+  background: var(--color-card);
+  box-shadow:
+    0 1px 0 color-mix(in srgb, var(--color-fg) 10%, transparent) inset,
+    0 14px 26px -16px rgba(0, 0, 0, 0.75);
+  transform: translateY(calc(var(--i) * 3px));
+}
+.ade-mx-lineup-tile + .ade-mx-lineup-tile {
+  margin-left: -8px;
+}
+.ade-mx-hero-text,
+.ade-mx-detail-row {
+  position: relative;
+  z-index: 1;
+}
+.ade-mx-hero-text {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.ade-mx-hero-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.ade-mx-hero-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--kit-panel-edge);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  font-size: 11.5px;
+  color: var(--kit-text-2);
+}
+.ade-mx-hero-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+.ade-mx-hero-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--kit-text-2);
+}
+
+/* One row per machine. */
+.ade-mx-list {
+  display: grid;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-mx-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 14px;
+  padding: 12px 16px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-mx-row + .ade-mx-row {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-mx-row:hover {
+  background: var(--kit-hover);
+}
+.ade-mx-row-id {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.ade-mx-row-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-mx-row[data-offline="true"] .ade-mx-row-name {
+  color: var(--kit-text-3);
+}
+.ade-mx-row-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-mx-row-facts {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+}
+.ade-mx-row-disk {
+  display: grid;
+  gap: 4px;
+  width: 120px;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-mx-row-version {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 150px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+.ade-mx-row-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--color-accent);
+}
+.ade-mx-row-caret {
+  color: var(--kit-text-3);
+}
+
+/* A machine's own page. */
+.ade-mx-detail-row {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  padding: 22px 24px;
+}
+.ade-mx-detail-id {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 5px;
+}
+.ade-mx-detail-facts {
+  display: flex;
+  align-items: flex-start;
+  gap: 22px;
+}
+.ade-mx-fact {
+  display: grid;
+  gap: 6px;
+}
+.ade-mx-fact--disk {
+  width: 130px;
+}
+.ade-mx-fact-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12.5px;
+  color: var(--color-fg);
+}
+.ade-mx-quiet {
+  padding: 4px 2px;
+  font-size: 12.5px;
+  color: var(--kit-text-3);
+}
+.ade-mx-links {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+.ade-mx-link {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ade-mx-link:hover {
+  background: var(--kit-hover);
+  border-color: color-mix(in srgb, var(--color-fg) 14%, transparent);
+}
+.ade-mx-link > svg {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--kit-text-3);
+}
+.ade-mx-link-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+.ade-mx-link-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ade-mx-link-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-mx-link-hint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+
+/* A machine picker: a tile, a name and a caret. In a page title it takes the
+   title's size and sits on the title's line ("Providers on [machine ▾]"). */
+.ade-mpick-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 9px 0 5px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 9px;
+  background: var(--kit-panel-bg);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ade-mpick-trigger[data-variant="title"] {
+  height: 34px;
+  padding: 0 10px 0 5px;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+.ade-mpick-trigger:hover {
+  background: var(--kit-hover);
+}
+.ade-mpick-trigger > svg {
+  color: var(--kit-text-3);
+}
+.ade-mpick-name {
+  max-width: 280px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-mpick-menu {
+  min-width: 240px;
+  padding: 5px;
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  background: var(--color-card);
+  box-shadow: var(--shadow-float);
+}
+.ade-mpick-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) 14px;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 8px 6px 6px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-mpick-item:hover {
+  background: var(--kit-hover);
+}
+.ade-mpick-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-mpick-item > svg {
+  color: var(--color-accent);
+}
+
+button.ade-mx-hero-chip {
+  font: inherit;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.ade-mx-hero-chip[data-tone="accent"] {
+  border-color: color-mix(in srgb, var(--color-accent) 40%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-fg);
+}
+
+.ade-mx-block {
+  display: grid;
+  gap: 8px;
+}
+.ade-mx-block > .kit-eyebrow {
+  padding-left: 2px;
+}
+
+.ade-mx-hero-title--row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* A machine's settings: groups of same-size rows, one rhythm. */
+.ade-mx-groups {
+  display: grid;
+  gap: 22px;
+}
+.ade-mx-group {
+  display: grid;
+  gap: 8px;
+}
+.ade-mx-group-title {
+  margin: 0;
+  padding-left: 2px;
+}
+.ade-mx-group-rows {
+  display: grid;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-mx-srow {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 56px;
+  padding: 8px 14px;
+}
+.ade-mx-srow + .ade-mx-srow {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-mx-srow-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+.ade-mx-srow-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ade-mx-srow-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-mx-srow-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-mx-srow-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.ade-mx-srow-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ade-mx-srow-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-mx-srow-link:hover {
+  background: var(--kit-hover);
+  color: var(--color-fg);
+}
+.ade-mx-srow-hint {
+  font-size: 12px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
+.ade-mx-row-meter {
+  display: block;
+  width: 140px;
+}
+.ade-restarts-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}

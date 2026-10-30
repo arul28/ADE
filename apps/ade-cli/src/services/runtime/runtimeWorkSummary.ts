@@ -58,6 +58,8 @@ export async function summarizeRuntimeUpdateImpact(
     projectName: project?.displayName ?? PERSONAL_CHATS_IMPACT_LABEL,
     projectRoot: project?.rootPath ?? null,
     ...(project ? {} : { resumable: false }),
+    // What the restart does to it, by this machine's continue rule.
+    ...(chat.continueHold !== undefined ? { continueHold: chat.continueHold } : {}),
   }));
   let cliSessions = 0;
   let terminals = 0;

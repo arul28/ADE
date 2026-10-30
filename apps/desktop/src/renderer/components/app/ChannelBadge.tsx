@@ -1,7 +1,7 @@
 import React from "react";
 
 import type { AppPackageChannel } from "../../../shared/packageChannel";
-import type { UpdateTrack } from "../../../shared/updateTrack";
+import { updateTrackLabel, type UpdateTrack } from "../../../shared/updateTrack";
 import { packageChannelLabel, rendererPackageChannel } from "../../lib/packageChannel";
 import { rendererUpdateTrack } from "../../lib/updateTrack";
 
@@ -71,6 +71,23 @@ export function ChannelBadge({
       aria-label={betaTrack ? "ADE Beta" : `${label} build${shownVersion ? ` ${shownVersion}` : ""}`}
     >
       {body}
+    </span>
+  );
+}
+
+/**
+ * A machine's update track as the header's chip: the amber BETA chip, or a
+ * quiet STABLE one beside it when both tracks are in one list.
+ */
+export function UpdateTrackChip({ track }: { track: UpdateTrack }): React.ReactElement {
+  return (
+    <span
+      className="ade-shell-channel-badge shrink-0"
+      data-static="true"
+      data-track={track}
+      aria-label={updateTrackLabel(track)}
+    >
+      {track === "beta" ? "BETA" : "STABLE"}
     </span>
   );
 }
