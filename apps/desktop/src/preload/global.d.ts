@@ -5,6 +5,7 @@ import type { JevAnswers, JevDecideRequest, JevQuestions, JevStatus } from "../s
 import type { MuseSettingsRequest, MuseSettingsResult, MuseSettingsRunArgs } from "../shared/museSettings";
 import type { HomeWidgetsBridge } from "../shared/types/homeWidgets";
 import type { AppBundleOwnershipBridge } from "../shared/types/appBundleOwnership";
+import type { DatabaseCopiesBridge } from "../shared/types/startupRecovery";
 import type { MusicBridge } from "../shared/types/music";
 import type { SetDefaultTerminalShellArgs, TerminalShellSettings } from "../shared/types/terminalShells";
 import type { SmartLinkPreview } from "../shared/smartLinks";
@@ -5013,6 +5014,8 @@ declare global {
       onUpdateEvent: (cb: (snapshot: AutoUpdateSnapshot) => void) => () => void;
       /** Whether this computer's ADE.app needs a password on every update, and the one-click fix. Absent on the web client. */
       appBundleOwnership?: AppBundleOwnershipBridge;
+      /** The database copies ADE took on this computer before updates. Absent on the web client. */
+      databaseCopies?: DatabaseCopiesBridge;
       /** Home page widgets backed by the desktop main process. Absent on the web client. */
       home?: HomeWidgetsBridge;
       /** Desktop-local Music: Apple Music playback and Spotify Connect, with catalog and library browsing. */
