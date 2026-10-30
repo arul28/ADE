@@ -15,27 +15,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { prBodyProofIds, rewritePrBodyProofForGithub, type PrBodyProofFile } from "../../desktop/src/shared/prBodyProof";
-
-/** `gh pr comment --attach` shipped in 2.99.0. */
-export const GH_ATTACH_MIN_VERSION = [2, 99, 0] as const;
-
-/** GitHub's upload limits for an attachment. */
-export const GITHUB_ATTACHMENT_LIMITS = {
-  imageBytes: 10 * 1024 * 1024,
-  /** Free plans. Paid plans allow {@link GITHUB_ATTACHMENT_LIMITS.videoPaidBytes}. */
-  videoFreeBytes: 10 * 1024 * 1024,
-  videoPaidBytes: 100 * 1024 * 1024,
-} as const;
-
-export type PublishableArtifact = {
-  id: string;
-  kind: string;
-  title: string;
-  description: string | null;
-  uri: string;
-  mimeType: string | null;
-};
+import {
+  ghVersionCanAttach,
+  parseGhVersion,
+  stagePrBodyProof,
+  stageProofFile,
+  type PublishableArtifact,
+} from "../../desktop/src/main/services/prs/prBodyProofStaging";
 
 export type ProofPublishResult = {
   prUrl: string;
@@ -43,7 +29,12 @@ export type ProofPublishResult = {
   posted: Array<{ id: string; caption: string; file: string; bytes: number }>;
   skipped: Array<{ id: string; reason: string }>;
   warnings: string[];
+  /** Earlier ADE proof comments deleted by `replace`. */
+  replaced?: number;
 };
+
+/** The last line of every proof comment ADE posts; `replace` finds earlier ones by it. */
+const PROOF_COMMENT_FOOTER = "<sub>Posted by ADE from the chat's proof.</sub>";
 
 /** How long each `gh` call may run. An upload of up to 100 MB gets the longest. */
 export const GH_TIMEOUTS_MS = { quick: 30_000, upload: 10 * 60_000 } as const;
@@ -57,107 +48,18 @@ function ghFailure(result: ReturnType<typeof spawnSync>, fallback: string): stri
   return String(result.stderr ?? "").trim() || fallback;
 }
 
-function parseVersion(text: string): number[] | null {
-  const match = /gh version (\d+)\.(\d+)\.(\d+)/.exec(text);
-  return match ? match.slice(1, 4).map(Number) : null;
-}
-
-function versionAtLeast(version: number[], minimum: readonly number[]): boolean {
-  for (let index = 0; index < minimum.length; index += 1) {
-    const have = version[index] ?? 0;
-    const need = minimum[index] ?? 0;
-    if (have !== need) return have > need;
-  }
-  return true;
-}
-
 /** Refuses with a plain instruction when `gh` is missing or too old for `--attach`. */
 export function assertGhSupportsAttach(run: typeof spawnSync = spawnSync): void {
   const result = run("gh", ["--version"], { encoding: "utf8", timeout: GH_TIMEOUTS_MS.quick });
   if (result.error || result.status !== 0) {
     throw new ProofPublishError("GitHub CLI (gh) is not installed. Install gh 2.99.0 or later, then run gh auth login.");
   }
-  const version = parseVersion(String(result.stdout ?? ""));
-  if (!version || !versionAtLeast(version, GH_ATTACH_MIN_VERSION)) {
+  const version = parseGhVersion(String(result.stdout ?? ""));
+  if (!ghVersionCanAttach(version)) {
     throw new ProofPublishError(
       `gh ${version?.join(".") ?? "(unknown version)"} cannot attach files. Upgrade to gh 2.99.0 or later (brew upgrade gh), then run this again.`,
     );
   }
-}
-
-function isVideo(artifact: PublishableArtifact): boolean {
-  return artifact.kind === "video_recording" || (artifact.mimeType?.startsWith("video/") ?? false);
-}
-
-function isPicture(artifact: PublishableArtifact): boolean {
-  return artifact.kind === "screenshot" || (artifact.mimeType?.startsWith("image/") ?? false);
-}
-
-/** Brackets and line breaks would end the markdown alt text early. */
-function markdownCaption(text: string): string {
-  return text.replace(/[[\]\r\n]+/g, " ").replace(/\s+/g, " ").trim();
-}
-
-/**
- * The stored file for a proof record, inside the project's artifact store
- * only. Both sides are resolved through symlinks first: the file goes to
- * GitHub, so a link inside the store must not reach a file outside it.
- */
-export function resolveStoredProofFile(projectRoot: string, uri: string): string | null {
-  if (!uri || /^[a-z][a-z0-9+.-]*:\/\//i.test(uri)) return null;
-  let artifactsDir: string;
-  let candidate: string;
-  try {
-    artifactsDir = fs.realpathSync.native(path.resolve(projectRoot, ".ade", "artifacts"));
-    candidate = fs.realpathSync.native(path.resolve(projectRoot, uri));
-  } catch {
-    return null;
-  }
-  const relative = path.relative(artifactsDir, candidate);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
-  return fs.statSync(candidate).isFile() ? candidate : null;
-}
-
-type StagedProofFile =
-  | { file: string; bytes: number; caption: string; video: boolean; warning: string | null }
-  | { skip: string };
-
-/**
- * Copies one proof file into the staging directory under a plain, unique name
- * (gh matches body references by path), or says why it cannot go up.
- */
-function stageProofFile(artifact: PublishableArtifact, projectRoot: string, staging: string, ordinal: number): StagedProofFile {
-  if (!isPicture(artifact) && !isVideo(artifact)) {
-    return { skip: `a ${artifact.kind.replace(/_/g, " ")} cannot be attached to a PR` };
-  }
-  const source = resolveStoredProofFile(projectRoot, artifact.uri);
-  if (!source) {
-    // The list comes from the brain; the file must be on this machine too.
-    // A brain on another machine keeps its proof there, so run the command
-    // on that machine (where its agents run) to post it.
-    return {
-      skip: `its stored file is not on this machine under ${path.join(projectRoot, ".ade", "artifacts")}; if the ADE brain runs on another machine, run this command there`,
-    };
-  }
-  const video = isVideo(artifact);
-  const bytes = fs.statSync(source).size;
-  const limit = video ? GITHUB_ATTACHMENT_LIMITS.videoPaidBytes : GITHUB_ATTACHMENT_LIMITS.imageBytes;
-  if (bytes > limit) {
-    return {
-      skip: `it is ${(bytes / 1024 / 1024).toFixed(1)} MB, over GitHub's ${limit / 1024 / 1024} MB limit for ${video ? "a video" : "a picture"}`,
-    };
-  }
-  const file = `proof-${ordinal}${path.extname(source).toLowerCase() || (video ? ".mp4" : ".png")}`;
-  fs.copyFileSync(source, path.join(staging, file));
-  return {
-    file,
-    bytes,
-    caption: markdownCaption(artifact.description?.trim() || artifact.title || file),
-    video,
-    warning: video && bytes > GITHUB_ATTACHMENT_LIMITS.videoFreeBytes
-      ? `${artifact.id} is ${(bytes / 1024 / 1024).toFixed(1)} MB. GitHub Free accepts videos up to 10 MB; paid plans up to 100 MB.`
-      : null,
-  };
 }
 
 /**
@@ -171,6 +73,8 @@ export function publishProofToPullRequest(args: {
   artifacts: PublishableArtifact[];
   heading?: string | null;
   note?: string | null;
+  /** Delete this account's earlier ADE proof comments on the PR, after the new one posts. */
+  replace?: boolean;
   cwd?: string;
   run?: typeof spawnSync;
 }): ProofPublishResult {
@@ -212,7 +116,7 @@ export function publishProofToPullRequest(args: {
         `nothing to post: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ") || "no artifacts"}`,
       );
     }
-    lines.push("<sub>Posted by ADE from the chat's proof.</sub>");
+    lines.push(PROOF_COMMENT_FOOTER);
     fs.writeFileSync(path.join(staging, "body.md"), lines.join("\n"));
     // Run from the staging directory: gh resolves `./proof-N.ext` against it.
     const comment = run("gh", ["pr", "comment", prUrl, "--body-file", "body.md", ...attachArgs], {
@@ -224,10 +128,61 @@ export function publishProofToPullRequest(args: {
       throw new ProofPublishError(`gh pr comment failed: ${ghFailure(comment, `exit ${comment.status}`)}`);
     }
     const commentUrl = /https:\/\/\S+#issuecomment-\d+/.exec(String(comment.stdout ?? ""))?.[0] ?? null;
-    return { prUrl, commentUrl, posted, skipped, warnings };
+    const replaced = args.replace ? deleteEarlierProofComments({ run, prUrl, keepUrl: commentUrl, cwd: args.cwd, warnings }) : undefined;
+    return { prUrl, commentUrl, posted, skipped, warnings, ...(replaced !== undefined ? { replaced } : {}) };
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/**
+ * Deletes the signed-in account's earlier ADE proof comments on the PR (found
+ * by {@link PROOF_COMMENT_FOOTER}), never `keepUrl`, the one just posted.
+ * Runs after the new comment is up, so a failed post leaves the old proof in
+ * place. A failure here is a warning: the new proof is already posted.
+ */
+function deleteEarlierProofComments(args: {
+  run: typeof spawnSync;
+  prUrl: string;
+  keepUrl: string | null;
+  cwd?: string;
+  warnings: string[];
+}): number {
+  const match = /github\.com\/([^/]+)\/([^/]+)\/pull\/(\d+)$/.exec(args.prUrl);
+  const keepId = /#issuecomment-(\d+)$/.exec(args.keepUrl ?? "")?.[1] ?? null;
+  if (!match || !keepId) {
+    args.warnings.push("Could not tell which comment was just posted, so earlier proof comments were left in place.");
+    return 0;
+  }
+  const [, owner, repo, number] = match;
+  const login = args.run("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", cwd: args.cwd, timeout: GH_TIMEOUTS_MS.quick });
+  const me = String(login.stdout ?? "").trim();
+  if (login.status !== 0 || !me) {
+    args.warnings.push(`Earlier proof comments were left in place: ${ghFailure(login, "gh could not read the signed-in account")}.`);
+    return 0;
+  }
+  const list = args.run(
+    "gh",
+    ["api", "--paginate", `repos/${owner}/${repo}/issues/${number}/comments`, "--jq", `.[] | [.id, .user.login, (.body | contains(${JSON.stringify(PROOF_COMMENT_FOOTER)}))] | @tsv`],
+    { encoding: "utf8", cwd: args.cwd, timeout: GH_TIMEOUTS_MS.upload },
+  );
+  if (list.status !== 0) {
+    args.warnings.push(`Earlier proof comments were left in place: ${ghFailure(list, "gh could not list the PR's comments")}.`);
+    return 0;
+  }
+  let deleted = 0;
+  for (const row of String(list.stdout ?? "").split("\n")) {
+    const [id, author, ours] = row.trim().split("\t");
+    if (!id || id === keepId || author !== me || ours !== "true") continue;
+    const removal = args.run("gh", ["api", "-X", "DELETE", `repos/${owner}/${repo}/issues/comments/${id}`], {
+      encoding: "utf8",
+      cwd: args.cwd,
+      timeout: GH_TIMEOUTS_MS.quick,
+    });
+    if (removal.status === 0) deleted += 1;
+    else args.warnings.push(`Could not delete earlier proof comment ${id}: ${ghFailure(removal, `exit ${removal.status}`)}.`);
+  }
+  return deleted;
 }
 
 /**
@@ -249,51 +204,13 @@ export function publishProofIntoPullRequestBody(args: {
   const run = args.run ?? spawnSync;
   assertGhSupportsAttach(run);
   const { url: prUrl, body } = readPullRequestBody(args.pr, { cwd: args.cwd, run });
-  const cited = new Set(prBodyProofIds(body));
   const staging = fs.mkdtempSync(path.join(os.tmpdir(), "ade-proof-publish-"));
-  const posted: ProofPublishResult["posted"] = [];
-  const skipped: ProofPublishResult["skipped"] = [];
-  const warnings: string[] = [];
-  const files = new Map<string, PrBodyProofFile>();
   try {
-    for (const artifact of args.artifacts) {
-      if (!cited.has(artifact.id)) continue;
-      const staged = stageProofFile(artifact, args.projectRoot, staging, posted.length + 1);
-      if ("skip" in staged) {
-        skipped.push({ id: artifact.id, reason: staged.skip });
-        continue;
-      }
-      if (staged.warning) warnings.push(staged.warning);
-      files.set(artifact.id, { file: staged.file, video: staged.video });
-      posted.push({ id: artifact.id, caption: staged.caption, file: staged.file, bytes: staged.bytes });
-    }
-    for (const id of cited) {
-      if (!files.has(id) && !skipped.some((entry) => entry.id === id)) {
-        skipped.push({ id, reason: "not in this chat's or lane's proof" });
-      }
-    }
+    const { rewritten, posted, skipped, warnings } = stagePrBodyProof({ body, artifacts: args.artifacts, projectRoot: args.projectRoot, staging });
     if (!posted.length) {
       throw new ProofPublishError(
         `nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ") || "the PR text cites no proof"}`,
       );
-    }
-    const rewritten = rewritePrBodyProofForGithub(body, (id) => files.get(id) ?? null);
-    // A comparison goes up whole or stays as written. A side staged for a pair
-    // whose other side could not go up is in no sentence of the new text, so
-    // it is not attached and not reported as uploaded.
-    for (const entry of [...posted]) {
-      if (rewritten.includes(`](./${entry.file})`)) continue;
-      posted.splice(posted.indexOf(entry), 1);
-      skipped.push({ id: entry.id, reason: "the other side of its comparison could not be uploaded" });
-    }
-    if (!posted.length) {
-      throw new ProofPublishError(`nothing to upload: ${skipped.map((entry) => `${entry.id} (${entry.reason})`).join("; ")}`);
-    }
-    // An item cited two times can go up for one citation and stay behind in a
-    // comparison. It is uploaded, so it is not skipped; say what stayed.
-    const stillCited = new Set(prBodyProofIds(rewritten));
-    for (const entry of posted) {
-      if (stillCited.has(entry.id)) warnings.push(`${entry.id} is uploaded, but it also stays as a citation in a comparison whose other side could not be uploaded`);
     }
     fs.writeFileSync(path.join(staging, "body.md"), rewritten);
     const edit = run(

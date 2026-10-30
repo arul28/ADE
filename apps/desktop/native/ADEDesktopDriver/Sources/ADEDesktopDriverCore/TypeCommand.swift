@@ -14,11 +14,19 @@ public enum TypeCommand {
     public static func split(_ payload: [String: JSONValue]) -> (text: String, target: [String: JSONValue]) {
         var target = payload
         target.removeValue(forKey: "clear")
+        target.removeValue(forKey: "typePaceMs")
         if let typed = target.removeValue(forKey: "typeText") {
             return (typed.stringValue ?? "", target)
         }
         let typed = target.removeValue(forKey: "text")?.stringValue ?? ""
         return (typed, target)
+    }
+
+    /// The pause between characters a running recording asked for, in
+    /// milliseconds (`typePaceMs`), so a video shows typing; 0 types at once.
+    /// Capped, so a bad value cannot stall the driver.
+    public static func paceMs(_ payload: [String: JSONValue]) -> Int {
+        max(0, min(200, payload["typePaceMs"]?.intValue ?? 0))
     }
 
     /// True when the target half names something to act on.

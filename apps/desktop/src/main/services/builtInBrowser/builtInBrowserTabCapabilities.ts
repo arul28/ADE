@@ -119,7 +119,9 @@ import type {
   BuiltInBrowserElementTargetInput,
 } from "./builtInBrowserService";
 import { evaluateInTab } from "./builtInBrowserCdp";
-import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata, type DemoEngine } from "../../../shared/demoVideo/demoContract";
+import { DEMO_RAW_FILE_EXTENSION, type DemoArtifactMetadata, type DemoEngine, type DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import type { DemoPageActionTarget } from "../demoVideo/demoTrackTargets";
+import { DEMO_DRAG_PRESS_MS, DEMO_DRAG_STEP_MS, DEMO_DRAG_STEPS, demoDragSeconds } from "../demoVideo/demoPacing";
 import { produceDemoVideo } from "../demoVideo/demoRenderService";
 import { watchDemoRecording } from "../demoVideo/demoRecordingGuard";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
@@ -309,6 +311,13 @@ export type BuiltInBrowserTabCapabilityDeps = {
   getEmulationViewScale: () => number;
   /** The project this collection belongs to; an upload root. */
   getCollectionProjectRoot: () => string | null;
+  /** Logs a page action for the tab's demo track; true while the tab records. */
+  noteDemoAction?: (
+    tab: BrowserTabState,
+    input: { chatSessionId?: string | null },
+    kind: DemoTrackEventKind,
+    target: DemoPageActionTarget,
+  ) => Promise<boolean>;
   /**
    * A tab gained or lost its last preview subscriber.
    *
@@ -1005,7 +1014,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before hovering.");
     return runTracedAgentAction(tab, "hover", input, async () => {
       const wc = tab.webContents;
-      const { x, y } = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
+      const { x, y, element } = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
+      await deps.noteDemoAction?.(tab, input, "hover", { point: { x, y }, element });
       await withTemporaryDebugger(wc, async () => {
         await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
@@ -1025,10 +1035,21 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       const wc = tab.webContents;
       const from = await resolveClickTarget(tab, input as BuiltInBrowserClickArgs);
       const to = await resolveDragDestination(tab, input);
-      const steps = Math.min(
-        MAX_DRAG_STEPS,
-        Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),
-      );
+      // While the tab records, the drag runs at a pace a viewer can follow,
+      // and the track gets its path so the drawn pointer carries the item.
+      const demoSteps = Math.max(DEMO_DRAG_STEPS, Math.min(MAX_DRAG_STEPS, Math.floor(optionalFiniteNumber(input.steps) ?? 0)));
+      const recording = (await deps.noteDemoAction?.(tab, input, "drag", {
+        point: { x: from.x, y: from.y },
+        to,
+        seconds: demoDragSeconds(demoSteps),
+      })) ?? false;
+      const steps = recording
+        ? demoSteps
+        : Math.min(
+          MAX_DRAG_STEPS,
+          Math.max(1, Math.floor(optionalFiniteNumber(input.steps) ?? DEFAULT_DRAG_STEPS)),
+        );
+      const pause = (ms: number) => (recording ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve());
       await withTemporaryDebugger(wc, async () => {
         await dispatchPageMouseEvent(tab, {
           type: "mouseMoved",
@@ -1043,8 +1064,11 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
           button: "left",
           clickCount: 1,
         });
+        await pause(DEMO_DRAG_PRESS_MS);
         for (let step = 1; step <= steps; step += 1) {
-          const ratio = step / steps;
+          // Eased while recording, so the item picks up and settles like a hand moved it.
+          const ratio = recording ? easeInOutSine(step / steps) : step / steps;
+          if (step > 1) await pause(DEMO_DRAG_STEP_MS);
           await dispatchPageMouseEvent(tab, {
             type: "mouseMoved",
             x: Math.round(from.x + (to.x - from.x) * ratio),
@@ -1065,6 +1089,8 @@ export function createBuiltInBrowserTabCapabilities(deps: BuiltInBrowserTabCapab
       return actionResult(tab, input);
     });
   }
+
+  const easeInOutSine = (p: number) => 0.5 - Math.cos(Math.PI * p) / 2;
 
   const resolveDragDestination = async (
     tab: BrowserTabState,

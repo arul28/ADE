@@ -1,6 +1,6 @@
 ---
 name: ade-proof-artifacts
-description: Use this skill when the user asks for proof, screenshots, video, artifacts, test evidence, computer-use capture, or when work should appear in ADE's proof drawer.
+description: Use this skill when the user asks for proof, a demo, screenshots, video, something to post or show off, artifacts, test evidence, computer-use capture, or when work should appear in ADE's proof drawer. Read it before capturing anything a person will see.
 ---
 
 # ADE proof and artifacts
@@ -16,6 +16,46 @@ line above it, then run
 `ade proof list --text` and see the row. If the output contains `failed`, or the
 list does not show it, the drawer is empty — fix it now rather than reporting
 proof you did not file.
+
+## Scratch or showcase
+
+- **Scratch**: what you capture to check your own work (screenshots,
+  observes, quick recordings). Keep it out of the drawer and off PRs.
+- **Showcase**: what a person will see, in your answer or on a PR. The bar: they
+  could post it to Twitter as is. File only showcase proof.
+
+## Make showcase proof (any app)
+
+1. **Choose what to show.** A visible fix: before and after. A feature: one
+   demo per thing worth seeing. Anything that moves (a drag, live filtering,
+   a panel opening, an animation) is a video; a still is for a state. An
+   internal or tiny change may need none.
+2. **Stage first.** Only the subject on screen:
+   - Dismiss banners, toasts, notifications, update prompts, dev overlays and
+     element inspectors. Close unrelated windows, tabs and panels.
+   - Make the subject big and whole: size the window to it (at least 1280
+     wide, 2× scale), collapse sidebars, open the panel full size, zoom the
+     page. Nothing the demo uses may be cut off at an edge, and the subject
+     fills the frame: no big empty areas (shrink the window or viewport to
+     the content, or zoom the page). Text must read at phone size.
+   - Real or demo data is fine; secrets never (tokens, keys, passwords,
+     private messages). Use demo data when the user asks or the app has it.
+   - Get to the starting state (signed in, data loaded) before recording.
+3. **Script 3–6 beats.** Before each one: `ade proof step "<caption>"`, at most
+   60 characters, saying what happens ("Fold it. The app follows."), not
+   what you click. Add `--focus x,y,w,h` (fractions of the recorded frame,
+   judged from a screenshot of the same surface) to hold the camera on a
+   small subject for that beat.
+4. **Record only the flow.** Start, run the beats, stop when the result
+   shows. Every visible change gets its own beat; do nothing unscripted on
+   camera. A mistake means record again, not carry on.
+5. **Check it.** `ade proof review <id> --text`, then open the image it
+   prints and fix everything it lists. Anything off: fix the stage, record
+   again, `ade proof rm` the old one.
+6. **Pictures**: crop to the subject with a little context; one picture per
+   claim. Before/after is always one `proof-compare` block, never two
+   separate pictures.
+7. **Publish once**, the final set: see **Put proof on the PR**.
 
 ## Show the proof in your answer
 
@@ -61,7 +101,9 @@ Copy the id from the `cite:` line; do not type it.
 
 `ade proof publish --pr <number or URL> <id> <id>` posts the items you pick
 as one PR comment, with each picture and video under its caption, and marks
-them in the drawer. See the **ade-pr-workflows** skill for the limits.
+them in the drawer. Post the final set once, after the work is done; when you
+must post again, add `--replace` so your earlier ADE proof comments go. See
+the **ade-pr-workflows** skill for the limits.
 
 ## Commands
 
@@ -69,6 +111,7 @@ them in the drawer. See the **ade-pr-workflows** skill for the limits.
 ade proof attach "$TMPDIR/checkout.png" --caption "Checkout completes" --text
 ade proof list --text          # confirm the row is there
 ade proof status --text
+ade proof review <id> --text   # a frame sheet (video) or the file (picture) to check
 ade proof capture --caption "Checkout confirmation visible" --text     # the lane's display
 ade proof record --seconds 20 --caption "Retry flow recovers" --text  # the lane's display
 ade help proof
@@ -97,11 +140,13 @@ ade --socket browser record stop --tab <tab-id> --text
 ```
 
 Every recording becomes a **demo** when it stops: still time cut, waits sped
-up, zoom to where the actions happen (a phone only with `--zoom`), a pointer and click rings, under 10 MB (GitHub's
-limit for a PR video). Mark the steps while recording with
-`ade proof step "<what happens next>"`; each one is a caption in the video
-and a chapter in ADE's player. `record start --plain` keeps a recording as it
-was recorded; use it only when the user asks. A recording stops itself after
+up, zoom to where the actions happen (a phone only with `--zoom`, or any
+surface with `ade proof step --focus`), a pointer and click rings, under
+10 MB (GitHub's limit for a PR video). Only `ade proof step` captions show,
+at the bottom, or at the top when the action is low; each is also a chapter
+in ADE's player.
+`record start --plain` keeps a recording as it was recorded; use it only when
+the user asks. A recording stops itself after
 5 minutes, or after 2 minutes with no action, so record the flow that proves
 the claim and not the whole task: set up first, start recording, run the
 flow, and stop as soon as the result is on screen. Retries, saving and

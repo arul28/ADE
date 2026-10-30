@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { readGhPrShellActions } from "./ghPrShellCommands";
+import { readGhPrBodyEdits, readGhPrShellActions } from "./ghPrShellCommands";
 
 const URL = "https://github.com/acme/app/pull/42";
 const created = [{ kind: "create", owner: "acme", repo: "app", number: 42 }];
@@ -26,5 +26,24 @@ describe("readGhPrShellActions", () => {
     ["a failed merge", `gh pr merge 42`, "X Pull request acme/app#42 is not mergeable", 1, []],
   ])("%s", (_label, command, output, exitCode, expected) => {
     expect(readGhPrShellActions({ command, output, exitCode })).toEqual(expected);
+  });
+});
+
+describe("readGhPrBodyEdits", () => {
+  // Each answer is a PR whose text ADE then rereads and repairs; a wrong
+  // number would repair the wrong PR, so anything unsure reads as nothing.
+  it.each([
+    ["an edit by number", `gh pr edit 42 --body-file pr.md`, 0, [{ owner: null, repo: null, number: 42 }]],
+    ["an edit by URL", `gh pr edit ${URL} -b "new text"`, 0, [{ owner: "acme", repo: "app", number: 42 }]],
+    ["the current branch's PR", `gh pr edit --body-file=pr.md`, 0, [{ owner: null, repo: null, number: null }]],
+    ["a repo flag", `gh -R acme/app pr edit 42 -F pr.md && gh pr view 42`, 0, [{ owner: "acme", repo: "app", number: 42 }]],
+    ["flag values before the PR", `gh pr edit --add-label bug --title "Fix 9" 42 --body x`, 0, [{ owner: null, repo: null, number: 42 }]],
+    ["a title-only edit", `gh pr edit 42 --title "x"`, 0, []],
+    ["a PR named by branch", `gh pr edit my-branch --body-file pr.md`, 0, []],
+    ["a failed edit", `gh pr edit 42 --body-file pr.md`, 1, []],
+    ["an edit only inside a quoted string", `echo "gh pr edit 42 --body x"`, 0, []],
+    ["an edit only in a heredoc body", `cat <<'EOF' > pr.md\ngh pr edit 3 --body y\nEOF\ngh pr edit 4 -F pr.md`, 0, [{ owner: null, repo: null, number: 4 }]],
+  ])("%s", (_label, command, exitCode, expected) => {
+    expect(readGhPrBodyEdits({ command, exitCode })).toEqual(expected);
   });
 });

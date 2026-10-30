@@ -14,10 +14,15 @@
  *   sprite sequences (both rasterized here), and `drawtext` for captions and the
  *   speed badge. Overlay positions follow the camera through the same
  *   piecewise-linear expressions the camera uses.
+ * - `contactSheet` (`ffmpegContactSheet.ts`) seeks each time as its own input,
+ *   scales the first frame of each, and lays them out with `xstack` into one
+ *   PNG.
  *
- * Differences from the other engines, all cosmetic: caption boxes have square
- * corners and no accent bar (drawtext cannot size a box to its text and draw a
- * second shape against it), and wrapped caption lines are left-aligned.
+ * Differences from the other engines, all cosmetic: caption boxes are square,
+ * not pills (drawtext cannot round the box it sizes to its text), a top
+ * caption's height is estimated from its line count to place the badge below
+ * it, and on an ffmpeg older than 7 (no `text_align`) wrapped caption lines
+ * are left-aligned.
  *
  * ffmpeg is the machine's own when it has one that can render the plan (the
  * libx264 encoder and the drawtext filter: Fedora's ffmpeg-free has no
@@ -57,6 +62,7 @@ import {
 } from "../ai/cliExecutableResolver";
 import { getPinnedToolStatus, resolvePinnedTool } from "../../../../../ade-cli/src/services/tools/pinnedTool";
 import { pinnedToolDownload } from "../../../../../ade-cli/src/services/tools/onDemand";
+import { ffmpegContactSheet } from "./ffmpegContactSheet";
 
 const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v", ".mkv", ".webm"]);
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
@@ -112,15 +118,20 @@ const majorVersions = new Map<string, number | null>();
  * git build (`N-…`) or an unreadable version is new enough for the new form.
  */
 function filterScriptArgs(ffmpegPath: string, scriptPath: string): string[] {
+  return olderThan7(ffmpegPath)
+    ? ["-filter_complex_script", scriptPath]
+    : ["-/filter_complex", scriptPath];
+}
+
+/** True for an ffmpeg that says it is 6 or older; a git build or an unreadable version is not. */
+function olderThan7(ffmpegPath: string): boolean {
   if (!majorVersions.has(ffmpegPath)) {
     const result = spawnSync(ffmpegPath, ["-hide_banner", "-version"], { encoding: "utf8", timeout: 10_000, windowsHide: true });
     const match = /ffmpeg version n?(\d+)\./u.exec(result.stdout ?? "");
     majorVersions.set(ffmpegPath, match ? Number(match[1]) : null);
   }
   const major = majorVersions.get(ffmpegPath);
-  return major !== null && major !== undefined && major < 7
-    ? ["-filter_complex_script", scriptPath]
-    : ["-/filter_complex", scriptPath];
+  return major !== null && major !== undefined && major < 7;
 }
 
 /**
@@ -263,7 +274,8 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
       const scratch = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-ffmpeg-demo-"));
       const partial = path.join(path.dirname(request.output), `.${path.basename(request.output)}.${process.pid}.partial.mp4`);
       try {
-        const graph = await writeRenderGraph(request.plan, scratch);
+        // drawtext's `text_align` (each wrapped line centered) arrived after ffmpeg 6.
+        const graph = await writeRenderGraph(request.plan, scratch, { centerLines: !olderThan7(tools.ffmpegPath) });
         let frames = 0;
         const plan = request.plan;
         const fps = plan.output.fps;
@@ -323,6 +335,11 @@ export function createFfmpegDemoEngine(deps: FfmpegDemoEngineDeps): DemoEngine {
       } finally {
         await fs.promises.rm(scratch, { recursive: true, force: true }).catch(() => undefined);
       }
+    },
+
+    async contactSheet(request, options) {
+      const tools = await deps.resolveTools();
+      return await ffmpegContactSheet(request, { tools, probe: probeVideo, run: runFfmpeg, logger, signal: options?.signal });
     },
   };
 }
@@ -444,7 +461,11 @@ function q(value: string): string {
   return `'${value.replace(/\\/gu, "\\\\").replace(/'/gu, "")}'`;
 }
 
-async function writeRenderGraph(plan: DemoPlan, scratch: string): Promise<{ scriptPath: string; inputArgs: string[] }> {
+async function writeRenderGraph(
+  plan: DemoPlan,
+  scratch: string,
+  options: { centerLines: boolean },
+): Promise<{ scriptPath: string; inputArgs: string[] }> {
   const W = plan.output.width;
   const H = plan.output.height;
   const fps = plan.output.fps;
@@ -513,6 +534,20 @@ async function writeRenderGraph(plan: DemoPlan, scratch: string): Promise<{ scri
     return file ? `fontfile=${q(file)}` : `font=${q(bold ? "Sans:style=Bold" : "Sans")}`;
   };
 
+  // Captions are laid out first: a badge shown with a top caption moves below its box.
+  const captionFontSize = style.captionFontSize * S;
+  const captionPadX = captionFontSize;
+  const captionPadY = 0.5 * captionFontSize;
+  const captionMargin = style.captionMargin * S;
+  const captions = [...(plan.captions ?? []).entries()]
+    .filter(([, caption]) => caption.text?.trim() && caption.end > caption.start)
+    .map(([index, caption]) => {
+      const lines = wrapCaption(caption.text, captionFontSize, 0.8 * W - 2 * captionPadX);
+      // drawtext's line height is about 1.2 em; the box adds the padding above and below.
+      const boxHeight = lines.length * 1.2 * captionFontSize + (lines.length - 1) * 0.25 * captionFontSize + 2 * captionPadY;
+      return { index, caption, lines, top: caption.position === "top", boxBottom: captionMargin + boxHeight };
+    });
+
   // The speed badge, top right.
   for (const [index, badge] of (plan.badges ?? []).entries()) {
     if (!badge.text?.trim() || !(badge.end > badge.start)) continue;
@@ -522,18 +557,20 @@ async function writeRenderGraph(plan: DemoPlan, scratch: string): Promise<{ scri
     const inset = 0.8 * fontSize;
     const textPath = path.join(scratch, `badge-${index}.txt`);
     await fs.promises.writeFile(textPath, badge.text.trim(), "utf8");
+    const drops = captions
+      .filter((entry) => entry.top && entry.caption.start < badge.end && entry.caption.end > badge.start)
+      .map((entry) => `between(t,${n(entry.caption.start)},${n(entry.caption.end)})*${n(entry.boxBottom + 0.5 * fontSize - inset)}`);
+    const y = drops.length ? q(`${n(inset + padY)}+${drops.reduce((a, b) => `max(${a},${b})`)}`) : n(inset + padY);
     const out = nextLabel();
-    chains.push(`[${current}]drawtext=${fontOption(true)}:textfile=${q(textPath)}:expansion=none:fontsize=${n(fontSize)}:fontcolor=white:box=1:boxcolor=0x111111@0.72:boxborderw=${Math.round(padY)}|${Math.round(padX)}:x=${q(`w-${n(inset + padX)}-text_w`)}:y=${n(inset + padY)}:enable=${q(`between(t,${n(badge.start)},${n(badge.end)})`)}[${out}]`);
+    chains.push(`[${current}]drawtext=${fontOption(true)}:textfile=${q(textPath)}:expansion=none:fontsize=${n(fontSize)}:fontcolor=white:box=1:boxcolor=0x111111@0.72:boxborderw=${Math.round(padY)}|${Math.round(padX)}:x=${q(`w-${n(inset + padX)}-text_w`)}:y=${y}:enable=${q(`between(t,${n(badge.start)},${n(badge.end)})`)}[${out}]`);
     current = out;
   }
 
-  // Captions, bottom center, with the other engines' short fade.
-  for (const [index, caption] of (plan.captions ?? []).entries()) {
-    if (!caption.text?.trim() || !(caption.end > caption.start)) continue;
-    const fontSize = style.captionFontSize * S;
-    const padX = 0.9 * fontSize;
-    const padY = 0.5 * fontSize;
-    const lines = wrapCaption(caption.text, fontSize, 0.8 * W - 2 * padX);
+  // Captions, bottom or top center, with the other engines' short fade.
+  for (const { index, caption, lines, top } of captions) {
+    const fontSize = captionFontSize;
+    const padX = captionPadX;
+    const padY = captionPadY;
     const textPath = path.join(scratch, `caption-${index}.txt`);
     await fs.promises.writeFile(textPath, lines.join("\n"), "utf8");
     const fade = Math.min(0.15, (caption.end - caption.start) / 2);
@@ -541,7 +578,7 @@ async function writeRenderGraph(plan: DemoPlan, scratch: string): Promise<{ scri
       ? `max(0,min(1,min((t-${n(caption.start)})/${n(fade)},(${n(caption.end)}-t)/${n(fade)})))`
       : "1";
     const out = nextLabel();
-    chains.push(`[${current}]drawtext=${fontOption(true)}:textfile=${q(textPath)}:expansion=none:fontsize=${n(fontSize)}:line_spacing=${n(0.25 * fontSize)}:fontcolor=white:box=1:boxcolor=0x111111@0.78:boxborderw=${Math.round(padY)}|${Math.round(padX)}:x=${q("(w-text_w)/2")}:y=${q(`h-${n(style.captionMargin * S + padY)}-text_h`)}:alpha=${q(alpha)}:enable=${q(`between(t,${n(caption.start)},${n(caption.end)})`)}[${out}]`);
+    chains.push(`[${current}]drawtext=${fontOption(true)}:textfile=${q(textPath)}:expansion=none:fontsize=${n(fontSize)}:line_spacing=${n(0.25 * fontSize)}${options.centerLines && lines.length > 1 ? ":text_align=center" : ""}:fontcolor=white:box=1:boxcolor=0x111111@0.8:boxborderw=${Math.round(padY)}|${Math.round(padX)}:x=${q("(w-text_w)/2")}:y=${top ? n(captionMargin + padY) : q(`h-${n(captionMargin + padY)}-text_h`)}:alpha=${q(alpha)}:enable=${q(`between(t,${n(caption.start)},${n(caption.end)})`)}[${out}]`);
     current = out;
   }
 
@@ -791,6 +828,9 @@ function encodePng(image: Rgba): Buffer {
 // ---------------------------------------------------------------------------
 // Processes
 // ---------------------------------------------------------------------------
+
+export type FfmpegVideoProbe = typeof probeVideo;
+export type FfmpegRun = typeof runFfmpeg;
 
 async function probeVideo(
   ffprobePath: string,

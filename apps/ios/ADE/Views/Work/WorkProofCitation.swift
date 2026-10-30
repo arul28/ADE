@@ -103,7 +103,7 @@ struct WorkProofCitationView: View {
       .accessibilityLabel(captionText(artifact))
       .accessibilityHint("Opens the proof full screen")
     case .video(let url), .remoteURL(let url):
-      WorkArtifactVideoPlayerView(url: url, seek: $seekRequest)
+      WorkArtifactInlineVideoView(url: url, seek: $seekRequest) { viewerOpen = true }
         .aspectRatio(16.0 / 10.0, contentMode: .fit)
         .frame(maxHeight: mediaMaxHeight)
         .clipShape(shape)

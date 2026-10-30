@@ -100,7 +100,7 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
-import { createPrShellLinkWatcher } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
+import { createPrShellLinkWatcher, shellPrBodyRepairVia } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -3201,6 +3201,7 @@ export async function createAdeRuntime(args: {
         logger,
         subscribeToEvents: (callback) => chatForShellLinks.subscribeToEvents(callback),
         linkShellPrAction: (args) => headlessLinearServices.prService.linkShellPrAction(args),
+        repairShellPrBody: shellPrBodyRepairVia({ prService: headlessLinearServices.prService, proof: computerUseArtifactBrokerService }),
       });
       // Registered before the start: a throw from start() still unsubscribes.
       teardown.push(() => prShellLinkWatcher.dispose());

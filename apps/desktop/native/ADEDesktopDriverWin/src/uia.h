@@ -76,6 +76,10 @@ class Uia {
   bool invoke(const UiaElement& e);
   bool setValue(const UiaElement& e, const std::wstring& value);
   bool appendValue(const UiaElement& e, const std::wstring& text, bool clear);
+  // appendValue one character at a time (a surrogate pair stays whole) with
+  // `paceMs` after each, so a recording shows typing. Returns how many UTF-16
+  // units went in: text.size() when all of it did, 0 when the first refused.
+  size_t appendValuePaced(const UiaElement& e, const std::wstring& text, bool clear, DWORD paceMs);
   bool focus(const UiaElement& e);
   bool scroll(const UiaElement& e, const std::string& direction, int amount);
   bool closeWindow(HWND hwnd);

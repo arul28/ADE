@@ -662,7 +662,7 @@ private struct WorkProofPage: View {
   }
 }
 
-/// Videos reuse the chat transcript's AVKit player, which brings its own play
+/// Videos use AVKit's full-screen player, which brings its own play
 /// control. Anything else at a media URL just says what it is.
 private struct WorkProofVideoPage: View {
   let url: URL

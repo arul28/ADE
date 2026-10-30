@@ -266,24 +266,26 @@ export function buildAdeBootstrapGuidance(
   return [
     "## ADE",
     "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state.",
-    "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
-    `Skills: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
+    `ADE capabilities ship as Agent Skills; for ADE tasks read the matching \`ade-*\` skill first: ${adeBundledAgentSkills.filter((name) => !adeDeprecatedAgentSkillAliases.has(name)).map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
-    "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
+    "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
     // The one scene line every agent sees. Without it the skill was opened only
     // when a model happened to read the index, so scenes almost never appeared.
-    "Visuals: when there is an obvious thing to show and a picture reads faster than prose (status across many items, a comparison, a trend), add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first; check with `ade scene preview`.",
+    "Visuals: when there is an obvious thing to show and a picture beats prose (status across many items, a comparison, a trend), or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
     // The one proof line every agent sees. Chat shows a picture only from the
     // project's own files or the proof store; an agent that linked a screenshot
     // it saved to /tmp left the user a chip saying "Outside this project".
-    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show.",
+    "Images in answers: `ade proof attach <file>`, then paste its `cite:` line; other paths may not show. Proof or demos for people: read `ade-proof-artifacts`.",
+    // Agents opened about two thirds of recent PRs with `gh`, and rewrote the
+    // text of the rest with `gh pr edit`, which drops ADE's footer and leaves
+    // cited proof as links GitHub cannot show.
+    "PRs: open with `ade prs create`, rewrite text with `ade prs body`; `gh` skips proof upload and the lane link.",
     "For computer use, read `ade-computer-use` first. `mcp__computer_use` drives the user's real screen: use it only on request; never substitute `@oai/sky` via `node_repl`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Settings questions: `ade settings find <words>`. Read only requested `ade secrets`, never print them, and clean up started processes.",
-    "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
     // The distinction agents get wrong: a wake is you doing work later, a
     // draft send is the user's message arriving later. Naming both here keeps
     // an agent from reaching for its own cron when the user asked for a send.
-    "Use `ade drafts` to send a message later (it lands as a real user turn in the target chat and shows in the user's Drafts); use `ade chat scheduled-work create` to wake *yourself* later to do work.",
+    "`ade chat scheduled-work create` wakes *you* later to work (durably resumes bound chats and tracked provider CLIs); `ade drafts` sends a message later as a real user turn, shown in the user's Drafts.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }

@@ -10,6 +10,7 @@ import { createDemoEngineSet, type DemoEngineSet } from "../../demoVideo/demoEng
 import { finalPathForRaw, rawPathFor, recordingCapMsFor, watchDemoRecording } from "../../demoVideo/demoRecordingGuard";
 import { DemoRecordingUnusableError, demoLengths, produceDemoVideo } from "../../demoVideo/demoRenderService";
 import { demoRecordingKey, demoTrackRegistry } from "../../demoVideo/demoTrackRegistry";
+import { demoTypingPace } from "../../demoVideo/demoPacing";
 import type { Logger } from "../../logging/logger";
 import { ADE_ACCENT_COLOR } from "../../../../shared/themeTokens";
 import { APPLE_AUTO_RECORD_SETTING_KEY } from "../../../../shared/appleDeviceSettings";
@@ -154,6 +155,9 @@ export interface SimRecordingService {
      * because it is on the screen being recorded.
      */
     source?: AppleInputSource;
+    /** When typing began, and how long it ran, when it was paced for a recording. */
+    startedAtMs?: number;
+    seconds?: number;
   }): Promise<void>;
   start(args: {
     laneId: string;
@@ -259,6 +263,14 @@ export const MANUAL_RECORDING_MAX_MS = RECORDING_MAX_MS;
 /** The recording's key in the demo track registry. One recording per lane. */
 export function appleDemoKey(laneId: string): string {
   return demoRecordingKey("apple", laneId);
+}
+
+/**
+ * The typing pace while the lane's recording runs, or null when none does.
+ * The helper never leaves less than 12 ms between keys, so `seconds` counts it.
+ */
+export function appleTypingPace(laneId: string, text: string): { paceMs: number; seconds: number } | null {
+  return demoTrackRegistry.isRecording(appleDemoKey(laneId)) ? demoTypingPace(text, 12) : null;
 }
 
 /**
@@ -1161,6 +1173,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           by: input.source === "user" ? "user" : "agent",
           ...(hasPoint && entry.record.overlays ? { x: input.x! / size!.width, y: input.y! / size!.height } : {}),
           ...(text && badgesEnabled() && entry.record.overlays ? { label: text } : {}),
+          ...(input.startedAtMs ? { atMs: input.startedAtMs } : {}),
+          ...(input.seconds ? { seconds: input.seconds } : {}),
         });
       } catch (error) {
         warn("apple.recording.note_input_failed", { laneId: input.laneId, error: String(error) });

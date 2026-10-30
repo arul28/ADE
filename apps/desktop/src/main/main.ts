@@ -230,7 +230,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrWatchService } from "./services/prs/prWatchService";
 import { createTerminalWatchService } from "./services/pty/terminalWatchService";
-import { createPrShellLinkWatcher } from "./services/prs/prShellLinkWatcher";
+import { createPrShellLinkWatcher, shellPrBodyRepairVia } from "./services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -5086,6 +5086,9 @@ app.whenReady().then(async () => {
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
       linkShellPrAction: (args) => prService.linkShellPrAction(args),
+      // The broker is built further down; the closure reads it once a chat
+      // command arrives, long after startup.
+      repairShellPrBody: (args) => shellPrBodyRepairVia({ prService, proof: computerUseArtifactBrokerService })(args),
     });
     prShellLinkWatcher.start();
     prWatchServiceRef = createPrWatchService({

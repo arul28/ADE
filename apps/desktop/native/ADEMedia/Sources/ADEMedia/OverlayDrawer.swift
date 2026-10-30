@@ -13,15 +13,17 @@ import Foundation
 ///   alpha from `DemoOverlayGeometry.ring`.
 /// - Pointer: `DEMO_POINTER_POLYGON` × `pointerHeight × S`, tip on the point,
 ///   white fill, `#111111` stroke 0.06 pointer units wide, round joins.
-/// - Caption: semibold system text, `captionFontSize × S`, white, at most two
-///   lines of 80% of the output width (the second ends in an ellipsis when the
-///   text does not fit), line height 1.25 em. Box padding 0.5 em by 0.9 em,
-///   `rgba(17,17,17,0.78)`, corner radius 0.4 em, a 0.2 em accent bar down its
-///   left edge. Centred, its bottom `captionMargin × S` above the frame's.
-///   Fades over 0.15 s at each end.
+/// - Caption: a pill. Semibold system text, `captionFontSize × S`, white,
+///   every line centred, at most two lines in a box at most 80% of the output
+///   width (the second ends in an ellipsis when the text does not fit), line
+///   height 1.25 em. Padding 0.5 em down and 1.0 em across, `rgba(17,17,17,0.8)`,
+///   corner radius `min(boxHeight / 2, 1.2 em)`. Centred across the output,
+///   `captionMargin × S` from its bottom edge, or from its top edge for a
+///   `top` caption. Fades over 0.15 s at each end.
 /// - Badge: bold system text, `badgeFontSize × S`, white, one line of height
 ///   1.25 em, padding 0.25 em by 0.5 em, `rgba(17,17,17,0.72)`, radius 0.35 em,
-///   inset 0.8 × its font size from the top and right edges.
+///   inset 0.8 × its font size from the top and right edges. When a top
+///   caption would cover it, it moves down to the same inset below the caption.
 ///
 /// Drawn in that order after the picture: rings, pointer, badge, caption.
 ///
@@ -134,18 +136,32 @@ final class OverlayDrawer {
             }
         }
 
-        if let index = visible.badge, let badge = badgeImage(index, side: side) {
-            let inset = 0.8 * plan.style.badgeFontSize * side
-            let x = Double(width) - inset - badge.width
-            context.draw(badge.image, in: CGRect(x: x, y: flip(inset + badge.height), width: badge.width, height: badge.height))
+        // The caption's box, y-down, whether or not it has faded in yet: the
+        // badge sits below a top caption for the caption's whole span, so it
+        // does not jump during the fade.
+        var captionBox: CGRect?
+        var captionOnTop = false
+        if let (index, _) = visible.caption, let caption = captionImage(index, side: side) {
+            let margin = plan.style.captionMargin * side
+            captionOnTop = plan.captions[index].position == .top
+            let top = captionOnTop
+                ? margin
+                : Double(height) - margin - caption.height
+            captionBox = CGRect(x: (Double(width) - caption.width) / 2, y: top, width: caption.width, height: caption.height)
         }
 
-        if let (index, alpha) = visible.caption, alpha > 0, let caption = captionImage(index, side: side) {
-            let bottom = Double(height) - plan.style.captionMargin * side
-            let x = (Double(width) - caption.width) / 2
+        if let index = visible.badge, let badge = badgeImage(index, side: side) {
+            let inset = 0.8 * plan.style.badgeFontSize * side
+            var box = CGRect(x: Double(width) - inset - badge.width, y: inset, width: badge.width, height: badge.height)
+            // Always below a top caption, touching or not, as the other engines do.
+            if let captionBox, captionOnTop { box.origin.y = captionBox.maxY + inset }
+            context.draw(badge.image, in: CGRect(x: box.minX, y: flip(box.maxY), width: box.width, height: box.height))
+        }
+
+        if let (index, alpha) = visible.caption, alpha > 0, let captionBox, let caption = captionImage(index, side: side) {
             context.saveGState()
             context.setAlpha(alpha)
-            context.draw(caption.image, in: CGRect(x: x, y: flip(bottom), width: caption.width, height: caption.height))
+            context.draw(caption.image, in: CGRect(x: captionBox.minX, y: flip(captionBox.maxY), width: captionBox.width, height: captionBox.height))
             context.restoreGState()
         }
     }
@@ -160,13 +176,12 @@ final class OverlayDrawer {
             text: plan.captions[index].text,
             font: systemFont(size: fontSize, weight: 0.3),
             fontSize: fontSize,
-            maxTextWidth: Double(width) * 0.8 - 1.8 * fontSize,
+            maxTextWidth: Double(width) * 0.8 - 2 * fontSize,
             maxLines: 2,
-            padX: 0.9 * fontSize,
+            padX: fontSize,
             padY: 0.5 * fontSize,
-            radius: 0.4 * fontSize,
-            fillAlpha: 0.78,
-            accentBar: 0.2 * fontSize
+            radius: 1.2 * fontSize,
+            fillAlpha: 0.8
         )
         captionImages[index] = image
         return image
@@ -185,8 +200,7 @@ final class OverlayDrawer {
             padX: 0.5 * fontSize,
             padY: 0.25 * fontSize,
             radius: 0.35 * fontSize,
-            fillAlpha: 0.72,
-            accentBar: 0
+            fillAlpha: 0.72
         )
         badgeImages[index] = image
         return image
@@ -203,7 +217,8 @@ final class OverlayDrawer {
         return CTFontCreateWithFontDescriptor(descriptor, size, nil)
     }
 
-    /// Lays `text` out in wrapped lines and draws it in a rounded box.
+    /// Lays `text` out in wrapped lines, each centred, and draws it in a
+    /// rounded box. The corner radius is at most half the box's height.
     private func textBox(
         text: String,
         font: CTFont,
@@ -213,8 +228,7 @@ final class OverlayDrawer {
         padX: Double,
         padY: Double,
         radius: Double,
-        fillAlpha: Double,
-        accentBar: Double
+        fillAlpha: Double
     ) -> TextImage? {
         let white = CGColor(srgbRed: 1, green: 1, blue: 1, alpha: 1)
         let attributes: [CFString: Any] = [kCTFontAttributeName: font, kCTForegroundColorAttributeName: white]
@@ -264,14 +278,6 @@ final class OverlayDrawer {
         context.addPath(shape)
         context.setFillColor(CGColor(srgbRed: 17 / 255, green: 17 / 255, blue: 17 / 255, alpha: fillAlpha))
         context.fillPath()
-        if accentBar > 0 {
-            context.saveGState()
-            context.addPath(shape)
-            context.clip()
-            context.setFillColor(accent)
-            context.fill(CGRect(x: 0, y: 0, width: accentBar, height: boxHeight))
-            context.restoreGState()
-        }
 
         // Each line is centred vertically in its 1.25 em slot, top to bottom.
         for (row, line) in lines.enumerated() {
@@ -280,7 +286,7 @@ final class OverlayDrawer {
             let lineWidth = CTLineGetTypographicBounds(line, &ascent, &descent, nil) - CTLineGetTrailingWhitespaceWidth(line)
             let slotTop = padY + Double(row) * lineHeight
             let baselineFromTop = slotTop + (lineHeight - (ascent + descent)) / 2 + ascent
-            let x = lines.count == 1 ? padX : padX + (textWidth - lineWidth) / 2
+            let x = padX + (textWidth - lineWidth) / 2
             context.textPosition = CGPoint(x: x, y: boxHeight - baselineFromTop)
             CTLineDraw(line, context)
         }

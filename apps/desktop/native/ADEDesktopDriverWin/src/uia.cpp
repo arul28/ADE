@@ -386,6 +386,17 @@ bool Uia::appendValue(const UiaElement& e, const std::wstring& text, bool clear)
   return SUCCEEDED(hr);
 }
 
+size_t Uia::appendValuePaced(const UiaElement& e, const std::wstring& text, bool clear, DWORD paceMs) {
+  size_t at = 0;
+  while (at < text.size()) {
+    const size_t n = (IS_HIGH_SURROGATE(text[at]) && at + 1 < text.size()) ? 2 : 1;
+    if (!appendValue(e, text.substr(at, n), clear && at == 0)) break;
+    at += n;
+    Sleep(paceMs);
+  }
+  return at;
+}
+
 bool Uia::focus(const UiaElement& e) { return e.element && SUCCEEDED(e.element->SetFocus()); }
 
 bool Uia::scroll(const UiaElement& e, const std::string& direction, int amount) {

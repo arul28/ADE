@@ -129,20 +129,37 @@ public struct DemoRing: Codable, Equatable, Sendable {
     }
 }
 
-/// A caption or a badge: text shown from `start` to `end`, output time.
+/// A caption or a badge: text shown from `start` to `end`, output time. A
+/// badge always sits below a top caption while both show, touching or not
+/// (demoContract.ts, `DemoBadge`).
 public struct DemoTextSpan: Codable, Equatable, Sendable {
     public var start: Double
     public var end: Double
     public var text: String
+    /// Captions only: which edge of the output the caption sits on. Absent
+    /// (or anything else) is the bottom.
+    public var position: DemoCaptionPosition?
 
-    public init(start: Double, end: Double, text: String) {
+    public init(start: Double, end: Double, text: String, position: DemoCaptionPosition? = nil) {
         self.start = start
         self.end = end
         self.text = text
+        self.position = position
     }
 
     public func isActive(at time: Double) -> Bool {
         time >= start && time < end
+    }
+}
+
+public enum DemoCaptionPosition: String, Codable, Equatable, Sendable {
+    case top
+    case bottom
+
+    /// An unknown value reads as the bottom, so a newer planner's position
+    /// does not fail the whole render.
+    public init(from decoder: Decoder) throws {
+        self = DemoCaptionPosition(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .bottom
     }
 }
 
@@ -200,6 +217,26 @@ public struct DemoRenderResult: Codable, Equatable, Sendable {
         self.bytes = bytes
         self.durationSeconds = durationSeconds
         self.frames = frames
+    }
+}
+
+/// `ade-media contact-sheet`: the frames of a finished video at `times`, tiled
+/// into one PNG. Limits and layout: `ContactSheet` (mirrors demoContract.ts).
+public struct DemoContactSheetRequest: Codable, Equatable, Sendable {
+    public var input: String
+    public var output: String
+    public var times: [Double]
+    public var columns: Int
+    public var tileWidth: Int
+}
+
+public struct DemoContactSheetResult: Codable, Equatable, Sendable {
+    public var width: Int
+    public var height: Int
+
+    public init(width: Int, height: Int) {
+        self.width = width
+        self.height = height
     }
 }
 

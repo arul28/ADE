@@ -8,9 +8,8 @@ import {
   assertGhSupportsAttach,
   publishProofIntoPullRequestBody,
   publishProofToPullRequest,
-  resolveStoredProofFile,
-  type PublishableArtifact,
 } from "./proofPublish";
+import { resolveStoredProofFile, type PublishableArtifact } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 
 type Run = typeof spawnSync;
 type RunResult = { status: number; stdout?: string; stderr?: string };

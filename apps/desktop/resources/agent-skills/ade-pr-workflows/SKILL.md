@@ -94,6 +94,10 @@ Rules for the evidence:
   your work. Do not do the work again to get a picture. When you have no
   "before" picture, say so and show the "after".
 - **Say what you did not check.** A reader trusts a text that names its gaps.
+- **Showcase only, final only.** A visible fix gets before/after; a feature
+  gets a demo of each thing worth seeing. Every item clears the showcase bar
+  in **ade-proof-artifacts** and passed `ade proof review`. Put proof up once
+  the work is done; never post a set and then swap it for another.
 
 ## Put proof in the PR text
 
@@ -232,6 +236,9 @@ ade proof publish --pr <number or URL> <artifact-id> <artifact-id> --heading "Pr
 - GitHub limits: 10 MB for a picture; 10 MB for a video on GitHub Free,
   100 MB on paid plans. A larger item is skipped and the output says why.
 - Post only what shows the change. Do not post every capture.
+- Posting again (the change moved after a review)? Add `--replace`: the new
+  comment goes up, then your earlier ADE proof comments on the PR are deleted.
+  Delete the stale items from the drawer too (`ade proof rm`).
 
 ## Use actions for niche surfaces
 

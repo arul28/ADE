@@ -410,8 +410,9 @@ export async function createMachineRemoteConnection(
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
         return await fileRemoteAppControlProofHere(params);
       }
-      if (method === "ade/actions/call" && params?.name === "list_computer_use_artifacts") {
-        // A proof command's verify step checks the drawer it filed into: this one.
+      if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
+        // A proof command's verify step checks the drawer it filed into, and a
+        // review reads proof from it: this one.
         return await callLocalProject(method, params);
       }
       return await callRemote(method, params);

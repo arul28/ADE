@@ -109,7 +109,7 @@ describe("computerUseArtifactBrokerService", () => {
     ]);
   });
 
-  it("lists legacy lane-owned artifacts that have lane_id but no owner link", () => {
+  it("scopes listings to their owner, also when one id is asked for, including legacy lane-only rows", async () => {
     const broker = createComputerUseArtifactBrokerService({
       db,
       projectId: "project-1",
@@ -129,6 +129,28 @@ describe("computerUseArtifactBrokerService", () => {
     expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-1" }))
       .toEqual([expect.objectContaining({ id: "lane-only", laneId: "lane-1" })]);
     expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-2" })).toEqual([]);
+
+    // A cited id from another chat or lane comes back as nothing: this is
+    // what keeps `ade proof publish` and the PR text repair from uploading
+    // proof the caller does not own.
+    const linked = await broker.ingestAsync({
+      backend: { name: "agent-browser" },
+      owners: [{ kind: "chat_session", id: "chat-a" }],
+      inputs: [{ kind: "browser_verification", title: "Chat A's check", text: "{}", mimeType: "application/json" }],
+    });
+    const chatOnly = linked.artifacts[0]!.id;
+    expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-2", artifactId: "lane-only" })).toEqual([]);
+    expect(broker.listArtifacts({ ownerKind: "lane", ownerId: "lane-1", artifactId: "lane-only" }).map((a) => a.id)).toEqual(["lane-only"]);
+    expect(broker.listArtifacts({ ownerKind: "chat_session", ownerId: "chat-b", artifactId: chatOnly })).toEqual([]);
+    expect(broker.listArtifacts({ ownerKind: "chat_session", ownerId: "chat-a", artifactId: chatOnly }).map((a) => a.id)).toEqual([chatOnly]);
+    expect(broker.findProofForOwners({
+      ids: ["lane-only", chatOnly],
+      owners: [{ kind: "chat_session", id: "chat-b" }, { kind: "lane", id: "lane-2" }],
+    })).toEqual([]);
+    expect(broker.findProofForOwners({
+      ids: ["lane-only", chatOnly, "missing"],
+      owners: [{ kind: "chat_session", id: "chat-a" }, { kind: "lane", id: "lane-1" }],
+    }).map((a) => a.id).sort()).toEqual([chatOnly, "lane-only"].sort());
   });
 
   it("reads image previews only from the project artifact directory", async () => {

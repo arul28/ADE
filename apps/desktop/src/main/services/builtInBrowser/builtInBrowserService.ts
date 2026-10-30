@@ -204,7 +204,7 @@ import {
   createBrowserHitTester,
   INSPECT_FRAME_BINDING_NAME,
 } from "./builtInBrowserHitTest";
-import type { DemoEngine, DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
+import { parseDemoStepFocus, type DemoEngine, type DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
 import {
   DEMO_VIEWPORT_ISOLATED_WORLD_ID,
@@ -214,7 +214,9 @@ import {
   demoUrlHost,
   noteDemoPageAction,
   parseDemoViewport,
+  type DemoPageActionTarget,
 } from "../demoVideo/demoTrackTargets";
+import { demoTypingPlan, typeDemoText } from "../demoVideo/demoPacing";
 import {
   BuiltInBrowserHandoffActiveError,
   handoffOrigin,
@@ -2078,12 +2080,14 @@ export function createBuiltInBrowserService(args: {
      * the lane's, else the chat's. Browser recordings live in this process's
      * demo track registry, so the brain forwards its steps here.
      */
-    noteDemoStep(input: { laneId?: string | null; chatSessionId?: string | null; text?: string | null } = {}): { noted: number } {
+    noteDemoStep(input: { laneId?: string | null; chatSessionId?: string | null; text?: string | null; focus?: unknown } = {}): { noted: number } {
       const text = typeof input.text === "string" ? input.text : "";
+      const parsedFocus = input.focus == null ? null : parseDemoStepFocus(input.focus);
+      const focus = parsedFocus && "rect" in parsedFocus ? parsedFocus.rect : null;
       const laneId = typeof input.laneId === "string" && input.laneId.trim() ? input.laneId.trim() : null;
       const chatSessionId = typeof input.chatSessionId === "string" && input.chatSessionId.trim() ? input.chatSessionId.trim() : null;
       if (!laneId && !chatSessionId) return { noted: 0 };
-      return { noted: demoTrackRegistry.noteStep({ laneId, chatSessionId }, text) };
+      return { noted: demoTrackRegistry.noteStep({ laneId, chatSessionId }, text, undefined, focus) };
     },
     /**
      * `owner` identifies the renderer holding the subscription (its
@@ -6058,9 +6062,9 @@ function createBuiltInBrowserWindowService(args: {
     tab: BrowserTabState,
     input: { chatSessionId?: string | null },
     kind: DemoTrackEventKind,
-    target: { point?: { x: number; y: number } | null; element?: BuiltInBrowserElementSnapshot | null; label?: string },
-  ): Promise<void> {
-    await noteDemoPageAction({
+    target: DemoPageActionTarget,
+  ): Promise<boolean> {
+    return noteDemoPageAction({
       key: builtInBrowserRecordingKey(tab.id),
       kind,
       by: input.chatSessionId ? "agent" : "user",
@@ -6103,6 +6107,12 @@ function createBuiltInBrowserWindowService(args: {
     });
   }
 
+  /** All at once, or (while the tab records) a few characters at a time, as a person types. */
+  async function insertTextForAction(tab: BrowserTabState, text: string, typing: ReturnType<typeof demoTypingPlan> | null): Promise<void> {
+    await withTemporaryDebugger(tab.webContents, () =>
+      typeDemoText(text, typing, (piece) => sendDebuggerCommand(tab.webContents, "Input.insertText", { text: piece })));
+  }
+
   async function typeText(input: BuiltInBrowserTypeTextArgs): Promise<BuiltInBrowserAgentActionResult> {
     const tab = targetTabFromInput(input, "No active browser tab. Open a tab before typing.");
     return runTracedAgentAction(tab, "typeText", input, async () => {
@@ -6110,10 +6120,9 @@ function createBuiltInBrowserWindowService(args: {
       if (!text) throw new Error("Text is required.");
       await captureActionBaseline(tab, input);
       // No label: what had focus is unknown, so the text may be a secret.
-      await noteDemoAction(tab, input, "type", {});
-      await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
-      });
+      const typing = demoTypingPlan(text);
+      const recording = await noteDemoAction(tab, input, "type", { seconds: typing.seconds });
+      await insertTextForAction(tab, text, recording ? typing : null);
       emitStatus();
       return actionResult(tab, input);
     });
@@ -6177,10 +6186,9 @@ function createBuiltInBrowserWindowService(args: {
         : (typeof input.text === "string" ? input.text : null);
       if (text == null) throw new Error("Fill text is required.");
       const element = await focusElementTarget(tab, input, { select: true, clear: true });
-      await noteDemoAction(tab, input, "type", { element, label: demoTypedLabel(text, element) });
-      await withTemporaryDebugger(tab.webContents, async () => {
-        await sendDebuggerCommand(tab.webContents, "Input.insertText", { text });
-      });
+      const typing = demoTypingPlan(text);
+      const recording = await noteDemoAction(tab, input, "type", { element, label: demoTypedLabel(text, element), seconds: typing.seconds });
+      await insertTextForAction(tab, text, recording ? typing : null);
       emitStatus();
       return actionResult(tab, input);
     });
@@ -7225,6 +7233,7 @@ function createBuiltInBrowserWindowService(args: {
     dispatchPageMouseEvent,
     resolveClickTarget,
     focusElementTarget,
+    noteDemoAction,
     observationDirectory,
     observationRootPath,
     observationRelativeBasePath,

@@ -7,6 +7,8 @@
  * - `ade-media analyze <input>` prints one `DemoAnalysis` JSON line.
  * - `ade-media render <request.json>` prints one `DemoRenderResult` JSON line
  *   and reports `progress 0.42` lines on stderr while it works.
+ * - `ade-media contact-sheet <request.json>` writes a `DemoContactSheetRequest`'s
+ *   PNG and prints one `DemoContactSheetResult` JSON line.
  *
  * On failure the binary exits 1 with `error: <message>` as its last stderr
  * line; that message becomes the rejected Error's message, so the demo
@@ -26,6 +28,7 @@ import os from "node:os";
 import path from "node:path";
 import type {
   DemoAnalysis,
+  DemoContactSheetResult,
   DemoEngine,
   DemoRenderRequest,
   DemoRenderResult,
@@ -43,6 +46,9 @@ const READABLE_EXTENSIONS = new Set([".mp4", ".mov", ".m4v"]);
 /** A raw file is at most {@link RECORDING_MAX_MS} long; decoding it runs many times faster. */
 const ANALYZE_TIMEOUT_MS = Math.max(120_000, RECORDING_MAX_MS);
 const RENDER_MIN_TIMEOUT_MS = 60_000;
+/** Each tile is one seek and one decode from the nearest key frame. */
+const CONTACT_SHEET_BASE_TIMEOUT_MS = 30_000;
+const CONTACT_SHEET_PER_TIME_MS = 2_000;
 /** After SIGTERM, how long `ade-media` gets to delete its partial file before SIGKILL. */
 const KILL_GRACE_MS = 3_000;
 /** The analysis of a five-minute 60 fps file is well under a megabyte. */
@@ -115,8 +121,7 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
 
     async render(request, options) {
       assertSupported();
-      const requestPath = path.join(os.tmpdir(), `ade-media-request-${process.pid}-${randomUUID()}.json`);
-      await fs.promises.writeFile(requestPath, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+      const requestPath = await writeRequestFile(request);
       const startedAt = Date.now();
       try {
         const stdout = await runAdeMedia({
@@ -152,20 +157,53 @@ export function createSwiftDemoEngine(deps: SwiftDemoEngineDeps): DemoEngine {
         await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
       }
     },
+
+    async contactSheet(request, options) {
+      assertSupported();
+      const requestPath = await writeRequestFile(request);
+      try {
+        const stdout = await runAdeMedia({
+          binaryPath,
+          args: ["contact-sheet", requestPath],
+          timeoutMs: CONTACT_SHEET_BASE_TIMEOUT_MS + CONTACT_SHEET_PER_TIME_MS * request.times.length,
+          signal: options?.signal,
+          logger,
+          label: "contact-sheet",
+        });
+        const result = parseLastJsonLine(stdout, "contact-sheet") as DemoContactSheetResult;
+        if (!result || typeof result.width !== "number" || typeof result.height !== "number") {
+          throw new Error("ade-media contact-sheet printed something that is not a contact sheet result.");
+        }
+        return result;
+      } catch (error) {
+        await removePartialOutputs(request.output);
+        throw error;
+      } finally {
+        await fs.promises.rm(requestPath, { force: true }).catch(() => undefined);
+      }
+    },
   };
 }
 
+/** A request too big for argv goes to `ade-media` as a private temp file. */
+async function writeRequestFile(request: unknown): Promise<string> {
+  const requestPath = path.join(os.tmpdir(), `ade-media-request-${process.pid}-${randomUUID()}.json`);
+  await fs.promises.writeFile(requestPath, JSON.stringify(request), { encoding: "utf8", mode: 0o600 });
+  return requestPath;
+}
+
 /**
- * `ade-media` deletes its partial file (`.<name>.<pid>.partial.mp4`, plus the
- * writer's `…sb-*` scratch copy) itself, unless it had to be SIGKILLed after
- * the grace period. This sweeps what such a kill left beside `output`.
+ * `ade-media` deletes its partial file (`.<name>.<pid>.partial.mp4` or
+ * `.partial.png`, plus the writer's `…sb-*` scratch copy) itself, unless it
+ * had to be SIGKILLed after the grace period. This sweeps what such a kill
+ * left beside `output`.
  */
 async function removePartialOutputs(output: string): Promise<void> {
   const directory = path.dirname(output);
   const prefix = `.${path.basename(output)}.`;
   const names = await fs.promises.readdir(directory).catch(() => [] as string[]);
   await Promise.all(names
-    .filter((name) => name.startsWith(prefix) && name.includes(".partial.mp4"))
+    .filter((name) => name.startsWith(prefix) && /\.partial\.(mp4|png)/u.test(name))
     .map((name) => fs.promises.rm(path.join(directory, name), { force: true }).catch(() => undefined)));
 }
 

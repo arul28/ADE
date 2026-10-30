@@ -8,7 +8,7 @@ import {
 } from "../../../shared/chatAttachmentLimits";
 import { sniffImageMimeType } from "../../../shared/imageSniff";
 import { getImageAttachmentMediaType } from "../../../shared/types/chat";
-import { imageDimensions, type ImageDimensions } from "../shared/imageDimensions";
+import { gifDimensions, imageDimensions, webpDimensions, type ImageDimensions } from "../shared/imageDimensions";
 import type { Logger } from "../logging/logger";
 
 /**
@@ -195,33 +195,6 @@ function yieldToEventLoop(): Promise<void> {
  */
 function gifOrWebpDimensions(bytes: Buffer): ImageDimensions | null {
   return gifDimensions(bytes) ?? webpDimensions(bytes);
-}
-
-/** Logical screen size, little-endian at bytes 6 and 8. */
-function gifDimensions(bytes: Buffer): ImageDimensions | null {
-  if (bytes.length < 10) return null;
-  const signature = bytes.toString("latin1", 0, 6);
-  if (signature !== "GIF87a" && signature !== "GIF89a") return null;
-  return { width: bytes.readUInt16LE(6), height: bytes.readUInt16LE(8) };
-}
-
-/** Canvas size from the first chunk: VP8 (lossy), VP8L (lossless) or VP8X. */
-function webpDimensions(bytes: Buffer): ImageDimensions | null {
-  if (bytes.length < 25) return null;
-  if (bytes.toString("latin1", 0, 4) !== "RIFF" || bytes.toString("latin1", 8, 12) !== "WEBP") return null;
-  const chunk = bytes.toString("latin1", 12, 16);
-  if (chunk === "VP8L") {
-    const bits = bytes.readUInt32LE(21);
-    return { width: (bits & 0x3fff) + 1, height: ((bits >> 14) & 0x3fff) + 1 };
-  }
-  if (bytes.length < 30) return null;
-  if (chunk === "VP8 ") {
-    return { width: bytes.readUInt16LE(26) & 0x3fff, height: bytes.readUInt16LE(28) & 0x3fff };
-  }
-  if (chunk === "VP8X") {
-    return { width: bytes.readUIntLE(24, 3) + 1, height: bytes.readUIntLE(27, 3) + 1 };
-  }
-  return null;
 }
 
 function decodePng(bytes: Buffer): Rgba {

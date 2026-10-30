@@ -553,21 +553,55 @@ final class AccessibilityDriver {
         _ element: AXUIElement,
         record: ObservedElement,
         text: String,
-        clear: Bool
+        clear: Bool,
+        paceMs: Int = 0,
+        shouldContinue: () -> Bool = { true }
     ) throws {
         _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         var isSettable: DarwinBoolean = false
         AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isSettable)
         if isSettable.boolValue {
             let existing = clear ? "" : (Self.stringValue(of: element) ?? "")
-            if setValue(element, to: existing + text) { return }
+            // Empty text with `clear` is a plain value write, paced or not.
+            if paceMs > 0 && !text.isEmpty {
+                // A recording is running: the value grows a character at a
+                // time, so the video shows typing rather than a paste.
+                var typed = ""
+                for character in text {
+                    if !typed.isEmpty { try Self.stopIfTakenOver(shouldContinue, typed: typed.count, of: text.count) }
+                    guard setValue(element, to: existing + typed + String(character)) else { break }
+                    typed.append(character)
+                    RunLoopPump.typingPause(paceMs)
+                }
+                if typed.count == text.count { return }
+                // Posting the whole text now would type the part already in
+                // the field a second time.
+                if !typed.isEmpty {
+                    throw DriverError(
+                        code: DriverErrorCode.internalError,
+                        message: "The field stopped accepting text after \(typed.count) of \(text.count) characters; observe it before typing again."
+                    )
+                }
+            } else if setValue(element, to: existing + text) {
+                return
+            }
         }
         if clear {
             // Select-all then type over it: the only "clear" a value-less
             // element understands.
             try postKey(pid: record.pid, keyCode: KeyCodes.table["a"]!, modifiers: [.maskCommand])
         }
-        try postText(pid: record.pid, text: text)
+        try postText(pid: record.pid, text: text, paceMs: paceMs, shouldContinue: shouldContinue)
+    }
+
+    /// Paced typing pumps the run loop, so someone can take control between
+    /// two keys; their app then must not get the rest of the agent's text.
+    static func stopIfTakenOver(_ shouldContinue: () -> Bool, typed: Int, of total: Int) throws {
+        guard !shouldContinue() else { return }
+        throw DriverError(
+            code: DriverErrorCode.userHasControl,
+            message: "Typing stopped after \(typed) of \(total) characters: someone took control of this screen."
+        )
     }
 
     /// Presses a window's own close button. The way ⌘W reaches a lane window:
@@ -708,8 +742,12 @@ final class AccessibilityDriver {
     }
 
     /// Types a string as unicode key events, so layouts and emoji survive.
-    func postText(pid: pid_t, text: String) throws {
-        for character in text {
+    func postText(pid: pid_t, text: String, paceMs: Int = 0, shouldContinue: () -> Bool = { true }) throws {
+        for (index, character) in text.enumerated() {
+            if index > 0 {
+                RunLoopPump.typingPause(paceMs)
+                try Self.stopIfTakenOver(shouldContinue, typed: index, of: text.count)
+            }
             var utf16 = Array(String(character).utf16)
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)

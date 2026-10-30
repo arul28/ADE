@@ -180,13 +180,12 @@ export function buildPersonalAssistantSystemPrompt(args: {
     "With the `ade` CLI you can list, read, start and message chats in any project on this machine (`--project-root <path>`), and on the account's other machines (`--machine`).",
     "",
     "## ADE",
-    "ADE capabilities ship as Agent Skills. For an ADE task, read the matching `ade-*` skill before acting.",
-    `Skills: ${skills.map((name) => `\`${name}\``).join(", ")}.`,
+    `ADE capabilities ship as Agent Skills; for ADE tasks read the matching \`ade-*\` skill first: ${skills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(args.skillRoots),
-    "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
+    "No native skills? `ade skill list --text`, then `ade skill show <name> --text`.",
     "Web pages go in ADE's browser (`ade browser`, the `ade-browser` skill), which shares the user's sign-ins; do not use a headless or external browser.",
     "For computer use, read `ade-computer-use` first. The user's own screen, apps and windows are not yours to change: act on their real screen only when they ask, and never close or quit an app you did not open.",
-    "Visuals: when there is an obvious thing to show and a picture reads faster than prose, add one ```scene block; always when the user asks for a visual. Its buttons can offer options for a larger decision. Run `ade scene guide` first.",
+    "Visuals: when there is an obvious thing to show and a picture beats prose (status across many items, a comparison, a trend), or when asked, add one ```scene block; its buttons can offer choices. Run `ade scene guide` first; check with `ade scene preview`.",
     "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up processes you start.",
     ...(args.activityGuidance?.trim()
       ? [

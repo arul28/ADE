@@ -49,30 +49,44 @@ export function demoTrackTarget(
   };
 }
 
+export type DemoPageActionTarget = {
+  point?: { x: number; y: number } | null;
+  element?: Pick<AgentElementSnapshot, "frame" | "center"> | null;
+  label?: string;
+  /** A drag's end, CSS pixels. */
+  to?: { x: number; y: number } | null;
+  /** How long the action will run on the screen (paced typing, a paced drag). */
+  seconds?: number;
+};
+
 /**
  * A page action on a surface that is recording (the browser's tab, App
  * Control's page), for its demo track. Costs nothing when the surface is not
  * recording and never fails the action. The time is taken before the
- * viewport read, so it is when the action happened.
+ * viewport read, so it is when the action happened. True when the surface is
+ * recording, so the caller can pace the action for the video.
  */
 export async function noteDemoPageAction(args: {
   key: string;
   kind: DemoTrackEventKind;
   by: DemoTrackEvent["by"];
-  target: { point?: { x: number; y: number } | null; element?: Pick<AgentElementSnapshot, "frame" | "center"> | null; label?: string };
+  target: DemoPageActionTarget;
   readViewport: () => Promise<DemoViewportSize | null>;
-}): Promise<void> {
-  if (!demoTrackRegistry.isRecording(args.key)) return;
+}): Promise<boolean> {
+  if (!demoTrackRegistry.isRecording(args.key)) return false;
   const atMs = Date.now();
   const { target } = args;
-  const viewport = target.point || target.element ? await args.readViewport().catch(() => null) : null;
+  const viewport = target.point || target.element || target.to ? await args.readViewport().catch(() => null) : null;
   demoTrackRegistry.note(args.key, {
     kind: args.kind,
     by: args.by,
     atMs,
     ...demoTrackTarget(viewport, target.point ?? null, target.element ?? null),
+    ...(viewport && target.to ? { to: [target.to.x / viewport.width, target.to.y / viewport.height] as [number, number] } : {}),
     ...(target.label ? { label: target.label } : {}),
+    ...(target.seconds ? { seconds: target.seconds } : {}),
   });
+  return true;
 }
 
 /** The element's name as a viewer would say it: "Save", "Email". */

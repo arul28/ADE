@@ -147,11 +147,29 @@ extension DriverRuntime {
             let (element, record) = TypeCommand.hasTarget(target)
                 ? try resolve(payload: target)
                 : try accessibility.focusedElementInNewestObservation()
+            let paceMs = TypeCommand.paceMs(payload)
+            // Paced typing pumps the run loop between keys; held like a drag,
+            // so no other request moves focus or input in the middle of it.
+            if paceMs > 0 { try gestures.begin(laneId: laneId) }
+            defer {
+                if paceMs > 0 {
+                    gestures.end()
+                    scheduleDeferredDrain()
+                }
+            }
+            // A takeover is let through the gate; the typing stops there, as a
+            // background drag lets go (a lease that is only cleared is no one).
+            let holderAtStart = leases.lease(forLane: laneId)?.holderId
             try accessibility.type(
                 element,
                 record: record,
                 text: text,
-                clear: payload["clear"]?.boolValue ?? false
+                clear: payload["clear"]?.boolValue ?? false,
+                paceMs: paceMs,
+                shouldContinue: { [leases] in
+                    let holder = leases.lease(forLane: laneId)?.holderId
+                    return holder == nil || holder == holderAtStart
+                }
             )
             return ["resolvedIndex": .int(record.index)]
         case "setValue":
@@ -397,11 +415,21 @@ extension DriverRuntime {
                 targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
             )
         case "type":
+            let paceMs = TypeCommand.paceMs(payload)
+            // See the accessibility `type`: paced keys are held like a drag.
+            if paceMs > 0 { try gestures.begin(laneId: laneId) }
+            defer {
+                if paceMs > 0 {
+                    gestures.end()
+                    scheduleDeferredDrain()
+                }
+            }
             try realInput.text(
                 laneId: laneId,
                 holderId: holderId,
                 text: TypeCommand.split(payload).text,
-                targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates()),
+                paceMs: paceMs
             )
         default:
             throw DriverError(
