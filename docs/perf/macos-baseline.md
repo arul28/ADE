@@ -145,8 +145,8 @@ be far smaller; it was not measured that way.
 | Renderer work per keystroke (dev) | `keystroke-trace.mjs` | — | ~4.5 ms (style 2.3, script 1.6) | 8 ms |
 | Input to next frame, 10k plain draft with ultrathink (dev) | CDP input-to-next-rAF, 120 keys/run, 3 runs; 2026-10-16 at `d36087c5b` | — | p50 3.4 ms; p90 4.1–4.2 ms (1327×800, throwaway project, no model messages) | 8 ms |
 | Keystrokes slower than 16 ms (dev) | `typing.mjs` | — | 8 of 80 events | 16 of 80 |
-| Component renders for 20 typed characters, median and worst of 3 (browser mock, dev) | `composer-typing-renders.mjs`, real transcript loaded; 2026-10-29 on `e48278d17` plus the composer change | 1,267 / 1,268 | 135 / 135 (composer 4 per key, plus one sidebar draft-indicator update) | 166 |
-| Work chat switch, warm, dev app on the owner's real ~/.ade with two other machines connected: first changed frame median / worst long frame; component renders per switch | `interaction.mjs chats 4` (3 alternated pairs), `chat-switch-renders.mjs 9333 8`; 2026-10-29 | 55-65 / ~86 ms; ~2,000 renders | 50-57 / 53-70 ms; 1,235 renders | 60 ms first frame |
+| Component renders for 20 typed characters, median and worst of 3 (browser mock, dev) | `composer-typing-renders.mjs`, real transcript loaded; 2026-10-29 on `46c4fcff9` (the composer change; PR #1985) | 1,267 / 1,268 | 135 / 135 (composer 4 per key, plus one sidebar draft-indicator update) | 166 |
+| Work chat switch, warm, dev app on the owner's real ~/.ade with two other machines connected: first changed frame median / worst long frame; component renders per switch | `interaction.mjs chats 4` (3 alternated pairs), `chat-switch-renders.mjs 9333 8`; 2026-10-29 on `20465883b` (PR #1985) | 55-65 / ~86 ms; ~2,000 renders | 50-57 / 53-70 ms; 1,235 renders | 60 ms first frame |
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 

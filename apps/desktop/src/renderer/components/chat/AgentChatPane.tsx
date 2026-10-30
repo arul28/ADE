@@ -4708,6 +4708,10 @@ export function AgentChatPane({
   const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommandsState] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   // Re-read after every turn; an unchanged list keeps its identity.
+  // The chat the slash-command read in state belongs to (null for a lane-level
+  // read). A read for another chat always changes it, so the pane renders even
+  // when the new list equals the previous chat's.
+  const [sdkSlashCommandsChatId, setSdkSlashCommandsChatId] = useState<string | null>(null);
   const setSdkSlashCommands = useCallback((next: import("../../../shared/types").AgentChatSlashCommand[]) => {
     setSdkSlashCommandsState((prev) => reuseStructurallyEqualArray(next, prev));
   }, []);
@@ -10230,8 +10234,13 @@ export function AgentChatPane({
       setSdkSlashCommands([]);
       return;
     }
+    const readChatId = "sessionId" in args ? args.sessionId ?? null : null;
     getAgentChatSlashCommandsCached(args, { pin })
-      .then((cmds) => { if (!cancelled) setSdkSlashCommands(cmds); })
+      .then((cmds) => {
+        if (cancelled) return;
+        setSdkSlashCommands(cmds);
+        setSdkSlashCommandsChatId(readChatId);
+      })
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
   }, [isPersonalPane, isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
@@ -10247,9 +10256,13 @@ export function AgentChatPane({
   // state's list is used as before.
   const cachedSlashCommandsForChat = isTileActive && !isPersonalPane && renderedSessionId
     && !isDeferredComposerModelSelection(modelId, selectedSessionModelId, deferredComposerSessionIdRef.current, renderedSessionId)
-    ? peekAgentChatSlashCommandsCache({ sessionId: renderedSessionId, projectRoot }, chatRuntimePin)
+    ? peekAgentChatSlashCommandsCache({ sessionId: renderedSessionId, projectRoot }, renderedChatRuntimePin)
     : undefined;
-  const skillNameSource = cachedSlashCommandsForChat ?? sdkSlashCommands;
+  // A read that belongs to the chat on screen is current; until it lands, the
+  // cached list stands in.
+  const skillNameSource = sdkSlashCommandsChatId === renderedSessionId
+    ? sdkSlashCommands
+    : cachedSlashCommandsForChat ?? sdkSlashCommands;
   const threadEntitySkillNames = useStableIdentity(
     useMemo(() => skillNameSource.map((command) => command.name.replace(/^\//, "")), [skillNameSource]),
     sameKeyList,

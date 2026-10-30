@@ -2914,6 +2914,8 @@ function renderEvent(
   }
 ) {
   const event = envelope.event;
+  // False only for a row the view opened with (no entrance on a switch).
+  const playEntrance = options?.playEntrance !== false;
 
   // One rule for "this row draws nothing", shared with Thought-run merging.
   if (transcriptEventDrawsNothing(event, options)) return null;
@@ -3134,7 +3136,7 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message" && userBody) {
-    const playSendEntrance = options?.playEntrance !== false && !animatedUserMessageKeys.has(envelope.key);
+    const playSendEntrance = playEntrance && !animatedUserMessageKeys.has(envelope.key);
     animatedUserMessageKeys.add(envelope.key);
     const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
@@ -3281,7 +3283,7 @@ function renderEvent(
             </div>
           ) : null}
           <div data-ade-find-skip="" className="contents">
-            <UserMessageSendConfirmations event={event} entrance={options?.playEntrance !== false} />
+            <UserMessageSendConfirmations event={event} entrance={playEntrance} />
           </div>
           {remoteMcpLabel ? (
             <div
@@ -3312,7 +3314,7 @@ function renderEvent(
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
         // actions float below the row, and `hidden` would clip them.
         className="flex min-w-0 max-w-full w-full justify-start overflow-x-clip"
-        initial={options?.playEntrance === false ? false : { opacity: 0 }}
+        initial={playEntrance ? { opacity: 0 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
@@ -3395,7 +3397,7 @@ function renderEvent(
     const isFailed = event.status === "failed";
     return (
       <motion.div
-        initial={options?.playEntrance === false ? false : { opacity: 0 }}
+        initial={playEntrance ? { opacity: 0 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
         className={cn(
@@ -4142,7 +4144,7 @@ function renderEvent(
     return (
       <motion.div
         className={cn(livePreview ? "w-full" : "w-fit", "max-w-[var(--chat-content-width,52rem)]")}
-        initial={options?.playEntrance === false ? false : { opacity: 0 }}
+        initial={playEntrance ? { opacity: 0 } : false}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
       >
@@ -4224,7 +4226,7 @@ function renderEvent(
 
   /* ── Tool result ── */
   if (event.type === "tool_result") {
-    return <ToolResultCard event={event} entrance={options?.playEntrance !== false} />;
+    return <ToolResultCard event={event} entrance={playEntrance} />;
   }
 
   /* ── Approval request ── */
@@ -5700,7 +5702,9 @@ const VIRTUALIZATION_THRESHOLD = 60;
  * commit drew only the overscan, and the rows that fill the pane mounted in a
  * second commit with a second style and layout pass. It only decides which
  * rows mount: the scroll restore and everything else still wait for the
- * measured `containerHeight`.
+ * measured `containerHeight`. One value for every list in the window (main
+ * chat, side chats, grid tiles): a pane of another size seeds at most a few
+ * extra or missing rows, which its own measurement corrects in that commit.
  */
 let lastMeasuredChatPaneHeightPx = 0;
 /**
@@ -5771,8 +5775,10 @@ function needsScrollRestore(memory: ChatScrollMemory | null): boolean {
 /**
  * Where a scroll restore will land under the height model, before anything is
  * mounted: the saved row's model top plus its offset, else the saved distance
- * from the bottom. The same two answers `applyScrollRestore` gives for a row
- * that is not mounted. Null when there is nothing to restore.
+ * from the bottom. `applyScrollRestore` also falls back to the drawn group
+ * that folds the saved row; this estimate does not, so a folded anchor seeds
+ * from the bottom distance. It only decides which rows mount first. Null when
+ * there is nothing to restore.
  */
 function estimateScrollRestoreTop(
   memory: ChatScrollMemory | null,

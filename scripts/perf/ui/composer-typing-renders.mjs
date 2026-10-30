@@ -144,7 +144,7 @@ for (let run = 0; run < runs; run++) {
 }
 const sorted = [...results].sort((a, b) => a.total - b.total);
 const median = sorted[Math.floor(sorted.length / 2)];
-console.log(JSON.stringify({ chars, gapMs, runs, medianRenders: median.total, worstRenders: sorted[sorted.length - 1].total, target: "166-182" }));
+console.log(JSON.stringify({ chars, gapMs, runs, medianRenders: median.total, worstRenders: sorted[sorted.length - 1].total, ceiling: 166, outsideTarget: "166-182" }));
 console.log("-- components, median run");
 for (const [name, n] of median.top) console.log(`${String(n).padStart(6)} ${name}`);
 if (detail) {

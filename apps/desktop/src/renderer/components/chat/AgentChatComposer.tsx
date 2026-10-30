@@ -1154,7 +1154,7 @@ function ComposerIdleSendButton({
       ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
       ?? null;
     (first ?? caretRef.current)?.focus();
-  }, [menuOpen]);
+  }, [caretRef, menuOpen]);
 
   const rows = [
     {
@@ -2791,9 +2791,9 @@ function AgentChatComposerImpl({
   // Prompt stashes and Codex voice live in the project runtime; a scoped
   // (personal) pane has neither, so their controls and shortcuts are hidden.
   const draftsAvailable = projectChatPane;
-  const withoutPlanning = <T extends { icon?: string }>(options: T[]): T[] => (
+  const withoutPlanning = useCallback(<T extends { icon?: string }>(options: T[]): T[] => (
     planningAllowed ? options : options.filter((option) => option.icon !== "plan")
-  );
+  ), [planningAllowed]);
   const cloudCanLaunch = cloudLaunch?.canLaunch ?? false;
   const cloudModelReady = cloudLaunch?.modelReady ?? false;
   const cloudHasEligibleModels = cloudLaunch?.hasEligibleModels ?? true;
@@ -3158,6 +3158,9 @@ function AgentChatComposerImpl({
       out.push(composerModelSuggestion(descriptor));
     }
     return out;
+    // runtimeCatalogTick is not read here: it changes when the runtime catalog
+    // loads, which the descriptor lookups above read from module state.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableModelIds, mentionModelIds, modelCatalogScopeKey, runtimeCatalogTick]);
   // A model chip being edited: which chip, which part, which option is lit.
   const [modelChipEdit, setModelChipEdit] = useState<{
@@ -6190,6 +6193,7 @@ function AgentChatComposerImpl({
     parallelChatMode,
     parallelConfiguringIndex,
     parallelModelSlots,
+    withoutPlanning,
   ]);
 
   // Clean composer: no provider-tinted glow border (that produced the bright
@@ -7327,7 +7331,7 @@ function AgentChatComposerImpl({
     // empty composer (Send clicked with the menu open, `/usage`, `/context`).
     closeCommandMenu();
     onSubmit();
-  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, hasComposerContextContent, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
+  }, [activeTurnHasContent, closeCommandMenu, attachments.length, backgroundLaunchBusy, busy, cloudFileAttachmentsDelivered, cloudSessionLinked, composerInputLocked, contextAttachmentCount, contextAttachments, cloudCanLaunch, cloudHasEligibleModels, cloudModeActive, cloudModelReady, draft, onDraftChange, onSubmit, onSubmitBlocked, onSubmitToCloud, pendingImageAttachments.length, pendingInput, pendingRedirectActive, parallelChatMode, parallelLaunchBusy, parallelModelSlots.length, singleModelBlockedMessage, singleModelReady]);
 
   const submitActiveTurnDraft = useCallback(() => {
     if (effectiveActiveTurnSendMode === "queue") {
@@ -7979,7 +7983,10 @@ function AgentChatComposerImpl({
         onCompact={onCompactContext}
       />
 
-  ) : null), [compactControl, compactionPulse, modelCatalogScopeKey, modelId, onCompactContext, parallelChatMode, turnActive, usageViewModel]);
+  // runtimeCatalogTick: the label reads the runtime catalog (module state),
+  // which loads after mount and bumps the tick.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  ) : null), [compactControl, compactionPulse, modelCatalogScopeKey, modelId, onCompactContext, parallelChatMode, runtimeCatalogTick, turnActive, usageViewModel]);
   const attachmentAndToolControls = useMemo(() => (
     <>
       <SmartTooltip
