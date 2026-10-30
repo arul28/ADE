@@ -75,6 +75,8 @@ export type DemoTrackEventKind =
   | "key"
   | "scroll"
   | "drag"
+  /** The pointer moved onto something without clicking it. */
+  | "hover"
   | "navigate"
   /** A step caption: the agent's `ade proof step "<text>"`. */
   | "step";
@@ -92,8 +94,18 @@ export type DemoTrackEvent = {
    * A short label: the element's name for an action ("Save"), the typed text
    * for `type` (already shortened), the URL host for `navigate`, the caption
    * for `step`.
+   *
+   * On a `step`, `rect` is its focus (`ade proof step --focus`): the region
+   * the camera holds on until the next step.
    */
   label?: string;
+  /** A drag's end point, normalized; `x`/`y` is where it started. */
+  to?: [number, number];
+  /**
+   * How long the action ran on the screen, in seconds: text typed a few
+   * characters at a time, a drag moved across. Absent for an instant action.
+   */
+  seconds?: number;
   by: "agent" | "user";
 };
 
@@ -201,10 +213,17 @@ export type DemoCursorKey = { t: number; x: number; y: number; visible: boolean 
 /** A click ring, starting at output time `t`, at a normalized source point. */
 export type DemoRing = { t: number; x: number; y: number };
 
-/** Text drawn at the bottom center of the output, over the picture. */
-export type DemoCaption = { start: number; end: number; text: string };
+/**
+ * A caption, centered across the output, `captionMargin` from its bottom
+ * edge, or from its top edge when `position` is `top` (the planner moves it
+ * there when the action is low in the view). A pill: `#111111` at 0.8,
+ * corner radius `min(boxHeight / 2, 1.2 × fontSize)`, padding `1.0 ×
+ * fontSize` across and `0.5 × fontSize` down, semibold white text, each line
+ * centered, at most two lines and 80 % of the output's width. No accent bar.
+ */
+export type DemoCaption = { start: number; end: number; text: string; position?: "top" | "bottom" };
 
-/** The small speed badge ("4×") in the top right corner of the output. */
+/** The small badge in the top right corner of the output: a speed ("4×") or a key press ("Cmd + K"). */
 export type DemoBadge = { start: number; end: number; text: string };
 
 /**
@@ -212,7 +231,7 @@ export type DemoBadge = { start: number; end: number; text: string };
  * so they read the same at any output size. Both engines draw the same shapes.
  */
 export type DemoStyle = {
-  /** `#RRGGBB`, the ADE accent. Rings and the caption's accent bar. */
+  /** `#RRGGBB`, the ADE accent. Click rings. */
   accent: string;
   ringDurationSeconds: number;
   ringStartRadius: number;
@@ -221,7 +240,7 @@ export type DemoStyle = {
   /** Pointer height. The pointer is {@link DEMO_POINTER_POLYGON}, white with a dark outline. */
   pointerHeight: number;
   captionFontSize: number;
-  /** Gap between the caption's box and the bottom edge. */
+  /** Gap between the caption's box and the edge it sits on. */
   captionMargin: number;
   badgeFontSize: number;
 };
@@ -266,6 +285,25 @@ export type DemoPlan = {
   style: DemoStyle;
 };
 
+/** A step caption longer than this is refused: one short phrase per beat. */
+export const DEMO_STEP_MAX_CHARS = 60;
+
+/**
+ * A step's `--focus x,y,w,h` (fractions of the recorded frame) as a
+ * {@link DemoRect}, or an error sentence. Shared by the CLI and the brain.
+ */
+export function parseDemoStepFocus(value: unknown): { rect: DemoRect } | { error: string } {
+  const parts = Array.isArray(value)
+    ? value
+    : typeof value === "string" ? value.split(",").map((part) => part.trim()) : [];
+  const numbers = parts.map((part) => (typeof part === "number" ? part : Number(part)));
+  const usage = "--focus takes x,y,width,height as fractions of the recorded frame (0–1), e.g. 0.5,0.1,0.5,0.8 for the right half.";
+  if (numbers.length !== 4 || numbers.some((n) => !Number.isFinite(n))) return { error: usage };
+  const [x, y, w, h] = numbers as [number, number, number, number];
+  if (x < 0 || y < 0 || w <= 0 || h <= 0 || x + w > 1.001 || y + h > 1.001) return { error: usage };
+  return { rect: [x, y, Math.min(w, 1 - x), Math.min(h, 1 - y)] };
+}
+
 // ---------------------------------------------------------------------------
 // Engines
 // ---------------------------------------------------------------------------
@@ -304,6 +342,23 @@ export type DemoRenderResult = {
   frames: number;
 };
 
+/**
+ * A contact sheet of a finished video, for an agent to check its own demo:
+ * the frames at `times` (seconds), each scaled to `tileWidth` px wide (height
+ * by the video's aspect), laid out left to right, top to bottom, `columns`
+ * per row, with a 6 px gap and a `#202020` background, written as a PNG to
+ * `output` (its folder exists). A time past the end shows the last frame.
+ */
+export type DemoContactSheetRequest = {
+  input: string;
+  output: string;
+  times: number[];
+  columns: number;
+  tileWidth: number;
+};
+
+export type DemoContactSheetResult = { width: number; height: number };
+
 /** One engine. Implementations reject with an Error whose message is readable. */
 export type DemoEngine = {
   id: DemoEngineId;
@@ -311,6 +366,8 @@ export type DemoEngine = {
   canRead(inputPath: string): boolean;
   analyze(inputPath: string, options?: { signal?: AbortSignal }): Promise<DemoAnalysis>;
   render(request: DemoRenderRequest, options?: { signal?: AbortSignal; onProgress?: (fraction: number) => void }): Promise<DemoRenderResult>;
+  /** Absent on an engine that cannot make one (the Chromium engine). */
+  contactSheet?(request: DemoContactSheetRequest, options?: { signal?: AbortSignal }): Promise<DemoContactSheetResult>;
 };
 
 // ---------------------------------------------------------------------------

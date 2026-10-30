@@ -77,7 +77,9 @@ bool sendKeys(const std::string& key, const std::vector<std::string>& modifiers)
 // (invalid_argument) more than kMaxTypedChars, so one call cannot hold the
 // driver's worker for minutes; the brain sizes its wait to the same cap.
 constexpr size_t kMaxTypedChars = 4'000;
-bool sendText(const std::wstring& text);
+// paceMs: the pause after each character a running recording asked for, so
+// its video shows typing; 0 keeps the 12 ms the editors need.
+bool sendText(const std::wstring& text, DWORD paceMs = 0);
 void releaseAllButtons();
 
 // Quiet input for the shared desktop: posted to one window, no pointer.

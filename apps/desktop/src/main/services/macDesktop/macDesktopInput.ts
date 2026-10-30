@@ -13,7 +13,7 @@
 
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
 import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
-import { demoTypedLabelForField } from "../demoVideo/demoTrackTargets";
+import { demoTypedLabelForField, demoTypingPace } from "../demoVideo/demoTrackTargets";
 import {
   macDesktopNextStep,
   macDesktopOffDisplayRefusalMessage,
@@ -346,6 +346,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     label: string | null;
     element: MacDesktopElement | null;
     point: { x: number; y: number } | null;
+    to?: { x: number; y: number } | null;
+    seconds?: number;
     by: "agent" | "user";
   }): void => {
     const key = macDesktopDemoKey(laneId);
@@ -366,6 +368,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       by: action.by,
       ...(center ? { x: nx(center.x), y: ny(center.y) } : {}),
       ...(frame ? { rect: [nx(frame.x), ny(frame.y), frame.width / display.width, frame.height / display.height] } : {}),
+      ...(action.to ? { to: [nx(action.to.x), ny(action.to.y)] as [number, number] } : {}),
+      ...(action.seconds ? { seconds: action.seconds } : {}),
       // A type event's label is the typed text itself (already filtered), never
       // the field's name: the caption reads `Type "<label>"`.
       label: action.kind === "type"
@@ -499,7 +503,13 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
     /** The first step of two: the second one observes, so this one does not. */
     skipObservation?: boolean;
     /** What a running recording's demo track notes about this action. */
-    demo?: { kind: DemoTrackEventKind; label?: string | null } | null;
+    demo?: {
+      kind: DemoTrackEventKind;
+      label?: string | null;
+      /** A drag's end, global screen points. */
+      to?: { x: number; y: number } | null;
+      seconds?: number;
+    } | null;
     /** The driver budget, when this action takes longer than a usual request. */
     timeoutMs?: number;
     /** The error to throw instead when that budget runs out. */
@@ -608,6 +618,8 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         label: args.demo.label ?? null,
         element,
         point: pointOf(args.payload),
+        to: args.demo.to ?? null,
+        seconds: args.demo.seconds,
         by: args.controllerId?.trim() ? "user" : "agent",
       });
     }
@@ -811,6 +823,9 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       const silent = isSilent(args, mode);
       const submit = args.submit === true;
       const caption = `type · ${args.text.slice(0, 40)}`;
+      // While the lane records, the driver types a character at a time (an
+      // accessibility value grows by one) so the video shows typing, not a paste.
+      const pace = demoTrackRegistry.isRecording(macDesktopDemoKey(laneId)) ? demoTypingPace(args.text) : null;
       const typed = await runAction({
         laneId,
         action: "type",
@@ -819,7 +834,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         // The words ride `typeText`, so a text target's label in `text` is not
         // overwritten by them. The driver reads `text` as the words only when
         // `typeText` is absent (an older service), and then never as a label.
-        payload: { ...target.payload, typeText: args.text, clear: args.clear === true },
+        payload: { ...target.payload, typeText: args.text, clear: args.clear === true, ...(pace ? { typePaceMs: pace.paceMs } : {}) },
         ...(typeTimeoutMs ? {
           timeoutMs: typeTimeoutMs,
           timeoutError: () => deps.serviceError(
@@ -842,6 +857,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
           label: target.element && target.element.subrole !== "AXSecureTextField" && target.element.role !== "AXSecureTextField"
             ? demoTypedLabelForField(args.text, [target.element.title, target.element.label, target.element.identifier, target.element.help])
             : null,
+          ...(pace ? { seconds: pace.seconds } : {}),
         },
         target: { ...target.payload },
       });
@@ -933,6 +949,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
       // starts in), real when asked for — a drop onto another app or the Dock
       // needs the window server — and real on a Windows seat.
       const mode = resolveMode(laneId, args.mode, true);
+      const durationMs = Math.max(0, Math.min(10_000, Math.round(args.durationMs ?? 500)));
       return await runAction({
         laneId,
         action: "drag",
@@ -941,7 +958,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         payload: {
           from: from.payload,
           to: to.payload,
-          durationMs: Math.max(0, Math.min(10_000, Math.round(args.durationMs ?? 500))),
+          durationMs,
         },
         resolved: from.element,
         chatSessionId: args.chatSessionId ?? null,
@@ -949,7 +966,7 @@ export function createMacDesktopInput(deps: MacDesktopInputDeps) {
         holderId: args.holderId ?? null,
         silent: isSilent(args, mode),
         caption: "drag",
-        demo: { kind: "drag", label: null },
+        demo: { kind: "drag", label: null, to: to.element?.center ?? pointOf(to.payload), seconds: durationMs / 1000 },
         target: { from: from.payload, to: to.payload },
       });
     },

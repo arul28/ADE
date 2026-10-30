@@ -202,6 +202,13 @@ import {
   type GitHubPrIssueReference,
 } from "../../../shared/githubMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
+import { prBodyProofIds } from "../../../shared/prBodyProof";
+import {
+  ghVersionCanAttach,
+  parseGhVersion,
+  stagePrBodyProof,
+  type PublishableArtifact,
+} from "./prBodyProofStaging";
 import { ensureAdePrTranscriptGistLinks, hasAdePrTranscriptGistLinks, type AdePrTranscriptGistLink } from "../../../shared/adePrTranscriptGists";
 import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
 import {
@@ -1056,6 +1063,24 @@ export type ShellPrLinkArgs = {
   repoName: string | null;
   prNumber: number;
 };
+
+/** A PR whose text a chat's own `gh pr create` or `gh pr edit --body` wrote. */
+export type ShellPrBodyRepairArgs = {
+  sessionId: string;
+  repoOwner: string | null;
+  repoName: string | null;
+  /** Null when the command named no PR: it acted on the lane branch's PR. */
+  prNumber: number | null;
+  /** The chat's and lane's own proof among `ids`; nobody else's. */
+  listOwnedProof: (args: { ids: string[]; owners: Array<{ kind: "chat_session" | "lane"; id: string }> }) => PublishableArtifact[];
+  /** Records the PR on each uploaded proof item, as `ade proof publish` does. */
+  linkProofToPr: (args: { artifactIds: string[]; prUrl: string }) => void;
+};
+
+export type ShellPrBodyRepairResult =
+  | { status: "repaired"; footer: boolean; uploaded: string[]; skipped: Array<{ id: string; reason: string }> }
+  | { status: "unchanged" }
+  | { status: "skipped"; reason: string };
 
 /**
  * Whether GitHub rejected the GraphQL `stack` field itself, as opposed to
@@ -1912,6 +1937,126 @@ export function createPrService({
       linkedLane,
     });
     return { status: "linked", prId: row.id };
+  };
+
+  /** One repair per PR at a time; a command that lands mid-repair runs once after it. */
+  const shellBodyRepairs = new Map<string, { running: Promise<ShellPrBodyRepairResult>; again: ShellPrBodyRepairArgs | null }>();
+  /** `gh` 2.99+ is on this machine. Only a yes is remembered: an upgrade needs no restart. */
+  let ghCanAttach = false;
+
+  /**
+   * Puts back what an agent's `gh` write of a PR's text dropped: the "Open in
+   * ADE" footer and Linear reference ADE stamps on the lane's PR, and GitHub
+   * copies of the proof the text cites (`![caption](ade-proof://id)` and
+   * ```proof-compare blocks), as `ade prs body` does. Only proof owned by the
+   * chat or its lane goes up; any other citation, and every other line of the
+   * text, stays as the agent wrote it. Only a PR whose head is the chat's lane
+   * branch in this repository is touched.
+   */
+  const repairShellPrBodyOnce = async (args: ShellPrBodyRepairArgs): Promise<ShellPrBodyRepairResult> => {
+    const skip = (reason: string): ShellPrBodyRepairResult => {
+      logger.info("prs.shell_body_repair_skipped", { sessionId: args.sessionId, prNumber: args.prNumber, reason });
+      return { status: "skipped", reason };
+    };
+    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
+    if (!sessionId) return skip("session_missing");
+    const session = db.get<{ lane_id: string | null; tool_type: string | null }>(
+      "select lane_id, tool_type from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    if (!session?.lane_id || !isChatToolType(session.tool_type)) return skip("not_a_lane_chat");
+    const lane = (await laneService.list({ includeArchived: false, includeStatus: false }))
+      .find((entry) => entry.id === session.lane_id);
+    if (!lane) return skip("lane_missing");
+    let repo: GitHubRepoRef;
+    try {
+      repo = await githubService.getRepoOrThrow();
+    } catch {
+      return skip("no_github_repo");
+    }
+    const sameRepo = (owner: unknown, name: unknown) =>
+      String(owner ?? "").toLowerCase() === repo.owner.toLowerCase()
+      && String(name ?? "").toLowerCase() === repo.name.toLowerCase();
+    if (args.repoOwner && args.repoName && !sameRepo(args.repoOwner, args.repoName)) return skip("other_repo");
+    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branchRef));
+    const prNumber = args.prNumber ?? getRowForLaneBranch(lane.id, laneBranch)?.github_pr_number ?? null;
+    if (!prNumber) return skip("no_lane_pr");
+
+    let pull: any;
+    try {
+      pull = await fetchPr(repo, prNumber, { fresh: true });
+    } catch (error) {
+      logger.warn("prs.shell_body_repair_github_read_failed", { prNumber, error: getErrorMessage(error) });
+      return skip("github_unreadable");
+    }
+    if (!sameRepo(pull?.base?.repo?.owner?.login, pull?.base?.repo?.name)) return skip("other_repo");
+    if (!sameRepo(pull?.head?.repo?.owner?.login, pull?.head?.repo?.name)) return skip("fork_head");
+    if (normalizeBranchName(asString(pull?.head?.ref)) !== laneBranch) return skip("head_not_lane_branch");
+    if (pull?.state !== "open") return skip("not_open");
+
+    const body = typeof pull?.body === "string" ? pull.body : "";
+    const stamp = (text: string) => ensureAdeDeeplinkFooter(applyIssuePrLinkage(text, lane, primaryLinearLinkClosesOnMerge(lane)), {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      branch: laneBranch,
+      prNumber,
+    });
+
+    const citedIds = prBodyProofIds(body);
+    const owners: Array<{ kind: "chat_session" | "lane"; id: string }> = [{ kind: "chat_session", id: sessionId }, { kind: "lane", id: lane.id }];
+    if (args.sessionId !== sessionId) owners.push({ kind: "chat_session", id: args.sessionId });
+    const artifacts = citedIds.length ? args.listOwnedProof({ ids: citedIds, owners }) : [];
+    if (artifacts.length && !ghCanAttach) {
+      const version = await runGh(["--version"], { cwd: projectRoot, timeoutMs: 30_000 });
+      ghCanAttach = version.exitCode === 0 && ghVersionCanAttach(parseGhVersion(version.stdout));
+      if (!ghCanAttach) logger.info("prs.shell_body_repair_no_gh_attach", { prNumber });
+    }
+
+    if (artifacts.length && ghCanAttach) {
+      const staging = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-pr-body-proof-"));
+      try {
+        const staged = stagePrBodyProof({ body, artifacts, projectRoot, staging });
+        if (staged.posted.length) {
+          const next = stamp(staged.rewritten);
+          await fs.promises.writeFile(path.join(staging, "body.md"), next);
+          const prUrl = asString(pull?.html_url) || `https://github.com/${repo.owner}/${repo.name}/pull/${prNumber}`;
+          const edit = await runGh(
+            ["pr", "edit", prUrl, "--body-file", "body.md", ...staged.posted.flatMap((entry) => ["--attach", `./${entry.file}`])],
+            { cwd: staging, timeoutMs: 10 * 60_000 },
+          );
+          if (edit.exitCode !== 0) {
+            logger.warn("prs.shell_body_repair_upload_failed", { prNumber, error: edit.stderr.trim().slice(0, 500) });
+          } else {
+            const uploaded = staged.posted.map((entry) => entry.id);
+            try {
+              args.linkProofToPr({ artifactIds: uploaded, prUrl });
+            } catch (error) {
+              logger.warn("prs.shell_body_repair_proof_link_failed", { prNumber, error: getErrorMessage(error) });
+            }
+            logger.info("prs.shell_body_repaired", { sessionId, prNumber, footer: next !== staged.rewritten, uploaded, skipped: staged.skipped });
+            return { status: "repaired", footer: next !== staged.rewritten, uploaded, skipped: staged.skipped };
+          }
+        }
+      } finally {
+        await fs.promises.rm(staging, { recursive: true, force: true }).catch(() => {});
+      }
+    }
+
+    // No proof to upload, or the upload could not run: the footer still goes back.
+    const next = stamp(body);
+    if (next === body) return { status: "unchanged" };
+    try {
+      await githubService.apiRequest({
+        method: "PATCH",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+        body: { body: next },
+      });
+    } catch (error) {
+      logger.warn("prs.shell_body_repair_patch_failed", { prNumber, error: getErrorMessage(error) });
+      return skip("patch_failed");
+    }
+    logger.info("prs.shell_body_repaired", { sessionId, prNumber, footer: true, uploaded: [] });
+    return { status: "repaired", footer: true, uploaded: [], skipped: [] };
   };
 
   /**
@@ -7313,6 +7458,15 @@ export function createPrService({
     return withStack;
   };
 
+  /** Whether the lane's primary Linear issue closes when its PR merges. */
+  const primaryLinearLinkClosesOnMerge = (lane: LaneSummary): boolean => {
+    if (!lane.linearIssue) return false;
+    const primaryLink = (lane.linearIssueLinks ?? []).find(
+      (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
+    );
+    return primaryLink?.closeOnMerge === true;
+  };
+
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === args.laneId);
     if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
@@ -7351,13 +7505,7 @@ export function createPrService({
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
     const currentBody = typeof pr?.body === "string" ? pr.body : "";
-    const primaryLink = lane.linearIssue
-      ? (lane.linearIssueLinks ?? []).find(
-          (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
-        )
-      : null;
-    const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
-    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closePrimaryOnMerge), {
+    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, primaryLinearLinkClosesOnMerge(lane)), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -10344,6 +10492,31 @@ export function createPrService({
       const work = linkShellPrActionOnce(args).finally(() => shellPrLinksInFlight.delete(key));
       shellPrLinksInFlight.set(key, work);
       return await work;
+    },
+
+    /**
+     * Repairs the text of a PR a chat wrote with `gh` (see `repairShellPrBodyOnce`).
+     * Repeats while one runs collapse into one more pass, which reads the newest text.
+     */
+    repairShellPrBody(args: ShellPrBodyRepairArgs): Promise<ShellPrBodyRepairResult> {
+      const key = `${args.repoOwner ?? ""}/${args.repoName ?? ""}#${args.prNumber ?? `lane:${args.sessionId}`}`.toLowerCase();
+      const current = shellBodyRepairs.get(key);
+      if (current) {
+        current.again = args;
+        return current.running;
+      }
+      const entry: { running: Promise<ShellPrBodyRepairResult>; again: ShellPrBodyRepairArgs | null } = { running: Promise.resolve({ status: "unchanged" }), again: null };
+      entry.running = (async () => {
+        let result = await repairShellPrBodyOnce(args);
+        while (entry.again) {
+          const next = entry.again;
+          entry.again = null;
+          result = await repairShellPrBodyOnce(next);
+        }
+        return result;
+      })().finally(() => shellBodyRepairs.delete(key));
+      shellBodyRepairs.set(key, entry);
+      return entry.running;
     },
 
     /**

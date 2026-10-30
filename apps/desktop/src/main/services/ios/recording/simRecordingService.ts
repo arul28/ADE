@@ -154,6 +154,9 @@ export interface SimRecordingService {
      * because it is on the screen being recorded.
      */
     source?: AppleInputSource;
+    /** When typing began, and how long it ran, when it was paced for a recording. */
+    startedAtMs?: number;
+    seconds?: number;
   }): Promise<void>;
   start(args: {
     laneId: string;
@@ -1161,6 +1164,8 @@ export function createSimRecordingService(deps: SimRecordingServiceDeps = {}): S
           by: input.source === "user" ? "user" : "agent",
           ...(hasPoint && entry.record.overlays ? { x: input.x! / size!.width, y: input.y! / size!.height } : {}),
           ...(text && badgesEnabled() && entry.record.overlays ? { label: text } : {}),
+          ...(input.startedAtMs ? { atMs: input.startedAtMs } : {}),
+          ...(input.seconds ? { seconds: input.seconds } : {}),
         });
       } catch (error) {
         warn("apple.recording.note_input_failed", { laneId: input.laneId, error: String(error) });

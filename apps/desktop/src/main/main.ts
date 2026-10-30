@@ -246,6 +246,7 @@ import type {
   CaptureGestureHealth,
   CaptureGestureShot,
 } from "../shared/types/captureGesture";
+import { PROOF_LISTING_ARTIFACT_FILTER, type ComputerUseArtifactView } from "../shared/types/computerUseArtifacts";
 import { fitCaptureShotToAttachmentLimit } from "./services/capture/captureShotFit";
 import { pickCaptureGestureWindow } from "./services/capture/captureGestureTarget";
 import {
@@ -5075,6 +5076,29 @@ app.whenReady().then(async () => {
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
       linkShellPrAction: (args) => prService.linkShellPrAction(args),
+      repairShellPrBody: (args) => prService.repairShellPrBody({
+        ...args,
+        listOwnedProof: ({ ids, owners }) => {
+          const found = new Map<string, ComputerUseArtifactView>();
+          for (const owner of owners) {
+            for (const artifactId of ids) {
+              for (const artifact of computerUseArtifactBrokerService.listArtifacts({
+                ownerKind: owner.kind,
+                ownerId: owner.id,
+                artifactId,
+                ...PROOF_LISTING_ARTIFACT_FILTER,
+                limit: 1,
+              })) {
+                found.set(artifact.id, artifact);
+              }
+            }
+          }
+          return [...found.values()];
+        },
+        linkProofToPr: ({ artifactIds, prUrl }) => {
+          computerUseArtifactBrokerService.linkArtifactsToPullRequest({ artifactIds, prUrl });
+        },
+      }),
     });
     prShellLinkWatcher.start();
     prWatchServiceRef = createPrWatchService({

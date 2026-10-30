@@ -276,9 +276,9 @@ proof drawer; without it, the returned path stays scratch. Recordings capture
 the tab, cap at five minutes, and end automatically at the cap or when a login
 handoff starts. Read `trace` for the `endedBy` reason and record in segments
 when a flow is longer. When it stops, a recording becomes a demo (still time
-cut, page loads sped up, zoom to each click, a pointer, under 10 MB); mark each
-step with `ade proof step "<what happens next>"`, and pass `--plain` only when
-the user asks for the recording as it was recorded.
+cut, page loads sped up, zoom to each click, a pointer, under 10 MB); mark each step with `ade proof step "<what happens next>"`, and
+pass `--plain` only when the user asks for the recording as it was recorded.
+Showcase proof: **ade-proof-artifacts**.
 
 ### 9. Let presence explain the work
 

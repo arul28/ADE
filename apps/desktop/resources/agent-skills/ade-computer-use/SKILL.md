@@ -123,6 +123,15 @@ Follow `next:` instead of a guess. Today only the Mac Desktop prints it.
 | App Control | `ade app-control proof --caption "<what>"` | `ade app-control record start --caption "<what>"`, then `record stop` |
 | Browser | `ade browser proof --tab <id> --caption "<what>"` | `ade browser record start --tab <id> --caption "<what>"`, then `record stop --tab <id>` |
 
+Stage before showcase proof (the steps are in **ade-proof-artifacts**):
+
+| Surface | Stage |
+|---|---|
+| Apple | `ade apple status-bar --time 9:41 --wifi-bars 3 --battery-level 100`; a device never paired with ADE (no push banners). New screens: add a hero shot with `ade apple render --angles three-quarter-left` |
+| Mac / Windows / Linux Desktop | `ade screen windows --text`, then `close` or `minimize --window <id>` everything that is not the subject |
+| App Control | Only the app's window is recorded: make the subject big inside it (collapse sidebars, open the panel); `ade proof step --focus` for the rest |
+| Browser | `ade browser emulate --tab <id> --width 1280 --height 800 --scale 2` (not smaller: stills come out at this size); `ade browser zoom --tab <id> --factor 1.25` when text is small |
+
 `ade proof capture` and `ade proof record` capture the lane's display. They
 refuse the user's real screen unless you pass `--real-screen`. Pass it only
 when the user asks for proof of their own screen. The **ade-proof-artifacts**

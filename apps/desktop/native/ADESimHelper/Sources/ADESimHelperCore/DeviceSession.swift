@@ -506,7 +506,10 @@ public actor DeviceSession {
     /// Reports the characters it could not map rather than dropping them
     /// silently: a caller that asked for an emoji needs to know it did not
     /// arrive, because the field it is typing into will look almost right.
-    public func type(text: String) async throws -> [Character] {
+    public func type(text: String, paceMs: Int = 0) async throws -> [Character] {
+        // The keyboard stack needs at least 12 ms between keys; a recording
+        // may ask for more.
+        let gap = UInt64(max(12, paceMs)) * 1_000_000
         if let foldable = await foldableInput() {
             let (strokes, unsupported) = KeyboardUsage.usages(for: text)
             for stroke in strokes {
@@ -514,7 +517,7 @@ public actor DeviceSession {
                 try await foldable.key(usage: stroke.usage, down: true)
                 try await foldable.key(usage: stroke.usage, down: false)
                 if stroke.shifted { try await foldable.key(usage: KeyboardUsage.leftShift, down: false) }
-                try? await Task.sleep(nanoseconds: 12_000_000)
+                try? await Task.sleep(nanoseconds: gap)
             }
             return unsupported
         }
@@ -532,7 +535,7 @@ public actor DeviceSession {
             // The simulator's keyboard stack drops keys delivered faster than
             // it processes them; a short gap is the difference between the
             // typed string and a truncated one.
-            try? await Task.sleep(nanoseconds: 12_000_000)
+            try? await Task.sleep(nanoseconds: gap)
         }
         return unsupported
     }

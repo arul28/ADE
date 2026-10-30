@@ -595,46 +595,37 @@ const ENGINE_SOURCE = String.raw`
       return lines.map(function (entry) { return ellipsize(ctx, entry, maxWidth); });
     }
 
-    function drawCaption(ctx, W, H, S, text, alpha) {
+    /** Draws a caption pill and returns its box, so the badge can keep clear of it. */
+    function drawCaption(ctx, W, H, S, text, alpha, position) {
       var fontSize = style.captionFontSize * S;
       ctx.save();
       ctx.globalAlpha = alpha;
       ctx.font = "600 " + fontSize + "px " + FONT;
       ctx.textBaseline = "middle";
       ctx.textAlign = "left";
-      var padX = 0.9 * fontSize;
+      var padX = 1.0 * fontSize;
       var padY = 0.5 * fontSize;
-      var bar = 0.2 * fontSize;
       var lineHeight = 1.25 * fontSize;
-      // The accent bar sits inside the left padding, as in ade-media.
-      var maxText = 0.8 * W - 2 * padX;
-      var lines = wrap(ctx, text, Math.max(fontSize, maxText));
+      var lines = wrap(ctx, text, Math.max(fontSize, 0.8 * W - 2 * padX));
       var textWidth = 0;
       for (var i = 0; i < lines.length; i += 1) textWidth = Math.max(textWidth, ctx.measureText(lines[i]).width);
       var boxW = textWidth + 2 * padX;
       var boxH = lines.length * lineHeight + 2 * padY;
       var boxX = (W - boxW) / 2;
-      var boxY = H - style.captionMargin * S - boxH;
-      var radius = 0.4 * fontSize;
-      roundedRect(ctx, boxX, boxY, boxW, boxH, radius);
-      ctx.fillStyle = "rgba(17,17,17,0.78)";
+      var boxY = position === "top" ? style.captionMargin * S : H - style.captionMargin * S - boxH;
+      roundedRect(ctx, boxX, boxY, boxW, boxH, Math.min(boxH / 2, 1.2 * fontSize));
+      ctx.fillStyle = "rgba(17,17,17,0.8)";
       ctx.fill();
-      ctx.save();
-      ctx.clip();
-      ctx.fillStyle = style.accent;
-      ctx.fillRect(boxX, boxY, bar, boxH);
-      ctx.restore();
       ctx.fillStyle = "#FFFFFF";
-      // One line sits at the left padding; two are each centred in the box.
-      var textLeft = boxX + padX;
       for (var j = 0; j < lines.length; j += 1) {
-        var lineX = lines.length > 1 ? textLeft + (textWidth - ctx.measureText(lines[j]).width) / 2 : textLeft;
-        ctx.fillText(lines[j], lineX, boxY + padY + lineHeight * (j + 0.5));
+        ctx.fillText(lines[j], boxX + (boxW - ctx.measureText(lines[j]).width) / 2, boxY + padY + lineHeight * (j + 0.5));
       }
       ctx.restore();
+      return { y: boxY, h: boxH };
     }
 
-    function drawBadge(ctx, W, S, text) {
+    /** top: where the badge's inset starts (below a top caption when one shows). */
+    function drawBadge(ctx, W, S, text, top) {
       var fontSize = style.badgeFontSize * S;
       ctx.save();
       ctx.font = "700 " + fontSize + "px " + FONT;
@@ -648,7 +639,7 @@ const ENGINE_SOURCE = String.raw`
       var boxW = textWidth + 2 * padX;
       var boxH = 1.25 * fontSize + 2 * padY;
       var boxX = W - inset - boxW;
-      var boxY = inset;
+      var boxY = top + inset;
       roundedRect(ctx, boxX, boxY, boxW, boxH, 0.35 * fontSize);
       ctx.fillStyle = "rgba(17,17,17,0.72)";
       ctx.fill();
@@ -725,16 +716,20 @@ const ENGINE_SOURCE = String.raw`
         drawPointer(ctx, tip[0], tip[1], S);
       }
 
-      var badge = latestShowing(plan.badges || [], T);
-      if (badge) drawBadge(ctx, W, S, badge.text);
-
+      var badgeTop = 0;
       var caption = latestShowing(plan.captions || [], T);
       if (caption) {
         // A short fade at each end, never longer than half the caption (as ade-media).
         var fade = Math.min(0.15, (caption.end - caption.start) / 2);
         var alpha = fade > 0 ? clamp(Math.min(1, (T - caption.start) / fade, (caption.end - T) / fade), 0, 1) : 1;
-        if (alpha > 0) drawCaption(ctx, W, H, S, caption.text, alpha);
+        if (alpha > 0) {
+          var box = drawCaption(ctx, W, H, S, caption.text, alpha, caption.position);
+          if (caption.position === "top") badgeTop = box.y + box.h;
+        }
       }
+
+      var badge = latestShowing(plan.badges || [], T);
+      if (badge) drawBadge(ctx, W, S, badge.text, badgeTop);
     }
 
     return { sourceTime: sourceTime, draw: draw };

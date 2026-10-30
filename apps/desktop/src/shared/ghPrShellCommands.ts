@@ -325,3 +325,53 @@ export function shellToolCallCommand(args: unknown): string | null {
   }
   return null;
 }
+
+const EDIT_FLAGS_WITH_VALUE = new Set([
+  "-b", "--body", "-F", "--body-file", "-t", "--title", "-B", "--base", "-m", "--milestone", "-R", "--repo",
+  "--add-assignee", "--remove-assignee", "--add-label", "--remove-label", "--add-project", "--remove-project",
+  "--add-reviewer", "--remove-reviewer",
+]);
+
+/** A pull request whose text a chat's command replaced. */
+export type GhPrBodyEdit = {
+  owner: string | null;
+  repo: string | null;
+  /** Null when the command named no PR: gh edited the current branch's. */
+  number: number | null;
+};
+
+/**
+ * The PRs a successful command rewrote the text of: `gh pr edit --body` or
+ * `--body-file`. A command that names its PR by branch reads as nothing, since
+ * this reader does not resolve branches. A `gh pr create` is read by
+ * {@link readGhPrShellActions}.
+ */
+export function readGhPrBodyEdits(args: { command: string; exitCode?: number | null }): GhPrBodyEdit[] {
+  if (args.exitCode != null && args.exitCode !== 0) return [];
+  if (!mightTouchGhPr(args.command)) return [];
+  const edits: GhPrBodyEdit[] = [];
+  for (const entry of simpleCommands(tokenize(unwrapShell(args.command))).map(readGhPrInvocation)) {
+    if (!entry || entry.verb !== "edit") continue;
+    let body = false;
+    let target: GhPrBodyEdit | null = null;
+    let named = false;
+    for (let i = 0; i < entry.args.length; i += 1) {
+      const arg = entry.args[i]!;
+      if (arg.startsWith("-")) {
+        const [name, inline] = arg.split("=", 2);
+        if (name === "-b" || name === "--body" || name === "-F" || name === "--body-file") body = true;
+        if (EDIT_FLAGS_WITH_VALUE.has(name!) && inline === undefined) i += 1;
+        continue;
+      }
+      if (named) continue;
+      named = true;
+      const ref = parsePrRef(arg);
+      if (ref) target = ref;
+    }
+    if (!body || (named && !target)) continue;
+    const resolved = target ?? { owner: null, repo: null, number: null };
+    if (!resolved.owner) Object.assign(resolved, splitRepoFlag(entry.repoFlag));
+    edits.push(resolved);
+  }
+  return edits;
+}

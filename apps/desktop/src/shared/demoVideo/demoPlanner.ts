@@ -30,8 +30,12 @@
  * changes as a whole right after, which is a new page best seen in full.
  * Nearby actions share one zoom and the camera pans between them. Surfaces with
  * a mouse get a drawn pointer that glides to each action; clicks and taps get
- * a ring. Step captions from `ade proof step` show at the bottom; with none,
- * the actions' own labels do.
+ * a ring. Only step captions from `ade proof step` show: an action's own label
+ * ("Click Save") reads like a log, not a demo.
+ *
+ * A caption sits at the bottom, or at the top when the action during it is
+ * low in the view (typing into a prompt box), so it never covers what it
+ * describes. Cuts show no badge; a speed-up shows its speed.
  *
  * ## Size
  *
@@ -42,6 +46,7 @@
  */
 
 import {
+  DEMO_STEP_MAX_CHARS,
   DEMO_TARGET_BYTES,
   type DemoAnalysis,
   type DemoAnalysisFrame,
@@ -81,10 +86,6 @@ const ACTIVITY_CARRY = 0.6;
  * blinks twice a second, so it stays still.
  */
 const STEADY_CHANGES_PER_SECOND = 4;
-/** A cut this long shows a "skipped" badge, so a viewer knows time passed. */
-const SKIP_BADGE_MIN_SECONDS = 3;
-const SKIP_BADGE_SECONDS = 1.2;
-
 const MOMENT_BEFORE = 0.3;
 const MOMENT_AFTER = 1.2;
 const RESULT_WINDOW = 4.0;
@@ -122,20 +123,46 @@ const ZOOM_IGNORE_TAIL = 1.0;
 const WHOLE_SCREEN_AREA = 0.5;
 const WHOLE_SCREEN_CHANGED = 0.05;
 const CAMERA_SAMPLE_SECONDS = 1 / 15;
+/** A step's focus may zoom further than an action: the agent chose the region. */
+const FOCUS_ZOOM_MAX = 3.0;
+/**
+ * But no further than this many output pixels per source pixel: past it the
+ * picture goes soft. A Retina capture has room for 3×; a 1x one about 2×.
+ */
+const FOCUS_MAX_UPSCALE = 2.0;
+/** How much of the view a step's focus fills. */
+const FOCUS_FILL = 0.92;
+/** A focus this close to the whole frame is the whole frame. */
+const FOCUS_MIN_ZOOM = 1.05;
 /** A scene zoom that would hold shorter than this is left out: it only flickers. */
 const SCENE_MIN_HOLD = 1.5;
 /** Two zooms closer than this (after the zoom out) join: the camera moves straight across. */
 const CAMERA_JOIN_GAP = 0.8;
+/** The home view's margin around everything that happened, per side. */
+const HOME_MARGIN = 0.04;
+/** A crop that gains less than this is not worth losing the frame's edges for. */
+const HOME_MIN_ZOOM = 1.2;
+/** A scene zooms past the home view only when it gets this much closer. */
+const HOME_SCENE_GAIN = 1.15;
 
 const POINTER_SURFACES = new Set<DemoTrack["surface"]>(["mac-desktop", "app-control", "browser"]);
-const POINTER_GLIDE = 0.6;
+/** A glide's length: a short hop is quick, a move across the screen takes longer. */
+const POINTER_GLIDE_MIN = 0.35;
+const POINTER_GLIDE_MAX = 0.8;
+/** The least time between two actions for the pointer to glide at all rather than jump. */
+const POINTER_GLIDE_FLOOR = 0.2;
+/** A drag with no recorded length moves across in this long. */
+const POINTER_DRAG_DEFAULT = 0.5;
 const POINTER_APPEAR_BEFORE = 0.8;
 const POINTER_SAMPLE_SECONDS = 1 / 20;
 
 const STEP_CAPTION_MAX = 5.0;
-const ACTION_CAPTION = 2.0;
 const CAPTION_MIN = 0.8;
-const CAPTION_MAX_CHARS = 60;
+
+/** An action this low in the view (0 top, 1 bottom) moves its caption to the top… */
+const CAPTION_LOW_ACTION = 0.68;
+/** …unless another action in the same caption is this high. */
+const CAPTION_HIGH_ACTION = 0.32;
 
 export const DEMO_STYLE: DemoStyle = {
   accent: "#A78BFA",
@@ -144,7 +171,7 @@ export const DEMO_STYLE: DemoStyle = {
   ringEndRadius: 0.04,
   ringLineWidth: 0.004,
   pointerHeight: 0.035,
-  captionFontSize: 0.034,
+  captionFontSize: 0.036,
   captionMargin: 0.05,
   badgeFontSize: 0.028,
 };
@@ -154,6 +181,7 @@ export const DEMO_STYLE: DemoStyle = {
 // ---------------------------------------------------------------------------
 
 type Rung = { longSide: number; shortSide: number; fps: number };
+
 const LADDER: Rung[] = [
   { longSide: 1920, shortSide: 1080, fps: 30 },
   { longSide: 1280, shortSide: 720, fps: 30 },
@@ -185,15 +213,14 @@ function floorBitrate(output: { width: number; height: number; fps: number }): n
   return output.width * output.height * output.fps * FLOOR_BITS_PER_PIXEL_FRAME;
 }
 
-/** The first ladder step, from `startRung`, whose fitting bitrate reads well. */
+/** The first ladder step whose fitting bitrate reads well. */
 function chooseOutput(
   source: { width: number; height: number },
   durationSeconds: number,
   budgetBits: number,
-  startRung = 0,
 ): { output: DemoOutput; belowFloor: boolean; rung: number } {
   const budgetRate = budgetBits / Math.max(durationSeconds, 0.5);
-  for (let index = Math.max(0, startRung); index < LADDER.length; index += 1) {
+  for (let index = 0; index < LADDER.length; index += 1) {
     const rung = LADDER[index]!;
     const size = sizeFor(source, rung);
     const ceiling = size.width * size.height * rung.fps * CEILING_BITS_PER_PIXEL_FRAME;
@@ -260,6 +287,11 @@ function isScreenAction(event: DemoTrackEvent): boolean {
   return event.kind !== "step";
 }
 
+/** How long the action ran on the screen: typing, a drag. 0 for an instant one. */
+function actionSeconds(event: DemoTrackEvent): number {
+  return typeof event.seconds === "number" && Number.isFinite(event.seconds) && event.seconds > 0 ? Math.min(event.seconds, 10) : 0;
+}
+
 function decideBins(track: DemoTrack | null, analysis: DemoAnalysis, duration: number): Decision[] {
   const count = Math.max(1, Math.ceil(duration / BIN_SECONDS));
   const levels = new Array<Level>(count).fill(0);
@@ -310,8 +342,9 @@ function decideBins(track: DemoTrack | null, analysis: DemoAnalysis, duration: n
   mark(moments, 0, OPENING_MOMENT);
   for (const event of track?.events ?? []) {
     if (!isScreenAction(event)) continue;
-    mark(moments, event.t - MOMENT_BEFORE, event.t + MOMENT_AFTER);
-    mark(results, event.t + MOMENT_AFTER, event.t + RESULT_WINDOW);
+    const done = event.t + actionSeconds(event);
+    mark(moments, event.t - MOMENT_BEFORE, done + MOMENT_AFTER);
+    mark(results, done + MOMENT_AFTER, done + RESULT_WINDOW);
   }
   for (const load of track?.loadSpans ?? []) {
     mark(loads, load.start, load.end);
@@ -430,6 +463,7 @@ function clampCenter(center: number, zoom: number): number {
 
 type Box = [number, number, number, number];
 type View = { zoom: number; cx: number; cy: number };
+const WHOLE_VIEW: View = { zoom: 1, cx: 0.5, cy: 0.5 };
 
 /** The area an action touches: its element, or a small square around its point. */
 function focusBox(event: DemoTrackEvent): Box | null {
@@ -471,9 +505,12 @@ const ZOOM_KINDS = new Set<DemoTrackEvent["kind"]>(["click", "tap", "type", "dra
 
 type CameraWindow = { inStart: number; inEnd: number; holdEnd: number; view: View };
 
-/** Writes camera keys: zoom in, hold, zoom out, or move straight to the next view when it comes soon. */
-function cameraKeys(windows: CameraWindow[], outputDuration: number, out: number): DemoCameraKey[] {
-  const keys: DemoCameraKey[] = [{ t: 0, zoom: 1, cx: 0.5, cy: 0.5 }];
+/**
+ * Writes camera keys: zoom in, hold, zoom out, or move straight to the next
+ * view when it comes soon. Between zooms the camera rests on `home`.
+ */
+function cameraKeys(windows: CameraWindow[], outputDuration: number, out: number, home: View = WHOLE_VIEW): DemoCameraKey[] {
+  const keys: DemoCameraKey[] = [{ t: 0, zoom: home.zoom, cx: clampCenter(home.cx, home.zoom), cy: clampCenter(home.cy, home.zoom) }];
   const push = (t: number, zoom: number, cx: number, cy: number) => {
     const clamped = Math.min(Math.max(t, 0), outputDuration);
     const last = keys[keys.length - 1]!;
@@ -497,7 +534,7 @@ function cameraKeys(windows: CameraWindow[], outputDuration: number, out: number
       push(from.t + span * (step / steps), a.zoom + (b.zoom - a.zoom) * p, a.cx + (b.cx - a.cx) * p, a.cy + (b.cy - a.cy) * p);
     }
   };
-  const whole: View = { zoom: 1, cx: 0.5, cy: 0.5 };
+  const whole = home;
   let open: CameraWindow | null = null;
   for (const window of windows) {
     if (open && window.inStart < open.holdEnd + out + CAMERA_JOIN_GAP) {
@@ -539,13 +576,12 @@ function planSceneCamera(
   analysis: DemoAnalysis,
   segments: DemoSegment[],
   outputDuration: number,
+  pictureScale: number,
 ): DemoCameraKey[] {
   const longSide = Math.max(analysis.width, analysis.height);
   const maxZoom = longSide < 1400 ? ZOOM_MAX_SMALL_SOURCE : ZOOM_MAX;
   const events = (track?.events ?? []).filter(isScreenAction);
-
-  const wholeScreenAt = (frame: DemoAnalysisFrame) =>
-    frame.changed >= WHOLE_SCREEN_CHANGED && Boolean(frame.box && frame.box[2] * frame.box[3] >= WHOLE_SCREEN_AREA);
+  const home = planHomeView(track, analysis, Math.min(maxZoom, FOCUS_MAX_UPSCALE / Math.max(pictureScale, 1e-6))) ?? WHOLE_VIEW;
   const cuts = [
     ...events.filter((event) => event.kind === "navigate").map((event) => event.t),
     // The first frame reports the whole screen as changed; it is not a cut.
@@ -584,7 +620,8 @@ function planSceneCamera(
         && !wholeScreenAt(frame))
       .map((frame) => frame.box as Box);
     const view = viewFor([...scene.foci.map((focus) => focus.box), ...changed], maxZoom);
-    if (!view) continue;
+    // Not worth a zoom when the home view is already about this close.
+    if (!view || view.zoom < home.zoom * HOME_SCENE_GAIN) continue;
     const firstO = sourceToOutput(segments, firstT);
     const inStart = Math.max(0, firstO - ZOOM_LEAD);
     const inEnd = Math.max(inStart, Math.min(firstO - 0.1, inStart + ZOOM_RAMP));
@@ -596,7 +633,44 @@ function planSceneCamera(
     if (holdEnd - inEnd < SCENE_MIN_HOLD) continue;
     windows.push({ inStart, inEnd, holdEnd, view });
   }
-  return cameraKeys(windows, outputDuration, ZOOM_OUT);
+  return cameraKeys(windows, outputDuration, ZOOM_OUT, home);
+}
+
+function wholeScreenAt(frame: DemoAnalysisFrame): boolean {
+  return frame.changed >= WHOLE_SCREEN_CHANGED && Boolean(frame.box && frame.box[2] * frame.box[3] >= WHOLE_SCREEN_AREA);
+}
+
+/**
+ * The view a computer recording rests on instead of the whole frame: the part
+ * of the screen where anything happened (every action, every step focus,
+ * every change after the first frame) with a margin, in the frame's aspect.
+ * A small app in a large frame then fills the video, and the empty rest is
+ * cropped away. Null, so the whole frame shows, when the crop would gain
+ * little or when a change covered the whole screen (a new page, a scroll):
+ * what it showed may lie anywhere.
+ */
+function planHomeView(track: DemoTrack | null, analysis: DemoAnalysis, maxZoom: number): View | null {
+  if (maxZoom < HOME_MIN_ZOOM) return null;
+  const boxes: Box[] = [];
+  for (const [index, frame] of analysis.frames.entries()) {
+    if (index === 0 || !frame.box || frame.changed < BUSY_CHANGED) continue;
+    if (wholeScreenAt(frame)) return null;
+    boxes.push(frame.box);
+  }
+  for (const event of track?.events ?? []) {
+    if (event.kind === "navigate") return null;
+    const box = event.kind === "step" ? event.rect ?? null : focusBox(event);
+    if (box) boxes.push(box);
+    if (event.to) boxes.push([event.to[0] - FOCUS_POINT_HALF, event.to[1] - FOCUS_POINT_HALF, FOCUS_POINT_HALF * 2, FOCUS_POINT_HALF * 2]);
+  }
+  if (!boxes.length) return null;
+  const left = Math.max(0, Math.min(...boxes.map((box) => box[0])) - HOME_MARGIN);
+  const top = Math.max(0, Math.min(...boxes.map((box) => box[1])) - HOME_MARGIN);
+  const right = Math.min(1, Math.max(...boxes.map((box) => box[0] + box[2])) + HOME_MARGIN);
+  const bottom = Math.min(1, Math.max(...boxes.map((box) => box[1] + box[3])) + HOME_MARGIN);
+  const zoom = Math.min(maxZoom, 1 / Math.max(right - left, 1e-3), 1 / Math.max(bottom - top, 1e-3));
+  if (zoom < HOME_MIN_ZOOM) return null;
+  return { zoom, cx: (left + right) / 2, cy: (top + bottom) / 2 };
 }
 
 /**
@@ -627,18 +701,56 @@ function planPhoneCamera(
   return cameraKeys(windows, outputDuration, ZOOM_OUT_PHONE);
 }
 
+/**
+ * The camera when the agent chose it: once any step has a focus
+ * (`ade proof step --focus`), the steps drive the camera and nothing else
+ * does. A step with a focus moves the camera to that region as it starts and
+ * holds it until the next step; a step without one shows the whole frame. Null
+ * when no step has a focus.
+ */
+function planFocusCamera(
+  track: DemoTrack | null,
+  segments: DemoSegment[],
+  outputDuration: number,
+  pictureScale: number,
+): DemoCameraKey[] | null {
+  const steps = (track?.events ?? []).filter((event) => event.kind === "step").sort((a, b) => a.t - b.t);
+  if (!steps.some((step) => step.rect)) return null;
+  const maxZoom = Math.max(1, Math.min(FOCUS_ZOOM_MAX, FOCUS_MAX_UPSCALE / Math.max(pictureScale, 1e-6)));
+  const windows: CameraWindow[] = [];
+  steps.forEach((step, index) => {
+    const rect = step.rect;
+    if (!rect || rect[2] <= 0 || rect[3] <= 0) return;
+    const zoom = Math.min(maxZoom, FOCUS_FILL / rect[2], FOCUS_FILL / rect[3]);
+    if (zoom < FOCUS_MIN_ZOOM) return;
+    const start = sourceToOutput(segments, step.t);
+    const next = steps[index + 1];
+    const end = next ? sourceToOutput(segments, next.t) : outputDuration;
+    // Held to the next step when it has a focus too (the camera moves straight
+    // across); otherwise it zooms out before the next step starts.
+    const holdEnd = Math.min(end - (next?.rect ? 0 : ZOOM_OUT), outputDuration - (next ? 0 : ZOOM_OUT));
+    const inEnd = Math.min(start + ZOOM_RAMP, holdEnd);
+    if (holdEnd - start < ZOOM_RAMP) return;
+    windows.push({ inStart: start, inEnd, holdEnd, view: { zoom, cx: rect[0] + rect[2] / 2, cy: rect[1] + rect[3] / 2 } });
+  });
+  return cameraKeys(windows, outputDuration, ZOOM_OUT);
+}
+
+/** `pictureScale`: output pixels per source pixel at zoom 1. */
 function planCamera(
   track: DemoTrack | null,
   analysis: DemoAnalysis,
   segments: DemoSegment[],
   outputDuration: number,
+  pictureScale: number,
 ): DemoCameraKey[] {
-  return track?.surface === "apple"
-    ? planPhoneCamera(track, segments, outputDuration)
-    : planSceneCamera(track, analysis, segments, outputDuration);
+  return planFocusCamera(track, segments, outputDuration, pictureScale)
+    ?? (track?.surface === "apple"
+      ? planPhoneCamera(track, segments, outputDuration)
+      : planSceneCamera(track, analysis, segments, outputDuration, pictureScale));
 }
 
-const POINTER_KINDS = new Set<DemoTrackEvent["kind"]>(["click", "drag", "type", "scroll"]);
+const POINTER_KINDS = new Set<DemoTrackEvent["kind"]>(["click", "drag", "type", "scroll", "hover"]);
 const RING_KINDS = new Set<DemoTrackEvent["kind"]>(["click", "tap", "drag"]);
 
 function planPointer(track: DemoTrack | null, segments: DemoSegment[]): { cursor: DemoCursorKey[]; rings: DemoRing[] } {
@@ -653,6 +765,15 @@ function planPointer(track: DemoTrack | null, segments: DemoSegment[]): { cursor
     if (last && Math.abs(key.t - last.t) < 1e-9) cursor[cursor.length - 1] = key;
     else cursor.push(key);
   };
+  /** Eased from `from` at `start` to `to` at `end`. */
+  const move = (from: { x: number; y: number }, to: { x: number; y: number }, start: number, end: number) => {
+    push({ t: start, x: from.x, y: from.y, visible: true });
+    const steps = Math.max(1, Math.ceil((end - start) / POINTER_SAMPLE_SECONDS));
+    for (let step = 1; step <= steps; step += 1) {
+      const p = easeInOutCubic(step / steps);
+      push({ t: start + (end - start) * (step / steps), x: from.x + (to.x - from.x) * p, y: from.y + (to.y - from.y) * p, visible: true });
+    }
+  };
   for (const event of track.events) {
     const point = eventPoint(event);
     if (!point) continue;
@@ -665,24 +786,29 @@ function planPointer(track: DemoTrack | null, segments: DemoSegment[]): { cursor
       push({ t: appear, x: point.x, y: point.y, visible: true });
       push({ t: o, x: point.x, y: point.y, visible: true });
     } else {
-      const glideStart = Math.max(previous.o + 0.15, o - POINTER_GLIDE);
-      if (glideStart >= o) {
-        push({ t: o, x: point.x, y: point.y, visible: true });
+      // The glide ends as the action lands. It starts once the previous action
+      // has settled, and never so late that the pointer jumps.
+      const distance = Math.hypot(point.x - previous.x, point.y - previous.y);
+      const glide = Math.min(POINTER_GLIDE_MAX, POINTER_GLIDE_MIN + distance * 0.6);
+      const glideStart = Math.max(previous.o + 0.1, o - glide);
+      if (o - glideStart < POINTER_GLIDE_FLOOR) {
+        // Too close behind the last action for a glide of its own: the pointer
+        // spends the whole gap moving instead of jumping.
+        if (o - previous.o > 0.05) move(previous, point, previous.o, o);
+        else push({ t: o, x: point.x, y: point.y, visible: true });
       } else {
-        push({ t: glideStart, x: previous.x, y: previous.y, visible: true });
-        const steps = Math.max(1, Math.ceil((o - glideStart) / POINTER_SAMPLE_SECONDS));
-        for (let step = 1; step <= steps; step += 1) {
-          const p = easeInOutCubic(step / steps);
-          push({
-            t: glideStart + (o - glideStart) * (step / steps),
-            x: previous.x + (point.x - previous.x) * p,
-            y: previous.y + (point.y - previous.y) * p,
-            visible: true,
-          });
-        }
+        move(previous, point, glideStart, o);
       }
     }
     previous = { o, x: point.x, y: point.y };
+    // A drag carries the pointer (and what it holds) to its end.
+    if (event.kind === "drag" && event.to) {
+      const end = { x: event.to[0], y: event.to[1] };
+      const seconds = actionSeconds(event);
+      const arrive = seconds > 0 ? sourceToOutput(segments, event.t + seconds) : o + POINTER_DRAG_DEFAULT;
+      move(point, end, o, Math.max(arrive, o + 0.2));
+      previous = { o: Math.max(arrive, o + 0.2), ...end };
+    }
   }
   return { cursor, rings };
 }
@@ -691,38 +817,58 @@ function planPointer(track: DemoTrack | null, segments: DemoSegment[]): { cursor
 // Captions and badges
 // ---------------------------------------------------------------------------
 
+/** `ade proof step` refuses longer text; this only guards older tracks. */
 function shorten(text: string): string {
   const flat = text.replace(/\s+/g, " ").trim();
-  return flat.length > CAPTION_MAX_CHARS ? `${flat.slice(0, CAPTION_MAX_CHARS - 1)}…` : flat;
+  return flat.length > DEMO_STEP_MAX_CHARS ? `${flat.slice(0, DEMO_STEP_MAX_CHARS - 1)}…` : flat;
 }
 
-function actionCaption(event: DemoTrackEvent): string | null {
-  if (!event.label) return null;
-  switch (event.kind) {
-    case "click":
-      return `Click ${event.label}`;
-    case "tap":
-      return `Tap ${event.label}`;
-    case "type":
-      return `Type “${event.label}”`;
-    case "navigate":
-      return `Open ${event.label}`;
-    case "key":
-      return `Press ${event.label}`;
-    default:
-      return null;
+/** The camera's view at output time `t`, interpolated as an engine does. */
+function cameraAt(camera: DemoCameraKey[], t: number): DemoCameraKey {
+  let previous = camera[0] ?? { t: 0, zoom: 1, cx: 0.5, cy: 0.5 };
+  for (const key of camera) {
+    if (key.t > t) {
+      const span = key.t - previous.t;
+      const f = span > 0 ? (t - previous.t) / span : 1;
+      return {
+        t,
+        zoom: previous.zoom + (key.zoom - previous.zoom) * f,
+        cx: previous.cx + (key.cx - previous.cx) * f,
+        cy: previous.cy + (key.cy - previous.cy) * f,
+      };
+    }
+    previous = key;
   }
+  return previous;
+}
+
+/**
+ * Top when the actions during a caption are low in the view and none is high:
+ * the caption would sit on the thing being done.
+ */
+function placeCaptions(captions: DemoCaption[], track: DemoTrack | null, segments: DemoSegment[], camera: DemoCameraKey[]): DemoCaption[] {
+  const actions = (track?.events ?? []).filter((event) => event.kind !== "step" && event.kind !== "navigate");
+  return captions.map((caption) => {
+    let low = false;
+    let high = false;
+    for (const event of actions) {
+      const point = eventPoint(event);
+      if (!point) continue;
+      const o = sourceToOutput(segments, event.t);
+      if (o < caption.start || o > caption.end) continue;
+      const view = cameraAt(camera, o);
+      const y = 0.5 + (point.y - clampCenter(view.cy, view.zoom)) * Math.max(view.zoom, 1);
+      if (y >= CAPTION_LOW_ACTION) low = true;
+      if (y <= CAPTION_HIGH_ACTION) high = true;
+    }
+    return low && !high ? { ...caption, position: "top" as const } : caption;
+  });
 }
 
 function planCaptions(track: DemoTrack | null, segments: DemoSegment[], outputDuration: number): DemoCaption[] {
-  const events = track?.events ?? [];
-  const steps = events.filter((event) => event.kind === "step" && event.label);
-  const raw: Array<{ start: number; text: string; max: number }> = steps.length > 0
-    ? steps.map((event) => ({ start: sourceToOutput(segments, event.t), text: event.label!, max: STEP_CAPTION_MAX }))
-    : events.flatMap((event) => {
-      const text = actionCaption(event);
-      return text ? [{ start: sourceToOutput(segments, event.t), text, max: ACTION_CAPTION }] : [];
-    });
+  const raw = (track?.events ?? [])
+    .filter((event) => event.kind === "step" && event.label)
+    .map((event) => ({ start: sourceToOutput(segments, event.t), text: event.label!, max: STEP_CAPTION_MAX }));
   raw.sort((a, b) => a.start - b.start);
 
   const captions: DemoCaption[] = [];
@@ -737,17 +883,74 @@ function planCaptions(track: DemoTrack | null, segments: DemoSegment[], outputDu
   return captions;
 }
 
+/** A key press shows for this long. */
+const KEY_BADGE_SECONDS = 1.3;
+/** The same key again this soon counts up ("Tab ×3") instead of showing anew. */
+const KEY_REPEAT_JOIN = 1.0;
+
+const KEY_NAMES: Record<string, string> = {
+  meta: "Cmd", cmd: "Cmd", command: "Cmd", super: "Win", win: "Win",
+  control: "Ctrl", ctrl: "Ctrl", alt: "Alt", option: "Option", opt: "Option", shift: "Shift",
+  enter: "Enter", return: "Enter", escape: "Esc", esc: "Esc", tab: "Tab", space: "Space", " ": "Space",
+  backspace: "Backspace", delete: "Delete", del: "Delete", home: "Home", end: "End",
+  pageup: "Page Up", pagedown: "Page Down",
+  arrowup: "↑", up: "↑", arrowdown: "↓", down: "↓", arrowleft: "←", left: "←", arrowright: "→", right: "→",
+};
+
+/** "Meta+k" → "Cmd + K", "ArrowDown" → "↓", "Enter" → "Enter". */
+export function demoKeyText(label: string): string | null {
+  const parts = label.split("+").map((part) => part.trim()).filter(Boolean);
+  if (label.trim() === "+") parts.push("+");
+  if (!parts.length) return null;
+  const words = parts.map((part) => {
+    const known = KEY_NAMES[part.toLowerCase()];
+    if (known) return known;
+    return part.length === 1 ? part.toUpperCase() : part.charAt(0).toUpperCase() + part.slice(1);
+  });
+  const text = words.join(" + ");
+  return text.length > 24 ? null : text;
+}
+
+/** Each key press, as the viewer would want to see it on screen. */
+function planKeyBadges(track: DemoTrack | null, segments: DemoSegment[], outputDuration: number): DemoBadge[] {
+  const badges: Array<DemoBadge & { key: string; count: number; pressed: number }> = [];
+  for (const event of track?.events ?? []) {
+    if (event.kind !== "key" || !event.label) continue;
+    const key = demoKeyText(event.label);
+    if (!key) continue;
+    const start = sourceToOutput(segments, event.t);
+    const end = Math.min(outputDuration, start + KEY_BADGE_SECONDS);
+    const last = badges[badges.length - 1];
+    if (last && last.key === key && start - last.pressed <= KEY_REPEAT_JOIN) {
+      last.count += 1;
+      last.text = `${key} ×${last.count}`;
+      last.end = end;
+      last.pressed = start;
+      continue;
+    }
+    badges.push({ start, end, text: key, key, count: 1, pressed: start });
+  }
+  return badges.map(({ start, end, text }) => ({ start, end, text }));
+}
+
+/**
+ * Speed badges and key badges in one row: no two overlap (an engine may draw
+ * every badge whose span holds the time), and the newer one wins.
+ */
+function mergeBadges(...lists: DemoBadge[][]): DemoBadge[] {
+  const all = lists.flat().filter((badge) => badge.end - badge.start > 0.05).sort((a, b) => a.start - b.start);
+  const merged: DemoBadge[] = [];
+  all.forEach((badge, index) => {
+    const next = all[index + 1];
+    const end = next ? Math.min(badge.end, next.start) : badge.end;
+    if (end - badge.start > 0.05) merged.push({ ...badge, end });
+  });
+  return merged;
+}
+
+/** A speed-up shows its speed. A cut shows nothing: a demo is edited. */
 function planBadges(segments: DemoSegment[]): DemoBadge[] {
   const badges: DemoBadge[] = [];
-  segments.forEach((segment, index) => {
-    const previous = segments[index - 1];
-    if (!previous) return;
-    const skipped = segment.sourceStart - previous.sourceEnd;
-    if (skipped < SKIP_BADGE_MIN_SECONDS) return;
-    const whole = Math.round(skipped);
-    const label = `${Math.floor(whole / 60)}:${String(whole % 60).padStart(2, "0")}`;
-    badges.push({ start: segment.outputStart, end: Math.min(segment.outputEnd, segment.outputStart + SKIP_BADGE_SECONDS), text: `skipped ${label}` });
-  });
   for (const segment of segments) {
     const speed = Math.round(speedOf(segment));
     if (speed <= 1) continue;
@@ -755,14 +958,6 @@ function planBadges(segments: DemoSegment[]): DemoBadge[] {
     const last = badges[badges.length - 1];
     if (last && last.text === text && Math.abs(last.end - segment.outputStart) < 1e-6) last.end = segment.outputEnd;
     else badges.push({ start: segment.outputStart, end: segment.outputEnd, text });
-  }
-  // One badge at a time, in time order: a speed-up that starts where a skip
-  // badge is showing takes over from it.
-  badges.sort((a, b) => a.start - b.start);
-  for (let index = 0; index < badges.length - 1; index += 1) {
-    const current = badges[index]!;
-    const next = badges[index + 1]!;
-    if (current.end > next.start) current.end = next.start;
   }
   return badges.filter((badge) => badge.end - badge.start > 0.05);
 }
@@ -817,17 +1012,20 @@ export function planDemo(input: { track: DemoTrack | null; analysis: DemoAnalysi
   }
 
   const { cursor, rings } = planPointer(input.track, segments);
+  // A size refit may later shrink the output; the zoom cap holds at this, the largest size.
+  const pictureScale = fit.output.width / source.width;
+  const camera = planCamera(input.track, input.analysis, segments, outputDuration, pictureScale);
   return {
     version: 1,
     source,
     output: fit.output,
     durationSeconds: outputDuration,
     segments,
-    camera: planCamera(input.track, input.analysis, segments, outputDuration),
+    camera,
     cursor,
     rings,
-    captions: planCaptions(input.track, segments, outputDuration),
-    badges: planBadges(segments),
+    captions: placeCaptions(planCaptions(input.track, segments, outputDuration), input.track, segments, camera),
+    badges: mergeBadges(planBadges(segments), planKeyBadges(input.track, segments, outputDuration)),
     style: DEMO_STYLE,
   };
 }

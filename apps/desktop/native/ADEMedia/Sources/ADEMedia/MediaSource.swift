@@ -50,8 +50,8 @@ final class MediaSource {
     /// The end of the file on the movie timeline.
     let endTime: CMTime
 
-    private let asset: AVURLAsset
-    private let track: AVAssetTrack
+    let asset: AVURLAsset
+    let track: AVAssetTrack
     private var reader: AVAssetReader?
     private var output: AVAssetReaderTrackOutput?
     private var origin: CMTime?

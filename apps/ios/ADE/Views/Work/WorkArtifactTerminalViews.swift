@@ -4,9 +4,36 @@ import AVKit
 
 final class WorkArtifactVideoPlayerModel: ObservableObject {
   let player: AVPlayer
+  @Published private(set) var isPlaying = false
+  private var playingObservation: NSKeyValueObservation?
+  private var endObserver: NSObjectProtocol?
 
   init(url: URL) {
     player = AVPlayer(url: url)
+    playingObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] player, _ in
+      let playing = player.timeControlStatus != .paused
+      DispatchQueue.main.async { self?.isPlaying = playing }
+    }
+    // A video that played to the end starts over on the next play.
+    endObserver = NotificationCenter.default.addObserver(
+      forName: .AVPlayerItemDidPlayToEndTime,
+      object: nil,
+      queue: .main
+    ) { [weak self] note in
+      guard let self, (note.object as? AVPlayerItem) === self.player.currentItem else { return }
+      self.player.seek(to: .zero)
+    }
+  }
+
+  deinit {
+    if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
+  }
+
+  /// Sets `isPlaying` itself so the tap redraws at once; the observer only
+  /// catches changes the player makes on its own (the end of the video).
+  func togglePlayback() {
+    if isPlaying { player.pause() } else { player.play() }
+    isPlaying.toggle()
   }
 
   func update(url: URL) {
@@ -17,9 +44,8 @@ final class WorkArtifactVideoPlayerModel: ObservableObject {
   }
 }
 
-/// The one AVKit player in the Work views. It carries no chrome of its own so
-/// that an answer's citation (sized, rounded) and a full-bleed proof page can
-/// both use it.
+/// AVKit's player, for full-screen proof pages. Never put it in a transcript
+/// row: see `WorkArtifactInlineVideoView`.
 struct WorkArtifactVideoPlayerView: View {
   let url: URL
   /// A chapter's start, in seconds: set it and the player seeks there, plays,
@@ -44,6 +70,94 @@ struct WorkArtifactVideoPlayerView: View {
         model.player.play()
         seek?.wrappedValue = nil
       }
+  }
+}
+
+/// A video inside an answer. A transcript row is a `UIHostingConfiguration`
+/// cell, and such a cell cannot host a view controller: AVKit's `VideoPlayer`
+/// there draws SwiftUI's yellow "unsupported view" box instead of the video.
+/// This is a bare `AVPlayerLayer` with a play button; Expand opens the
+/// full-screen viewer, which has AVKit's controls.
+struct WorkArtifactInlineVideoView: View {
+  let url: URL
+  /// A chapter's start, in seconds: set it and the player seeks there, plays,
+  /// and clears it.
+  var seek: Binding<Double?>?
+  let onExpand: () -> Void
+  @StateObject private var model: WorkArtifactVideoPlayerModel
+
+  init(url: URL, seek: Binding<Double?>? = nil, onExpand: @escaping () -> Void) {
+    self.url = url
+    self.seek = seek
+    self.onExpand = onExpand
+    _model = StateObject(wrappedValue: WorkArtifactVideoPlayerModel(url: url))
+  }
+
+  var body: some View {
+    WorkPlayerLayerView(player: model.player)
+      .background(Color.black)
+      .overlay {
+        if !model.isPlaying {
+          Image(systemName: "play.fill")
+            .font(.system(size: 22, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 56, height: 56)
+            .background(Color.black.opacity(0.55), in: Circle())
+            .allowsHitTesting(false)
+        }
+      }
+      .contentShape(Rectangle())
+      .onTapGesture { model.togglePlayback() }
+      .accessibilityElement()
+      .accessibilityLabel(model.isPlaying ? "Pause video" : "Play video")
+      .accessibilityAddTraits(.isButton)
+      .accessibilityAction { model.togglePlayback() }
+      .overlay(alignment: .topTrailing) {
+        Button {
+          model.player.pause()
+          onExpand()
+        } label: {
+          Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 13, weight: .semibold))
+            .foregroundStyle(.white)
+            .frame(width: 32, height: 32)
+            .background(Color.black.opacity(0.55), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(8)
+        .accessibilityLabel("Open the video full screen")
+      }
+      .onChange(of: url) { _, newValue in
+        model.update(url: newValue)
+      }
+      .onChange(of: seek?.wrappedValue) { _, requested in
+        guard let requested else { return }
+        model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
+        model.player.play()
+        seek?.wrappedValue = nil
+      }
+      // A row scrolled away (or reused for another) stops its sound.
+      .onDisappear { model.player.pause() }
+  }
+}
+
+private struct WorkPlayerLayerView: UIViewRepresentable {
+  let player: AVPlayer
+
+  final class LayerView: UIView {
+    override class var layerClass: AnyClass { AVPlayerLayer.self }
+    var playerLayer: AVPlayerLayer { layer as! AVPlayerLayer }
+  }
+
+  func makeUIView(context: Context) -> LayerView {
+    let view = LayerView()
+    view.playerLayer.videoGravity = .resizeAspect
+    view.playerLayer.player = player
+    return view
+  }
+
+  func updateUIView(_ view: LayerView, context: Context) {
+    if view.playerLayer.player !== player { view.playerLayer.player = player }
   }
 }
 

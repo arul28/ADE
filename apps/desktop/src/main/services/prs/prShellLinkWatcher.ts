@@ -1,5 +1,6 @@
 import {
   mightTouchGhPr,
+  readGhPrBodyEdits,
   readGhPrShellActions,
   shellToolCallCommand,
   shellToolResultText,
@@ -8,7 +9,7 @@ import type { AgentChatEventEnvelope } from "../../../shared/types/chat";
 import type { Logger } from "../logging/logger";
 import { getErrorMessage } from "../shared/utils";
 import { setBounded } from "../../../shared/boundedMap";
-import type { ShellPrLinkArgs, ShellPrLinkResult } from "./prService";
+import type { ShellPrBodyRepairResult, ShellPrLinkArgs, ShellPrLinkResult } from "./prService";
 
 /** Tool calls waiting for their result, across all chats. Oldest drop first. */
 const PENDING_CALLS_CAP = 256;
@@ -19,11 +20,19 @@ export type PrShellLinkWatcherDeps = {
   logger: Logger;
   subscribeToEvents: (callback: (event: AgentChatEventEnvelope) => void) => () => void;
   linkShellPrAction: (args: ShellPrLinkArgs) => Promise<ShellPrLinkResult>;
+  /** Puts back the footer and cited proof a `gh` write of the PR's text left out. */
+  repairShellPrBody?: (args: {
+    sessionId: string;
+    repoOwner: string | null;
+    repoName: string | null;
+    prNumber: number | null;
+  }) => Promise<ShellPrBodyRepairResult>;
 };
 
 /**
  * Links the PRs a chat's own shell commands create or merge (`gh pr create`,
- * `gh pr merge`) to that chat. An agent told to use `ade prs create` still
+ * `gh pr merge`) to that chat, and repairs the text of a PR the chat wrote
+ * with `gh pr create` or `gh pr edit --body`. An agent told to use `ade prs create` still
  * often runs `gh` directly; without this its PR reached the chat only through
  * the branch auto-map's guess at "up to three chats open at the time", and a
  * PR merged from the shell in a lane with another open PR settled nothing.
@@ -43,7 +52,13 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
     const key = `${sessionId}:${itemId}`;
     if (handled.has(key) || inFlightKeys.has(key)) return;
     const actions = readGhPrShellActions({ command, output, exitCode });
-    if (actions.length === 0) {
+    const bodies = deps.repairShellPrBody
+      ? [
+          ...actions.filter((action) => action.kind === "create"),
+          ...readGhPrBodyEdits({ command, exitCode }),
+        ]
+      : [];
+    if (actions.length === 0 && bodies.length === 0) {
       setBounded(handled, key, true, HANDLED_CAP);
       return;
     }
@@ -75,6 +90,18 @@ export function createPrShellLinkWatcher(deps: PrShellLinkWatcherDeps) {
       }
       // Only a settled event is marked handled; see the note above.
       if (!retry) setBounded(handled, key, true, HANDLED_CAP);
+      // After the links, so a new PR already has its row. A repair of text
+      // that needs none changes nothing, so a retried event may run it again.
+      for (const body of bodies) {
+        void deps.repairShellPrBody?.({
+          sessionId,
+          repoOwner: body.owner,
+          repoName: body.repo,
+          prNumber: body.number,
+        }).catch((error) => {
+          deps.logger.warn("prs.shell_body_repair_failed", { sessionId, prNumber: body.number, error: getErrorMessage(error) });
+        });
+      }
     }).finally(() => {
       inFlightKeys.delete(key);
     });

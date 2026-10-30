@@ -117,6 +117,8 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
   if (command == "type") {
     const bool canonicalText = payload["typeText"].isString();
     const std::wstring text = widen(canonicalText ? payload["typeText"].str() : payload["text"].str());
+    // A running recording asks for a pause per character so its video shows typing.
+    const DWORD pace = static_cast<DWORD>((std::max)(int64_t{0}, (std::min)(int64_t{200}, payload["typePaceMs"].asInt())));
     bool clear = payload["clear"].asBool();
     UiaElement e;
     bool haveTarget = false;
@@ -139,7 +141,7 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
           fail(code::kWindowActionFailed, "Windows could not focus that window; no text was sent.");
         }
         if (clear && !sendKeys("a", {"ctrl"})) failLocked();
-        if (!sendText(text)) failLocked();
+        if (!sendText(text, pace)) failLocked();
         return out;
       }
     } else {
@@ -165,10 +167,18 @@ Json Engine::accessibilityInput(Lane& lane, const std::string& command, const Js
       }
       if (haveTarget && !uia_.focus(e)) fail(code::kHandleExpired, "The text target is no longer available. Observe again.");
       if (clear && !sendKeys("a", {"ctrl"})) failLocked();
-      if (!sendText(text)) failLocked();
+      if (!sendText(text, pace)) failLocked();
       return out;
     }
-    if (haveTarget && uia_.appendValue(e, text, clear)) return out;
+    if (haveTarget && pace > 0) {
+      // A recording is running: the value grows a character at a time.
+      const size_t at = uia_.appendValuePaced(e, text, clear, pace);
+      if (at == text.size()) return out;
+      // Refused from the first character: the paths below type it all.
+      if (at > 0) fail(code::kWindowActionFailed, "The control stopped accepting text partway; observe it before typing again.");
+    } else if (haveTarget && uia_.appendValue(e, text, clear)) {
+      return out;
+    }
     HWND window = haveTarget ? e.window : nullptr;
     if (!window) {
       auto windows = laneWindows(lane);
@@ -375,7 +385,8 @@ Json Engine::realInput(Lane& lane, const std::string& command, const Json& paylo
       ok = sendKeys(payload["key"].str(), stringList(payload["modifiers"]));
     } else {
       if (payload["clear"].asBool() && !sendKeys("a", {"ctrl"})) failLocked();
-      ok = sendText(widen(payload["typeText"].isString() ? payload["typeText"].str() : payload["text"].str()));
+      const DWORD pace = static_cast<DWORD>((std::max)(int64_t{0}, (std::min)(int64_t{200}, payload["typePaceMs"].asInt())));
+      ok = sendText(widen(payload["typeText"].isString() ? payload["typeText"].str() : payload["text"].str()), pace);
     }
     if (user && user != target) {
       Sleep(30);

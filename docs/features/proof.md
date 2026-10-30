@@ -246,8 +246,13 @@ checks and opens the source with `O_NOFOLLOW` before copying.
 Post chosen proof to a GitHub pull request as one comment.
 
 ```
-ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading "<text>"] [--note "<text>"]
+ade proof publish --pr <number|url> <artifact-id> [<artifact-id>...] [--heading "<text>"] [--note "<text>"] [--replace]
 ```
+
+- `--replace`: after the new comment posts, delete the signed-in account's
+  earlier ADE proof comments on the PR (found by the comment's closing
+  "Posted by ADE from the chat's proof." line), never the one just posted. A
+  failed post deletes nothing; a failed delete is a warning.
 
 - The CLI reads the items through `list_computer_use_artifacts`, so a caller
   can post only its own chat's or lane's proof.
@@ -315,7 +320,8 @@ what the caller asked for, so it reflects the authorized owner set.
   as a demo. It refuses when a recording is already running on the
   lane. With no lane display it is refused like `capture`; `--real-screen`
   records the whole real screen with `screencapture -v` instead.
-- `ade proof step "<text>"` adds a step caption to every recording running on
+- `ade proof step "<text>" [--focus x,y,w,h]` adds a step caption (at most 60
+  characters) and an optional camera focus to every recording running on
   the caller's lane (or its chat, when no lane resolves). See
   [Demo videos](#demo-videos).
 - `ade proof launch`, `ade proof interact`, and `ade proof environment` are lower-level computer-use helpers for capture workflows.
@@ -348,9 +354,13 @@ the CDP screencast on Windows and Linux) and the built-in browser.
 | Waits | A page load, or a small change (spinner, progress bar) after an action while the agent waits on a tool, plays at 2×, 4×, 8× or 16× so it lasts about 2.5 s. A `4×` badge shows. Past 16× the middle is cut. |
 | Agent thinking | While the agent thinks and acts on nothing, the screen counts as still, even if a clock or an animation changes. |
 | Actions | 0.3 s before to 1.2 s after each action always plays at normal speed. |
-| Zoom | The recording splits into scenes at each navigation or change of the whole screen. In each scene the camera zooms once (at most 2×) to one steady view that holds every action and every change in it, holds that view, and zooms out at the end of the scene. It does not move between actions in a scene. A scene with a short zoom, or one whose view would be almost the whole screen, gets no zoom. A phone recording does not zoom unless it started with `--zoom`; then each tap gets a short 1.3× zoom. |
-| Pointer | Mac Desktop, App Control and the browser get a drawn pointer that glides to each action, and a ring on each click. The Apple device gets tap rings. |
-| Captions | Each `ade proof step "<text>"` shows at the bottom from that moment until the next step (at most 5 s). With no steps, the actions' own labels show ("Click Save"). |
+| Focus | Once any `ade proof step` has `--focus x,y,w,h` (fractions of the recorded frame), the steps drive the camera and nothing else does: a focused step moves the camera to its region (up to 3×) as it starts and holds it to the next step, moving straight across when that step is focused too; an unfocused step shows the whole frame. |
+| Home view | A computer recording rests on the part of the screen where anything happened (every action, step focus and change after the first frame, plus a margin), in the frame's aspect, instead of the whole frame, so a small app or dialog in a big frame fills the video from its first frame to its last. It applies only when it gains at least 1.2× and the picture stays sharp, and never after a change of the whole screen or a navigation. |
+| Zoom | Without a focused step, the recording splits into scenes at each navigation or change of the whole screen. In each scene the camera zooms once (at most 2×) to one steady view that holds every action and every change in it, holds that view, and zooms out at the end of the scene. It does not move between actions in a scene. A scene with a short zoom, or one whose view would be almost the whole screen, gets no zoom. A phone recording does not zoom unless it started with `--zoom`; then each tap gets a short 1.3× zoom. |
+| Pointer | Mac Desktop, App Control and the browser get a drawn pointer that glides to each action and hover (quick for a short hop, longer across the screen), carries a drag from its start to its end, and rings each click. The Apple device gets tap rings. |
+| Typing and drags | While a surface records, typed text appears a character at a time (45 ms apart, faster for long text so it takes about 2.7 s at most) instead of all at once: the browser and App Control insert it in pieces; Mac Desktop, Windows and Linux drivers and the simulator pause between keys (`typePaceMs` in the driver payload, `paceMs` to the simulator helper), and a Mac or Windows field that takes its value directly grows by one character at a time. A browser drag moves in eased steps over about 0.75 s. Not recording, all of it stays as fast as before. The time it takes plays at normal speed. |
+| Keys | A key press shows as a badge in the top right corner for 1.3 s ("Enter", "Cmd + K", "↓"); the same key again within a second counts up ("Tab ×3"). |
+| Captions | Each `ade proof step "<text>"` (at most 60 characters; longer is refused) shows from that moment until the next step (at most 5 s), as a dark rounded pill with centered text. It sits at the bottom, or at the top when the actions during it are low in the view and none is high (typing into a prompt box); the badge moves below a top caption it would hit. With no steps there are no captions: an action's own label ("Click Save") reads like a log. A speed-up shows its `4×` badge; a cut shows nothing. |
 | Size | Every file, plain ones included, ends under 10 MB: GitHub Free's limit for a PR video. The output steps down 1080p30 → 720p30 → 720p15 → 720p10 → 540p10 until the bitrate that fits reads well, then the timing gets stricter. |
 
 `record start --plain` (older name `--keep-idle`) skips everything but the
@@ -427,9 +437,22 @@ failure and files nothing. A demo render that fails is tried once more as a
 plain render first.
 
 Windows and macOS produce the same demo from the same plan: cuts, sped-up
-waits, zoom, the drawn pointer and click rings, step captions, the skip badge,
+waits, zoom, the drawn pointer and click rings, step captions, the speed badge,
 and `metadata.demo.steps` as the player's chapters. Chapters live in the proof
 metadata on both, not in the MP4 container.
+
+### Checking a demo: `ade proof review`
+
+`ade proof review <id> --text` (`review_computer_use_artifact`,
+`proofReview.ts`) gives the agent something to look at before a person sees
+the proof. For a video it writes a contact sheet (4–12 frames across it, 4 per
+row, 6 for a portrait video) to `.ade/cache/proof-review/` (the newest 20
+kept), made by the first engine with `contactSheet` (`ade-media`, then
+ffmpeg); for a picture it gives the file. Both come with findings from the
+file and its record: under 3 s, over 90 s, no captions, a plain or fallback
+recording, recorded before the request, a picture under 700 px on its shorter side or a thin
+strip. It reads the caller's own proof only (the listing's owner rule), and a
+machine-targeted CLI reviews the proof on its own machine, where it was filed.
 
 ### Limits every recording shares
 

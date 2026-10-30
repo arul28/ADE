@@ -106,7 +106,9 @@ public enum SimHelperCommand: Equatable, Sendable {
     case multiTouch(id: String, udid: String, phase: TouchPhase, first: DevicePoint, second: DevicePoint)
     case button(id: String, udid: String, name: String)
     case key(id: String, udid: String, phase: KeyPhase, usage: Int)
-    case type(id: String, udid: String, text: String)
+    /// `paceMs`: the pause between keys a running recording asked for, so a
+    /// video shows typing; 0 keeps the shortest gap the keyboard takes.
+    case type(id: String, udid: String, text: String, paceMs: Int = 0)
     /// `space` is the anchor's and the delta's.
     case scroll(id: String, udid: String, deltaX: Double, deltaY: Double, anchor: DevicePoint?, space: PointSpace)
     case orientation(id: String, udid: String, value: Int)
@@ -152,7 +154,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .multiTouch(id, _, _, _, _): return id
         case let .button(id, _, _): return id
         case let .key(id, _, _, _): return id
-        case let .type(id, _, _): return id
+        case let .type(id, _, _, _): return id
         case let .scroll(id, _, _, _, _, _): return id
         case let .orientation(id, _, _): return id
         case let .posture(id, _, _, _): return id
@@ -181,7 +183,7 @@ public enum SimHelperCommand: Equatable, Sendable {
         case let .multiTouch(_, udid, _, _, _): return udid
         case let .button(_, udid, _): return udid
         case let .key(_, udid, _, _): return udid
-        case let .type(_, udid, _): return udid
+        case let .type(_, udid, _, _): return udid
         case let .scroll(_, udid, _, _, _, _): return udid
         case let .orientation(_, udid, _): return udid
         case let .posture(_, udid, _, _): return udid
@@ -340,7 +342,8 @@ public enum SimHelperCommandParser {
                 guard let text = dictionary["text"] as? String else {
                     throw Invalid.message("`text` is required for type.")
                 }
-                return .success(.type(id: id, udid: udid, text: text))
+                let paceMs = max(0, min(200, Int(number("paceMs") ?? 0)))
+                return .success(.type(id: id, udid: udid, text: text, paceMs: paceMs))
 
             case "scroll":
                 let udid = try requireUdid()

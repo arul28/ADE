@@ -58,6 +58,8 @@ type ChatState = {
 const CHAT_SPAN_RETENTION_MS = 15 * 60 * 1000;
 /** A recording keeps at most this many events; a runaway action loop cannot grow it without bound. */
 const MAX_EVENTS_PER_RECORDING = 5_000;
+/** No single action runs longer on the screen than this. */
+const MAX_ACTION_SECONDS = 10;
 /** Labels are shown in the video; nothing longer is readable there. */
 const MAX_LABEL_LENGTH = 80;
 
@@ -222,6 +224,12 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
       const rect = event.rect && event.rect.every((value) => Number.isFinite(value))
         ? event.rect.map((value) => Math.min(Math.max(value, 0), 1)) as DemoTrackEvent["rect"]
         : undefined;
+      const toX = clampUnit(event.to?.[0]);
+      const toY = clampUnit(event.to?.[1]);
+      const to: DemoTrackEvent["to"] = toX !== undefined && toY !== undefined ? [toX, toY] : undefined;
+      const seconds = typeof event.seconds === "number" && Number.isFinite(event.seconds) && event.seconds > 0
+        ? Math.min(event.seconds, MAX_ACTION_SECONDS)
+        : undefined;
       entry.events.push({
         kind: event.kind,
         by: event.by,
@@ -230,8 +238,10 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
         ...(clampUnit(event.y) !== undefined ? { y: clampUnit(event.y) } : {}),
         ...(rect ? { rect } : {}),
         ...(cleanLabel(event.label) ? { label: cleanLabel(event.label) } : {}),
+        ...(to ? { to } : {}),
+        ...(seconds ? { seconds } : {}),
       });
-      entry.lastActivityAtMs = Math.max(entry.lastActivityAtMs, atMs);
+      entry.lastActivityAtMs = Math.max(entry.lastActivityAtMs, atMs + (seconds ?? 0) * 1000);
     },
 
     /** A page load started or finished on the recorded surface. */
@@ -253,7 +263,8 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
      * A step caption for every running recording in scope: the lane's, or the
      * chat's when no lane is given. Returns how many recordings took it.
      */
-    noteStep(scope: { laneId?: string | null; chatSessionId?: string | null }, text: string, atMs?: number): number {
+    /** `focus`: the region the camera holds on for this step (normalized). */
+    noteStep(scope: { laneId?: string | null; chatSessionId?: string | null }, text: string, atMs?: number, focus?: DemoTrackEvent["rect"] | null): number {
       const label = cleanLabel(text);
       if (!label) return 0;
       let noted = 0;
@@ -263,7 +274,7 @@ export function createDemoTrackRegistry(deps: { now?: () => number } = {}) {
           : Boolean(scope.chatSessionId) && entry.chatSessionId === scope.chatSessionId;
         if (!inScope || entry.events.length >= MAX_EVENTS_PER_RECORDING) continue;
         const at = atMs ?? now();
-        entry.events.push({ kind: "step", by: "agent", label, atMs: at });
+        entry.events.push({ kind: "step", by: "agent", label, atMs: at, ...(focus ? { rect: focus } : {}) });
         entry.lastActivityAtMs = Math.max(entry.lastActivityAtMs, at);
         noted += 1;
       }

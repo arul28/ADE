@@ -194,6 +194,7 @@ import {
   type SimHelperTransport,
 } from "./simHelperClient";
 import {
+  appleDemoKey,
   createSimRecordingService,
   readArtifactId,
   type AppleInputSource,
@@ -202,6 +203,8 @@ import {
   type SimRecordingServiceDeps,
 } from "./recording/simRecordingService";
 import { createLaneDeviceLifecycle } from "./laneDeviceLifecycle";
+import { demoTrackRegistry } from "../demoVideo/demoTrackRegistry";
+import { demoTypingPace } from "../demoVideo/demoTrackTargets";
 import { createAppleDuoService, parseHelperPosture } from "./appleDuoService";
 import { createAppleDeviceLeases } from "./appleDeviceLease";
 import { normalizeBuildConfiguration, normalizeLaunchArguments } from "./iosLaunchArgs";
@@ -3242,6 +3245,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       x?: number;
       y?: number;
       text?: string;
+      startedAtMs?: number;
+      seconds?: number;
       /**
        * Who drove the device. `user` never starts a recording (round 3, A2).
        *
@@ -3268,6 +3273,8 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       x: input.x,
       y: input.y,
       text: input.text,
+      startedAtMs: input.startedAtMs,
+      seconds: input.seconds,
       pointSize: runtime.streamStatus?.transport?.pointWidth && runtime.streamStatus.transport.pointHeight
         ? { width: runtime.streamStatus.transport.pointWidth, height: runtime.streamStatus.transport.pointHeight }
         : null,
@@ -6392,8 +6399,9 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     });
   };
 
-  const helperType = async (deviceUdid: string, text: string): Promise<void> => {
-    await helper().send({ type: "type", udid: deviceUdid, text });
+  /** `paceMs`: the pause between keys while a recording runs, so the video shows typing. */
+  const helperType = async (deviceUdid: string, text: string, paceMs?: number): Promise<void> => {
+    await helper().send({ type: "type", udid: deviceUdid, text, ...(paceMs ? { paceMs } : {}) });
   };
 
   /**
@@ -6776,9 +6784,18 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
     const checkFocus = options.checkFocus !== false && input.source !== "user";
     return enqueueControl("text", async () => {
       const focused = checkFocus ? await readFocusedElement(deviceUdid).catch(() => undefined) : undefined;
-      await helperType(deviceUdid, input.text);
+      const pace = demoTrackRegistry.isRecording(appleDemoKey(runtime.key)) ? demoTypingPace(input.text) : null;
+      const startedAtMs = Date.now();
+      await helperType(deviceUdid, input.text, pace?.paceMs);
       runtime.streamStatus = { ...runtime.streamStatus, inputBackend: "helper" };
-      noteInput(runtime, { udid: deviceUdid, kind: "type", text: input.text, source: input.source, noRecord: input.noRecord });
+      noteInput(runtime, {
+        udid: deviceUdid,
+        kind: "type",
+        text: input.text,
+        source: input.source,
+        noRecord: input.noRecord,
+        ...(pace ? { startedAtMs, seconds: pace.seconds } : {}),
+      });
       if (focused === undefined) return { ok: true };
       if (focused === null) {
         return {

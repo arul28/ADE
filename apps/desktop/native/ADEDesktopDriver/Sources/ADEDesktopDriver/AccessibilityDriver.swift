@@ -553,21 +553,35 @@ final class AccessibilityDriver {
         _ element: AXUIElement,
         record: ObservedElement,
         text: String,
-        clear: Bool
+        clear: Bool,
+        paceMs: Int = 0
     ) throws {
         _ = AXUIElementSetAttributeValue(element, kAXFocusedAttribute as CFString, kCFBooleanTrue)
         var isSettable: DarwinBoolean = false
         AXUIElementIsAttributeSettable(element, kAXValueAttribute as CFString, &isSettable)
         if isSettable.boolValue {
             let existing = clear ? "" : (Self.stringValue(of: element) ?? "")
-            if setValue(element, to: existing + text) { return }
+            if paceMs > 0 {
+                // A recording is running: the value grows a character at a
+                // time, so the video shows typing rather than a paste.
+                var typed = ""
+                var delivered = true
+                for character in text {
+                    typed.append(character)
+                    guard setValue(element, to: existing + typed) else { delivered = false; break }
+                    TypeCommand.pause(paceMs)
+                }
+                if delivered { return }
+            } else if setValue(element, to: existing + text) {
+                return
+            }
         }
         if clear {
             // Select-all then type over it: the only "clear" a value-less
             // element understands.
             try postKey(pid: record.pid, keyCode: KeyCodes.table["a"]!, modifiers: [.maskCommand])
         }
-        try postText(pid: record.pid, text: text)
+        try postText(pid: record.pid, text: text, paceMs: paceMs)
     }
 
     /// Presses a window's own close button. The way ⌘W reaches a lane window:
@@ -708,8 +722,9 @@ final class AccessibilityDriver {
     }
 
     /// Types a string as unicode key events, so layouts and emoji survive.
-    func postText(pid: pid_t, text: String) throws {
-        for character in text {
+    func postText(pid: pid_t, text: String, paceMs: Int = 0) throws {
+        for (index, character) in text.enumerated() {
+            if index > 0 { TypeCommand.pause(paceMs) }
             var utf16 = Array(String(character).utf16)
             guard let down = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: nil, virtualKey: 0, keyDown: false)

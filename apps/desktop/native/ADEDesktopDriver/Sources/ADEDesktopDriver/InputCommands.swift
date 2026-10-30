@@ -151,7 +151,8 @@ extension DriverRuntime {
                 element,
                 record: record,
                 text: text,
-                clear: payload["clear"]?.boolValue ?? false
+                clear: payload["clear"]?.boolValue ?? false,
+                paceMs: TypeCommand.paceMs(payload)
             )
             return ["resolvedIndex": .int(record.index)]
         case "setValue":
@@ -401,7 +402,8 @@ extension DriverRuntime {
                 laneId: laneId,
                 holderId: holderId,
                 text: TypeCommand.split(payload).text,
-                targetPid: WindowHitTest.frontmostPid(in: hitCandidates())
+                targetPid: WindowHitTest.frontmostPid(in: hitCandidates()),
+                paceMs: TypeCommand.paceMs(payload)
             )
         default:
             throw DriverError(

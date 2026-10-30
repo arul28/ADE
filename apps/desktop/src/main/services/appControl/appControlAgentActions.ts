@@ -77,7 +77,14 @@ import {
 import type { Logger } from "../logging/logger";
 import { nowIso } from "../shared/utils";
 import type { DemoTrackEventKind } from "../../../shared/demoVideo/demoContract";
-import { demoElementLabel, demoTypedLabel, noteDemoPageAction } from "../demoVideo/demoTrackTargets";
+import {
+  demoElementLabel,
+  demoTypedLabel,
+  demoTypingPlan,
+  noteDemoPageAction,
+  typeDemoPieces,
+  type DemoPageActionTarget,
+} from "../demoVideo/demoTrackTargets";
 import { appControlRecordingKey } from "./appControlRecording";
 
 /**
@@ -584,10 +591,10 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
     client: TClient,
     session: AppControlSession,
     kind: DemoTrackEventKind,
-    target: { point?: { x: number; y: number } | null; element?: AppControlElementSnapshot | null; label?: string },
-  ): Promise<void> => {
-    if (!session.laneId) return;
-    await noteDemoPageAction({
+    target: DemoPageActionTarget,
+  ): Promise<boolean> => {
+    if (!session.laneId) return false;
+    return noteDemoPageAction({
       key: appControlRecordingKey(session.laneId),
       kind,
       by: "agent",
@@ -603,6 +610,15 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         return width > 0 && height > 0 ? { width, height } : null;
       },
     });
+  };
+
+  /** All at once, or (while the lane records) a few characters at a time, as a person types. */
+  const insertText = async (client: TClient, text: string, typing: ReturnType<typeof demoTypingPlan> | null): Promise<void> => {
+    if (!typing) {
+      await client.send("Input.insertText", { text });
+      return;
+    }
+    await typeDemoPieces(typing, (piece) => client.send("Input.insertText", { text: piece }));
   };
 
   const runAgentAction = async (
@@ -668,6 +684,7 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
   const agentHover = async (input: AppControlAgentHoverArgs): Promise<AppControlAgentActionResult> =>
     runAgentAction("hover", input, async (client, session, tracker) => {
       const point = await resolveAgentPoint(client, session, input, tracker);
+      await noteDemoAction(client, session, "hover", { point: { x: point.x, y: point.y }, element: point.element });
       await deps.enablePageDomain(client);
       await client.send("Input.dispatchMouseEvent", {
         type: "mouseMoved",
@@ -689,9 +706,14 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
         clear: true,
         editableRequired: true,
       }, tracker);
-      await noteDemoAction(client, session, "type", { element, label: demoTypedLabel(fillValue, element) });
+      const typing = demoTypingPlan(fillValue);
+      const recording = await noteDemoAction(client, session, "type", {
+        element,
+        label: demoTypedLabel(fillValue, element),
+        seconds: typing.seconds,
+      });
       await deps.enablePageDomain(client);
-      await client.send("Input.insertText", { text: fillValue });
+      await insertText(client, fillValue, recording ? typing : null);
     });
 
   const agentClear = async (input: AppControlAgentClearArgs): Promise<AppControlAgentActionResult> =>
@@ -710,9 +732,10 @@ export function createAppControlAgentActions<TClient extends AppControlAgentCdpC
       if (!text.length) throw new Error("App Control type requires text.");
       await captureActionBaseline(client, input, tracker);
       // No label: what had focus is unknown, so the text may be a secret.
-      await noteDemoAction(client, session, "type", {});
+      const typing = demoTypingPlan(text);
+      const recording = await noteDemoAction(client, session, "type", { seconds: typing.seconds });
       await deps.enablePageDomain(client);
-      await client.send("Input.insertText", { text });
+      await insertText(client, text, recording ? typing : null);
     });
 
   const agentPress = async (input: AppControlAgentPressArgs): Promise<AppControlAgentActionResult> =>
