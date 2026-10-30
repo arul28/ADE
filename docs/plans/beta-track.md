@@ -220,9 +220,8 @@ Open (updated 2026-10-29):
   (T3 #20240).
 - "ADE could not start" window with "go back to the previous version", and a
   Settings list of database copies: not built. The copies exist on disk.
-- Tests broken on purpose by the channel removal
-  (`packagedSyncHostLaunchGate.test.ts` and any others that pass "beta" as a
-  channel) are left for `/test`.
+- Tests broken on purpose by the channel removal: fixed in `/test`
+  (`packagedSyncHostLaunchGate.test.ts` passes, checked 2026-10-30).
 
 ## Status (2026-10-29)
 
