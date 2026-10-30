@@ -248,8 +248,15 @@ function replayAtResidentCap(args: {
         mismatches += 1;
       }
       // The newest event is on screen, not queued behind a window that could
-      // not take it.
-      if (events[events.length - 1] !== envelope) drops += 1;
+      // not take it. A repeated tool call is folded into its first entry (same
+      // logical item) instead of appended, so it is on screen there rather than
+      // last. An evicted newer event is caught by `missing` below.
+      const newestKey = agentChatEventIdentityKey(envelope);
+      const newestToolKey = logicalToolItemKey(envelope);
+      const newestOnScreen = events[events.length - 1] === envelope
+        || events.some((entry) => agentChatEventIdentityKey(entry) === newestKey
+          || (newestToolKey !== null && logicalToolItemKey(entry) === newestToolKey));
+      if (!newestOnScreen) drops += 1;
       if (!timestampsAreAscending(events)) reordered += 1;
       if (events.length > maxEvents || residentBytes(events) > maxBytes) overBudget += 1;
       // Every event of this run is still resident. A repeated tool call is
