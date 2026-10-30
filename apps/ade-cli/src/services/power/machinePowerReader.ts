@@ -229,7 +229,10 @@ function readLinuxPower(
     }
     if (type !== "battery" || battery) continue;
     sawBattery = true;
-    const percent = normalizeBatteryPercent(Number(read(entry, "capacity")));
+    // A missing or empty capacity file is unreadable, not 0%: Number(null) and
+    // Number("") are both 0.
+    const capacity = read(entry, "capacity");
+    const percent = capacity ? normalizeBatteryPercent(Number(capacity)) : null;
     if (percent === null) continue;
     batteryStatus = read(entry, "status")?.toLowerCase() ?? "";
     battery = { percent, charging: batteryStatus === "charging" };
