@@ -5,10 +5,10 @@
  * The lifecycle revision (step 1) detects that the world moved. It does not say
  * what to do about work already stopped when it moves — that is R2, the one race
  * where both outcomes are bad. This registry is the other half: a short-lived,
- * visible, exclusive, abortable marker that teardown runs inside.
+ * visible, exclusive, abortable marker that the settle check runs inside.
  *
  * Deliberately IN MEMORY. The design requires a `settling` row found at startup
- * to resolve to not-settled, because teardown is not resumable across a restart
+ * to resolve to not-settled, because a settle is not resumable across a restart
  * and pretending otherwise would resurrect the "orphaned work is live work"
  * mistake the liveness half avoids. In-memory gives that for free: a restart has
  * no settling sessions, which is exactly the required answer. It also keeps the
@@ -28,7 +28,10 @@ export type SettleAbortReason =
 export type SettleAbortedReason =
   | SettleAbortReason
   | "lifecycle_changed"
-  | "teardown_failed"
+  /** A turn is running. A working chat cannot be settled. */
+  | "turn_running"
+  /** ADE could not tell whether a turn is running, so it did not settle. */
+  | "status_unknown"
   /** Another settle owned the window; this caller filed nothing. */
   | "joined_in_flight";
 

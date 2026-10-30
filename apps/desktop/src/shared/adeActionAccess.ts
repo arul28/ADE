@@ -291,7 +291,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   session: {
     live: "all",
     read: [
-      "get", "getDelta", "getLifecycleSettings", "getSettleResidue", "list",
+      "get", "getDelta", "getLifecycleSettings", "list",
       "readTranscriptTail",
     ],
     write: [

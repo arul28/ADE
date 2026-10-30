@@ -242,26 +242,28 @@ and in tests.
   [settle-teardown-design.md](settle-teardown-design.md) §3a and §6d.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
-  registry. Settle now DOES stop the session's outstanding work, through
-  `sessionSettleTeardown.ts`: it interrupts the active turn and its background
-  work, confirms the session went quiet, and records what it could not confirm.
-  **Terminals are never touched** — a settle files a session as done, it does
-  not take the user's shell away.
+  registry. **Settle is a classification and stops nothing.** A settled chat
+  keeps its background shells, subagents, cloud runs, scheduled wakes and
+  crons running. Two rules keep "settled" honest:
+  - **A working chat cannot be settled.** Inside the settling window the
+    settle runs `settleTurnCheck.ts`, which refuses while a turn is running
+    (`turn_running`), or when the turn read does not answer within 10s
+    (`status_unknown`). This applies to every caller, including the CLI, the phone,
+    the CTO operator and the PR-merge poller; the UI hides Settle on those rows
+    (`sessionIsMidFlight`).
+  - **Any turn start unsettles.** `agentChatService.setSessionActive` calls
+    `sessionService.unsettleOnTurnStart` on every turn start (a user message,
+    a scheduled wake, a cron, a background job or subagent reporting back, a
+    restart resume). It clears only the settle tuple, never an `ade chat ask`
+    hand, and writes nothing for a row that is not settled.
 
-  Getting there needed the whole of
-  [settle-teardown-design.md](settle-teardown-design.md), because the obvious
-  version was built and cut in #1059 after producing a P1 in each of six review
-  rounds. Teardown is async and the settle tuple is written and cleared from ten
-  places, so a teardown-then-write settle races real activity, and every guard
-  tried against it either read a column that turn-start never updates or had to
-  be repeated at each entry point. What made it work was doing it in order: the
-  tuple became host-authoritative (§3c-i), then one chokepoint owned every
-  mutation and moved a revision (§3a), then a settling window made teardown
-  visible, exclusive and abortable (§3b) — and only then could teardown be
-  awaited inside that window (§6). An unconfirmed stop still settles, with
-  recorded residue rather than silence (§3d option 3). Archive remains a
-  different, heavier path: it disposes sessions outright — see
-  `laneService.archive`, where the ordering is load-bearing.
+  Settled chats also resume after a brain restart like any other chat (only
+  archive holds a resume). **Terminals are never touched.** Archive remains the
+  path that stops work: it disposes sessions outright — see
+  `laneService.archive`, where the ordering is load-bearing. The history of the
+  earlier stop-on-settle design is in
+  [settle-teardown-design.md](settle-teardown-design.md); its settling window,
+  revision and chokepoint (§3a–§3c) still carry the settle.
   `dismissPendingInput: true`
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native

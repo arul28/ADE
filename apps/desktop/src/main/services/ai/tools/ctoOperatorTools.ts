@@ -1192,7 +1192,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         });
         if (!result.found) return { success: false, error: `Session not found: ${sessionId}` };
         if (!result.settled) {
-          // The reason matters: `teardown_failed` and `joined_in_flight` do not
+          // The reason matters: `status_unknown` and `joined_in_flight` do not
           // mean the session went active, and saying so misdirects the operator.
           return { success: false, error: settleAbortMessage(sessionId, result.abortedBy) };
         }

@@ -579,9 +579,11 @@ ticking component; the two text surfaces take the already-formatted string from
 30-second cadence. On row hover or
 keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
 the context-appropriate Settle or Un-settle action. That button disables itself
-while its settle/un-settle call is in flight: settle teardown now does real
-provider work on the rows where it is offered, so a second click lands inside
-the window and the backend answers a joined settle with a raw session id. An
+while its settle/un-settle call is in flight: a second click would land inside
+the settling window, and the backend answers a joined settle with a raw
+session id. Settle is hidden on a row whose turn is running (a working chat
+cannot be settled) and offered on a row that only has background work left,
+which keeps running after the settle. An
 open snooze menu pins the action slot visible. A row whose snooze ended early shows the shared Woke
 presentation until it is opened, at which point `TerminalsPage` clears the
 marker — opening is the acknowledgement.

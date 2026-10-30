@@ -157,8 +157,8 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "./services/sessions/sessionService";
-import type { SettleResidueItem, SettleTeardownContext, SettleTeardownOutcome, SubagentLink } from "./services/sessions/sessionSettleTeardown";
-import { createSettleTeardownWiring } from "./services/sessions/settleTeardownWiring";
+import type { SettleCheckOutcome, SubagentLink } from "./services/sessions/settleTurnCheck";
+import { createSettleWiring } from "./services/sessions/settleWiring";
 import { createSessionDeltaService } from "./services/sessions/sessionDeltaService";
 import { createPtyService } from "./services/pty/ptyService";
 import { terminalShellPreferenceStoreFor } from "./services/pty/terminalShells";
@@ -4143,27 +4143,21 @@ app.whenReady().then(async () => {
 
     // Late-bound: the chat service that owns the work does not exist yet at
     // this point, and the settle path must not depend on construction order.
-    const settleTeardownRef: {
-      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+    const settleRef: {
+      check: ((sessionId: string) => Promise<SettleCheckOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
-      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
       subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
-    } = { run: null, report: null, residue: null, subagentLinks: null };
+    } = { check: null, report: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
       logger,
-      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
-      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      onRemoteSettleWrite: (args) => settleRef.report?.(args),
       // Read at call time: the automation service is built later.
       onChatSettled: (chat) => automationService?.onSessionSettled(chat),
       listSubagentLinks: async (parentSessionIds) =>
-        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
-      runSettleTeardown: async (sessionId, ctx) =>
-        settleTeardownRef.run
-          ? await settleTeardownRef.run(sessionId, ctx)
-          // Before the chat service is up there is no background work to stop,
-          // so an empty teardown is the honest answer, not a skipped one.
-          : { residue: [], confirmed: false },
+        settleRef.subagentLinks ? await settleRef.subagentLinks(parentSessionIds) : [],
+      // Before the chat service is up no chat has a running turn to refuse.
+      checkSettle: async (sessionId) => (settleRef.check ? await settleRef.check(sessionId) : {}),
     });
     sessionService.onChanged((event) => {
       emitProjectEvent(projectRoot, IPC.sessionsChanged, event);
@@ -5131,16 +5125,15 @@ app.whenReady().then(async () => {
       disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
     };
     {
-      const wiring = createSettleTeardownWiring({
+      const wiring = createSettleWiring({
         agentChatService,
         logger,
         analytics: productAnalyticsService ?? null,
         surface: "desktop",
       });
-      settleTeardownRef.run = wiring.runSettleTeardown;
-      settleTeardownRef.report = wiring.onRemoteSettleWrite;
-      settleTeardownRef.residue = wiring.onSettleResidue;
-      settleTeardownRef.subagentLinks = wiring.listSubagentLinks;
+      settleRef.check = wiring.checkSettle;
+      settleRef.report = wiring.onRemoteSettleWrite;
+      settleRef.subagentLinks = wiring.listSubagentLinks;
     }
     setImmediate(() => {
       void Promise.resolve()

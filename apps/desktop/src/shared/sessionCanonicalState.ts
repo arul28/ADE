@@ -276,7 +276,8 @@ export function isPersistedTurnFailureCurrent(args: {
  *   2. settled — explicitly declared (user, or the PR-merge policy) or forced
  *      by a "settled" override; presence wins over failure because a declared
  *      quiet is a human judgment call. An "active" override suppresses this
- *      tier entirely. Cleared at the write site on any new activity,
+ *      tier entirely. Honored only at rest, and cleared at the write site on
+ *      any new turn or terminal output. It never stops background work,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death AT REST. A chat whose
  *      live runtime reports a turn in progress is `running` instead: the marker
@@ -353,11 +354,10 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   }
 
   // 2. Declared settle (or a "settled" override). No timestamp math: activity
-  // un-settles by clearing the column where the activity happens (user turn
-  // start / PTY output). Only honored AT REST — a settled chat woken by
-  // scheduled work shows green while the turn streams, then re-settles when it
-  // goes idle again (the settledAt column survives background wakes; only user
-  // activity clears it).
+  // un-settles by clearing the column where the activity happens (any chat
+  // turn start, including a scheduled wake / PTY output). Only honored AT REST,
+  // so the row never reads settled while a turn streams, even in the moment
+  // before the turn-start clear lands.
   //
   const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
@@ -366,17 +366,11 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
     // re-lighting the row would let a stubborn monitor out-vote the user's
     // explicit "this is done".
     //
-    // But `liveness` still reports the truth, because a settled session can
-    // legitimately still own live work. Settle teardown DOES stop the session's
-    // outstanding background tasks (`sessionSettleTeardown.ts`) — that landed —
-    // but it is best-effort: a provider with no stop control, a stop that times
-    // out, or a stop the provider rejects all leave the settle standing with
-    // residue recorded against it. Work that escaped the process tree entirely
-    // (`nohup`/`setsid`/`disown`) is invisible to it by construction.
-    //
-    // So a surface that wants to show "settled, but something is still running"
-    // must be able to. The phase alone would hide it, which is the exact failure
-    // this module exists to prevent — just at the other end of the lifecycle.
+    // But `liveness` still reports the truth, because a settled session
+    // legitimately keeps its live work: settle is a classification and stops
+    // nothing, so background shells, subagents and monitors run on after it.
+    // A surface that wants to show "settled, but something is still running"
+    // must be able to.
     const settledWork = args.backgroundWork;
     return {
       phase: "settled",

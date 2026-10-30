@@ -1389,10 +1389,6 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
   "session_lifecycle_revisions",
-  // Host-local record of work a settle teardown could not confirm it stopped.
-  // Not replicated: it describes processes on THIS host, and a peer showing
-  // "1 job could not be stopped" for a machine it cannot see would be a lie.
-  "session_settle_residue",
 ]);
 
 /**
@@ -4777,16 +4773,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
 
-  // What a settle teardown could not confirm it stopped (design 3d, option 3).
-  // Replaced wholesale per settle, so the row always describes the LAST settle
-  // rather than accumulating history the user cannot clear.
-  db.run(`
-    create table if not exists session_settle_residue (
-      session_id text primary key,
-      recorded_at text not null,
-      items text not null
-    )
-  `);
+  // Settle used to stop a chat's work and record here what it could not stop.
+  // Settle no longer stops anything, so the table has no writer or reader.
+  db.run("drop table if exists session_settle_residue");
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.

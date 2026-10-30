@@ -1,26 +1,17 @@
 # Settle teardown — design
 
-**Status:** implemented. Steps 0-2 shipped in #1069, #1073 and #1075; the
-race-matrix review passed and cleared step 3, which attaches real teardown. §6
-records what step 3 actually built, including where it departed from the plan
-and why.
+**Status: superseded (2026-10-30). Settle no longer stops anything.** The
+product decision changed: settle is a classification, not a stop. A settled
+chat keeps its background shells, subagents, cloud runs, scheduled wakes and
+crons running; a working chat cannot be settled; and any turn start (including
+a scheduled wake) takes a chat out of settled. See §7 for what changed. The
+settling window, lifecycle revision and chokepoint (§3a–§3c) still carry every
+settle; the teardown steps (§6b), residue (§6c) and the per-source interrupt
+policy (§3c-iv) were removed.
 
-**Steps 0-3 are implemented.** Step 0's host-side half is "Host enforcement
-for pre-fix clients" in §3c-i; step 1 is the chokepoint and revision in §3a,
-whose implemented shape is recorded at the end of that section.
-
-**The problem, as it stood before step 3** (kept because the rest of this
-document argues from it — see §6 for what shipped): settle wrote a lifecycle
-column and stopped nothing. A session filed as "done" could still own a
-background shell, a subagent fleet, or a Cursor cloud run — burning tokens and
-holding ports behind a row that had left every live-work surface. Archive was
-the only lifecycle path that stopped processes (`laneService.archive` →
-`stopLaneRuntimeWork`, ordered before the port-lease release). Settle now tears
-down through `sessionSettleTeardown.ts` (§6b), best-effort, with residue
-recorded when a stop cannot be confirmed (§6c) — which is also why the Settle
-affordance is offered on a row whose turn has ended but whose background work
-has not (`sessionIsMidFlight`, see `ui-surfaces.md`): settling it is what stops
-that work.
+The rest of this document records the stop-on-settle design as it shipped in
+#1069, #1073 and #1075, and why it was hard. It is kept because the races it
+catalogues still apply to anything awaited inside the settling window.
 
 This document exists because the obvious implementation — "await teardown, then
 write `settled_at`" — was built, reviewed six times, and cut in PR #1059. It
@@ -765,3 +756,27 @@ R7/R7b are unchanged and still write the row with a raw `db.run`. They pin the
 property that motivates the whole mechanism: a write that reaches the tuple
 without the chokepoint is invisible to the guard. The reconciled path is
 asserted separately, against the same shape the apply layer now produces.
+
+---
+
+## 7. Settle stops nothing (2026-10-30)
+
+The owner's rule: *settling a chat only files it out of the way. If it has
+background jobs, scheduled jobs or anything else, all of it keeps working. If
+it becomes non-idle again, it unsettles. If it is working, it cannot be
+settled.*
+
+| Before | Now |
+|---|---|
+| A user settle interrupted the running turn and its background work (`stop_and_background`), waited up to 5s, recorded residue. | `settleTurnCheck.ts` reads whether a turn is running and stops nothing. |
+| A machine settle (`pr_merge`) refused a running turn; a user settle cancelled it. | Every caller is refused while a turn runs (`turn_running`); a turn read that does not answer in 10s refuses with `status_unknown`. |
+| Only a person's message unsettled a chat; a scheduled wake ran the turn and the row re-settled at rest. | Any turn start unsettles (`sessionService.unsettleOnTurnStart`, from `agentChatService.setSessionActive`). It clears the settle tuple only, never an `ade chat ask` hand. |
+| Settled chats did not resume after a brain restart. | They resume like any other chat; only archive holds a resume. The resumed turn unsettles them. |
+| `session_settle_residue`, `session.getSettleResidue`, the `settle_teardown_residue` analytics action. | Removed; the table is dropped at startup. |
+
+Unchanged: the settling window (exclusive, abortable, in-memory), the revision
+re-check after the await, the subagent cascade (a subagent mid-turn refuses and
+is left as it is), terminals never touched, and archive as the path that stops
+work. Warm idle compaction still skips settled chats: it is housekeeping, and
+its turn would unsettle a chat the person put away for no reason of theirs.
+

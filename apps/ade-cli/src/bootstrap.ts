@@ -37,13 +37,8 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
-import { createSettleTeardownWiring } from "../../desktop/src/main/services/sessions/settleTeardownWiring";
-import type {
-  SettleResidueItem,
-  SettleTeardownContext,
-  SettleTeardownOutcome,
-  SubagentLink,
-} from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
+import { createSettleWiring } from "../../desktop/src/main/services/sessions/settleWiring";
+import type { SettleCheckOutcome, SubagentLink } from "../../desktop/src/main/services/sessions/settleTurnCheck";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -1258,27 +1253,25 @@ export async function createAdeRuntime(args: {
     // services. Session changes still use it once publishing is attached.
     let pushPublisherForPtySignals: PushPublisherService | null = null;
     let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
-    // Late-bound: the chat service that owns the work is constructed further
-    // down. Without this the brain — which owns phone sync, remote commands and
-    // the PR-merge poller in a normal install — would settle sessions while
-    // stopping nothing.
-    const settleTeardownRef: {
-      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
+    // Late-bound: the chat service that knows which turns are running is
+    // constructed further down. Without this the brain — which owns phone sync,
+    // remote commands and the PR-merge poller in a normal install — would
+    // settle chats mid-turn.
+    const settleRef: {
+      check: ((sessionId: string) => Promise<SettleCheckOutcome>) | null;
       report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
-      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
       subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
-    } = { run: null, report: null, residue: null, subagentLinks: null };
+    } = { check: null, report: null, subagentLinks: null };
     const sessionService = createSessionService({
       db,
       logger,
-      runSettleTeardown: async (sessionId, ctx) =>
-        settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
-      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
-      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      // Before the chat service is up no chat has a running turn to refuse.
+      checkSettle: async (sessionId) => (settleRef.check ? await settleRef.check(sessionId) : {}),
+      onRemoteSettleWrite: (args) => settleRef.report?.(args),
       // Read at call time: the automation service is built later.
       onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
       listSubagentLinks: async (parentSessionIds) =>
-        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
+        settleRef.subagentLinks ? await settleRef.subagentLinks(parentSessionIds) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -2758,17 +2751,16 @@ export async function createAdeRuntime(args: {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
       };
-      const settleWiring = createSettleTeardownWiring({
+      const settleWiring = createSettleWiring({
         agentChatService,
         logger,
         analytics: productAnalyticsService ?? null,
         // The brain is the non-GUI runtime surface, matching its other analytics.
         surface: "api",
       });
-      settleTeardownRef.run = settleWiring.runSettleTeardown;
-      settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
-      settleTeardownRef.residue = settleWiring.onSettleResidue;
-      settleTeardownRef.subagentLinks = settleWiring.listSubagentLinks;
+      settleRef.check = settleWiring.checkSettle;
+      settleRef.report = settleWiring.onRemoteSettleWrite;
+      settleRef.subagentLinks = settleWiring.listSubagentLinks;
     }
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");

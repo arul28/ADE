@@ -3069,14 +3069,14 @@ and a Codex plan decline can enqueue a revision. Tracked CLIs can dismiss only
 an explicit `ade chat ask` marker; a raw native terminal prompt must be
 resolved in the terminal and the menu says **Resolve input to settle**.
 
-The teardown that a settle performs is deliberately narrower than the dismissal.
-`sessions/settleTeardownWiring.ts` stops the session's work through
-`interrupt({ mode: "stop_and_background" })` (`SETTLE_TEARDOWN_STOP_MODE`): it
-keeps the user's queued prompts (those are unrecoverable) and still stops
-background work (the reason settle exists). That mode does **not** settle Codex
-cards: stopping work is
-not the same as discarding a decision the user still owns, exactly as
-`stop_only` already spares queued follow-ups. Only queue-clearing modes
+A settle itself stops nothing: `sessions/settleWiring.ts` only refuses a chat
+whose turn is running, and a settled chat keeps its background work, scheduled
+wakes and subagents (see `terminals-and-sessions/README.md`). The dismissal
+above ends only the turn blocked on the question (`stop_and_clear`), so
+background work survives it too. Codex cards are settled only by the
+queue-clearing stop modes: stopping work is not the same as discarding a
+decision the user still owns, exactly as `stop_only` already spares queued
+follow-ups. Only queue-clearing modes
 (`stop_and_clear`, `stop_and_clear_and_background`) — the user pressing a
 Stop that clears the queue — settle them, and only the explicit **Dismiss & settle**
 transaction discards a
@@ -4461,10 +4461,9 @@ rejected like the other generic titles.
   it settles it, so a second call — the app-server's own `turn/aborted` landing
   after a local interrupt already settled — finds an empty map and cannot
   resolve the same card twice. Five details are load-bearing:
-  - **Queue-preserving modes do not settle Codex cards.** Settle teardown
-    uses `stop_and_background`, which stops work without discarding a
-    decision the user still owns, the same way `stop_only` spares queued
-    follow-ups. Only queue-clearing modes (`stop_and_clear`,
+  - **Queue-preserving modes do not settle Codex cards.**
+    `stop_and_background` stops work without discarding a decision the user
+    still owns, the same way `stop_only` spares queued follow-ups. Only queue-clearing modes (`stop_and_clear`,
     `stop_and_clear_and_background`) and the explicit **Dismiss & settle**
     transaction settle cards.
   - **Runtime-death paths pass `planApprovals: "preserve-cards"`**

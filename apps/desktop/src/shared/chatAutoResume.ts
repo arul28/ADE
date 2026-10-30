@@ -334,16 +334,20 @@ export const MAX_CONSECUTIVE_RESTART_RESUMES = 3;
  * Why a chat a restart cut short does not continue by itself, or null when it
  * does. One owner for the rule, so the notice and the resume always agree.
  */
-export type RestartResumeHold = "disabled" | "stale" | "awaiting_user" | "capped" | "settled";
+export type RestartResumeHold = "disabled" | "stale" | "awaiting_user" | "capped" | "archived";
 
 export function restartResumeHold(args: {
   continueEnabled: boolean;
   recent: boolean;
   awaitingUser: boolean;
   capped: boolean;
-  settledOrArchived: boolean;
+  /**
+   * Only archive holds a resume. Settle is a classification and stops nothing,
+   * so a settled chat resumes like any other (and the resumed turn unsettles it).
+   */
+  archived: boolean;
 }): RestartResumeHold | null {
-  if (args.settledOrArchived) return "settled";
+  if (args.archived) return "archived";
   // Before the setting and the age: the notice must ask for the answer, not
   // offer a generic "retry or continue".
   if (args.awaitingUser) return "awaiting_user";
