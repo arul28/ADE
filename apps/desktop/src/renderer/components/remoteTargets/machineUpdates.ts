@@ -64,7 +64,7 @@ function withIds(current: ReadonlySet<string>, ids: readonly string[], present: 
  * that cannot ask a machine to update.
  */
 export function canUpdateOtherMachines(): boolean {
-  const remoteRuntime = window.ade.remoteRuntime as { updateAndRestart?: unknown } | undefined;
+  const remoteRuntime = window.ade?.remoteRuntime as { updateAndRestart?: unknown } | undefined;
   return isAdeAvailable(remoteRuntime?.updateAndRestart);
 }
 

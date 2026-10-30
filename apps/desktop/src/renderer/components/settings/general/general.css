@@ -1,0 +1,413 @@
+/* Settings → General. One calm column: the attention row, two identity
+   cards, then ADE as a branded card with every machine's update. */
+.ade-gen {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+/* ── Needs attention: one row that opens in place ─────────────────────── */
+.ade-gen-attn {
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-gen-attn[data-state="crit"] {
+  border-color: color-mix(in srgb, var(--kit-crit) 30%, transparent);
+  background: color-mix(in srgb, var(--kit-crit) 6%, var(--kit-panel-bg));
+}
+.ade-gen-attn[data-state="warn"] {
+  border-color: color-mix(in srgb, var(--kit-warn) 30%, transparent);
+  background: color-mix(in srgb, var(--kit-warn) 6%, var(--kit-panel-bg));
+}
+.ade-gen-attn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+}
+.ade-gen-attn-toggle {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 36px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-gen-attn-toggle:disabled {
+  cursor: default;
+}
+.ade-gen-attn-toggle:not(:disabled):hover {
+  background: var(--kit-hover);
+}
+.ade-gen-attn[data-state="ok"] .kit-dot {
+  background: var(--kit-ok);
+}
+.ade-gen-attn-title {
+  font-weight: 600;
+  white-space: nowrap;
+}
+.ade-gen-attn[data-state="ok"] .ade-gen-attn-title {
+  font-weight: 500;
+  color: var(--kit-text-2);
+}
+.ade-gen-attn-preview {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--kit-text-3);
+}
+.ade-gen-attn-caret {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--kit-text-3);
+  transition: transform 160ms ease;
+}
+.ade-gen-attn[data-open="true"] .ade-gen-attn-caret {
+  transform: rotate(180deg);
+}
+.ade-gen-attn-body {
+  padding: 2px 12px 12px;
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-gen-attn-askbtn {
+  margin-top: 8px;
+}
+.ade-gen-attn-ask {
+  margin-top: 10px;
+}
+
+/* ── You and This machine ─────────────────────────────────────────────── */
+.ade-gen-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+@container modernpage (max-width: 620px) {
+  .ade-gen-pair { grid-template-columns: 1fr; }
+}
+.ade-gen-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 16px;
+}
+.ade-gen-ident {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.ade-gen-ident-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ade-gen-ident-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--color-fg);
+}
+.ade-gen-ident-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-gen-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+.ade-gen-meter {
+  display: grid;
+  gap: 6px;
+}
+.ade-gen-meter-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+
+/* ── ADE: a branded head, then how updates arrive, then every machine ─── */
+.ade-gen-ade {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: var(--radius-lg, 14px);
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-gen-hero {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+  color: #fff;
+}
+/* ADE's own colours, painted in CSS: no canvas, nothing animating. */
+.ade-gen-hero-wash {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background:
+    radial-gradient(60% 120% at 8% 10%, rgba(168, 85, 247, 0.85), transparent 70%),
+    radial-gradient(50% 110% at 92% 0%, rgba(56, 189, 248, 0.55), transparent 72%),
+    radial-gradient(70% 100% at 70% 110%, rgba(236, 72, 153, 0.45), transparent 70%),
+    linear-gradient(120deg, #1c1033, #120c24 60%, #0d1326);
+}
+.ade-gen-hero-wash::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.30), rgba(0, 0, 0, 0.05) 55%, rgba(0, 0, 0, 0.25)),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.22), transparent 60%);
+}
+.ade-gen-hero-row {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 20px 20px 20px 24px;
+}
+.ade-gen-hero-mark {
+  flex: none;
+  width: 104px;
+  filter: drop-shadow(0 10px 14px rgba(10, 4, 30, 0.55));
+}
+.ade-gen-hero-mark img {
+  display: block;
+  width: 100%;
+  height: auto;
+  transform: rotate(-4deg);
+}
+.ade-gen-hero-id {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 6px;
+}
+.ade-gen-hero-version {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 24px;
+  font-weight: 600;
+  letter-spacing: -0.03em;
+}
+.ade-gen-hero-state {
+  font-size: 12.5px;
+  color: rgba(255, 255, 255, 0.78);
+}
+.ade-gen-hero[data-state="ready"] .ade-gen-hero-state {
+  color: #fff;
+}
+.ade-gen-hero-action {
+  flex: none;
+}
+.ade-gen-hero-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 32px;
+  padding: 0 14px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.10);
+  color: #fff;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  transition: background 120ms ease;
+}
+.ade-gen-hero-btn:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+}
+.ade-gen-hero-btn[data-tone="primary"] {
+  border-color: transparent;
+  background: #fff;
+  color: #1b1030;
+}
+.ade-gen-hero-btn[data-tone="primary"]:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.88);
+}
+.ade-gen-hero-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+.ade-gen-hero .ade-shell-channel-badge[data-track="stable"] {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: rgba(255, 255, 255, 0.85);
+}
+
+/* Under the hero, one body: the track, automatic install, every machine and
+   the way to Advanced, divided by hairlines rather than boxed one by one. */
+.ade-gen-ade-body {
+  display: flex;
+  flex-direction: column;
+}
+.ade-gen-ade-body > .ade-modern-rows {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.ade-gen-ade-body > .ade-modern-rows + *,
+.ade-gen-ade-body > .ade-gen-mup + * {
+  border-top: 1px solid var(--kit-rule);
+}
+
+/* Every machine's update, one row each. */
+.ade-gen-mup {
+  padding-bottom: 4px;
+}
+.ade-gen-mup-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 36px;
+  padding: 6px 14px 0;
+}
+.ade-gen-mup-list {
+  display: grid;
+}
+.ade-gen-mup-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  column-gap: 14px;
+  padding: 8px 14px;
+}
+.ade-gen-mup-row + .ade-gen-mup-row {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-gen-mup-who {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 2px;
+  margin: -2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-gen-mup-who:hover .ade-gen-mup-name {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.ade-gen-mup-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-gen-mup-row[data-offline="true"] .ade-gen-mup-name {
+  color: var(--kit-text-3);
+}
+.ade-gen-mup-version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-gen-mup-target {
+  color: var(--color-fg);
+}
+.ade-gen-mup-action {
+  display: inline-flex;
+  justify-content: flex-end;
+  min-width: 96px;
+}
+.ade-gen-mup-status {
+  grid-column: 1 / -1;
+  padding: 6px 0 2px 38px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+
+.ade-gen-advanced {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 16px;
+  border: 0;
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.ade-gen-advanced:hover {
+  background: var(--kit-hover);
+  color: var(--color-fg);
+}
+.ade-gen-advanced-hint {
+  color: var(--kit-text-3);
+}
+.ade-gen-advanced > svg:last-child {
+  margin-left: auto;
+  color: var(--kit-text-3);
+}
+.ade-gen-advanced-hint::before {
+  content: "— ";
+}
+
+.ade-gen-mup-who:disabled {
+  cursor: default;
+}
+.ade-gen-mup-who:disabled:hover .ade-gen-mup-name {
+  text-decoration: none;
+}
+/* On a machine's own page, in its hero: the version and its one action. */
+.ade-gen-mup-bare {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+.ade-gen-mup-bare-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+}
+.ade-gen-mup-bare .ade-gen-mup-version {
+  font-size: 12.5px;
+}
+.ade-gen-mup-bare-status {
+  max-width: 280px;
+  font-size: 11.5px;
+  color: var(--kit-text-2);
+  text-align: right;
+}

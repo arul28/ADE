@@ -96,7 +96,7 @@ function readFailureItem(failed: string[], recheck: () => Promise<void>): Attent
     title: failed.length === 1 ? `ADE couldn't check ${names}` : `ADE couldn't check ${failed.length} things`,
     detail: `Couldn't read ${names}, so this list may be missing something.`,
     where: "Overview",
-    route: settingsRouteFor("overview"),
+    route: settingsRouteFor("overview.attention"),
     fix: { label: "Check again", run: recheck },
   }];
 }

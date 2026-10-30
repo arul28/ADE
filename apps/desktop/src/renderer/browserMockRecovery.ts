@@ -384,6 +384,8 @@ export function applyBrowserMockBrainDown(ade: {
  */
 type MockUpdateScenario = {
   snapshot: Partial<AutoUpdateSnapshot>;
+  /** This computer's own name, as sync reports it. */
+  thisMachineName?: string;
   runningTrack: "stable" | "beta";
   local: UpdateInstallImpact;
   machines: Array<{ id: string; name: string; arch: string; version: string; impact: UpdateImpact }>;
@@ -455,6 +457,28 @@ function mockUpdateScenario(name: string | null): MockUpdateScenario | null {
       machines: [{ id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.125", impact: studioChat }],
     };
   }
+  if (name === "settings") {
+    // Settings with three machines: this Stable MacBook, a Stable Mac Studio
+    // one build behind, and a Beta Windows PC one beta behind.
+    return {
+      snapshot: {
+        status: "idle",
+        currentVersion: "1.2.127",
+        version: null,
+        latestKnownVersion: "1.2.127",
+        lastCheckedAt: Date.now() - 6 * 60_000,
+        latestByTrack,
+        track: { selected: "stable", running: "stable", switching: null },
+      },
+      runningTrack: "stable",
+      local: { ...localChat, connectedPhones: [] },
+      thisMachineName: "Arul's MacBook Pro",
+      machines: [
+        { id: "mock-remote", name: "Arul's Mac Studio", arch: "darwin-arm64", version: "1.2.126", impact: studioChat },
+        { id: "mock-windows", name: "Arul's Windows PC", arch: "win32-x64", version: "1.2.128-beta.1", impact: { checked: true, chats: [], cliSessions: 0, terminals: 0 } },
+      ],
+    };
+  }
   if (name === "beta") {
     return {
       snapshot: {
@@ -498,6 +522,14 @@ function applyBrowserMockUpdateScenario(ade: MockUpdateAde): void {
     isPackaged: true,
   });
   ade.app.updateTrack = scenario.runningTrack;
+  if (scenario.thisMachineName && ade.sync?.getLocalStatus) {
+    const baseLocal = ade.sync.getLocalStatus;
+    const name = scenario.thisMachineName;
+    ade.sync.getLocalStatus = async (...args: unknown[]) => {
+      const status = await baseLocal(...args) as { localDevice?: Record<string, unknown> } | null;
+      return status ? { ...status, localDevice: { ...(status.localDevice ?? {}), name } } : status;
+    };
+  }
   const now = Date.now();
   const connections = scenario.machines.map((machine) => {
     const target = {
@@ -528,6 +560,39 @@ function applyBrowserMockUpdateScenario(ade: MockUpdateAde): void {
     };
   });
   const snapshot = { connections, connectedCount: connections.length, updatedAt: now };
+  // `settings`: the two other machines hold this project too, so they are
+  // routable the way a real machine with the repo is (Providers picker, a
+  // machine's own page). Written to the root store's cross-machine union.
+  if (urlParam("adeUpdate") === "settings") {
+    const seedUnion = () => {
+      void import("./state/appStore").then(({ rootAppStoreApi }) => {
+        const union = Object.fromEntries(scenario.machines.map((machine) => [machine.id, {
+          machineId: machine.id,
+          machineName: machine.name,
+          targetId: machine.id,
+          projectId: `${machine.id}-project`,
+          binding: {
+            kind: "remote" as const,
+            key: `remote:${machine.id}:${machine.id}-project`,
+            targetId: machine.id,
+            runtimeName: machine.name,
+            transport: "paired" as const,
+            projectId: `${machine.id}-project`,
+            rootPath: "/Users/arul/Projects/ADE",
+            displayName: "ADE",
+          },
+          online: true,
+          lanes: [],
+          sessions: [],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+        }]));
+        rootAppStoreApi.setState({ crossMachineLanesByMachineId: union } as never);
+      });
+    };
+    window.setTimeout(seedUnion, 3_000);
+    window.setTimeout(seedUnion, 7_000);
+  }
   ade.remoteRuntime.getConnectionSnapshot = async () => snapshot as never;
   ade.remoteRuntime.listTargets = async () => connections.map((connection) => connection.target) as never;
   ade.remoteRuntime.getUpdateImpact = async (id: string) =>
@@ -548,6 +613,7 @@ type MockUpdateAde = {
   updateGetState: () => Promise<AutoUpdateSnapshot>;
   updateGetInstallImpact: () => Promise<UpdateInstallImpact>;
   app: { getInfo: () => Promise<AppInfo>; restartBackgroundService?: () => Promise<void>; updateTrack?: string };
+  sync?: { getLocalStatus?: (...args: unknown[]) => Promise<unknown> };
   ai: {
     getContinueAfterRestart?: () => Promise<{ enabled: boolean }>;
     setContinueAfterRestart?: (enabled: boolean) => Promise<{ enabled: boolean }>;
