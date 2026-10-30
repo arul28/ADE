@@ -65,7 +65,7 @@ type CopilotErrorCategory = "auth" | "rate_limit" | "budget" | "network" | "unkn
  * timer. A 5xx or a timeout is the service's, so it reads as a connection
  * problem the person can retry, not as a fault in the chat.
  */
-function classifyCopilotError(errorType: string | null, errorCode: string | null, statusCode: number | null): CopilotErrorCategory {
+export function classifyCopilotError(errorType: string | null, errorCode: string | null, statusCode: number | null): CopilotErrorCategory {
   switch (errorType) {
     case "authentication":
     case "authorization":

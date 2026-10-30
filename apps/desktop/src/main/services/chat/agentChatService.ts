@@ -1446,7 +1446,8 @@ import {
   resolveCopilotSlashCommand,
 } from "./copilotSlashCommands";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
-import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { captureProblem } from "../../../shared/sentry/capture";
+import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
@@ -59846,8 +59847,7 @@ export function createAgentChatService(args: {
         if (eventRecord.type === "session.error") {
           // The fields GitHub traces a failed request by, for a report that
           // only says "Copilot errored".
-          logger.warn("agent_chat.copilot_session_error", {
-            sessionId: chatId,
+          const diagnostics = {
             errorType: eventData.errorType,
             errorCode: eventData.errorCode,
             statusCode: eventData.statusCode,
@@ -59856,7 +59856,21 @@ export function createAgentChatService(args: {
             serviceRequestId: eventData.serviceRequestId,
             model: current.eventMapperState.servedModel ?? current.modelId,
             message: typeof eventData.message === "string" ? boundedLogText(eventData.message) : undefined,
-          });
+          };
+          logger.warn("agent_chat.copilot_session_error", { sessionId: chatId, ...diagnostics });
+          // Sign-in, rate limits, quota and GitHub outages stay in the log
+          // above; anything else may be ADE sending a request Copilot rejects,
+          // so it becomes an issue, one per error type and code.
+          const errorType = typeof eventData.errorType === "string" ? eventData.errorType : null;
+          const errorCode = typeof eventData.errorCode === "string" ? eventData.errorCode : null;
+          const statusCode = typeof eventData.statusCode === "number" ? eventData.statusCode : null;
+          if (classifyCopilotError(errorType, errorCode, statusCode) === "unknown") {
+            captureProblem("Copilot session error", {
+              tags: { provider: "copilot", "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
+              extra: diagnostics,
+              fingerprint: ["copilot-session-error", errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
+            });
+          }
         }
         if (eventRecord.type === "session.idle") {
           const aborted = eventData.aborted === true;
