@@ -39,6 +39,7 @@ let client: BrainClient | null = null;
 const json: number[] = [];
 const gz: number[] = [];
 let failed = 0;
+let firstError: string | null = null;
 try {
   client = await connectBrain(record.socket, "chat-open-bytes-bench");
   await client.addProject(projectRoot);
@@ -58,8 +59,9 @@ try {
       const text = JSON.stringify(payload);
       json.push(Buffer.byteLength(text));
       gz.push(gzipSync(text).length);
-    } catch {
+    } catch (error) {
       failed += 1;
+      firstError ??= `${sessionId}: ${error instanceof Error ? error.message : String(error)}`.slice(0, 300);
     }
   }
 } finally {
@@ -73,6 +75,7 @@ console.log(JSON.stringify({
   platform: process.platform,
   chats: json.length,
   failed,
+  firstError,
   jsonKB: { p50: kb(percentile(sj, 0.5)), p90: kb(percentile(sj, 0.9)), p99: kb(percentile(sj, 0.99)), max: kb(sj.at(-1) ?? 0) },
   gzipKB: { p50: kb(percentile(sg, 0.5)), p90: kb(percentile(sg, 0.9)), p99: kb(percentile(sg, 0.99)), max: kb(sg.at(-1) ?? 0) },
   totalJsonMB: +(json.reduce((s, x) => s + x, 0) / 1048576).toFixed(1),

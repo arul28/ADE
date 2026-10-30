@@ -12,11 +12,11 @@
 // event in the copy's transcripts, so the per-event overhead is ADE's own. The buffer
 // is replayed as agentChatService runs it: the first delta starts a 100 ms timer, every
 // delta of the same stream joins the pending text, the timer flushes it.
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, statSync } from "node:fs";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
 import { appendBufferedAssistantText, type BufferedAssistantText } from "../../../apps/desktop/src/main/services/chat/chatTextBatching";
 import type { AgentChatEventEnvelope } from "../../../apps/desktop/src/shared/types/chat";
+import { loadTranscript } from "./transcript-files.mts";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -36,17 +36,8 @@ const newest = readdirSync(dir)
   .slice(0, 20);
 let sample: AgentChatEventEnvelope | null = null;
 for (const file of newest) {
-  const raw = readFileSync(file);
-  const lines = (file.endsWith(".gz") ? gunzipSync(raw) : raw).toString("utf8").split("\n").reverse();
-  for (const line of lines) {
-    try {
-      const parsed = JSON.parse(line) as AgentChatEventEnvelope;
-      if (parsed?.event?.type === "text" && (parsed.event as { messageId?: string }).messageId) {
-        sample = parsed;
-        break;
-      }
-    } catch {}
-  }
+  sample = loadTranscript(file).reverse()
+    .find((envelope) => envelope.event.type === "text" && Boolean((envelope.event as { messageId?: string }).messageId)) ?? null;
   if (sample) break;
 }
 if (!sample) throw new Error(`no text event with a messageId in ${dir}`);

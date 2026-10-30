@@ -1,8 +1,7 @@
 // cd apps/ade-cli && npx tsx ../../scripts/perf/service/chat-timeline.bench.mts --project <copy root> [--chat <id>] [--runs 5]
 //   [--scenario stream-1000|rebuild|tool-done] (default: all three; one scenario keeps a CPU profile to it)
-// Three chat timeline costs, each against an outside target, on real transcripts
-// of a project copy (<root>/.ade/transcripts/chat/*.jsonl[.gz]). Transcripts are
-// only read. Every scenario runs two warm-ups, then --runs measured runs from a
+// Three chat timeline costs, each against an outside target, on a project's real
+// transcripts (read with transcript-files.mts; only read). Every scenario runs two warm-ups, then --runs measured runs from a
 // fresh state, and prints the median with the slowest run.
 //
 //   stream-1000: 1,000 events loaded, then 200 streamed updates, each through
@@ -17,16 +16,14 @@
 // The chat for rebuild and tool-done is --chat, else the transcript closest to
 // 15,700 events. stream-1000 uses every transcript with at least 1,200 events
 // (at most five, the largest first).
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { gunzipSync } from "node:zlib";
-import type { AgentChatEventEnvelope } from "../../../apps/desktop/src/shared/types/chat";
 import { mergeAgentChatLiveEvents } from "../../../apps/desktop/src/shared/chatHistoryMerge";
 import { chatDisplayEvents } from "../../../apps/desktop/src/renderer/components/chat/chatHistoryWindow";
 import {
   collapseChatTranscriptEventsIncrementalWithContext,
   collapseChatTranscriptEventsWithContext,
 } from "../../../apps/desktop/src/renderer/components/chat/chatTranscriptRows";
+import { largestTranscripts, loadTranscript } from "./transcript-files.mts";
 
 const args = process.argv.slice(2);
 const flag = (name: string) => {
@@ -39,20 +36,6 @@ const runs = Number(flag("--runs") ?? 5);
 const only = flag("--scenario");
 const wants = (scenario: string) => !only || only === scenario;
 const WARMUPS = 2;
-const dir = path.join(project, ".ade", "transcripts", "chat");
-
-function load(file: string): AgentChatEventEnvelope[] {
-  const raw = readFileSync(file);
-  const text = (file.endsWith(".gz") ? gunzipSync(raw) : raw).toString("utf8");
-  return text.split("\n").flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed?.event?.type ? [parsed as AgentChatEventEnvelope] : [];
-    } catch {
-      return [];
-    }
-  });
-}
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const round = (x: number, digits = 2) => +x.toFixed(digits);
@@ -65,14 +48,13 @@ function measure(once: () => number): { medianMs: number; worstMs: number; runsM
   return { medianMs: round(median(ms), 3), worstMs: round(Math.max(...ms), 3), runsMs: ms.map((x) => round(x, 3)) };
 }
 
-// Load the 12 largest transcripts on disk (and --chat, wherever it ranks).
-const sized = readdirSync(dir)
-  .filter((name) => name.endsWith(".jsonl") || name.endsWith(".jsonl.gz"))
-  .map((name) => ({ file: path.join(dir, name), bytes: statSync(path.join(dir, name)).size }))
-  .sort((a, b) => b.bytes - a.bytes)
-  .filter((entry, rank) => rank < 12 || (flag("--chat") && path.basename(entry.file).startsWith(flag("--chat")!)))
-  .map(({ file }) => ({ file, events: load(file) }))
+// Load the 12 largest transcripts (and --chat, wherever it ranks).
+const chatFlag = flag("--chat");
+const sized = largestTranscripts(chatFlag ? Number.POSITIVE_INFINITY : 12, project)
+  .filter((file, rank) => rank < 12 || (chatFlag !== undefined && path.basename(file).startsWith(chatFlag)))
+  .map((file) => ({ file, events: loadTranscript(file) }))
   .sort((a, b) => b.events.length - a.events.length);
+if (!sized.length) throw new Error(`no chat transcripts in ${path.join(project, ".ade", "transcripts")}`);
 
 const id = (file: string) => path.basename(file).slice(0, 8);
 
@@ -99,11 +81,11 @@ for (const { file, events: envelopes } of wants("stream-1000") ? sized.filter((e
 }
 
 // rebuild + tool-done on one long chat
-const chosenId = flag("--chat");
+const chosenId = chatFlag;
 const target = chosenId
   ? sized.find((entry) => path.basename(entry.file).startsWith(chosenId))
   : [...sized].sort((a, b) => Math.abs(a.events.length - 15_700) - Math.abs(b.events.length - 15_700))[0];
-if (!target) throw new Error(`no transcript${chosenId ? ` ${chosenId}` : ""} in ${dir}`);
+if (!target) throw new Error(`no transcript ${chosenId} in ${project}`);
 const all = mergeAgentChatLiveEvents([], target.events);
 const displayedAll = chatDisplayEvents(all);
 if (wants("rebuild")) {
@@ -138,6 +120,7 @@ const toolResults = !wants("tool-done") ? [] : raw
   .filter(({ envelope, index }) => envelope.event.type === "tool_result" && index > STREAM_LEAD)
   .slice(-20);
 const perResult: number[] = [];
+const perResultWorst: number[] = [];
 for (const { index } of toolResults) {
   const step = measure(() => {
     let events = mergeAgentChatLiveEvents([], raw.slice(0, index - STREAM_LEAD));
@@ -157,6 +140,7 @@ for (const { index } of toolResults) {
     return performance.now() - started;
   });
   perResult.push(step.medianMs);
+  perResultWorst.push(step.worstMs);
 }
 if (wants("tool-done")) console.log(JSON.stringify({
   scenario: "tool-done",
@@ -164,6 +148,7 @@ if (wants("tool-done")) console.log(JSON.stringify({
   events: all.length,
   toolResults: perResult.length,
   medianMs: perResult.length ? round(median(perResult), 3) : null,
-  worstMs: perResult.length ? round(Math.max(...perResult), 3) : null,
+  // Median over the results of each result's median run; worst single run over all.
+  worstMs: perResultWorst.length ? round(Math.max(...perResultWorst), 3) : null,
   targetMs: 0.28,
 }));

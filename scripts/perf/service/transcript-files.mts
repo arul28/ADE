@@ -29,8 +29,9 @@ function uncompressedSize(file: string): number {
   }
 }
 
-export function largestTranscripts(count = 5): string[] {
-  const root = path.join(projectRoot(), ".ade", "transcripts");
+/** The `count` largest chats (by uncompressed size) of `project`, default $ADE_PROJECT_ROOT or this checkout's project. */
+export function largestTranscripts(count = 5, project = projectRoot()): string[] {
+  const root = path.join(project, ".ade", "transcripts");
   const files: string[] = [];
   const chatDir = path.join(root, "chat");
   if (existsSync(chatDir)) {
