@@ -94,7 +94,9 @@ export function resolveCopilotSlashCommand(
 ): { name: string; allowDuringAgentExecution: boolean } | null {
   if (copilotAdeOwnedCommandReply(name)) return null;
   if (!listed?.length) return BUILT_IN_NAMES.has(name) ? { name, allowDuringAgentExecution: false } : null;
-  const found = listed.find((command) => command.name === name || command.aliases?.includes(name));
+  // Typed names are lowercased; the runtime's may not be (a skill's name).
+  const found = listed.find((command) => command.name.toLowerCase() === name
+    || command.aliases?.some((alias) => alias.toLowerCase() === name));
   if (!found || copilotAdeOwnedCommandReply(found.name)) return null;
   return { name: found.name, allowDuringAgentExecution: found.allowDuringAgentExecution };
 }

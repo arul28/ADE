@@ -59772,7 +59772,18 @@ export function createAgentChatService(args: {
       acquired.pooled.bridge.onEvent = (chatId, event) => {
         const target = managedSessions.get(chatId);
         const current = target?.runtime;
-        if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
+        if (!target || current?.kind !== "copilot") return;
+        if (!current.activeTurnId) {
+          // MCP servers start with the session, often before any turn: a
+          // failed one is still worth a notice, outside any turn.
+          const idleType = event && typeof event === "object" ? (event as Record<string, unknown>).type : null;
+          if (idleType !== "session.mcp_server_status_changed") return;
+          for (const mapped of mapCopilotSdkEvent(event, { turnId: "", state: current.eventMapperState })) {
+            const { turnId: _turnId, ...outsideTurn } = mapped as AgentChatEvent & { turnId?: string };
+            emitChatEvent(target, outsideTurn as AgentChatEvent);
+          }
+          return;
+        }
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
         // A sub-agent's prompt, idle, abort or task end is not the turn's: only
@@ -62768,6 +62779,10 @@ export function createAgentChatService(args: {
       // A Copilot command typed during a turn runs now when Copilot allows it
       // (`/context`, `/usage`); otherwise it would reach the model as prose.
       const steerCommand = attachments.length ? null : parseCopilotSlashCommand(trimmed);
+      if (steerCommand && !copilotAdeOwnedCommandReply(steerCommand.name)) {
+        // Whether Copilot allows a command mid-turn is in its list.
+        runtime.slashCommands ??= await runtime.sdk.listCommands(sessionId).catch(() => null);
+      }
       if (steerCommand) {
         const ownedReply = copilotAdeOwnedCommandReply(steerCommand.name);
         const resolved = ownedReply ? null : resolveCopilotSlashCommand(steerCommand.name, runtime.slashCommands);

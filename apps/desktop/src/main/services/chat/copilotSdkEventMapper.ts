@@ -125,7 +125,8 @@ function fileEditDiff(detailed: string | null, filePath: string, editCount: numb
   return sections.find((section) => {
     const header = section.split("\n", 1)[0] ?? "";
     const target = header.match(/ b\/(.+)$/)?.[1];
-    return Boolean(target && normalized.endsWith(target));
+    // Whole path segments only: `b/a.ts` must not take `b/src/a.ts`'s section.
+    return Boolean(target && (normalized === target || normalized.endsWith(`/${target}`)));
   }) ?? "";
 }
 
