@@ -8099,8 +8099,9 @@ function AgentChatMessageListMain({
       // height, and the scroll memory of a pinned reader reads none. So a
       // reply that grows at the end needs no list render (this was one per
       // streamed update), and the content observer keeps the view pinned. The
-      // next render reads the new height.
-      if (isFollowingBottom && index === rowIndexByKey.size - 1) return;
+      // next render reads the new height. A row that shrank still renders:
+      // the box's minimum would otherwise keep the old height below it.
+      if (isFollowingBottom && height > previousHeight && index === rowIndexByKey.size - 1) return;
       if (measureFlushTimer.current) {
         if (!isFollowingBottom) return;
         clearTimeout(measureFlushTimer.current);

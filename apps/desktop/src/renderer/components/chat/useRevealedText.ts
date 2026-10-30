@@ -225,11 +225,14 @@ export function useSplitRevealed(
   // A resumed scan only moves the cut forward over text it already settled, so
   // the new piece is appended and every earlier piece keeps its identity. A
   // scan that restarted (the text was replaced) starts the pieces over as one.
-  const segments = previous && settled === previous.settled
-    ? previous.segments
-    : resumable && previous && settled.startsWith(previous.settled)
-      ? [...previous.segments, settled.slice(previous.settled.length)]
-      : settled.length > 0 ? [settled] : [];
+  let segments: readonly string[];
+  if (previous && settled === previous.settled) {
+    segments = previous.segments;
+  } else if (resumable && previous && settled.startsWith(previous.settled)) {
+    segments = [...previous.segments, settled.slice(previous.settled.length)];
+  } else {
+    segments = settled.length > 0 ? [settled] : [];
+  }
   cacheRef.current = { scan, settled, segments };
   return { settled, settledSegments: segments, tail: parts.tail };
 }

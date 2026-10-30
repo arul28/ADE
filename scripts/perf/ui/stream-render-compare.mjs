@@ -148,9 +148,16 @@ for (const name of apps) if (!APPS[name]) throw new Error(`unknown app ${name}; 
 // The preview CLIs start child processes, so each server gets its own process group.
 const stopGroup = (child) => {
   try {
-    if (process.platform === "win32") execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
-    else process.kill(-child.pid);
-  } catch {}
+    if (process.platform === "win32") {
+      // A child that already exited no longer owns its PID, and Windows may have given it to another process.
+      if (child.exitCode === null && child.signalCode === null) execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], { stdio: "ignore" });
+    } else {
+      process.kill(-child.pid);
+    }
+  } catch (error) {
+    // ESRCH: the group is already gone.
+    if (error?.code !== "ESRCH") console.warn(`could not stop preview server ${child.pid}: ${error?.message ?? error}`);
+  }
 };
 
 async function serve(app) {
@@ -363,14 +370,22 @@ const OPEN = {
 
 /** In the page: deliver each planned event at its time, then wait for the frame that shows the end. */
 async function replay({ text, plan, kind, sentinel, idle }) {
-  const target = () => kind === "ade"
-    ? [...document.querySelectorAll("[data-assistant-output]")].at(-1) ?? null
-    : document.querySelector(kind === "pandacode" ? ".live-text" : '[data-message-id="live-assistant"]');
-  const deliver = kind === "ade"
-    ? (from, end) => window.__adeMockEmitChatEvent(window.__benchSessionId, { type: "text", text: text.slice(from, end), turnId: "live-turn", messageId: "live-assistant" })
-    : kind === "pandacode"
-      ? (from, end) => window.__previewEmit("agent-event", { sessionId: "session-1", kind: "text", text: text.slice(from, end) })
-      : (_from, end) => window.__t3bench.update(text.slice(0, end));
+  // Each app's live reply element, and how it takes a delivery (new text for ADE and PandaCode, the whole text so far for T3).
+  const apps = {
+    ade: {
+      target: () => [...document.querySelectorAll("[data-assistant-output]")].at(-1) ?? null,
+      deliver: (from, end) => window.__adeMockEmitChatEvent(window.__benchSessionId, { type: "text", text: text.slice(from, end), turnId: "live-turn", messageId: "live-assistant" }),
+    },
+    pandacode: {
+      target: () => document.querySelector(".live-text"),
+      deliver: (from, end) => window.__previewEmit("agent-event", { sessionId: "session-1", kind: "text", text: text.slice(from, end) }),
+    },
+    t3: {
+      target: () => document.querySelector('[data-message-id="live-assistant"]'),
+      deliver: (_from, end) => window.__t3bench.update(text.slice(0, end)),
+    },
+  };
+  const { target, deliver } = apps[kind];
   const frame = () => new Promise((resolve) => requestAnimationFrame(resolve));
   const t0 = performance.now();
   if (idle) {
