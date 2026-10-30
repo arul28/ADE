@@ -1902,6 +1902,12 @@ The PR page loads only what the visible surface needs:
   demand.
 - Background refresh updates only the stale subset using
   fingerprints, not every PR on every cycle.
+- A refresh that changes nothing in the row except its sync time does not
+  write the row: `pull_requests` is a synced table, and each write went to
+  every phone and peer. `prService` keeps that time in memory (applied to
+  every row read, so staleness and summaries see it) and writes it only with a
+  real change or once the stored `last_synced_at` is 15 minutes old. After a
+  restart a row reads as stale and refreshes once.
 
 ## Merge flow
 
