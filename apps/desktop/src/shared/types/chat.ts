@@ -2438,6 +2438,8 @@ export type AgentChatEvent =
        */
       type: "session_meta_updated";
       title?: string;
+      /** The chat's other-machine work changed (`AgentChatRemoteWorkUse`), whole. */
+      remoteWork?: AgentChatRemoteWorkUse[];
       manuallyNamed?: boolean;
       claudeTag?: string | null;
       /** What Claude mods draw for this chat right now, whole. Never stored. */
@@ -3266,6 +3268,24 @@ export type AgentChatRuntimeOwnerRef = {
   socketPath?: string;
 };
 
+/**
+ * Another machine this chat ran commands on (`ade shell start --machine`):
+ * the project there and the shells it started. Live only, kept by the chat's
+ * own brain; a restart forgets it.
+ */
+export type AgentChatRemoteWorkUse = {
+  machineKey: string;
+  machineName: string;
+  /** The account directory's platform for that machine ("darwin", "windows", …). */
+  machinePlatform?: string | null;
+  /** The project on that machine the commands ran in. */
+  projectId: string | null;
+  projectRootPath: string | null;
+  /** Terminal ids there, newest last (at most a few). */
+  terminalIds: string[];
+  lastStartedAt: string;
+};
+
 export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   /** The chat's Compact first mode. Sent for Claude, Codex, Pi and OpenCode. */
   compactionIdleMode?: "ask" | "always" | "never";
@@ -3417,6 +3437,8 @@ export type AgentChatSessionSummary = PersonalAttachmentRootsField & {
   status: AgentChatSessionStatus;
   /** Start of the currently active provider turn; null when no turn is running. */
   currentTurnStartedAt?: string | null;
+  /** Other machines this chat ran commands on; see `AgentChatRemoteWorkUse`. */
+  remoteWork?: AgentChatRemoteWorkUse[] | null;
   /**
    * The brain accepted a turn that has not started yet: the provider runtime is
    * still coming up, so `status` stays "idle" for a moment after the send. Set

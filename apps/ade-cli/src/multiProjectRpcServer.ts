@@ -1179,6 +1179,23 @@ function readProjectRegistrationIntent(
   return { catalogVisibility, registrationSource };
 }
 
+/** `ade shell start --machine`: a pty.create for the caller's work copy there. */
+function isRemoteWorkShellStart(method: string, params: Record<string, unknown>): boolean {
+  if (method !== "ade/actions/call" || params.name !== "run_ade_action" || !isRecord(params.arguments)) return false;
+  const call = params.arguments;
+  return call.domain === "pty" && call.action === "create" && isRecord(call.args) && isRecord(call.args.remoteWork);
+}
+
+/** The terminal id in a forwarded pty.create answer, through its envelopes. */
+function remoteWorkCreatedTerminalId(result: unknown): string | null {
+  let value: unknown = result;
+  for (let depth = 0; depth < 4 && isRecord(value); depth += 1) {
+    if (typeof value.sessionId === "string" && typeof value.ptyId === "string") return value.sessionId;
+    value = "structuredContent" in value ? value.structuredContent : value.result;
+  }
+  return null;
+}
+
 function omitProjectId(
   params: Record<string, unknown>,
 ): Record<string, unknown> {
@@ -3038,6 +3055,20 @@ export function createMultiProjectRpcRequestHandler(
           timeoutMs: typeof params.timeoutMs === "number" ? params.timeoutMs : undefined,
           clone: params.clone === true,
         });
+        // A shell this chat started in its work copy there: the chat's views
+        // show which machine it is working on.
+        if (callerChat && isRemoteWorkShellStart(forwardMethod, forwardParams)) {
+          const created = remoteWorkCreatedTerminalId(answer.result);
+          located?.runtime.agentChatService?.noteRemoteWork?.({
+            sessionId: callerChat,
+            machineKey: answer.machine.machineKey,
+            machineName: answer.machine.name,
+            machinePlatform: answer.machine.platform ?? null,
+            projectId: answer.project?.projectId ?? null,
+            projectRootPath: answer.project?.rootPath ?? null,
+            terminalId: created,
+          });
+        }
         // A child this chat started there: remember it, so that machine's
         // report of its finished turns is accepted here and nowhere else.
         const childSessionId = startsOwnChild ? createdChatSessionId(answer.result) : null;

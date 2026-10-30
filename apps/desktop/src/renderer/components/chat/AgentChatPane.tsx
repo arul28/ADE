@@ -315,6 +315,7 @@ import { navigateToSpawnedChat } from "./spawnNavigation";
 import { requestChatActionsPane, takeChatActionsPaneRequest } from "./chatActionsPaneRequests";
 import { AgentBrowserPresenceHeaderButton } from "../terminals/AgentBrowserPresenceBadge";
 import { SideChatHeaderButton } from "./SideChatBadge";
+import { RemoteWorkHeaderButton } from "./RemoteWorkHeaderButton";
 import {
   noteSideChat,
   noteSideChatStartFailed,
@@ -10607,6 +10608,7 @@ export function AgentChatPane({
         if (meta.subagentTakeoverPromptShownAt !== undefined) {
           summaryPatch.subagentTakeoverPromptShownAt = meta.subagentTakeoverPromptShownAt;
         }
+        if (meta.remoteWork !== undefined) summaryPatch.remoteWork = meta.remoteWork;
         if (Object.keys(summaryPatch).length > 0) {
           patchSessionSummary(envelope.sessionId, summaryPatch);
         }
@@ -10626,6 +10628,7 @@ export function AgentChatPane({
           && key !== "orchestrationParentSessionId"
           && key !== "subagentTakeoverPromptShownAt"
           && key !== "usageLimitResume"
+          && key !== "remoteWork"
         );
         if (
           modeChanged
@@ -17640,6 +17643,9 @@ export function AgentChatPane({
     workSidebar.setTool,
     selectedSession?.sideChatParentSessionId,
     selectedSession?.sideChatSessionId,
+    selectedSession?.remoteWork,
+    selectedSession?.status,
+    selectedSession?.currentTurnStartedAt,
     laneId,
     hasAttachedTerminal,
     chatActionsAvailable,
@@ -17654,6 +17660,7 @@ export function AgentChatPane({
         chatSessionId={selectedSessionId}
         onClick={() => workSidebar.setTool("browser")}
       />
+      <RemoteWorkHeaderButton session={selectedSession} />
       <SideChatHeaderButton
         mainSessionId={selectedSession?.sideChatParentSessionId ? null : selectedSessionId}
         rowSideChatSessionId={selectedSession?.sideChatSessionId ?? null}

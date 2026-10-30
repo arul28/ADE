@@ -685,6 +685,7 @@ import type {
   AgentChatPendingSettingAfterBackground,
   AgentChatReasoningEffortChange,
   AgentChatSessionSummary,
+  AgentChatRemoteWorkUse,
   AgentChatSetClaudeOutputStyleArgs,
   AgentChatCancelScheduledWorkArgs,
   AgentChatCancelScheduledWorkResult,
@@ -13403,6 +13404,8 @@ export function createAgentChatService(args: {
   const listMcpAppGrants = async (args: McpAppGrantsArgs): Promise<McpAppGrantsResult> => mcpApps.grants(args);
   const revokeMcpAppGrant = async (args: McpAppRevokeGrantArgs): Promise<McpAppGrantsResult> => mcpApps.revokeGrant(args);
 
+  /** Other machines each chat ran commands on; live only. See `noteRemoteWork`. */
+  const remoteWorkBySession = new Map<string, AgentChatRemoteWorkUse[]>();
   /** Assigned once the handoff helpers below exist; hooks before that no-op. */
   let crossMachineHandoff: CrossMachineHandoffOrchestrator | null = null;
   let crossMachineHandoffSweepTimer: ReturnType<typeof setTimeout> | null = null;
@@ -66548,7 +66551,9 @@ export function createAgentChatService(args: {
     const summaryMcpServers = liveSession?.mcpServers ?? persisted?.mcpServers;
     const crossMachineMove = scope.crossMachineMove(row.id)?.record ?? null;
     const crossMachineBatchApproval = scope.crossMachineBatchApproval(row.id);
+    const remoteWork = remoteWorkBySession.get(row.id) ?? null;
     return {
+      ...(remoteWork?.length ? { remoteWork } : {}),
       sessionId: row.id,
       laneId: row.laneId,
       provider,
@@ -76058,6 +76063,42 @@ export function createAgentChatService(args: {
     return { provider, laneId, laneWorktreePath: cwd, parts, adeSkillRoots: skillRoots, mcpServers, providerHomeEnv };
   };
 
+  /**
+   * This chat started a shell on another machine (`ade shell start --machine`,
+   * recorded by this brain as it forwards the call). Open views get the whole
+   * list at once, so the header can show where the chat is working.
+   */
+  const noteRemoteWork = (args: {
+    sessionId: string;
+    machineKey: string;
+    machineName: string;
+    machinePlatform?: string | null;
+    projectId: string | null;
+    projectRootPath: string | null;
+    terminalId: string | null;
+  }): void => {
+    const sessionId = args.sessionId.trim();
+    if (!sessionId || !args.machineKey.trim()) return;
+    const uses = remoteWorkBySession.get(sessionId) ?? [];
+    const previous = uses.find((use) => use.machineKey === args.machineKey);
+    const terminalIds = [
+      ...(previous?.terminalIds ?? []).filter((id) => id !== args.terminalId),
+      ...(args.terminalId ? [args.terminalId] : []),
+    ].slice(-5);
+    const next: AgentChatRemoteWorkUse = {
+      machineKey: args.machineKey,
+      machineName: args.machineName,
+      machinePlatform: args.machinePlatform ?? previous?.machinePlatform ?? null,
+      projectId: args.projectId ?? previous?.projectId ?? null,
+      projectRootPath: args.projectRootPath ?? previous?.projectRootPath ?? null,
+      terminalIds,
+      lastStartedAt: new Date().toISOString(),
+    };
+    const list = [...uses.filter((use) => use.machineKey !== args.machineKey), next].slice(-4);
+    remoteWorkBySession.set(sessionId, list);
+    emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
+  };
+
   return {
     createSession,
     previewNewChatAdeContext,
@@ -76378,6 +76419,7 @@ export function createAgentChatService(args: {
     deleteSession,
     archiveSession,
     unarchiveSession,
+    noteRemoteWork,
     disposeAll,
     forceDisposeAll,
     updateSession: updateSessionAndRememberDefaults,

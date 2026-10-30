@@ -465,6 +465,13 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
       const shells = B.runtime.ptyService.list({ chatSessionId: copies[0].owner });
       expect(shells.length).toBe(1);
 
+      // A's brain recorded where the chat worked, for its views.
+      const parentSummary = await A.runtime.agentChatService.getSessionSummary(parent.id);
+      console.log("[xm-shell] remoteWork", JSON.stringify(parentSummary?.remoteWork));
+      expect(parentSummary?.remoteWork?.[0]?.machineName).toBe("Machine B");
+      expect(parentSummary?.remoteWork?.[0]?.terminalIds).toContain(shells[0].id);
+      expect(parentSummary?.remoteWork?.[0]?.projectId).toBe(B.projectId);
+
       const listed = await cli(["terminal", "list", "--machine", "Machine B", "--json"]);
       console.log("[xm-shell] terminal list", listed.status, listed.stdout.slice(0, 300), listed.stderr.slice(-300));
       expect(listed.status).toBe(0);

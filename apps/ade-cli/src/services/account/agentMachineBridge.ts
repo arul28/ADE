@@ -108,7 +108,7 @@ export type MachineCallRequest = {
 };
 
 export type MachineCallResult = {
-  machine: { machineKey: string; name: string };
+  machine: { machineKey: string; name: string; platform?: string | null };
   project: { projectId: string; name: string | null; rootPath: string } | null;
   result: unknown;
 };
@@ -330,7 +330,7 @@ export function createAgentMachineBridge(options: AgentMachineBridgeOptions) {
       }
     }
     return {
-      machine: { machineKey: machine.machineKey, name: machineName(machine) },
+      machine: { machineKey: machine.machineKey, name: machineName(machine), platform: machine.platform ?? null },
       project: project ? projectSummary(project) : null,
       result,
     };

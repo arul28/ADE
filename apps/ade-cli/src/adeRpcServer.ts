@@ -3017,6 +3017,8 @@ async function prepareRemoteWorkShell(
     args: {
       ...rest,
       ...runOnce,
+      // The command names the shell where the chat's views list it.
+      title: asOptionalTrimmedString(rest.title) ?? (command ? command.slice(0, 120) : "Work copy shell"),
       laneId: primary.laneId,
       cwd: prepared.path,
       allowExternalCwd: true,
