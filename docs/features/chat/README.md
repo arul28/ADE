@@ -1636,6 +1636,12 @@ chats after restarts** on (Settings → Chat, the default; config
   `backgroundLossWakePending` flag. That chat gets a notice naming the work and
   the same durable row with `BACKGROUND_WORK_LOST_RESUME_PROMPT`, so it re-runs
   what it still needs instead of waiting for a report that cannot come.
+- Only recent chats are continued or woken (`RESTART_RESUME_MAX_AGE_MS`, 6 h).
+  A cut-off turn counts by its row's end time (none counts as now: the dead
+  owner was only just found). A chat at rest must also have gone quiet within
+  that time, by its idle time or, when a graceful shutdown cleared that, by its
+  last turn's `done`. So a chat that sat for days and is reached only when its
+  project opens later is not woken.
 - Every entry goes through `runRestartRecoveryIfPending`, which holds the
   guards (not recovered yet in this process, no runtime here, not deleted,
   `chatAutoAdoptable`: owner gone, not yielding to the machine brain, account

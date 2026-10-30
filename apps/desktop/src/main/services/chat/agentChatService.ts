@@ -21944,13 +21944,15 @@ export function createAgentChatService(args: {
   /**
    * How long after a restart cut a turn short ADE still continues it. A chat
    * first opened later than this (it crashed long ago, maybe under an older
-   * build) keeps the closed turn instead of resuming stale work.
+   * build) keeps the closed turn instead of resuming stale work. A chat at
+   * rest that waited on background work wakes only if it went idle within
+   * this time.
    */
   const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
-  const cutOffRecently = (row: { endedAt?: string | null } | null | undefined): boolean => {
-    // No end time: the row read "running" until the dead owner was detected now.
-    const endedMs = row?.endedAt ? Date.parse(row.endedAt) : Number.NaN;
-    return !Number.isFinite(endedMs) || Date.now() - endedMs <= RESTART_RESUME_MAX_AGE_MS;
+  /** No time reads as now: a row with no end time read "running" until the dead owner was detected now. */
+  const withinRestartResumeAge = (iso: string | null | undefined): boolean => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return !Number.isFinite(ms) || Date.now() - ms <= RESTART_RESUME_MAX_AGE_MS;
   };
 
   /**
@@ -21973,6 +21975,13 @@ export function createAgentChatService(args: {
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const envelope = events[index]!;
       if (envelope.event.type === "user_message" && !envelope.event.metadata?.scheduledWake) return envelope.timestamp;
+    }
+    return null;
+  };
+  /** When the newest turn ended (its `done`), or null if none has. */
+  const latestTurnEndAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index]!.event.type === "done") return events[index]!.timestamp;
     }
     return null;
   };
@@ -22072,8 +22081,19 @@ export function createAgentChatService(args: {
     const awaitingUser = managed.awaitingInputAtLoad === true
       || readPersistedState(managed.session.id)?.awaitingInput === true;
     let resumeHold: RestartResumeHold | null = null;
+    // A chat at rest has no end time when a late project open or the stale-run
+    // sweep reaches it first, so it must also have gone quiet recently: one
+    // that sat for days would otherwise read as just cut off and wake by
+    // itself. Its idle time says when. A graceful shutdown clears that (an
+    // ended chat has none), so then its last turn's end does; not its last
+    // event, which can be the shutdown's own notice. A cut-off turn is judged
+    // by its end time alone.
+    const restedSince = unsettled
+      ? null
+      : managed.idleSinceBeforeRestartRecovery ?? latestTurnEndAt(transcriptEvents);
     // Read before `reopen` clears the row's end time.
-    const recent = cutOffRecently(sessionService.get(managed.session.id));
+    const recent = withinRestartResumeAge(sessionService.get(managed.session.id)?.endedAt)
+      && withinRestartResumeAge(restedSince);
     // One rule for the resume, the lost-work wake and the notice.
     const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
       continueEnabled: continueAfterRestartEnabled(),
