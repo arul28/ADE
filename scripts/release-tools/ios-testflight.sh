@@ -92,12 +92,12 @@ log "waiting for processing"
 for i in $(seq 1 60); do
   existing="$(find_build 2>/dev/null || true)"
   case "$existing" in
-    *VALID) break ;;
+    *" VALID") break ;;
     *INVALID|*FAILED) echo "build $BN processing: $existing"; exit 1 ;;
   esac
   sleep 45
 done
-case "$existing" in *VALID) ;; *) echo "build $BN not VALID after 45 min: '$existing'"; exit 1 ;; esac
+case "$existing" in *" VALID") ;; *) echo "build $BN not VALID after 45 min: '$existing'"; exit 1 ;; esac
 BID="${existing%% *}"
 log "build $BN is VALID ($BID)"
 
