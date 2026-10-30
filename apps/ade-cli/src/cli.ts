@@ -579,7 +579,8 @@ import {
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
-import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
+import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
+import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -27002,6 +27003,21 @@ function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): v
   }
 }
 
+/**
+ * This brain's build, for the restart-loop report: the version, and the
+ * bundle's size and time so two builds of one version still differ. A stat,
+ * not a hash of the 30 MB bundle.
+ */
+function brainBuildIdentity(): string {
+  const modulePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+  try {
+    const stat = fs.statSync(modulePath);
+    return `${VERSION}+${stat.size}-${Math.round(stat.mtimeMs)}`;
+  } catch {
+    return VERSION;
+  }
+}
+
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -27059,8 +27075,12 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
-  if (process.platform === "darwin") {
-    boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  if (process.platform === "darwin" || process.platform === "linux") {
+    boundServiceOutputLogs(path.dirname(lastFailurePathForMachine()));
+  }
+  // A guest inside an embedder's process is not this machine's brain.
+  if (!embedded) {
+    startBrainRestartLoopWatch({ runtimeDir: path.dirname(lastFailurePathForMachine()), build: brainBuildIdentity() });
   }
   // Resolved before the backoff: the crash-loop record counts only failures
   // on this brain's own endpoint.
@@ -28041,6 +28061,9 @@ async function runServe(
   const finish = () => {
     if (done) return;
     done = true;
+    // An orderly stop (an update, the restart button, a shutdown request) is
+    // not a crash for the restart-loop report.
+    markBrainStoppedCleanly();
     resolveDone?.();
   };
 

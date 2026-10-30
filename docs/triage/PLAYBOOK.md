@@ -92,8 +92,8 @@ ade doctor --text
 Then read the brain's own log tail — `ade report-issue --text` already contains it, and so does
 the context file you were given (look for `Brain` and `Background service`). The files, if you
 want them directly, are under `$ADE_HOME/runtime/`: `brain.jsonl`, and `launchd.err.log` /
-`launchd.out.log` on macOS, the supervisor log on Windows, `journalctl --user -u <unit>` on
-Linux.
+`launchd.out.log` on macOS, the supervisor log on Windows, `systemd.err.log` /
+`systemd.out.log` on Linux (`journalctl --user -u <unit>` for a unit installed before those files).
 
 Diagnosis:
 

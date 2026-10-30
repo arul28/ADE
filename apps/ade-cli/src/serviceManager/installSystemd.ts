@@ -78,10 +78,17 @@ export function renderSystemdEnvironment(key: string, value: string): string {
  * a failure the caller sees the same way whichever process reads it, so no
  * per-unit policy could change the outcome.
  */
-export function renderSystemdUnit(command: AdeServiceCommand): string {
+export function renderSystemdUnit(command: AdeServiceCommand, options: { runtimeLogDir?: string } = {}): string {
   const envLines = Object.entries(command.env ?? {})
     .map(([key, value]) => renderSystemdEnvironment(key, value))
     .join("\n");
+  // launchd parity: the brain's stdout and stderr also land in files, so an
+  // error report can attach them without starting `journalctl`. systemd
+  // older than 240 does not know `append:`, ignores the two lines with a
+  // warning and keeps sending the output to the journal.
+  const outputLines = options.runtimeLogDir
+    ? `\nStandardOutput=append:${path.join(options.runtimeLogDir, "systemd.out.log")}\nStandardError=append:${path.join(options.runtimeLogDir, "systemd.err.log")}`
+    : "";
   return `[Unit]
 Description=ADE runtime service
 
@@ -89,7 +96,7 @@ Description=ADE runtime service
 Type=simple
 ExecStart=${renderCommand(command)}
 Restart=always
-RestartSec=2
+RestartSec=2${outputLines}
 ${envLines}
 
 [Install]
@@ -181,7 +188,7 @@ export async function installSystemdService(
   const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
   const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
 
-  const unit = renderSystemdUnit(command);
+  const unit = renderSystemdUnit(command, { runtimeLogDir: path.join(adeHome, "runtime") });
   const existingUnit = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : null;
   const unitUnchanged = existingUnit === unit;
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";

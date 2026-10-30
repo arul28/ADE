@@ -669,14 +669,22 @@ function collectServiceOutputLogs(args: {
       readLogTail("Background service (stdout)", path.join(args.runtimeDir, "launchd.out.log")),
     ];
   }
+  // A unit installed by this version writes both streams to files
+  // (`renderSystemdUnit`); an older unit, or systemd before 240, leaves them in
+  // the journal. Both are read so either kind of machine has its output here.
+  const files = [
+    readLogTail("Background service (stderr)", path.join(args.runtimeDir, "systemd.err.log")),
+    readLogTail("Background service (stdout)", path.join(args.runtimeDir, "systemd.out.log")),
+  ];
   const journal = journalPlan(args.env, args.homeDir);
   // Gated on the unit file, so a machine that never installed the service is
   // never charged a subprocess to be told nothing — the definition section
   // already reports the missing unit, which is the more useful fact anyway.
   if (!journal.installed) {
-    return [{ label: "Background service (journal)", path: journal.display, error: "(not present)" }];
+    return [...files, { label: "Background service (journal)", path: journal.display, error: "(not present)" }];
   }
   return [
+    ...files,
     readCommandOutput(
       "Background service (journal)",
       journal.display,

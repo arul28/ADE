@@ -75,7 +75,22 @@ HKCU\Software\Microsoft\Windows\CurrentVersion\Run
 ```
 
 The value starts a hidden, UTF-8-with-BOM PowerShell launcher under the
-channel's ADE home. That launcher restores the complete resolved brain
+channel's ADE home, through `conhost.exe --headless` (resolved from System32
+like the other trusted tools). The one-shot start task and the WMI fallback
+start it the same way. Started bare, `powershell.exe` is a console program with
+no console to inherit, so Windows opened one for it, and on Windows 11 that is a
+Windows Terminal window that takes the foreground; `-WindowStyle Hidden` only
+hides it once PowerShell is running. Every sign-in, update, repair and brain
+restart flashed a terminal and swallowed whatever the user was typing. The
+headless host gives PowerShell a console with no window at all, and the
+supervisor's console no longer lives inside the user's Windows Terminal
+process. conhost starts PowerShell with the same command line, so the
+supervisor is still a `powershell.exe` naming the launcher. A headless conhost
+exits as soon as its stdin reads end-of-file, so it only works where it gets no
+standard input at all (a task, the Run key, WMI); a Node `spawn` with
+`stdio: "ignore"` hands it `NUL` and the client never runs.
+
+That launcher restores the complete resolved brain
 environment, starts the packaged ADE runtime, and writes an advisory JSON record
 containing supervisor and runtime process ids. Status validates that the
 recorded supervisor is a PowerShell process whose command line names the exact

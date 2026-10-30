@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
@@ -233,6 +233,24 @@ export function resolveDetachedDevInvocation(command, args, options = {}) {
     ? { windowsVerbatimArguments: false, ...resolveNpmInvocation(args, { ...options, platform, env }) }
     : resolveDevSpawnInvocation(command, args, env, platform);
   return { ...resolved, windowsHide: true };
+}
+
+/**
+ * Windows: start a long-lived dev process detached, but inside a hidden console
+ * (see `dev-console-host.mjs`), with its output appended to `logPath` (or
+ * dropped when it is null). A plain `detached: true` spawn leaves the process
+ * with no console, and every console program under it then opens a visible
+ * Windows Terminal window. The returned child is the host: its pid roots the
+ * command's tree and it exits with the command's exit code.
+ */
+export function spawnWithHiddenConsole(command, args, { logPath = null, cwd = undefined, env = process.env } = {}) {
+  return spawn(process.execPath, [path.join(repoRoot, "scripts", "dev-console-host.mjs"), logPath ?? "-", command, ...args], {
+    cwd,
+    env,
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
 }
 
 export function run(command, args, extraEnv = {}) {
@@ -757,20 +775,29 @@ export async function ensureRuntime(socketPath, projectRoot = null, { exitWithLa
   // brain lost its tunnel, and the agents under it died. ADE_DEV_RUNTIME_SYNC=1
   // opts a dev brain in on purpose.
   const syncArgs = process.env.ADE_DEV_RUNTIME_SYNC === "1" ? [] : ["--no-sync"];
-  const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath, ...syncArgs], {
-    cwd: repoRoot,
-    env: {
-      ...detachedDevRuntimeEnv(socketPath, projectRoot),
-      ...(exitWithLauncher ? { ADE_RUNTIME_PARENT_PID: String(process.pid) } : {}),
-    },
-    detached: true,
-    // Detached means nobody is reading this process's output — without a log
-    // file a dev daemon that dies at startup leaves no trace at all.
-    stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
-    windowsHide: process.platform === "win32",
-  });
+  const runtimeArgs = [cliPath(), "serve", "--socket", socketPath, ...syncArgs];
+  const runtimeEnv = {
+    ...detachedDevRuntimeEnv(socketPath, projectRoot),
+    ...(exitWithLauncher ? { ADE_RUNTIME_PARENT_PID: String(process.pid) } : {}),
+  };
+  const child = process.platform === "win32"
+    // The brain starts console programs all day (git, tailscale, provider
+    // CLIs); with no console of its own each one flashed a terminal window.
+    ? spawnWithHiddenConsole(process.execPath, runtimeArgs, {
+      logPath: logFd === null ? null : logPath,
+      cwd: repoRoot,
+      env: runtimeEnv,
+    })
+    : spawn(process.execPath, runtimeArgs, {
+      cwd: repoRoot,
+      env: runtimeEnv,
+      detached: true,
+      // Detached means nobody is reading this process's output — without a log
+      // file a dev daemon that dies at startup leaves no trace at all.
+      stdio: logFd === null ? "ignore" : ["ignore", logFd, logFd],
+    });
   if (logFd !== null) {
-    // The child owns its dup of the fd now.
+    // The child owns its dup of the fd now (on Windows the host reopens the path).
     try {
       fs.closeSync(logFd);
     } catch {
@@ -809,6 +836,14 @@ export async function ensureRuntime(socketPath, projectRoot = null, { exitWithLa
 async function terminateSpawnedRuntime(child) {
   const pid = child?.pid;
   if (!pid) return;
+  if (process.platform === "win32") {
+    // The pid is the console host (`spawnWithHiddenConsole`); /T takes the brain under it.
+    spawnSync(path.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe"), ["/PID", String(pid), "/T", "/F"], {
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    return;
+  }
   const alive = () => isPidAlive(pid);
   try {
     process.kill(pid, "SIGTERM");

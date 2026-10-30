@@ -2533,11 +2533,12 @@ function createGitStatusTool(cwd: string) {
           cwd,
           timeout: 15_000,
           env: toolGitEnv(),
+          windowsHide: true,
         });
         const { stdout: branch } = await execFileAsync(
           "git",
           toolGitArgs(["rev-parse", "--symbolic-full-name", "HEAD"]),
-          { cwd, timeout: 5_000, env: toolGitEnv() }
+          { cwd, timeout: 5_000, env: toolGitEnv(), windowsHide: true }
         );
         return { branch: branchNameFromHeadRef(branch), status: stdout.trim(), clean: stdout.trim() === "" };
       } catch (err) {
@@ -2571,6 +2572,7 @@ function createGitDiffTool(cwd: string) {
           timeout: 30_000,
           maxBuffer: 5 * 1024 * 1024,
           env: toolGitEnv(),
+          windowsHide: true,
         });
         const truncated = stdout.length > 200_000;
         return { diff: stdout.slice(0, 200_000), truncated };
@@ -2598,7 +2600,7 @@ function createGitLogTool(cwd: string) {
           args.push("--format=%H %an %ad %s", "--date=short");
         }
         if (ref) args.push(ref);
-        const { stdout } = await execFileAsync("git", toolGitArgs(args), { cwd, timeout: 15_000, env: toolGitEnv() });
+        const { stdout } = await execFileAsync("git", toolGitArgs(args), { cwd, timeout: 15_000, env: toolGitEnv(), windowsHide: true });
         return { log: stdout.trim() };
       } catch (err) {
         return { log: "", error: `git log failed: ${getErrorMessage(err)}` };

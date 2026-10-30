@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectNoJargon } from "../../../test/jargonGuard";
-import { boundLaunchdLogs } from "../../../../../ade-cli/src/services/runtime/runtimeLogMaintenance";
+import { boundServiceOutputLogs } from "../../../../../ade-cli/src/services/runtime/runtimeLogMaintenance";
 import { createAgentChatService } from "../chat/agentChatService";
 import { readThreadPointerLedger } from "../chat/threadPointerLedger";
 import {
@@ -323,12 +323,12 @@ describe("disk-full incident integration matrix", () => {
     fs.writeFileSync(logPath, Buffer.alloc(11 * 1024 * 1024, 0x61));
     fs.writeFileSync(path.join(runtimeDir, "launchd.out.log"), "");
 
-    boundLaunchdLogs(runtimeDir);
+    boundServiceOutputLogs(runtimeDir);
     expect(fs.statSync(logPath).size).toBe(0);
     expect(fs.statSync(`${logPath}.1`).size).toBe(1024 * 1024);
     const rotatedBefore = fs.readFileSync(`${logPath}.1`);
 
-    boundLaunchdLogs(runtimeDir);
+    boundServiceOutputLogs(runtimeDir);
     expect(fs.statSync(logPath).size).toBe(0);
     expect(fs.readFileSync(`${logPath}.1`)).toEqual(rotatedBefore);
   });

@@ -38,6 +38,14 @@ export function windowsPowerShellCommand(): string {
   return windowsPowerShellCommandCache;
 }
 
+let windowsConsoleHostCommandCache: string | null = null;
+
+/** Trusted `conhost.exe`, lazily resolved for the same reason as `windowsPowerShellCommand`. */
+export function windowsConsoleHostCommand(): string {
+  windowsConsoleHostCommandCache ??= resolveTrustedWindowsTool("conhost");
+  return windowsConsoleHostCommandCache;
+}
+
 /**
  * Trusted `taskkill.exe`, or `null` on a host that will not hand one over.
  *

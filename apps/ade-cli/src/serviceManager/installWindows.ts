@@ -49,6 +49,7 @@ import {
   readWindowsServicePidRecord as readWindowsSupervisorPidRecord,
   renderWindowsServiceLauncher,
   waitForWindowsRuntimeReadiness,
+  windowsConsoleHostCommand,
   windowsPowerShellCommand,
   type WindowsRuntimeReadinessProbe,
   type WindowsServicePidRecord,
@@ -557,20 +558,12 @@ export function buildWindowsStartTaskArgs(
   launcherPath: string,
   startTaskName: string,
 ): string[] {
-  const launcherArguments = [
-    "-NoProfile",
-    "-NonInteractive",
-    "-WindowStyle",
-    "Hidden",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-File",
-    cmdQuote(launcherPath),
-  ].join(" ");
+  // The action is the console host, not PowerShell: see `windowsLauncherCommand`.
+  const launcherArguments = `--headless ${renderWindowsCommand(windowsLauncherPowerShellCommand(launcherPath))}`;
   const nameLiteral = powerShellSingleQuotedLiteral(startTaskName);
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(windowsPowerShellCommand())} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
+    `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(windowsConsoleHostCommand())} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
     // Far-future one-shot trigger: the task only ever runs because we start it.
     "$trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddDays(3650))",
     // Priority 4 is an ordinary app's. The default, 7, starts the supervisor
@@ -819,8 +812,9 @@ function removeWindowsTaskIfPresent(
   return endAndDeleteWindowsTask(run, taskName, description, state);
 }
 
-function windowsLauncherCommand(launcherPath: string): string {
-  return renderWindowsCommand({
+/** The supervisor process itself: Windows PowerShell running the launcher script. */
+function windowsLauncherPowerShellCommand(launcherPath: string): AdeServiceCommand {
+  return {
     command: windowsPowerShellCommand(),
     args: [
       "-NoProfile",
@@ -832,7 +826,25 @@ function windowsLauncherCommand(launcherPath: string): string {
       "-File",
       launcherPath,
     ],
-  });
+  };
+}
+
+/**
+ * The command line that starts the supervisor at sign-in (the Run value) and
+ * through WMI: the launcher's PowerShell, inside `conhost.exe --headless`.
+ *
+ * Started bare, powershell.exe is a console program with no console to
+ * inherit, so Windows opens one for it -- on Windows 11 that is a Windows
+ * Terminal window, which takes the foreground -- and `-WindowStyle Hidden`
+ * only hides it once PowerShell is already running. Every sign-in, update,
+ * repair and restart flashed a terminal and stole the user's keystrokes. A
+ * headless console host gives PowerShell a console with no window at all.
+ * conhost starts the client with this same command line, so the supervisor is
+ * still a powershell.exe whose command line names the launcher, which is what
+ * the PID and predecessor checks look for.
+ */
+function windowsLauncherCommand(launcherPath: string): string {
+  return `${cmdQuote(windowsConsoleHostCommand())} --headless ${renderWindowsCommand(windowsLauncherPowerShellCommand(launcherPath))}`;
 }
 
 /**

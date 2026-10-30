@@ -1,11 +1,12 @@
 /**
  * The diagnostics only the desktop's main process can add to a report
  * (`shared/sentry/diagnostics.ts`): every Electron process with its memory,
- * the newest part of the brain's log, and a memory trail in the breadcrumbs.
+ * the newest part of the brain's log, this machine's background service
+ * (`brainServiceDiagnostics.ts`), and a memory trail in the breadcrumbs.
  */
-import fs from "node:fs";
 import { app } from "electron";
 import { brainLogPath } from "../../../../ade-cli/src/services/projects/machineLayout";
+import { readFileTail, registerBrainServiceSentryDiagnostics } from "../../../../ade-cli/src/sentry/brainServiceDiagnostics";
 import { addSentryBreadcrumb } from "../../shared/sentry/capture";
 import {
   DIAGNOSTIC_FILE_MAX_CHARS,
@@ -21,6 +22,7 @@ const BYTES_PER_KB = 1024;
 export function registerDesktopSentryDiagnostics(): void {
   registerSentryDiagnosticContext("electron_processes", electronProcessesContext);
   registerSentryDiagnosticAttachment("brain-log", (event) => (isRemoteMachineEvent(event) ? null : readBrainLogTail()));
+  registerBrainServiceSentryDiagnostics({ skipFilesFor: isRemoteMachineEvent });
   startMemoryWatch();
 }
 
@@ -61,23 +63,8 @@ function electronProcessesContext(): Record<string, unknown> | null {
  * second lookup. A read of the file's last bytes only.
  */
 function readBrainLogTail(): { filename: string; data: string } | null {
-  let fd: number | null = null;
-  try {
-    fd = fs.openSync(brainLogPath(), "r");
-    const size = fs.fstatSync(fd).size;
-    const length = Math.min(size, DIAGNOSTIC_FILE_MAX_CHARS);
-    if (length <= 0) return null;
-    const buffer = Buffer.alloc(length);
-    fs.readSync(fd, buffer, 0, length, size - length);
-    const text = buffer.toString("utf8");
-    // A read that starts mid-file starts mid-line: drop that partial line.
-    const data = length < size ? text.slice(text.indexOf("\n") + 1) : text;
-    return data ? { filename: "brain-log-tail.jsonl", data } : null;
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) fs.closeSync(fd);
-  }
+  const data = readFileTail(brainLogPath(), DIAGNOSTIC_FILE_MAX_CHARS);
+  return data ? { filename: "brain-log-tail.jsonl", data } : null;
 }
 
 const MEMORY_WATCH_INTERVAL_MS = 60_000;

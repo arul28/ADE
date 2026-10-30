@@ -78,6 +78,7 @@ import {
 } from "./localRuntimeTimeoutPolicy";
 import { callerReportsFailureParam, isInCapturedIpcCall } from "../../sentry/ipcCallScope";
 import { addSentryBreadcrumb } from "../../../shared/sentry/capture";
+import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
@@ -151,6 +152,9 @@ type LocalRuntimeConnectionPoolOptions = {
    */
   onRuntimeModeChange?: (mode: "primary" | "isolated") => void;
 };
+
+/** Brain lifecycle steps an error report keeps (`diagnosticSnapshot().history`). */
+const BRAIN_HISTORY_LIMIT = 25;
 
 type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
@@ -1260,6 +1264,8 @@ export class LocalRuntimeConnectionPool {
   private updateWindowUntilMs = 0;
   /** Logs a brain update's window once, not on every connect attempt inside it. */
   private loggedBrainUpdateWindow = false;
+  /** The newest brain lifecycle steps, oldest first, for error reports. */
+  private readonly brainHistory: Array<Record<string, unknown>> = [];
   private readonly coalescedActionCalls = new Map<string, Promise<RemoteRuntimeActionResult>>();
   /** Every action call still running, coalesced or not, for `drain()`. */
   private readonly inFlightActionCalls = new Set<Promise<unknown>>();
@@ -1691,7 +1697,19 @@ export class LocalRuntimeConnectionPool {
       lastWedge: status.lastWedge,
       ...this.connectionStats,
       projects: [...this.projectsByRoot.entries()].map(([rootPath, project]) => ({ rootPath, projectId: project.projectId })),
+      history: this.brainHistory,
     };
+  }
+
+  /**
+   * One step in the brain's story for the next error report: which brain
+   * connected (pid, version, build), each disconnect, repair and install, and
+   * the update windows. A report about a restart shows what led up to it
+   * without the user's log files. Never sent on its own.
+   */
+  private noteBrainHistory(event: string, detail: Record<string, unknown> = {}): void {
+    this.brainHistory.push({ at: new Date().toISOString(), event, ...detail });
+    if (this.brainHistory.length > BRAIN_HISTORY_LIMIT) this.brainHistory.shift();
   }
 
   /**
@@ -2018,6 +2036,11 @@ export class LocalRuntimeConnectionPool {
         parsed?.starting ? "local_runtime.service_install_starting" : "local_runtime.service_install_succeeded",
         payload,
       );
+      this.noteBrainHistory("install_succeeded", {
+        restarted: parsed?.restarted === true,
+        starting: parsed?.starting === true,
+        message: this.serviceInstallStatus.message?.slice(0, 300) ?? null,
+      });
     } else {
       this.serviceInstallStatus = {
         state: "failed",
@@ -2030,6 +2053,11 @@ export class LocalRuntimeConnectionPool {
         failureStep: parsed?.failureStep ?? null,
       };
       this.logger.warn("local_runtime.service_install_failed", payload);
+      this.noteBrainHistory("install_failed", {
+        exitCode: code,
+        failureStep: parsed?.failureStep ?? null,
+        message: this.serviceInstallStatus.message?.slice(0, 300) ?? null,
+      });
     }
   }
 
@@ -3156,12 +3184,14 @@ export class LocalRuntimeConnectionPool {
   beginUpdateWindow(reason: string, maxMs = LOCAL_RUNTIME_UPDATE_WINDOW_MAX_MS): void {
     this.updateWindowUntilMs = Date.now() + Math.max(0, maxMs);
     this.logger.info("local_runtime.update_window_started", { reason, maxMs });
+    this.noteBrainHistory("update_window_started", { reason });
   }
 
   endUpdateWindow(reason: string): void {
     if (this.updateWindowUntilMs === 0) return;
     this.updateWindowUntilMs = 0;
     this.logger.info("local_runtime.update_window_ended", { reason });
+    this.noteBrainHistory("update_window_ended", { reason });
   }
 
   private isUpdateWindowActive(): boolean {
@@ -3540,6 +3570,10 @@ export class LocalRuntimeConnectionPool {
       pid: compatibilityError?.pid ?? null,
       message: compatibilityError?.message ?? null,
     });
+    this.noteBrainHistory("repair_attempt", { reason, attempt: this.serviceRepairAttempts, pid: compatibilityError?.pid ?? null });
+    // Searchable across machines in Sentry Logs, never an issue: a repair is
+    // how ADE recovers, and one alone is not a failure.
+    forwardSignalToSentry("local_runtime.service_repair_attempt", { reason, attempt: this.serviceRepairAttempts }, reason);
     // A compatibility failure means the service is RUNNING with the wrong
     // identity — an older Alpha/Beta build, or one left behind by an update.
     // The installer is idempotent: when the launchd plist/systemd unit is
@@ -3925,6 +3959,12 @@ export class LocalRuntimeConnectionPool {
     }
     this.setActiveClient(client);
     this.noteConnectedRuntime(options.isMachineService === true);
+    this.noteBrainHistory("connected", {
+      pid: runtimeInfo.pid,
+      version: runtimeInfo.version,
+      buildHash: runtimeInfo.buildHash,
+      machineService: options.isMachineService === true,
+    });
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;
     this.activeRuntimePublishHealth = runtimeInfo.publishHealth;
@@ -3936,6 +3976,7 @@ export class LocalRuntimeConnectionPool {
         socketPath,
         error: error.message,
       });
+      this.noteBrainHistory("disconnected", { pid: this.activeRuntimePid, error: error.message.slice(0, 300) });
       this.connection = null;
       this.activeConnection = null;
       this.setActiveClient(null);
@@ -4071,6 +4112,7 @@ export class LocalRuntimeConnectionPool {
     child.once("exit", (code, signal) => {
       flushOutput();
       this.logger.warn("local_runtime.exited", { code, signal, pid: outputBase.pid, socketPath });
+      this.noteBrainHistory("app_brain_exited", { code, signal, pid: outputBase.pid ?? null });
       clearCurrentChildState();
     });
     child.once("error", (error) => {

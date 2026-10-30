@@ -85,6 +85,31 @@ is mirrored in `packages/sdk/src/windowsSystemTools.ts` — `@ade-dev/sdk` ships
 standalone to npm and cannot import from this repo — so a change to the kernel
 alias, the canonical-path check, or the escape check has to land in both files.
 
+`windowsHide` is not enough on its own. It hides a console only when the
+process gets one at spawn, and Windows 11 turns every *visible* new console
+into a Windows Terminal window that takes the foreground. Three shapes still
+flash:
+
+- **A console program started by Task Scheduler, the Run key or WMI.**
+  `powershell.exe -WindowStyle Hidden` opens its window first and hides it
+  later. Start it as `conhost.exe --headless <command line>` (trusted tool
+  `conhost`), as `installWindows.ts` does for the brain supervisor. A headless
+  conhost exits when its stdin reads end-of-file, so never `spawn` it from Node
+  with `stdio: "ignore"` (that is `NUL`): the client never runs.
+- **Anything under a `detached: true` Node process.** Detached means
+  DETACHED_PROCESS: no console at all, so each console grandchild started
+  without CREATE_NO_WINDOW gets a brand-new visible console. libuv sets
+  CREATE_NO_WINDOW only when `windowsHide` is on *and* no stdio slot is
+  inherited, and third-party code rarely does both. Do not detach a
+  long-lived Node process on Windows; the dev scripts use
+  `spawnWithHiddenConsole` (`scripts/dev-shared.mjs`) instead.
+- **`Start-Process` without `-WindowStyle Hidden`.** It always makes a new
+  console.
+
+Children of the installed brain and desktop are safe: they run under
+`ADE.exe`, and Electron gives console children a hidden console. A plain
+`node.exe` (the dev brain, a test harness) gets no such help.
+
 ## 4. No `LSEnvironment` equivalent — an installed app inherits nothing
 
 **Failure.** macOS injects `ADE_PACKAGE_CHANNEL`, `ADE_DESKTOP_APP_NAME`, and
