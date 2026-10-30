@@ -2414,7 +2414,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   replica strictly more than 5,000 versions behind. It scans at most 1,000
   relevant rows per host poll, caps the shared cache and logical payload at
   10,000 rows / 4 MiB, and falls back to normal incremental replay when the
-  current state or one version group exceeds those limits.
+  current state or one version group exceeds those limits. Each step's export
+  runs off the event loop (`exportChangesSinceOffThread`), and a phone at
+  cursor 0 gets its ordinary first batch before the compact one.
 - `syncPeerService.ts` (~580 lines) — WebSocket **client**. The runtime
   can run this too when it joins another runtime as a peer (handoff
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
