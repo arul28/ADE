@@ -2430,6 +2430,13 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   After start, use the returned session id with:
     $ ade terminal read --terminal <session-id> --text
 
+  On another machine (this chat's work copy there: a hidden worktree at your
+  commit, which must be on origin, with your uncommitted changes applied):
+    $ ade shell start --machine <name> --wait -- npm test   Stream the output, exit with its code
+    $ ade shell start --machine <name> --no-sync -- git status   Run in the copy as it is
+    $ ade shell start --machine <name> --discard --wait -- npm test   Throw away unpushed work there first
+    $ ade shell clean --machine <name>               Delete this chat's work copy there
+
   Provider CLI launches accept --instance for Claude/Codex accounts and
   --preset or --credential for saved harness brains.
 

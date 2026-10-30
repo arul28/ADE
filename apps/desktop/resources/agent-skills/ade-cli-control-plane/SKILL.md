@@ -720,9 +720,32 @@ ade chat wait <id> --machine "Mac mini" --for idle --timeout-ms 900000
   with "· on <machine>" and the `ade chat read … --machine` command.
 - `--machine "a,b"` on `chat create` starts one child per machine.
 - An offline machine fails at once and nothing is queued; retry later.
-- Build where the code runs: to build or test an iOS app from a Linux or
-  Windows machine, start a subagent on the Mac rather than driving its
-  simulator from here.
+- Ask the user before you use another machine, and say which one and why
+  ("Your Windows PC is online. Run the Windows tests there?"). Do not spread
+  work across machines on your own.
+
+### Running one command on another machine
+
+To run tests, a build, or a CLI signed in only there, keep this chat where it
+is and run the command there. It runs in this chat's **work copy** on that
+machine: a hidden worktree at your commit (not a lane), with your uncommitted
+changes applied. Nothing is installed for you; install deps there yourself
+when a command needs them, and they stay for the next run.
+
+```bash
+git push                                          # your commit must be on origin
+ade shell start --machine "Windows PC" --wait -- npm test   # streams output, exits with its code
+ade terminal list --machine "Windows PC" --text   # this chat's shells there
+ade shell clean --machine "Windows PC"            # delete the work copy when done
+```
+
+- The command uses that machine's shell (PowerShell on Windows).
+- Git moves code between the machines. To keep work you did there, commit and
+  push from there (`ade shell start --machine … --no-sync -- git push origin HEAD:<branch>`),
+  then pull here. A sync refuses while the copy holds unpushed work; `--no-sync`
+  runs in the copy as it is, `--discard` throws that work away.
+- The copy goes by itself after a week unused, or when this chat is deleted or
+  archived. A whole task with its own lane there is `ade chat create --machine`.
 
 ### Moving this chat to another machine
 

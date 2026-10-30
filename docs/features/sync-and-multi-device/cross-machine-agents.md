@@ -73,6 +73,44 @@ shows them. A machine older than it answers "isn't available", reported as
 "no answer". Through ADE MCP the CLI does not look anywhere else; ADE MCP
 finds the computer and forwards the call itself (docs/features/ade-mcp).
 
+## Running a command in a work copy there
+
+`ade shell start --machine <name> [--wait] -- <command>` runs one command on
+another machine for this chat, without a lane or a chat there. The other
+machine keeps a **work copy** for the chat
+(`apps/desktop/src/main/services/remoteWork/remoteWorkCopyService.ts`): a plain
+git worktree under `<project>/.ade/remote-work/`, detached at the chat's commit,
+with the chat's uncommitted changes applied as one binary patch. It is created
+on the first command; nothing is installed in advance, and ignored files
+(installed deps, build output) survive between runs.
+
+- **Git moves code.** The CLI (`cliMachineTargeting.ts`, `readLocalWorkSource`)
+  sends the commit, the remote branch that holds it, and the patch (16 MiB at
+  most). A commit that is not on origin is refused here: "Push it first".
+- **Never lose work there.** Before a sync the copy is compared with what the
+  last sync wrote and with its checked-out commit. Unpushed commits, or files
+  changed there and not committed, refuse the sync and name the files.
+  `--no-sync` runs in the copy as it is (to commit and push from there);
+  `--discard` resets anyway.
+- **One command at a time.** A sync waits for no one: while a shell still runs
+  in the copy the next synced command is refused; `--no-sync` runs beside it.
+- **The run.** The command runs in that machine's own shell, not interactive
+  (`$SHELL -c`; PowerShell `-Command` on Windows), so the output is the
+  command's and the shell ends with its exit code. `--wait` streams the output
+  and exits with that code. The shell is owned by the caller's foreign id, so
+  only that chat reads, writes or stops it (`ade terminal … --machine`).
+- **Cleanup.** `ade shell clean --machine <name>`; a week unused; the source
+  chat deleted or archived on its own machine (the sweep asks it with
+  `chats.locate`, which now says `archived` when the project is running there,
+  and never acts on silence); a low disk deletes other idle copies, oldest
+  first, before a new copy is refused.
+- **Where it shows.** The chat's own brain records each such shell as it
+  forwards the call (`noteRemoteWork`); the chat header and session card show
+  that machine's logo while the current turn uses it, with the commands and
+  Stop. Settings › Machines reads `remote_work.list` (every project on that
+  machine, from `<ADE_HOME>/remote-work/projects.json`) and deletes with
+  `remote_work.delete` (desktop only).
+
 ## Moving a chat to another machine
 
 `ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO
