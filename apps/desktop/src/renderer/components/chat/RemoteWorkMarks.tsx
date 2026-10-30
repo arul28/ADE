@@ -77,7 +77,8 @@ function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; activ
     if (pin === "unreachable") return;
     void window.ade.terminal.signal({ terminalId, signal: "SIGINT" }, pin)
       // Read the list again rather than assume it stopped: a command may handle SIGINT.
-      .then(() => setReadNonce((value) => value + 1))
+      // Wait a moment first, so a command that does stop has time to exit.
+      .then(() => { window.setTimeout(() => setReadNonce((value) => value + 1), 750); })
       .catch((reason: unknown) => showToast({
         tone: "error",
         title: `Couldn't stop the command on ${use.machineName}`,
