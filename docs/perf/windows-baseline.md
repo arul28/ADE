@@ -669,6 +669,48 @@ off by a varying amount: the first run of the third column backed off and
 shows 5 starts and 21 versions, the second did not (26 and 41). Both show the
 PR-refresh fix cutting synced writes (69-71 → 21-41).
 
+### Dev app on the copies (shared home, own pipe)
+
+The owner chose the shared `~/.ade` for the dev app: its own pipe
+(`\\.\pipe\ade-runtime-perfwin-r2`), sync off, the isolation report checked
+first, and two copies of the project open as tabs (`c2`, `c3`, never the live
+project; removed from the project list afterwards through the dev brain). No
+other machine was connected from this dev app. `main` plus this branch's
+scripts (no renderer change). `interaction.mjs <mode> 4`, 5 runs after a
+warm-up; median of the run medians, worst run in brackets.
+
+| Row | Now | Oct 13 (one tab, live project) | Ceiling |
+|---|---|---|---|
+| Tab switch: first changed frame, warm | 26.5 ms (27.7) | 35 / 44 ms | 60 ms |
+| Tab switch: page settled, warm (median) | 61.3 ms (68.3) | 79 / 87 ms | — |
+| Tab switch: slowest single settle in a run | 177-403 ms (History 214-387, Automations 175, CTO 156) | 357 / 381 ms (Automations, CTO) | 420 ms (open item) |
+| Project tab switch: first changed frame, warm | 47.6 ms (48.5) | not measured | — |
+| Project tab switch: page settled, warm | 103.7 ms (107.7) | not measured | 300 ms |
+| Renderer JS heap after GC | 127 MB | 125 MB | 220 MB |
+
+`process-cpu.mjs 15`, 5 samples, Work idle after a renderer reload and one
+visit to every tab (two project tabs open, so the renderer row is not
+comparable with Oct 13's one tab):
+
+| Process | CPU (median) | Working set, median (private) | Oct 13 | Ceiling |
+|---|---:|---:|---:|---:|
+| Electron main | 0.2% | 225 MB (195) | 216-218 MB | 240 MB |
+| GPU | 0% | 176 MB (223) | 165-192 MB | 215 MB |
+| Renderer | 0.2% | 613 MB (538) | 500-550 MB | 610 MB (over, with a second tab) |
+| Brain | 1.4% | 287 MB (305) | 287-341 MB | 380 MB |
+
+Not measured here:
+
+- **Press to content** (`press-to-paint.mjs`): its real mouse input over CDP
+  no longer switches anything in this build (a test click on a sidebar tab hit
+  the tab and did nothing), so every switch reads "missed". `interaction.mjs`
+  (click handler to frame) works.
+- **Chat switch**: the copy's project has 7 chat sessions and the Work list
+  shows one row, so there is nothing to switch between. The Mac side measures
+  chat switches on the owner's real data with three machines connected.
+- The first dev app closed by itself after about 20 minutes with nothing in
+  its log; the second ran the whole set.
+
 ### Corrected rows
 
 - **F5 startup recovery read**: 0.18 ms (worst run 0.19) on the copy with its
