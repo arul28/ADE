@@ -158,7 +158,7 @@ function MachineListRow({
   const busy = stats?.cpu.busyPercent ?? null;
   const builds = stats?.builds?.reduce((sum, build) => sum + build.count, 0) ?? 0;
   const busyNotes = offline ? [] : [
-    builds > 0 ? (builds === 1 ? "1 build running" : `${builds} builds running`) : null,
+    builds > 0 ? (builds === 1 ? "1 build" : `${builds} builds`) : null,
     stats?.power?.onBattery ? powerWords(stats.power) : null,
   ];
   return (
@@ -175,11 +175,11 @@ function MachineListRow({
         <span className="ade-mx-row-name">
           <span className="ade-mx-row-name-text">{name}</span>
           {machine.isThisMachine ? <span className="kit-tag">This machine</span> : null}
-          {preferenceTag ? <span className="kit-tag" data-tone={preferenceTag === "Manual only" ? "warn" : undefined}>{preferenceTag}</span> : null}
         </span>
         <span className="ade-mx-row-sub">
           <span className="kit-dot" data-state={status.state} aria-hidden />
-          {[status.word, os, ...busyNotes].filter(Boolean).join(" · ")}
+          <span className="ade-mx-row-sub-text">{[status.word, os, ...busyNotes].filter(Boolean).join(" · ")}</span>
+          {preferenceTag ? <span className="kit-tag" data-tone={preferenceTag === "Manual only" ? "warn" : undefined} title="New work: how often Least loaded picks this machine">{preferenceTag}</span> : null}
         </span>
       </span>
       <span className="ade-mx-row-facts">

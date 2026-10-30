@@ -560,3 +560,16 @@ button.ade-mx-hero-chip {
 .ade-mx-row-name > .kit-tag {
   flex: none;
 }
+.ade-mx-row-sub-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ade-mx-row-sub > .kit-tag {
+  flex: none;
+}
+.ade-mx-row-sub {
+  min-width: 0;
+  overflow: hidden;
+}
