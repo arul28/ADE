@@ -1446,7 +1446,7 @@ import {
   resolveCopilotSlashCommand,
 } from "./copilotSlashCommands";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
-import { captureProblem } from "../../../shared/sentry/capture";
+import { copilotBreadcrumb, reportCopilotProblem, reportCopilotSignal } from "./copilotSentry";
 import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
@@ -59743,6 +59743,7 @@ export function createAgentChatService(args: {
             // from a later step of opening must not replace a live conversation.
             if (!/session\.resume failed.*session not found/i.test(error instanceof Error ? error.message : String(error))) throw error;
             logger.warn("agent_chat.copilot_session_missing", { sessionId: managed.session.id, copilotSessionId: persistedSessionId });
+            reportCopilotSignal("session_missing", { model: managed.session.modelId ?? managed.session.model });
             emitChatEvent(managed, {
               type: "system_notice",
               noticeKind: "warning",
@@ -59865,10 +59866,12 @@ export function createAgentChatService(args: {
           const errorCode = typeof eventData.errorCode === "string" ? eventData.errorCode : null;
           const statusCode = typeof eventData.statusCode === "number" ? eventData.statusCode : null;
           if (classifyCopilotError(errorType, errorCode, statusCode) === "unknown") {
-            captureProblem("Copilot session error", {
-              tags: { provider: "copilot", "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
+            reportCopilotProblem("session_error", {
+              message: diagnostics.message ?? errorType ?? "session.error",
+              model: diagnostics.model,
+              groupBy: [errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
+              tags: { "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
               extra: diagnostics,
-              fingerprint: ["copilot-session-error", errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
             });
           }
         }
@@ -59888,6 +59891,11 @@ export function createAgentChatService(args: {
         current.interrupted = true;
         current.turnSettled?.(true);
         logger.warn("agent_chat.copilot_sdk_worker_exited", { sessionId: chatId, error: error.message });
+        reportCopilotProblem("worker_exited", {
+          message: error.message,
+          model: target.session.modelId ?? target.session.model,
+          tags: { "copilot.turn_active": current.busy },
+        });
       };
       acquired.pooled.bridge.onExitPlanRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -60056,6 +60064,7 @@ export function createAgentChatService(args: {
             sessionId: target.session.id,
             error: error instanceof Error ? error.message : String(error),
           });
+          reportCopilotSignal("auto_switch_prompt_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
         }
         // The rate-limit error was held back for this prompt. Declining makes
         // it the turn's error, so the usage-limit resume can be armed.
@@ -60116,6 +60125,7 @@ export function createAgentChatService(args: {
               server: serverName,
               error: error instanceof Error ? error.message : String(error),
             });
+            reportCopilotSignal("mcp_auth_lookup_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
             return { registryConfigured: false };
           });
           if (token.accessToken) return { kind: "token", accessToken: token.accessToken, expiresIn: token.expiresIn ?? 3600 };
@@ -60255,6 +60265,7 @@ export function createAgentChatService(args: {
     if (typedCommand && !controlReply) {
       runtime.slashCommands ??= await runtime.sdk.listCommands(managed.session.id).catch((error: unknown) => {
         logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
+        reportCopilotProblem("commands_list_failed", { error, model: managed.session.modelId ?? managed.session.model });
         return null;
       });
       const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
@@ -60328,6 +60339,13 @@ export function createAgentChatService(args: {
             agentMode = outcome.agentMode ?? agentMode;
             if (outcome.notice) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: outcome.notice, turnId });
           }
+          copilotBreadcrumb("turn sent", {
+            model: managed.session.modelId ?? managed.session.model,
+            agentMode: agentMode ?? "interactive",
+            permissionMode: managed.session.copilotPermissionMode ?? null,
+            attachments: attachments.length,
+            command: displayPrompt ? displayPrompt.split(/\s/)[0] : null,
+          });
           await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode, displayPrompt);
         }
         runtime.interrupted = runtime.interrupted || await turnIdle;
@@ -60367,6 +60385,9 @@ export function createAgentChatService(args: {
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
+      // An interrupt (the user's, or the worker dying, which reports itself)
+      // is not a failure to look into.
+      if (!runtime.interrupted) reportCopilotProblem("turn_failed", { error, model: managed.session.modelId ?? managed.session.model });
       emitChatEvent(managed, { type: "error", message, turnId });
       emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "failed", turnId });
       emitChatEvent(managed, {
@@ -62819,7 +62840,10 @@ export function createAgentChatService(args: {
             });
             return { steerId, queued: false };
           }
-          const outcome = copilotCommandOutcome(resolved!.name, await runtime.sdk.invokeCommand(sessionId, resolved!.name, steerCommand.input || undefined));
+          const outcome = copilotCommandOutcome(resolved!.name, await runtime.sdk.invokeCommand(sessionId, resolved!.name, steerCommand.input || undefined).catch((error: unknown) => {
+            reportCopilotProblem("command_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.command": resolved!.name } });
+            throw error;
+          }));
           if (outcome.kind === "output") {
             // The notice names the command, since no user row records it.
             emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: `${trimmed}\n\n${copilotCommandOutputMarkdown(outcome)}`, turnId });
@@ -69642,6 +69666,7 @@ export function createAgentChatService(args: {
         }));
       } catch (error) {
         logger.warn("agent_chat.copilot_model_catalog_failed", { error: error instanceof Error ? error.message : String(error) });
+        reportCopilotSignal("model_catalog_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
         return [];
       }
     }
@@ -71786,6 +71811,7 @@ export function createAgentChatService(args: {
             model: copilotModelId,
             error: error instanceof Error ? error.message : String(error),
           });
+          reportCopilotProblem("setting_failed", { error, model: copilotModelId, tags: { "copilot.setting": "model" } });
           reopenCopilotForSettings(managed, "the new model", error);
         }
       }
@@ -72110,6 +72136,7 @@ export function createAgentChatService(args: {
         const runtime = managed.runtime;
         const modeResult = await runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
           logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+          reportCopilotProblem("setting_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.setting": "permission_mode", "copilot.permission_mode": requestedMode } });
           return null;
         });
         if (!modeResult) {

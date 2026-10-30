@@ -3064,7 +3064,7 @@ function renderEvent(
   if (event.type === "user_message" && userBody?.kind === "wake-card") {
     const prWatchWake = userBody.wake;
     if (prWatchWake.card.variant === "pr_watch_wake") {
-      return <PrWatchWakeLine card={prWatchWake.card} wakeText={event.text} watchId={prWatchWake.watchId} />;
+      return <PrWatchWakeLine card={prWatchWake.card} wakeText={event.text} watchId={prWatchWake.watchId} sessionId={options?.sessionId ?? null} />;
     }
     const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
     return (

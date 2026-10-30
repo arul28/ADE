@@ -2248,9 +2248,11 @@ are how a chat asks to be woken when its PR changes. Source:
   delivery succeeds, guarded so a watch stopped or restarted mid-read is not
   overwritten (a mode switch mid-read keeps the told state, so nothing is told
   twice, and the switched watch runs again right after the pass). The transcript shows the wake as one divider line (`pr_watch_wake`,
-  "Watching PR #1991 · 8 new comments · Open PR ›"; "Shipping" or "Stopped
-  watching" by the watch's state when it was sent). Clicking it shows what
-  changed and the exact text the agent got. It is never a user bubble.
+  "Watching PR #1991 · 8 new comments ›", then a PR icon that opens the PR in
+  the chat's tools pane; "Shipping" or "Stopped watching" by the watch's state
+  when it was sent). A wake about checks shows their counts with check icons
+  in place of words. Clicking the line shows what changed and the exact text
+  the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
   turning it off, the chat being archived or deleted, 10 comment-only wakes in

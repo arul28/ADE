@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
+import { reportCopilotProblem, reportCopilotSignal } from "./copilotSentry";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
 import { copilotVersionRejectionMessage, detectCopilotVersionRejection } from "../ai/providerVersionRejection";
@@ -189,13 +190,17 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     const waiter = COPILOT_SDK_WAITERS[message.type];
     const callback = bridge[WAITER_HANDLERS[message.type]];
     const respond = (answer: unknown) => {
-      pooled.request(waiter.respondType, { waiterId: message.waiterId, [waiter.payloadKey]: answer }).catch((error) => logger?.warn("agent_chat.copilot_sdk_callback_failed", { error: error instanceof Error ? error.message : String(error) }));
+      pooled.request(waiter.respondType, { waiterId: message.waiterId, [waiter.payloadKey]: answer }).catch((error) => {
+        logger?.warn("agent_chat.copilot_sdk_callback_failed", { error: error instanceof Error ? error.message : String(error) });
+        reportCopilotSignal("callback_failed", { type: message.type });
+      });
     };
     void Promise.resolve(callback ? callback(message.chatId, message.waiterId, message.request) : waiter.fallback)
       .then(respond, (error) => {
         // Copilot waits on every request until it gets an answer, so a failed
         // handler still answers, with the fallback that never approves.
         logger?.warn("agent_chat.copilot_sdk_handler_failed", { type: message.type, error: error instanceof Error ? error.message : String(error) });
+        reportCopilotProblem("handler_failed", { error, tags: { "copilot.request": message.type } });
         respond(waiter.fallback);
       });
   });

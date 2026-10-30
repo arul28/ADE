@@ -258,6 +258,7 @@ export function createPrWatchService(deps: PrWatchServiceDeps) {
         },
         changes: evaluation.changes,
         stop: evaluation.stop,
+        checks,
       };
       const summary = summarizePrWatchChanges(evaluation.changes);
       try {

@@ -23,6 +23,7 @@ shared ACP host. Their spec is `acp-providers-spec.md`.
 | `apps/desktop/src/main/services/chat/copilotSdkProtocol.ts` | Messages between the app and the worker. |
 | `apps/desktop/src/main/services/chat/copilotSdkEventMapper.ts` | SDK session events to ADE chat events. |
 | `apps/desktop/src/main/services/chat/copilotSdkPermissions.ts` | The "Allow for this session" rule Copilot can remember for a permission prompt. |
+| `apps/desktop/src/main/services/chat/copilotSentry.ts` | Which Copilot failures become Sentry issues and which stay Logs (see Troubleshooting). |
 | `apps/desktop/src/main/services/chat/copilotSlashCommands.ts` | Copilot's own slash commands: the `/` menu rows, which ones ADE owns, and what ADE does with a command's answer. |
 | `apps/desktop/src/main/services/ai/acpExecutables.ts` (`resolveCopilotSdkRuntime`) | Picks the runtime chats run on: a dev/test override, ADE's pinned download, the SDK's own package (a source checkout), the previous pinned version. Never the machine's `copilot`. `resolveCopilotExecutable` in the same file resolves the separate `copilot-cli` pin that terminals run. |
 | `apps/desktop/src/main/services/ai/providerConnectionStatus.ts` (`buildCopilotConnection`) | Copilot's Settings and availability status, from the SDK's live sign-in check. |
@@ -289,7 +290,7 @@ when the user chooses to wait.
 | `subagent.started`, `completed`, `failed` | Subagent cards, attributed by the event's `agentId`. |
 | `session.compaction_start` / `complete` | Context compaction events, with `preCompactionTokens` and `postCompactionTokens`. A failed compaction's `error` becomes a warning notice. |
 | `session.usage_info` | The context meter (`currentTokens` over `tokenLimit`), broken down into system, tools and conversation tokens. |
-| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget), then by `errorCode` (a `*rate_limit*` code → rate limit, a quota or billing code → budget) and the HTTP status (401 → auth, 429 → rate limit, 408 and 5xx → network, which the card offers to retry). The detail carries its `remediation`, its `url`, and the diagnostics: the HTTP status, the provider's error type and parameter, the error code, and the two request ids GitHub traces a failure by (`providerCallId`, the `x-github-request-id`, and `serviceRequestId`). The brain logs the same fields as `agent_chat.copilot_session_error`, which reaches Sentry as a log. An error none of those classes cover also opens a Sentry issue, `Copilot session error`, one per error type and code, since it may be a request ADE built wrong. A root `session.error` ends the turn as failed. |
+| `session.error` | The turn's error, classed by `errorType` (authentication and authorization → auth, rate_limit → rate limit, quota → budget), then by `errorCode` (a `*rate_limit*` code → rate limit, a quota or billing code → budget) and the HTTP status (401 → auth, 429 → rate limit, 408 and 5xx → network, which the card offers to retry). The detail carries its `remediation`, its `url`, and the diagnostics: the HTTP status, the provider's error type and parameter, the error code, and the two request ids GitHub traces a failure by (`providerCallId`, the `x-github-request-id`, and `serviceRequestId`). The brain logs the same fields as `agent_chat.copilot_session_error`, which reaches Sentry as a log. An error none of those classes cover also opens a Sentry issue (kind `session_error`, one per error type and code), since it may be a request ADE built wrong. A root `session.error` ends the turn as failed. |
 | `session.mcp_server_status_changed` | A server that failed to start shows once per chat: "Copilot could not start the MCP server <name>: <first line of the error>". |
 | `session.info` | An info notice with Copilot's message and tip. Cancellation, timing, snapshot and MCP lines are not shown. |
 | `session.warning` | A warning notice. |
@@ -537,6 +538,30 @@ These are deliberately not built yet:
   the next message reopens it with the new setting. If a turn is running it
   finishes first, unless the change was to a stricter permission level: then
   the turn stops at once, so tools do not keep running under the looser level.
+
+### Copilot in Sentry
+
+Every Copilot failure is a brain log line, and warn lines reach Sentry as Logs.
+The ones that may be ADE's fault are also issues, tagged `provider: copilot`,
+`copilot.kind` and `copilot.model`, grouped per kind and cause (ids and numbers
+taken out of the message), so one bug is one issue:
+
+| `copilot.kind` | When |
+|---|---|
+| `session_error` | A `session.error` that is not sign-in, rate limit, quota or an outage. Tagged with its error type, code and HTTP status; the extra carries both request ids. |
+| `turn_failed` | A turn that failed opening, sending or running a command, unless it was interrupted. |
+| `worker_exited` | The SDK worker died under a live chat (not a close ADE asked for). |
+| `commands_list_failed` | The runtime would not list its slash commands. |
+| `command_failed` | A command typed mid-turn failed to run. |
+| `setting_failed` | Copilot refused a model or permission-level change. |
+| `handler_failed` | A permission, question or plan handler threw, so Copilot got the refusing fallback. |
+
+A worker's own uncaught exceptions are issues too (`process: worker:copilot`).
+A lost conversation, a model list that would not load, a failed MCP sign-in
+lookup or auto-switch prompt, and an answer that could not reach the worker are
+signals: Logs on a small budget, never issues. Each sent turn leaves a
+`copilot` breadcrumb (model, agent mode, permission level, attachment count,
+command), so an issue shows what was asked just before it.
 
 ## Related
 

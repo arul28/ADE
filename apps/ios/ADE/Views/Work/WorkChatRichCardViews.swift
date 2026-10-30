@@ -5380,6 +5380,10 @@ private struct WorkPrWatchWakeLine: View {
   @State private var expanded = false
 
   private var warning: Bool { card.rows.contains { $0.tone == .warning || $0.icon == .fail } }
+  /// A wake that is only about checks says it with the counts alone.
+  private var checksOnly: Bool {
+    card.progress != nil && !card.rows.isEmpty && card.rows.allSatisfy { $0.icon == .pass || $0.icon == .fail }
+  }
 
   var body: some View {
     let text = workPrWatchWakeLineText(card)
@@ -5391,9 +5395,13 @@ private struct WorkPrWatchWakeLine: View {
         } label: {
           HStack(spacing: 4) {
             Text(text.lead).fontWeight(.medium).foregroundStyle(ADEColor.textSecondary)
-            if !text.summary.isEmpty {
+            if !text.summary.isEmpty && !checksOnly {
               Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
               Text(text.summary).foregroundStyle(warning ? ADEColor.warning : ADEColor.textMuted).lineLimit(1)
+            }
+            if let progress = card.progress {
+              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              checkCounts(progress)
             }
             Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .semibold))
           }
@@ -5408,12 +5416,13 @@ private struct WorkPrWatchWakeLine: View {
             onOpenDeeplink(deeplink)
           } label: {
             HStack(spacing: 2) {
-              Text("Open PR")
+              Image(systemName: "arrow.triangle.pull").font(.system(size: 10, weight: .semibold))
               Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
             }
           }
           .buttonStyle(.plain)
           .layoutPriority(1)
+          .accessibilityLabel("Open the pull request")
         }
         Rectangle().fill(ADEColor.textMuted.opacity(0.15)).frame(height: 1)
       }
@@ -5447,6 +5456,26 @@ private struct WorkPrWatchWakeLine: View {
       }
     }
     .padding(.vertical, 4)
+  }
+
+  /// "✓ 38  ✕ 2  ◌ 1": the checks behind a checks wake, each count with its glyph.
+  private func checkCounts(_ progress: WorkAdeCardProgress) -> some View {
+    let parts: [(count: Int, symbol: String, tint: Color, label: String)] = [
+      (progress.passed, "checkmark.circle.fill", ADEColor.success, "passed"),
+      (progress.failed, "xmark.circle.fill", ADEColor.warning, "failed"),
+      (progress.running + progress.queued, "circle.dotted", ADEColor.textMuted, "still running"),
+    ].filter { $0.count > 0 }
+    return HStack(spacing: 6) {
+      ForEach(parts, id: \.label) { part in
+        HStack(spacing: 2) {
+          Image(systemName: part.symbol).font(.system(size: 9, weight: .semibold))
+          Text("\(part.count)").monospacedDigit()
+        }
+        .foregroundStyle(part.tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(part.count) \(part.label)")
+      }
+    }
   }
 }
 
