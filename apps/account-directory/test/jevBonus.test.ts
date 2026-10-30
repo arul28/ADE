@@ -124,6 +124,8 @@ describe("POST /jev/systemone", () => {
 
   it.each([
     ["Jev's own rate limit", () => upstream(429, { error: "nope" }), 429],
+    // ADE's spend cap on the key: every brain is told to stop until midnight.
+    ["a spent ADE key", () => upstream(402, { error: "nope" }), 429],
     ["a refused ADE key", () => upstream(401, { error: "nope" }), 503],
     ["a Jev outage", () => upstream(500, { error: "nope" }), 502],
     ["a reply body that fails to read", () => upstreamBodyFails(), 502],

@@ -3294,7 +3294,8 @@ describe("SessionListPane quiet-shelf defaults", () => {
     expect(container.querySelector('[data-section-id="lane-known"]')).toBeNull();
     expect(shelfRows()).toEqual([]);
 
-    fireEvent.click(screen.getByRole("button", { name: "Snoozed (1)" }));
+    // The shelf counts chats, not lanes: one lane holding both rows reads 2.
+    fireEvent.click(screen.getByRole("button", { name: "Snoozed (2)" }));
     expect(toggleWorkSectionCollapsed).toHaveBeenCalledWith("shelf-open:lane-shelf:snoozed");
   });
 

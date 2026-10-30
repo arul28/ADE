@@ -3308,7 +3308,12 @@ The iOS pieces:
   scope component changes and saves the outgoing scope first. Lane deeplinks
   frame those fields transiently: persistence is suppressed until the user
   takes control, at which point edits resume from the saved base rather than
-  making notification routing a permanent preference change.
+  making notification routing a permanent preference change. The record also
+  holds "Fold busy lanes" (Focus, `foldBusyLanes`), on by default like the
+  desktop sidebar: a record saved without `focusDefaultApplied` stored it off
+  by default, so it loads on once, and turning it off afterwards sticks. The
+  Working shelf header counts the chats of the lanes folded onto it, not the
+  lanes.
 - `apps/ios/ADETests/WorkSessionCanonicalStateTests.swift` covers the derivation,
   the row status vocabulary, and scoped view-state parity;
   `WorkSessionGroupingTests.swift` covers the grouping, quiet lanes, nested

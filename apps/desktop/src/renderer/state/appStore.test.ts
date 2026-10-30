@@ -1346,7 +1346,7 @@ describe("appStore", () => {
       expect(updated.draftKind).toBe("chat");
     });
 
-    it("migrates settled collapse once and preserves a later expansion across reload", async () => {
+    it("migrates settled collapse and Focus once, and keeps a later change across reload", async () => {
       vi.useFakeTimers();
       try {
         mockStorage.set("ade.workViewState.v1", JSON.stringify({
@@ -1355,6 +1355,7 @@ describe("appStore", () => {
               statusFilter: "running",
               showSettled: false,
               workCollapsedSectionIds: [],
+              workFoldBusyLanes: false,
             },
           },
           laneWorkViewByScope: {},
@@ -1364,11 +1365,14 @@ describe("appStore", () => {
         const firstLoad = await import("./appStore");
         const migrated = firstLoad.useAppStore.getState().getWorkViewState("/project/legacy");
         expect(migrated.workCollapsedSectionIds).toEqual(["status:settled"]);
+        // Every blob before v7 stored Focus off; the upgrade turns it on once.
+        expect(migrated.workFoldBusyLanes).toBe(true);
         expect("statusFilter" in migrated).toBe(false);
         expect("showSettled" in migrated).toBe(false);
 
         firstLoad.useAppStore.getState().setWorkViewState("/project/legacy", {
           workCollapsedSectionIds: [],
+          workFoldBusyLanes: false,
         });
         await vi.advanceTimersByTimeAsync(300);
 
@@ -1376,16 +1380,18 @@ describe("appStore", () => {
           version?: number;
           workViewByProject?: Record<string, Record<string, unknown>>;
         };
-        expect(persisted.version).toBe(6);
+        expect(persisted.version).toBe(7);
         expect(persisted.workViewByProject?.["/project/legacy"]?.workCollapsedSectionIds).toEqual([]);
+        expect(persisted.workViewByProject?.["/project/legacy"]?.workFoldBusyLanes).toBe(false);
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("statusFilter");
         expect(persisted.workViewByProject?.["/project/legacy"]).not.toHaveProperty("showSettled");
 
         vi.resetModules();
         const secondLoad = await import("./appStore");
-        expect(
-          secondLoad.useAppStore.getState().getWorkViewState("/project/legacy").workCollapsedSectionIds,
-        ).toEqual([]);
+        const reloaded = secondLoad.useAppStore.getState().getWorkViewState("/project/legacy");
+        expect(reloaded.workCollapsedSectionIds).toEqual([]);
+        // Turned off after the upgrade, it stays off.
+        expect(reloaded.workFoldBusyLanes).toBe(false);
       } finally {
         vi.useRealTimers();
       }
