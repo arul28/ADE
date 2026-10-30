@@ -74,6 +74,8 @@ Relay is a transport, not cloud storage, and it does not store your ADE project 
 
 If Relay is unavailable: confirm both devices are signed in to the same account, keep ADE running on the machine you want to reach, then open **Connections** and try again. ADE shows the route that failed and the next action to take. To avoid Relay entirely, connect over the same local network, Tailscale, or an SSH setup you configured yourself.
 
+**Settings › Account › Connections** shows the order clients try routes in (local network, then Tailscale, then ADE Relay) and a Tailscale setup checklist read from this computer. With Tailscale HTTPS set up, the web client reaches the computer over your tailnet. Each computer under **Your computers** has its own **ADE Relay** switch; turning it off keeps that computer off the relay, and ADE warns you first about what stops working.
+
 ## Or install the brain on the box instead
 
 SSH remotes are driven by your desktop: it bootstraps the runtime on the far side and tunnels the connection. The alternative is to install ADE's brain on that machine directly and connect it to your account:

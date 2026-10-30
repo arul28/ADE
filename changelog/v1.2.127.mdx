@@ -1,0 +1,24 @@
+---
+title: "v1.2.127"
+description: "Release notes for ADE v1.2.127 - October 30, 2026"
+---
+
+ADE 1.2.127 adds a Beta update track, a Tailscale route and Private network setup for your computers, and branded Integrations pages. It also makes ADE MCP work as one account server and removes ADE Code and project notes.
+
+## New
+
+- A Beta update track gives you a new build from `main` every few hours, on the same install; switch tracks in Settings › About › Updates, and stable releases now promote a beta that has already run (#1971).
+- Settings › Account › Connections sets up Tailscale step by step, the web app can reach your computer over Tailscale HTTPS, and each computer has its own ADE Relay switch (#1964).
+- GitHub, Linear and Jira each get a branded page in Settings › Integrations with your sign-in, main actions and status (#1967).
+
+## Improved
+
+- ADE MCP works as one server for your account, and its setup page says exactly what is wrong when a connection fails (#1970).
+- Background jobs such as chat titles no longer start your own MCP servers on Droid, Kimi, Grok, Muse, Devin and Cursor (#1972).
+- Integrations pages fit narrow windows, and the Linear agent's model picker has room for the full model name (#1968).
+- The Account page no longer redraws the window nonstop while it is open (#1969).
+
+## Removed
+
+- ADE Code, the terminal app opened with `ade code`, is gone; use the desktop app or the web app instead (#1974).
+- Project notes (`ade notes` and Agent notes in Settings) are gone; agents use skills and the repo's own docs (#1965).
