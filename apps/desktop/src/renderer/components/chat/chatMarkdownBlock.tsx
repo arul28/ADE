@@ -144,14 +144,16 @@ function workspaceFilePathOf(code: string): string | null {
 const OPEN_CODE_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
 /** A Markdown link reference or footnote definition line: `[label]: destination`. */
 const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S/;
-const FENCE_LINE = /^ {0,3}(`{3,}|~{3,})/;
+/** A fence line; a backtick fence's info string may not hold a backtick. */
+const FENCE_LINE = /^ {0,3}(?:(`{3,})[^`]*$|(~{3,}))/;
 
 /** Whether `markdown` defines a reference outside its code fences. */
 function hasReferenceDefinition(markdown: string): boolean {
   if (!markdown.includes("]:")) return false;
   let fence: string | null = null;
   for (const line of markdown.split("\n")) {
-    const marker = FENCE_LINE.exec(line)?.[1];
+    const match = FENCE_LINE.exec(line);
+    const marker = match?.[1] ?? match?.[2];
     if (fence) {
       // A fence closes on a run of its own character at least as long.
       if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
