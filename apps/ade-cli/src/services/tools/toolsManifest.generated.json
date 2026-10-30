@@ -140,33 +140,33 @@
       "targets": {
         "darwin-arm64": {
           "package": "@github/copilot-sdk-darwin-arm64",
-          "version": "1.0.22",
-          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-darwin-arm64/-/copilot-sdk-darwin-arm64-1.0.22.tgz",
-          "integrity": "sha512-qmCCCrPXZzspZgKEitQ5HGlVGHd5kxZPlNUk7AfFcPmhvhfF4p8ROoH2OER5fGMsQwIiuAfz2XyXqkUVCupWKw=="
+          "version": "1.0.28",
+          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-darwin-arm64/-/copilot-sdk-darwin-arm64-1.0.28.tgz",
+          "integrity": "sha512-R15W4SUS12DyGiWEX/hxsSWTtvyo+Cxrn4SAbU0NeB1kBb+IzkvKmc85gOefh7QzuRZnSn2Wnch7oOmfoYMuPQ=="
         },
         "darwin-x64": {
           "package": "@github/copilot-sdk-darwin-x64",
-          "version": "1.0.22",
-          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-darwin-x64/-/copilot-sdk-darwin-x64-1.0.22.tgz",
-          "integrity": "sha512-oh0LlHEVTcC6r6rzxEhNPhUgoFRvnP85x4HwF5tEkzldegw6qVYCpB4zwgcy47o51ML4jHlP/jkzq5SOC2z89A=="
+          "version": "1.0.28",
+          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-darwin-x64/-/copilot-sdk-darwin-x64-1.0.28.tgz",
+          "integrity": "sha512-b4haZ9J0G1BDg2gtNHW8yAEyddulrUZkGcnP7Dm7Ue1uNiO35qAqS+Q5jdadYj+cwhlBnNqXscO5l19tpaPyrw=="
         },
         "linux-arm64": {
           "package": "@github/copilot-sdk-linux-arm64",
-          "version": "1.0.22",
-          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-linux-arm64/-/copilot-sdk-linux-arm64-1.0.22.tgz",
-          "integrity": "sha512-E1MLsrO6bXTTqXFb+IZwdkSm3W1j7KOoGvX3aZdIrMPpjLneMeokZNec4716AYwdeWDF1t+mLYWU1ipfkRkhxA=="
+          "version": "1.0.28",
+          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-linux-arm64/-/copilot-sdk-linux-arm64-1.0.28.tgz",
+          "integrity": "sha512-41G/pQajhEz6rCeUSDOooFPrKSpgE8aOetH0y4a3zIJNKybr+1QfJJkia9O49LQpzQBAgn0AkEF/h6qrYdUnQQ=="
         },
         "linux-x64": {
           "package": "@github/copilot-sdk-linux-x64",
-          "version": "1.0.22",
-          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-linux-x64/-/copilot-sdk-linux-x64-1.0.22.tgz",
-          "integrity": "sha512-9O0RBsP8Eyf5TOp99ISWDjWQwlUbgMSzdvGii4l6LazmWesukglwxLGBmPEVXa8wEpug+LDGifzeJ74+663YsA=="
+          "version": "1.0.28",
+          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-linux-x64/-/copilot-sdk-linux-x64-1.0.28.tgz",
+          "integrity": "sha512-yAsoTZfP//a1oirpdXc4oIX1m69ePP4ef3Yasmm3iT+hM7mpQLTxWWaDD6C2vuIJk1tPZLK0jndFVoFYr/d7yw=="
         },
         "win32-x64": {
           "package": "@github/copilot-sdk-win32-x64",
-          "version": "1.0.22",
-          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-win32-x64/-/copilot-sdk-win32-x64-1.0.22.tgz",
-          "integrity": "sha512-yUapm2AapONBj+ty3A/+C5ZjDcGi72CgAggeoEqmD6oQqUnA8+A71fR8avmCV7Rhmwwzb1mh2AZd9wAjrHuwig=="
+          "version": "1.0.28",
+          "tarball": "https://registry.npmjs.org/@github/copilot-sdk-win32-x64/-/copilot-sdk-win32-x64-1.0.28.tgz",
+          "integrity": "sha512-pzlzyuBHcF3TrgBue0w9cypmZ+1BpCKL1VdVO98SlXqOhOBJ2aHXAY42gI0ZVbZuCfkv4T+EUHAriyv0PJIidw=="
         }
       }
     },
@@ -4244,37 +4244,37 @@
         "darwin-arm64": {
           "format": "npm-tarball",
           "package": "@github/copilot-darwin-arm64",
-          "version": "1.0.98",
-          "tarball": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.98.tgz",
-          "integrity": "sha512-2V3TL1nKk43TvxIa8T28df9+6VYT2zR/aSQLyd8WOVhUsF2hhpNzDeXGMOYEuyn2UrkbIJJ1V2TRrhQm+6HW1g=="
+          "version": "1.0.105",
+          "tarball": "https://registry.npmjs.org/@github/copilot-darwin-arm64/-/copilot-darwin-arm64-1.0.105.tgz",
+          "integrity": "sha512-cB4CplzVs+k5dlK3/ukr8M5yNI2i8O+lpA8dpMrh4znxW2lknOS+5ZfA++b9jOSz0PmRvK47Ruvq/FrjP33bNw=="
         },
         "darwin-x64": {
           "format": "npm-tarball",
           "package": "@github/copilot-darwin-x64",
-          "version": "1.0.98",
-          "tarball": "https://registry.npmjs.org/@github/copilot-darwin-x64/-/copilot-darwin-x64-1.0.98.tgz",
-          "integrity": "sha512-pQYqPtMcX75MO87Wd4Grqn0W5EzEJ88EPOulTszRa/3eYH41Dr5UEPaYW96ng53pnKvn1VwnJSm+X18YQfAYYw=="
+          "version": "1.0.105",
+          "tarball": "https://registry.npmjs.org/@github/copilot-darwin-x64/-/copilot-darwin-x64-1.0.105.tgz",
+          "integrity": "sha512-DkqgEvvQxoYbvS55xciNGGo6V18K8gltcqXespReXRa4eBxSYeBeDPO3d0GM1GhBIrjpxHmXtTulCP5YQOItaw=="
         },
         "linux-arm64": {
           "format": "npm-tarball",
           "package": "@github/copilot-linux-arm64",
-          "version": "1.0.98",
-          "tarball": "https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-1.0.98.tgz",
-          "integrity": "sha512-x8VTkvNbXPxoKS8SVBQmC5fZw9Ccgcq/c8yy+D0KybUeBAfcRq0f4uRYxgbxNKHeEajtnCldTDa1bHrtY+rDfQ=="
+          "version": "1.0.105",
+          "tarball": "https://registry.npmjs.org/@github/copilot-linux-arm64/-/copilot-linux-arm64-1.0.105.tgz",
+          "integrity": "sha512-L7/4Sq1ibeUdD8aE++cubBjr2oWfAFGe0yKjuY5oe0HDZw8QHYAPrZhB2p79Nkg2lIB88REncsf+qWuVVDVPjA=="
         },
         "linux-x64": {
           "format": "npm-tarball",
           "package": "@github/copilot-linux-x64",
-          "version": "1.0.98",
-          "tarball": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.98.tgz",
-          "integrity": "sha512-CspYuA5OeroO+4kRukm7KG3b8CI1HUkhviilmcwyZkWKwSBIBjDRypBLqHy62aUWUnsq3SVnIUsMrq6rthD4EA=="
+          "version": "1.0.105",
+          "tarball": "https://registry.npmjs.org/@github/copilot-linux-x64/-/copilot-linux-x64-1.0.105.tgz",
+          "integrity": "sha512-3trlyisQQAnlNy3CvYVRDVWC/WK+0CfDId7dDwNbxTFJ9IgM3aoCPyg+QbGPBUeuYNs4sjgtTqFn5l5yfyHVDg=="
         },
         "win32-x64": {
           "format": "npm-tarball",
           "package": "@github/copilot-win32-x64",
-          "version": "1.0.98",
-          "tarball": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.98.tgz",
-          "integrity": "sha512-XlSIx7egXW4q3tbsPPl37WC0IxxRpjdwDIBLgTtzPR3qynBZML/H11WNandTVw5fVAUxnQ/RZE32r3At9emXQA=="
+          "version": "1.0.105",
+          "tarball": "https://registry.npmjs.org/@github/copilot-win32-x64/-/copilot-win32-x64-1.0.105.tgz",
+          "integrity": "sha512-Yiy3loRnNICCzmyTQLMs5KnVg1sQUTDkP5JBHu+YrFvzyWVtHIr4nfuLScx5e34qtxcuq/YOHHf0gk4fnxlHcg=="
         }
       }
     },

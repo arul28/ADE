@@ -1,5 +1,5 @@
 import type { AgentChatContextUsage, AgentChatEvent } from "../../../shared/types";
-import { asRecord as record, finiteNumberOrNull as number } from "../shared/utils";
+import { asRecord as record, finiteNumberOrNull as number, redactSecrets } from "../shared/utils";
 import { copilotUpdateRequiredMessage } from "./copilotSdkPool";
 
 function text(value: unknown): string | null {
@@ -29,6 +29,8 @@ export type CopilotSdkEventMapperState = {
    * shown only if the user declines the switch (see onAutoModeSwitchRequest).
    */
   heldRateLimitError: Extract<AgentChatEvent, { type: "error" }> | null;
+  /** MCP servers whose failure this chat already showed. Kept across turns. */
+  failedMcpServers: Set<string>;
 };
 export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
   return {
@@ -49,6 +51,7 @@ export function createCopilotSdkEventMapperState(): CopilotSdkEventMapperState {
     mismatchModels: new Set(),
     turnError: null,
     heldRateLimitError: null,
+    failedMcpServers: new Set(),
   };
 }
 
@@ -57,10 +60,12 @@ type CopilotErrorCategory = "auth" | "rate_limit" | "budget" | "network" | "unkn
 /**
  * ADE's error category from Copilot's typed `errorType` ("authentication",
  * "authorization", "policy", "quota", "rate_limit", "context_limit", "query",
- * …). Only a rate limit arms the usage-limit resume; an exhausted quota waits
- * for a billing change, not a timer.
+ * …), its finer `errorCode` and the HTTP status. Only a rate limit arms the
+ * usage-limit resume; an exhausted quota waits for a billing change, not a
+ * timer. A 5xx or a timeout is the service's, so it reads as a connection
+ * problem the person can retry, not as a fault in the chat.
  */
-function classifyCopilotError(errorType: string | null): CopilotErrorCategory {
+export function classifyCopilotError(errorType: string | null, errorCode: string | null, statusCode: number | null): CopilotErrorCategory {
   switch (errorType) {
     case "authentication":
     case "authorization":
@@ -72,9 +77,60 @@ function classifyCopilotError(errorType: string | null): CopilotErrorCategory {
     case "network":
     case "connection":
       return "network";
-    default:
-      return "unknown";
   }
+  if (errorCode && /rate_limit/.test(errorCode)) return "rate_limit";
+  if (errorCode && /quota|billing/.test(errorCode)) return "budget";
+  if (statusCode === 401) return "auth";
+  if (statusCode === 429) return "rate_limit";
+  if (statusCode === 408 || (statusCode != null && statusCode >= 500)) return "network";
+  return "unknown";
+}
+
+/**
+ * The diagnostics a `session.error` carries beyond its message: the HTTP
+ * status, the provider's error type, parameter and code, and the two request
+ * ids GitHub traces a failure by (`x-github-request-id` and
+ * `x-copilot-service-request-id`). Without them every failed request reads the
+ * same, and nobody can tell a schema rejection from an overload or a policy.
+ */
+export function copilotErrorDiagnostics(data: Record<string, unknown>): string | null {
+  const status = number(data.statusCode);
+  const providerType = text(data.providerErrorType);
+  const param = text(data.providerErrorParam);
+  const code = text(data.errorCode);
+  const parts = [
+    status != null ? `HTTP ${status}` : null,
+    providerType ? `${providerType}${param ? ` (${param})` : ""}` : null,
+    code && code !== providerType ? `code ${code}` : null,
+    text(data.errorType) && text(data.errorType) !== "query" ? `type ${text(data.errorType)}` : null,
+  ].filter(Boolean);
+  const ids = [
+    text(data.providerCallId) ? `GitHub request ${text(data.providerCallId)}` : null,
+    text(data.serviceRequestId) ? `Copilot request ${text(data.serviceRequestId)}` : null,
+  ].filter(Boolean);
+  const lines = [parts.join(" · "), ids.join(" · ")].filter(Boolean);
+  return lines.length ? lines.join("\n") : null;
+}
+
+/**
+ * The part of a tool's detailed result that is one file's unified diff.
+ * Copilot keeps the edit tools' diffs in `result.detailedContent`; an edit
+ * that touched several files carries one `diff --git` section per file.
+ */
+function fileEditDiff(detailed: string | null, filePath: string, editCount: number): string {
+  if (!detailed || !/^@@ |^diff --git |^--- /m.test(detailed)) return "";
+  if (editCount === 1) return detailed.replace(/^\n+/, "");
+  const normalized = filePath.replace(/\\/g, "/");
+  // Whole path segments, and the longest header that fits: `/repo/src/a.ts`
+  // takes `src/a.ts`'s section, not `a.ts`'s.
+  let best: { section: string; length: number } | null = null;
+  for (const section of detailed.split(/^(?=diff --git )/m)) {
+    const header = section.split("\n", 1)[0] ?? "";
+    const target = header.match(/ b\/(.+)$/)?.[1];
+    if (!target || (normalized !== target && !normalized.endsWith(`/${target}`))) continue;
+    if (!best || target.length > best.length) best = { section, length: target.length };
+  }
+  return best?.section ?? "";
 }
 
 /**
@@ -108,6 +164,9 @@ const COPILOT_REMEDIATIONS: Record<string, string> = {
   rewind_conversation: "Rewind the chat to before the blocked request, then continue.",
 };
 
+/** `session.info` kinds ADE does not show. */
+const COPILOT_QUIET_INFO_TYPES = new Set(["cancellation", "timing", "snapshot", "mcp"]);
+
 /** Events a sub-agent sends on the parent stream that only the root agent's state may see. */
 const ROOT_ONLY_EVENTS = new Set([
   "assistant.message_delta",
@@ -118,6 +177,7 @@ const ROOT_ONLY_EVENTS = new Set([
   "session.auto_mode_resolved",
   "session.usage_info",
   "session.error",
+  "session.info",
   "abort",
 ]);
 
@@ -181,9 +241,11 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       const error = record(data.error);
       const resultText = text(result?.detailedContent) ?? text(result?.content) ?? text(error?.message) ?? text(data.textOutput) ?? "";
       const out: AgentChatEvent[] = [{ type: "tool_result", tool: start?.name ?? text(data.toolName) ?? "tool", result: resultText, itemId: id, turnId, status: failed ? "failed" : "completed", ...(start?.mcp ? { mcp: start.mcp } : {}) }];
-      if (Array.isArray(data.fileEdits)) for (const raw of data.fileEdits) {
+      const edits = Array.isArray(data.fileEdits) ? data.fileEdits : [];
+      for (const raw of edits) {
         const edit = record(raw); const filePath = text(edit?.path); if (!filePath) continue;
-        out.push({ type: "file_change", path: filePath, kind: edit?.kind === "create" ? "create" : edit?.kind === "delete" ? "delete" : "modify", diff: "", itemId: id, turnId, status: "completed" });
+        const diff = fileEditDiff(text(result?.detailedContent), filePath, edits.length);
+        out.push({ type: "file_change", path: filePath, kind: edit?.kind === "create" ? "create" : edit?.kind === "delete" ? "delete" : "modify", diff, itemId: id, turnId, status: "completed" });
       }
       return out;
     }
@@ -231,6 +293,25 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       const reason = failed ? text(data.error) : null;
       return reason ? [compact, { type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not compact the conversation: ${reason}`, turnId }] : [compact];
     }
+    case "session.mcp_server_status_changed": {
+      // A server that fails to start shows once per chat, as the CLI's /env
+      // does; otherwise its tools are just missing and nothing says why.
+      const name = text(data.serverName);
+      if (!name || text(data.status) !== "failed" || state.failedMcpServers.has(name)) return [];
+      state.failedMcpServers.add(name);
+      // An MCP error can carry the server's URL with a token in it.
+      const reason = redactSecrets(text(data.error) ?? "").split("\n", 1)[0]?.slice(0, 240);
+      return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not start the MCP server ${name}${reason ? `: ${reason}` : "."}`, turnId }];
+    }
+    case "session.info": {
+      // Copilot's own status lines (a retry, a model or sign-in note). A
+      // cancellation is already the turn's interrupted state, MCP failures
+      // come from their status event, and timing and snapshot lines are noise.
+      const message = text(data.message);
+      if (!message || COPILOT_QUIET_INFO_TYPES.has(text(data.infoType) ?? "")) return [];
+      const tip = text(data.tip);
+      return [{ type: "system_notice", noticeKind: "info", message: tip ? `${message} ${tip}` : message, turnId }];
+    }
     case "session.warning": {
       const message = text(data.message) ?? text(data.reason) ?? "Copilot reported a warning.";
       return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message, turnId }];
@@ -239,10 +320,15 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       // An organisation policy that needs a newer Copilot gets precise words.
       const message = copilotUpdateRequiredMessage(data) ?? text(data.message) ?? "Copilot reported a runtime error.";
       const remediation = COPILOT_REMEDIATIONS[text(data.remediation) ?? ""] ?? null;
-      const detail = [remediation, text(data.url)].filter(Boolean).join("\n");
+      const detail = [remediation, text(data.url), copilotErrorDiagnostics(data)].filter(Boolean).join("\n");
       const error: Extract<AgentChatEvent, { type: "error" }> = {
         type: "error", message, ...(detail ? { detail } : {}),
-        errorInfo: { category: classifyCopilotError(text(data.errorType)), provider: "copilot", model: state.servedModel ?? undefined }, turnId,
+        errorInfo: {
+          category: classifyCopilotError(text(data.errorType), text(data.errorCode), number(data.statusCode)),
+          provider: "copilot",
+          model: state.servedModel ?? undefined,
+        },
+        turnId,
       };
       // Copilot follows an eligible rate limit with an offer to continue on
       // Auto; the error waits for that answer instead of arming a resume, and

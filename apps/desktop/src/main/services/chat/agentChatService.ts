@@ -521,6 +521,7 @@ import {
   exceedsInlineFileLimit,
   imageAttachmentReferenceText,
   imageNotInlinedHintPart,
+  imageNotInlinedText,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
@@ -1436,8 +1437,18 @@ import {
   type DroidSdkPooled,
 } from "./droidSdkPool";
 import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
+import type { CopilotSdkAgentMode, CopilotSdkAttachment, CopilotSlashCommandInfo } from "./copilotSdkProtocol";
+import {
+  copilotAdeOwnedCommandReply,
+  copilotCommandOutcome,
+  copilotCommandOutputMarkdown,
+  copilotSlashCommandRows,
+  parseCopilotSlashCommand,
+  resolveCopilotSlashCommand,
+} from "./copilotSlashCommands";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
-import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { copilotBreadcrumb, reportCopilotProblem } from "./copilotSentry";
+import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
@@ -3806,6 +3817,8 @@ type CopilotRuntime = {
   pendingRewindMessageId?: string;
   /** A setting change failed mid-turn; reopen with the saved settings once the turn ends. */
   reopenAfterTurn?: boolean;
+  /** Copilot's own slash commands and skills, as its runtime last listed them; null before the first list. */
+  slashCommands: CopilotSlashCommandInfo[] | null;
 };
 
 type PiRuntime = {
@@ -44450,7 +44463,8 @@ export function createAgentChatService(args: {
     // settings until it is next idle.
     const idle = runtime.kind === "claude"
       ? !runtime.busy && runtime.liveBackgroundTaskIds.size === 0
-      : runtime.kind === "codex" ? !runtime.activeTurnId : false;
+      : runtime.kind === "codex" ? !runtime.activeTurnId
+        : runtime.kind === "copilot" ? !runtime.busy : false;
     if (previous !== undefined && previous !== signature && idle) {
       teardownRuntime(managed, "restart");
     } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
@@ -59664,8 +59678,22 @@ export function createAgentChatService(args: {
     else teardownRuntime(managed, "restart");
   };
 
+  /**
+   * The "Compact at" setting as the share of the model's window where Copilot
+   * starts compacting in the background (its default is 80%). Unknown on
+   * Auto, whose window depends on the model Copilot picks.
+   */
+  const copilotCompactionThreshold = (managed: ManagedChatSession): number | undefined => {
+    const atTokens = compactionSettingsFor(managed).atTokens;
+    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    if (!atTokens || !window || window <= 0) return undefined;
+    return Math.min(0.9, Math.max(0.1, atTokens / window));
+  };
+
   const copilotRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CopilotRuntime> }>();
   const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
+    // A changed "Compact at" reopens an idle session with the new threshold.
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process)) {
       return managed.runtime;
     }
@@ -59693,6 +59721,7 @@ export function createAgentChatService(args: {
         contextTier: managed.session.copilotContextTier ?? "default",
         autoTier: managed.session.copilotAutoTier ?? null,
         permissionMode: managed.session.copilotPermissionMode ?? "ask",
+        backgroundCompactionThreshold: copilotCompactionThreshold(managed),
         mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
         skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
         // The system message is Copilot's persistent instruction channel, so
@@ -59710,6 +59739,13 @@ export function createAgentChatService(args: {
               }),
               buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
             ].filter(Boolean).join("\n\n"),
+      };
+      // MCP servers report their status while the session opens, before the
+      // runtime below exists, and those events are not in its history: hold
+      // them and show them once the runtime is in place.
+      const openingEvents: unknown[] = [];
+      acquired.pooled.bridge.onEvent = (_chatId, event) => {
+        if (openingEvents.length < 50 && (event as { type?: unknown } | null)?.type === "session.mcp_server_status_changed") openingEvents.push(event);
       };
       const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
       const opened = persistedSessionId
@@ -59754,11 +59790,23 @@ export function createAgentChatService(args: {
         pendingAutoTier: null,
         activeTurnId: null,
         busy: false, interrupted: false, eventMapperState, pendingSteers: [],
+        slashCommands: null,
       };
       acquired.pooled.bridge.onEvent = (chatId, event) => {
         const target = managedSessions.get(chatId);
         const current = target?.runtime;
-        if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
+        if (!target || current?.kind !== "copilot") return;
+        if (!current.activeTurnId) {
+          // MCP servers start with the session, often before any turn: a
+          // failed one is still worth a notice, outside any turn.
+          const idleType = event && typeof event === "object" ? (event as Record<string, unknown>).type : null;
+          if (idleType !== "session.mcp_server_status_changed") return;
+          for (const mapped of mapCopilotSdkEvent(event, { turnId: "", state: current.eventMapperState })) {
+            const { turnId: _turnId, ...outsideTurn } = mapped as AgentChatEvent & { turnId?: string };
+            emitChatEvent(target, outsideTurn as AgentChatEvent);
+          }
+          return;
+        }
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
         // A sub-agent's prompt, idle, abort or task end is not the turn's: only
@@ -59811,6 +59859,35 @@ export function createAgentChatService(args: {
           persistChatState(target);
           emitSessionModeMeta(target);
         }
+        if (eventRecord.type === "session.error") {
+          // The fields GitHub traces a failed request by, for a report that
+          // only says "Copilot errored".
+          const diagnostics = {
+            errorType: eventData.errorType,
+            errorCode: eventData.errorCode,
+            statusCode: eventData.statusCode,
+            providerErrorType: eventData.providerErrorType,
+            providerCallId: eventData.providerCallId,
+            serviceRequestId: eventData.serviceRequestId,
+            model: current.eventMapperState.servedModel ?? current.modelId,
+            message: typeof eventData.message === "string" ? boundedLogText(eventData.message) : undefined,
+          };
+          logger.warn("agent_chat.copilot_session_error", { sessionId: chatId, ...diagnostics });
+          // Sign-in, rate limits, quota and GitHub outages stay in the log
+          // above; anything else may be ADE sending a request Copilot rejects,
+          // so it becomes an issue, one per error type and code.
+          const errorType = typeof eventData.errorType === "string" ? eventData.errorType : null;
+          const errorCode = typeof eventData.errorCode === "string" ? eventData.errorCode : null;
+          const statusCode = typeof eventData.statusCode === "number" ? eventData.statusCode : null;
+          if (classifyCopilotError(errorType, errorCode, statusCode) === "unknown") {
+            reportCopilotProblem("session_error", {
+              model: diagnostics.model,
+              groupBy: [errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
+              tags: { "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
+              extra: diagnostics,
+            });
+          }
+        }
         if (eventRecord.type === "session.idle") {
           const aborted = eventData.aborted === true;
           current.interrupted = current.interrupted || aborted;
@@ -59827,6 +59904,11 @@ export function createAgentChatService(args: {
         current.interrupted = true;
         current.turnSettled?.(true);
         logger.warn("agent_chat.copilot_sdk_worker_exited", { sessionId: chatId, error: error.message });
+        reportCopilotProblem("worker_exited", {
+          message: error.message,
+          model: target.session.modelId ?? target.session.model,
+          tags: { "copilot.turn_active": current.busy },
+        });
       };
       acquired.pooled.bridge.onExitPlanRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -60090,12 +60172,63 @@ export function createAgentChatService(args: {
         }
         return { kind: "cancelled" };
       };
+      // The threshold this session opened with, so a later change reopens it.
+      runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
       managed.runtime = runtime;
       persistChatState(managed);
+      for (const event of openingEvents.splice(0)) acquired.pooled.bridge.onEvent?.(managed.session.id, event);
       return runtime;
     } catch (error) {
       releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
       throw error;
+    }
+  };
+
+  /**
+   * Attachments as Copilot takes them: files by path, images inline. An image
+   * is fitted the way every inline image is (a Claude model behind Copilot
+   * rejects one over 5 MB of base64 and fails the whole request), and goes
+   * only to a model that reads images; Auto picks one that does. An image
+   * left out becomes a note in the prompt instead of a rejected request.
+   */
+  const copilotSdkAttachments = async (
+    managed: ManagedChatSession,
+    resolved: readonly ResolvedAgentChatFileRef[],
+  ): Promise<{ attachments: CopilotSdkAttachment[]; notes: string[] }> => {
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    const readsImages = !descriptor || descriptor.providerModelId === "auto" || descriptor.capabilities.vision;
+    const attachments: CopilotSdkAttachment[] = [];
+    const notes: string[] = [];
+    for (const attachment of resolved) {
+      if (attachment.type !== "image") {
+        attachments.push({ type: "file", path: attachment._resolvedPath });
+        continue;
+      }
+      if (!readsImages) {
+        notes.push(imageNotInlinedText(attachment.path, `${descriptor?.displayName ?? "this model"} does not read images`));
+        continue;
+      }
+      const fitted = await fitImageForProviderInline(await readResolvedAttachmentBytes(attachment), attachment.mimeType || "image/png", { provider: "copilot", logger });
+      if (fitted.kind === "omit") {
+        notes.push(imageNotInlinedText(attachment.path, fitted.reason));
+        continue;
+      }
+      attachments.push({ type: "blob", data: fitted.data.toString("base64"), mimeType: fitted.mediaType, displayName: path.basename(attachment.path) });
+    }
+    return { attachments, notes };
+  };
+
+  /**
+   * The runtime's own commands and skills, or null when it would not list them
+   * (the built-ins stand in, and the next command asks again).
+   */
+  const listCopilotCommands = async (managed: ManagedChatSession, runtime: CopilotRuntime): Promise<CopilotSlashCommandInfo[] | null> => {
+    try {
+      return await runtime.sdk.listCommands(managed.session.id);
+    } catch (error) {
+      logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
+      reportCopilotProblem("commands_list_failed", { error, model: managed.session.modelId ?? managed.session.model });
+      return null;
     }
   };
 
@@ -60106,7 +60239,8 @@ export function createAgentChatService(args: {
     onDispatched?: () => void; onBackendDispatched?: () => void;
   }): Promise<void> => {
     let promptText = args.promptText;
-    let agentMode: "autopilot" | undefined;
+    let agentMode: CopilotSdkAgentMode | undefined;
+    let displayPrompt: string | undefined;
     let controlReply: string | null = null;
     const rawGoalCommand = [args.userText, args.displayText, args.promptText].find((value) => /^\s*\/goal(?:\s|$)/i.test(value ?? ""));
     const goalCommand = rawGoalCommand?.trim().match(/^\/goal(?:\s+(.*))?$/is);
@@ -60143,8 +60277,21 @@ export function createAgentChatService(args: {
         agentMode = "autopilot";
       }
     }
+    // Copilot's own commands (`/compact`, `/review`, a skill) run through its
+    // command API, as in its CLI; sent as a message they reach the model as
+    // prose. The ones ADE owns (the model, the permission level) say where
+    // ADE does it.
+    const typedCommand = goalCommand ? null : parseCopilotSlashCommand(args.userText?.trim() || args.displayText);
+    const ownedCommandReply = typedCommand ? copilotAdeOwnedCommandReply(typedCommand.name) : null;
+    if (ownedCommandReply) controlReply = ownedCommandReply;
     const turnId = args.turnId ?? randomUUID();
     const runtime = await ensureCopilotRuntime(managed);
+    let nativeCommand: { name: string; input: string } | null = null;
+    if (typedCommand && !controlReply) {
+      runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
+      const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
+      if (resolved) nativeCommand = { name: resolved.name, input: typedCommand.input };
+    }
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -60156,6 +60303,8 @@ export function createAgentChatService(args: {
     if (previousMapperState?.requestedModel === runtime.modelId) {
       runtime.eventMapperState.mismatchModels = previousMapperState.mismatchModels;
     }
+    // A failed MCP server is shown once per chat.
+    if (previousMapperState) runtime.eventMapperState.failedMcpServers = previousMapperState.failedMcpServers;
     setSessionActive(managed);
     const displayText = args.displayText.trim();
     const userText = args.userText?.trim() || displayText;
@@ -60182,16 +60331,9 @@ export function createAgentChatService(args: {
       return;
     }
     try {
-      const attachments = await Promise.all(args.resolvedAttachments.map(async (attachment) => {
-        if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
-        const bytes = await readResolvedAttachmentBytes(attachment);
-        return {
-          type: "blob" as const,
-          data: bytes.toString("base64"),
-          mimeType: attachment.mimeType || "image/png",
-          displayName: path.basename(attachment.path),
-        };
-      }));
+      const prepared = await copilotSdkAttachments(managed, args.resolvedAttachments);
+      const attachments = prepared.attachments;
+      if (prepared.notes.length) promptText = `${promptText}\n\n${prepared.notes.join("\n")}`;
       args.onBackendDispatched?.();
       let settleTurn!: (aborted: boolean) => void;
       const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
@@ -60203,7 +60345,30 @@ export function createAgentChatService(args: {
         runtime.interrupted = true;
       } else {
         const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
-        await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
+        // The turn stays open while the command runs: `/compact` reports its
+        // compaction as events before it answers.
+        const outcome = nativeCommand
+          ? copilotCommandOutcome(nativeCommand.name, await runtime.sdk.invokeCommand(managed.session.id, nativeCommand.name, nativeCommand.input || undefined))
+          : null;
+        if (outcome?.kind === "output") {
+          emitChatEvent(managed, { type: "text", text: copilotCommandOutputMarkdown(outcome), turnId });
+          settleTurn(false);
+        } else {
+          if (outcome?.kind === "prompt") {
+            promptText = outcome.prompt;
+            displayPrompt = outcome.displayPrompt;
+            agentMode = outcome.agentMode ?? agentMode;
+            if (outcome.notice) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: outcome.notice, turnId });
+          }
+          copilotBreadcrumb("turn sent", {
+            model: managed.session.modelId ?? managed.session.model,
+            agentMode: agentMode ?? "interactive",
+            permissionMode: managed.session.copilotPermissionMode ?? null,
+            attachments: attachments.length,
+            command: displayPrompt ? displayPrompt.split(/\s/)[0] : null,
+          });
+          await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode, displayPrompt);
+        }
         runtime.interrupted = runtime.interrupted || await turnIdle;
         const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
         const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
@@ -60241,6 +60406,9 @@ export function createAgentChatService(args: {
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
+      // An interrupt (the user's, or the worker dying, which reports itself)
+      // is not a failure to look into.
+      if (!runtime.interrupted) reportCopilotProblem("turn_failed", { error, model: managed.session.modelId ?? managed.session.model });
       emitChatEvent(managed, { type: "error", message, turnId });
       emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "failed", turnId });
       emitChatEvent(managed, {
@@ -62674,6 +62842,42 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "copilot" && managed.runtime?.kind === "copilot" && managed.runtime.busy) {
       const runtime = managed.runtime;
+      // A Copilot command typed during a turn runs now when Copilot allows it
+      // (`/context`, `/usage`); otherwise it would reach the model as prose.
+      const steerCommand = attachments.length ? null : parseCopilotSlashCommand(trimmed);
+      if (steerCommand && !copilotAdeOwnedCommandReply(steerCommand.name)) {
+        // Whether Copilot allows a command mid-turn is in its list.
+        runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
+      }
+      if (steerCommand) {
+        const ownedReply = copilotAdeOwnedCommandReply(steerCommand.name);
+        const resolved = ownedReply ? null : resolveCopilotSlashCommand(steerCommand.name, runtime.slashCommands);
+        if (ownedReply || resolved) {
+          const turnId = runtime.activeTurnId ?? undefined;
+          if (ownedReply || !resolved?.allowDuringAgentExecution) {
+            emitChatEvent(managed, {
+              type: "system_notice", noticeKind: "info", turnId,
+              message: ownedReply ?? `Wait for this turn to finish before running /${resolved!.name}.`,
+            });
+            return { steerId, queued: false };
+          }
+          const outcome = copilotCommandOutcome(resolved!.name, await runtime.sdk.invokeCommand(sessionId, resolved!.name, steerCommand.input || undefined).catch((error: unknown) => {
+            reportCopilotProblem("command_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.command": resolved!.name } });
+            throw error;
+          }));
+          if (outcome.kind === "output") {
+            // The notice names the command, since no user row records it.
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: `${trimmed}\n\n${copilotCommandOutputMarkdown(outcome)}`, turnId });
+            options?.onAcceptedDispatch?.();
+            return { steerId, queued: false };
+          }
+          // The command's prompt runs as Copilot's; this row records who asked.
+          emitChatEvent(managed, { type: "user_message", text: trimmed, turnId });
+          await runtime.sdk.send(sessionId, outcome.prompt, [], dispatchMode === "inline" ? "immediate" : "enqueue", outcome.agentMode, outcome.displayPrompt);
+          options?.onAcceptedDispatch?.();
+          return { steerId, queued: dispatchMode !== "inline" };
+        }
+      }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
@@ -62700,18 +62904,9 @@ export function createAgentChatService(args: {
       else emitSteerUserRow(managed, row, "queued", runtime.activeTurnId ?? undefined);
       persistChatState(managed);
       try {
-        const sdkAttachments = await Promise.all(preparedSteer.resolvedAttachments.map(async (attachment) => {
-          if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
-          const bytes = await readResolvedAttachmentBytes(attachment);
-          return {
-            type: "blob" as const,
-            data: bytes.toString("base64"),
-            mimeType: attachment.mimeType || "image/png",
-            displayName: path.basename(attachment.path),
-          };
-        }));
+        const { attachments: sdkAttachments, notes } = await copilotSdkAttachments(managed, preparedSteer.resolvedAttachments);
         const contextPrompt = buildChatContextAttachmentPrompt(preparedSteer.contextAttachments);
-        const promptText = contextPrompt ? `${contextPrompt}\n\n${preparedSteer.submittedText}` : preparedSteer.submittedText;
+        const promptText = [contextPrompt, preparedSteer.submittedText, notes.join("\n")].filter(Boolean).join("\n\n");
         await runtime.sdk.send(sessionId, promptText, sdkAttachments, deliveryMode === "inline" ? "immediate" : "enqueue");
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
@@ -71637,6 +71832,7 @@ export function createAgentChatService(args: {
             model: copilotModelId,
             error: error instanceof Error ? error.message : String(error),
           });
+          reportCopilotProblem("setting_failed", { error, model: copilotModelId, tags: { "copilot.setting": "model" } });
           reopenCopilotForSettings(managed, "the new model", error);
         }
       }
@@ -71961,6 +72157,7 @@ export function createAgentChatService(args: {
         const runtime = managed.runtime;
         const modeResult = await runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
           logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+          reportCopilotProblem("setting_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.setting": "permission_mode", "copilot.permission_mode": requestedMode } });
           return null;
         });
         if (!modeResult) {
@@ -72560,6 +72757,19 @@ export function createAgentChatService(args: {
           kind: "skill" as const,
         }));
       return mergeSlashCommands([localCommands, museCommands, skillCommands]);
+    }
+
+    if (provider === "copilot") {
+      // Copilot lists its own commands and the skills it loaded, as its CLI
+      // shows them. Before a chat's runtime is open, its built-ins and the
+      // project's prompt and skill files stand in.
+      const rt = managed?.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process) ? managed.runtime : null;
+      if (rt && managed) {
+        rt.slashCommands = await listCopilotCommands(managed, rt) ?? rt.slashCommands;
+      }
+      return rt?.slashCommands?.length
+        ? mergeSlashCommands([localCommands, copilotSlashCommandRows(rt.slashCommands)])
+        : mergeSlashCommands([await filesystemBackedCommands(), localCommands, copilotSlashCommandRows(null)]);
     }
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and

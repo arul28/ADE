@@ -4991,6 +4991,8 @@ struct WorkAdeCardView: View, Equatable {
   var body: some View {
     if card.variant == "pr_conflict" {
       WorkPrConflictLine(card: card, deeplink: deeplink, onOpenDeeplink: onOpenDeeplink)
+    } else if card.variant == "pr_watch_wake" {
+      WorkPrWatchWakeLine(card: card, deeplink: deeplink, onOpenDeeplink: onOpenDeeplink)
     } else {
       boxedCard
     }
@@ -5345,6 +5347,147 @@ private struct WorkPrConflictLine: View {
     .disabled(deeplink == nil)
     .accessibilityLabel(card.fallbackText)
     .accessibilityHint(deeplink != nil ? "Opens the pull request" : "")
+  }
+}
+
+/// "Watching PR #1991 · 8 new comments", read off a `pr_watch_wake` card: the
+/// subtitle ends in the watch's state when ADE sent it ("watching", "shipping",
+/// "watch stopped"), the title is "PR #N · <what changed>". Mirrors desktop's
+/// `prWatchWakeLineText`.
+func workPrWatchWakeLineText(_ card: WorkAdeCardModel) -> (lead: String, summary: String) {
+  let title = card.title.trimmingCharacters(in: .whitespacesAndNewlines)
+  var titleNumber: Int? = nil
+  var summary = title
+  if title.hasPrefix("PR #"), let dot = title.range(of: "·") {
+    titleNumber = Int(title[title.index(title.startIndex, offsetBy: 4)..<dot.lowerBound].trimmingCharacters(in: .whitespaces))
+    summary = title[dot.upperBound...].trimmingCharacters(in: .whitespaces)
+  }
+  var targetNumber: Int? = nil
+  if case .pr(_, _, let number, _) = card.navTarget { targetNumber = number }
+  let prNumber = targetNumber ?? titleNumber
+  let status = (card.subtitle ?? "").split(separator: "·").last.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+  let verb = status == "shipping" ? "Shipping" : status == "watch stopped" ? "Stopped watching" : "Watching"
+  return (prNumber.map { "\(verb) PR #\($0)" } ?? verb, summary)
+}
+
+/// A PR Watch / Ship wake as one quiet divider line: what ADE is watching,
+/// what changed, and Open PR. Tapping the line shows what changed and the
+/// exact message the agent got. Mirrors desktop's `PrWatchWakeLine`.
+private struct WorkPrWatchWakeLine: View {
+  let card: WorkAdeCardModel
+  let deeplink: URL?
+  let onOpenDeeplink: (URL) -> Void
+  @State private var expanded = false
+
+  private var warning: Bool { card.rows.contains { $0.tone == .warning || $0.icon == .fail } }
+  /// A wake that is only about checks says it with the counts alone.
+  private var checksOnly: Bool {
+    card.progress != nil && !card.rows.isEmpty && card.rows.allSatisfy { $0.icon == .pass || $0.icon == .fail }
+  }
+
+  var body: some View {
+    let text = workPrWatchWakeLineText(card)
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 6) {
+        Rectangle().fill(ADEColor.textMuted.opacity(0.15)).frame(height: 1)
+        Button {
+          withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+        } label: {
+          HStack(spacing: 4) {
+            Text(text.lead).fontWeight(.medium).foregroundStyle(ADEColor.textSecondary)
+            if !text.summary.isEmpty && !checksOnly {
+              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              Text(text.summary).foregroundStyle(warning ? ADEColor.warning : ADEColor.textMuted).lineLimit(1)
+            }
+            if let progress = card.progress {
+              Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+              checkCounts(progress)
+            }
+            Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .semibold))
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(accessibilityText(text))
+        .accessibilityHint(expanded ? "Hides what changed" : "Shows what changed and what the agent was told")
+        if let deeplink {
+          Text("·").foregroundStyle(ADEColor.textMuted.opacity(0.5))
+          Button {
+            onOpenDeeplink(deeplink)
+          } label: {
+            HStack(spacing: 2) {
+              Image(systemName: "arrow.triangle.pull").font(.system(size: 10, weight: .semibold))
+              Image(systemName: "chevron.right").font(.system(size: 8, weight: .semibold))
+            }
+          }
+          .buttonStyle(.plain)
+          .layoutPriority(1)
+          .accessibilityLabel("Open the pull request")
+        }
+        Rectangle().fill(ADEColor.textMuted.opacity(0.15)).frame(height: 1)
+      }
+      .font(.caption2)
+      .foregroundStyle(ADEColor.textMuted)
+      if expanded {
+        VStack(alignment: .leading, spacing: 3) {
+          ForEach(Array(card.rows.enumerated()), id: \.offset) { _, row in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+              Text("•").foregroundStyle(row.tone == .warning || row.icon == .fail ? ADEColor.warning : ADEColor.textMuted)
+              Text(row.text).foregroundStyle(ADEColor.textSecondary).lineLimit(2)
+              if let detail = row.detail?.trimmingCharacters(in: .whitespacesAndNewlines), !detail.isEmpty {
+                Text(detail).foregroundStyle(ADEColor.textMuted).lineLimit(1)
+              }
+            }
+          }
+          if let more = card.rowsTruncated, more > 0 {
+            Text("+\(more) more").foregroundStyle(ADEColor.textMuted)
+          }
+          if let wakeText = card.wakeText?.trimmingCharacters(in: .whitespacesAndNewlines), !wakeText.isEmpty {
+            Text("What the agent was told").foregroundStyle(ADEColor.textMuted).padding(.top, 2)
+            Text(wakeText)
+              .foregroundStyle(ADEColor.textSecondary)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(8)
+              .background(ADEColor.cardBackground.opacity(0.5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+          }
+        }
+        .font(.caption)
+      }
+    }
+    .padding(.vertical, 4)
+  }
+
+  /// What the line says, for VoiceOver: "Watching PR #1991, 36 passed, 2 failed".
+  private func accessibilityText(_ text: (lead: String, summary: String)) -> String {
+    var parts = [text.lead]
+    if !text.summary.isEmpty && !checksOnly { parts.append(text.summary) }
+    if let progress = card.progress {
+      if progress.passed > 0 { parts.append("\(progress.passed) passed") }
+      if progress.failed > 0 { parts.append("\(progress.failed) failed") }
+      if progress.running + progress.queued > 0 { parts.append("\(progress.running + progress.queued) still running") }
+    }
+    return parts.joined(separator: ", ")
+  }
+
+  /// "✓ 38  ✕ 2  ◌ 1": the checks behind a checks wake, each count with its glyph.
+  private func checkCounts(_ progress: WorkAdeCardProgress) -> some View {
+    let parts: [(count: Int, symbol: String, tint: Color, label: String)] = [
+      (progress.passed, "checkmark.circle.fill", ADEColor.success, "passed"),
+      (progress.failed, "xmark.circle.fill", ADEColor.warning, "failed"),
+      (progress.running + progress.queued, "circle.dotted", ADEColor.textMuted, "still running"),
+    ].filter { $0.count > 0 }
+    return HStack(spacing: 6) {
+      ForEach(parts, id: \.label) { part in
+        HStack(spacing: 2) {
+          Image(systemName: part.symbol).font(.system(size: 9, weight: .semibold))
+          Text("\(part.count)").monospacedDigit()
+        }
+        .foregroundStyle(part.tint)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(part.count) \(part.label)")
+      }
+    }
   }
 }
 

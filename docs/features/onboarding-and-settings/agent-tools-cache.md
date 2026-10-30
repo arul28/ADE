@@ -82,8 +82,8 @@ has them in `node_modules`, so it never downloads them.
 | `claude-code` | 0.3.300 (Claude Code 2.1.300) | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `codex` | 0.164.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `opencode` | 2.0.29 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `copilot` | 1.0.22 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
-| `copilot-cli` | 1.0.98 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `copilot` | 1.0.28 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
+| `copilot-cli` | 1.0.105 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `droid` | 0.244.0 | `npm-tarball` | npm sha512 SRI | `registry.npmjs.org` |
 | `grok` | 1.0.46 | `npm-tarball` + brotli step | npm sha512 SRI | `registry.npmjs.org` |
 | `pi` | 1.4.0 | `npm-tree` (about 119 packages per target, hoisted flat since Pi stopped shipping `npm-shrinkwrap.json` in 1.0.2) | npm sha512 SRI per package | `registry.npmjs.org` |

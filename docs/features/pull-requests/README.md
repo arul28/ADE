@@ -2181,7 +2181,9 @@ Cards are news for the user; they never start a turn. **Watch** and **Ship**
 are how a chat asks to be woken when its PR changes. Source:
 `shared/prWatch.ts` (pure evaluator, wake text, wake card),
 `main/services/prs/prChatWatchStore.ts` (rows), `main/services/prs/prWatchService.ts`
-(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control).
+(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control),
+`renderer/components/chat/PrWatchWakeLine.tsx` (the wake's line in the
+transcript; iOS `WorkPrWatchWakeLine`).
 
 - **Turning it on.** Beside the header PR pill, while the PR is open, sits
   one icon button with a caret: a slashed eye (off), an eye (Watch, sky) or a
@@ -2246,9 +2248,12 @@ are how a chat asks to be woken when its PR changes. Source:
   boundary of a running one. What the agent was told is recorded only after
   delivery succeeds, guarded so a watch stopped or restarted mid-read is not
   overwritten (a mode switch mid-read keeps the told state, so nothing is told
-  twice, and the switched watch runs again right after the pass). The transcript shows the wake as its card (`pr_watch_wake`,
-  "Agent notified · watching"), with the exact text folded underneath — never
-  as a user bubble.
+  twice, and the switched watch runs again right after the pass). The transcript shows the wake as one divider line (`pr_watch_wake`,
+  "Watching PR #1991 · 8 new comments ›", then a PR icon that opens the PR in
+  the chat's tools pane; "Shipping" or "Stopped watching" by the watch's state
+  when it was sent). A wake about checks shows their counts with check icons
+  in place of words. Clicking the line shows what changed and the exact text
+  the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
   turning it off, the chat being archived or deleted, 10 comment-only wakes in

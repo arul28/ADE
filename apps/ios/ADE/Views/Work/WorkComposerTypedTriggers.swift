@@ -1845,6 +1845,14 @@ enum WorkComposerSlashCatalog {
         ("/explain", "Explain a file or change."),
         ("/review", "Review the current diff."),
       ]
+    case "copilot":
+      return [
+        ("/compact", "Summarize conversation history to reduce context use."),
+        ("/context", "Show context window token usage."),
+        ("/usage", "Show session usage and AI credits."),
+        ("/review", "Run the code review agent on your changes."),
+        ("/plan", "Create an implementation plan before coding."),
+      ]
     case "muse":
       return [
         ("/compact", "Summarize the visible conversation to free tokens."),
