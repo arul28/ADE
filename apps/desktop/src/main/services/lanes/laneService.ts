@@ -15,6 +15,8 @@ import {
   GIT_TREE_WRITE_PROGRESS_ENV,
   GIT_TREE_WRITE_TIMEOUT_MS,
   GitTimeoutError,
+  gitWorktreeListIdentity,
+  gitWorktreeRootCached,
   parseGitCheckoutProgressLine,
   refreshNewWorktreeIndexSoon,
   rememberGitRepoResult,
@@ -1226,32 +1228,8 @@ async function resolveCommitOid(worktreePath: string, ref: string): Promise<stri
  * re-created worktree, or a rewritten `.git` file, asks git again. Mutations
  * keep calling the uncached check.
  */
-const worktreeRootAnswers = new Map<string, { signature: string; isRoot: boolean }>();
-
-async function worktreeRootSignature(worktreePath: string): Promise<string | null> {
-  try {
-    const [dir, dotGit] = await Promise.all([
-      fs.promises.stat(worktreePath, { bigint: true }),
-      fs.promises.lstat(path.join(worktreePath, ".git"), { bigint: true }),
-    ]);
-    return `${dir.dev}:${dir.ino}|${dotGit.ino}:${dotGit.mtimeNs}:${dotGit.size}`;
-  } catch {
-    return null;
-  }
-}
-
 async function isExpectedGitWorktreeRootCached(worktreePath: string): Promise<boolean> {
-  if (!worktreePath) return false;
-  const signature = await worktreeRootSignature(worktreePath);
-  const known = worktreeRootAnswers.get(worktreePath);
-  if (signature && known?.signature === signature) return known.isRoot;
-  const isRoot = await isExpectedGitWorktreeRoot(worktreePath);
-  // Only a yes is kept: a no is also what a timeout or a git that failed to
-  // start reports, and keeping it would hold the lane unavailable until a
-  // restart. A folder that really is not a worktree asks again each refresh.
-  if (signature && isRoot) worktreeRootAnswers.set(worktreePath, { signature, isRoot });
-  else worktreeRootAnswers.delete(worktreePath);
-  return isRoot;
+  return await gitWorktreeRootCached(worktreePath, () => isExpectedGitWorktreeRoot(worktreePath));
 }
 
 async function computeLaneStatus(
@@ -3077,12 +3055,26 @@ export function createLaneService({
     pendingWorktreeCreationPaths.has(canonicalPath(worktreePath)) ||
     (normalizeBranchKey(branchRef).length > 0 && pendingWorktreeCreationBranches.has(normalizeBranchKey(branchRef)));
 
+  /**
+   * The last `git worktree list`, kept while nothing it reads has changed
+   * (`gitWorktreeListIdentity`). Every lane list runs the worktree reconcile
+   * first, so it ran this git command each time: ~30 ms of process start on
+   * Windows, on a read the UI makes constantly. The reconcile itself still runs
+   * every time, on the kept listing.
+   */
+  let worktreeListing: { key: string; worktrees: GitWorktreeInfo[] } | null = null;
   const listGitWorktrees = async (): Promise<GitWorktreeInfo[]> => {
+    // Taken before git runs: a worktree added or removed during the read moves
+    // the key, so the next call reads again.
+    const key = await gitWorktreeListIdentity(projectRoot);
+    if (key && worktreeListing?.key === key) return worktreeListing.worktrees.map((worktree) => ({ ...worktree }));
     const result = await runGitOrThrow(
       ["worktree", "list", "--porcelain"],
       { cwd: projectRoot, timeoutMs: 15_000 }
     );
-    return parseGitWorktreePorcelain(worktreeStdout(result));
+    const worktrees = parseGitWorktreePorcelain(worktreeStdout(result));
+    worktreeListing = key ? { key, worktrees: worktrees.map((worktree) => ({ ...worktree })) } : null;
+    return worktrees;
   };
 
   const registeredWorktreeForLane = async (

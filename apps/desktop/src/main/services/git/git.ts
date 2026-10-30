@@ -912,6 +912,111 @@ export async function gitBranchRefsIdentity(worktreePath: string): Promise<strin
   }
 }
 
+async function fileStamp(file: string): Promise<string | null> {
+  try {
+    const s = await fs.promises.stat(file, { bigint: true });
+    return `${s.ino}:${s.size}:${s.mtimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Every folder under `dir`, stamped (a loose ref update renames a lock file into its folder). */
+async function folderTreeStamps(dir: string, parts: string[]): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    parts.push("-");
+    return;
+  }
+  parts.push((await fileStamp(dir)) ?? "-");
+  for (const entry of entries) if (entry.isDirectory()) await folderTreeStamps(path.join(dir, entry.name), parts);
+}
+
+/**
+ * A key that changes whenever `git worktree list --porcelain`, run in the main
+ * checkout `repoRoot`, can answer differently: the main `HEAD`, each linked
+ * worktree's admin folder (its `HEAD`, its `gitdir` pointer and lock file),
+ * whether that worktree's `.git` still exists (git reports a deleted one as
+ * prunable), and the branch refs (the listing names each worktree's commit).
+ * Null outside the plain layout (`.git` not a folder in `repoRoot`, a
+ * redirected `GIT_DIR`, reftable refs), so the caller asks git.
+ */
+export async function gitWorktreeListIdentity(repoRoot: string): Promise<string | null> {
+  if (process.env.GIT_DIR || process.env.GIT_COMMON_DIR) return null;
+  try {
+    const commonDir = path.join(repoRoot, ".git");
+    if (!(await fs.promises.lstat(commonDir)).isDirectory()) return null;
+    if (fs.existsSync(path.join(commonDir, "reftable"))) return null;
+    const head = await fileStamp(path.join(commonDir, "HEAD"));
+    if (!head) return null;
+    const parts = [head, (await fileStamp(path.join(commonDir, "packed-refs"))) ?? "-"];
+    await folderTreeStamps(path.join(commonDir, "refs", "heads"), parts);
+    const adminRoot = path.join(commonDir, "worktrees");
+    let names: string[] = [];
+    try {
+      names = (await fs.promises.readdir(adminRoot, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch {
+      // No linked worktrees.
+    }
+    parts.push((await fileStamp(adminRoot)) ?? "-");
+    for (const name of names) {
+      const admin = path.join(adminRoot, name);
+      parts.push(name);
+      for (const file of ["HEAD", "gitdir", "locked"]) parts.push((await fileStamp(path.join(admin, file))) ?? "-");
+      try {
+        const pointer = (await fs.promises.readFile(path.join(admin, "gitdir"), "utf8")).trim();
+        parts.push(pointer && fs.existsSync(path.resolve(admin, pointer)) ? "present" : "gone");
+      } catch {
+        parts.push("gone");
+      }
+    }
+    return createHash("sha1").update(parts.join("|")).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The folder and `.git` entry that decide whether a folder is a worktree root.
+ * A `.git` folder is identified by its inode alone: its mtime moves on nearly
+ * every git command (the index, lock files), which says nothing about the
+ * answer. A `.git` file (a linked worktree's pointer) also by size and mtime,
+ * since its content is the answer.
+ */
+async function worktreeRootSignature(worktreePath: string): Promise<string | null> {
+  try {
+    const [dir, dotGit] = await Promise.all([
+      fs.promises.stat(worktreePath, { bigint: true }),
+      fs.promises.lstat(path.join(worktreePath, ".git"), { bigint: true }),
+    ]);
+    const dotGitKey = dotGit.isDirectory() ? `dir:${dotGit.ino}` : `file:${dotGit.ino}:${dotGit.mtimeNs}:${dotGit.size}`;
+    return `${dir.dev}:${dir.ino}|${dotGitKey}`;
+  } catch {
+    return null;
+  }
+}
+
+const worktreeRootYes = new Map<string, string>();
+
+/**
+ * Whether `worktreePath` is a worktree root, from `check` (which runs git), with
+ * a yes kept while the folder and its `.git` entry are the same. Only a yes is
+ * kept: a no is also what a timeout or a git that failed to start reports, and
+ * keeping it would hold the folder unavailable until a restart.
+ */
+export async function gitWorktreeRootCached(worktreePath: string, check: () => Promise<boolean>): Promise<boolean> {
+  if (!worktreePath) return false;
+  const key = path.resolve(worktreePath);
+  const signature = await worktreeRootSignature(worktreePath);
+  if (signature && worktreeRootYes.get(key) === signature) return true;
+  const isRoot = await check();
+  if (signature && isRoot) worktreeRootYes.set(key, signature);
+  else worktreeRootYes.delete(key);
+  return isRoot;
+}
+
 /** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */
 export type GitRepoObservation = { commonGitDir: string; epoch: number; askedAtMs: number };
 

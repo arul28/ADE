@@ -14,6 +14,8 @@ import {
   parseGitOwnershipError,
   getHeadSha,
   gitBranchRefsIdentity,
+  gitWorktreeListIdentity,
+  gitWorktreeRootCached,
   runGit,
   runGitMergeTree,
   runGitOrThrow,
@@ -322,6 +324,65 @@ describe("gitBranchRefsIdentity", () => {
     expect(fs.existsSync(path.join(repoRoot, ".git", "reftable"))).toBe(true);
     expect(await gitBranchRefsIdentity(repoRoot)).toBeNull();
     fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+});
+
+describe("gitWorktreeListIdentity", () => {
+  // The lane list keeps `git worktree list` while this key is unchanged, and
+  // its reconcile adopts worktrees and drops lanes whose worktree is gone.
+  // Every change below is made outside ADE.
+  it("changes whenever the worktree listing can, and not on a status", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-worktree-identity-"));
+    const linked = `${repoRoot}-linked`;
+    git(repoRoot, ["init", "-b", "main"]);
+    git(repoRoot, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "one"]);
+    let last = await gitWorktreeListIdentity(repoRoot);
+    expect(last, "plain layout yields an identity").toBeTruthy();
+    const changedAfter = async (change: () => void): Promise<boolean> => {
+      change();
+      const now = await gitWorktreeListIdentity(repoRoot);
+      const changed = now !== last;
+      last = now;
+      return changed;
+    };
+
+    expect(await changedAfter(() => git(repoRoot, ["status"]))).toBe(false);
+    const changes: Array<[string, () => void]> = [
+      ["worktree added", () => git(repoRoot, ["worktree", "add", "-q", "-b", "lane", linked])],
+      ["branch switched in the worktree", () => git(linked, ["checkout", "-q", "-b", "lane-two"])],
+      ["commit in the worktree", () => git(linked, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "two"])],
+      ["main checkout switched", () => git(repoRoot, ["checkout", "-q", "-b", "side"])],
+      ["worktree locked", () => git(repoRoot, ["worktree", "lock", linked])],
+      ["worktree unlocked", () => git(repoRoot, ["worktree", "unlock", linked])],
+      ["worktree folder deleted outside git", () => fs.rmSync(linked, { recursive: true, force: true })],
+      ["pruned", () => git(repoRoot, ["worktree", "prune"])],
+    ];
+    const missed = [];
+    for (const [label, change] of changes) if (!(await changedAfter(change))) missed.push(label);
+    expect(missed).toEqual([]);
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
+});
+
+describe("gitWorktreeRootCached", () => {
+  it("asks git again only when the folder or its .git entry is replaced, and never keeps a no", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-root-cache-"));
+    git(root, ["init", "-q"]);
+    let checks = 0;
+    const check = async () => { checks += 1; return fs.existsSync(path.join(root, ".git")); };
+
+    expect(await gitWorktreeRootCached(root, check)).toBe(true);
+    git(root, ["status"]); // moves the .git folder's mtime, which says nothing about the answer
+    expect(await gitWorktreeRootCached(root, check)).toBe(true);
+    expect(checks).toBe(1);
+
+    fs.rmSync(path.join(root, ".git"), { recursive: true, force: true });
+    expect(await gitWorktreeRootCached(root, check)).toBe(false);
+    expect(await gitWorktreeRootCached(root, check)).toBe(false);
+    git(root, ["init", "-q"]);
+    expect(await gitWorktreeRootCached(root, check)).toBe(true);
+    expect(checks).toBe(4);
+    fs.rmSync(root, { recursive: true, force: true });
   });
 });
 
