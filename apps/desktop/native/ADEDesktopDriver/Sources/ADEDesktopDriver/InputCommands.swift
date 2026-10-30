@@ -157,12 +157,19 @@ extension DriverRuntime {
                     scheduleDeferredDrain()
                 }
             }
+            // A takeover is let through the gate; the typing stops there, as a
+            // background drag lets go (a lease that is only cleared is no one).
+            let holderAtStart = leases.lease(forLane: laneId)?.holderId
             try accessibility.type(
                 element,
                 record: record,
                 text: text,
                 clear: payload["clear"]?.boolValue ?? false,
-                paceMs: paceMs
+                paceMs: paceMs,
+                shouldContinue: { [leases] in
+                    let holder = leases.lease(forLane: laneId)?.holderId
+                    return holder == nil || holder == holderAtStart
+                }
             )
             return ["resolvedIndex": .int(record.index)]
         case "setValue":

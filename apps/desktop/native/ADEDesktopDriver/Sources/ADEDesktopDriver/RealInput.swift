@@ -421,7 +421,12 @@ final class RealInput {
     func text(laneId: String, holderId: String?, text: String, targetPid: pid_t? = nil, paceMs: Int = 0) throws {
         try authorize(laneId: laneId, holderId: holderId)
         for (index, character) in text.enumerated() {
-            if index > 0 { RunLoopPump.typingPause(paceMs) }
+            if index > 0 {
+                RunLoopPump.typingPause(paceMs)
+                // The pause runs other requests; a lease that lapsed or changed
+                // hands meanwhile stops the text, as a drag re-checks each step.
+                if paceMs > 0 { try authorize(laneId: laneId, holderId: holderId) }
+            }
             var utf16 = Array(String(character).utf16)
             guard let down = CGEvent(keyboardEventSource: hidSource, virtualKey: 0, keyDown: true),
                   let up = CGEvent(keyboardEventSource: hidSource, virtualKey: 0, keyDown: false)

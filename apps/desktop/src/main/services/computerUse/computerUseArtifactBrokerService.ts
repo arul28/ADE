@@ -1519,7 +1519,7 @@ export function createComputerUseArtifactBrokerService(args: {
       const owned = !record || !ownerKind || !ownerId
         || (ownerKind === "lane" && record.laneId === ownerId)
         || readLinkRows([record.id]).some((link) => link.ownerKind === ownerKind && link.ownerId === ownerId);
-      artifacts = record && owned && matchesMetadataKindFilter(record, args) ? [record] : [];
+      artifacts = record && owned && (!args.kind || record.kind === args.kind) && matchesMetadataKindFilter(record, args) ? [record] : [];
     } else {
     if (ownerKind && ownerId) {
       artifacts = readArtifactRows(

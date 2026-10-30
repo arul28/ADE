@@ -50,7 +50,8 @@ private extension View {
     onChange(of: url) { _, newValue in
       model.update(url: newValue)
     }
-    .onChange(of: seek?.wrappedValue) { _, requested in
+    // Initial too: a chapter picked before the player appeared is still waiting.
+    .onChange(of: seek?.wrappedValue, initial: true) { _, requested in
       guard let requested else { return }
       model.player.seek(to: CMTime(seconds: requested, preferredTimescale: 600))
       model.player.play()
