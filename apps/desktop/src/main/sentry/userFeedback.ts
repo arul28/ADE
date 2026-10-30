@@ -11,12 +11,15 @@
  */
 import { captureUserFeedback, isSentryActive } from "../../shared/sentry/capture";
 import { resolveSentryUserId } from "../../shared/sentry/eventFilter";
-import { scrubFreeText } from "../../shared/sentry/scrub";
+import { scrubFreeText, scrubString } from "../../shared/sentry/scrub";
 
 /** Longest note sent. */
 export const USER_FEEDBACK_MAX_CHARS = 2_000;
 
-let lastSentMessage: string | null = null;
+/** A "Try again" within this window resends the report, not the note. */
+const RETRY_WINDOW_MS = 10 * 60_000;
+
+let lastSent: { message: string; atMs: number } | null = null;
 
 /** Returns the feedback id, or null when nothing was sent. */
 export function sendSentryUserFeedback(args: {
@@ -31,10 +34,11 @@ export function sendSentryUserFeedback(args: {
     maxLength: USER_FEEDBACK_MAX_CHARS,
   });
   // "Try again" after a failed upload sends the report again, not the note.
-  if (!message || message === lastSentMessage) return null;
+  if (!message || (lastSent?.message === message && Date.now() - lastSent.atMs < RETRY_WINDOW_MS)) return null;
   const tags: Record<string, string> = {};
   for (const [key, value] of Object.entries(args.tags ?? {})) {
-    if (typeof value === "string" && value.trim()) tags[key] = value.trim().slice(0, 200);
+    // Feedback skips `beforeSend`, so the renderer-supplied labels are scrubbed here too.
+    if (typeof value === "string" && value.trim()) tags[key] = scrubString(value.trim().slice(0, 200));
   }
   const feedbackId = captureUserFeedback({
     message,
@@ -43,6 +47,6 @@ export function sendSentryUserFeedback(args: {
     tags,
     onError: args.onError,
   });
-  if (feedbackId) lastSentMessage = message;
+  if (feedbackId) lastSent = { message, atMs: Date.now() };
   return feedbackId;
 }

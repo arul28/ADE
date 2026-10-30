@@ -885,10 +885,11 @@ export const dashboardSpec = Object.freeze({
         insight(
           "weekly-account-deletions",
           "Weekly account deletions",
-          "Accounts deleted each week, from the account directory's Clerk webhook.",
+          "Accounts deleted each week, from the account directory's Clerk webhook. The deletion carries no internal flag of its own, so ADE's own accounts are left out by the `is_internal` person property their sign-up set.",
           trends({
             series: [eventNode(EVENTS.ACCOUNT_DELETED, "Accounts deleted")],
             dateFrom: "-180d",
+            properties: [{ key: PROPERTIES.IS_INTERNAL, value: ["true"], operator: "is_not", type: "person" }],
           }),
         ),
         insight(

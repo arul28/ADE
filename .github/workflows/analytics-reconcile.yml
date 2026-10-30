@@ -59,6 +59,8 @@ jobs:
         if: steps.key.outputs.present == 'true'
         with:
           sparse-checkout: scripts/analytics
+          # The job never pushes; keep the token out of git config, beside the Clerk and PostHog secrets.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         if: steps.key.outputs.present == 'true'
         with:
@@ -92,5 +94,9 @@ jobs:
             sleep 60
           done
           { echo "### Check (failed)"; cat "$RUNNER_TEMP/report.md"; } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error::Sign-ups are missing from PostHog; see the run summary."
+          if [ "$status" -eq 1 ]; then
+            echo "::error::Sign-ups are missing from PostHog; see the run summary."
+          else
+            echo "::error::The check could not reach Clerk or PostHog (exit $status): a key may be expired or an API failed. See the step log."
+          fi
           exit 1

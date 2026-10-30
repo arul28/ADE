@@ -595,16 +595,15 @@ export function createSurveyService(args: {
     }
     if (sentThisLaunch.has(survey.id)) return { accepted: false };
     if (input.kind === "dismissed") {
-      sentThisLaunch.add(survey.id);
-      return {
-        accepted: args.analytics.captureInternal({
-          event: "survey dismissed",
-          surface: "desktop",
-          survey: { ...base, partiallyCompleted: input.partiallyCompleted === true },
-          dedupeKey: `survey-dismissed:${survey.id}`,
-          minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
-        }).accepted,
-      };
+      const { accepted } = args.analytics.captureInternal({
+        event: "survey dismissed",
+        surface: "desktop",
+        survey: { ...base, partiallyCompleted: input.partiallyCompleted === true },
+        dedupeKey: `survey-dismissed:${survey.id}`,
+        minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
+      });
+      if (accepted) sentThisLaunch.add(survey.id);
+      return { accepted };
     }
     if (input.kind !== "sent") return { accepted: false };
     const responses = validateSurveyAnswers(survey, input.answers);

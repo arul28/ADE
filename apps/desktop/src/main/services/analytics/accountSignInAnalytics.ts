@@ -6,8 +6,8 @@ type SignInOutcome = "started" | "completed" | "failed" | "cancelled";
 
 type Attempt = {
   source: AccountSignInSource;
-  /** Sign-in sessions of this attempt that have not finished. */
-  open: Set<string>;
+  /** Sign-in sessions of this attempt that have not finished, with the method each one uses. */
+  open: Map<string, AccountSignInSource>;
   ended: boolean;
   cancelled: boolean;
   errorKind: string | null;
@@ -73,8 +73,8 @@ function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boole
     }
   };
 
-  const remember = (sessionId: string, attempt: Attempt): void => {
-    attempt.open.add(sessionId);
+  const remember = (sessionId: string, attempt: Attempt, source: AccountSignInSource): void => {
+    attempt.open.set(sessionId, source);
     sessions.set(sessionId, attempt);
     while (sessions.size > MAX_TRACKED_SESSIONS) {
       const oldest = sessions.keys().next().value;
@@ -83,23 +83,25 @@ function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boole
     }
   };
 
-  const end = (attempt: Attempt, outcome: Exclude<SignInOutcome, "started">): void => {
+  /** `source` is the method of the session that ended the attempt, so `ade login` finished on a phone counts as `device_code`. */
+  const end = (attempt: Attempt, outcome: Exclude<SignInOutcome, "started">, source: AccountSignInSource): void => {
     if (attempt.ended) return;
     attempt.ended = true;
-    record(outcome, attempt.source, outcome === "failed" ? attempt.errorKind ?? "other" : null);
+    record(outcome, source, outcome === "failed" ? attempt.errorKind ?? "other" : null);
   };
 
   /** One session of `attempt` is over; the attempt ends with its last one. */
   const close = (sessionId: string, attempt: Attempt): void => {
+    const source = attempt.open.get(sessionId) ?? attempt.source;
     attempt.open.delete(sessionId);
     sessions.delete(sessionId);
     if (attempt.open.size > 0) return;
-    end(attempt, attempt.cancelled ? "cancelled" : "failed");
+    end(attempt, attempt.cancelled ? "cancelled" : "failed", source);
   };
 
   const openAttempt = (source: AccountSignInSource): Attempt => {
     if (oneAttempt && current && !current.ended) return current;
-    const attempt: Attempt = { source, open: new Set(), ended: false, cancelled: false, errorKind: null };
+    const attempt: Attempt = { source, open: new Map(), ended: false, cancelled: false, errorKind: null };
     current = attempt;
     record("started", source);
     return attempt;
@@ -110,7 +112,7 @@ function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boole
     started(source: AccountSignInSource, sessionId: string | null | undefined): void {
       const attempt = openAttempt(source);
       const id = sessionId?.trim();
-      if (id) remember(id, attempt);
+      if (id) remember(id, attempt, source);
     },
 
     /** A start that threw. Ends the attempt unless another of its sessions is still open. */
@@ -118,7 +120,7 @@ function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boole
       const attempt = openAttempt(source);
       if (attempt.open.size > 0) return;
       attempt.errorKind = error instanceof Error ? error.message : String(error ?? "other");
-      end(attempt, "failed");
+      end(attempt, "failed", source);
     },
 
     /** A poll's answer. Only a terminal one counts. */
@@ -127,9 +129,10 @@ function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boole
       const attempt = id ? sessions.get(id) : undefined;
       if (!id || !attempt) return;
       if (status === "signed_in") {
+        const source = attempt.open.get(id) ?? attempt.source;
         sessions.delete(id);
         attempt.open.delete(id);
-        end(attempt, "completed");
+        end(attempt, "completed", source);
         return;
       }
       if (status !== "expired" && status !== "error") return;
