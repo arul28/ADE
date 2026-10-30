@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFile, spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promisify } from "node:util";
 import { StringDecoder } from "node:string_decoder";
 import type { ConflictFileType } from "../../../shared/types";
@@ -62,6 +63,33 @@ export function selectGitExecutable(
   return selected?.path ?? null;
 }
 
+/** Where Git for Windows keeps its real git.exe, newest layout first (2.56 moved x64 to ucrt64). */
+const GIT_FOR_WINDOWS_BUILDS = ["ucrt64", "clangarm64", "mingw64", "mingw32"] as const;
+
+/**
+ * Git for Windows puts only its launcher on PATH: `<Git>\cmd\git.exe`, or
+ * `<Git>\bin\git.exe` in the portable build. The launcher sets PATH, HOME and
+ * MSYSTEM, then starts the real `<Git>\<build>\bin\git.exe` as a second
+ * process, so each git run costs two process starts (about 25 ms each on a
+ * Windows PC). The real binary does the same setup itself when MSYSTEM is
+ * unset, which is how Git for Windows tells heavy callers to run it. With
+ * MSYSTEM set (a brain started from Git Bash) it skips that setup and a
+ * `#!/bin/sh` hook cannot start, so the launcher stays. Any other git (Scoop,
+ * Chocolatey, a plain git.exe) comes back unchanged.
+ */
+function preferGitForWindowsBinary(selected: string, env: NodeJS.ProcessEnv = process.env): string {
+  if (env.MSYSTEM) return selected;
+  const dir = path.win32.dirname(selected);
+  const leaf = path.win32.basename(dir).toLowerCase();
+  if (path.win32.basename(selected).toLowerCase() !== "git.exe" || (leaf !== "cmd" && leaf !== "bin")) return selected;
+  const root = path.win32.dirname(dir);
+  for (const build of GIT_FOR_WINDOWS_BUILDS) {
+    const real = path.win32.join(root, build, "bin", "git.exe");
+    if (real.toLowerCase() !== selected.toLowerCase() && fs.existsSync(real)) return real;
+  }
+  return selected;
+}
+
 export function shouldProbeLoginShellForGit(
   selectedExecutable: string | null,
   platform: NodeJS.Platform = process.platform,
@@ -112,9 +140,13 @@ async function resolveGitExecutableUncached(): Promise<string> {
     }
   }
   if (resolvedCandidate) {
-    cachedGitExecutable = process.platform === "darwin" && resolvedCandidate === "/usr/bin/git"
-      ? await resolveAppleGitBehindShim() ?? resolvedCandidate
-      : resolvedCandidate;
+    if (process.platform === "darwin" && resolvedCandidate === "/usr/bin/git") {
+      cachedGitExecutable = await resolveAppleGitBehindShim() ?? resolvedCandidate;
+    } else if (process.platform === "win32") {
+      cachedGitExecutable = preferGitForWindowsBinary(resolvedCandidate);
+    } else {
+      cachedGitExecutable = resolvedCandidate;
+    }
     return cachedGitExecutable;
   }
   // Fall back to bare "git" — spawn will surface the original ENOENT with a
@@ -209,6 +241,12 @@ export type GitRunOptions = {
   timeoutMessage?: string;
   /** What `runGitOrThrow` says when `signal` stops git, instead of git's output. */
   cancelMessage?: string;
+  /**
+   * Called just before git is started (after any wait for the executable).
+   * Until then git has read nothing, so a caller can let a later ask share
+   * this run's answer.
+   */
+  onStart?: () => void;
 };
 
 export type GitRunResult = {
@@ -375,6 +413,7 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     return { exitCode: 130, stdout: "", stderr: "git was cancelled", cancelled: true };
   }
   const executable = await resolveGitExecutable();
+  opts.onStart?.();
   return await new Promise<GitRunResult>((resolve) => {
     // A caller's env wins over GIT_READ_ENV and GIT_NO_PROMPT_ENV.
     const envPatch = { ...GIT_READ_ENV, ...GIT_NO_PROMPT_ENV, ...(opts.env ?? {}) };
@@ -812,6 +851,170 @@ export async function resolveWorktreeIndexPath(worktreePath: string): Promise<st
   ).catch(() => null);
   // Relative to the worktree (`--path-format=absolute` needs git 2.31).
   return res && res.exitCode === 0 && res.stdout.trim() ? path.resolve(worktreePath, res.stdout.trim()) : "";
+}
+
+/**
+ * A key that changes whenever the answer of a branch listing (`for-each-ref
+ * refs/heads refs/remotes` with HEAD and upstream fields) can change: every
+ * folder under `refs/heads` and `refs/remotes` (git updates a loose ref by
+ * renaming a lock file into place, which moves its folder's mtime),
+ * `packed-refs`, this worktree's `HEAD`, and the repository and worktree config. Null when
+ * the layout is not the plain one git writes (or the environment redirects
+ * git, or refs are in reftable/), so the caller asks git as before.
+ */
+export async function gitBranchRefsIdentity(worktreePath: string): Promise<string | null> {
+  if (process.env.GIT_DIR || process.env.GIT_COMMON_DIR) return null;
+  try {
+    const dotGit = path.join(worktreePath, ".git");
+    const stat = await fs.promises.lstat(dotGit);
+    let gitDir: string | null = null;
+    if (stat.isDirectory()) gitDir = dotGit;
+    else if (stat.isFile()) {
+      const match = /^gitdir: (.+)$/.exec((await fs.promises.readFile(dotGit, "utf8")).trim());
+      if (match?.[1] && !match[1].includes("\n")) gitDir = path.resolve(worktreePath, match[1].trim());
+    }
+    const commonDir = await gitCommonDirFor(worktreePath);
+    if (!gitDir || !commonDir) return null;
+    // A reftable repository (git 2.45+) keeps refs in reftable/ files this key
+    // does not read; no key, so the caller asks git every time.
+    if (fs.existsSync(path.join(commonDir, "reftable"))) return null;
+    const parts: string[] = [];
+    const stamp = async (file: string, required: boolean): Promise<boolean> => {
+      try {
+        const s = await fs.promises.stat(file, { bigint: true });
+        parts.push(`${s.ino}:${s.size}:${s.mtimeNs}`);
+        return true;
+      } catch {
+        parts.push("-");
+        return !required;
+      }
+    };
+    if (!(await stamp(path.join(gitDir, "HEAD"), true))) return null;
+    await stamp(path.join(commonDir, "config"), false);
+    await stamp(path.join(gitDir, "config.worktree"), false);
+    await stamp(path.join(commonDir, "packed-refs"), false);
+    const walk = async (dir: string): Promise<void> => {
+      let entries: fs.Dirent[];
+      try {
+        entries = await fs.promises.readdir(dir, { withFileTypes: true });
+      } catch {
+        parts.push("-");
+        return;
+      }
+      await stamp(dir, false);
+      for (const entry of entries) if (entry.isDirectory()) await walk(path.join(dir, entry.name));
+    };
+    await walk(path.join(commonDir, "refs", "heads"));
+    await walk(path.join(commonDir, "refs", "remotes"));
+    return createHash("sha1").update(parts.join("|")).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+async function fileStamp(file: string): Promise<string | null> {
+  try {
+    const s = await fs.promises.stat(file, { bigint: true });
+    return `${s.ino}:${s.size}:${s.mtimeNs}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Every folder under `dir`, stamped (a loose ref update renames a lock file into its folder). */
+async function folderTreeStamps(dir: string, parts: string[]): Promise<void> {
+  let entries: fs.Dirent[];
+  try {
+    entries = await fs.promises.readdir(dir, { withFileTypes: true });
+  } catch {
+    parts.push("-");
+    return;
+  }
+  parts.push((await fileStamp(dir)) ?? "-");
+  for (const entry of entries) if (entry.isDirectory()) await folderTreeStamps(path.join(dir, entry.name), parts);
+}
+
+/**
+ * A key that changes whenever `git worktree list --porcelain`, run in the main
+ * checkout `repoRoot`, can answer differently: the main `HEAD`, each linked
+ * worktree's admin folder (its `HEAD`, its `gitdir` pointer and lock file),
+ * whether that worktree's `.git` still exists (git reports a deleted one as
+ * prunable), and the branch refs (the listing names each worktree's commit).
+ * Null outside the plain layout (`.git` not a folder in `repoRoot`, a
+ * redirected `GIT_DIR`, reftable refs), so the caller asks git.
+ */
+export async function gitWorktreeListIdentity(repoRoot: string): Promise<string | null> {
+  if (process.env.GIT_DIR || process.env.GIT_COMMON_DIR) return null;
+  try {
+    const commonDir = path.join(repoRoot, ".git");
+    if (!(await fs.promises.lstat(commonDir)).isDirectory()) return null;
+    if (fs.existsSync(path.join(commonDir, "reftable"))) return null;
+    const head = await fileStamp(path.join(commonDir, "HEAD"));
+    if (!head) return null;
+    const parts = [head, (await fileStamp(path.join(commonDir, "packed-refs"))) ?? "-"];
+    await folderTreeStamps(path.join(commonDir, "refs", "heads"), parts);
+    const adminRoot = path.join(commonDir, "worktrees");
+    let names: string[] = [];
+    try {
+      names = (await fs.promises.readdir(adminRoot, { withFileTypes: true })).filter((e) => e.isDirectory()).map((e) => e.name).sort();
+    } catch {
+      // No linked worktrees.
+    }
+    parts.push((await fileStamp(adminRoot)) ?? "-");
+    for (const name of names) {
+      const admin = path.join(adminRoot, name);
+      parts.push(name);
+      for (const file of ["HEAD", "gitdir", "locked"]) parts.push((await fileStamp(path.join(admin, file))) ?? "-");
+      try {
+        const pointer = (await fs.promises.readFile(path.join(admin, "gitdir"), "utf8")).trim();
+        parts.push(pointer && fs.existsSync(path.resolve(admin, pointer)) ? "present" : "gone");
+      } catch {
+        parts.push("gone");
+      }
+    }
+    return createHash("sha1").update(parts.join("|")).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The folder and `.git` entry that decide whether a folder is a worktree root.
+ * A `.git` folder is identified by its inode alone: its mtime moves on nearly
+ * every git command (the index, lock files), which says nothing about the
+ * answer. A `.git` file (a linked worktree's pointer) also by size and mtime,
+ * since its content is the answer.
+ */
+async function worktreeRootSignature(worktreePath: string): Promise<string | null> {
+  try {
+    const [dir, dotGit] = await Promise.all([
+      fs.promises.stat(worktreePath, { bigint: true }),
+      fs.promises.lstat(path.join(worktreePath, ".git"), { bigint: true }),
+    ]);
+    const dotGitKey = dotGit.isDirectory() ? `dir:${dotGit.ino}` : `file:${dotGit.ino}:${dotGit.mtimeNs}:${dotGit.size}`;
+    return `${dir.dev}:${dir.ino}|${dotGitKey}`;
+  } catch {
+    return null;
+  }
+}
+
+const worktreeRootYes = new Map<string, string>();
+
+/**
+ * Whether `worktreePath` is a worktree root, from `check` (which runs git), with
+ * a yes kept while the folder and its `.git` entry are the same. Only a yes is
+ * kept: a no is also what a timeout or a git that failed to start reports, and
+ * keeping it would hold the folder unavailable until a restart.
+ */
+export async function gitWorktreeRootCached(worktreePath: string, check: () => Promise<boolean>): Promise<boolean> {
+  if (!worktreePath) return false;
+  const key = path.resolve(worktreePath);
+  const signature = await worktreeRootSignature(worktreePath);
+  if (signature && worktreeRootYes.get(key) === signature) return true;
+  const isRoot = await check();
+  if (signature && isRoot) worktreeRootYes.set(key, signature);
+  else worktreeRootYes.delete(key);
+  return isRoot;
 }
 
 /** Where and when a read began, so its answer can stand in for another question (`rememberGitRepoResult`). */

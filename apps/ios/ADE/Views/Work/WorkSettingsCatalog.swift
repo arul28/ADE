@@ -126,6 +126,7 @@ enum WorkSettingsCatalog {
     "secrets.secrets": Setting(path: "Project › Secrets", locked: false),
     "stats.usage": Setting(path: "You › Usage › Usage & spend", locked: true),
     "ade-mcp.server": Setting(path: "You › ADE MCP › ADE MCP: let AI apps use ADE", locked: true),
+    "ade-mcp.connect": Setting(path: "You › ADE MCP › Connect an AI app to ADE", locked: true),
     "ade-mcp.computers": Setting(path: "You › ADE MCP › Computers AI apps can reach", locked: true),
     "ade-mcp.connections": Setting(path: "You › ADE MCP › Connected AI apps and tokens", locked: true),
   ]

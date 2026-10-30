@@ -191,8 +191,8 @@ export interface CtoOperatorToolDeps {
   // Domain coverage. Every entry below is OPTIONAL: a runtime that does
   // not wire the backing service leaves the method undefined and the tool
   // answers a clean "not available on this runtime" instead of throwing. That
-  // is the runtime-backed-null-services rule — `ade code`, the headless brain
-  // and the desktop all build this map and they do not wire the same graph.
+  // is the runtime-backed-null-services rule — the headless brain
+  // and the desktop both build this map and they do not wire the same graph.
   // ───────────────────────────────────────────────────────────────────────────
 
   /**
@@ -690,6 +690,28 @@ function summarizeUsageSnapshot(snapshot: unknown): unknown {
   };
 }
 
+/**
+ * Add a tool that is built the first time it is read. Building every tool's
+ * zod schema costs milliseconds, and a bridge call (`ade chat status`, every
+ * agent's CLI call) reads one tool from a fresh map; a chat's tool set reads
+ * them all and builds them all, as before. The first read replaces the getter
+ * with the built tool, so later reads and writes see a plain property.
+ */
+function defineLazyTool(tools: CtoOperatorToolMap, name: string, build: () => CtoOperatorTool): void {
+  const settle = (value: CtoOperatorTool) => {
+    Object.defineProperty(tools, name, { value, writable: true, enumerable: true, configurable: true });
+    return value;
+  };
+  Object.defineProperty(tools, name, {
+    enumerable: true,
+    configurable: true,
+    get: () => settle(build()),
+    set: (value: CtoOperatorTool) => {
+      settle(value);
+    },
+  });
+}
+
 export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorToolMap {
   const tools: CtoOperatorToolMap = {};
 
@@ -730,9 +752,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   });
   const { remoteMachine, onMachine, runRemote } = crossMachine;
 
-  tools.listMachines = core(crossMachine.tools.listMachines);
+  defineLazyTool(tools, "listMachines", () => core(crossMachine.tools.listMachines));
 
-  tools.listLanes = core({
+  defineLazyTool(tools, "listLanes", () => core({
     description: "List all ADE lanes with their status (dirty, ahead/behind, rebase state), branch info, and metadata. Use this to understand what work is happening across the project and choose where to open work. Pass machine to list another machine's lanes.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(false),
@@ -755,9 +777,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.inspectLane = core({
+  defineLazyTool(tools, "inspectLane", () => core({
     description: "Inspect one ADE lane by ID to understand its branch, worktree, and git state. Pass machine for a lane on another machine.",
     inputSchema: z.object({
       laneId: z.string(),
@@ -789,9 +811,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         })),
       };
     },
-  });
+  }));
 
-  tools.createLane = core({
+  defineLazyTool(tools, "createLane", () => core({
     description: "Create a new ADE lane for isolated work. Pass machine to create it on another machine: the lane, its worktree and everything run in it then live on that machine.",
     inputSchema: z.object({
       name: z.string(),
@@ -839,9 +861,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listChats = core({
+  defineLazyTool(tools, "listChats", () => core({
     description:
       "List ADE chat sessions so you can supervise active work and persistent identity threads. Each row carries " +
       "its settle/snooze lifecycle plus `wokeReason` when a snooze broke early, so you can triage what actually " +
@@ -886,9 +908,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       });
       return { success: true, count: withLifecycle.length, chats: withLifecycle };
     },
-  });
+  }));
 
-  tools.spawnChat = core({
+  defineLazyTool(tools, "spawnChat", () => core({
     description:
       "Create a native ADE work chat session — the primary way to launch an AI agent in ADE. " +
       "IMPORTANT: Always pass modelId when the user specifies a model. Use the full model ID " +
@@ -1068,9 +1090,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.sendChatMessage = core({
+  defineLazyTool(tools, "sendChatMessage", () => core({
     description:
       "Send a message to an ADE chat session you are supervising. Pass machine for a chat on another machine "
       + "(the same machine you started or listed it on).",
@@ -1092,9 +1114,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.interruptChat = core({
+  defineLazyTool(tools, "interruptChat", () => core({
     description: "Interrupt a running ADE chat turn.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1107,9 +1129,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getChatStatus = core({
+  defineLazyTool(tools, "getChatStatus", () => core({
     description:
       "Get the current status for an ADE chat session, including its settle/snooze lifecycle " +
       "and — when it recently came back from a snooze — the reason it woke. Pass machine for a chat on another machine.",
@@ -1136,9 +1158,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!session) return { success: false, error: `Chat not found: ${sessionId}` };
       return { success: true, session, lifecycle: readSessionLifecycle(deps, sessionId) };
     },
-  });
+  }));
 
-  tools.getSessionLifecycle = core({
+  defineLazyTool(tools, "getSessionLifecycle", () => core({
     description:
       "Read the settle/snooze lifecycle for any ADE session (chat or tracked CLI). Use this to triage " +
       "what needs attention: `snoozed` rows are deliberately quiet until `snoozedUntil`, and `wokeReason` " +
@@ -1152,9 +1174,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!lifecycle) return { success: false, error: `Session not found: ${sessionId}` };
       return { success: true, sessionId, ...lifecycle };
     },
-  });
+  }));
 
-  tools.settleSession = core({
+  defineLazyTool(tools, "settleSession", () => core({
     description:
       "Mark an ADE session complete so it drops out of the active tier. Pass `outcome` to record a one-line " +
       "result on the row. Real activity (a new turn, an approval request, a failed turn) un-settles it again.",
@@ -1170,7 +1192,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         });
         if (!result.found) return { success: false, error: `Session not found: ${sessionId}` };
         if (!result.settled) {
-          // The reason matters: `teardown_failed` and `joined_in_flight` do not
+          // The reason matters: `status_unknown` and `joined_in_flight` do not
           // mean the session went active, and saying so misdirects the operator.
           return { success: false, error: settleAbortMessage(sessionId, result.abortedBy) };
         }
@@ -1179,9 +1201,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.unsettleSession = core({
+  defineLazyTool(tools, "unsettleSession", () => core({
     description:
       "Return a settled ADE session to the active lifecycle. This clears a declared settle plus a " +
       "'settled' pin; an explicit keep-active pin survives.",
@@ -1197,9 +1219,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.setSessionSettleOverride = core({
+  defineLazyTool(tools, "setSessionSettleOverride", () => core({
     description:
       "Pin an ADE session's settle state. 'settled' behaves like a declared settle, 'active' is a keep-active " +
       "pin, and `clear` returns the row to the declared lifecycle state.",
@@ -1217,9 +1239,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.snoozeSession = core({
+  defineLazyTool(tools, "snoozeSession", () => core({
     description:
       "Hide an ADE session from the attention surfaces until a deadline. Snooze is a visibility overlay, not a " +
       "lifecycle change: the session keeps running, and a hand-raise (approval request, failed turn, completed " +
@@ -1245,9 +1267,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.wakeSession = core({
+  defineLazyTool(tools, "wakeSession", () => core({
     description: "Clear a snooze on an ADE session so it resurfaces now. No-op when the session was not snoozed.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
@@ -1264,9 +1286,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getChatTranscript = core({
+  defineLazyTool(tools, "getChatTranscript", () => core({
     description: "Read recent user and assistant turns for an ADE chat session without focusing the UI. Pass machine for a chat on another machine.",
     inputSchema: z.object({
       sessionId: z.string(),
@@ -1305,9 +1327,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listPullRequests = core({
+  defineLazyTool(tools, "listPullRequests", () => core({
     description:
       "List ADE-managed pull requests so the CTO can inspect active review state. Lists open and draft PRs by "
       + "default, newest first; pass state 'merged', 'closed' or 'all' for the history. 'count' is the total that "
@@ -1335,9 +1357,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getPullRequestStatus = core({
+  defineLazyTool(tools, "getPullRequestStatus", () => core({
     description: "Inspect pull request status, checks, reviews, and comments through ADE's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1368,9 +1390,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.commentOnPullRequest = core({
+  defineLazyTool(tools, "commentOnPullRequest", () => core({
     description: "Post a comment to a pull request through ADE's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1385,9 +1407,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.waitForChats = core({
+  defineLazyTool(tools, "waitForChats", () => core({
     description:
       "Return now and have ADE wake this thread when all (or any) of the named chats reach a state — 'idle' (finished "
       + "its turn, the default) or 'terminal' (ended or failed). Use it instead of polling getChatStatus. Subagents "
@@ -1413,9 +1435,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.watchPullRequest = core({
+  defineLazyTool(tools, "watchPullRequest", () => core({
     description:
       "Have ADE wake a chat whenever its pull request changes: a check fails, the checks pass, someone comments "
       + "or reviews, the branch starts conflicting, or the PR merges or closes. 'ship' adds standing instructions to "
@@ -1441,9 +1463,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.updatePullRequestTitle = core({
+  defineLazyTool(tools, "updatePullRequestTitle", () => core({
     description: "Update a pull request title through ADE's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1458,9 +1480,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.updatePullRequestBody = core({
+  defineLazyTool(tools, "updatePullRequestBody", () => core({
     description: "Update a pull request body through ADE's PR service.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1475,9 +1497,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listFileWorkspaces = files({
+  defineLazyTool(tools, "listFileWorkspaces", () => files({
     description: "List ADE file workspaces so the CTO can inspect files by lane or attached workspace.",
     inputSchema: z.object({
       includeArchived: z.boolean().optional().default(true),
@@ -1487,9 +1509,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const workspaces = deps.fileService.listWorkspaces({ includeArchived });
       return { success: true, count: workspaces.length, workspaces };
     },
-  });
+  }));
 
-  tools.readWorkspaceFile = files({
+  defineLazyTool(tools, "readWorkspaceFile", () => files({
     description: "Read a file from an ADE workspace or lane without opening the renderer editor.",
     inputSchema: z.object({
       workspaceId: z.string().trim().min(1).optional(),
@@ -1514,9 +1536,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.searchWorkspaceText = files({
+  defineLazyTool(tools, "searchWorkspaceText", () => files({
     description: "Search indexed text inside an ADE workspace or lane.",
     inputSchema: z.object({
       workspaceId: z.string().trim().min(1).optional(),
@@ -1546,9 +1568,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.commentOnLinearIssue = linear({
+  defineLazyTool(tools, "commentOnLinearIssue", () => linear({
     description: "Post a comment to a Linear issue.",
     inputSchema: z.object({
       issueId: z.string(),
@@ -1563,9 +1585,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.updateLinearIssueState = linear({
+  defineLazyTool(tools, "updateLinearIssueState", () => linear({
     description: "Move a Linear issue to a new state by state ID or exact state name.",
     inputSchema: z.object({
       issueId: z.string(),
@@ -1597,13 +1619,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // PR Creation & Management
   // ---------------------------------------------------------------------------
 
-  tools.createPrFromLane = core({
+  defineLazyTool(tools, "createPrFromLane", () => core({
     description: "Create a pull request from an ADE lane against its parent branch.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
@@ -1627,9 +1649,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.landPullRequest = core({
+  defineLazyTool(tools, "landPullRequest", () => core({
     description: "Land (merge) an ADE-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1645,9 +1667,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.closePullRequest = core({
+  defineLazyTool(tools, "closePullRequest", () => core({
     description: "Close an ADE-managed pull request without merging.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1661,9 +1683,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.requestPrReviewers = core({
+  defineLazyTool(tools, "requestPrReviewers", () => core({
     description: "Request user or team reviewers on an ADE-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1682,9 +1704,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getPullRequestDiff = core({
+  defineLazyTool(tools, "getPullRequestDiff", () => core({
     description:
       "Retrieve the code diff for an ADE-managed pull request. " +
       "Returns per-file patches from GitHub. Use `files` to limit to specific paths. " +
@@ -1749,9 +1771,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.approvePullRequest = core({
+  defineLazyTool(tools, "approvePullRequest", () => core({
     description: "Submit an APPROVE review on an ADE-managed pull request.",
     inputSchema: z.object({
       prId: z.string().trim().min(1),
@@ -1770,9 +1792,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.requestPrChanges = core({
+  defineLazyTool(tools, "requestPrChanges", () => core({
     description:
       "Submit a REQUEST_CHANGES review on an ADE-managed pull request with a comment explaining what needs to change.",
     inputSchema: z.object({
@@ -1788,13 +1810,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Lane Management
   // ---------------------------------------------------------------------------
 
-  tools.deleteLane = core({
+  defineLazyTool(tools, "deleteLane", () => core({
     description: "Delete an ADE lane and its associated worktree. This is destructive — the worktree and branch are removed.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1).describe("ID of the lane to delete."),
@@ -1807,9 +1829,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.renameLane = core({
+  defineLazyTool(tools, "renameLane", () => core({
     description: "Rename a lane's display name. Does not change the git branch name.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1).describe("ID of the lane to rename."),
@@ -1823,9 +1845,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.archiveLane = core({
+  defineLazyTool(tools, "archiveLane", () => core({
     description: "Archive a lane — hides it from the default lane list but preserves all data and the worktree.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1).describe("ID of the lane to archive."),
@@ -1838,13 +1860,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Test Management
   // ---------------------------------------------------------------------------
 
-  tools.listTestSuites = tests({
+  defineLazyTool(tools, "listTestSuites", () => tests({
     description: "List available test suites that can be run in ADE.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -1852,9 +1874,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const suites = deps.testService.listSuites();
       return { success: true, count: suites.length, suites };
     },
-  });
+  }));
 
-  tools.runTests = tests({
+  defineLazyTool(tools, "runTests", () => tests({
     description: "Run a test suite in a specific ADE lane.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
@@ -1869,9 +1891,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.stopTestRun = tests({
+  defineLazyTool(tools, "stopTestRun", () => tests({
     description: "Stop a running test execution.",
     inputSchema: z.object({
       runId: z.string().trim().min(1),
@@ -1885,9 +1907,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listTestRuns = tests({
+  defineLazyTool(tools, "listTestRuns", () => tests({
     description: "List recent test runs, optionally filtered by lane or suite.",
     inputSchema: z.object({
       laneId: z.string().optional(),
@@ -1903,9 +1925,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       });
       return { success: true, count: runs.length, runs };
     },
-  });
+  }));
 
-  tools.getTestLog = tests({
+  defineLazyTool(tools, "getTestLog", () => tests({
     description: "Read the tail of a test run log.",
     inputSchema: z.object({
       runId: z.string().trim().min(1),
@@ -1920,13 +1942,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Terminal Management
   // ---------------------------------------------------------------------------
 
-  tools.createTerminal = core({
+  defineLazyTool(tools, "createTerminal", () => core({
     description: "Open a shell whose command only directs agents (a cron, a status check, a script that launches work). Do not use it to edit the repository. For AI-powered work, use spawnChat. This does NOT create an AI chat session.",
     inputSchema: z.object({
       laneId: z.string().trim().min(1),
@@ -1953,9 +1975,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.watchTerminal = core({
+  defineLazyTool(tools, "watchTerminal", () => core({
     description:
       "Have ADE wake a chat when an ADE terminal on this machine prints something new, instead of polling it. "
       + "Output already on screen never wakes; new output wakes after it goes quiet for a few seconds, with the last "
@@ -1988,9 +2010,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.unwatchTerminal = core({
+  defineLazyTool(tools, "unwatchTerminal", () => core({
     description: "Stop terminal watches quietly: one by watchId, or this chat's watch on terminalId, or (neither) all of this chat's.",
     inputSchema: z.object({
       watchId: z.string().trim().min(1).optional(),
@@ -2008,13 +2030,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Linear Issue Discovery
   // ---------------------------------------------------------------------------
 
-  tools.listLinearIssues = linear({
+  defineLazyTool(tools, "listLinearIssues", () => linear({
     description: "Search Linear issues by project slug and state.",
     inputSchema: z.object({
       projectSlugs: z.array(z.string()).optional(),
@@ -2049,9 +2071,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getLinearIssue = linear({
+  defineLazyTool(tools, "getLinearIssue", () => linear({
     description: "Fetch a single Linear issue by ID or identifier.",
     inputSchema: z.object({
       issueId: z.string().trim().min(1),
@@ -2066,9 +2088,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.updateLinearIssueAssignee = linear({
+  defineLazyTool(tools, "updateLinearIssueAssignee", () => linear({
     description: "Assign or unassign a Linear issue.",
     inputSchema: z.object({
       issueId: z.string().trim().min(1),
@@ -2083,9 +2105,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.addLinearIssueLabel = linear({
+  defineLazyTool(tools, "addLinearIssueLabel", () => linear({
     description: "Add a label to a Linear issue.",
     inputSchema: z.object({
       issueId: z.string().trim().min(1),
@@ -2100,13 +2122,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Automation Management
   // ---------------------------------------------------------------------------
 
-  tools.listAutomations = core({
+  defineLazyTool(tools, "listAutomations", () => core({
     description: "List automation rules configured in ADE.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -2114,9 +2136,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const rules = deps.automationService.list();
       return { success: true, count: rules.length, rules };
     },
-  });
+  }));
 
-  tools.triggerAutomation = core({
+  defineLazyTool(tools, "triggerAutomation", () => core({
     description: "Manually trigger an ADE automation rule.",
     inputSchema: z.object({
       automationId: z.string().trim().min(1),
@@ -2131,9 +2153,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listAutomationRuns = core({
+  defineLazyTool(tools, "listAutomationRuns", () => core({
     description: "List recent automation run history.",
     inputSchema: z.object({
       limit: z.number().int().positive().max(100).optional().default(20),
@@ -2143,7 +2165,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       const runs = deps.automationService.listRuns({ limit });
       return { success: true, count: runs.length, runs };
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Git Operations
@@ -2207,70 +2229,70 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const refuseGitWrite = (laneId: string | undefined, operation: string) =>
     gitGuard(async () => assertCtoMayNotWriteRepository(laneId, operation));
 
-  tools.gitStatus = core({
+  defineLazyTool(tools, "gitStatus", () => core({
     description: "Get the git sync status for a lane (branch, ahead/behind, dirty state).",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard((git) => git.getSyncStatus({ laneId: resolveReadLaneId(laneId) })),
-  });
+  }));
 
-  tools.gitCommit = core({
+  defineLazyTool(tools, "gitCommit", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to commit in. Required — there is no default."), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitCommit"),
-  });
+  }));
 
-  tools.gitPush = core({
+  defineLazyTool(tools, "gitPush", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to push. Required — there is no default."), force: z.boolean().optional().default(false) }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitPush"),
-  });
+  }));
 
-  tools.gitPull = core({
+  defineLazyTool(tools, "gitPull", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({
       laneId: z.string().min(1).describe("Lane to pull into. Required — there is no default."),
       mode: z.enum(["ff-only", "rebase", "merge"]).optional().default("ff-only"),
     }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitPull"),
-  });
+  }));
 
-  tools.gitUndoLastHeadChange = core({
+  defineLazyTool(tools, "gitUndoLastHeadChange", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to undo in. Required — there is no default.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitUndoLastHeadChange"),
-  });
+  }));
 
-  tools.gitRedoLastHeadChange = core({
+  defineLazyTool(tools, "gitRedoLastHeadChange", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to redo in. Required — there is no default.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitRedoLastHeadChange"),
-  });
+  }));
 
-  tools.gitFetch = core({
+  defineLazyTool(tools, "gitFetch", () => core({
     description: "Fetch remote refs for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard((git) => git.fetch({ laneId: resolveReadLaneId(laneId) })),
-  });
+  }));
 
-  tools.gitListRecentCommits = core({
+  defineLazyTool(tools, "gitListRecentCommits", () => core({
     description: "List recent commits in a lane.",
     inputSchema: z.object({ laneId: z.string().optional(), limit: z.number().int().positive().max(100).optional().default(20) }),
     execute: ({ laneId, limit }) => gitGuard(async (git) => {
       const commits = await git.listRecentCommits({ laneId: resolveReadLaneId(laneId), limit });
       return { count: commits.length, commits };
     }),
-  });
+  }));
 
-  tools.gitListBranches = core({
+  defineLazyTool(tools, "gitListBranches", () => core({
     description: "List git branches for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(async (git) => {
       const branches = await git.listBranches({ laneId: resolveReadLaneId(laneId) });
       return { count: branches.length, branches };
     }),
-  });
+  }));
 
-  tools.gitCheckoutBranch = core({
+  defineLazyTool(tools, "gitCheckoutBranch", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({
       laneId: z.string().min(1).describe("Lane to switch branches in. Required — there is no default."),
@@ -2281,52 +2303,52 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       acknowledgeActiveWork: z.boolean().optional().default(false),
     }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitCheckoutBranch"),
-  });
+  }));
 
-  tools.gitStashPush = core({
+  defineLazyTool(tools, "gitStashPush", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to stash in. Required — there is no default."), message: z.string().optional() }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitStashPush"),
-  });
+  }));
 
-  tools.gitStashPop = core({
+  defineLazyTool(tools, "gitStashPop", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to pop the stash in. Required — there is no default."), stashRef: z.string().optional() }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitStashPop"),
-  });
+  }));
 
-  tools.gitStashList = core({
+  defineLazyTool(tools, "gitStashList", () => core({
     description: "List stashes saved for a lane branch.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(async (git) => {
       const stashes = await git.listStashes({ laneId: resolveReadLaneId(laneId) });
       return { count: stashes.length, stashes };
     }),
-  });
+  }));
 
-  tools.gitGetConflictState = core({
+  defineLazyTool(tools, "gitGetConflictState", () => core({
     description: "Check if a lane has merge or rebase conflicts in progress.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard((git) => git.getConflictState({ laneId: resolveReadLaneId(laneId) })),
-  });
+  }));
 
-  tools.gitRebaseContinue = core({
+  defineLazyTool(tools, "gitRebaseContinue", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to continue the rebase in. Required — there is no default.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitRebaseContinue"),
-  });
+  }));
 
-  tools.gitRebaseAbort = core({
+  defineLazyTool(tools, "gitRebaseAbort", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the rebase in. Required — there is no default.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitRebaseAbort"),
-  });
+  }));
 
-  tools.gitMergeAbort = core({
+  defineLazyTool(tools, "gitMergeAbort", () => core({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the merge in. Required — there is no default.") }),
     execute: ({ laneId }) => refuseGitWrite(laneId, "gitMergeAbort"),
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Conflict Resolution
@@ -2348,59 +2370,59 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
   const refuseConflictWrite = (laneId: string | undefined, operation: string) =>
     conflictGuard(async () => assertCtoMayNotWriteRepository(laneId, operation));
 
-  tools.getConflictStatus = conflicts({
+  defineLazyTool(tools, "getConflictStatus", () => conflicts({
     description: "Check merge conflict status for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => conflictGuard((conflicts) => conflicts.getLaneStatus({ laneId: resolveReadLaneId(laneId) })),
-  });
+  }));
 
-  tools.getConflictRiskMatrix = conflicts({
+  defineLazyTool(tools, "getConflictRiskMatrix", () => conflicts({
     description: "Get the conflict risk matrix across all lanes.",
     inputSchema: z.object({}),
     execute: () => conflictGuard(async (conflicts) => {
       const matrix = await conflicts.getRiskMatrix();
       return { count: matrix.length, entries: matrix };
     }),
-  });
+  }));
 
-  tools.simulateMerge = conflicts({
+  defineLazyTool(tools, "simulateMerge", () => conflicts({
     description: "Dry-run merge between two lanes to predict conflicts.",
     inputSchema: z.object({ sourceLaneId: z.string().min(1), targetLaneId: z.string().optional() }),
     execute: ({ sourceLaneId, targetLaneId }) => conflictGuard((conflicts) => conflicts.simulateMerge({ sourceLaneId, targetLaneId: targetLaneId?.trim() || undefined })),
-  });
+  }));
 
-  tools.runConflictPrediction = conflicts({
+  defineLazyTool(tools, "runConflictPrediction", () => conflicts({
     description: "Run batch conflict prediction across all lanes.",
     inputSchema: z.object({}),
     execute: () => conflictGuard((conflicts) => conflicts.runPrediction()),
-  });
+  }));
 
-  tools.listConflictProposals = conflicts({
+  defineLazyTool(tools, "listConflictProposals", () => conflicts({
     description: "List stored conflict resolution proposals for a lane.",
     inputSchema: z.object({ laneId: z.string().min(1) }),
     execute: ({ laneId }) => conflictGuard(async (conflicts) => {
       const proposals = await conflicts.listProposals({ laneId });
       return { count: proposals.length, proposals };
     }),
-  });
+  }));
 
-  tools.applyConflictProposal = conflicts({
+  defineLazyTool(tools, "applyConflictProposal", () => conflicts({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
     execute: ({ laneId }) => refuseConflictWrite(laneId, "applyConflictProposal"),
-  });
+  }));
 
-  tools.undoConflictProposal = conflicts({
+  defineLazyTool(tools, "undoConflictProposal", () => conflicts({
     description: CTO_REPOSITORY_WRITE_TOOL_DESCRIPTION,
     inputSchema: z.object({ laneId: z.string().min(1), proposalId: z.string().min(1) }),
     execute: ({ laneId }) => refuseConflictWrite(laneId, "undoConflictProposal"),
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Agent Chat Steering
   // ---------------------------------------------------------------------------
 
-  tools.steerChat = core({
+  defineLazyTool(tools, "steerChat", () => core({
     description: "Inject a steering instruction into an active chat session.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
@@ -2414,9 +2436,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.cancelSteer = core({
+  defineLazyTool(tools, "cancelSteer", () => core({
     description: "Cancel a pending steer instruction on a chat session. Pass the steerId returned by steerChat.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
@@ -2430,9 +2452,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.listSubagents = core({
+  defineLazyTool(tools, "listSubagents", () => core({
     description: "List sub-agents spawned by a chat session.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
@@ -2445,9 +2467,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.approveToolUse = core({
+  defineLazyTool(tools, "approveToolUse", () => core({
     description: "Approve or deny a pending tool use in a chat session.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
@@ -2462,7 +2484,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Unified Event Feed
@@ -2475,7 +2497,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
     ids: Record<string, string | null>;
   };
 
-  tools.getRecentEvents = core({
+  defineLazyTool(tools, "getRecentEvents", () => core({
     description:
       "Surface a unified feed of recent project events: CTO session completions, " +
       "test completions/failures, PR review activity, and chat session events. " +
@@ -2614,13 +2636,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         events: sliced,
       };
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Project Health Dashboard
   // ---------------------------------------------------------------------------
 
-  tools.getProjectHealthSummary = core({
+  defineLazyTool(tools, "getProjectHealthSummary", () => core({
     description:
       "Aggregate project health into a single snapshot: test pass rates, PR status distribution, and active lanes.",
     inputSchema: z.object({
@@ -2690,13 +2712,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         lanes,
       };
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Computer Use Artifact Oversight
   // ---------------------------------------------------------------------------
 
-  tools.listComputerUseArtifacts = proof({
+  defineLazyTool(tools, "listComputerUseArtifacts", () => proof({
     description:
       "List computer-use artifacts (screenshots, videos, browser traces, console logs) across the project.",
     inputSchema: z.object({
@@ -2744,9 +2766,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getArtifactPreview = proof({
+  defineLazyTool(tools, "getArtifactPreview", () => proof({
     description: "Get full details for a specific computer-use artifact by ID.",
     inputSchema: z.object({
       artifactId: z.string().min(1),
@@ -2775,9 +2797,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.reviewArtifact = proof({
+  defineLazyTool(tools, "reviewArtifact", () => proof({
     description: "Mark a computer-use artifact as approved, rejected, or needing more evidence.",
     inputSchema: z.object({
       artifactId: z.string().min(1),
@@ -2804,14 +2826,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Codebase Self-Search (for when CTO needs to understand ADE internals)
   // ---------------------------------------------------------------------------
 
   // ADE source search sits with file reads
-  tools.searchCodebase = files({
+  defineLazyTool(tools, "searchCodebase", () => files({
     description:
       "Search the ADE codebase itself for patterns, function names, or implementation details. " +
       "Use this when you need to understand how an ADE feature works internally, find the implementation " +
@@ -2875,13 +2897,13 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ---------------------------------------------------------------------------
   // Persistent Memory
   // ---------------------------------------------------------------------------
 
-  tools.saveMemory = core({
+  defineLazyTool(tools, "saveMemory", () => core({
     description:
       "Save a durable fact to the project context store (and MEMORY.md, which remains the local notes file). "
       + "Use for decisions, conventions, traps, user preferences, and standing project context. The store survives a restart, "
@@ -2937,9 +2959,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.forgetMemory = core({
+  defineLazyTool(tools, "forgetMemory", () => core({
     description:
       "Retire a durable fact that is wrong, stale, or no longer true, so it stops being injected. "
       + "Pass the id searchMemory returned, or the fact's exact text. The fact is archived (still searchable), "
@@ -2961,9 +2983,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.setProjectBrief = core({
+  defineLazyTool(tools, "setProjectBrief", () => core({
     description:
       "Write the one project brief: goal, what done looks like, constraints, conventions, and open loops. "
       + "There is one brief for the repository. It is injected ahead of other memory and survives a restart, a crash, and a cleared session. "
@@ -2985,9 +3007,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.searchMemory = core({
+  defineLazyTool(tools, "searchMemory", () => core({
     description:
       "Search your persistent memory (MEMORY.md, the project context store, thread state, and the daily logs) and every past "
       + "chat in this project, including your own retired threads. Rows that are live facts carry an `id` for saveMemory "
@@ -3013,9 +3035,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.readDiscoveries = core({
+  defineLazyTool(tools, "readDiscoveries", () => core({
     description:
       "Drain the worker discovery log: findings agents handed up since you last read it. "
       + "These are unreviewed — decide which ones deserve saveMemory. Reading advances the cursor, so each "
@@ -3035,9 +3057,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.readMemory = core({
+  defineLazyTool(tools, "readMemory", () => core({
     description:
       "Read your persistent memory: durable facts (MEMORY.md), the current thread state, and today's daily journal. " +
       "Use to review what you already know before making decisions.",
@@ -3061,7 +3083,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
   // ===========================================================================
   // Full ADE domain coverage, loaded on demand
@@ -3120,14 +3142,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
 
   // ── Any ADE action, on any machine ─────────────────────────────────────────
 
-  tools.listMachineActions = core(crossMachine.tools.listMachineActions);
-  tools.runMachineAction = core(crossMachine.tools.runMachineAction);
+  defineLazyTool(tools, "listMachineActions", () => core(crossMachine.tools.listMachineActions));
+  defineLazyTool(tools, "runMachineAction", () => core(crossMachine.tools.runMachineAction));
 
   // ── Pack loading ───────────────────────────────────────────────────────────
 
   // `core`, not a pack of its own: the loader is what reveals every other
   // pack, so it can never be one of the things waiting to be revealed.
-  tools.loadCtoTools = core({
+  defineLazyTool(tools, "loadCtoTools", () => core({
     description:
       "Load one pack of ADE operator tools. Every ADE domain is reachable from this session, but only the core pack "
       + "(lanes, chats, steering, git, PRs, automations, handoff, memory, events) carries full descriptions from the start. "
@@ -3166,11 +3188,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         tools: members,
       };
     },
-  });
+  }));
 
   // ── Automations (core: authoring is standing CTO work) ─────────────────────
 
-  tools.getAutomation = core({
+  defineLazyTool(tools, "getAutomation", () => core({
     description: "Read one automation rule in full, including its triggers, actions, and provenance.",
     inputSchema: z.object({ id: z.string().min(1) }),
     execute: async ({ id }) => {
@@ -3178,9 +3200,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!automationRules) return unavailable("The automation rule service");
       return attempt(() => automationRules.get({ id }));
     },
-  });
+  }));
 
-  tools.planAutomation = core({
+  defineLazyTool(tools, "planAutomation", () => core({
     description:
       "Turn a plain-English automation request into a rule draft, without saving it. "
       + "Returns the draft plus confidence, ambiguities, and issues. Follow with simulateAutomation to see what it would do, "
@@ -3219,9 +3241,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
           };
       return attempt(() => automationPlanner.parseNaturalLanguage({ intent, planner }));
     },
-  });
+  }));
 
-  tools.simulateAutomation = core({
+  defineLazyTool(tools, "simulateAutomation", () => core({
     description:
       "Dry-run an automation draft: report the actions it would take, in order, with warnings — and run none of them. "
       + "Always simulate before saving a rule you generated.",
@@ -3233,9 +3255,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!automationPlanner) return unavailable("The automation planner");
       return attempt(() => automationPlanner.simulate({ draft }));
     },
-  });
+  }));
 
-  tools.saveAutomation = core({
+  defineLazyTool(tools, "saveAutomation", () => core({
     description:
       "Validate and persist an automation rule draft. A draft with an `id` REPLACES that rule in place and asks the user "
       + "to confirm first; a draft without one creates a new rule. Draft actions may include `handoff` "
@@ -3269,9 +3291,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         ...(confirmations?.length ? { confirmations } : {}),
       }));
     },
-  });
+  }));
 
-  tools.setAutomationEnabled = core({
+  defineLazyTool(tools, "setAutomationEnabled", () => core({
     description: "Enable or disable one automation rule. Reversible, and keeps the rule and its history.",
     inputSchema: z.object({ id: z.string().min(1), enabled: z.boolean() }),
     execute: async ({ id, enabled }) => {
@@ -3279,9 +3301,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!automationRules) return unavailable("The automation rule service");
       return attempt(() => automationRules.toggleRule({ id, enabled }));
     },
-  });
+  }));
 
-  tools.deleteAutomation = core({
+  defineLazyTool(tools, "deleteAutomation", () => core({
     description:
       "Delete one automation rule permanently. Asks the user to confirm first. "
       + "Prefer setAutomationEnabled(false) when the user only wants it to stop firing.",
@@ -3297,11 +3319,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (declined) return declined;
       return attempt(() => automationRules.deleteRule({ id }));
     },
-  });
+  }));
 
   // ── Handoff (core) ─────────────────────────────────────────────────────────
 
-  tools.handoffChatToModel = core({
+  defineLazyTool(tools, "handoffChatToModel", () => core({
     description:
       "Hand a chat to a different model. `brief` writes a summary and starts a fresh thread (any lane in the project); "
       + "`fork` carries the full transcript and must stay in the source lane. "
@@ -3336,7 +3358,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         usedFallbackSummary: result.usedFallbackSummary ?? false,
       };
     },
-  });
+  }));
 
   // ── Scheduled work ─────────────────────────────────────────────────────────
 
@@ -3373,7 +3395,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       : {}),
   });
 
-  tools.scheduleWork = scheduling({
+  defineLazyTool(tools, "scheduleWork", () => scheduling({
     description:
       "Schedule durable work on a chat: a one-shot wakeup (delaySeconds or runAt) or a recurring five-field cron in the "
       + "ADE brain machine's local timezone. Survives restarts. Pass exactly one of cron, runAt, or delaySeconds.",
@@ -3399,9 +3421,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         ...(reason?.trim() ? { reason: reason.trim() } : {}),
       }));
     },
-  });
+  }));
 
-  tools.listScheduledWork = scheduling({
+  defineLazyTool(tools, "listScheduledWork", () => scheduling({
     description:
       "List ADE-managed wakeups, cron jobs, and loops — for one chat, or across the project. "
       + `Returns a compact record per job (prompts truncated to ${SCHEDULED_WORK_PROMPT_PREVIEW_CHARS} characters) `
@@ -3436,9 +3458,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return { success: false as const, error: getErrorMessage(error) };
       }
     },
-  });
+  }));
 
-  tools.getScheduledWorkState = scheduling({
+  defineLazyTool(tools, "getScheduledWorkState", () => scheduling({
     description: "Read pause state, next wake time, and active jobs for one chat's scheduled work.",
     inputSchema: z.object({ sessionId: z.string().min(1) }),
     execute: async ({ sessionId }) => {
@@ -3446,9 +3468,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!scheduledWork) return unavailable("Scheduled work");
       return attempt(() => scheduledWork.getState({ sessionId }));
     },
-  });
+  }));
 
-  tools.cancelScheduledWork = scheduling({
+  defineLazyTool(tools, "cancelScheduledWork", () => scheduling({
     description:
       "Cancel one scheduled job permanently. Asks the user to confirm first. "
       + "Use setScheduledWorkPaused when the user only wants it held.",
@@ -3466,9 +3488,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (declined) return declined;
       return attempt(() => scheduledWork.cancel({ sessionId, scheduleId }));
     },
-  });
+  }));
 
-  tools.setScheduledWorkPaused = scheduling({
+  defineLazyTool(tools, "setScheduledWorkPaused", () => scheduling({
     description: "Pause or resume every scheduled job on one chat. Reversible; nothing is lost.",
     inputSchema: z.object({ sessionId: z.string().min(1), paused: z.boolean() }),
     execute: async ({ sessionId, paused }) => {
@@ -3476,11 +3498,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!scheduledWork) return unavailable("Scheduled work");
       return attempt(() => scheduledWork.setPaused({ sessionId, paused }));
     },
-  });
+  }));
 
   // ── Proof capture ──────────────────────────────────────────────────────────
 
-  tools.captureProof = proof({
+  defineLazyTool(tools, "captureProof", () => proof({
     description:
       "File an existing on-disk file (screenshot, recording, trace, log) as a project proof artifact and attach it to a "
       + "lane, chat, automation run, PR, or Linear issue. Additive: it never removes or overwrites an artifact. "
@@ -3509,11 +3531,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         owners: [{ kind: ownerKind, id: ownerId, relation: "attached_to" }],
       }));
     },
-  });
+  }));
 
   // ── Universal search ───────────────────────────────────────────────────────
 
-  tools.searchProject = search({
+  defineLazyTool(tools, "searchProject", () => search({
     description:
       "Search ADE's own project index across lanes, chats, PRs, files, and issues — the same index behind ⌘K. "
       + "Use searchCodebase instead when you want raw ADE source text.",
@@ -3531,9 +3553,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         limit,
       }));
     },
-  });
+  }));
 
-  tools.getSearchIndexStatus = search({
+  defineLazyTool(tools, "getSearchIndexStatus", () => search({
     description: "Read the universal search index status: what is indexed and how fresh it is.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3542,11 +3564,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!indexStatus) return unavailable("Search index status");
       return attempt(() => indexStatus.call(universalSearch));
     },
-  });
+  }));
 
   // ── Usage, spend, budget ───────────────────────────────────────────────────
 
-  tools.getUsageStats = insights({
+  defineLazyTool(tools, "getUsageStats", () => insights({
     description:
       "Read token, cost, and activity stats. scope picks the reach: account merges every machine on the ADE account, "
       + "machine is this computer only, project is the open project's share.",
@@ -3560,9 +3582,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!usage) return unavailable("Usage tracking");
       return attempt(() => usage.getAdeUsageStats({ preset, scope, force }));
     },
-  });
+  }));
 
-  tools.getUsageSnapshot = insights({
+  defineLazyTool(tools, "getUsageSnapshot", () => insights({
     description:
       "Read provider rate-limit windows (5-hour, weekly) per account, the accounts and their instance ids, pacing, "
       + "and spend totals. The default summary is a few KB. detail 'full' adds the per-model and per-day token "
@@ -3578,9 +3600,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         return detail === "full" ? snapshot : summarizeUsageSnapshot(snapshot);
       });
     },
-  });
+  }));
 
-  tools.getBudgetStatus = insights({
+  defineLazyTool(tools, "getBudgetStatus", () => insights({
     description: "Read the project's spend caps, cumulative usage against them, and whether the budget currently blocks work.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3591,11 +3613,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         cumulativeUsageThisWeek: budget.getGlobalCumulativeUsage(),
       }));
     },
-  });
+  }));
 
   // ── Project config and secret NAMES ────────────────────────────────────────
 
-  tools.getProjectConfig = config({
+  defineLazyTool(tools, "getProjectConfig", () => config({
     description:
       "Read the project's effective ADE configuration: shared config, local overrides, and the merged result. "
       + "Read-only, and VALUES of env blocks and credential-shaped fields are replaced with placeholders — "
@@ -3608,9 +3630,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!outcome.success) return outcome;
       return { success: true, result: redactConfigValues(outcome.result) };
     },
-  });
+  }));
 
-  tools.listProjectSecretNames = config({
+  defineLazyTool(tools, "listProjectSecretNames", () => config({
     description:
       "List the NAMES and metadata of this project's ADE secrets. Values are never returned by any tool you have — "
       + "if the user needs a secret value, they must read it from the Secrets surface themselves.",
@@ -3641,11 +3663,11 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
         }),
       };
     },
-  });
+  }));
 
   // ── Devices: iOS simulator, app control, built-in browser (reads) ──────────
 
-  tools.getIosSimulatorStatus = devices({
+  defineLazyTool(tools, "getIosSimulatorStatus", () => devices({
     description: "Read the iOS simulator session status: which device is claimed, by which chat, and what is running.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3653,9 +3675,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!iosSimulator) return unavailable("The iOS simulator service");
       return attempt(() => iosSimulator.getStatus());
     },
-  });
+  }));
 
-  tools.listIosSimulatorDevices = devices({
+  defineLazyTool(tools, "listIosSimulatorDevices", () => devices({
     description: "List the iOS simulators available on this machine.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3663,9 +3685,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!iosSimulator) return unavailable("The iOS simulator service");
       return attempt(() => iosSimulator.listDevices());
     },
-  });
+  }));
 
-  tools.listIosLaunchTargets = devices({
+  defineLazyTool(tools, "listIosLaunchTargets", () => devices({
     description: "List the app targets ADE can launch on an iOS simulator for a lane.",
     inputSchema: z.object({ laneId: z.string().optional().describe("Lane to scan. Read-only, so any lane is fine.") }),
     execute: async ({ laneId }) => {
@@ -3673,9 +3695,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!iosSimulator) return unavailable("The iOS simulator service");
       return attempt(() => iosSimulator.listLaunchTargets({ laneId: resolveReadLaneId(laneId) }));
     },
-  });
+  }));
 
-  tools.getIosScreenSnapshot = devices({
+  defineLazyTool(tools, "getIosScreenSnapshot", () => devices({
     description: "Read the current iOS simulator screen as a structured snapshot (elements and text, not pixels).",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3684,9 +3706,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!getScreenSnapshot) return unavailable("iOS simulator screen snapshots");
       return attempt(() => getScreenSnapshot.call(iosSimulator, {}));
     },
-  });
+  }));
 
-  tools.getAppControlStatus = devices({
+  defineLazyTool(tools, "getAppControlStatus", () => devices({
     description: "Read the desktop app-control session status: what is attached and which chat owns it.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3694,9 +3716,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!appControl) return unavailable("The app control service");
       return attempt(() => appControl.getStatus());
     },
-  });
+  }));
 
-  tools.listAppControlTargets = devices({
+  defineLazyTool(tools, "listAppControlTargets", () => devices({
     description: "List the desktop apps and renderer targets ADE can attach to right now.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3704,9 +3726,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!appControl) return unavailable("The app control service");
       return attempt(() => appControl.listTargets());
     },
-  });
+  }));
 
-  tools.getAppControlSnapshot = devices({
+  defineLazyTool(tools, "getAppControlSnapshot", () => devices({
     description: "Read a structured snapshot of the attached desktop app's UI (elements and text, not pixels).",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3715,9 +3737,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!getSnapshot) return unavailable("App control snapshots");
       return attempt(() => getSnapshot.call(appControl, {}));
     },
-  });
+  }));
 
-  tools.getBrowserStatus = devices({
+  defineLazyTool(tools, "getBrowserStatus", () => devices({
     description: "Read the built-in browser's status: whether it is running, claimed, and by which chat.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3725,9 +3747,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!browser) return unavailable("The built-in browser");
       return attempt(() => browser.getStatus());
     },
-  });
+  }));
 
-  tools.listBrowserSessions = devices({
+  defineLazyTool(tools, "listBrowserSessions", () => devices({
     description: "List the built-in browser's open sessions and their tabs.",
     inputSchema: z.object({}),
     execute: async () => {
@@ -3735,9 +3757,9 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!browser) return unavailable("The built-in browser");
       return attempt(() => browser.listSessions());
     },
-  });
+  }));
 
-  tools.getBrowserTrace = devices({
+  defineLazyTool(tools, "getBrowserTrace", () => devices({
     description: "Read one built-in browser session's recorded trace: navigations, console output, and network summary.",
     inputSchema: z.object({ sessionId: z.string().min(1) }),
     execute: async ({ sessionId }) => {
@@ -3746,7 +3768,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): CtoOperatorTo
       if (!getTrace) return unavailable("Browser traces");
       return attempt(() => getTrace.call(browser, { sessionId }));
     },
-  });
+  }));
 
   return tools;
 }

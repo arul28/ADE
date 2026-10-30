@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type * as childProcess from "node:child_process";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const spawnMock = vi.fn();
 const resolveClaudeCodeExecutableMock = vi.fn(() => ({
@@ -191,7 +191,22 @@ function createMockProcess(args: {
   return child;
 }
 
+// Background jobs read the provider's config folder and build a private copy
+// under the ADE home. Point both at a scratch folder, never the real ones.
+let scratchHome = "";
+beforeEach(() => {
+  scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-task-home-"));
+  vi.stubEnv("ADE_HOME", path.join(scratchHome, "ade"));
+  vi.stubEnv("FACTORY_HOME_OVERRIDE", scratchHome);
+  vi.stubEnv("KIMI_CODE_HOME", path.join(scratchHome, "kimi"));
+  vi.stubEnv("GROK_HOME", path.join(scratchHome, "grok"));
+  vi.stubEnv("XDG_CONFIG_HOME", path.join(scratchHome, "config"));
+  vi.stubEnv("APPDATA", path.join(scratchHome, "appdata"));
+});
+
 afterEach(() => {
+  vi.unstubAllEnvs();
+  fs.rmSync(scratchHome, { recursive: true, force: true });
   spawnMock.mockReset();
   resolveClaudeCodeExecutableMock.mockClear();
   resolveCodexExecutableMock.mockClear();

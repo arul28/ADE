@@ -2,8 +2,9 @@
 // Brain cold start: spawn of `cli.cjs serve` until "ADE brain listening on" prints, the ready line
 // the desktop's handover waits to see. Compares no compile cache with Node's compile cache at the
 // path the service definition uses (<ADE_HOME>/cache/node-compile). Each pair runs back to back and
-// the order flips every pair. Everything runs against one throwaway ADE home and cwd under /tmp,
-// with sync off (--no-sync) and a per-run socket /tmp/ade-bench-brain-<n>.sock. The bench never
+// the order flips every pair. Everything runs against one throwaway ADE home and cwd under /tmp
+// (the OS temp folder on Windows), with sync off (--no-sync) and a per-run socket
+// /tmp/ade-bench-brain-<n>.sock (on Windows a named pipe, ade-bench-brain-<pid>-<n>). The bench never
 // touches ~/.ade, the installed brain (com.ade.runtime), or a socket it did not create.
 // Each run stops the brain the orderly way (its own `shutdown` RPC, the same call `ade brain stop`
 // makes), because Node writes the compile cache only on a graceful exit. Signals are the fallback.
@@ -34,13 +35,24 @@ type Timed = {
 
 if (!fs.existsSync(cliPath)) throw new Error(`Missing ${cliPath}; run npm --prefix apps/ade-cli run build first.`);
 
-const root = fs.mkdtempSync("/tmp/ade-bench-brain-root-");
+const isWindows = process.platform === "win32";
+const tempRoot = isWindows ? os.tmpdir() : "/tmp";
+const realAdeHome = path.join(fs.realpathSync(os.homedir()), ".ade");
+const inside = (child: string, parent: string) => {
+  const relative = path.relative(fs.realpathSync(parent), fs.realpathSync(child));
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+// Checked before anything is created, so a refused run leaves nothing behind.
+if (fs.existsSync(realAdeHome) && (fs.realpathSync(tempRoot) === fs.realpathSync(realAdeHome) || inside(tempRoot, realAdeHome))) {
+  throw new Error("Refusing to run: the temp folder is inside the real ADE home.");
+}
+const root = fs.mkdtempSync(path.join(tempRoot, "ade-bench-brain-root-"));
 const adeHome = path.join(root, "ade-home");
 const fakeHome = path.join(root, "home");
 const runCwd = path.join(root, "cwd");
 const cacheDir = path.join(adeHome, "cache", "node-compile");
-const realAdeHome = path.join(fs.realpathSync(os.homedir()), ".ade");
-if (!root.startsWith("/tmp/") || adeHome.startsWith(realAdeHome)) throw new Error("Refusing to run outside a /tmp throwaway home.");
+if (!inside(root, tempRoot)) throw new Error("Refusing to run outside a throwaway home in the temp folder.");
+const socketFor = (n: number) => (isWindows ? `\\\\.\\pipe\\ade-bench-brain-${process.pid}-${n}` :`/tmp/ade-bench-brain-${n}.sock`);
 for (const dir of [adeHome, fakeHome, runCwd]) fs.mkdirSync(dir, { recursive: true });
 
 function envFor(variant: Variant): NodeJS.ProcessEnv {
@@ -52,6 +64,11 @@ function envFor(variant: Variant): NodeJS.ProcessEnv {
     ADE_HOME: adeHome,
     ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
   };
+  if (isWindows) {
+    // The home the brain sees on Windows, and what Windows processes need to start at all.
+    env.USERPROFILE = fakeHome;
+    for (const key of ["SystemRoot", "ComSpec", "PATHEXT", "TEMP", "TMP"]) if (process.env[key]) env[key] = process.env[key];
+  }
   if (variant === "compile-cache") env.NODE_COMPILE_CACHE = cacheDir;
   return env;
 }
@@ -155,8 +172,8 @@ async function stopBrain(child: ChildProcess, sock: string): Promise<Pick<Timed,
 }
 
 async function timeOne(n: number, variant: Variant): Promise<Timed> {
-  const sock = `/tmp/ade-bench-brain-${n}.sock`;
-  fs.rmSync(sock, { force: true });
+  const sock = socketFor(n);
+  if (!isWindows) fs.rmSync(sock, { force: true });
   const t0 = performance.now();
   const child = spawn(process.execPath, [cliPath, "serve", "--socket", sock, "--no-sync"], {
     cwd: runCwd,
@@ -181,7 +198,7 @@ async function timeOne(n: number, variant: Variant): Promise<Timed> {
     return { readyMs, socketAcceptsConnect, ...(await stopBrain(child, sock)) };
   } finally {
     if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
-    fs.rmSync(sock, { force: true });
+    if (!isWindows) fs.rmSync(sock, { force: true });
   }
 }
 
@@ -230,5 +247,5 @@ try {
   }));
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
-  for (let n = 0; n < 200; n++) fs.rmSync(`/tmp/ade-bench-brain-${n}.sock`, { force: true });
+  if (!isWindows) for (let n = 0; n < 200; n++) fs.rmSync(socketFor(n), { force: true });
 }

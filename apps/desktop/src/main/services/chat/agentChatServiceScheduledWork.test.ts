@@ -13,6 +13,7 @@ import {
   deriveScheduledWorkSnapshots,
   installClaudeResponseFixture,
   installClaudeWakeupFixture,
+  installRealTranscriptParser,
   path,
   readPersistedChatState,
   runGit,
@@ -23,6 +24,7 @@ import {
   waitForFakeTimerCondition,
   writePersistedChatState,
 } from "./agentChatService.testHarness";
+import { BACKGROUND_WORK_LOST_RESUME_PROMPT } from "../../../shared/chatAutoResume";
 import { describe, expect, it, test, vi } from "vitest";
 
 async function waitForFakeTimerPromise<T>(
@@ -377,7 +379,7 @@ describe("createAgentChatService", () => {
       const created = await service.createScheduledWork({
         sessionId: "cli-state",
         cron: "1 * * * *",
-        prompt: "Inspect this from ADE Code.",
+        prompt: "Inspect this from the CLI.",
         recurring: false,
       });
 
@@ -772,6 +774,60 @@ describe("createAgentChatService", () => {
       expect(events.some((event) => (
         event.sessionId === unowned.id || event.sessionId === foreignAccount.id
       ) && event.event.type === "user_message" && event.event.metadata?.scheduledWake != null)).toBe(false);
+    });
+
+    // A chat at rest whose awaited background work a restart stopped wakes to
+    // be told, but only if it went quiet recently. A graceful shutdown clears
+    // its idle time, so its last turn's end has to decide.
+    it.each([
+      { name: "idle ten minutes, then a graceful shutdown", idleForMs: 10 * 60_000, keepIdleTime: false, wakes: true },
+      { name: "idle three days, then a graceful shutdown", idleForMs: 3 * 24 * 60 * 60_000, keepIdleTime: false, wakes: false },
+      { name: "idle three days, then a crash that kept its idle time", idleForMs: 3 * 24 * 60 * 60_000, keepIdleTime: true, wakes: false },
+    ])("a lost-work wake after a restart: $name", async ({ idleForMs, keepIdleTime, wakes }) => {
+      vi.useFakeTimers();
+      vi.setSystemTime(SCHEDULE_TEST_START);
+      const scheduledWork = createScheduledWorkDb();
+      installClaudeResponseFixture({ sdkSessionId: "sdk-lost-work", responseText: "Started the long job." });
+      const starter = createService({ db: scheduledWork.db });
+      const session = await starter.service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await starter.service.runSessionTurn({ sessionId: session.id, text: "Start the long job.", timeoutMs: 15_000 });
+      const idleSinceAt = (await starter.service.getSessionSummary(session.id))?.idleSinceAt;
+      expect(idleSinceAt, "the finished turn leaves the chat at rest").toEqual(expect.any(String));
+
+      // The brain stops while the job runs, so the row's end time is now.
+      vi.setSystemTime(SCHEDULE_TEST_START + idleForMs);
+      await starter.service.disposeAll();
+      expect(starter.sessionService.get(session.id)?.status).toBe("detached");
+      writePersistedChatState(session.id, {
+        ...readPersistedChatState(session.id),
+        runtimeOwner: null,
+        backgroundLossWakePending: true,
+        ...(keepIdleTime ? { idleSinceAt } : {}),
+      });
+      // The recovering brain reads the turn's `done` back from the transcript.
+      installRealTranscriptParser();
+
+      const recovering = createService({
+        db: scheduledWork.db,
+        processRegistry: {
+          pid: process.pid,
+          startedAt: "2026-10-20T12:00:00.000Z",
+          isProcessIdentityLive: () => false,
+          listLiveProcessIdentities: () => [{ pid: process.pid, startedAt: "2026-10-20T12:00:00.000Z" }],
+        },
+        machineBrainPid: () => null,
+      });
+      await recovering.service.refreshScheduledWork();
+      await recovering.service.getChatTranscript({ sessionId: session.id });
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(recovering.sessionService.get(session.id)?.status, "recovery reopened the chat").not.toBe("detached");
+      const lostWorkWakes = (scheduledWork.readState()?.schedules ?? [])
+        .filter((row) => row.sessionId === session.id && row.prompt === BACKGROUND_WORK_LOST_RESUME_PROMPT);
+      expect(lostWorkWakes).toHaveLength(wakes ? 1 : 0);
+      // Consumed either way: a later restart must not wake it for this loss.
+      expect(readPersistedChatState(session.id).backgroundLossWakePending).toBeUndefined();
+      recovering.service.forceDisposeAll();
     });
 
     it("retries a scheduled wake refused by disk pressure", async () => {

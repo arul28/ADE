@@ -11,7 +11,7 @@ import { AdeError, toError } from "./errors.js";
  * code on this path, and a second framing mode is a second place to get the
  * byte accounting wrong.
  *
- * Reimplemented from (not imported from) `apps/ade-cli/src/tuiClient/
+ * Reimplemented from (not imported from) `apps/ade-cli/src/lib/
  * jsonRpcClient.ts` — the package must build standalone.
  */
 

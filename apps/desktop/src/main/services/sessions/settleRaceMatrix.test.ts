@@ -1,22 +1,21 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import { createSessionService } from "./sessionService";
 import { createSettleLifecycleWriter } from "./settleLifecycleWriter";
-import type { SettleResidueItem, SettleTeardownContext } from "./sessionSettleTeardown";
-import type { SettleAbortedReason } from "./settlingStateRegistry";
+import { createSettleWiring } from "./settleWiring";
+import type { SettleAbortedReason, SettleSessionsOutcome } from "./settlingStateRegistry";
 
 
 /**
- * The race matrix from the settle-teardown design (§2), tested directly against
- * the lifecycle revision and the settling window — with a real, awaited teardown.
+ * The race matrix from the settle design (§2), tested directly against the
+ * lifecycle revision and the settling window — with a real, awaited check.
  *
- * That ordering is the point. Every one of these races was previously argued
- * about in review rather than executed, and the six rounds of PR #1059 are what
- * that cost. Here the teardown callback is a seam we drive by hand: whatever it
- * does is what a real provider stop would have been doing when the race landed.
+ * A settle reads whether the session's turn is running and only then writes.
+ * The check callback is a seam we drive by hand: whatever it does is what the
+ * world would have been doing while that read was in flight.
  */
 
 function createLogger() {
@@ -59,39 +58,25 @@ describe("settle race matrix", () => {
     const db = await openKvDb(path.join(projectRoot, ".ade", "ade.db"), createLogger() as any);
     disposers.push(async () => db.close());
     insertProjectGraph(db);
-    // The teardown seam the race matrix drives. Whatever this does is what a
-    // real provider stop would have been doing when the race landed.
-    let teardown: (sessionId: string) => void | Promise<void> = () => {};
-    // Records what the seam was handed, so a test can assert the abort was
-    // visible to teardown WHILE it ran rather than only afterwards.
-    const teardownContexts: SettleTeardownContext[] = [];
-    let residue: SettleResidueItem[] = [];
-    // What a teardown that REFUSED to run reports back (a machine settle over a
-    // running turn). Distinct from residue: nothing was stopped and nothing may
-    // be filed.
-    let teardownAbortedBy: SettleAbortedReason | null = null;
+    // The check seam the race matrix drives. Whatever this does is what the
+    // world was doing while the settle's turn read was in flight.
+    let duringCheck: (sessionId: string) => void | Promise<void> = () => {};
+    // What a check that refused reports back (a working chat).
+    let checkAbortedBy: SettleAbortedReason | null = null;
     const remoteWrites: Array<{ columns: string[]; changesetSessionCount: number }> = [];
     const service = createSessionService({
       db,
       onRemoteSettleWrite: (args) => { remoteWrites.push(args); },
-      runSettleTeardown: async (sessionId, ctx) => {
-        teardownContexts.push(ctx);
-        await teardown(sessionId);
-        return {
-          residue,
-          confirmed: true,
-          ...(teardownAbortedBy ? { abortedBy: teardownAbortedBy } : {}),
-        };
+      checkSettle: async (sessionId) => {
+        await duringCheck(sessionId);
+        return checkAbortedBy ? { abortedBy: checkAbortedBy } : {};
       },
     });
-    const setTeardown = (fn: (sessionId: string) => void | Promise<void>) => {
-      teardown = fn;
+    const setDuringCheck = (fn: (sessionId: string) => void | Promise<void>) => {
+      duringCheck = fn;
     };
-    const setResidue = (items: SettleResidueItem[]) => {
-      residue = items;
-    };
-    const setTeardownAbortedBy = (reason: SettleAbortedReason | null) => {
-      teardownAbortedBy = reason;
+    const setCheckAbortedBy = (reason: SettleAbortedReason | null) => {
+      checkAbortedBy = reason;
     };
     const create = (id: string) =>
       service.create({
@@ -109,25 +94,36 @@ describe("settle race matrix", () => {
       db,
       service,
       create,
-      setTeardown,
-      setResidue,
-      setTeardownAbortedBy,
-      teardownContexts,
+      setDuringCheck,
+      setCheckAbortedBy,
       remoteWrites,
     };
   }
 
   /**
+   * A leaked window makes every later settle of the session join one that
+   * never ends, so the session can never be settled again. Proven through
+   * behavior: the next settle must not come back `joined_in_flight`.
+   */
+  async function expectWindowClosed(
+    service: Awaited<ReturnType<typeof fixture>>["service"],
+    sessionId = "session-1",
+  ): Promise<void> {
+    const next = await service.settleSessionsReportingAborts([sessionId]);
+    expect(next.aborted.map((entry) => entry.reason)).not.toContain("joined_in_flight");
+  }
+
+  /**
    * R1 — settle vs turn start. The worst case: the user is actively working and
-   * the row goes quiet. C3 fires during teardown; the settle must be abandoned,
+   * the row goes quiet. C3 fires during the check; the settle must be abandoned,
    * not applied afterwards.
    */
-  it("R1: a turn starting during teardown abandons the settle", async () => {
-    const { service, setTeardown } = await fixture();
+  it("R1: a turn starting during the check abandons the settle", async () => {
+    const { service, setDuringCheck } = await fixture();
     await service.settleSessions(["session-1"]);
     service.unsettleSession("session-1");
 
-    setTeardown(() => {
+    setDuringCheck(() => {
       service.clearTurnStartMarkers("session-1");
     });
     const outcome = await service.settleSessionsReportingAborts(["session-1"]);
@@ -137,61 +133,126 @@ describe("settle race matrix", () => {
     expect(service.get("session-1")?.settledAt).toBeNull();
     // A leaked window would swallow this session's output forever and leave it
     // permanently unsettleable — the mechanism's worst failure mode.
-    expect(service.settlingSessionIds()).toEqual([]);
+    service.unsettleSession("session-1");
+    await expectWindowClosed(service);
   });
 
   /**
-   * The interrupt policy, end to end.
+   * A working chat cannot be settled, whoever asks, and settling stops nothing.
    *
-   * Teardown decides whether it is allowed to cancel a running turn, and it
-   * decides from WHO asked — so the source has to survive the trip from the
-   * caller to the teardown context, and a refusal has to come back as an abort
-   * rather than as a settle that quietly filed a session still doing work.
+   * Through the real wiring the hosts use: a running turn and a turn accepted
+   * but not yet started both refuse with `turn_running`; a read that never
+   * answers, or a chat another brain runs, refuses with `status_unknown` rather
+   * than filing a chat it could not see; a resting chat settles.
    */
-  it("tells teardown whether the caller may cancel a running turn", async () => {
-    const { service, teardownContexts } = await fixture();
-
-    await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" });
-    expect(teardownContexts.at(-1)?.mayInterruptActiveTurn).toBe(false);
-
-    service.unsettleSession("session-1");
-    await service.settleSessionsReportingAborts(["session-1"], { source: "user" });
-    expect(teardownContexts.at(-1)?.mayInterruptActiveTurn).toBe(true);
+  it.each([
+    ["user", { status: "active" }, "turn_running"],
+    ["operator", { status: "active" }, "turn_running"],
+    ["pr_merge", { status: "active" }, "turn_running"],
+    ["user", { status: "idle", turnAcceptedAt: "2026-08-11T00:02:00.000Z" }, "turn_running"],
+    ["pr_merge", { status: "idle", turnAcceptedAt: "2026-08-11T00:02:00.000Z" }, "turn_running"],
+    ["user", "never", "status_unknown"],
+    ["pr_merge", { status: "idle", runtimeOwnedElsewhere: { pid: 4242 } }, "status_unknown"],
+    ["user", { status: "idle" }, null],
+    ["pr_merge", { status: "idle" }, null],
+  ] as const)("a %s settle of a chat reading %j is refused with %s", async (source, summary, reason) => {
+    const { db } = await fixture();
+    const service = createSessionService({
+      db,
+      checkSettle: createSettleWiring({
+        surface: "desktop",
+        agentChatService: {
+          getSessionSummary: async () => (summary === "never" ? await new Promise<never>(() => {}) : summary),
+        },
+      }).checkSettle,
+    });
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const pending = service.settleSessionsReportingAborts(["session-1"], { source });
+      await vi.advanceTimersByTimeAsync(10_000);
+      const outcome = await pending;
+      if (reason) {
+        expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason }]);
+        expect(outcome.settled).toEqual([]);
+        expect(service.get("session-1")?.settledAt).toBeNull();
+      } else {
+        expect(outcome.aborted).toEqual([]);
+        expect(outcome.settled).toEqual(["session-1"]);
+        expect(service.get("session-1")?.settledAt).toBeTruthy();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
-  it("does not settle a session whose teardown refused to stop its work", async () => {
-    const { service, setTeardownAbortedBy } = await fixture();
-    setTeardownAbortedBy("turn_start");
+  it("does not settle a session whose check refused", async () => {
+    const { service, setCheckAbortedBy } = await fixture();
+    setCheckAbortedBy("turn_running");
 
     const outcome = await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" });
 
     expect(outcome.settled).toEqual([]);
-    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_running" }]);
     expect(service.get("session-1")?.settledAt).toBeNull();
-    expect(service.settlingSessionIds()).toEqual([]);
+    setCheckAbortedBy(null);
+    await expectWindowClosed(service);
   });
 
   /**
-   * R2 — settle abandoned after teardown ran. Teardown is a no-op here, so what
-   * this pins is the reporting half: the caller is told, and never sees silent
-   * success. #1059 returned success and that is what a caller built on.
+   * Any turn start — a scheduled wake, a cron, a background job reporting back
+   * — takes a chat out of settled, and touches nothing else: the question the
+   * agent raised stays up, a keep-active pin survives, and a settle still in
+   * its window is abandoned rather than landing on a working chat.
+   */
+  it("a host-started turn unsettles the chat and touches nothing else", async () => {
+    const { db, service, setDuringCheck } = await fixture();
+    await service.settleSessionsReportingAborts(["session-1"]);
+    // An `ade chat ask` hand raised after the settle, written as the agent's
+    // request lands (a settle clears attention, so it cannot come first).
+    db.run(
+      "update terminal_sessions set attention_requested_at = ?, attention_source = 'agent_explicit' where id = ?",
+      ["2026-08-11T00:05:00.000Z", "session-1"],
+    );
+
+    expect(service.clearSettleOnTurnStart("session-1")).toBe(true);
+    expect(service.get("session-1")?.settledAt).toBeNull();
+    expect(service.get("session-1")?.attentionRequestedAt).toBe("2026-08-11T00:05:00.000Z");
+
+    // Not settled, pinned keep-active: nothing to clear, so nothing is written.
+    service.setSettleOverride("session-1", "active");
+    const revision = service.getSettleLifecycleRevision("session-1");
+    expect(service.clearSettleOnTurnStart("session-1")).toBe(false);
+    expect(service.getSettleLifecycleRevision("session-1")).toBe(revision);
+    expect(service.get("session-1")?.settleOverride).toBe("active");
+
+    // A turn that starts while a settle is mid-check abandons it, pin intact.
+    setDuringCheck(() => { service.clearSettleOnTurnStart("session-1"); });
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
+    expect(outcome).toEqual({ settled: [], aborted: [{ sessionId: "session-1", reason: "turn_start" }] });
+    expect(service.get("session-1")?.settleOverride).toBe("active");
+  });
+
+  /**
+   * R2 — settle abandoned after the check ran. What this pins is the reporting
+   * half: the caller is told, and never sees silent success. #1059 returned
+   * success and that is what a caller built on.
    */
   it("R2: an abandoned settle reports the reason instead of silent success", async () => {
-    const { service, setTeardown } = await fixture();
-    let teardownRan = false;
+    const { service, setDuringCheck } = await fixture();
+    let checkRan = false;
 
-    setTeardown(() => {
-      teardownRan = true;
+    setDuringCheck(() => {
+      checkRan = true;
       service.requestAttention("session-1", "need you");
     });
     const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
-    expect(teardownRan).toBe(true);
+    expect(checkRan).toBe(true);
     expect(outcome.settled).toEqual([]);
     expect(outcome.aborted[0]).toMatchObject({ sessionId: "session-1", reason: "attention_requested" });
   });
 
-  it("rejects lifecycle activity arriving after teardown but before the guarded commit", async () => {
+  it("rejects lifecycle activity arriving after the check but before the guarded commit", async () => {
     const { db, service } = await fixture();
     const sibling = createSessionService({ db });
     const result = await service.settleSessionsReportingAborts(["session-1"], { source: "pr_merge" }, () => {
@@ -205,41 +266,26 @@ describe("settle race matrix", () => {
     expect(service.get("session-1")?.settledAt).toBeNull();
   });
 
-  /** R3 — work drains on its own during teardown. Benign; the settle lands. */
-  it("R3: background work finishing during teardown does not block the settle", async () => {
-    const { service, setTeardown } = await fixture();
-
-    setTeardown(() => {
-      // A stop against an already-finished task is a no-op, and nothing touches
-      // the settle tuple.
-    });
-    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
-
-    expect(outcome.aborted).toEqual([]);
-    expect(outcome.settled).toEqual(["session-1"]);
-    expect(service.get("session-1")?.settledAt).toBeTruthy();
-  });
-
   /**
    * R4 — concurrent settle sources. PR-merge auto-settle racing a user settle
-   * must not run two teardowns against one session.
+   * must not file one session twice.
    */
-  it("R4: a second settle joins the in-flight one instead of tearing down twice", async () => {
-    const { service, setTeardown } = await fixture();
-    let teardowns = 0;
+  it("R4: a second settle joins the in-flight one instead of settling twice", async () => {
+    const { service, setDuringCheck } = await fixture();
+    let checks = 0;
 
     let inner: Awaited<ReturnType<typeof service.settleSessionsReportingAborts>> | null = null;
-    setTeardown(async () => {
-      teardowns += 1;
+    setDuringCheck(async () => {
+      checks += 1;
       // Re-entrant settle, exactly as a PR-merge poll landing mid-user-settle.
-      // The window is already open, so this must JOIN rather than tear down
-      // again — the teardown counter is what proves it.
+      // The window is already open, so this must JOIN rather than check
+      // again — the check counter is what proves it.
       inner = await service.settleSessionsReportingAborts(["session-1"]);
     });
 
     const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
-    expect(teardowns, "the joined settle must not start its own teardown").toBe(1);
+    expect(checks, "the joined settle must not start its own check").toBe(1);
     expect(outcome.settled).toEqual(["session-1"]);
     // The joiner does NOT report success. It filed nothing, and a caller with a
     // durable consequence — the PR poller marking a merge handled — must not
@@ -253,16 +299,16 @@ describe("settle race matrix", () => {
   });
 
   /**
-   * R6 — output during teardown, the high-frequency shape of R1. This is the
-   * case that would make the feature dead on arrival: stopping a process emits
-   * output, so C4/C5 fire BECAUSE teardown is running. They must be swallowed on
-   * all three axes or no settle could ever land.
+   * R6 — output during the check, the high-frequency shape of R1. Settle stops
+   * nothing, so a background shell keeps printing while the settle is in its
+   * window. C4/C5 must be swallowed on all three axes or a chat with live
+   * background work could never be settled.
    */
-  it("R6: output during teardown is swallowed on all three axes", async () => {
-    const { service, setTeardown } = await fixture();
+  it("R6: output during the check is swallowed on all three axes", async () => {
+    const { service, setDuringCheck } = await fixture();
     const revisionBefore = service.getSettleLifecycleRevision("session-1");
 
-    setTeardown(() => {
+    setDuringCheck(() => {
       service.setLastOutputPreview("session-1", "final chunk", { clearSettled: true });
       service.touchSessionActivity("session-1", "2026-08-11T00:09:00.000Z");
     });
@@ -300,7 +346,7 @@ describe("settle race matrix", () => {
    * deliberately left desktop peers replicating, so this is reachable in
    * production.
    *
-   * This test exists to show the BLAST RADIUS before real teardown existed, per the
+   * This test exists to show the BLAST RADIUS of a bypassing write, per the
    * coordinator's step-3 review scope — it asserts today's real behavior, not
    * the behavior we want.
    */
@@ -315,10 +361,10 @@ describe("settle race matrix", () => {
    * path is asserted immediately after them.
    */
   it("R7: a peer-style write that bypasses the writer is invisible to the guard", async () => {
-    const { db, service, setTeardown } = await fixture();
+    const { db, service, setDuringCheck } = await fixture();
     const revisionBefore = service.getSettleLifecycleRevision("session-1");
 
-    setTeardown(() => {
+    setDuringCheck(() => {
       // Exactly what a replicated peer settle looks like locally: the row's
       // settle tuple changes without the writer being involved.
       db.run(
@@ -358,9 +404,9 @@ describe("settle race matrix", () => {
    * would not notice it either.
    */
   it("R7b: a bypassing peer write leaves the caller unable to tell what happened", async () => {
-    const { db, service, setTeardown } = await fixture();
+    const { db, service, setDuringCheck } = await fixture();
 
-    setTeardown(() => {
+    setDuringCheck(() => {
       db.run(
         "update terminal_sessions set settled_at = ?, settle_source = ? where id = ?",
         ["2026-08-11T00:07:00.000Z", "user", "session-1"],
@@ -410,68 +456,69 @@ describe("settle race matrix", () => {
   });
 
   /**
-   * A teardown that throws is routine in step 3 — a process refuses to die, a
-   * cloud stop 500s. It must be reported, must not leak the window, and must not
+   * A check whose read throws could not tell whether the chat is working. It
+   * must refuse rather than file it, must not leak the window, and must not
    * discard the accounting for the rest of the batch.
    */
-  it("reports a throwing teardown and still closes its window", async () => {
-    const { service, create, setTeardown } = await fixture();
+  it("refuses a session whose check throws and still closes its window", async () => {
+    const { service, create, setDuringCheck } = await fixture();
     create("session-2");
 
-    setTeardown((sessionId) => {
-      if (sessionId === "session-1") throw new Error("provider stop failed");
+    setDuringCheck((sessionId) => {
+      if (sessionId === "session-1") throw new Error("chat service unavailable");
     });
     const outcome = await service.settleSessionsReportingAborts(["session-1", "session-2"]);
 
-    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "teardown_failed" }]);
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "status_unknown" }]);
     // The rest of the batch was still attempted and accounted for.
     expect(outcome.settled).toEqual(["session-2"]);
-    expect(service.settlingSessionIds()).toEqual([]);
+    setDuringCheck(() => {});
+    await expectWindowClosed(service);
   });
 
-  /** A settling row found after a restart resolves to not-settled. */
-  it("stops a teardown whose window was force-closed out from under it", async () => {
-    const { service, setTeardown, teardownContexts } = await fixture();
-    let sawAbandoned: boolean | null = null;
+  /**
+   * A delete force-closes the window mid-check. Whatever occupies the id
+   * afterwards — a recreated session — is not this settle's, and a settle
+   * reading `abortedBy` alone would see "not aborted" and file the new row.
+   */
+  it("does not file a recreated session whose old window was force-closed", async () => {
+    const { service, create, setDuringCheck } = await fixture();
 
-    setTeardown(() => {
-      // What `deleteSession` does mid-teardown: `forget` force-closes this
-      // window. Whatever occupies the id afterwards — nothing, or a fresh
-      // window opened by a later settle for a recreated session — is not ours,
-      // and a teardown reading `abortedBy` alone would see "not aborted" and
-      // keep issuing provider stops.
+    setDuringCheck(() => {
       service.deleteSession("session-1");
-      sawAbandoned = teardownContexts.at(-1)?.isAborted() ?? null;
-    });
-
-    await service.settleSessionsReportingAborts(["session-1"]);
-
-    expect(sawAbandoned, "a teardown that lost its window must see itself abandoned").toBe(true);
-  });
-
-  it("crash safety: the settling window does not survive the process", async () => {
-    const { service, setTeardown } = await fixture();
-    expect(service.settlingSessionIds()).toEqual([]);
-
-    // Captured, not asserted, inside the callback: a failing `expect` in there
-    // throws, the teardown catch turns it into `teardown_failed`, and the test
-    // stays green while proving nothing.
-    let duringWindow: string[] | null = null;
-    setTeardown(() => {
-      duringWindow = service.settlingSessionIds();
+      create("session-1");
     });
     const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
-    expect(outcome.aborted, "the teardown must not have thrown").toEqual([]);
-    expect(duringWindow, "the session must be visibly settling mid-teardown").toEqual([
-      "session-1",
-    ]);
-    // Always ended, even on the abandoned path — a leaked window would make the
-    // session permanently unsettleable.
-    expect(service.settlingSessionIds()).toEqual([]);
+    expect(outcome.settled).toEqual([]);
+    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "lifecycle_changed" }]);
+    expect(service.get("session-1")?.settledAt).toBeNull();
   });
+
+  it("crash safety: the settling window does not survive the process", async () => {
+    const { db, service, setDuringCheck } = await fixture();
+
+    // A fresh service on the same database is what a restart sees. Captured,
+    // not asserted, inside the callback: a failing `expect` in there throws,
+    // the check catch turns it into `status_unknown`, and the test stays green
+    // while proving nothing.
+    let afterRestart: SettleSessionsOutcome | null = null;
+    setDuringCheck(async () => {
+      afterRestart = await createSessionService({ db }).settleSessionsReportingAborts(["session-1"]);
+    });
+    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
+
+    // The restarted service holds no window, so it settles rather than joining.
+    expect(afterRestart).toEqual({ settled: ["session-1"], aborted: [] });
+    // And the original, whose revision moved under it, does not file twice.
+    expect(outcome).toEqual({ settled: [], aborted: [{ sessionId: "session-1", reason: "lifecycle_changed" }] });
+    setDuringCheck(() => {});
+    service.unsettleSession("session-1");
+    await expectWindowClosed(service);
+  });
+
   it("stops the queue when a persistence failure propagates", async () => {
-    const { service, db, create, setTeardown } = await fixture();
+    const { service, db, create, setDuringCheck } = await fixture();
     const ids = ["session-1"];
     for (let n = 2; n <= 12; n += 1) {
       create(`session-${n}`);
@@ -481,8 +528,8 @@ describe("settle race matrix", () => {
     // Fail the write for one session only. The pool must stop taking new work
     // rather than settling rows the caller has already given up on.
     const realRunChanged = db.runChanged.bind(db);
-    let tornDown = 0;
-    setTeardown(() => { tornDown += 1; });
+    let checked = 0;
+    setDuringCheck(() => { checked += 1; });
     db.runChanged = ((sql: string, params?: unknown[]) => {
       if (typeof sql === "string" && /update\s+terminal_sessions/i.test(sql)
         && Array.isArray(params) && params.includes("session-2")) {
@@ -498,21 +545,21 @@ describe("settle race matrix", () => {
     // taking new sessions instead of running on past the caller. The few
     // already in flight when it failed still finish, which is the point —
     // nothing is abandoned half-written.
-    expect(tornDown, "the pool must stop taking new sessions after a failure").toBeLessThan(ids.length);
+    expect(checked, "the pool must stop taking new sessions after a failure").toBeLessThan(ids.length);
     // And every window closed, or those rows would be unsettleable for the
     // life of the process.
-    expect(service.settlingSessionIds()).toEqual([]);
+    await expectWindowClosed(service, "session-2");
   });
 
-  it("keeps a persistence failure distinct from a failed teardown", async () => {
-    const { service, db, setTeardown } = await fixture();
-    let stopped = 0;
-    setTeardown(() => {
-      stopped += 1;
+  it("keeps a persistence failure distinct from a failed check", async () => {
+    const { service, db, setDuringCheck } = await fixture();
+    let checked = 0;
+    setDuringCheck(() => {
+      checked += 1;
     });
-    // Teardown succeeds; saving the row is what breaks.
-    // The settle tuple lands via `runChanged` (the bump needs the matched-row
-    // count), so patching `run` alone would sail straight past it.
+    // The check passes; saving the row is what breaks. The settle tuple lands
+    // via `runChanged` (the bump needs the matched-row count), so patching
+    // `run` alone would sail straight past it.
     const realRunChanged = db.runChanged.bind(db);
     db.runChanged = ((sql: string, params?: unknown[]) => {
       if (typeof sql === "string" && /update\s+terminal_sessions/i.test(sql)) {
@@ -521,13 +568,13 @@ describe("settle race matrix", () => {
       return realRunChanged(sql, params as never);
     }) as typeof db.runChanged;
 
-    // It must NOT come back as `teardown_failed`: the work really did stop, and
-    // labelling it a teardown failure invites a caller to retry the stop.
+    // It must NOT come back as `status_unknown`: the check answered, and
+    // labelling a lock as "could not tell" hides the real failure.
     await expect(service.settleSessionsReportingAborts(["session-1"])).rejects.toThrow(/locked/);
-    expect(stopped, "teardown ran, so it must not be reported as failed").toBe(1);
+    expect(checked, "the check ran, so it must not be reported as failed").toBe(1);
     db.runChanged = realRunChanged;
     // The window still closed, or the session would be permanently unsettleable.
-    expect(service.settlingSessionIds()).toEqual([]);
+    await expectWindowClosed(service);
   });
 
   it("does not erase an existing status note when a re-settle supplies none", async () => {
@@ -545,9 +592,9 @@ describe("settle race matrix", () => {
   });
 
   it("tells an aborted single-session settle apart from a missing one", async () => {
-    const { service, setTeardown } = await fixture();
-    // A turn starts while the settle is mid-teardown, exactly as in R1.
-    setTeardown(() => {
+    const { service, setDuringCheck } = await fixture();
+    // A turn starts while the settle is mid-check, exactly as in R1.
+    setDuringCheck(() => {
       service.clearTurnStartMarkers("session-1");
     });
 
@@ -563,79 +610,19 @@ describe("settle race matrix", () => {
     });
   });
   /**
-   * R5, end to end: an unconfirmed stop does NOT block the settle (3d option 3),
-   * and the residue is discoverable on the row afterwards rather than only
-   * returned to whoever happened to call.
-   */
-  it("R5: settles with recorded residue when teardown cannot confirm the stop", async () => {
-    const { service, setResidue } = await fixture();
-    setResidue([{
-      kind: "background_tasks",
-      reason: "no_stop_control",
-      count: 2,
-      detail: "2 jobs on codex could not be stopped",
-    }]);
-
-    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
-
-    // Filed, not blocked: option 1 (reject the settle) was explicitly not chosen.
-    expect(outcome.settled).toEqual(["session-1"]);
-    expect(outcome.aborted).toEqual([]);
-    expect(service.get("session-1")?.settledAt).not.toBeNull();
-
-    const residue = service.getSettleResidue("session-1");
-    expect(residue?.items).toEqual([{
-      kind: "background_tasks",
-      reason: "no_stop_control",
-      count: 2,
-      detail: "2 jobs on codex could not be stopped",
-    }]);
-  });
-
-  it("does not leave residue hanging on a session the user reactivated", async () => {
-    const { service, setResidue } = await fixture();
-    setResidue([{
-      kind: "background_tasks", reason: "timeout", count: 1, detail: "1 job could not be stopped",
-    }]);
-    await service.settleSessionsReportingAborts(["session-1"]);
-    expect(service.getSettleResidue("session-1")).not.toBeNull();
-
-    service.unsettleSession("session-1");
-
-    // The row is working again. A stale "1 job could not be stopped" marker
-    // would re-light a session that is fine.
-    expect(service.getSettleResidue("session-1")).toBeNull();
-  });
-
-  it("records no residue for a settle that was abandoned", async () => {
-    const { service, setResidue, setTeardown } = await fixture();
-    setResidue([{
-      kind: "background_tasks", reason: "timeout", count: 1, detail: "1 job could not be stopped",
-    }]);
-    setTeardown(() => {
-      service.clearTurnStartMarkers("session-1");
-    });
-
-    const outcome = await service.settleSessionsReportingAborts(["session-1"]);
-
-    expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "turn_start" }]);
-    // Nothing was filed, so there is no settled row for residue to describe.
-    expect(service.getSettleResidue("session-1")).toBeNull();
-  });
-  /**
    * Decision 1 for step 3: finish host authority instead of building consensus
    * machinery. A replicated settle-tuple write is routed back through the
    * chokepoint, so it gains the revision, the settling window and the abort
    * semantics a local decision has — no peer-visible concurrency token.
    */
-  it("tears sessions down concurrently, and still reports in the caller's order", async () => {
-    const { service, create, setTeardown } = await fixture();
+  it("checks sessions concurrently, and still reports in the caller's order", async () => {
+    const { service, create, setDuringCheck } = await fixture();
     for (const id of ["session-2", "session-3"]) create(id);
 
     let inFlight = 0;
     let peakInFlight = 0;
     const release: Array<() => void> = [];
-    setTeardown(async () => {
+    setDuringCheck(async () => {
       inFlight += 1;
       peakInFlight = Math.max(peakInFlight, inFlight);
       await new Promise<void>((resolve) => { release.push(resolve); });
@@ -643,19 +630,19 @@ describe("settle race matrix", () => {
     });
 
     const pending = service.settleSessionsReportingAborts(["session-3", "session-1", "session-2"]);
-    // Let all three teardowns start before any finishes.
+    // Let all three checks start before any finishes.
     await new Promise<void>((resolve) => { setTimeout(resolve, 0); });
-    // Asserted BEFORE draining: serial teardown parks two of the three behind
+    // Asserted BEFORE draining: serial checks park two of the three behind
     // the first, and the drain below would then hang until vitest's timeout —
     // a real failure, but reported as "test timed out" instead of as this.
-    expect(release.length, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
+    expect(release.length, "bulk settle must not check one session at a time").toBeGreaterThan(1);
     while (release.length) release.pop()!();
     const outcome = await pending;
 
-    // Serial teardown was the regression: the confirmation budget is seconds,
+    // Serial checks were the regression: a slow read is paid once per session,
     // and iOS gives the whole command 30s.
-    expect(peakInFlight, "bulk settle must not tear down one session at a time").toBeGreaterThan(1);
-    // Order follows the request, not whichever teardown finished first.
+    expect(peakInFlight, "bulk settle must not check one session at a time").toBeGreaterThan(1);
+    // Order follows the request, not whichever check finished first.
     expect(outcome.settled).toEqual(["session-3", "session-1", "session-2"]);
   });
 
@@ -687,14 +674,11 @@ describe("settle race matrix", () => {
     });
 
     it("makes a peer reactivation abort an in-flight settle instead of being overwritten", async () => {
-      const { db, service, setTeardown, teardownContexts } = await fixture();
+      const { db, service, setDuringCheck } = await fixture();
       await service.settleSessionsReportingAborts(["session-1"]);
       service.unsettleSession("session-1");
 
-      // Captured inside teardown: the window is closed by the time the call
-      // returns, so `isAborted` is only meaningful while it is still open.
-      let abortedDuringTeardown: boolean | null = null;
-      setTeardown(() => {
+      setDuringCheck(() => {
         // The mirror case Codex raised: a peer reactivates the session while
         // this host is mid-settle.
         applyPeerWrite(
@@ -705,16 +689,13 @@ describe("settle race matrix", () => {
         service.reconcileRemoteSettleTuple([
           { sessionId: "session-1", column: "settle_override" },
         ]);
-        abortedDuringTeardown = teardownContexts.at(-1)?.isAborted() ?? null;
       });
       const outcome = await service.settleSessionsReportingAborts(["session-1"]);
 
       expect(outcome.aborted).toEqual([{ sessionId: "session-1", reason: "remote_lifecycle_changed" }]);
       expect(outcome.settled).toEqual([]);
-      // Visible to teardown WHILE it runs, not only after. The revision alone is
-      // re-read after the await, which would let teardown run to completion and
-      // interrupt a turn the user just started on the other device.
-      expect(abortedDuringTeardown, "teardown must see the abort while it is still running").toBe(true);
+      // `remote_lifecycle_changed`, not `lifecycle_changed`: the abort tripped
+      // while the check was still in flight, not only via the revision after.
       // The peer's reactivation survives.
       expect(service.get("session-1")?.settleOverride).toBe("active");
       expect(service.get("session-1")?.settledAt).toBeNull();

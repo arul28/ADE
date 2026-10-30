@@ -1,0 +1,305 @@
+name: Beta
+
+# Builds ADE's Beta track from main. See docs/plans/beta-track.md for the
+# decisions and contracts this implements.
+#
+# Every half hour it looks for the newest main commit with a green ci-pass
+# that is newer than the last beta, and, at most once every 3 hours, builds it
+# as vX.Y.Z-beta.N (X.Y.Z = latest stable + one patch). The build is the
+# stable release build (release-core.yml), stamped as a beta: same app id and
+# name, orange icon, updater manifests still named latest-mac.yml/latest.yml.
+# It is published as a GitHub prerelease (release-publish.yml): a draft until
+# every asset is attached, then public, never "latest". Only then does the
+# feed job point the fixed beta-feed prerelease at it, which is what Beta
+# machines read. Old betas are pruned last.
+#
+# workflow_dispatch:
+# - force: ignore the 3 h gap and the "nothing that ships changed" skip.
+# - preview_ref: build that branch or commit as vX.Y.Z-beta.0.preview.<run>
+#   for a one-time test on a real machine. It skips the main and ci-pass
+#   gates, is published as a prerelease like a beta, and never touches the
+#   feed, so no machine is offered it as an update; it is installed by hand.
+#
+# A failed run opens (or comments on) the "Beta build failed" issue; the next
+# beta that reaches the feed closes it. Preview runs report to whoever
+# dispatched them and leave the issue alone.
+
+on:
+  schedule:
+    # Off the hour, when GitHub's scheduler is least crowded.
+    - cron: "17,47 * * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build now, even within 3 hours of the last beta.
+        required: false
+        default: false
+        type: boolean
+      preview_ref:
+        description: >-
+          Branch or commit to build as a one-time preview. Never reaches the
+          beta feed. Leave empty for a normal beta.
+        required: false
+        default: ""
+        type: string
+
+# Every job states its own permissions.
+permissions: {}
+
+# One publisher at a time for the feed, never cancelled: a run replaced
+# mid-publish could leave a half-published beta. GitHub keeps one pending run
+# per group; a newer pending run replaces an older one, which is harmless here
+# because every run resolves the newest green main commit itself. (`queue:
+# max` would keep them all, but a key GitHub rejects would stop every beta, so
+# it is left out.) Its own group, so a beta never waits on or cancels a stable
+# release. Previews never touch the feed, so each gets a group of its own.
+concurrency:
+  group: ${{ inputs.preview_ref && format('beta-preview-{0}', github.run_id) || 'beta' }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: read
+    outputs:
+      skip: ${{ steps.resolve.outputs.skip }}
+      reason: ${{ steps.resolve.outputs.reason }}
+      tag: ${{ steps.resolve.outputs.tag }}
+      sha: ${{ steps.resolve.outputs.sha }}
+      preview: ${{ steps.resolve.outputs.preview }}
+      notes: ${{ steps.resolve.outputs.notes }}
+    steps:
+      # Full history and every tag: the resolver walks main's first-parent
+      # history and reads each beta's commit from its tag.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # The called workflows come from the same ref as this file, so a feed
+      # run from a branch would publish with that branch's release pipeline.
+      # Real betas therefore run only from main; previews may run from
+      # anywhere, because they never reach the feed.
+      - name: Require main for feed builds
+        if: ${{ !inputs.preview_ref && github.ref != 'refs/heads/main' }}
+        run: |
+          echo "::error::Beta builds that reach the feed run only from main. Use preview_ref to build a branch."
+          exit 1
+
+      - name: Resolve the beta to build
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          FORCE: ${{ inputs.force && 'true' || '' }}
+          PREVIEW_REF: ${{ inputs.preview_ref }}
+        run: |
+          set -euo pipefail
+          args=()
+          [ -n "$FORCE" ] && args+=(--force)
+          [ -n "$PREVIEW_REF" ] && args+=(--preview-ref "$PREVIEW_REF")
+          node scripts/beta/resolve.mjs "${args[@]}"
+
+  build:
+    needs: resolve
+    if: ${{ needs.resolve.outputs.skip == 'false' }}
+    # The ceiling release-core.yml declares; it holds no write-capable job.
+    permissions:
+      actions: read
+      checks: read
+      contents: read
+    uses: ./.github/workflows/release-core.yml
+    with:
+      release_tag: ${{ needs.resolve.outputs.tag }}
+      target_ref: ${{ needs.resolve.outputs.sha }}
+      preview: ${{ needs.resolve.outputs.preview == 'true' }}
+    secrets: inherit
+
+  # The same gate as release.yml's publish-release, rebuilt from
+  # release-core.yml's outputs: with the Windows switch on, a failed or skipped
+  # Windows build blocks the beta exactly as a failed macOS build does.
+  publish:
+    if: >-
+      ${{
+        always()
+        && needs.resolve.outputs.skip == 'false'
+        && needs.build.outputs.runtime_result == 'success'
+        && needs.build.outputs.mac_result == 'success'
+        && (
+          vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
+          || needs.build.outputs.windows_result == 'success'
+        )
+      }}
+    needs:
+      - resolve
+      - build
+    permissions:
+      actions: read
+      contents: write
+    uses: ./.github/workflows/release-publish.yml
+    with:
+      release_tag: ${{ needs.resolve.outputs.tag }}
+      target_ref: ${{ needs.resolve.outputs.sha }}
+      release_notes: ${{ needs.resolve.outputs.notes }}
+      make_public: true
+    secrets: inherit
+
+  # Runs only after the versioned release is public with every asset, so the
+  # feed can never name a file that is not downloadable yet (T3 #26917).
+  feed:
+    if: ${{ !cancelled() && needs.publish.result == 'success' && needs.resolve.outputs.preview == 'false' }}
+    needs:
+      - resolve
+      - publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      TAG_NAME: ${{ needs.resolve.outputs.tag }}
+      TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # Only for the pure-JS yaml package, as release-publish.yml's manifest
+      # merge does; --ignore-scripts skips Electron's postinstall.
+      - name: Install the yaml parser
+        run: cd apps/desktop && npm ci --ignore-scripts --no-audit --no-fund
+
+      - name: Build the feed from the published beta
+        run: |
+          set -euo pipefail
+          state="$(gh release view "$TAG_NAME" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
+          if [ "$state" != "false true" ]; then
+            echo "::error::$TAG_NAME is not a public prerelease ($state); the feed stays on the previous beta."
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/feed-in" "$RUNNER_TEMP/feed-out"
+          gh release view "$TAG_NAME" --json assets --jq '.assets[].name' > "$RUNNER_TEMP/feed-assets.txt"
+          gh release download "$TAG_NAME" --dir "$RUNNER_TEMP/feed-in" \
+            --pattern latest-mac.yml --pattern latest.yml --pattern release-manifest.json
+          node scripts/beta/feed.mjs --tag "$TAG_NAME" --repo "$GH_REPO" \
+            --in "$RUNNER_TEMP/feed-in" --out "$RUNNER_TEMP/feed-out" \
+            --assets "$RUNNER_TEMP/feed-assets.txt"
+
+      # beta-feed is a prerelease with a fixed tag. It is created on first use
+      # and re-marked as a prerelease every run, so it can never become the
+      # release a stable machine's releases/latest lookup returns.
+      - name: Replace the beta feed
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/feed-out"
+          if ! gh release view beta-feed >/dev/null 2>&1; then
+            gh release create beta-feed --prerelease --latest=false --target "$TARGET_SHA" \
+              --title "Beta feed" \
+              --notes "ADE Beta machines read their updates from this release. Its files always describe the newest beta and are replaced by beta.yml; download builds from the versioned vX.Y.Z-beta.N releases instead."
+          fi
+          gh release edit beta-feed --prerelease --latest=false
+          # Updater manifests first, beta.json last: a reader that sees the new
+          # beta.json then finds the manifests already pointing at that build.
+          # A file being replaced is briefly missing; clients read a 404 as
+          # "no beta right now" and check again later.
+          manifests=("$out/latest-mac.yml")
+          if [ -f "$out/latest.yml" ]; then
+            manifests+=("$out/latest.yml")
+          elif gh release view beta-feed --json assets --jq '.assets[].name' | grep -qx latest.yml; then
+            # This beta has no Windows build; do not leave Windows machines on
+            # an older beta's manifest that names a different version.
+            gh release delete-asset beta-feed latest.yml --yes
+          fi
+          gh release upload beta-feed "${manifests[@]}" --clobber
+          gh release upload beta-feed "$out/beta.json" --clobber
+          feed_tag="$(gh release download beta-feed --pattern beta.json --output - | jq -r .tag)"
+          if [ "$feed_tag" != "$TAG_NAME" ]; then
+            echo "::error::beta-feed's beta.json names $feed_tag, not $TAG_NAME."
+            exit 1
+          fi
+          echo "beta-feed now serves $TAG_NAME" >> "$GITHUB_STEP_SUMMARY"
+
+  prune:
+    if: ${{ !cancelled() && needs.feed.result == 'success' }}
+    needs:
+      - resolve
+      - feed
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Delete old betas and stale previews
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG_NAME: ${{ needs.resolve.outputs.tag }}
+        run: node scripts/beta/prune.mjs --current "$TAG_NAME"
+
+  report:
+    if: ${{ always() }}
+    needs:
+      - resolve
+      - build
+      - publish
+      - feed
+      - prune
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      issues: write
+    steps:
+      - name: Open or close the "Beta build failed" issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PREVIEW_REF: ${{ inputs.preview_ref }}
+          TAG_NAME: ${{ needs.resolve.outputs.tag }}
+          TARGET_SHA: ${{ needs.resolve.outputs.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        run: |
+          set -euo pipefail
+          if [ -n "$PREVIEW_REF" ]; then
+            echo "Preview run; the Beta issue is left alone."
+            exit 0
+          fi
+          failed="$(printf '%s' "$NEEDS_JSON" | jq -r '[to_entries[] | select(.value.result == "failure") | .key] | join(" ")')"
+          feed="$(printf '%s' "$NEEDS_JSON" | jq -r '.feed.result')"
+          title="Beta build failed"
+          gh label create beta --color FB8C00 --description "Beta track builds" >/dev/null 2>&1 || true
+          issue="$(gh issue list --state open --label beta --limit 100 --json number,title \
+            --jq "[.[] | select(.title == \"$title\")][0].number // empty")"
+
+          if [ -n "$failed" ]; then
+            # Name the jobs that actually broke, nested ones included
+            # ("build / build-mac-release (arm64)"), not just the caller jobs.
+            jobs="$(gh api "repos/$GH_REPO/actions/runs/$RUN_ID/attempts/$RUN_ATTEMPT/jobs" --paginate \
+              --jq '.jobs[] | select(.conclusion == "failure") | "- " + .name')"
+            body="$(printf 'Run: %s\nBeta: %s\nCommit: %s\n\nFailed jobs:\n%s\n' \
+              "$RUN_URL" "${TAG_NAME:-not chosen}" "${TARGET_SHA:-none}" "${jobs:-- $failed}")"
+            if [ -n "$issue" ]; then
+              gh issue comment "$issue" --body "$body"
+            else
+              gh issue create --title "$title" --label beta --body "$body"
+            fi
+            exit 0
+          fi
+          if [ "$feed" = "success" ] && [ -n "$issue" ]; then
+            gh issue comment "$issue" --body "Fixed: $TAG_NAME is on the beta feed. $RUN_URL"
+            gh issue close "$issue"
+          fi

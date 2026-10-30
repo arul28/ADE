@@ -4684,7 +4684,7 @@ setInterval(() => {}, 1000);
   );
 
   it("blocks a spawn onto a sibling channel's runtime endpoint", async () => {
-    // A Stable desktop must not spawn an app-owned brain onto the Beta
+    // A Stable desktop must not spawn an app-owned brain onto the Alpha
     // channel's endpoint. ADE_HOME points somewhere unrelated, so the layout
     // comparison cannot match and only the cross-channel set can catch this.
     // On Windows that set was hardcoded to `~/.ade*/sock/ade.sock` — addresses
@@ -4694,7 +4694,7 @@ setInterval(() => {}, 1000);
       const outcome = await runPrimaryEndpointGuard({
         adeHome,
         packageChannel: "stable",
-        requestedSocketPath: () => channelRuntimeSocketPath(".ade-beta"),
+        requestedSocketPath: () => channelRuntimeSocketPath(".ade-alpha"),
       });
 
       expect(outcome.requested).not.toBe(outcome.layout);

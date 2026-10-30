@@ -13,7 +13,7 @@
  * Readiness stays with the agent — a wake is news, not a merge decision.
  */
 
-import type { AdeCardPayload, AdeCardRow } from "./adeCard";
+import type { AdeCardPayload, AdeCardProgress, AdeCardRow } from "./adeCard";
 import { classifyPrAuthor } from "./prBotIdentity";
 import { isCiProducerCheck } from "./prChecksRollup";
 import type { PrCheck, PrChecksStatus, PrState } from "./types/prs";
@@ -545,7 +545,21 @@ export type PrWatchWakeContext = {
   stop: PrWatchStopReason | null;
   /** Failing-check log tails keyed by check name, when the reactor fetched them. */
   logExcerpts?: ReadonlyMap<string, string>;
+  /** The head's checks this pass, for the card's pass/fail counts. Null when they could not be read. */
+  checks?: readonly PrCheck[] | null;
 };
+
+/** Pass/fail/running/queued counts of a PR's checks; a skipped or neutral check counts nowhere. */
+export function prWatchCheckProgress(checks: readonly PrCheck[]): AdeCardProgress {
+  const progress: AdeCardProgress = { passed: 0, failed: 0, running: 0, queued: 0 };
+  for (const check of checks) {
+    if (check.status === "queued") progress.queued += 1;
+    else if (check.status === "in_progress") progress.running += 1;
+    else if (isFailedCheck(check)) progress.failed += 1;
+    else if (check.conclusion === "success") progress.passed += 1;
+  }
+  return progress;
+}
 
 function changeLines(change: PrWatchChange, ctx: PrWatchWakeContext): string[] {
   const commit = ctx.pr.headSha ? ` on ${ctx.pr.headSha.slice(0, 7)}` : "";
@@ -682,6 +696,10 @@ export function buildPrWatchWakeCard(ctx: PrWatchWakeContext & { watchId: string
     subtitle: `Agent notified · ${status}`,
     rows: shown,
     ...(rows.length > shown.length ? { rowsTruncated: rows.length - shown.length } : {}),
+    // A checks wake shows the counts in place of "checks passed".
+    ...(ctx.checks?.length && ctx.changes.some((change) => change.kind === "checks_passed" || change.kind === "checks_failed")
+      ? { progress: prWatchCheckProgress(ctx.checks) }
+      : {}),
     fallbackText: `PR #${ctx.pr.githubPrNumber}: ${summarizePrWatchChanges(ctx.changes)} — agent notified`,
     createdAt: ctx.deliveredAt,
   };

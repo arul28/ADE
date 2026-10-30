@@ -18,6 +18,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { codedError } from "../../desktop/src/shared/codedError";
+import { shippedVersionOrNull } from "../../desktop/src/shared/updateTrack";
 import {
   detectCloudPlaceholderFile,
   detectCloudStorageProvider,
@@ -36,13 +37,7 @@ import {
   createSessionService,
   STALE_RUNNING_SESSION_RESCAN_DELAY_MS,
 } from "../../desktop/src/main/services/sessions/sessionService";
-import { createSettleTeardownWiring } from "../../desktop/src/main/services/sessions/settleTeardownWiring";
-import type {
-  SettleResidueItem,
-  SettleTeardownContext,
-  SettleTeardownOutcome,
-  SubagentLink,
-} from "../../desktop/src/main/services/sessions/sessionSettleTeardown";
+import { createLateBoundSettle, createSettleWiring } from "../../desktop/src/main/services/sessions/settleWiring";
 import { createProjectConfigService } from "../../desktop/src/main/services/config/projectConfigService";
 import { createConflictService } from "../../desktop/src/main/services/conflicts/conflictService";
 import { createGitOperationsService } from "../../desktop/src/main/services/git/gitOperationsService";
@@ -355,6 +350,7 @@ const chatRuntimeBudget = createChatRuntimeBudget();
 declare const __ADE_VERSION__: string | undefined;
 
 const BUNDLED_ADE_VERSION = typeof __ADE_VERSION__ === "string" ? __ADE_VERSION__.trim() : "";
+
 
 export { createEventBuffer, type BufferedEvent, type EventBuffer };
 
@@ -786,6 +782,35 @@ export function cleanupLegacyBundledAdeSkillsForCli(): void {
   }
 }
 
+let adeCodeHomeLeftoversRemoved = false;
+
+/**
+ * Delete what the removed ADE Code terminal client left on disk: its state
+ * file under `~/.ade` (once per process) and the per-project heartbeat and
+ * clipboard caches. Nothing reads these any more. Fire-and-forget so it never
+ * delays a runtime start.
+ */
+function removeAdeCodeLeftovers(projectRoot: string, logger: Logger): void {
+  if (process.env.VITEST) return;
+  const targets = [
+    path.join(projectRoot, ".ade", "cache", "ade-code"),
+    path.join(projectRoot, ".ade", "cache", "ade-code-clipboard"),
+  ];
+  if (!adeCodeHomeLeftoversRemoved) {
+    adeCodeHomeLeftoversRemoved = true;
+    const homeAde = path.join(os.homedir(), ".ade");
+    targets.push(path.join(homeAde, "ade-code-state.json"), path.join(homeAde, "ade-code-state.json.lock"));
+  }
+  for (const target of targets) {
+    void fs.promises.rm(target, { recursive: true, force: true }).catch((error: unknown) => {
+      logger.warn("runtime.ade_code_leftover_remove_failed", {
+        target,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }
+}
+
 export function createHeadlessAdeCliAgentEnv(
   baseEnv: NodeJS.ProcessEnv = process.env,
   options: {
@@ -900,7 +925,7 @@ export async function createAdeRuntime(args: {
    * How much of the runtime to build.
    *
    * - "full": everything (the machine brain / project daemon).
-   * - "chat": the TUI + personal-chat runtime. Drops iOS-sim, app-control, and
+   * - "chat": the personal-chat runtime. Drops iOS-sim, app-control, and
    *   the built-in browser bridge, all of which need a desktop host.
    * - "embedded": "chat" minus everything an external embedder must not get.
    *   Automations, their ingress rule dispatch, and auto-update are off, and
@@ -969,6 +994,7 @@ export async function createAdeRuntime(args: {
   const servesMachineEndpoint = servesMachineRuntimeEndpoint(runtimeSocketPath, resolveMachineEndpointNames().runtime);
   const sessionActivityReportingEnabled = !embeddedRuntime && Boolean(runtimeSocketPath);
   const logger = createFileLogger(path.join(paths.logsDir, "ade-cli.jsonl"));
+  if (!embeddedRuntime) removeAdeCodeLeftovers(projectRoot, logger);
   const diskPressureMonitor = createDiskPressureMonitor({
     roots: [projectRoot, machineRuntimeLayout.adeDir],
   });
@@ -996,6 +1022,7 @@ export async function createAdeRuntime(args: {
     }
     db = await openKvDb(paths.dbPath, logger, {
       hasSyncPeers,
+      appVersion: shippedVersionOrNull(process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION),
     });
     // The app and the brain's project scope record it too, so a project used
     // only from the CLI is protected the same way as one opened in the app.
@@ -1225,27 +1252,19 @@ export async function createAdeRuntime(args: {
     // services. Session changes still use it once publishing is attached.
     let pushPublisherForPtySignals: PushPublisherService | null = null;
     let ptyServiceForSessionChanges: ReturnType<typeof createPtyService> | null = null;
-    // Late-bound: the chat service that owns the work is constructed further
-    // down. Without this the brain — which owns phone sync, remote commands and
-    // the PR-merge poller in a normal install — would settle sessions while
-    // stopping nothing.
-    const settleTeardownRef: {
-      run: ((sessionId: string, ctx: SettleTeardownContext) => Promise<SettleTeardownOutcome>) | null;
-      report: ((args: { columns: string[]; changesetSessionCount: number }) => void) | null;
-      residue: ((args: { provider: string | null; items: SettleResidueItem[] }) => void) | null;
-      subagentLinks: ((parentSessionIds: readonly string[]) => Promise<SubagentLink[]>) | null;
-    } = { run: null, report: null, residue: null, subagentLinks: null };
+    // Late-bound: the chat service that knows which turns are running is
+    // constructed further down. Without this the brain — which owns phone sync,
+    // remote commands and the PR-merge poller in a normal install — would
+    // settle chats mid-turn.
+    const lateSettle = createLateBoundSettle();
     const sessionService = createSessionService({
       db,
       logger,
-      runSettleTeardown: async (sessionId, ctx) =>
-        settleTeardownRef.run ? await settleTeardownRef.run(sessionId, ctx) : { residue: [], confirmed: false },
-      onRemoteSettleWrite: (args) => settleTeardownRef.report?.(args),
-      onSettleResidue: (args) => settleTeardownRef.residue?.(args),
+      checkSettle: lateSettle.checkSettle,
+      onRemoteSettleWrite: lateSettle.onRemoteSettleWrite,
+      listSubagentLinks: lateSettle.listSubagentLinks,
       // Read at call time: the automation service is built later.
       onChatSettled: (chat) => automationServiceRef?.onSessionSettled(chat),
-      listSubagentLinks: async (parentSessionIds) =>
-        settleTeardownRef.subagentLinks ? await settleTeardownRef.subagentLinks(parentSessionIds) : [],
     });
     // Inbound settle-tuple writes get this host's lifecycle revision, so an
     // in-flight settle can see a peer's decision and abandon rather than
@@ -1276,7 +1295,7 @@ export async function createAdeRuntime(args: {
     const processRegistry = createProcessRegistryService({
       db,
       logger,
-      role: chatOnlyRuntime ? "tui-runtime" : "ade-serve-daemon",
+      role: chatOnlyRuntime ? "chat-runtime" : "ade-serve-daemon",
       projectRoot,
     });
     teardown.push(() => processRegistry.stop());
@@ -2725,17 +2744,13 @@ export async function createAdeRuntime(args: {
         countActiveForLane: (laneId) => agentChatService.countActiveForLane(laneId),
         disposeForLane: (laneId) => agentChatService.disposeForLane(laneId),
       };
-      const settleWiring = createSettleTeardownWiring({
+      lateSettle.bind(createSettleWiring({
         agentChatService,
         logger,
         analytics: productAnalyticsService ?? null,
         // The brain is the non-GUI runtime surface, matching its other analytics.
         surface: "api",
-      });
-      settleTeardownRef.run = settleWiring.runSettleTeardown;
-      settleTeardownRef.report = settleWiring.onRemoteSettleWrite;
-      settleTeardownRef.residue = settleWiring.onSettleResidue;
-      settleTeardownRef.subagentLinks = settleWiring.listSubagentLinks;
+      }));
     }
     if (resolvedArgs.chatRuntime === "agent" && !agentChatService) {
       throw new Error("Agent chat runtime was requested but the agent chat service was not initialized.");

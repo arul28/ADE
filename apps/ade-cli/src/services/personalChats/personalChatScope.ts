@@ -24,7 +24,7 @@ import {
 } from "../../../../desktop/src/main/services/chat/personalHostPaths";
 import type { AdeRuntime } from "../../bootstrap";
 import type { BufferedEvent, EventBufferDrainResult } from "../../eventBuffer";
-import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { resolveMachineAdeLayout, resolvePersonalChatsStateRoot } from "../projects/machineLayout";
 import { asObject, requiredString, type ObjectArgs } from "./rpcArgs";
 import { credentialStoreProviderForHarness } from "../../../../desktop/src/shared/harnessCredentialProviders";
 import { EmbeddedHostSettings } from "./embeddedHostSettings";
@@ -78,7 +78,7 @@ type PersonalChatScopeOptions = {
   createRuntime?: typeof import("../../bootstrap").createAdeRuntime;
   /**
    * Runtime profile for the hidden machine-chat runtime. "chat" is the default
-   * and what the desktop, TUI, and brain all use. "embedded" is for a runtime
+   * and what the desktop and brain both use. "embedded" is for a runtime
    * an external embedder started (`ade runtime run --profile embedded`): same
    * personal-chat surface, no automations, and sync forced off.
    */
@@ -285,7 +285,7 @@ export class PersonalChatScope {
    */
   async warmExisting(): Promise<void> {
     const layout = resolveMachineAdeLayout();
-    const stateRoot = layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+    const stateRoot = resolvePersonalChatsStateRoot(layout);
     if (!fs.existsSync(path.join(stateRoot, ".ade", "ade.db"))) return;
     await this.getRuntime();
   }
@@ -1007,7 +1007,7 @@ export class PersonalChatScope {
 
   private async createRuntime(): Promise<AdeRuntime> {
     const layout = resolveMachineAdeLayout();
-    const stateRoot = layout.personalChatsStateRoot ?? path.join(layout.adeDir, "personal-chats", "state");
+    const stateRoot = resolvePersonalChatsStateRoot(layout);
     const workspaceRoot = layout.personalChatsWorkspaceRoot ?? path.join(layout.adeDir, "personal-chats", "workspaces");
     fs.mkdirSync(stateRoot, { recursive: true, mode: 0o700 });
     fs.mkdirSync(workspaceRoot, { recursive: true, mode: 0o700 });

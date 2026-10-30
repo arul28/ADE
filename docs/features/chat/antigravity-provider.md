@@ -146,6 +146,5 @@ The `agy` CLI's and the Antigravity app's logins are separate and not reused.
 
 Settings descriptor and logo (LobeHub's Antigravity mark, the one the editor
 menu uses), model picker rail, `ade chat models --provider antigravity`, the
-web client (through the same actions), the TUI (labels, refresh; `/login`
-points at Settings), and iOS (`WorkModelCatalog.swift` group and label,
+web client (through the same actions), and iOS (`WorkModelCatalog.swift` group and label,
 provider label/color; a CLI launch with an Antigravity model is refused).

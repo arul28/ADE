@@ -9,7 +9,7 @@ import type {
 
 /**
  * The ONE vocabulary for "what state is this session in", shared by the Work
- * tab (desktop + iOS mirror), the TUI, and — by documented mapping — the push
+ * tab (desktop + iOS mirror) and — by documented mapping — the push
  * pipeline, so a session's badge, its Live Activity phase, and any
  * notification always tell the same story.
  *
@@ -195,7 +195,7 @@ export type CanonicalSessionInputs = {
   exitCode?: number | null;
   /**
    * Declared settle. Only two writers exist: the user (desktop row/bulk
-   * actions, `ade code`) and the deterministic PR-merge policy — agents lost
+   * actions) and the deterministic PR-merge policy — agents lost
    * `ade chat settle` in 2026-07 because "is this done" is not their call.
    * Presence alone settles — new activity clears the column at the write site
    * (turn start / PTY output), so no timestamp comparison happens here.
@@ -276,7 +276,8 @@ export function isPersistedTurnFailureCurrent(args: {
  *   2. settled — explicitly declared (user, or the PR-merge policy) or forced
  *      by a "settled" override; presence wins over failure because a declared
  *      quiet is a human judgment call. An "active" override suppresses this
- *      tier entirely. Cleared at the write site on any new activity,
+ *      tier entirely. Honored only at rest, and cleared at the write site on
+ *      any new turn or terminal output. It never stops background work,
  *   3. stopped — user/system-disposed PTY,
  *   4. failed — non-zero exit / killed / chat turn death AT REST. A chat whose
  *      live runtime reports a turn in progress is `running` instead: the marker
@@ -295,6 +296,19 @@ export function isPersistedTurnFailureCurrent(args: {
  * has happened in three hours" is the fact worth surfacing regardless of what
  * claims to be alive.
  */
+/**
+ * Whether the settle tuple says "settled": a declared settle or a "settled"
+ * pin, and never while an explicit "active" (keep-active) pin is set. The tuple
+ * only; callers add "and at rest" where it matters.
+ */
+export function isSettleTupleSettled(args: {
+  settledAt?: string | null;
+  settleOverride?: string | null;
+}): boolean {
+  if (args.settleOverride === "active") return false;
+  return args.settleOverride === "settled" || Boolean(args.settledAt);
+}
+
 export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSessionState {
   const nowMs = args.nowMs ?? Date.now();
   const chat = args.isChatTool?.(args.toolType) ?? false;
@@ -353,30 +367,22 @@ export function canonicalSessionState(args: CanonicalSessionInputs): CanonicalSe
   }
 
   // 2. Declared settle (or a "settled" override). No timestamp math: activity
-  // un-settles by clearing the column where the activity happens (user turn
-  // start / PTY output). Only honored AT REST — a settled chat woken by
-  // scheduled work shows green while the turn streams, then re-settles when it
-  // goes idle again (the settledAt column survives background wakes; only user
-  // activity clears it).
+  // un-settles by clearing the column where the activity happens (any chat
+  // turn start, including a scheduled wake / PTY output). Only honored AT REST,
+  // so the row never reads settled while a turn streams, even in the moment
+  // before the turn-start clear lands.
   //
-  const pinnedActive = args.settleOverride === "active";
   const atRest = args.status !== "running" || args.runtimeState === "idle";
-  if (!pinnedActive && atRest && (args.settleOverride === "settled" || args.settledAt)) {
+  if (atRest && isSettleTupleSettled(args)) {
     // The PHASE stays settled: a declared settle is a human judgment call, and
     // re-lighting the row would let a stubborn monitor out-vote the user's
     // explicit "this is done".
     //
-    // But `liveness` still reports the truth, because a settled session can
-    // legitimately still own live work. Settle teardown DOES stop the session's
-    // outstanding background tasks (`sessionSettleTeardown.ts`) — that landed —
-    // but it is best-effort: a provider with no stop control, a stop that times
-    // out, or a stop the provider rejects all leave the settle standing with
-    // residue recorded against it. Work that escaped the process tree entirely
-    // (`nohup`/`setsid`/`disown`) is invisible to it by construction.
-    //
-    // So a surface that wants to show "settled, but something is still running"
-    // must be able to. The phase alone would hide it, which is the exact failure
-    // this module exists to prevent — just at the other end of the lifecycle.
+    // But `liveness` still reports the truth, because a settled session
+    // legitimately keeps its live work: settle is a classification and stops
+    // nothing, so background shells, subagents and monitors run on after it.
+    // A surface that wants to show "settled, but something is still running"
+    // must be able to.
     const settledWork = args.backgroundWork;
     return {
       phase: "settled",
@@ -489,7 +495,7 @@ export type CanonicalStatusBucket = "running" | "awaiting-input" | "ended" | "se
  * Snooze never alters a session's canonical phase. `canonicalSessionState()`
  * does not read these fields at all: a snoozed row is still running/failed/
  * needs_you exactly as before, snooze only decides where the UI files it.
- * Keeping the two orthogonal is what lets desktop, `ade code`, and iOS derive
+ * Keeping the two orthogonal is what lets desktop and iOS derive
  * "is this hidden right now" from the same two columns without re-deriving the
  * lifecycle.
  */
@@ -655,10 +661,7 @@ export function sessionStatusBucket(args: {
     || args.attentionSource === "provider_structured"
     || args.pendingInputWaiting === true
   ) return "awaiting-input";
-  const effectiveSettled = args.settleOverride === "active"
-    ? false
-    : args.settleOverride === "settled" || Boolean(args.settledAt);
-  if (effectiveSettled && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
+  if (isSettleTupleSettled(args) && (args.status !== "running" || args.runtimeState === "idle")) return "ended";
   // A live turn outranks a persisted failure marker: chats keep their row
   // "running" between turns, so `runtimeState` is the live signal that says a
   // turn is actually in flight.

@@ -192,7 +192,7 @@ import {
   isAgentChatDroidPermissionMode,
 } from "../../desktop/src/shared/types/chat";
 
-// Cross-surface (desktop + TUI + iOS) model picker favorites & recents.
+// Cross-surface (desktop + iOS) model picker favorites & recents.
 // Backed by the per-project cr-sqlite CRR DB (runtime.db) so the three surfaces
 // converge for a given project via sync. The store is a per-db singleton (see
 // services/modelPickerStore.ts) shared by the JSON-RPC server and the sync
@@ -2406,6 +2406,12 @@ function emptyLinearQuickView(connection: LinearConnectionStatus): CtoLinearQuic
 
 async function resolveDefaultLaneId(runtime: AdeRuntime): Promise<string> {
   await runtime.laneService.ensurePrimaryLane().catch(() => {});
+  // Every CTO operator action (chat status, list, transcript, create, send)
+  // asks this. The primary lane's row answers it; a lane list also runs git
+  // and the worktree reconcile, about 80 ms per call on Windows, so it is
+  // only the fallback for a project without an active primary.
+  const primaryLaneId = runtime.laneService.getPrimaryLane()?.laneId?.trim();
+  if (primaryLaneId) return primaryLaneId;
   const lanes = await runtime.laneService.list({ includeArchived: false, includeStatus: false });
   const laneId = (lanes.find((lane) => lane.laneType === "primary") ?? lanes[0])?.id?.trim?.() || "";
   if (!laneId) {
@@ -8970,7 +8976,7 @@ export function createAdeRpcRequestHandler(args: {
 
     if (method.startsWith("modelPicker.")) {
       // Backed by the per-project cr-sqlite DB (runtime.db) so favorites +
-      // recents converge across desktop/TUI/iOS for a project via CRR sync.
+      // recents converge across desktop/iOS for a project via CRR sync.
       const store = getSharedModelPickerStore(runtime.db);
       if (method === "modelPicker.getFavorites") {
         return { favorites: store.getFavorites() };

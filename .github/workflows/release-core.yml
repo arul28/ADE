@@ -20,6 +20,16 @@ on:
         required: false
         default: false
         type: boolean
+      preview:
+        description: >-
+          Build a one-time test version of a commit that has not merged, as a
+          vX.Y.Z-beta.0.preview.<run> tag. Skips the main-ancestor and ci-pass
+          gates the way windows_proof does. Only beta.yml sets it, and that
+          workflow publishes the result as a prerelease that never reaches the
+          beta feed, so no machine is ever offered it as an update.
+        required: false
+        default: false
+        type: boolean
     outputs:
       runtime_result:
         description: Aggregate result of the build-runtime-binaries matrix.
@@ -55,10 +65,25 @@ jobs:
       - name: Validate release tag and target binding
         env:
           RELEASE_TAG: ${{ inputs.release_tag }}
+          PREVIEW: ${{ inputs.preview }}
         run: |
           set -euo pipefail
           if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
             echo "::error::Release tag must use the canonical v1.2.3 or v1.2.3-prerelease form."
+            exit 1
+          fi
+          # preview skips the two gates below, so it may only ever produce a
+          # preview tag; a real beta or stable tag always goes through them.
+          is_preview_tag=false
+          if printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-beta\.0\.preview\.[0-9]+$'; then
+            is_preview_tag=true
+          fi
+          if [ "$PREVIEW" = "true" ] && [ "$is_preview_tag" != "true" ]; then
+            echo "::error::A preview build must use a vX.Y.Z-beta.0.preview.N tag, not $RELEASE_TAG."
+            exit 1
+          fi
+          if [ "$PREVIEW" != "true" ] && [ "$is_preview_tag" = "true" ]; then
+            echo "::error::$RELEASE_TAG is a preview tag; build it through beta.yml's preview_ref input."
             exit 1
           fi
 
@@ -79,8 +104,13 @@ jobs:
       # prepare-release.yml, which holds contents: read and cannot publish, so
       # nothing can ship from a commit this step did not vet. Every publishing
       # path leaves windows_proof false and is still gated here.
+      #
+      # preview skips it for the same reason: a branch build for a one-time
+      # test on a real machine. It does publish, but only under a preview tag
+      # (enforced above), as a prerelease that beta.yml never writes into the
+      # beta feed, so no update check can offer it.
       - name: Ensure release commit points to main
-        if: ${{ !inputs.windows_proof }}
+        if: ${{ !inputs.windows_proof && !inputs.preview }}
         run: |
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
@@ -90,9 +120,10 @@ jobs:
       # that has not merged, and it runs solely from prepare-release.yml, which
       # holds contents: read and cannot create a release or tag. Nothing can
       # ship from a commit this step did not vet. Every publishing path leaves
-      # windows_proof false and is still gated here.
+      # windows_proof false and is still gated here. preview: see the step
+      # above.
       - name: Ensure CI passed for release commit
-        if: ${{ !inputs.windows_proof }}
+        if: ${{ !inputs.windows_proof && !inputs.preview }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -258,6 +289,27 @@ jobs:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: cd apps/desktop && npm run version:release
 
+      # A beta tag (vX.Y.Z-beta.N, previews included) keeps latest-mac.yml as
+      # the updater manifest's name (detectUpdateChannel=false) and takes the
+      # orange icon. No-op on a stable tag. See the script for the details.
+      - name: Apply release track
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/beta/apply-build-track.mjs
+
+      # A stable release builds the commit of a beta that already ran, and its
+      # notes are written afterwards, on main. Only the notes come from main:
+      # changelog/*.mdx is text the app shows in What's new
+      # (bundle-release-notes.mjs reads nothing else), never code, which is
+      # also why require-release-ci-pass.sh lets notes-only commits borrow CI.
+      - name: Take release notes from main
+        if: ${{ !contains(inputs.release_tag, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout FETCH_HEAD -- changelog
+
       - name: Reset release output
         run: |
           rm -rf apps/desktop/release apps/desktop/.cache
@@ -394,7 +446,9 @@ jobs:
       # ade-brain). After the artifact upload, so it can never hold up or
       # change a release; the script skips without SENTRY_AUTH_TOKEN and never
       # exits non-zero. Release ade@<tag without v> is the version stamped
-      # above, which is what the app and the brain report.
+      # above, which is what the app and the brain report. A beta is its own
+      # Sentry release (ade@1.2.128-beta.3); the track tag on events is set by
+      # the app at runtime, since Sentry releases carry no environment.
       - name: Upload ${{ matrix.arch }} source maps to Sentry
         if: ${{ !inputs.windows_proof }}
         continue-on-error: true
@@ -538,6 +592,27 @@ jobs:
         env:
           ADE_RELEASE_TAG: ${{ inputs.release_tag }}
         run: cd apps/desktop && npm run version:release
+
+      # See the equivalent step in build-mac-release. On Windows it keeps
+      # latest.yml and swaps build/icon.ico for the orange one, before the
+      # music host and the installer embed it.
+      - name: Apply release track
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: node scripts/beta/apply-build-track.mjs
+
+      # A stable release builds the commit of a beta that already ran, and its
+      # notes are written afterwards, on main. Only the notes come from main:
+      # changelog/*.mdx is text the app shows in What's new
+      # (bundle-release-notes.mjs reads nothing else), never code, which is
+      # also why require-release-ci-pass.sh lets notes-only commits borrow CI.
+      - name: Take release notes from main
+        if: ${{ !contains(inputs.release_tag, '-') }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin main
+          git checkout FETCH_HEAD -- changelog
 
       - name: Reset release output
         shell: pwsh

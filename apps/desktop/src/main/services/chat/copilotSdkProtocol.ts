@@ -33,14 +33,45 @@ export type CopilotSdkSessionConfig = {
   mcpServers?: SessionConfig["mcpServers"];
   disabledMcpServers?: string[];
   permissionMode?: string;
+  /** Context use (0–1) at which Copilot starts compacting in the background; its default otherwise. */
+  backgroundCompactionThreshold?: number;
   utility?: boolean;
 };
+
+/** The mode a sent message runs in; a plan prompt from `/plan` runs in `plan`. */
+export type CopilotSdkAgentMode = "interactive" | "plan" | "autopilot";
+
+/**
+ * One of Copilot's slash commands, as `session.rpc.commands.list()` reports it
+ * (the SDK does not export its `SlashCommandInfo`). Names carry no slash.
+ */
+export type CopilotSlashCommandInfo = {
+  name: string;
+  aliases?: string[];
+  description: string;
+  kind: string;
+  allowDuringAgentExecution: boolean;
+  input?: { hint?: string; required?: boolean } | null;
+};
+
+/** What `session.rpc.commands.invoke()` answers, by `kind` (the SDK's `SlashCommandInvocationResult`). */
+export type CopilotSlashCommandResult =
+  | { kind: "text"; text: string; markdown?: boolean }
+  | { kind: "agent-prompt"; prompt: string; displayPrompt: string; mode?: string; notice?: string }
+  | { kind: "completed"; message?: string; mode?: string }
+  | { kind: "select-subcommand"; command: string; title: string; options: Array<{ name: string; description: string }> }
+  | { kind: "add-timeline-entry"; entry: { type: string; text: string; url?: string }; prefillInput?: string }
+  | { kind: "show-dialog"; dialog?: unknown }
+  | { kind: "set-model"; model: string; warning?: string }
+  | { kind: "set-plan-model"; planModel?: string; message: string };
 
 export type CopilotSdkWorkerRequest =
   | { type: "init"; requestId: string; payload: CopilotSdkWorkerInit }
   | { type: "auth" | "models" | "account_quota" | "dispose"; requestId: string; payload?: { gitHubToken?: string } }
   | { type: "create" | "resume"; requestId: string; payload: CopilotSdkSessionConfig }
-  | { type: "send"; requestId: string; payload: { chatId: string; prompt: string; attachments?: CopilotSdkAttachment[]; mode?: "enqueue" | "immediate"; agentMode?: "autopilot" } }
+  | { type: "send"; requestId: string; payload: { chatId: string; prompt: string; attachments?: CopilotSdkAttachment[]; mode?: "enqueue" | "immediate"; agentMode?: CopilotSdkAgentMode; displayPrompt?: string } }
+  | { type: "commands"; requestId: string; payload: { chatId: string } }
+  | { type: "command"; requestId: string; payload: { chatId: string; name: string; input?: string } }
   | { type: "set_model"; requestId: string; payload: { chatId: string; model: string; reasoningEffort?: string | null; contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null } }
   | { type: "set_auto_tier"; requestId: string; payload: { chatId: string; autoTier: AgentChatCopilotAutoTier | null } }
   | { type: "set_permission_mode"; requestId: string; payload: { chatId: string; permissionMode: string } }

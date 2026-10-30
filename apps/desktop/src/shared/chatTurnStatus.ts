@@ -337,7 +337,7 @@ function effortChangeWhen(change: AgentChatReasoningEffortChange): string {
 }
 
 /**
- * "High now · Medium next turn": the desktop and TUI chip label. `modelId`
+ * "High now · Medium next turn": the desktop chip label. `modelId`
  * names the chat's model so levels read as its picker does.
  */
 export function reasoningEffortChangeLabel(change: AgentChatReasoningEffortChange, modelId?: string | null): string {

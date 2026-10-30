@@ -178,7 +178,7 @@ function toRows(entries: RankedItem[], group: "CI" | "Other"): AdeCardRow[] {
   return entries.map(({ item, bucket }) => ({
     icon: jobIcon(bucket),
     text: item.name,
-    // The group name travels in `detail` so every surface — desktop, TUI, iOS —
+    // The group name travels in `detail` so every surface — desktop, iOS —
     // shows the split without needing a new payload field to render headers.
     // A failure with a step or a duration replaces that generic label.
     detail: (bucket === "failed" ? failureDetail(item) : null) ?? `${group} · ${bucket}`,

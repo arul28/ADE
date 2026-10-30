@@ -1,9 +1,8 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
@@ -27,7 +26,6 @@ const {
   assertBundledAgentSkills,
   assertNoRuntimeFetchedToolPackages,
   assertPackagedTreeSizeBudget,
-  assertPackagedTuiEsmShims,
   assertPathExists,
   assertPathMissing,
   assertRuntimeToolJsEntryPointsPresent,
@@ -160,9 +158,6 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
     const archiveEntries = stdout.split(/\r?\n/);
     if (!archiveEntries.some((entry) => entry.startsWith("./node_modules/"))) {
       throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./node_modules/: ${nativeArchivePath}`);
-    }
-    if (!archiveEntries.includes("./tuiClient/cli.mjs")) {
-      throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain ./tuiClient/cli.mjs: ${nativeArchivePath}`);
     }
     if (!archiveEntries.includes(`./vendor/crsqlite/${requiredTarget}/crsqlite.dylib`)) {
       throw new Error(`[release:mac] Remote runtime native archive for ${requiredTarget} does not contain cr-sqlite: ${nativeArchivePath}`);
@@ -499,7 +494,6 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   const appAsarPath = path.join(resourcesPath, "app.asar");
   const unpackedPath = await resolveRuntimeUnpackedPath(resourcesPath);
   const unpackedPaths = await resolveRuntimeUnpackedPaths(resourcesPath);
-  const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.sh");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
@@ -532,7 +526,6 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertBundledMusicHost(resourcesPath, description);
   await assertNoRuntimeFetchedToolPayload(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, unpackedPaths, description, expectedArch);
-  assertPackagedTuiEsmShims(await fs.readFile(adeCliTuiPath, "utf8"));
   await assertRemoteRuntimeBundle(resourcesPath, description, expectedArch);
   await validatePackageHygiene(appPath, description, expectedArch);
 
@@ -621,30 +614,6 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   });
   if (!adeCliHelp.includes("Agent-focused command-line interface for ADE")) {
     throw new Error("[release:mac] Bundled ADE CLI wrapper did not print ADE CLI help");
-  }
-
-  const tuiSmokeDir = await fs.mkdtemp(path.join(os.tmpdir(), "ade-mac-tui-smoke-"));
-  try {
-    const tuiRunnerPath = path.join(tuiSmokeDir, "run-tui-help.mjs");
-    await fs.writeFile(
-      tuiRunnerPath,
-      `const tui = await import(${JSON.stringify(pathToFileURL(adeCliTuiPath).href)});\n` +
-        "process.exitCode = await tui.runAdeCodeCli(['--help']);\n",
-      "utf8",
-    );
-    const { stdout: adeCodeHelp } = await execFileAsync(executablePath, [tuiRunnerPath], {
-      cwd: resourcesPath,
-      env: {
-        ...process.env,
-        ELECTRON_RUN_AS_NODE: "1",
-        NODE_PATH: "",
-      },
-    });
-    if (!adeCodeHelp.includes("Terminal-native ADE Work chat.")) {
-      throw new Error("[release:mac] Bundled ADE code TUI did not print help");
-    }
-  } finally {
-    await fs.rm(tuiSmokeDir, { recursive: true, force: true });
   }
 
   console.log(`[release:mac] Packaged runtime smoke passed for ${description}: ${path.relative(appPath, nodePtyAddon)}`);

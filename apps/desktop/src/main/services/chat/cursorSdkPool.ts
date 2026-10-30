@@ -11,6 +11,7 @@ import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath
 import { pathKey } from "../shared/pathCompare";
 import { CURSOR_SDK_PRECOMPACT_ENV } from "./cursorSdkHooks";
 import { CURSOR_SDK_KILL_ESCALATION_MS, CURSOR_SDK_ONESHOT_POLICY } from "./cursorSdkPolicy";
+import { providerTaskCursorHome } from "../mcp/providerTaskMcpOff";
 import { terminateChildProcessTree } from "../shared/utils";
 import { cursorSdkOwnerPidArg } from "./cursorSdkWorkerGuards";
 import { startSdkWorker } from "./sdkWorkerProcess";
@@ -320,9 +321,7 @@ function adeCommandNameCandidates(env: NodeJS.ProcessEnv): string[] {
   const names = [
     env.ADE_CLI_PATH ? path.basename(env.ADE_CLI_PATH, process.platform === "win32" ? ".cmd" : "") : "",
     env.ADE_CLI_INSTALL_NAME,
-    env.ADE_PACKAGE_CHANNEL === "alpha" || env.ADE_PACKAGE_CHANNEL === "beta"
-      ? `ade-${env.ADE_PACKAGE_CHANNEL}`
-      : "",
+    env.ADE_PACKAGE_CHANNEL === "alpha" ? "ade-alpha" : "",
     "ade",
     "ade-dev",
   ];
@@ -570,6 +569,8 @@ export async function acquireCursorSdkConnection(args: {
   /** The exact ADE runtime this SDK worker may target for activity reports. */
   activityRuntimeSocketPath?: string | null;
   cleanupStateRoot?: boolean;
+  /** The home the worker runs on (`HOME`, `USERPROFILE`); the user's own when omitted. */
+  userHomeDir?: string;
   logger?: Logger;
 }): Promise<{ pooled: CursorSdkPooled; generation: number }> {
   for (let staleInitRetries = 0; ; staleInitRetries += 1) {
@@ -640,6 +641,7 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     poolKey: args.poolKey,
     instanceId,
     stateKey: args.stateKey,
+    userHomeDir: args.userHomeDir,
   });
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
@@ -1450,6 +1452,9 @@ export async function runCursorSdkLocalPrompt(args: {
       sessionId: `oneshot:${args.feature}`,
       cleanupStateRoot: true,
       policy: CURSOR_SDK_ONESHOT_POLICY,
+      // Not the user's home: its `.cursor/mcp.json` servers would start for a
+      // job that runs no tools. The worker installs ADE's tool gate there too.
+      userHomeDir: providerTaskCursorHome(),
       logger: args.logger,
     });
     // A one-shot answers from its prompt: ADE hands the model every excerpt it

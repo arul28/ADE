@@ -390,7 +390,7 @@ describe("fileService", () => {
   });
 
   it("browses the workspace shallowest-first when quick open gets an empty query", async () => {
-    // A bare `@` in any composer (desktop, TUI, iOS, web) sends query "".
+    // A bare `@` in any composer (desktop, iOS, web) sends query "".
     // That must return a navigable list, not nothing.
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-quick-open-browse-"));
     const { execSync } = await import("node:child_process");

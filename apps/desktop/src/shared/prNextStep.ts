@@ -8,7 +8,7 @@ import type {
 import { normalizeGithubLogin } from "./prBotIdentity";
 
 /**
- * The one next step for a PR: what the Merge card leads with, what the TUI
+ * The one next step for a PR: what the Merge card leads with, what a lane
  * summary says, and what iOS shows in its merge bar. It guides and never gates:
  * "Merge anyway" stays available unless GitHub itself would refuse the merge
  * (conflicts, a draft, or protection rules without admin rights).
@@ -102,7 +102,7 @@ export type PrNextStep = {
   chips: PrRequirementChip[];
 };
 
-/** The slice of a next step a lane summary carries (TUI, lane lists). */
+/** The slice of a next step a lane summary carries (lane lists). */
 export type PrLaneNextStep = Pick<PrNextStep, "kind" | "headline" | "tone">;
 
 /**
@@ -368,7 +368,7 @@ export function prChangesRequestedBy(reviews: readonly ReviewLike[]): string[] {
 }
 
 /**
- * The next step from a PR's status snapshot — the TUI, iOS and the Merge card
+ * The next step from a PR's status snapshot — iOS and the Merge card
  * read it this way. `fallback` carries the PR row's own values for a status
  * that does not report them.
  */

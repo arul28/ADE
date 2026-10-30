@@ -20,7 +20,8 @@ import { windowsTaskkillCommand } from "./processExecution";
  * {@link spawnOffThread} returns a ChildProcess-shaped proxy so callers keep
  * their stream, timeout and cancel logic unchanged. It covers what capture-style
  * callers use: `pid`, `exitCode`, `signalCode`, `stdout`/`stderr` `data`,
- * `stdin.end(text)`, `kill()`, and the `spawn` / `error` / `close` events.
+ * `stdin.write`/`end` (stdin closes at start unless `keepStdinOpen`), `kill()`,
+ * and the `spawn` / `error` / `close` events.
  * {@link terminateOffThreadChildTree} replaces `terminateProcessTree` for it.
  *
  * The worker is one per process, created on first use and unref'd so it never
@@ -37,7 +38,8 @@ type SpawnRequest = {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
   envPatch?: Record<string, string | undefined>;
-  stdin: string | null;
+  /** Text to write as the child starts, and whether stdin closes after it. */
+  stdin: { text: string; end: boolean };
 };
 
 type WorkerMessage =
@@ -57,17 +59,28 @@ export type OffThreadSpawnOptions = {
    * key is usually `Path`, and a second spelling makes two keys in the child.
    */
   envPatch?: Record<string, string | undefined>;
+  /**
+   * Keep stdin open until `stdin.end()`, for a child that talks over stdin
+   * while it runs. By default stdin closes as the child starts, after any
+   * text written before then.
+   */
+  keepStdinOpen?: boolean;
 };
 
 class OffThreadStream extends EventEmitter {}
 
 class OffThreadStdin extends EventEmitter {
-  constructor(private readonly onEnd: (text: string) => void) {
+  constructor(private readonly send: (text: string, end: boolean) => void) {
     super();
   }
 
+  write(text: string): boolean {
+    this.send(text, false);
+    return true;
+  }
+
   end(text?: string): void {
-    this.onEnd(text ?? "");
+    this.send(text ?? "", true);
   }
 }
 
@@ -84,7 +97,7 @@ export class OffThreadChild extends EventEmitter {
   constructor(
     private readonly runner: OffThreadSpawner,
     readonly id: number,
-    sendStdin: (text: string) => void,
+    sendStdin: (text: string, end: boolean) => void,
   ) {
     super();
     this.stdin = new OffThreadStdin(sendStdin);
@@ -149,6 +162,12 @@ const WORKER_SOURCE = String.raw`
   const post = (message) => {
     try { parentPort.postMessage(message); } catch {}
   };
+  // Text after stdin has closed is dropped, as a closed pipe would drop it.
+  const writeStdin = (child, text, end) => {
+    if (child.stdin.writableEnded) return;
+    if (text) child.stdin.write(text);
+    if (end) child.stdin.end();
+  };
   parentPort.on("message", (message) => {
     if (message.type === "spawn") {
       let child;
@@ -166,7 +185,7 @@ const WORKER_SOURCE = String.raw`
       children.set(message.id, child);
       post({ type: "spawned", id: message.id, pid: typeof child.pid === "number" ? child.pid : null });
       child.stdin.on("error", () => {});
-      if (message.stdin !== null) child.stdin.end(message.stdin);
+      writeStdin(child, message.stdin.text, message.stdin.end);
       // Output is sent in batches, a few ms apart (or every 64 KB): Windows
       // console tools write in tiny pieces (tasklist: ~7,000 writes for
       // 18 KB), and one message per piece cost the caller's loop ~55 ms a run.
@@ -211,7 +230,7 @@ const WORKER_SOURCE = String.raw`
     const child = children.get(message.id);
     if (!child) return;
     if (message.type === "stdin") {
-      child.stdin.end(message.text);
+      writeStdin(child, message.text, message.end);
       return;
     }
     if (message.type === "kill") {
@@ -231,7 +250,7 @@ const WORKER_SOURCE = String.raw`
 
 type ControlMessage =
   | SpawnRequest
-  | { type: "stdin"; id: number; text: string }
+  | { type: "stdin"; id: number; text: string; end: boolean }
   | { type: "kill"; id: number; signal: NodeJS.Signals; tree: boolean };
 
 class OffThreadSpawner {
@@ -246,11 +265,16 @@ class OffThreadSpawner {
     // Stdin written before the worker has the process is buffered here and
     // sent with the spawn request, so `spawn(); child.stdin.end(x)` keeps
     // working exactly as it does for a real ChildProcess.
-    let pendingStdin: string | null = null;
+    let pendingStdin = "";
+    let pendingEnd = !options.keepStdinOpen;
     let requested = false;
-    const child = new OffThreadChild(this, id, (text) => {
-      if (!requested) pendingStdin = text;
-      else this.post({ type: "stdin", id, text });
+    const child = new OffThreadChild(this, id, (text, end) => {
+      if (requested) {
+        this.post({ type: "stdin", id, text, end });
+        return;
+      }
+      pendingStdin += text;
+      if (end) pendingEnd = true;
     });
     this.children.set(id, child);
     // Deferred one microtask, like a real spawn's events, so the caller can
@@ -265,7 +289,7 @@ class OffThreadSpawner {
         cwd: options.cwd,
         env: options.env,
         envPatch: options.envPatch,
-        stdin: pendingStdin ?? "",
+        stdin: { text: pendingStdin, end: pendingEnd },
       });
       if (!sent) this.fail(id, "The off-thread spawner is unavailable.");
     });
@@ -386,7 +410,6 @@ export function execFileOffThread(
     const child = spawnOffThread(command, args, { cwd: options.cwd, env: options.env, envPatch: options.envPatch });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
-    let bytes = 0;
     let failure: Error | null = null;
     let settled = false;
     const finish = (exitCode: number | null, error: Error | null) => {
@@ -405,14 +428,19 @@ export function execFileOffThread(
       child.killTree("SIGTERM");
     };
     const timer = setTimeout(() => kill(new Error(`${command} timed out after ${options.timeoutMs} ms`)), options.timeoutMs);
-    const collect = (sink: Buffer[]) => (data: Buffer) => {
-      if (failure) return;
-      bytes += data.length;
-      if (bytes > maxBuffer) {
-        kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
-        return;
-      }
-      sink.push(data);
+    // Per stream, as execFile counts maxBuffer: a quiet stdout must not fail
+    // because stderr was chatty, or the other way round.
+    const collect = (sink: Buffer[]) => {
+      let bytes = 0;
+      return (data: Buffer) => {
+        if (failure) return;
+        bytes += data.length;
+        if (bytes > maxBuffer) {
+          kill(new Error(`${command} output exceeded maxBuffer (${maxBuffer} bytes)`));
+          return;
+        }
+        sink.push(data);
+      };
     };
     child.stdout.on("data", collect(stdout));
     child.stderr.on("data", collect(stderr));

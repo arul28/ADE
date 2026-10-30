@@ -264,6 +264,120 @@ describe("account vault", () => {
     expect((await call("GET", "/attention/account/vault")).body.items).toHaveLength(0);
   });
 
+  // The MCP servers registry keeps a server's secrets under
+  // `mcp/<server>/<env|header|oauth>/<name>`. One such key used to fail every
+  // batch it rode in, which stopped a machine's whole vault from syncing.
+  it("stores, reads and deletes the MCP registry's slash-separated keys", async () => {
+    const keys = ["mcp/openrouter/oauth/token", "mcp/my-server_2/env/-API_KEY", "mcp/x/header/Authorization"];
+    expect((await put(keys.map((key) => sealed({ kind: "secret", key })))).body)
+      .toMatchObject({ ok: true, written: 3 });
+    const read = await call("GET", "/attention/account/vault");
+    expect((read.body.items as Array<{ key: string }>).map((item) => item.key).sort()).toEqual([...keys].sort());
+
+    const removed = await call("DELETE", `/attention/account/vault/all/secret/${encodeURIComponent(keys[0]!)}`);
+    expect(removed.body).toMatchObject({ ok: true, deleted: true });
+    // A proxy that decoded the `%2F` on the way still names the same key.
+    const decoded = await call("DELETE", `/attention/account/vault/all/secret/${keys[1]}`);
+    expect(decoded.body).toMatchObject({ ok: true, deleted: true });
+  });
+
+  it.each([
+    ["a parent segment", "mcp/../token"],
+    ["a dot segment", "mcp/./token"],
+    ["an empty segment", "mcp//token"],
+    ["a leading slash", "/mcp/token"],
+    ["a trailing slash", "mcp/token/"],
+    ["a control character", "mcp/to\u0001ken"],
+    ["a space", "mcp/my token"],
+  ])("refuses a key with %s", async (_label, key) => {
+    expect((await put([sealed({ kind: "secret", key })])).status).toBe(400);
+    expect((await call("DELETE", `/attention/account/vault/all/secret/${encodeURIComponent(key)}`)).status).toBe(400);
+  });
+
+  // A client that asks for per-item answers gets them: one refused or stale
+  // item no longer holds back the rest, and it learns which one and why. A
+  // write older than the stored row (an eight-day-old queued Linear token
+  // after another machine rotated it) comes back with that row to adopt.
+  it("answers each item on its own when asked, writing the good ones", async () => {
+    await put([sealed({ kind: "linear_refresh_token", key: "default", value: "rotated", refreshOwner: "device-1" })]);
+    const eightDaysAgo = new Date(Date.now() - 8 * 24 * 60 * 60_000).toISOString();
+    const result = await call("PUT", "/attention/account/vault", {
+      itemResults: true,
+      sentAt: new Date().toISOString(),
+      deviceId: "device-old",
+      items: [
+        sealed(),
+        sealed({ kind: "ssh_key", key: "other" }),
+        sealed({ key: "big", value: "x".repeat(10_000) }),
+        sealed({ kind: "linear_refresh_token", key: "default", value: "eight-days-old", writtenAt: eightDaysAgo }),
+      ],
+    });
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      ok: true,
+      written: 1,
+      results: [
+        { status: "written" },
+        { status: "rejected", reason: "unknown kind" },
+        { status: "rejected", reason: "value too large" },
+        { status: "stale", current: { key: "default", value: "rotated", refreshOwner: "device-1" } },
+      ],
+    });
+    const items = (await call("GET", "/attention/account/vault")).body.items as Array<{ key: string; value: string }>;
+    expect(items.map((item) => [item.key, item.value]).sort()).toEqual([["anthropic", expect.any(String)], ["default", "rotated"]]);
+  });
+
+  describe("a write made before the stored row", () => {
+    const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
+    const DAY = 24 * 60 * 60_000;
+
+    // Wins: made after the stored row; made just now on a machine whose clock
+    // runs a day slow (corrected by its own `sentAt`); or made while this same
+    // device's earlier write was still in flight.
+    it.each([
+      { label: "made after the stored row", writtenAt: () => at(60_000), sentAt: () => at(60_000), deviceId: "device-old" },
+      { label: "made just now on a day-slow clock", writtenAt: () => at(-DAY), sentAt: () => at(-DAY), deviceId: "device-old" },
+      { label: "made by the device that wrote the stored row", writtenAt: () => at(-DAY), sentAt: () => at(0), deviceId: "device-1" },
+      {
+        label: "made by the device that deleted the stored row",
+        writtenAt: () => at(-DAY),
+        sentAt: () => at(0),
+        deviceId: "device-1",
+        deletedFirst: true,
+      },
+    ])("is written when $label", async ({ writtenAt, sentAt, deviceId, deletedFirst }) => {
+      await put([sealed({ value: "stored" })]);
+      if (deletedFirst) await call("DELETE", "/attention/account/vault/all/provider_key/anthropic?deviceId=device-1");
+      raw.exec(`update account_vault_items set updated_at = '${at(-60_000)}'`);
+      const result = await call("PUT", "/attention/account/vault", {
+        itemResults: true, sentAt: sentAt(), deviceId, items: [sealed({ value: "mine", writtenAt: writtenAt() })],
+      });
+      expect(result.body).toMatchObject({ ok: true, written: 1, results: [{ status: "written" }] });
+      expect((await call("GET", "/attention/account/vault")).body.items).toMatchObject([{ value: "mine" }]);
+    });
+
+    it.each([
+      { label: "an older delete from another device", writtenAt: -DAY, deviceId: "device-old", deleted: false },
+      { label: "a newer delete", writtenAt: 1_000, deviceId: "device-old", deleted: true },
+      { label: "an older delete from the device that wrote it", writtenAt: -DAY, deviceId: "device-1", deleted: true },
+    ])("answers $label against the stored row", async ({ writtenAt, deviceId, deleted }) => {
+      await put([sealed({ value: "kept" })]);
+      const result = await call(
+        "DELETE",
+        `/attention/account/vault/all/provider_key/anthropic?writtenAt=${encodeURIComponent(at(writtenAt))}`
+          + `&sentAt=${encodeURIComponent(at(0))}&deviceId=${deviceId}`,
+      );
+      if (deleted) {
+        expect(result.body).toMatchObject({ ok: true, deleted: true });
+      } else {
+        expect(result.status).toBe(409);
+        expect(result.body).toMatchObject({ code: "stale", current: { key: "anthropic", value: "kept" } });
+      }
+      expect((await call("GET", "/attention/account/vault")).body.items)
+        .toMatchObject([deleted ? { deleted: true, value: null } : { value: "kept" }]);
+    });
+  });
+
   it("bounds the value", async () => {
     expect((await put([sealed({ value: "x".repeat(10_000) })])).status).toBe(400);
     expect((await put([sealed({ value: "" })])).status).toBe(400);

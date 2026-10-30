@@ -23,8 +23,6 @@ import {
   verifyPackedRuntimeFiles,
 } from "./build-runtime-npm-packages.mjs";
 
-const ADE_CODE_MODULE = "native/tuiClient/cli.mjs";
-
 // Most packaging cases exercise the POSIX asset layout. Set the simulated
 // builder host explicitly so those contract checks also run on Windows; the
 // dedicated Windows-host refusal case below still passes `hostPlatform` itself.
@@ -67,12 +65,6 @@ function writeFakeArtifacts(dir, target) {
     );
     for (const packageName of [
       "@linear/sdk",
-      "ink",
-      "react",
-      "react-reconciler",
-      "highlight.js",
-      "marked",
-      "@xterm/xterm",
       "@xterm/headless",
       "@xterm/addon-serialize",
     ]) {
@@ -90,11 +82,6 @@ function writeFakeArtifacts(dir, target) {
     }
     fs.mkdirSync(path.join(staging, "vendor", "crsqlite", target), { recursive: true });
     fs.writeFileSync(path.join(staging, "vendor", "crsqlite", target, crsqliteName(target)), "binary");
-    fs.mkdirSync(path.join(staging, "tuiClient"), { recursive: true });
-    fs.writeFileSync(
-      path.join(staging, "tuiClient", "cli.mjs"),
-      "export async function runAdeCodeCli() { return 0; }\n",
-    );
     const noticeDir = path.join(staging, "third-party-notices", "@factory", "droid-sdk");
     fs.mkdirSync(noticeDir, { recursive: true });
     fs.writeFileSync(path.join(noticeDir, "LICENSE"), "Droid SDK license\n");
@@ -103,7 +90,7 @@ function writeFakeArtifacts(dir, target) {
       `${JSON.stringify({
         target,
         createdAt: "2026-01-01T00:00:00.000Z",
-        packages: ["better-sqlite3", "@linear/sdk", "ink", "react", "react-reconciler", "highlight.js", "marked", "@xterm/xterm", "@xterm/headless", "@xterm/addon-serialize"],
+        packages: ["better-sqlite3", "@linear/sdk", "@xterm/headless", "@xterm/addon-serialize"],
         inlinedPackages: ["@factory/droid-sdk"],
       }, null, 2)}\n`,
     );
@@ -171,14 +158,7 @@ test("builds the embedded platform-package layout and keeps the Droid license no
     }
     for (const relative of [
       "native/vendor/crsqlite",
-      "native/tuiClient",
       "native/node_modules/@linear/sdk",
-      "native/node_modules/ink",
-      "native/node_modules/react",
-      "native/node_modules/react-reconciler",
-      "native/node_modules/highlight.js",
-      "native/node_modules/marked",
-      "native/node_modules/@xterm/xterm",
       "native/node_modules/@opencode/cli/bin/opencode",
       "native/node_modules/@opencode/cli/bin/opencode.exe",
     ]) {
@@ -427,7 +407,6 @@ test("rejects full-profile files from embedded runtime tarballs", () => {
             "bin/ade",
             "native/node_modules/better-sqlite3/index.js",
             "native/vendor/crsqlite/linux-x64/crsqlite.so",
-            ADE_CODE_MODULE,
           ]),
         }),
       /npm would publish files excluded from the embedded runtime profile/,
@@ -535,7 +514,7 @@ test("fails the build when the packed tarball carries no launcher", () => {
   });
 });
 
-test("accepts embedded package contents with sync and TUI assets pruned", () => {
+test("accepts embedded package contents with sync assets pruned", () => {
   withTempDirs(({ artifacts, out }) => {
     writeFakeArtifacts(artifacts, "linux-x64");
     const packageDir = buildRuntimePackage({
@@ -547,7 +526,6 @@ test("accepts embedded package contents with sync and TUI assets pruned", () => 
       exception: "EXCEPTION TEXT",
     });
     assert.equal(fs.existsSync(path.join(packageDir, "native", "vendor", "crsqlite")), false);
-    assert.equal(fs.existsSync(path.join(packageDir, "native", "tuiClient")), false);
     verifyPackedRuntimeFiles({
       packageDir,
       runPack: packedListing([

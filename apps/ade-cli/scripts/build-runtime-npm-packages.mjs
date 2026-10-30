@@ -54,7 +54,7 @@ export const META_PACKAGE_NAME = "@ade-dev/runtime";
 
 // The npm runtime packages are used only by SDK embedders, which always start
 // the binary with `--profile embedded`. ADE's CLI installer still consumes the
-// full native archive and keeps these files for `ade code`, Linear and sync.
+// full native archive and keeps these files for Linear and sync.
 //
 // Only packages the runtime bundle (`dist/cli.cjs`) never requires belong
 // here: anything it requires is loaded from `native/node_modules` at startup,
@@ -65,19 +65,10 @@ export const META_PACKAGE_NAME = "@ade-dev/runtime";
 // checkout's own node_modules resolve whatever the package left out.
 export const EMBEDDED_EXCLUDED_PACKAGES = new Set([
   "@linear/sdk",
-  "@xterm/addon-fit",
-  "@xterm/xterm",
-  "highlight.js",
-  "ink",
-  "ink-text-input",
-  "marked",
-  "react",
-  "react-reconciler",
 ]);
 
 const EMBEDDED_PROFILE = "embedded";
 const EMBEDDED_EXCLUDED_NATIVE_PATHS = [
-  "native/tuiClient",
   "native/vendor/crsqlite",
   "native/node_modules/@opencode/cli/bin/opencode",
   "native/node_modules/@opencode/cli/bin/opencode.exe",
@@ -359,9 +350,8 @@ You do not import this package. \`@ade-dev/sdk\` finds it automatically through
     native/          ADE_RUNTIME_ROOT
     native/node_modules   ADE_RUNTIME_NODE_MODULES
 
-This package carries the SDK's embedded runtime profile. It omits ADE Code's
-TUI, Linear's SDK, and cr-sqlite; the CLI installer keeps those in its full
-runtime archive. The Droid SDK implementation is bundled into the executable,
+This package carries the SDK's embedded runtime profile. It omits Linear's SDK
+and cr-sqlite; the CLI installer keeps those in its full runtime archive. The Droid SDK implementation is bundled into the executable,
 and its license notice is in \`native/third-party-notices/\`.
 
 Install \`@ade-dev/runtime\` rather than this package directly: it lists all five
@@ -614,7 +604,7 @@ function defaultPackRunner(cwd) {
  * disk is trivially packed. So PRESENCE is asserted against the packed listing
  * too — the launcher and at least one native module — which is what catches a
  * truncated or empty `ade-<target>.native.tar.gz`. The SDK package uses the
- * embedded profile, which does not ship the TUI or cr-sqlite; the verifier
+ * embedded profile, which does not ship cr-sqlite; the verifier
  * checks that profile, the duplicate OpenCode executable stays out, and the
  * Droid SDK license notice remains explicitly.
  *

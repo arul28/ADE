@@ -427,7 +427,7 @@ export function isSceneParseFailure(value: ParsedScene | SceneParseFailure): val
 /**
  * One line standing in for a scene on a surface that cannot run one.
  *
- * The TUI is the caller that matters: a scene is up to 96 KB of HTML and CSS,
+ * A text-only transcript is the caller that matters: a scene is up to 96 KB of HTML and CSS,
  * and printing it into a terminal transcript buries the answer the user asked
  * for under a wall of markup.
  */

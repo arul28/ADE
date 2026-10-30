@@ -1,10 +1,10 @@
 import SwiftUI
 
-/// Claude, Codex, Muse, and Pi honor `/compact` as a real compact action. Other
-/// providers would treat the same text as a normal prompt.
+/// Claude, Codex, Copilot, Muse, and Pi honor `/compact` as a real compact
+/// action. Other providers would treat the same text as a normal prompt.
 func workProviderSupportsManualCompact(_ provider: String) -> Bool {
   switch provider.lowercased() {
-  case "claude", "codex", "muse", "pi":
+  case "claude", "codex", "copilot", "muse", "pi":
     return true
   default:
     return false

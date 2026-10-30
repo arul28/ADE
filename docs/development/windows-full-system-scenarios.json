@@ -20,7 +20,7 @@
     ],
     "clients": [
       "windows-desktop",
-      "ade-code",
+      "ade-cli",
       "hosted-web",
       "ios",
       "desktop-peer"
@@ -144,7 +144,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -164,7 +164,7 @@
         "operatingSystems": ["windows-11-x64"],
         "shells": [],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -183,7 +183,7 @@
         "operatingSystems": ["windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -202,7 +202,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -222,7 +222,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7"],
         "providers": ["claude", "codex", "cursor", "droid", "opencode"],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -242,7 +242,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["cmd"],
         "providers": ["claude", "codex", "cursor", "droid", "opencode"],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -314,21 +314,21 @@
       "dependencies": ["Second ADE desktop on the same trusted LAN"]
     },
     {
-      "id": "ade-code-tailscale",
-      "title": "ADE Code client over Tailscale",
+      "id": "desktop-peer-tailscale",
+      "title": "Desktop peer over Tailscale",
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": ["codex"],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "desktop-peer"],
         "routes": ["tailscale"],
         "journeys": ["windows-regressions"]
       },
       "requiredEvidenceKinds": ["network", "ipc", "log"],
       "passConditions": [
         "ADE resolves the Windows Tailscale CLI from Program Files, PATH, or the explicit override.",
-        "ADE Code attaches to the intended project and receives live chat and terminal state."
+        "A paired desktop attaches to the intended project and receives live chat and terminal state."
       ],
       "dependencies": ["Two nodes on one test tailnet"]
     },
@@ -479,7 +479,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -519,7 +519,7 @@
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
         "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": [],
-        "clients": ["windows-desktop", "ade-code"],
+        "clients": ["windows-desktop", "ade-cli"],
         "routes": [],
         "journeys": ["windows-regressions"]
       },
@@ -595,7 +595,7 @@
       "id": "explicit-shell-conpty-matrix",
       "title": "PowerShell 5.1, PowerShell 7, cmd, and Git Bash ConPTY matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd", "git-bash"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd", "git-bash"], "providers": [], "clients": ["windows-desktop", "ade-cli"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["shell-conpty-matrix"],
       "acceptanceRequirementIds": ["powershell-5-1", "powershell-7", "cmd", "git-bash", "conpty-unicode", "conpty-metacharacters", "conpty-resize", "conpty-ctrl-c", "conpty-cancel", "descendant-cleanup", "crash-restore"],
       "requiredEvidenceKinds": ["gui", "process", "log"],
@@ -610,7 +610,7 @@
       "id": "explicit-provider-lifecycle-matrix",
       "title": "Real provider authentication and recovery matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["claude", "codex", "cursor", "droid", "opencode"], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["claude", "codex", "cursor", "droid", "opencode"], "clients": ["windows-desktop", "ade-cli"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["provider-lifecycle-matrix"],
       "acceptanceRequirementIds": ["claude-authenticated", "claude-unauthenticated", "claude-fresh", "claude-resume", "claude-recovery-metadata", "claude-recovery-instructions", "claude-redaction", "codex-authenticated", "codex-unauthenticated", "codex-fresh", "codex-resume", "codex-recovery-metadata", "codex-recovery-instructions", "codex-redaction", "cursor-authenticated", "cursor-unauthenticated", "cursor-fresh", "cursor-resume", "cursor-recovery-metadata", "cursor-recovery-instructions", "cursor-redaction", "opencode-authenticated", "opencode-unauthenticated", "opencode-fresh", "opencode-resume", "opencode-recovery-metadata", "opencode-recovery-instructions", "opencode-redaction", "droid-authenticated", "droid-unauthenticated", "droid-fresh", "droid-resume", "droid-recovery-metadata", "droid-recovery-instructions", "droid-redaction"],
       "requiredEvidenceKinds": ["gui", "log", "process", "db"],
@@ -625,7 +625,7 @@
       "id": "standalone-cli-brain-lifecycle",
       "title": "Standalone ade-win32-x64 CLI and brain lifecycle",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": [], "clients": ["ade-code"], "routes": ["lan", "tailscale"], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": [], "clients": ["ade-cli"], "routes": ["lan", "tailscale"], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["standalone-cli-brain"],
       "acceptanceRequirementIds": ["ade-win32-x64", "install", "start", "status", "doctor", "update", "remote-bootstrap", "openssh-prerequisite", "damaged-install-recovery"],
       "requiredEvidenceKinds": ["process", "ipc", "log", "network"],
@@ -640,7 +640,7 @@
       "id": "brain-host-lifecycle-explicit",
       "title": "Closed desktop, brain crash, login, logout, reboot, repair, reinstall, and uninstall",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7"], "providers": [], "clients": ["windows-desktop", "ade-cli"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["brain-host-lifecycle"],
       "acceptanceRequirementIds": ["desktop-closed", "brain-crash", "brain-restart", "login", "logout", "reboot", "repair", "reinstall", "uninstall"],
       "requiredEvidenceKinds": ["process", "ipc", "log", "db"],
@@ -670,7 +670,7 @@
       "id": "cross-machine-directions-explicit",
       "title": "Bidirectional client, session, and runtime direction matrix",
       "hosts": ["windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": ["claude", "codex", "opencode"], "clients": ["windows-desktop", "desktop-peer", "hosted-web", "ios", "ade-code"], "routes": ["lan", "tailscale", "relay"], "journeys": ["account-directory", "windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": ["claude", "codex", "opencode"], "clients": ["windows-desktop", "desktop-peer", "hosted-web", "ios", "ade-cli"], "routes": ["lan", "tailscale", "relay"], "journeys": ["account-directory", "windows-regressions"]},
       "acceptanceGateIds": ["cross-machine-directions"],
       "acceptanceRequirementIds": ["windows-session-to-macos", "windows-session-to-physical-ios", "windows-session-to-hosted-web", "macos-session-to-windows", "windows-client-to-macos-linux-runtime", "macos-linux-client-to-windows-runtime"],
       "requiredEvidenceKinds": ["gui", "ipc", "network", "db"],
@@ -685,7 +685,7 @@
       "id": "transport-streaming-reconnect-explicit",
       "title": "LAN firewall, Tailscale, Relay, reconnect, streaming, and remote-command matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["codex"], "clients": ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"], "routes": ["lan", "tailscale", "relay"], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["codex"], "clients": ["windows-desktop", "ade-cli", "hosted-web", "ios", "desktop-peer"], "routes": ["lan", "tailscale", "relay"], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["transport-streaming-reconnect"],
       "acceptanceRequirementIds": ["lan-firewall", "tailscale", "relay", "reconnect", "terminal-streaming", "chat-streaming", "remote-commands"],
       "requiredEvidenceKinds": ["network", "ipc", "gui", "log"],

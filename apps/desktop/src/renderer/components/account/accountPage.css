@@ -492,14 +492,16 @@
   border-radius: 50%;
   background: radial-gradient(closest-side, rgba(0, 0, 0, 0.55), transparent);
   filter: blur(3px);
-  animation: ade-ah-floor 6s ease-in-out infinite;
+  animation: ade-ah-floor 6s ease-in-out 3;
 }
 .ade-ah-avatar-body {
   position: absolute;
   inset: 0;
   transform-style: preserve-3d;
   transform: rotateX(14deg) rotateY(-20deg);
-  animation: ade-ah-float 6s ease-in-out infinite;
+  /* Three floats, then rest: like the mesh behind it, which freezes after 20 s
+     idle. An endless loop redraws the window at the display's refresh rate. */
+  animation: ade-ah-float 6s ease-in-out 3;
 }
 .ade-ah-avatar-edge,
 .ade-ah-avatar-face,
@@ -533,7 +535,8 @@
   background: linear-gradient(150deg, rgba(255, 255, 255, 0.38) 0%, rgba(255, 255, 255, 0.06) 38%, transparent 55%);
   mix-blend-mode: screen;
 }
-.ade-ah-avatar:hover .ade-ah-avatar-body { animation-play-state: paused; }
+.ade-ah-avatar:hover .ade-ah-avatar-body,
+.ade-ah-avatar:hover .ade-ah-avatar-floor { animation-play-state: paused; }
 @keyframes ade-ah-float {
   0%, 100% { transform: rotateX(14deg) rotateY(-20deg) translate3d(0, 0, 0); }
   50% { transform: rotateX(8deg) rotateY(-10deg) translate3d(0, -5px, 0); }

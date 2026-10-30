@@ -379,7 +379,7 @@ import {
   codexMemoryCitationSourceRefs,
 } from "./chatSourceAdapters";
 import type { createSessionService } from "../sessions/sessionService";
-import type { SubagentLink } from "../sessions/sessionSettleTeardown";
+import type { SubagentLink } from "../sessions/settleWiring";
 import { STALE_RUNNING_SESSION_RESCAN_DELAY_MS } from "../sessions/sessionService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type { AdeDb } from "../state/kvDb";
@@ -521,6 +521,7 @@ import {
   exceedsInlineFileLimit,
   imageAttachmentReferenceText,
   imageNotInlinedHintPart,
+  imageNotInlinedText,
   inlineAttachmentHintPart,
 } from "./attachmentInlineGuard";
 import { MAX_PROVIDER_INLINE_FILE_BYTES } from "../../../shared/chatAttachmentLimits";
@@ -1142,6 +1143,11 @@ import {
   buildRestartNote,
   collectRestartCancelledWork,
   RESTART_RESUME_PROMPT,
+  MAX_CONSECUTIVE_RESTART_RESUMES,
+  nextRestartResumeStreak,
+  restartInterruptedNotice,
+  restartResumeHold,
+  type RestartResumeHold,
   RESTART_RESUME_REASON,
   BACKGROUND_WORK_LOST_RESUME_PROMPT,
   BACKGROUND_WORK_LOST_RESUME_REASON,
@@ -1223,6 +1229,7 @@ import {
   classifyBackgroundWorkKind,
   SESSION_STALE_AFTER_MS,
   isPersistedTurnFailureCurrent,
+  isSettleTupleSettled,
   summarizeBackgroundWork,
   totalBackgroundWork,
   type SessionBackgroundWork,
@@ -1430,8 +1437,18 @@ import {
   type DroidSdkPooled,
 } from "./droidSdkPool";
 import { acquireCopilotSdkConnection, isCopilotSdkWorkerLive, releaseCopilotSdkConnection, type CopilotSdkPooled } from "./copilotSdkPool";
+import type { CopilotSdkAgentMode, CopilotSdkAttachment, CopilotSlashCommandInfo } from "./copilotSdkProtocol";
+import {
+  copilotAdeOwnedCommandReply,
+  copilotCommandOutcome,
+  copilotCommandOutputMarkdown,
+  copilotSlashCommandRows,
+  parseCopilotSlashCommand,
+  resolveCopilotSlashCommand,
+} from "./copilotSlashCommands";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
-import { createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
+import { copilotBreadcrumb, reportCopilotProblem } from "./copilotSentry";
+import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
@@ -1728,6 +1745,7 @@ import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
+  STALE_RUN_EVENT_TYPES,
   type StaleRunSweepChatRow,
 } from "./chatStaleRunSweep";
 import {
@@ -3799,6 +3817,8 @@ type CopilotRuntime = {
   pendingRewindMessageId?: string;
   /** A setting change failed mid-turn; reopen with the saved settings once the turn ends. */
   reopenAfterTurn?: boolean;
+  /** Copilot's own slash commands and skills, as its runtime last listed them; null before the first list. */
+  slashCommands: CopilotSlashCommandInfo[] | null;
 };
 
 type PiRuntime = {
@@ -5365,6 +5385,26 @@ type ManagedChatSession = {
   backgroundLossWakeState?: "scheduled" | "dispatched";
   /** This process already ran restart recovery for this chat; never twice. */
   restartRecoveryDone?: boolean;
+  /**
+   * `idleSinceAt` as it was when restart recovery began. Recovery closes the
+   * cut-off turn and marks the chat idle, which would otherwise read as "the
+   * resumed turn finished" and restart the resume streak (see
+   * `nextRestartResumeStreak`).
+   */
+  idleSinceBeforeRestartRecovery?: string | null;
+  /**
+   * `awaitingInput` as the chat's state file said when this process loaded
+   * the chat. Any persist with no runtime drops the flag, so recovery reads
+   * this, not the file, on every path (startup sweep, stale-row sweep, turn
+   * start), and never resumes past an open question.
+   */
+  awaitingInputAtLoad?: boolean;
+  /**
+   * When the user last sent a message, from the transcript, as restart
+   * recovery found it. A message after the last automatic resume means the
+   * user stepped in, so the resume streak starts again.
+   */
+  lastUserMessageBeforeRestartRecovery?: string | null;
   /**
    * When its parent's "+ child chats" Stop stopped this chat. Its stopped
    * report then lands as a quiet notice instead of waking the parent the user
@@ -11592,8 +11632,8 @@ export function createAgentChatService(args: {
   getAccountUsage: () => ChatAccountUsage | null;
   /**
    * Domain coverage for the CTO's operator tools. Every one is optional and
-   * lazily resolved: the desktop wires all of them, `ade code` and the headless
-   * brain wire a subset, and an unwired service leaves its tools answering
+   * lazily resolved: the desktop wires all of them and the headless
+   * brain wires a subset, and an unwired service leaves its tools answering
    * "not available on this runtime" instead of throwing (runtime-backed null
    * services). None of them are used by any non-CTO session.
    */
@@ -11608,7 +11648,7 @@ export function createAgentChatService(args: {
    *
    * Synchronous on purpose — the answer costs one line of system prompt, so it
    * must not make the send path wait on a service call — and an unwired runtime
-   * (`ade code`, the headless brain, any non-Mac host) leaves it undefined and
+   * (the headless brain, any non-Mac host) leaves it undefined and
    * emits nothing.
    */
   macDesktopRuntime?: Pick<
@@ -15918,17 +15958,24 @@ export function createAgentChatService(args: {
     signal?: AbortSignal,
     parseLine: (raw: string) => AgentChatEventEnvelope[] = parseAgentChatTranscript,
     lineMayMatch?: (line: Buffer) => boolean,
-  ): Promise<void> => {
-    const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
-    if (!transcriptPath) return;
+    /** Scan this file instead of the cached path (a caller that re-chose the authoritative transcript). */
+    pathOverride?: string,
+  ): Promise<{ complete: boolean; transcriptPath: string | null; scannedBytes: number }> => {
+    const transcriptPath = pathOverride ?? await resolveTranscriptPathForSessionId(sessionId, signal);
+    if (!transcriptPath) return { complete: true, transcriptPath: null, scannedBytes: 0 };
     const logicalSize = await readHistoryFileSize(transcriptPath);
     const scanStart = Math.max(0, logicalSize - MAX_TRANSPARENT_HISTORY_BYTES);
+    // False when the scan saw less than the whole file: an older part past the
+    // window, or a line too long to parse. A caller that needs every event of a
+    // kind (the stale-run sweep) reads the full file instead.
+    let complete = scanStart === 0;
     let readOffset = Math.max(0, scanStart - 1);
     let carry: Buffer = Buffer.alloc(0);
     let skipOversizedLine = false;
     let alignFirstLine = readOffset > 0;
 
     const processLine = (line: Buffer): void => {
+      if (line.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) complete = false;
       if (line.length === 0 || line.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) return;
       if (lineMayMatch && !lineMayMatch(line)) return;
       const raw = line.toString("utf8");
@@ -15953,6 +16000,8 @@ export function createAgentChatService(args: {
       if (alignFirstLine || skipOversizedLine) {
         const firstNewline = buffer.indexOf(0x0a);
         if (firstNewline < 0) {
+          // Still inside a line whose start was cut by the window (already not
+          // complete) or one already over the limit.
           skipOversizedLine = true;
           alignFirstLine = false;
           continue;
@@ -15973,9 +16022,11 @@ export function createAgentChatService(args: {
       if (carry.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) {
         carry = Buffer.alloc(0);
         skipOversizedLine = true;
+        complete = false;
       }
     }
     if (!skipOversizedLine && carry.length > 0) processLine(carry);
+    return { complete, transcriptPath, scannedBytes: logicalSize };
   };
 
   const readRecentTranscriptEnvelopesForSessionIdAsync = async (
@@ -16065,6 +16116,32 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
+  };
+
+  // The stale-run sweep reads only these events (see STALE_RUN_EVENT_TYPES), so
+  // its timer pass scans the transcript off the event loop and parses just the
+  // lines that name one of them, instead of the whole file at once.
+  const staleRunEventNeedles = STALE_RUN_EVENT_TYPES.map((type) => Buffer.from(`"${type}"`));
+  const readStaleRunEnvelopesForSessionIdAsync = async (sessionId: string): Promise<AgentChatEventEnvelope[]> => {
+    // The file the full reader would choose, re-chosen each time (not the cached
+    // path): a dedicated transcript created after a legacy one was cached must win.
+    const transcriptPath = await resolveBestTranscriptPathForSessionIdAsync(sessionId, managedSessions.get(sessionId));
+    if (!transcriptPath) return [];
+    const envelopes: AgentChatEventEnvelope[] = [];
+    const scan = await scanTranscriptEnvelopesForSessionIdAsync(
+      sessionId,
+      (envelope) => envelopes.push(envelope),
+      undefined,
+      parseAgentChatTranscript,
+      (line) => staleRunEventNeedles.some((needle) => line.includes(needle)),
+      transcriptPath,
+    );
+    // Read the whole file synchronously instead (one atomic look, as before) when
+    // the scan may have missed something: a skipped line could be the result that
+    // ends a subagent, and an event written while the scan ran (a child finishing)
+    // would be missed too. Either way the sweep would stop a finished agent.
+    const grew = (await readHistoryFileSize(transcriptPath)) !== scan.scannedBytes;
+    return scan.complete && !grew ? envelopes : readFullTranscriptEnvelopesForSessionId(sessionId);
   };
 
   const readSubagentSnapshotsFromTranscript = async (
@@ -21739,6 +21816,18 @@ export function createAgentChatService(args: {
 
   const setSessionActive = (managed: ManagedChatSession): void => {
     if (managed.session.status !== "active") {
+      // A turn starting from anything (a scheduled wake, a cron, a background
+      // job or subagent reporting back, a restart resume) takes a settled chat
+      // out of settled. Settle only classifies a chat at rest. A failed write
+      // must not cost the turn its start.
+      try {
+        sessionService.clearSettleOnTurnStart(managed.session.id);
+      } catch (error) {
+        logger.warn("agent_chat.clear_settle_on_turn_start_failed", {
+          sessionId: managed.session.id,
+          error: getErrorMessage(error),
+        });
+      }
       managed.session.currentTurnStartedAt = nowIso();
       lastTurnStartedAtBySession.set(managed.session.id, managed.session.currentTurnStartedAt);
       // A new turn starts: the last turn's id no longer applies. Proof filed
@@ -21855,15 +21944,49 @@ export function createAgentChatService(args: {
   /**
    * How long after a restart cut a turn short ADE still continues it. A chat
    * first opened later than this (it crashed long ago, maybe under an older
-   * build) keeps the closed turn instead of resuming stale work.
+   * build) keeps the closed turn instead of resuming stale work. A chat at
+   * rest that waited on background work wakes only if it went idle within
+   * this time.
    */
   const RESTART_RESUME_MAX_AGE_MS = 6 * 60 * 60_000;
-  const cutOffRecently = (row: { endedAt?: string | null } | null | undefined): boolean => {
-    // No end time: the row read "running" until the dead owner was detected now.
-    const endedMs = row?.endedAt ? Date.parse(row.endedAt) : Number.NaN;
-    return !Number.isFinite(endedMs) || Date.now() - endedMs <= RESTART_RESUME_MAX_AGE_MS;
+  /** No time reads as now: a row with no end time read "running" until the dead owner was detected now. */
+  const withinRestartResumeAge = (iso: string | null | undefined): boolean => {
+    const ms = iso ? Date.parse(iso) : Number.NaN;
+    return !Number.isFinite(ms) || Date.now() - ms <= RESTART_RESUME_MAX_AGE_MS;
   };
 
+  /**
+   * The streak this chat's next automatic resume would have (see
+   * `nextRestartResumeStreak`). Before the scheduler is ready nothing can be
+   * armed yet, so it reads as a first resume.
+   */
+  const restartResumeStreakFor = (managed: ManagedChatSession): number => {
+    if (!scheduledWorkScheduler) return 1;
+    const sessionId = managed.session.id;
+    const previous = (scheduledWorkScheduler.list(sessionId) ?? [])
+      .find((schedule) => schedule.id === updateResumeScheduleId(sessionId));
+    const idleSince = managed.idleSinceBeforeRestartRecovery !== undefined
+      ? managed.idleSinceBeforeRestartRecovery
+      : managed.session.idleSinceAt;
+    return nextRestartResumeStreak(previous, idleSince, managed.lastUserMessageBeforeRestartRecovery ?? null);
+  };
+  /** The newest message the user typed (not an automatic wake), or null. */
+  const latestUserMessageAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const envelope = events[index]!;
+      if (envelope.event.type === "user_message" && !envelope.event.metadata?.scheduledWake) return envelope.timestamp;
+    }
+    return null;
+  };
+  /** When the newest turn ended (its `done`), or null if none has. */
+  const latestTurnEndAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index]!.event.type === "done") return events[index]!.timestamp;
+    }
+    return null;
+  };
+  const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
+    restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
   const armRestartResume = (
     managed: ManagedChatSession,
     resume: { prompt: string; reason: string } = { prompt: RESTART_RESUME_PROMPT, reason: RESTART_RESUME_REASON },
@@ -21874,8 +21997,28 @@ export function createAgentChatService(args: {
       await scheduledWorkReady;
       if (!scheduledWorkScheduler) return;
       const row = sessionService.get(sessionId);
-      if (!row || !isSchedulableAgentSession(row) || row.settledAt || row.archivedAt) return;
+      // Settled chats resume too: settle stops nothing, and the resumed turn
+      // takes the chat out of settled.
+      if (!row || !isSchedulableAgentSession(row) || row.archivedAt) return;
       if ((scheduledWorkScheduler.list(sessionId) ?? []).some(isPendingUpdateResumeScheduledWork)) return;
+      const restartResumeStreak = restartResumeStreakFor(managed);
+      if (restartResumeStreak > MAX_CONSECUTIVE_RESTART_RESUMES) {
+        logger.warn("agent_chat.restart_resume_capped", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak - 1,
+        });
+        // Recovery may have run before the scheduler could read the streak
+        // and promised a resume; this says what really happens.
+        if (resume.prompt === RESTART_RESUME_PROMPT) {
+          emitChatEvent(managed, {
+            type: "system_notice",
+            noticeKind: "info",
+            message: restartInterruptedNotice({ announceThisTurn: false, hold: "capped", cancelledLine: "" }),
+          });
+        }
+        return;
+      }
       const createdAt = Date.now();
       try {
         await scheduledWorkScheduler.upsert({
@@ -21890,8 +22033,13 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          restartResumeStreak,
         });
-        logger.info("agent_chat.restart_resume_armed", { sessionId, provider: managed.session.provider });
+        logger.info("agent_chat.restart_resume_armed", {
+          sessionId,
+          provider: managed.session.provider,
+          streak: restartResumeStreak,
+        });
       } catch (error) {
         logger.warn("agent_chat.restart_resume_arm_failed", {
           sessionId,
@@ -21925,8 +22073,35 @@ export function createAgentChatService(args: {
     const announceThisTurn = options?.announceThisTurn === true;
     if (managed.restartRecoveryDone) return null;
     managed.restartRecoveryDone = true;
+    managed.idleSinceBeforeRestartRecovery = managed.session.idleSinceAt ?? null;
+    managed.lastUserMessageBeforeRestartRecovery = latestUserMessageAt(transcriptEvents);
+    // Either source saying "waiting for the user" holds the resume: the state
+    // read at load (a persist with no runtime drops the flag later), or the
+    // file now (a sibling that owned the chat may have asked since).
+    const awaitingUser = managed.awaitingInputAtLoad === true
+      || readPersistedState(managed.session.id)?.awaitingInput === true;
+    let resumeHold: RestartResumeHold | null = null;
+    // A chat at rest has no end time when a late project open or the stale-run
+    // sweep reaches it first, so it must also have gone quiet recently: one
+    // that sat for days would otherwise read as just cut off and wake by
+    // itself. Its idle time says when. A graceful shutdown clears that (an
+    // ended chat has none), so then its last turn's end does; not its last
+    // event, which can be the shutdown's own notice. A cut-off turn is judged
+    // by its end time alone.
+    const restedSince = unsettled
+      ? null
+      : managed.idleSinceBeforeRestartRecovery ?? latestTurnEndAt(transcriptEvents);
     // Read before `reopen` clears the row's end time.
-    const recent = cutOffRecently(sessionService.get(managed.session.id));
+    const recent = withinRestartResumeAge(sessionService.get(managed.session.id)?.endedAt)
+      && withinRestartResumeAge(restedSince);
+    // One rule for the resume, the lost-work wake and the notice.
+    const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
+      continueEnabled: continueAfterRestartEnabled(),
+      recent,
+      awaitingUser,
+      capped: restartResumeCapReached(managed),
+      archived: Boolean(row?.archivedAt),
+    });
     // Rows the transcript still shows running, plus rows the stale-run sweep
     // closed for this restart: what the dead process took with it. Minus what
     // an earlier recovery already reported (those rows keep their restart
@@ -21952,21 +22127,19 @@ export function createAgentChatService(args: {
     managed.backgroundLossWakePending = false;
     if (unsettled) {
       const row = sessionService.get(managed.session.id);
-      const willContinue = continueAfterRestartEnabled()
-        && recent
-        && !row?.settledAt
-        && !row?.archivedAt;
+      // A turn that waited for the user's answer or approval is not resumed:
+      // the question died with the process that asked it, and "continue"
+      // would let the agent go on without the answer (T3 #18461).
+      const hold = holdFor(row);
+      resumeHold = hold;
+      const willContinue = hold === null;
       const cancelledLine = cancelled.length
         ? ` ${cancelled.length === 1 ? "1 background job was" : `${cancelled.length} background jobs were`} stopped; the agent is told which.`
         : "";
       emitChatEvent(managed, {
         type: "system_notice",
         noticeKind: "info",
-        message: announceThisTurn
-          ? `ADE restarted while this response was running. The interrupted turn was closed; the agent is told on this turn.${cancelledLine}`
-          : willContinue
-            ? `ADE restarted while this response was running. The agent picks up where it stopped.${cancelledLine}`
-            : `ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.${cancelledLine}`,
+        message: restartInterruptedNotice({ announceThisTurn, hold, cancelledLine }),
         turnId: unsettled.turnId,
       });
       const status = emitMissingTurnTerminalPair(managed, unsettled, {
@@ -21984,7 +22157,8 @@ export function createAgentChatService(args: {
     let wakeForLostWork = false;
     if (lostAwaitedWork) {
       const row = sessionService.get(managed.session.id);
-      wakeForLostWork = continueAfterRestartEnabled() && recent && !row?.settledAt && !row?.archivedAt;
+      // The same rule as a resume: never woken past an open question.
+      wakeForLostWork = holdFor(row) === null;
       // A shutdown that recorded the loss already named it in its own notice;
       // only work the transcript shows (a crash, or rows the stale-run sweep
       // closed) needs naming here.
@@ -22006,7 +22180,8 @@ export function createAgentChatService(args: {
     managed.endedNotified = false;
     sessionService.reopen(managed.session.id);
     persistChatState(managed);
-    if (unsettled && recent) return "resume";
+    // The same decision the notice above told the user.
+    if (unsettled) return resumeHold === null ? "resume" : null;
     return wakeForLostWork ? "lost_work_wake" : null;
   };
 
@@ -22068,7 +22243,10 @@ export function createAgentChatService(args: {
         managed,
         findUnsettledParentTurn(managed, events),
         events,
-        { excludeIds, announceThisTurn: args.reason === "turn_start" },
+        {
+          excludeIds,
+          announceThisTurn: args.reason === "turn_start",
+        },
       );
       if (args.reason !== "turn_start") armRestartRecovery(managed, arm);
     } catch (error) {
@@ -28901,6 +29079,7 @@ export function createAgentChatService(args: {
     // same as "no runtime". A second brain on the same ADE home sees every
     // sibling-owned chat that way, and recovering one closes the sibling's
     // in-flight turn as interrupted. Only the owner (or nobody) may recover.
+    managed.awaitingInputAtLoad = persisted?.awaitingInput === true;
     if (row.status === "detached") {
       runRestartRecoveryIfPending(managed, {
         reason: "load",
@@ -44304,7 +44483,8 @@ export function createAgentChatService(args: {
     // settings until it is next idle.
     const idle = runtime.kind === "claude"
       ? !runtime.busy && runtime.liveBackgroundTaskIds.size === 0
-      : runtime.kind === "codex" ? !runtime.activeTurnId : false;
+      : runtime.kind === "codex" ? !runtime.activeTurnId
+        : runtime.kind === "copilot" ? !runtime.busy : false;
     if (previous !== undefined && previous !== signature && idle) {
       teardownRuntime(managed, "restart");
     } else if (previous === undefined) runtimeCompactionSettings.set(runtime, signature);
@@ -57014,7 +57194,7 @@ export function createAgentChatService(args: {
       return "declined";
     }
     // Gated here, not only in the renderer: a cloud run refuses every steer, and
-    // the CLI, the TUI, iOS and `messageSession` auto-routing all reach this
+    // the CLI, iOS and `messageSession` auto-routing all reach this
     // path without the renderer's check.
     //
     // NOT covered by a unit test: reaching it needs a promoted cloud session
@@ -59518,8 +59698,22 @@ export function createAgentChatService(args: {
     else teardownRuntime(managed, "restart");
   };
 
+  /**
+   * The "Compact at" setting as the share of the model's window where Copilot
+   * starts compacting in the background (its default is 80%). Unknown on
+   * Auto, whose window depends on the model Copilot picks.
+   */
+  const copilotCompactionThreshold = (managed: ManagedChatSession): number | undefined => {
+    const atTokens = compactionSettingsFor(managed).atTokens;
+    const window = resolveSessionModelDescriptor(managed.session)?.contextWindow;
+    if (!atTokens || !window || window <= 0) return undefined;
+    return Math.min(0.9, Math.max(0.1, atTokens / window));
+  };
+
   const copilotRuntimeStarts = new WeakMap<ManagedChatSession, { epoch: number; promise: Promise<CopilotRuntime> }>();
   const ensureCopilotRuntime = async (managed: ManagedChatSession): Promise<CopilotRuntime> => {
+    // A changed "Compact at" reopens an idle session with the new threshold.
+    refreshRuntimeCompactionSettings(managed);
     if (managed.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process)) {
       return managed.runtime;
     }
@@ -59547,6 +59741,7 @@ export function createAgentChatService(args: {
         contextTier: managed.session.copilotContextTier ?? "default",
         autoTier: managed.session.copilotAutoTier ?? null,
         permissionMode: managed.session.copilotPermissionMode ?? "ask",
+        backgroundCompactionThreshold: copilotCompactionThreshold(managed),
         mcpServers: callerMcpServersForLaunch(managed) ?? undefined,
         skillDirectories: isPersonalSession(managed.session) ? [] : adePromptAgentSkillRoots({ cwd: managed.laneWorktreePath }),
         // The system message is Copilot's persistent instruction channel, so
@@ -59564,6 +59759,13 @@ export function createAgentChatService(args: {
               }),
               buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
             ].filter(Boolean).join("\n\n"),
+      };
+      // MCP servers report their status while the session opens, before the
+      // runtime below exists, and those events are not in its history: hold
+      // them and show them once the runtime is in place.
+      const openingEvents: unknown[] = [];
+      acquired.pooled.bridge.onEvent = (_chatId, event) => {
+        if (openingEvents.length < 50 && (event as { type?: unknown } | null)?.type === "session.mcp_server_status_changed") openingEvents.push(event);
       };
       const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
       const opened = persistedSessionId
@@ -59608,11 +59810,23 @@ export function createAgentChatService(args: {
         pendingAutoTier: null,
         activeTurnId: null,
         busy: false, interrupted: false, eventMapperState, pendingSteers: [],
+        slashCommands: null,
       };
       acquired.pooled.bridge.onEvent = (chatId, event) => {
         const target = managedSessions.get(chatId);
         const current = target?.runtime;
-        if (!target || current?.kind !== "copilot" || !current.activeTurnId) return;
+        if (!target || current?.kind !== "copilot") return;
+        if (!current.activeTurnId) {
+          // MCP servers start with the session, often before any turn: a
+          // failed one is still worth a notice, outside any turn.
+          const idleType = event && typeof event === "object" ? (event as Record<string, unknown>).type : null;
+          if (idleType !== "session.mcp_server_status_changed") return;
+          for (const mapped of mapCopilotSdkEvent(event, { turnId: "", state: current.eventMapperState })) {
+            const { turnId: _turnId, ...outsideTurn } = mapped as AgentChatEvent & { turnId?: string };
+            emitChatEvent(target, outsideTurn as AgentChatEvent);
+          }
+          return;
+        }
         const eventRecord = event && typeof event === "object" ? event as Record<string, unknown> : {};
         const eventData = eventRecord.data && typeof eventRecord.data === "object" ? eventRecord.data as Record<string, unknown> : {};
         // A sub-agent's prompt, idle, abort or task end is not the turn's: only
@@ -59665,6 +59879,35 @@ export function createAgentChatService(args: {
           persistChatState(target);
           emitSessionModeMeta(target);
         }
+        if (eventRecord.type === "session.error") {
+          // The fields GitHub traces a failed request by, for a report that
+          // only says "Copilot errored".
+          const diagnostics = {
+            errorType: eventData.errorType,
+            errorCode: eventData.errorCode,
+            statusCode: eventData.statusCode,
+            providerErrorType: eventData.providerErrorType,
+            providerCallId: eventData.providerCallId,
+            serviceRequestId: eventData.serviceRequestId,
+            model: current.eventMapperState.servedModel ?? current.modelId,
+            message: typeof eventData.message === "string" ? boundedLogText(eventData.message) : undefined,
+          };
+          logger.warn("agent_chat.copilot_session_error", { sessionId: chatId, ...diagnostics });
+          // Sign-in, rate limits, quota and GitHub outages stay in the log
+          // above; anything else may be ADE sending a request Copilot rejects,
+          // so it becomes an issue, one per error type and code.
+          const errorType = typeof eventData.errorType === "string" ? eventData.errorType : null;
+          const errorCode = typeof eventData.errorCode === "string" ? eventData.errorCode : null;
+          const statusCode = typeof eventData.statusCode === "number" ? eventData.statusCode : null;
+          if (classifyCopilotError(errorType, errorCode, statusCode) === "unknown") {
+            reportCopilotProblem("session_error", {
+              model: diagnostics.model,
+              groupBy: [errorType ?? "none", errorCode ?? String(statusCode ?? "none")],
+              tags: { "copilot.error_type": errorType, "copilot.error_code": errorCode, "copilot.status": statusCode },
+              extra: diagnostics,
+            });
+          }
+        }
         if (eventRecord.type === "session.idle") {
           const aborted = eventData.aborted === true;
           current.interrupted = current.interrupted || aborted;
@@ -59681,6 +59924,11 @@ export function createAgentChatService(args: {
         current.interrupted = true;
         current.turnSettled?.(true);
         logger.warn("agent_chat.copilot_sdk_worker_exited", { sessionId: chatId, error: error.message });
+        reportCopilotProblem("worker_exited", {
+          message: error.message,
+          model: target.session.modelId ?? target.session.model,
+          tags: { "copilot.turn_active": current.busy },
+        });
       };
       acquired.pooled.bridge.onExitPlanRequest = async (chatId, _waiterId, rawRequest) => {
         const target = managedSessions.get(chatId);
@@ -59944,12 +60192,63 @@ export function createAgentChatService(args: {
         }
         return { kind: "cancelled" };
       };
+      // The threshold this session opened with, so a later change reopens it.
+      runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
       managed.runtime = runtime;
       persistChatState(managed);
+      for (const event of openingEvents.splice(0)) acquired.pooled.bridge.onEvent?.(managed.session.id, event);
       return runtime;
     } catch (error) {
       releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
       throw error;
+    }
+  };
+
+  /**
+   * Attachments as Copilot takes them: files by path, images inline. An image
+   * is fitted the way every inline image is (a Claude model behind Copilot
+   * rejects one over 5 MB of base64 and fails the whole request), and goes
+   * only to a model that reads images; Auto picks one that does. An image
+   * left out becomes a note in the prompt instead of a rejected request.
+   */
+  const copilotSdkAttachments = async (
+    managed: ManagedChatSession,
+    resolved: readonly ResolvedAgentChatFileRef[],
+  ): Promise<{ attachments: CopilotSdkAttachment[]; notes: string[] }> => {
+    const descriptor = resolveSessionModelDescriptor(managed.session);
+    const readsImages = !descriptor || descriptor.providerModelId === "auto" || descriptor.capabilities.vision;
+    const attachments: CopilotSdkAttachment[] = [];
+    const notes: string[] = [];
+    for (const attachment of resolved) {
+      if (attachment.type !== "image") {
+        attachments.push({ type: "file", path: attachment._resolvedPath });
+        continue;
+      }
+      if (!readsImages) {
+        notes.push(imageNotInlinedText(attachment.path, `${descriptor?.displayName ?? "this model"} does not read images`));
+        continue;
+      }
+      const fitted = await fitImageForProviderInline(await readResolvedAttachmentBytes(attachment), attachment.mimeType || "image/png", { provider: "copilot", logger });
+      if (fitted.kind === "omit") {
+        notes.push(imageNotInlinedText(attachment.path, fitted.reason));
+        continue;
+      }
+      attachments.push({ type: "blob", data: fitted.data.toString("base64"), mimeType: fitted.mediaType, displayName: path.basename(attachment.path) });
+    }
+    return { attachments, notes };
+  };
+
+  /**
+   * The runtime's own commands and skills, or null when it would not list them
+   * (the built-ins stand in, and the next command asks again).
+   */
+  const listCopilotCommands = async (managed: ManagedChatSession, runtime: CopilotRuntime): Promise<CopilotSlashCommandInfo[] | null> => {
+    try {
+      return await runtime.sdk.listCommands(managed.session.id);
+    } catch (error) {
+      logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
+      reportCopilotProblem("commands_list_failed", { error, model: managed.session.modelId ?? managed.session.model });
+      return null;
     }
   };
 
@@ -59960,7 +60259,8 @@ export function createAgentChatService(args: {
     onDispatched?: () => void; onBackendDispatched?: () => void;
   }): Promise<void> => {
     let promptText = args.promptText;
-    let agentMode: "autopilot" | undefined;
+    let agentMode: CopilotSdkAgentMode | undefined;
+    let displayPrompt: string | undefined;
     let controlReply: string | null = null;
     const rawGoalCommand = [args.userText, args.displayText, args.promptText].find((value) => /^\s*\/goal(?:\s|$)/i.test(value ?? ""));
     const goalCommand = rawGoalCommand?.trim().match(/^\/goal(?:\s+(.*))?$/is);
@@ -59997,8 +60297,21 @@ export function createAgentChatService(args: {
         agentMode = "autopilot";
       }
     }
+    // Copilot's own commands (`/compact`, `/review`, a skill) run through its
+    // command API, as in its CLI; sent as a message they reach the model as
+    // prose. The ones ADE owns (the model, the permission level) say where
+    // ADE does it.
+    const typedCommand = goalCommand ? null : parseCopilotSlashCommand(args.userText?.trim() || args.displayText);
+    const ownedCommandReply = typedCommand ? copilotAdeOwnedCommandReply(typedCommand.name) : null;
+    if (ownedCommandReply) controlReply = ownedCommandReply;
     const turnId = args.turnId ?? randomUUID();
     const runtime = await ensureCopilotRuntime(managed);
+    let nativeCommand: { name: string; input: string } | null = null;
+    if (typedCommand && !controlReply) {
+      runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
+      const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
+      if (resolved) nativeCommand = { name: resolved.name, input: typedCommand.input };
+    }
     runtime.interrupted = false;
     runtime.busy = true;
     runtime.activeTurnId = turnId;
@@ -60010,6 +60323,8 @@ export function createAgentChatService(args: {
     if (previousMapperState?.requestedModel === runtime.modelId) {
       runtime.eventMapperState.mismatchModels = previousMapperState.mismatchModels;
     }
+    // A failed MCP server is shown once per chat.
+    if (previousMapperState) runtime.eventMapperState.failedMcpServers = previousMapperState.failedMcpServers;
     setSessionActive(managed);
     const displayText = args.displayText.trim();
     const userText = args.userText?.trim() || displayText;
@@ -60036,16 +60351,9 @@ export function createAgentChatService(args: {
       return;
     }
     try {
-      const attachments = await Promise.all(args.resolvedAttachments.map(async (attachment) => {
-        if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
-        const bytes = await readResolvedAttachmentBytes(attachment);
-        return {
-          type: "blob" as const,
-          data: bytes.toString("base64"),
-          mimeType: attachment.mimeType || "image/png",
-          displayName: path.basename(attachment.path),
-        };
-      }));
+      const prepared = await copilotSdkAttachments(managed, args.resolvedAttachments);
+      const attachments = prepared.attachments;
+      if (prepared.notes.length) promptText = `${promptText}\n\n${prepared.notes.join("\n")}`;
       args.onBackendDispatched?.();
       let settleTurn!: (aborted: boolean) => void;
       const turnIdle = new Promise<boolean>((resolve) => { settleTurn = resolve; });
@@ -60057,7 +60365,30 @@ export function createAgentChatService(args: {
         runtime.interrupted = true;
       } else {
         const metricsBefore = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
-        await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode);
+        // The turn stays open while the command runs: `/compact` reports its
+        // compaction as events before it answers.
+        const outcome = nativeCommand
+          ? copilotCommandOutcome(nativeCommand.name, await runtime.sdk.invokeCommand(managed.session.id, nativeCommand.name, nativeCommand.input || undefined))
+          : null;
+        if (outcome?.kind === "output") {
+          emitChatEvent(managed, { type: "text", text: copilotCommandOutputMarkdown(outcome), turnId });
+          settleTurn(false);
+        } else {
+          if (outcome?.kind === "prompt") {
+            promptText = outcome.prompt;
+            displayPrompt = outcome.displayPrompt;
+            agentMode = outcome.agentMode ?? agentMode;
+            if (outcome.notice) emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: outcome.notice, turnId });
+          }
+          copilotBreadcrumb("turn sent", {
+            model: managed.session.modelId ?? managed.session.model,
+            agentMode: agentMode ?? "interactive",
+            permissionMode: managed.session.copilotPermissionMode ?? null,
+            attachments: attachments.length,
+            command: displayPrompt ? displayPrompt.split(/\s/)[0] : null,
+          });
+          await runtime.sdk.send(managed.session.id, promptText, attachments, undefined, agentMode, displayPrompt);
+        }
         runtime.interrupted = runtime.interrupted || await turnIdle;
         const metricsAfter = await runtime.sdk.request<{ totalPremiumRequestCost?: number }>("usage_metrics", { chatId: managed.session.id }).catch(() => null);
         const premiumDelta = (metricsAfter?.totalPremiumRequestCost ?? 0) - (metricsBefore?.totalPremiumRequestCost ?? 0);
@@ -60095,6 +60426,9 @@ export function createAgentChatService(args: {
       runtime.turnSettled = undefined;
       markSessionIdleWithFreshCache(managed);
       const message = error instanceof Error ? error.message : String(error);
+      // An interrupt (the user's, or the worker dying, which reports itself)
+      // is not a failure to look into.
+      if (!runtime.interrupted) reportCopilotProblem("turn_failed", { error, model: managed.session.modelId ?? managed.session.model });
       emitChatEvent(managed, { type: "error", message, turnId });
       emitChatEvent(managed, { type: "status", turnStatus: runtime.interrupted ? "interrupted" : "failed", turnId });
       emitChatEvent(managed, {
@@ -61377,7 +61711,7 @@ export function createAgentChatService(args: {
     assertChatNotMovedAway(args.sessionId, "send_message");
     const managed = ensureManagedSession(args.sessionId);
     // `/side <question>` from any client (the desktop and iOS composers catch
-    // it first; `ade code`, `ade chat send` and SDK hosts reach here) opens the
+    // it first; `ade chat send` and SDK hosts reach here) opens the
     // chat's side chat instead of reaching the main chat as text. A chat that
     // cannot have one (a side chat, CTO, a provider with no fork) gets the
     // text as typed, as before side chats.
@@ -62528,6 +62862,42 @@ export function createAgentChatService(args: {
 
     if (managed.session.provider === "copilot" && managed.runtime?.kind === "copilot" && managed.runtime.busy) {
       const runtime = managed.runtime;
+      // A Copilot command typed during a turn runs now when Copilot allows it
+      // (`/context`, `/usage`); otherwise it would reach the model as prose.
+      const steerCommand = attachments.length ? null : parseCopilotSlashCommand(trimmed);
+      if (steerCommand && !copilotAdeOwnedCommandReply(steerCommand.name)) {
+        // Whether Copilot allows a command mid-turn is in its list.
+        runtime.slashCommands ??= await listCopilotCommands(managed, runtime);
+      }
+      if (steerCommand) {
+        const ownedReply = copilotAdeOwnedCommandReply(steerCommand.name);
+        const resolved = ownedReply ? null : resolveCopilotSlashCommand(steerCommand.name, runtime.slashCommands);
+        if (ownedReply || resolved) {
+          const turnId = runtime.activeTurnId ?? undefined;
+          if (ownedReply || !resolved?.allowDuringAgentExecution) {
+            emitChatEvent(managed, {
+              type: "system_notice", noticeKind: "info", turnId,
+              message: ownedReply ?? `Wait for this turn to finish before running /${resolved!.name}.`,
+            });
+            return { steerId, queued: false };
+          }
+          const outcome = copilotCommandOutcome(resolved!.name, await runtime.sdk.invokeCommand(sessionId, resolved!.name, steerCommand.input || undefined).catch((error: unknown) => {
+            reportCopilotProblem("command_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.command": resolved!.name } });
+            throw error;
+          }));
+          if (outcome.kind === "output") {
+            // The notice names the command, since no user row records it.
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: `${trimmed}\n\n${copilotCommandOutputMarkdown(outcome)}`, turnId });
+            options?.onAcceptedDispatch?.();
+            return { steerId, queued: false };
+          }
+          // The command's prompt runs as Copilot's; this row records who asked.
+          emitChatEvent(managed, { type: "user_message", text: trimmed, turnId });
+          await runtime.sdk.send(sessionId, outcome.prompt, [], dispatchMode === "inline" ? "immediate" : "enqueue", outcome.agentMode, outcome.displayPrompt);
+          options?.onAcceptedDispatch?.();
+          return { steerId, queued: dispatchMode !== "inline" };
+        }
+      }
       const preparedSteer = prepareSendMessage({
         sessionId,
         text: trimmed,
@@ -62554,18 +62924,9 @@ export function createAgentChatService(args: {
       else emitSteerUserRow(managed, row, "queued", runtime.activeTurnId ?? undefined);
       persistChatState(managed);
       try {
-        const sdkAttachments = await Promise.all(preparedSteer.resolvedAttachments.map(async (attachment) => {
-          if (attachment.type !== "image") return { type: "file" as const, path: attachment._resolvedPath };
-          const bytes = await readResolvedAttachmentBytes(attachment);
-          return {
-            type: "blob" as const,
-            data: bytes.toString("base64"),
-            mimeType: attachment.mimeType || "image/png",
-            displayName: path.basename(attachment.path),
-          };
-        }));
+        const { attachments: sdkAttachments, notes } = await copilotSdkAttachments(managed, preparedSteer.resolvedAttachments);
         const contextPrompt = buildChatContextAttachmentPrompt(preparedSteer.contextAttachments);
-        const promptText = contextPrompt ? `${contextPrompt}\n\n${preparedSteer.submittedText}` : preparedSteer.submittedText;
+        const promptText = [contextPrompt, preparedSteer.submittedText, notes.join("\n")].filter(Boolean).join("\n\n");
         await runtime.sdk.send(sessionId, promptText, sdkAttachments, deliveryMode === "inline" ? "immediate" : "enqueue");
         preparedSteer.onDispatched?.();
         options?.onAcceptedDispatch?.();
@@ -63836,7 +64197,7 @@ export function createAgentChatService(args: {
         // would ever pick this row up.
         const flushed = await drainCursorQueueHeadIfIdle(managed, runtime);
         // Reported as dispatched when the flush sent THIS row: telling the
-        // caller otherwise would have the TUI and iOS show a queued status for a
+        // caller otherwise would have iOS show a queued status for a
         // message already on its way.
         //
         // Reaching the non-null branch needs the turn boundary to fire while
@@ -66575,8 +66936,7 @@ export function createAgentChatService(args: {
         if (row.status === "disposed" || row.status === "detached") continue;
         // Mirror canonicalSessionState: an explicit "active" pin overrides a
         // settledAt column, and a settle only counts at rest.
-        const pinnedActive = row.settleOverride === "active";
-        if (!pinnedActive && (row.settleOverride === "settled" || Boolean(row.settledAt))) continue;
+        if (isSettleTupleSettled(row)) continue;
         const snoozedUntilMs = row.snoozedUntil ? Date.parse(row.snoozedUntil) : Number.NaN;
         if (Number.isFinite(snoozedUntilMs) && snoozedUntilMs > nowMs) continue;
       }
@@ -67019,6 +67379,8 @@ export function createAgentChatService(args: {
           lateFlag: false,
           durable: true,
           source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
+          // The user accepted this update: a fresh start for the resume cap.
+          restartResumeStreak: 0,
         });
         if (schedule.status === "scheduled" && schedule.pausedFlag !== true) armed.push(chat);
       } catch (error) {
@@ -70574,6 +70936,7 @@ export function createAgentChatService(args: {
    */
   const staleRunSweep = createStaleRunSweep<ManagedChatSession>({
     readFullTranscriptEnvelopesForSessionId,
+    readStaleRunEnvelopesForSessionIdAsync,
     listChatSessionIds: (limit) => sessionService
       // Scoped to chat tool types so the scan cap is spent on chats: unscoped,
       // a fleet of terminal sessions ordered by start time fills all 200 rows
@@ -70640,7 +71003,7 @@ export function createAgentChatService(args: {
     const cutoff = Date.now() - RESTART_RESUME_MAX_AGE_MS;
     const rows = sessionService
       .list({ status: "detached", limit: 200, toolTypes: CHAT_SESSION_TOOL_TYPES })
-      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt && !row.settledAt)
+      .filter((row) => isChatToolType(row.toolType) && !row.archivedAt)
       .filter((row) => {
         const endedMs = row.endedAt ? Date.parse(row.endedAt) : Number.NaN;
         return Number.isFinite(endedMs) && endedMs >= cutoff;
@@ -71489,6 +71852,7 @@ export function createAgentChatService(args: {
             model: copilotModelId,
             error: error instanceof Error ? error.message : String(error),
           });
+          reportCopilotProblem("setting_failed", { error, model: copilotModelId, tags: { "copilot.setting": "model" } });
           reopenCopilotForSettings(managed, "the new model", error);
         }
       }
@@ -71705,7 +72069,7 @@ export function createAgentChatService(args: {
       }
     }
     // Only an update that names the tier changes it. Clients that know Fast
-    // alone (the TUI, the phone, older desktops) resend `fastMode: true` with
+    // alone (the phone, older desktops) resend `fastMode: true` with
     // every model or effort change; reading that as "plain Fast" would drop an
     // Ultrafast choice the user made elsewhere. Fast off already cleared it.
     if (requestedFastTier !== undefined) {
@@ -71813,6 +72177,7 @@ export function createAgentChatService(args: {
         const runtime = managed.runtime;
         const modeResult = await runtime.sdk.setPermissionMode(managed.session.id, requestedMode).catch((error) => {
           logger.warn("agent_chat.copilot_permission_mode_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+          reportCopilotProblem("setting_failed", { error, model: managed.session.modelId ?? managed.session.model, tags: { "copilot.setting": "permission_mode", "copilot.permission_mode": requestedMode } });
           return null;
         });
         if (!modeResult) {
@@ -72412,6 +72777,19 @@ export function createAgentChatService(args: {
           kind: "skill" as const,
         }));
       return mergeSlashCommands([localCommands, museCommands, skillCommands]);
+    }
+
+    if (provider === "copilot") {
+      // Copilot lists its own commands and the skills it loaded, as its CLI
+      // shows them. Before a chat's runtime is open, its built-ins and the
+      // project's prompt and skill files stand in.
+      const rt = managed?.runtime?.kind === "copilot" && isCopilotSdkWorkerLive(managed.runtime.sdk.process) ? managed.runtime : null;
+      if (rt && managed) {
+        rt.slashCommands = await listCopilotCommands(managed, rt) ?? rt.slashCommands;
+      }
+      return rt?.slashCommands?.length
+        ? mergeSlashCommands([localCommands, copilotSlashCommandRows(rt.slashCommands)])
+        : mergeSlashCommands([await filesystemBackedCommands(), localCommands, copilotSlashCommandRows(null)]);
     }
 
     // Droid and OpenCode can both use the same filesystem-backed prompt and
@@ -73150,7 +73528,7 @@ export function createAgentChatService(args: {
    *
    * Dispatch by runtime kind:
    *
-   * - **Claude / ade-code**: SDK `getSubagentMessages` reads the per-subagent
+   * - **Claude**: SDK `getSubagentMessages` reads the per-subagent
    *   JSONL at `~/.claude/projects/<projectDir>/<sessionId>/subagents/agent-<agentId>.jsonl`.
    * - **OpenCode**: child session id is the agentId; we call
    *   `runtime.handle.client.session.messages({ path: { id }, query: { directory }})`

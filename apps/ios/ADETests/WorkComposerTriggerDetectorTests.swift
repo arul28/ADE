@@ -4,7 +4,7 @@ import SwiftUI
 @testable import ADE
 
 /// Pure-logic coverage for the cursor-relative trigger detector that mirrors the
-/// shared desktop/TUI regexes (`(?:^|\s)/([^\s/]*)$` and
+/// shared desktop regexes (`(?:^|\s)/([^\s/]*)$` and
 /// `(?:^|[ \t\r\n])@([^@\r\n]*)$`).
 /// Locks in the boundary rules that keep paths, fractions, and emails from
 /// opening the suggestion strip, plus the closest-to-cursor tie-break.
@@ -388,7 +388,7 @@ final class WorkComposerTriggerDetectorTests: XCTestCase {
 
   /// The token is the PR's github url, never its label — the same rule the
   /// rest of the chip model follows, and what makes a sent `#` selection draw
-  /// an identical pill on the desktop, the phone, and the TUI.
+  /// an identical pill on the desktop and the phone.
   func testPrSuggestionInsertsTheUrlAndLabelsItRepoHashNumber() {
     let rows = WorkComposerSuggestionController.prSuggestions(
       from: [prItem(id: "pr-1", number: 1237, title: "One chip model")],

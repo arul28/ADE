@@ -6,7 +6,7 @@ import { compactChatEventForWire } from "./chatEventCompaction";
  * What a phone receives for a chat, and nothing more.
  *
  * `chatEventCompaction` bounds heavy fields for EVERY consumer — the stored
- * transcript, desktop, hosted web, the TUI and the phone all share its caps,
+ * transcript, desktop, hosted web and the phone all share its caps,
  * because a payload the desktop keeps and the phone drops would render
  * differently on each. This module is the layer above that: the parts of a
  * chat that a phone should not carry at all, gated on a capability the phone
@@ -28,7 +28,7 @@ import { compactChatEventForWire } from "./chatEventCompaction";
  * commits a dot-family twin next to every underscore subagent lifecycle event,
  * so the transcript carries both and both cross the wire. They are not two
  * facts: in the measured thread the pair is written 1 ms apart with identical
- * ids, and every client folds them into ONE row — desktop and the TUI through
+ * ids, and every client folds them into ONE row — desktop through
  * `normalizeSubagentLifecycleEvent` (shared/chatSubagents.ts), iOS by decoding
  * `subagent.progress` into the same `.subagentProgress` case as
  * `subagent_progress` (RemoteModels.swift).

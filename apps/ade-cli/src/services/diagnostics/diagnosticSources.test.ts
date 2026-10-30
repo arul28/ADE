@@ -356,17 +356,17 @@ describe("collectMachineDiagnosticSources — service definition", () => {
     const { home } = machineHome();
     const agents = path.join(home, "Library", "LaunchAgents");
     fs.mkdirSync(agents, { recursive: true });
-    fs.writeFileSync(path.join(agents, "com.ade.runtime.beta.plist"), "<plist/>\n", "utf8");
+    fs.writeFileSync(path.join(agents, "com.ade.runtime.alpha.plist"), "<plist/>\n", "utf8");
 
     const definition = collectMachineDiagnosticSources({
-      env: { ADE_HOME: path.join(home, ".ade"), ADE_PACKAGE_CHANNEL: "beta" },
+      env: { ADE_HOME: path.join(home, ".ade-alpha"), ADE_PACKAGE_CHANNEL: "alpha" },
       homeDir: home,
       platform: "darwin",
       runCommand: noCommands,
       readVolume: () => null,
     }).serviceDefinition;
 
-    expect(definition[0]?.path).toContain("com.ade.runtime.beta.plist");
+    expect(definition[0]?.path).toContain("com.ade.runtime.alpha.plist");
     expect(definition[0]?.text).toContain("<plist/>");
   });
 

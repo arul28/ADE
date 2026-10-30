@@ -160,26 +160,6 @@ export function formatUsageLimitCountdown(remainingMs: number): string {
 /** Below this the countdown ticks every second; above it, every minute. */
 const USAGE_LIMIT_SECOND_TICK_WINDOW_MS = 5 * 60_000;
 
-export type UsageLimitResumePillModel = {
-  state: AgentChatUsageLimitResumeState;
-  /** Label segments, already ordered. The pill joins them with `·`. */
-  segments: string[];
-  /**
-   * The trailing segment that names what the popover offers (`Turn on`,
-   * `Retry`, `Try at 9:30 PM`). Already included in {@link segments}; carried
-   * separately so the pill can give it the affordance treatment.
-   */
-  actionHint: string | null;
-  /** `segments.join(" · ")` — the whole one-line label. */
-  label: string;
-  ariaLabel: string;
-  /**
-   * Milliseconds until this label could read differently, or null when it is
-   * static. Drives the pill's single interval — a static state arms none.
-   */
-  refreshMs: number | null;
-};
-
 function parseInstant(iso: string | null | undefined): number | null {
   if (!iso) return null;
   const parsed = Date.parse(iso);
@@ -203,58 +183,6 @@ function usageLimitResumeTargetMs(resume: AgentChatUsageLimitResume): number | n
 export function usageLimitResumeAttemptsLabel(attempts: number): string {
   const count = Number.isFinite(attempts) && attempts > 0 ? Math.floor(attempts) : 2;
   return `${count} ${count === 1 ? "try" : "tries"}`;
-}
-
-/** One-line pill copy per state. Verb-first, sentence case, neutral. */
-export function usageLimitResumePill(
-  resume: AgentChatUsageLimitResume,
-  nowMs: number,
-): UsageLimitResumePillModel {
-  const targetMs = usageLimitResumeTargetMs(resume);
-  const remainingMs = targetMs == null ? null : targetMs - nowMs;
-  const build = (
-    segments: string[],
-    actionHint: string | null,
-    refreshMs: number | null,
-  ): UsageLimitResumePillModel => {
-    const label = segments.join(" · ");
-    return {
-      state: resume.state,
-      segments,
-      actionHint,
-      label,
-      ariaLabel: `${label}. Open usage-limit options.`,
-      refreshMs,
-    };
-  };
-
-  switch (resume.state) {
-    case "resuming":
-      return build(["Resuming…"], null, null);
-    case "paused": {
-      const clock = formatUsageLimitClock(targetMs);
-      const hint = clock ? `Try at ${clock}` : "Try again";
-      return build([`Paused after ${usageLimitResumeAttemptsLabel(resume.attempts)}`, hint], hint, null);
-    }
-    case "opted_out":
-      return build(["Won't auto-resume", "Turn on"], "Turn on", null);
-    case "no_reset":
-      return build(["Usage limit", "no reset time", "Retry"], "Retry", null);
-    case "armed":
-    default: {
-      if (remainingMs == null) {
-        return build(["Resumes when the limit lifts", "usage limit"], null, null);
-      }
-      // The row is due but the turn boundary has not come round yet. Counting
-      // "in -4s" would be the pill lying about a wait that is already over.
-      if (remainingMs <= 0) return build(["Resuming…"], null, null);
-      return build(
-        [`Resumes in ${formatUsageLimitCountdown(remainingMs)}`, "usage limit"],
-        null,
-        remainingMs < USAGE_LIMIT_SECOND_TICK_WINDOW_MS ? 1_000 : 60_000,
-      );
-    }
-  }
 }
 
 /**

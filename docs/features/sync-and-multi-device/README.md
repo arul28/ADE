@@ -4,7 +4,7 @@ ADE syncs live runtime state across an ADE machine runtime and any connected
 controllers (other computers, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
-desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
+desktop-to-runtime and iOS connections. The account-gated cloud
 tunnel relay is eligible whenever the machine is signed in to an ADE account,
 unless its owner turned **ADE Relay** off for that computer in Settings ›
 Account (see *Per-computer relay switch* below). Two
@@ -34,7 +34,7 @@ does and does not travel, and the layers that implement it. Deep-dives:
   capsule, destination setup, and idempotent recovery.
 - `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
-  consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
+  consolidation relay, desktop/web/iOS reads, native Mac presentation,
   per-device policy, exact routing, acknowledgments, and ownership fences.
 
 Web client: the browser client is another controller of the same machine
@@ -52,7 +52,7 @@ that path is not a guest account and never becomes an account-wide view.
 
 Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
-the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
+the account relay, while signed-in desktop, hosted web, and iOS read
 the consolidated account stream through an account-scoped path. Navigation and
 actions still carry the owning machine/project/session so the client can adopt
 or select the correct destination. Without an account, a client may show only a
@@ -67,7 +67,7 @@ The brain rejects iOS builds older than `MIN_SUPPORTED_MOBILE_APP_BUILD` with `p
 The sync authority is the machine-owned `ade serve` runtime in
 `apps/ade-cli/`. The desktop renderer is just another client of that
 runtime — it attaches through the local runtime connection pool, exactly
-the same way `ade code` and the iOS app do.
+the same way the iOS app does.
 
 This is the inversion to internalise: the desktop is no longer the
 sync authority. A desktop window that is bound to a remote runtime is therefore
@@ -132,7 +132,7 @@ has not started" in the gap).
 #### Two ADE apps on one computer
 
 One machine has one sync host, so a second ADE app on the same computer — the
-release build plus an Alpha or Beta channel, each with its own `ADE_HOME` and
+release build plus an Alpha channel build, each with its own `ADE_HOME` and
 its own brain — is idle for sync rather than fighting for it. The lease is
 machine-wide across channels (`$TMPDIR/ade-sync-host-<uid>.json` records the
 owning pid, channel, and home), and the non-owning brain takes no lease, binds
@@ -343,8 +343,8 @@ Every native paired controller ranks routes the same way:
 3. ADE Relay, only with a fresh matching account proof.
 
 Within the LAN and tailnet tiers, current discovery outranks stale saved
-metadata and recent successful endpoints break ties. ADE Code and the desktop
-paired-runtime pool walk that ranking as sequential phases through
+metadata and recent successful endpoints break ties. The desktop
+paired-runtime pool walks that ranking as sequential phases through
 `buildPairedEndpointCandidates`. iOS races the whole ranked plan at once
 instead: the same preference decides who is dialed first, but a Relay candidate
 joins the race a few hundred milliseconds behind the leading direct candidate
@@ -729,7 +729,7 @@ Runtime support files outside `services/sync/`:
   desktop rotation from the brain and the CLI, which is exactly the process pair
   it exists to coordinate.
 - `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
-  account-machine list/delete/rename/adoption for ADE Code and the runtime.
+  account-machine list/delete/rename/adoption for the runtime.
   Rename writes the account-owned `customName` field without changing the
   hostname reported by publisher heartbeats; clearing the custom name restores
   the reported hostname as the display fallback. Directory 401 responses
@@ -779,13 +779,13 @@ Runtime support files outside `services/sync/`:
   project registry publishes on the same terms as any other — see *Hosting sync,
   and publishing, with no project*. It reports `no_active_sync_scope` only when
   this brain does not hold the lease at all. The published
-  machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
-  build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
-  stable build (or an already-suffixed name) is left untouched, so the same
+  machine `name` is suffixed by package channel (`publishedMachineName`): an Alpha
+  build advertises `<name> · Alpha`, while a
+  stable build (a Beta-track build is stable here) or an already-suffixed name is left untouched, so the same
   physical computer running two channels shows as two distinguishable directory rows.
   The registration also sends the install as structured fields
   (`describeAdeInstall`): `channel` (`stable` only for the default `~/.ade`
-  home, else `alpha`/`beta` from the package channel, omitted for a custom
+  home, else `alpha` from the package channel, omitted for a custom
   home) and `adeHome` (the home relative to the user's home folder, as
   `~/.ade-alpha`, or only the folder name for a home outside it, never a
   username). The Worker stores them in the `channel` and `ade_home` columns
@@ -913,8 +913,8 @@ Runtime support files outside `services/sync/`:
   adeHomePath)`, salted with the account id, so one computer signed into two
   accounts produces two unrelated values and no server-side join can correlate
   them. **An anchor identifies an ADE install, not a chassis**: the platform
-  UUID is shared by every ADE on the box (Stable in `~/.ade`, Beta in
-  `~/.ade-beta`, a second OS user's home), and hashing it alone made all of them
+  UUID is shared by every ADE on the box (Stable in `~/.ade`, Alpha in
+  `~/.ade-alpha`, a second OS user's home), and hashing it alone made all of them
   one machine taking turns superseding each other's row, so the canonicalized
   ADE home path is folded in — a wipe and reinstall lands on the same path and
   still reproduces the same anchor, which is the whole point. On Windows that
@@ -982,8 +982,7 @@ Runtime support files outside `services/sync/`:
 - `apps/desktop/src/shared/reconnectOutcome.ts` — what a reconnect did, in one
   sentence: `describeReconnectOutcome`, `reconnectNeedsFreshSignIn`,
   `readReconnectResult`, and the `ReconnectOutcome` type. The desktop's
-  Reconnect surfaces, `ade machines reconnect --text`, and the `ade code`
-  `/reconnect` notice all read it, so they cannot disagree. A result that needs
+  Reconnect surfaces, and `ade machines reconnect --text` all read it, so they cannot disagree. A result that needs
   a fresh sign-in says "Confirm it's you", never "Sign in again".
 - `apps/desktop/src/shared/accountMachineRefusal.ts` — `readAccountRefusalCode`,
   the single decoder for "why did the directory refuse to register this
@@ -1231,7 +1230,7 @@ Runtime support files outside `services/sync/`:
 - `account_settings` action domain (`list`, `get`, `set`, `remove`, `sync`) and
   `account_vault` action domain (`list`, `get`, `set`, `remove`, `sync`,
   `pendingKeys`) — how
-  desktop, `ade code`, the CLI, and iOS reach the stores through the brain.
+  desktop, the CLI, and iOS reach the stores through the brain.
   The domains remain separate: settings are non-secret account preferences,
   while vault reads/writes are host/CTO policy-gated credential operations.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
@@ -1343,7 +1342,7 @@ Runtime support files outside `services/sync/`:
   dialable endpoint is `offline`/`unreachable`.
 
 - `apps/ade-cli/src/eventBuffer.ts` — bounded runtime-event replay buffer
-  used by multi-project RPC and desktop/TUI event streams. Retains up to
+  used by multi-project RPC and desktop event streams. Retains up to
   10,000 events / 16 MB total / 1 MB per event by default, emits live
   subscribers best-effort even for oversize events, and returns
   `eventEpoch`, `gap`, and `oldestCursor` from `drain()` so clients can
@@ -2191,7 +2190,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   exclusion is **this process only** — launchd's tracked main pid is often
   the wedged predecessor still bound to 8787; excluding it is how a
   replacement brain used to stick on 8788 with two listeners on one machine
-  (dual-brain split). Cross-channel conflicts (ADE vs ADE Beta) are left
+  (dual-brain split). Cross-channel conflicts (ADE vs ADE Alpha) are left
   alone; the "ADE is already running with phone sync" dialog is intentional.
   When already listening on a fallback port, `tryMigrateToPort(8787)` binds
   the canonical port alongside the current listener, closes the old one on
@@ -2415,7 +2414,9 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   replica strictly more than 5,000 versions behind. It scans at most 1,000
   relevant rows per host poll, caps the shared cache and logical payload at
   10,000 rows / 4 MiB, and falls back to normal incremental replay when the
-  current state or one version group exceeds those limits.
+  current state or one version group exceeds those limits. Each step's export
+  runs off the event loop (`exportChangesSinceOffThread`), and a phone at
+  cursor 0 gets its ordinary first batch before the compact one.
 - `syncPeerService.ts` (~580 lines) — WebSocket **client**. The runtime
   can run this too when it joins another runtime as a peer (handoff
   rehearsal, controller-to-authority swap). On iOS, an equivalent Swift
@@ -2517,7 +2518,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   history scans or sends provider credentials to the controller.
   Lane snapshots support lightweight refreshes; lane detail uses the scoped lane-summary path.
   Model-picker commands read/write the same per-project CRR-backed
-  favorites/recents store as desktop and the TUI; the sync service falls
+  favorites/recents store as desktop; the sync service falls
   back to the DB-wired shared store when no explicit accessor is
   injected, so iOS never reads an empty process stub in production.
   The `personalChats.*` family is registered from the shared
@@ -2934,8 +2935,8 @@ Account Activity and push:
   brain writes the column on each agent item as `boardColumn`; see
   [push-notifications.md › The four states](push-notifications.md#the-four-states).
 - `apps/desktop/src/shared/attention/activityStateGroup.cases.json` — the
-  conformance fixture for the older six-group table. Desktop, the web client and
-  ADE Code no longer group by it; the relay still fills the Live Activity's
+  conformance fixture for the older six-group table. Desktop and the web client
+  no longer group by it; the relay still fills the Live Activity's
   legacy `groups` field from it for old iOS builds, so the relay (and the iOS
   mirror, until it moves) run these cases.
 - `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
@@ -3008,10 +3009,6 @@ Account Activity and push:
 - `apps/desktop/src/renderer/webclient/adapter/attention.ts` — direct browser
   account-relay reader plus signed-out paired-host fallback through
   `attention.getMachineSnapshot` / `attention.acknowledgeMachine`.
-- `apps/ade-cli/src/tuiClient/activityPane.ts` and
-  `components/ActivityPaneView.tsx` — ADE Code's machine-global `/activity`
-  pane and exact-destination acknowledgment flow. The hidden `/attention`
-  alias and `attention.call` RPC remain for compatibility.
 - `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
   Clerk verification, acknowledgments, presence/preferences, APNs fan-out,
   machine removal/revocation and pairing restore, and the cron-only expiry and
@@ -3436,7 +3433,7 @@ install. Three mechanisms, each in a different layer, keep that from happening:
   wipe mints both afresh and matches nothing, while a per-account hash of an
   OS-level machine identifier survives it. It is salted with the account id and
   folded with the ADE home path, so it can neither correlate two accounts nor
-  merge a Beta install into Stable's row, and a host that cannot read one simply
+  merge an Alpha install into Stable's row, and a host that cannot read one simply
   omits it.
 
 ### Getting back on after a refusal
@@ -4400,7 +4397,7 @@ cannot be changed until it is.
   process pid). A live listener that landed on a fallback keeps probing
   `tryMigrateToPort(8787)` so phones that saved 8787 reconnect without a
   restart. The "ADE is already running with phone sync" dialog is the
-  cross-channel case (ADE vs ADE Beta) and is intentional.
+  cross-channel case (ADE vs ADE Alpha) and is intentional.
 
 - **Cross-machine session handoff is not database sync or provider-session
   migration.** It publishes the exact Git commit and sends a bounded,

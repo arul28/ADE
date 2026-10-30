@@ -419,7 +419,11 @@ exclusions and host-authoritative tables are removed in SQL. The shared build
 and logical payload are capped at 10,000 rows / 4 MiB; a larger state or version
 group falls back to normal incremental replay. A successful build is sent as
 one logical `reason: "catchup"` batch (using `envelope_chunk` frames as needed),
-and writes after its fixed target resume incrementally.
+and writes after its fixed target resume incrementally. A phone that has
+scanned nothing yet (host cursor 0) first gets one ordinary batch, which holds
+the project row its first screen waits for; the compact batch follows, built or
+not. The build reads its windows on the export helper connection, off the
+host's event loop, one step at a time.
 
 ### Apply
 

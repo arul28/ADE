@@ -16,6 +16,13 @@ vi.mock("./git", () => ({
   runGit: (...args: unknown[]) => mockGit.runGit(...args),
   runGitOrThrow: (...args: unknown[]) => mockGit.runGitOrThrow(...args),
   getHeadSha: (...args: unknown[]) => mockGit.getHeadSha(...args),
+  // No refs identity: listBranches reads through runGitOrThrow, as these tests mock.
+  gitBranchRefsIdentity: async () => null,
+  // No kept answers: every lane check runs the mocked git, as these tests expect.
+  gitWorktreeRootCached: (_worktreePath: string, check: () => Promise<boolean>) => check(),
+  // Uncached: a cached read goes to the same mocked git these tests answer.
+  runGitRepoCached: async (args: unknown[], opts: unknown) => ({ exitCode: 0, stdout: await mockGit.runGitOrThrow(args, opts), stderr: "" }),
+  gitStdoutOrThrow: (res: { stdout: string }) => res.stdout,
 }));
 
 import { createGitOperationsService } from "./gitOperationsService";

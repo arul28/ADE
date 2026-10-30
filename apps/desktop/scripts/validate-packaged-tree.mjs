@@ -247,25 +247,11 @@ export function createPackagedTreeAssertions({ fail }) {
     }
   }
 
-  /**
-   * The bundled TUI is ESM. A bare `__dirname`/`__filename` in it throws at
-   * import time in the packaged app, which is only reachable by reading the
-   * file - there is no build step that would catch it.
-   */
-  function assertPackagedTuiEsmShims(contents) {
-    for (const token of ["__dirname", "__filename"]) {
-      if (contents.includes(token) && !contents.includes(`const ${token} =`)) {
-        fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
-      }
-    }
-  }
-
   return {
     assertAsarEmbedsNoRuntimeFetchedToolPayload,
     assertBundledAgentSkills,
     assertNoRuntimeFetchedToolPackages,
     assertPackagedTreeSizeBudget,
-    assertPackagedTuiEsmShims,
     assertPathExists,
     assertPathMissing,
     assertRuntimeToolJsEntryPointsPresent,

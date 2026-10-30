@@ -761,7 +761,7 @@ enum SessionWakeReason: String, Equatable {
 /// canonical phase: `workCanonicalSessionState` does not read these at all — a
 /// snoozed row is still running/failed/needs_you exactly as before, snooze only
 /// decides where the UI files it. Keeping the two orthogonal is what lets
-/// desktop, `ade code`, and iOS agree without re-deriving the lifecycle.
+/// desktop and iOS agree without re-deriving the lifecycle.
 struct SessionSnoozeState: Equatable {
   /// ISO deadline; expiry is DERIVED by comparing to now — there is no timer.
   var snoozedUntil: String?

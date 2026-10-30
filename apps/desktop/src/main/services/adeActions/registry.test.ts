@@ -1647,7 +1647,7 @@ describe("runtime session actions", () => {
     expect(settleSession).not.toHaveBeenCalled();
 
     // The user-driven single-row unsettle (desktop row menu on a remote-bound
-    // project, `ade code`'s /session unsettle) survives under a cto-gated name.
+    // project) survives under a cto-gated name.
     // Still synchronous: resuming the scheduled work settle paused is driven by
     // sessionService's onSettleCleared hook at the column write, not by each
     // caller — so the action itself stays a plain lifecycle call.

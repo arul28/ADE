@@ -10,7 +10,7 @@ import type { RemoteMcpScope } from "../../../../desktop/src/shared/types/remote
  * around the switch that grants the access (managing remote access itself,
  * minting account tokens, signing the machine in or out), or that cannot work
  * without a terminal and would cut the connection (the brain's own lifecycle,
- * interactive setup, `ade code`, a hard reset).
+ * interactive setup, a hard reset).
  *
  * Both scopes fail closed. Every top-level command is either in
  * FULL_ACCESS_COMMANDS or in BLOCKED_COMMANDS; a command in neither is refused,
@@ -37,7 +37,6 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
   ["serve", "Starting or stopping ADE's brain would cut this connection."],
   ["runtime", "Running another ADE runtime is not available remotely."],
   ["rpc", "The raw RPC stream is not available remotely."],
-  ["code", "`ade code` needs a terminal."],
   ["desktop", "Opening the desktop app is done on the computer itself."],
   ["account", "Account tokens outlive ADE MCP, so they are created on the computer itself."],
 ]);
@@ -179,19 +178,20 @@ export function checkRemoteAdeCommand(
       reason: `\`ade ${args[0]}\` isn't enabled for ADE MCP. Run \`ade help\` for the commands it can use.`,
     };
   }
-  // ADE MCP is switched on per computer. Forwarding to another machine would
-  // reach one whose owner may have it off.
+  // Another computer is reached through the tools' own `machine` input, which
+  // goes through that computer's token check and policy, never through the
+  // CLI's agent bridge.
   if (args.some((word) => MACHINE_TARGET_FLAG.test(word))) {
     return {
       ok: false,
-      reason: "ADE MCP reaches only this computer. Connect to another computer's own ADE MCP server to work there.",
+      reason: "Use the tool's `machine` input to run on another computer (machines_list names them), not --machine.",
     };
   }
   const words = positionalWords(args);
   // It asks every computer of the account; ADE MCP's chat tools run it for a
   // connection and apply its own computer rules (remoteMcpProtocol.ts).
   if ((command === "chat" || command === "chats") && words[0] === "locate") {
-    return { ok: false, reason: "ADE MCP reaches only this computer. The chat tools find a chat's computer by themselves." };
+    return { ok: false, reason: "The chat tools find a chat's computer by themselves: pass the chat id to chat_status or chat_read." };
   }
   if (isServiceSignInCommand(command, words)) {
     return { ok: false, reason: `\`ade ${command} ${words.slice(0, 2).join(" ")}\` is not available remotely. ${SERVICE_SIGN_IN_REASON}` };

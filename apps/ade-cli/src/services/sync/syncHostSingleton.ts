@@ -10,8 +10,9 @@ import {
   parseWindowsPortHolders,
 } from "./windowsPortHolders";
 import { readProcessStartTimeMs } from "../../../../desktop/src/main/services/processes/processStartTime";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
-import { adeHomeForChannel } from "../projects/machineLayout";
+import { adeHomeForChannel, liveChannelFromEnv } from "../projects/machineLayout";
 const LOCK_VERSION = 1;
 
 export type SyncHostSingletonOwner = {
@@ -401,9 +402,25 @@ function normalizedChannel(value: string | null | undefined): string | null {
   return normalized || null;
 }
 
+/**
+ * Channels recognized from a process command line. `beta` is the removed
+ * local Beta package channel: an old install may still run, so it is
+ * recognized for identification only, never mistaken for Stable, and its quit
+ * command stops its own service, not Stable's.
+ */
+const COMMAND_LINE_CHANNELS = [
+  { channel: "beta", pattern: /ADE Beta\.app|ade-beta|\bADE Beta\b/i, appName: "ADE Beta", adeHome: () => path.join(os.homedir(), ".ade-beta") },
+  { channel: "alpha", pattern: /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i, appName: "ADE Alpha", adeHome: () => adeHomeForChannel("alpha") },
+] as const;
+
+function commandLineChannel(commandLine: string | null | undefined): (typeof COMMAND_LINE_CHANNELS)[number] | null {
+  if (!commandLine) return null;
+  return COMMAND_LINE_CHANNELS.find((entry) => entry.pattern.test(commandLine)) ?? null;
+}
+
 function defaultAppName(channel: string | null): string {
-  if (channel === "beta") return "ADE Beta";
-  if (channel === "alpha") return "ADE Alpha";
+  const known = COMMAND_LINE_CHANNELS.find((entry) => entry.channel === channel);
+  if (known) return known.appName;
   return "ADE";
 }
 
@@ -427,9 +444,7 @@ export function buildQuitCommand(args: {
       : "";
   }
   const commandLine = args.commandLine ?? "";
-  const channel = normalizedChannel(args.packageChannel)
-    ?? (/ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine) ? "beta" : null)
-    ?? (/ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine) ? "alpha" : null);
+  const channel = normalizedChannel(args.packageChannel) ?? commandLineChannel(commandLine)?.channel ?? null;
   // The sync-host brain runs as a launchd LaunchAgent (com.ade.runtime[.channel])
   // in the persistent/headless runtime-service mode, with KeepAlive — so a plain
   // `kill` just respawns it. Stop it the right way: `launchctl bootout` the
@@ -455,7 +470,7 @@ function currentOwner(
   readOwnStartTimeMs: () => number | null = readOwnProcessStartTimeMs,
 ): SyncHostSingletonOwner {
   const now = new Date().toISOString();
-  const channel = normalizedChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const channel = liveChannelFromEnv(process.env.ADE_PACKAGE_CHANNEL);
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
   const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
@@ -557,17 +572,10 @@ function legacyOwner(
   // whenever the scanned platform is injected rather than the host's.
   platform: NodeJS.Platform = process.platform,
 ): SyncHostSingletonOwner {
-  const channel = commandLine && /ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine)
-    ? "beta"
-    : commandLine && /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine)
-      ? "alpha"
-      : null;
-  const appName = commandLine && /\bADE Beta\b|ADE Beta\.app/i.test(commandLine)
-    ? "ADE Beta"
-    : commandLine && /\bADE Alpha\b|ADE Alpha\.app/i.test(commandLine)
-      ? "ADE Alpha"
-      : "ADE";
-  const adeHome = adeHomeForChannel(channel);
+  const known = commandLineChannel(commandLine);
+  const channel = known?.channel ?? null;
+  const appName = known?.appName ?? "ADE";
+  const adeHome = known ? known.adeHome() : adeHomeForChannel(null);
   const now = new Date().toISOString();
   return {
     id: `legacy-${pid}-${port}`,
@@ -873,7 +881,8 @@ export function isSameChannelSyncHostOwner(
   owner: SyncHostSingletonOwner,
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
-  const currentChannel = normalizedChannel(env.ADE_PACKAGE_CHANNEL);
+  // As currentOwner() records it: a leftover "beta" is Stable.
+  const currentChannel = liveChannelFromEnv(env.ADE_PACKAGE_CHANNEL);
   const currentAdeHome = env.ADE_HOME?.trim() || adeHomeForChannel(currentChannel);
   if (owner.adeHome) {
     return adeHomeComparisonKey(owner.adeHome) === adeHomeComparisonKey(currentAdeHome);
@@ -950,6 +959,13 @@ function execFileText(
   timeout: number,
   maxBuffer: number,
 ): Promise<{ stdout: string; failed: boolean }> {
+  // The child processes no longer block on their answers, but starting them
+  // still did: on Windows CreateProcess runs on the calling thread, and the
+  // three PowerShell starts held the brain ~60 ms while a project opened.
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, { timeoutMs: timeout, maxBuffer })
+      .then((result) => ({ stdout: result.stdout, failed: Boolean(result.error) || result.exitCode !== 0 }));
+  }
   return new Promise((resolve) => {
     execFile(command, args, { encoding: "utf8", timeout, maxBuffer, windowsHide: true }, (error, stdout) => {
       resolve({ stdout: typeof stdout === "string" ? stdout : "", failed: Boolean(error) });

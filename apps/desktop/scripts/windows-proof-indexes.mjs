@@ -164,7 +164,7 @@ export function validateInventory(inventory) {
     operatingSystems: ["windows-10-22h2-x64", "windows-11-x64"],
     shells: ["powershell-5-1", "powershell-7", "cmd", "git-bash"],
     providers: ["claude", "codex", "cursor", "droid", "opencode"],
-    clients: ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"],
+    clients: ["windows-desktop", "ade-cli", "hosted-web", "ios", "desktop-peer"],
     routes: ["lan", "tailscale", "relay"],
     journeys: ["account-oauth", "account-directory", "signed-n-to-n-plus-one-update", "windows-regressions"],
   };

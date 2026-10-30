@@ -13,6 +13,8 @@ import {
   sessionAutoContinueAtUsageLimit,
   UPDATE_RESUME_SCHEDULED_WORK_SOURCE,
   updateResumeScheduleId,
+  nextRestartResumeStreak,
+  restartResumeHold,
 } from "./chatAutoResume";
 
 describe("isUsageLimitChatError", () => {
@@ -158,5 +160,38 @@ describe("sessionAutoContinueAtUsageLimit", () => {
     expect(sessionAutoContinueAtUsageLimit({})).toBe(true);
     expect(sessionAutoContinueAtUsageLimit({ autoContinueAtUsageLimit: true })).toBe(true);
     expect(sessionAutoContinueAtUsageLimit({ autoContinueAtUsageLimit: false })).toBe(false);
+  });
+});
+
+// A chat whose resumed turn is cut off by another restart, again and again,
+// must stop resuming itself (T3 #18461), and nothing may resume past an open
+// question. One table for the streak, one for the decision.
+describe("restart resume streak and hold", () => {
+  const fired = { source: UPDATE_RESUME_SCHEDULED_WORK_SOURCE, status: "done", lastFiredAt: 1_000, restartResumeStreak: 2 };
+  it.each([
+    ["the first resume", undefined, null, 1],
+    ["a resumed turn cut off again", fired, null, 3],
+    ["a resumed turn cut off again, idle from before it fired", fired, new Date(500).toISOString(), 3],
+    ["after the resumed turn finished", fired, new Date(2_000).toISOString(), 1],
+    ["after the user stepped in", { ...fired, status: "cancelled" }, null, 1],
+    ["after a message of the user's, even one cut off", fired, null, 1, new Date(2_000).toISOString()],
+    ["a message from before the last resume", fired, null, 3, new Date(500).toISOString()],
+    ["after an update the user accepted", { ...fired, restartResumeStreak: 0 }, null, 1],
+    ["after another kind of wake", { ...fired, source: "auto_resume_limit" }, null, 1],
+  ] as const)("streak: %s", (_label, previous, idleSinceAt, expected, lastUserMessageAt?: string) => {
+    expect(nextRestartResumeStreak(previous, idleSinceAt, lastUserMessageAt)).toBe(expected);
+  });
+
+  const base = { continueEnabled: true, recent: true, awaitingUser: false, capped: false, archived: false };
+  it.each([
+    ["resumes", base, null],
+    ["waits for an open question", { ...base, awaitingUser: true }, "awaiting_user"],
+    ["waits at the cap", { ...base, capped: true }, "capped"],
+    ["leaves old work alone", { ...base, recent: false }, "stale"],
+    ["leaves an archived chat alone", { ...base, archived: true, awaitingUser: true }, "archived"],
+    ["respects the setting before the cap", { ...base, continueEnabled: false, capped: true }, "disabled"],
+    ["names an open question before the setting", { ...base, continueEnabled: false, awaitingUser: true }, "awaiting_user"],
+  ] as const)("hold: %s", (_label, args, hold) => {
+    expect(restartResumeHold(args)).toBe(hold);
   });
 });

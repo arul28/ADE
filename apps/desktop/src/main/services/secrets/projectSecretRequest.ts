@@ -149,7 +149,7 @@ async function askProjectSecret(
   const card: ProjectSecretRequestCard = { name, reason, generate, exists, delivery };
 
   // A client that draws the native card reads the metadata; any other client
-  // (an older desktop, the phone, the TUI) still gets a working password
+  // (an older desktop, the phone) still gets a working password
   // question, with a keep/replace pick first when the name already exists.
   //
   // The delivery pick is always there (when this runtime can write files), so

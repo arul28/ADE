@@ -18,23 +18,6 @@ export function cursorCloudStatusToneClass(status: string | undefined | null): s
   return "border-fg/[0.08] bg-fg/[0.025] text-fg/55";
 }
 
-export function formatCursorCloudAge(value: number | string | null | undefined): string | null {
-  const ts = typeof value === "number"
-    ? value
-    : typeof value === "string"
-      ? Date.parse(value)
-      : NaN;
-  if (!Number.isFinite(ts) || ts <= 0) return null;
-  const delta = Date.now() - ts;
-  if (delta < 0) return null;
-  if (delta < 45_000) return "just now";
-  const minutes = Math.round(delta / 60_000);
-  if (minutes < 60) return `${minutes}m`;
-  const hours = Math.round(minutes / 60);
-  if (hours < 48) return `${hours}h`;
-  return `${Math.round(hours / 24)}d`;
-}
-
 /** `https://github.com/owner/repo` → `owner/repo` for compact row display. */
 export function cursorCloudRepoLabel(url: string): string {
   const key = repoMatchKey(url);

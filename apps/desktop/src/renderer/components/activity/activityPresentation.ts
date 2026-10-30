@@ -143,7 +143,7 @@ const SESSION_DERIVED_PRESENTATION = Object.fromEntries(
  * So its tone is decided by what the word means everywhere else in the product:
  * MERGE blocked, not "your move". `attentionPhasePriority` files it at tier 2
  * beside `review_requested` and `merge_ready` rather than with `needs_you` at
- * tier 0, and both the header rollup and the `ade code` TUI group it under
+ * tier 0, and the header rollup groups it under
  * "Failing or blocked" — a different group from "Needs you". A PR blocked on
  * branch policy, CI, or someone else's approval is frequently something the
  * reader cannot clear at all, so it makes no claim on them.
@@ -226,7 +226,7 @@ export function activityPhaseIsSessionDerived(
    Activity counts and groups agents by the Work board's four columns, through
    `activityBoardColumn` (shared/attention/activityBoardColumn.ts). This table is
    how each column looks: one label, one hue and one glyph identity. The desktop
-   panel, the pane, the home page and the `ade code` pane all read it, so a
+   panel, the pane and the home page all read it, so a
    column cannot be "Waiting" in one place and "Idle" in the next.
 
    A failure files under Needs you, but it keeps its own red mark

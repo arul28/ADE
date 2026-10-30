@@ -23,7 +23,7 @@ import type { AgentChatEvent, AgentChatEventEnvelope } from "./types/chat";
  * Codex plan-mode proposals (`plan` with no steps and streamed markdown) are
  * not task lists; they keep their own card and never touch this state.
  *
- * Desktop (thread card + Chat Info pane) and the `ade code` TUI all read this
+ * Desktop (thread card + Chat Info pane) reads this
  * module, so every surface shows the same list.
  */
 

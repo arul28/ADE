@@ -48,12 +48,11 @@ It's also a full dev environment: git worktrees, a code editor, pull requests, a
 
 <img src="assets/readme/machines.gif" alt="Running checks on two machines from one chat" width="100%" />
 
-**Same work, any screen.** Desktop, terminal, and phone show the same chat.
+**Same work, any screen.** Desktop and phone show the same chat.
 
 <table>
 <tr>
-<td width="44%"><img src="assets/readme/desktop.webp" alt="ADE desktop app" width="100%" /></td>
-<td width="44%"><img src="assets/readme/terminal.webp" alt="ade code in a terminal" width="100%" /></td>
+<td width="88%"><img src="assets/readme/desktop.webp" alt="ADE desktop app" width="100%" /></td>
 <td width="12%"><img src="assets/readme/phone.webp" alt="ADE on iPhone" width="100%" /></td>
 </tr>
 </table>
@@ -84,7 +83,7 @@ Your account is what links your machines. Run `ade connect` on each one you want
 
 You can skip the account. ADE still works on that one machine, but you can't reach it from anywhere else.
 
-**3. Open a client.** Open the desktop app, run `ade code` in a terminal, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines are already there.
+**3. Open a client.** Open the desktop app, go to [app.ade-app.dev](https://app.ade-app.dev), or get the [iOS app](https://testflight.apple.com/join/ZSdJGKPy). Your machines are already there.
 
 **4. Open a repo and go.** Open a git repository, make a lane (a git worktree for one task), and ask for a small change. The [quickstart](https://www.ade-app.dev/docs/quickstart) walks through it.
 
@@ -106,7 +105,7 @@ More: [AI providers](https://www.ade-app.dev/docs/configuration/ai-providers).
 | | |
 | --- | --- |
 | Desktop app | macOS 13+, Windows 10/11 x64 |
-| Terminal (`ade code`) | macOS, Linux, Windows |
+| `ade` CLI | macOS, Linux, Windows |
 | Web | Any browser, at [app.ade-app.dev](https://app.ade-app.dev) |
 | Phone | iOS on [TestFlight](https://testflight.apple.com/join/ZSdJGKPy). App Store and Android coming soon. |
 | Brain only | Linux (x64, arm64), plus everything above |
@@ -116,7 +115,6 @@ There's no Linux desktop app yet, but a Linux machine can run the Brain and you 
 ## Handy commands
 
 ```bash
-ade code                      # open the terminal app
 ade connect --status --text   # check this machine's connection
 ade machines list --text      # list the machines on your account
 ade doctor                    # find a problem
@@ -135,7 +133,7 @@ npm run dev     # build the CLI and open a dev copy of the desktop app
 The dev copy uses its own profile and its own Brain, so it won't touch the ADE you have installed.
 
 ```text
-apps/ade-cli   the Brain, the ade command, and ade code
+apps/ade-cli   the Brain and the ade command
 apps/desktop   the desktop app (Electron)
 apps/ios       the iPhone app (SwiftUI)
 apps/web       ade-app.dev

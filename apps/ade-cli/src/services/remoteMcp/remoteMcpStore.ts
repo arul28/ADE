@@ -4,12 +4,15 @@ import { getErrorMessage, isEnoentError, writeTextAtomic } from "../../../../des
 import { securePrivatePath } from "../../lib/trustedWindowsTools";
 import type { AccountVaultStore } from "../account/accountVaultStore";
 import {
+  isRemoteMcpKnownApp,
   isRemoteMcpScope,
   type RemoteMcpConnectionKind,
   type RemoteMcpConnectionSummary,
+  type RemoteMcpKnownApp,
   type RemoteMcpScope,
 } from "../../../../desktop/src/shared/types/remoteMcp";
 import { isRemoteMcpMachineKey } from "./remoteMcpAccount";
+import { inferRemoteMcpAppFromRecord } from "./remoteMcpKnownApps";
 
 /**
  * The account's ADE MCP connections, kept in the account vault so a token
@@ -25,12 +28,14 @@ import { isRemoteMcpMachineKey } from "./remoteMcpAccount";
  * `readLegacyRemoteMcpFile` reads it once for the migration into the vault;
  * a connection copied from it keeps the computer it was made on
  * (`machineKey`), so it does not start reaching every computer of the account.
+ * An app that signs in on one computer's own address (`/m/<endpointKey>`)
+ * gets a connection kept to that computer the same way.
  */
 
 /**
  * The stored record: what Settings and the CLI see, plus the token's hash, for
  * an app which registration it signed in with, and for a connection made
- * before accounts the one computer it may reach.
+ * before accounts or on one computer's own address the one computer it may reach.
  */
 type RemoteMcpConnection = Omit<RemoteMcpConnectionSummary, "onlyMachine"> & {
   tokenHash: string;
@@ -51,7 +56,7 @@ const CONNECTION_KEY_PREFIX = "connection:";
 export const REMOTE_MCP_SAVE_FAILED = "ADE couldn't save this to your ADE account: the signed-in account changed. Try again.";
 
 /** The slice of the account vault ADE MCP uses. */
-export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync">;
+export type RemoteMcpVault = Pick<AccountVaultStore, "list" | "get" | "set" | "remove" | "sync" | "pendingKeys" | "health">;
 
 function hashRemoteMcpToken(token: string): string {
   return createHash("sha256").update(token, "utf8").digest("hex");
@@ -86,6 +91,12 @@ function parseConnection(value: unknown): RemoteMcpConnection | null {
     createdAt: typeof record.createdAt === "string" ? record.createdAt : new Date(0).toISOString(),
     lastUsedAt: typeof record.lastUsedAt === "string" ? record.lastUsedAt : null,
     redirectHost: typeof record.redirectHost === "string" ? record.redirectHost.slice(0, 253) : null,
+    // A record from before apps were recognised: from its host and label, when that is unambiguous.
+    app: isRemoteMcpKnownApp(record.app)
+      ? record.app
+      : record.kind === "app"
+        ? inferRemoteMcpAppFromRecord(typeof record.redirectHost === "string" ? record.redirectHost : null, typeof record.label === "string" ? record.label : "")
+        : null,
     ...(typeof record.clientKey === "string" && /^[a-f0-9]{64}$/.test(record.clientKey) ? { clientKey: record.clientKey } : {}),
     ...(isRemoteMcpMachineKey(record.machineKey) ? { machineKey: record.machineKey } : {}),
   };
@@ -198,15 +209,34 @@ export function createRemoteMcpStore(args: {
       label: string;
       scope: RemoteMcpScope;
       redirectHost?: string | null;
+      /** The app ADE recognised at sign-in. */
+      app?: RemoteMcpKnownApp | null;
       /**
-       * The app registration this sign-in came from. Signing in again with the
-       * same one replaces that connection, so an app that re-authorizes does
-       * not pile up rows (or fill the cap) with tokens it no longer uses.
+       * The app registration and return address this sign-in came from.
+       * Signing in again with the same one replaces that connection, so an
+       * app that re-authorizes does not pile up rows (or fill the cap) with
+       * tokens it no longer uses.
        */
       clientKey?: string;
+      /**
+       * The key a record made before return addresses were part of it carries
+       * (the registration alone). Such a record is replaced too when it came
+       * from the same host: apps that share one registration (Cursor's is used
+       * by Cursor, its cloud agents, Grok Bot and grok.com) differ by host.
+       */
+      legacyClientKey?: string;
+      /** The one computer the connection reaches (a sign-in on that computer's own address); absent for the account. */
+      machineKey?: string;
     }): { token: string; connection: RemoteMcpConnectionSummary } {
       const current = read();
-      const replaced = input.clientKey ? current.filter((entry) => entry.clientKey === input.clientKey) : [];
+      const replaced = input.clientKey
+        ? current.filter((entry) => entry.clientKey === input.clientKey
+          // Same reach only: a sign-in on one computer's address never
+          // replaces the app's account-wide connection, or the reverse.
+          || (input.legacyClientKey !== undefined && entry.clientKey === input.legacyClientKey
+            && entry.redirectHost === (input.redirectHost ?? null)
+            && (entry.machineKey ?? null) === (input.machineKey ?? null)))
+        : [];
       if (current.length - replaced.length >= MAX_REMOTE_MCP_CONNECTIONS) {
         throw new Error(
           `Your ADE account already has ${MAX_REMOTE_MCP_CONNECTIONS} ADE MCP connections. Remove one in Settings first.`,
@@ -223,8 +253,11 @@ export function createRemoteMcpStore(args: {
         createdAt: now().toISOString(),
         lastUsedAt: null,
         redirectHost: input.redirectHost ?? null,
+        app: input.app ?? null,
         ...(input.clientKey ? { clientKey: input.clientKey } : {}),
+        ...(input.machineKey && isRemoteMcpMachineKey(input.machineKey) ? { machineKey: input.machineKey } : {}),
       };
+      if (input.machineKey && !connection.machineKey) throw new Error("ADE couldn't tell which computer this connection is for.");
       save(connection);
       for (const old of replaced) drop(old.id);
       return { token, connection: summarize(connection) };

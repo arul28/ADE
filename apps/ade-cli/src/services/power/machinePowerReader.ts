@@ -215,6 +215,7 @@ function readLinuxPower(
     deps.readTextFile(path.posix.join(LINUX_POWER_SUPPLY_DIR, entry, file))?.trim() ?? null;
 
   let battery: MachineBattery | null = null;
+  let sawBattery = false;
   let batteryStatus = "";
   let mainsOnline: boolean | null = null;
   for (const entry of entries) {
@@ -227,11 +228,19 @@ function readLinuxPower(
       continue;
     }
     if (type !== "battery" || battery) continue;
-    const percent = normalizeBatteryPercent(Number(read(entry, "capacity")));
+    sawBattery = true;
+    // A missing or empty capacity file is unreadable, not 0%: Number(null) and
+    // Number("") are both 0.
+    const capacity = read(entry, "capacity");
+    const percent = capacity ? normalizeBatteryPercent(Number(capacity)) : null;
     if (percent === null) continue;
     batteryStatus = read(entry, "status")?.toLowerCase() ?? "";
     battery = { percent, charging: batteryStatus === "charging" };
   }
+  // A battery that is there but could not be read is not "no battery": say
+  // nothing, as the Windows reader does, so the last reading stands (and the
+  // monitor keeps polling at the battery rate).
+  if (sawBattery && !battery) return UNKNOWN_POWER;
   // With a battery present but no AC supply exposed, the battery's own status
   // is the only evidence: "Discharging" means we are off mains, and anything
   // else (charging, full, unknown) means we are not.

@@ -317,10 +317,11 @@ Do this separately for desktop and iOS.
 
 ### Desktop scope
 
-Find the latest public desktop release tag:
+Find the latest public stable desktop release tag (beta tags sort above their
+stable version, so filter them out):
 
 ```bash
-DESKTOP_LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | head -n 1)
+DESKTOP_LAST_TAG=$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)
 git diff --name-only "$DESKTOP_LAST_TAG..origin/main"
 ```
 

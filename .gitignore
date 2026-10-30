@@ -26,7 +26,6 @@ __pycache__/
 # Build outputs
 /apps/ade-cli/dist/
 /apps/ade-cli/dist-static/
-/apps/ade-code/dist/
 /apps/desktop/release/
 /apps/desktop/dist/
 
@@ -74,7 +73,6 @@ ios-signing/
 /.playwright-mcp
 /.codex-derived-data
 package-lock.json
-!/apps/ade-code/package-lock.json
 !/apps/webhook-relay/package-lock.json
 !/apps/push-relay/package-lock.json
 !/apps/tunnel-relay/package-lock.json

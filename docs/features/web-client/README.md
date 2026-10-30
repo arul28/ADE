@@ -895,8 +895,6 @@ Account connection and entry points:
 - `apps/desktop/src/shared/deeplinks.ts` - shared deeplink grammar layered
   under the web client's `/open` route.
 - `apps/ade-cli/src/commands/deeplinks.ts` - `ade link --web`.
-- `apps/ade-cli/src/tuiClient/deeplinkRow.ts` and
-  `apps/ade-cli/src/tuiClient/rightPaneFormatters.ts` - TUI web-link helpers.
 - `apps/desktop/src/renderer/components/lanes/LaneContextMenu.tsx` and
   `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx` /
   `SessionContextMenu.tsx` - desktop "Open in web" entry points.
@@ -939,7 +937,6 @@ Tests:
   startup shell, retired pairing route, account privacy, welcome-surface boot,
   and StrictMode lifecycle coverage.
 - `apps/ade-cli/src/commands/deeplinks.test.ts`.
-- `apps/ade-cli/src/tuiClient/__tests__/deeplinkKeybind.test.ts`.
 - `apps/ade-cli/src/services/sync/syncRemoteCommandService.test.ts`.
 
 ## Gotchas
@@ -1457,7 +1454,6 @@ URL contract.
 Entry points:
 
 - CLI: `ade link ... --web` in `apps/ade-cli/src/commands/deeplinks.ts`.
-- TUI: `buildWebClientUrlForRow` in `apps/ade-cli/src/tuiClient/deeplinkRow.ts`.
 - Desktop lanes: "Open in web" in `LaneContextMenu.tsx`.
 - Desktop sessions: "Open in web" in `TerminalsPage.tsx` /
   `SessionContextMenu.tsx`.

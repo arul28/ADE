@@ -53,7 +53,7 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   Sentry.init({
     dsn: resolveSentryDsn("brain", process.env),
     release: sentryReleaseName(version),
-    environment: resolveSentryEnvironment({ env: process.env, packaged }),
+    environment: resolveSentryEnvironment({ env: process.env, packaged, version }),
     dist: sentryDist(process.platform, process.arch),
     tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
     // Never add trace headers to provider, GitHub or other third-party requests.

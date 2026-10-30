@@ -1,12 +1,17 @@
 import {
   createAccountCacheStore,
   createStoreRegistry,
+  type AccountCacheHealth,
   type AccountCacheLogger,
   type AccountCacheSyncStatus,
 } from "./accountCacheStore";
+import { machineAccountStoreLogger } from "./accountCacheDiagnostics";
+import { uploadAccountItems } from "./accountCacheUpload";
 import type {
   AccountSettingRecord,
   AccountSettingWrite,
+  AccountStaleDelete,
+  AccountWriteResult,
 } from "../push/accountRelayRows";
 import type { AccountSettingsWriteOptions } from "../../../../desktop/src/shared/types/accountSettings";
 
@@ -35,6 +40,8 @@ const DEFAULT_SYNC_INTERVAL_MS = 30_000;
  * over it, so such a value is dropped from the queue instead of sent.
  */
 const MAX_UPLOAD_VALUE_CHARS = 16_000;
+/** The Worker's `MAX_SETTINGS_PER_WRITE`; a longer batch is refused whole (413). */
+const MAX_SETTINGS_PER_PUT = 200;
 
 /** Separator for the composite cache key. NUL cannot occur in either half. */
 const KEY_SEPARATOR = "\u0000";
@@ -59,6 +66,9 @@ type PendingWrite = {
   changedAt: string;
   /** Monotonic per cache; see `AccountCachePending` for why it is not a time. */
   seq: number;
+  /** Cache-owned; see `AccountCachePending`. */
+  queuedAt?: string;
+  parked?: { reason: string; at: string };
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -125,16 +135,27 @@ function splitCacheKey(composite: string): { scope: string; key: string } | null
 }
 
 export type AccountSettingsRelay = {
+  /**
+   * Where the relay lives (the push relay client's `baseUrl`). What the cache
+   * learned about the relay is kept against it, so a different relay is asked
+   * again.
+   */
+  baseUrl?: string;
   getAccountSettings(options?: { since?: string | null; scope?: string | null }): Promise<{
     settings: AccountSettingRecord[];
     cursor: string | null;
     truncated: boolean;
   } | null>;
+  /** `results` only from a relay that answers per item; see `AccountWriteResult`. */
   putAccountSettings(
     settings: AccountSettingWrite[],
     deviceId: string | null,
-  ): Promise<{ updatedAt: string | null } | null>;
-  deleteAccountSetting(scope: string, key: string): Promise<boolean | null>;
+  ): Promise<{ updatedAt: string | null; results?: AccountWriteResult<AccountSettingRecord>[] } | null>;
+  deleteAccountSetting(
+    scope: string,
+    key: string,
+    options?: { writtenAt?: string | null; deviceId?: string | null },
+  ): Promise<boolean | AccountStaleDelete<AccountSettingRecord> | null>;
 };
 
 export function createAccountSettingsStore(args: {
@@ -159,6 +180,7 @@ export function createAccountSettingsStore(args: {
     logger,
     defaultSyncIntervalMs: DEFAULT_SYNC_INTERVAL_MS,
     changeMarkKind: "settings",
+    now,
     events: {
       writeFailed: "account.settings_cache_write_failed",
       mutationDropped: "account.settings_mutation_dropped",
@@ -166,8 +188,11 @@ export function createAccountSettingsStore(args: {
       pullFailed: "account.settings_pull_failed",
       pullTruncated: "account.settings_pull_truncated",
       cacheEntryDropped: "account.settings_cache_entry_dropped",
+      itemsParked: "account.settings_items_parked",
+      writesSuperseded: "account.settings_writes_superseded",
     },
     hasRelay: () => args.relay !== null,
+    relayId: () => args.relay?.baseUrl ?? null,
     pendingMatches: (existing, write) =>
       existing.scope === write.scope && existing.key === write.key,
     pendingKey: (entry) => cacheKey(entry.scope, entry.key),
@@ -187,33 +212,28 @@ export function createAccountSettingsStore(args: {
         completedSeqs.push(entry.seq);
         return false;
       });
-      let uploadedAt: string | null = null;
-      if (writes.length) {
-        const result = await relay.putAccountSettings(
-          writes.map((entry) => ({
+      // One setting the Worker will not take is set aside on its own, never
+      // held against the rest of the batch.
+      return await uploadAccountItems<PendingWrite, AccountSettingRecord>({
+        groups: [writes],
+        deletes: pending.filter((entry) => entry.deleted),
+        maxBatch: MAX_SETTINGS_PER_PUT,
+        completedSeqs,
+        put: (batch) => relay.putAccountSettings(
+          batch.map((entry) => ({
             scope: entry.scope,
             key: entry.key,
             value: entry.value,
             changedAt: entry.changedAt,
+            writtenAt: entry.queuedAt ?? entry.changedAt,
           })),
           args.getDeviceId?.() ?? null,
-        );
-        // `null` means there was no token to ask with. The queue stays.
-        if (result === null) return null;
-        uploadedAt = result.updatedAt;
-        completedSeqs.push(...writes.map((entry) => entry.seq));
-      }
-      for (const entry of pending.filter((item) => item.deleted)) {
-        let deleted: boolean | null;
-        try {
-          deleted = await relay.deleteAccountSetting(entry.scope, entry.key);
-        } catch {
-          return { updatedAt: uploadedAt, completedSeqs };
-        }
-        if (deleted === null) return { updatedAt: uploadedAt, completedSeqs };
-        completedSeqs.push(entry.seq);
-      }
-      return { updatedAt: uploadedAt, completedSeqs };
+        ),
+        del: (entry) => relay.deleteAccountSetting(entry.scope, entry.key, {
+          writtenAt: entry.queuedAt ?? entry.changedAt,
+          deviceId: args.getDeviceId?.() ?? null,
+        }),
+      });
     },
     async pull(cursor) {
       const page = await args.relay!.getAccountSettings({ since: cursor });
@@ -338,6 +358,16 @@ export function createAccountSettingsStore(args: {
       return cache.startPeriodicSync(intervalMs, undefined, onRemoteRowsApplied);
     },
 
+    /** How this machine's settings sync is doing, without the network. */
+    health(): AccountCacheHealth {
+      return cache.health();
+    },
+
+    /** Also log to `logger`; see `getSharedAccountSettingsStore`. */
+    attachLogger(logger: AccountSettingsLogger): void {
+      cache.attachLogger(logger);
+    },
+
     /** Test seam; never used in production. */
     cachePathForTests(): string {
       return cache.cachePath;
@@ -357,7 +387,13 @@ export function getSharedAccountSettingsStore(
   adeDir: string,
   create: () => AccountSettingsStore,
 ): AccountSettingsStore {
-  return registry.get(adeDir, create);
+  return registry.get(adeDir, () => {
+    const store = create();
+    // Machine-shared: its failures belong in the machine's log, whoever built it.
+    const machineLogger = machineAccountStoreLogger(adeDir);
+    if (machineLogger) store.attachLogger(machineLogger);
+    return store;
+  });
 }
 
 /** Test seam: drops the singletons so one test cannot see another's store. */

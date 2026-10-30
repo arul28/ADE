@@ -12,6 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `@ade-dev/sdk` and `@ade-dev/chat-ui` are 0.7.0, with provider accounts and API credentials, isolated logins, queued messages, usage-limit events, and the single-turn `client.run()` helper.
 - **Breaking:** `useMachineLogin` now defaults to `false`. Set it to `true` to reuse the host machine's Claude or Codex login.
 
+## [1.2.127] - 2026-10-30
+
+### Desktop and web
+
+- Beta update track built from `main` every few hours; stable promotes a beta (#1971).
+- Tailscale HTTPS route, Settings › Account › Connections setup and a per-computer ADE Relay switch (#1964).
+- Branded Integrations pages for GitHub, Linear and Jira, with narrow-window fixes (#1967, #1968).
+- ADE MCP works as one account server with a setup page that names the failure (#1970); background jobs no longer start user MCP servers on six providers (#1972); Account banner GPU fix (#1969).
+- Removed ADE Code (`ade code`) and project notes (`ade notes`) (#1974, #1965).
+
 ## [1.2.126] - 2026-10-29
 
 ### Desktop and web
@@ -2798,7 +2808,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.126...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.127...HEAD
+[1.2.127]: https://github.com/arul28/ADE/compare/v1.2.126...v1.2.127
 [1.2.126]: https://github.com/arul28/ADE/compare/v1.2.125...v1.2.126
 [1.2.125]: https://github.com/arul28/ADE/compare/v1.2.124...v1.2.125
 [1.2.124]: https://github.com/arul28/ADE/compare/v1.2.123...v1.2.124

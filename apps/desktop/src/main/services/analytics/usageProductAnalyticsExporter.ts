@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
-import type { AdeUsageClientSurface } from "../../../shared/types";
+import { normalizeAdeUsageClientSurface } from "../../../shared/types";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 const DEFAULT_INITIAL_DELAY_MS = 45_000;
@@ -28,10 +28,6 @@ type UsageProductAnalyticsExporterArgs = {
   batchSize?: number;
   now?: () => number;
 };
-
-function isUsageSurface(value: string): value is AdeUsageClientSurface {
-  return ["desktop", "mobile", "tui", "web", "api"].includes(value);
-}
 
 function derivedEventId(baseId: string, suffix: string): string {
   const chars = createHash("sha256").update(`${baseId}:${suffix}`).digest("hex").slice(0, 32).split("");
@@ -131,14 +127,17 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
     if (rows.length === 0) return 0;
     const accepted: string[] = [];
     const suppressed: Array<{ id: string; reason: string }> = [];
+    // One activation attempt per pass, so rows after it keep their ingress budget.
+    let activationAttempted = false;
     for (const row of rows) {
-      if (!isUsageSurface(row.client_surface)) {
+      const surface = normalizeAdeUsageClientSurface(row.client_surface);
+      if (!surface) {
         suppressed.push({ id: row.id, reason: "invalid_surface" });
         continue;
       }
       const results = [args.analytics.capture({
         event: "ade_feature_used",
-        surface: row.client_surface,
+        surface,
         projectId: row.project_id,
         sessionId: row.session_id,
         clientEventId: row.id,
@@ -154,7 +153,7 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
       if (started) {
         results.push(args.analytics.captureInternal({
           event: started.event,
-          surface: row.client_surface,
+          surface,
           projectId: row.project_id,
           sessionId: row.session_id,
           clientEventId: derivedEventId(row.id, started.event),
@@ -166,6 +165,19 @@ export function createUsageProductAnalyticsExporter(args: UsageProductAnalyticsE
             source: "mutation",
           },
         }));
+        // Chat activation comes from a completed turn. An agent CLI has no
+        // turns ADE can see, so starting one is its activation; the service
+        // keeps ade_activated to one per installation either way.
+        if (started.feature === "cli" && !activationAttempted) {
+          activationAttempted = true;
+          args.analytics.captureInternal({
+            event: "ade_activated",
+            surface,
+            projectId: row.project_id,
+            sessionId: row.session_id,
+            properties: { trigger: "cli_session_started" },
+          });
+        }
       }
       if (results.some((result) => result.accepted)) {
         accepted.push(row.id);

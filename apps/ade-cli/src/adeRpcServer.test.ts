@@ -175,6 +175,10 @@ function createRuntime() {
       list: vi.fn(async () => laneRows),
       getCompareBase: vi.fn(() => "main"),
       ensurePrimaryLane: vi.fn(async () => laneRows[0]),
+      getPrimaryLane: vi.fn(() => {
+        const primary = laneRows.find((row) => row.laneType === "primary");
+        return primary ? { laneId: primary.id, worktreePath: primary.worktreePath, branchRef: primary.branchRef } : null;
+      }),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
         return lane.worktreePath;
@@ -1393,14 +1397,14 @@ describe("adeRpcServer", () => {
       id: 2,
       method: "app/navigate",
       params: {
-        source: "ade-code",
+        source: "cli",
         target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
       },
     });
 
     expect(result).toEqual({ ok: true, mode: "desktop", windowId: 7 });
     expect(navigate).toHaveBeenCalledWith({
-      source: "ade-code",
+      source: "cli",
       target: { kind: "lane", sessionId: "chat-1", laneId: "lane-1" },
     });
   });
@@ -1415,7 +1419,7 @@ describe("adeRpcServer", () => {
       id: 2,
       method: "app/navigate",
       params: {
-        source: "ade-code",
+        source: "cli",
         target: { kind: "work" },
       },
     });
@@ -1439,7 +1443,7 @@ describe("adeRpcServer", () => {
       id: 2,
       method: "app/navigate",
       params: {
-        source: "ade-code",
+        source: "cli",
         target: { kind: "lane" },
       },
     })).rejects.toMatchObject({
@@ -1464,7 +1468,7 @@ describe("adeRpcServer", () => {
         jsonrpc: "2.0",
         id: 3,
         method: "app/navigate",
-        params: { source: "ade-code", target: { kind: "file", path } },
+        params: { source: "cli", target: { kind: "file", path } },
       })).rejects.toMatchObject({
         code: JsonRpcErrorCode.invalidParams,
         message: "app/navigate target 'file' requires a repo-relative path.",
@@ -1477,12 +1481,12 @@ describe("adeRpcServer", () => {
       jsonrpc: "2.0",
       id: 4,
       method: "app/navigate",
-      params: { source: "ade-code", target: { kind: "file", path: "src/app.ts", line: 3 } },
+      params: { source: "cli", target: { kind: "file", path: "src/app.ts", line: 3 } },
     });
     expect(ok).toBeTruthy();
     expect(navigate).toHaveBeenCalledTimes(1);
     expect(navigate).toHaveBeenCalledWith({
-      source: "ade-code",
+      source: "cli",
       target: { kind: "file", path: "src/app.ts", line: 3 },
     });
   });
@@ -1498,7 +1502,7 @@ describe("adeRpcServer", () => {
       jsonrpc: "2.0",
       id: 5,
       method: "app/navigate",
-      params: { source: "ade-code", target: { kind: "commit", sha: "not-a-sha" } },
+      params: { source: "cli", target: { kind: "commit", sha: "not-a-sha" } },
     })).rejects.toMatchObject({ code: JsonRpcErrorCode.invalidParams });
     expect(navigate).not.toHaveBeenCalled();
 
@@ -1506,11 +1510,11 @@ describe("adeRpcServer", () => {
       jsonrpc: "2.0",
       id: 6,
       method: "app/navigate",
-      params: { source: "ade-code", target: { kind: "commit", sha: "ABC1234" } },
+      params: { source: "cli", target: { kind: "commit", sha: "ABC1234" } },
     });
     expect(ok).toBeTruthy();
     expect(navigate).toHaveBeenCalledWith({
-      source: "ade-code",
+      source: "cli",
       target: { kind: "commit", sha: "abc1234" },
     });
   });
@@ -4914,13 +4918,13 @@ describe("adeRpcServer", () => {
 
   });
 
-  it("records normalized ADE Code actions without recording terminal keystrokes", async () => {
+  it("records normalized terminal-client actions without recording terminal keystrokes", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(
       handler,
-      { callerId: "ade-code:test", role: "cto" },
-      { clientName: "ade-code" },
+      { callerId: "ade-cli:test", role: "cto" },
+      { clientName: "ade-cli" },
     );
 
     await callTool(handler, "run_ade_action", {
@@ -4952,14 +4956,14 @@ describe("adeRpcServer", () => {
       (call: unknown[]) => typeof call[0] === "string" && call[0].includes("insert into usage_events"),
     );
     expect(usageEventCalls).toHaveLength(1);
-    expect(usageEventCalls[0]?.[1]).toEqual(expect.arrayContaining(["tui", "lanes.delete", "lane"]));
+    expect(usageEventCalls[0]?.[1]).toEqual(expect.arrayContaining(["cli", "lanes.delete", "lane"]));
     expect(fixture.runtime.ptyService.writeTerminal).toHaveBeenCalledWith({
       terminalId: "session-1",
       data: "y\n",
     });
     expect(fixture.runtime.productAnalyticsService.capture).toHaveBeenCalledTimes(1);
     expect(fixture.runtime.productAnalyticsService.capture).toHaveBeenCalledWith(
-      expect.objectContaining({ surface: "tui", projectId: "project-1" }),
+      expect.objectContaining({ surface: "cli", projectId: "project-1" }),
     );
     expect(fixture.runtime.productAnalyticsService.flush).toHaveBeenCalledTimes(1);
   });
@@ -5143,7 +5147,7 @@ describe("adeRpcServer", () => {
       sessionId === "terminal-1" ? ownTerminal : null,
     );
     const userHandler = createAdeRpcRequestHandler({ runtime: userFixture.runtime, serverVersion: "test" });
-    await initialize(userHandler, { callerId: "ade-code:test", role: "cto" }, { clientName: "ade-code" });
+    await initialize(userHandler, { callerId: "ade-cli:test", role: "cto" }, { clientName: "ade-cli" });
     await callTool(userHandler, "run_ade_action", {
       domain: "terminal",
       action: "write",

@@ -152,7 +152,7 @@ describe("externalSessionDetail", () => {
     ]);
 
     const detail = await loadExternalSessionDetail({ provider: "claude", sessionId: "22222222-2222-4222-8222-222222222222" });
-    // `messages` keeps its old shape for iOS and the TUI.
+    // `messages` keeps its old shape for iOS.
     expect(detail.messages.at(-1)).toMatchObject({ role: "user", text: "question 149" });
     const events = detail.events ?? [];
     expect(events).toHaveLength(200);

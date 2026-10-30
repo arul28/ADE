@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import type { HostReachabilityReport } from "../shared/connectionDiagnosis";
 import type { NewLaneDefaults } from "../shared/laneStart";
+import { resolveUpdateTrackFromArgv, type UpdateTrack } from "../shared/updateTrack";
 import type {
   ProjectMoveAttention,
   ProjectMoveCleanupArgs,
@@ -285,6 +286,8 @@ import type {
   KeepAwakeSnapshot,
   RemoteMcpAction,
   AutoUpdateSnapshot,
+  TrackSwitchCheckResult,
+  UpdateTrackSwitchResult,
   UpdateImpact,
   UpdateInstallImpact,
   ClearLocalAdeDataArgs,
@@ -4608,6 +4611,8 @@ const adeBridge = {
       argv: process.argv,
       env: process.env,
     }),
+    // The running build's update track, synchronous for the header label.
+    updateTrack: resolveUpdateTrackFromArgv(process.argv),
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
@@ -14034,6 +14039,10 @@ const adeBridge = {
     return await ipcRenderer.invoke(IPC.remoteMcpCall, action, args ?? {}) as T;
   },
   updateCheckForUpdates: () => ipcRenderer.invoke(IPC.updateCheckForUpdates),
+  updateCheckTrackSwitch: (target: UpdateTrack): Promise<TrackSwitchCheckResult> =>
+    ipcRenderer.invoke(IPC.updateCheckTrackSwitch, target),
+  updateSwitchTrack: (target: UpdateTrack): Promise<UpdateTrackSwitchResult> =>
+    ipcRenderer.invoke(IPC.updateSwitchTrack, target),
   updateGetState: (): Promise<AutoUpdateSnapshot> =>
     ipcRenderer.invoke(IPC.updateGetState),
   updateGetPreferences: (): Promise<AutoUpdatePreferences> =>

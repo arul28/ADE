@@ -14,7 +14,7 @@ import { COLORS } from "../components/lanes/laneDesignTokens";
  * decide which history is most useful. Lower rank wins.
  */
 // The ordering rule itself lives in `shared/primaryPr.ts` so the CLI and the
-// TUI pick the same row as this badge. Re-exported here because these names
+// other surfaces pick the same row as this badge. Re-exported here because these names
 // were this module's API first, and every caller already imports them here.
 import { pickPrimaryPr } from "../../shared/primaryPr";
 export { pickPrimaryPr, primaryPrStateRank } from "../../shared/primaryPr";

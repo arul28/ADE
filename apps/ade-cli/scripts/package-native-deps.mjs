@@ -335,16 +335,6 @@ async function copyAgentSkills(bundleRoot) {
   await fs.cp(source, destination, { recursive: true });
 }
 
-async function copyBuiltTuiClient(bundleRoot) {
-  const source = path.join(packageRoot, "dist", "tuiClient", "cli.mjs");
-  if (!(await exists(source))) {
-    throw new Error("Missing built ADE Code TUI module. Run `npm run build` before packaging native runtime dependencies.");
-  }
-  const destination = path.join(bundleRoot, "tuiClient", "cli.mjs");
-  await fs.mkdir(path.dirname(destination), { recursive: true });
-  await fs.copyFile(source, destination);
-}
-
 async function chmodRuntimeExecutables(bundleRoot, target) {
   // Provider CLIs are fetched into the pinned tools cache, not launched from
   // this archive. node-pty's macOS helper is the only copied executable here.
@@ -403,7 +393,6 @@ async function main() {
       copied.push(packageName);
     }
   }
-  await copyBuiltTuiClient(bundleRoot);
   await copyAgentSkills(bundleRoot);
   await copyCrsqliteExtension(bundleRoot, args.target);
   await copyLinuxDesktopDriver(bundleRoot, args.target);

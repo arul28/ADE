@@ -1,6 +1,6 @@
 # ADE CLI
 
-`apps/ade-cli` owns the `ade` command, the ADE brain, manual runtime entry points, and the terminal `ade code` client. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, `ade code`, the iOS app, and SSH-attached desktops all attach to it. A **manual runtime** is an explicit foreground execution process you start for dev/test work instead of using the automated brain service.
+`apps/ade-cli` owns the `ade` command, the ADE brain, manual runtime entry points. The **brain** is the always-on, machine-owned ADE process for one channel; it is the source of truth for lanes, agent chats, work sessions, PR state, sync, proof artifacts, and the project catalog on a machine. Desktop ADE, the web client, the iOS app, and SSH-attached desktops all attach to it. A **manual runtime** is an explicit foreground execution process you start for dev/test work instead of using the automated brain service.
 
 ## Modes
 
@@ -8,7 +8,7 @@ The `ade` binary has three operating modes:
 
 - **Attached brain** — the ADE brain listens on `$ADE_HOME/sock/ade.sock` (POSIX) or `\\.\pipe\ade-runtime` (Windows). All other CLI commands and clients open that local endpoint and speak ADE JSON-RPC.
 - **Manual runtime** (`ade runtime run`) — a foreground execution process on an explicit endpoint. Sync is always off; use this for dev/test work when you do not want to use the automated stable/beta/alpha brain service. Add `--profile embedded` to run it as a guest of an external embedder (`@ade-dev/sdk`) — see [Internal process command](#internal-process-command).
-- **Headless** (`--headless` or `ade code --embedded`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
+- **Headless** (`--headless`) — the CLI builds an in-process `AdeRuntime` for one project and answers the same JSON-RPC surface directly. Used for one-shot commands and as a fallback when no machine brain is available.
 - **`ade rpc --stdio`** — attaches to the local machine brain and bridges its JSON-RPC over stdio. This is the transport the desktop's remote runtime feature spawns over SSH.
 
 Default routing for typed commands: prefer the machine brain endpoint if reachable; auto-start the brain when the endpoint does not exist; fall back to headless for commands that don't need shared live state. Add `--socket` to require a specific endpoint, or `--headless` to force in-process execution.
@@ -184,6 +184,8 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
+`ade brain update` follows the machine's update track (`~/.ade/update-track.json`): on Beta, "latest" is the build the Beta feed names, and it never falls back to Stable (or the reverse). A pinned `--version` is used as given. When the saved track and the running build's track differ (a switch that did not finish), "latest" is refused; finish the switch in ADE › Settings › About, or pass `--version`.
+
 The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade` (`ade.exe` on Windows), which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. On Windows, update stops the existing process before replacing the executable, restores the previous executable, native tree, and service if promotion fails, and delegates staging cleanup until the running helper exits so Windows file locks do not retain update payloads. Failed compensation reports and preserves the exact recovery files instead of silently discarding the rollback error. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
 ## Internal process command
@@ -193,7 +195,6 @@ To make your own runtime, run `ade runtime run` on an explicit endpoint. Sync is
 ```bash
 ADE_HOME=/tmp/ade-dev-runtime ade runtime run --socket /tmp/ade-dev-runtime.sock
 ade --socket /tmp/ade-dev-runtime.sock projects list --text
-ade code --socket /tmp/ade-dev-runtime.sock
 ```
 
 `--profile embedded` marks the runtime a guest inside an external embedder's process — it is what `@ade-dev/sdk` spawns. `embedded` is the only profile the flag accepts; anything else is a usage error rather than a silent fall back to the full runtime. The profile reshapes the machine chat scope (personal chats only, no automations, sync off) and withholds machine-update/power controls, because a guest must never restart the machine's ADE out from under its host. Project scopes still build on demand, so an embedder that registers a project keeps a working project surface. Set `ADE_EMBEDDED_PARENT_PID` to the host's pid and the runtime shuts itself down if that process dies without unwinding (`SIGKILL`, a crashed host); without it the runtime logs `runtime.embedded_parent_watchdog_absent` and runs on.
@@ -257,13 +258,22 @@ The ADE brain owns a per-machine project catalog at `$ADE_HOME/projects.json` (`
 Manage the registry through typed CLI commands:
 
 ```bash
-ade projects list --text
+ade projects list --text           # hides projects whose folder is gone; --include-missing shows them
 ade projects add /path/to/project
+ade projects clone owner/repo      # clone with this computer's GitHub sign-in, then register it
+ade projects clone <url> --path '~/work' --machine "Mac Studio"   # on another computer; quote ~ so your shell leaves it for that computer
+ade projects prune --dry-run       # registry entries whose folder is gone (never folders)
 ade projects remove project_abc123…
 ade projects touch project_abc123…
 ade init                           # adds the cwd as a project
 ade init /path/to/project          # adds an explicit path
 ```
+
+A folder on a drive that is not connected (an unplugged `/Volumes/…`
+disk, a missing drive letter or share, an unmounted `/mnt` mount point) counts
+as unknown, never gone, so `prune` keeps it. `projects clone` without `--path`
+clones beside the other projects; a `--path` sent to another computer must be
+absolute there (a leading `~` means that computer's home).
 
 …or call the same JSON-RPC methods directly:
 
@@ -422,22 +432,11 @@ that account and are removed on sign-out or account switch. Direct PIN, SSH, and
 explicit-address pairings remain local and are not converted into account-owned
 records when the user later signs in.
 
-## `ade code`
-
-`ade code` launches the terminal-native ADE Work chat (Ink + React, in `src/tuiClient/`). Default behavior:
+## `ade machines connect`
 
 ```bash
-ade code                           # attach to the machine brain, auto-spawn it if missing
-ade code --embedded                # force the in-process embedded runtime
-ade code --print-state             # smoke-test the connection and exit
-ade code remote --target mac --project ADE
-                                   # attach to a saved paired or SSH remote machine
-ade code remote --target mac --route tailscale --project ADE
-                                   # require a paired Tailscale path; auto also tries LAN then Relay
-ade code remote session --target mac --project ADE --session chat-1
-                                   # open a remote chat or provider CLI terminal session
 ade login                          # sign in to the shared ADE account
-ade machines list --text          # list account machines: dial status, plus a
+ade machines list --text           # list account machines: dial status, plus a
                                    # presence column (Connected/Online/Asleep/
                                    # Offline and battery or wall power)
 ade machines rename <machine-key> "Build Mac"
@@ -449,32 +448,27 @@ ade machines remove <machine-key> --confirm REMOVE
                                    # clears the Activity it published
 ade machines reconnect             # re-pair THIS machine after it was removed
                                    # from the account, and lift the push gate
-ade machines connect <machine-key> --project ADE
-                                   # pair if needed, then open ADE Code on that machine
-ade --socket /path/to/ade.sock code   # attach to a specific local endpoint
-ade --project-root /repo code      # bind to a specific project root
+ade machines connect <machine-key|device-id|name>
+                                   # pair and save the account machine on this install
 ```
 
-`ade code remote` reads the same saved remote-machine registry as desktop ADE,
-then uses the target's declared transport. Paired targets connect through the
-DPoP-bound sync runtime bridge; SSH targets start `ade rpc --stdio` over a
-validated SSH route. Relay routes are available only while both machines are
-signed into the same ADE account; direct LAN and tailnet routes remain usable
-signed out. Interactive launches always show the machine picker, even when
-only one target is saved; scripts can continue selecting a single saved target
-implicitly or pass `--target`. Paired targets use LAN → Tailscale → Relay
-failover by default. `--route lan`, `--route tailscale`, and `--route relay`
-constrain the connection to one path and never silently downgrade to SSH.
-Account-created targets are paired-only, are removed when their
-account signs out or switches, and fail closed instead of falling back to SSH
-or a plaintext address. Legacy account machines
-that desktop ADE saved as uncredentialed SSH targets are adopted into the same
-paired store before launch; if the account directory cannot verify that legacy
-shape, ADE fails closed instead of attempting SSH. Explicit SSH targets keep
-their saved host alias so OpenSSH can apply its `Host`-scoped user, identity,
-agent, and proxy settings
-while ADE changes only the concrete route. Route/runtime probing shares one
-bounded, cancellable connection deadline and reports the attempted failures.
+`ade machines connect` pairs the machine if needed, saves it on this install so
+ADE desktop and the web client can open it, and prints the result. It does not
+open a terminal UI.
+
+Paired targets connect through the DPoP-bound sync runtime bridge; SSH targets
+start `ade rpc --stdio` over a validated SSH route. Relay routes are available
+only while both machines are signed into the same ADE account; direct LAN and
+tailnet routes remain usable signed out. Paired targets use LAN → Tailscale →
+Relay failover by default. Account-created targets are paired-only, are removed
+when their account signs out or switches, and fail closed instead of falling
+back to SSH or a plaintext address. Legacy account machines that desktop ADE
+saved as uncredentialed SSH targets are adopted into the same paired store; if
+the account directory cannot verify that legacy shape, ADE fails closed instead
+of attempting SSH. Explicit SSH targets keep their saved host alias so OpenSSH
+can apply its `Host`-scoped user, identity, agent, and proxy settings while ADE
+changes only the concrete route. Route/runtime probing shares one bounded,
+cancellable connection deadline and reports the attempted failures.
 After a true SSH connection initializes, desktop ADE runs the internal
 `ade sync pair-device --json-stdin` command on that exact selected channel home
 to exchange the controller's DPoP identity for a normal paired-machine secret.
@@ -482,14 +476,6 @@ The JSON request is bounded and never appears in argv. A packaged Beta runtime
 that uploads successfully but cannot initialize does not end the attempt: ADE
 probes Stable and the other channel homes, retains the first compatible home,
 and uses that same home for `pair-device` and all follow-up commands.
-The launcher bridges the selected transport back into the normal TUI with
-`--remote`, `--remote-label`, `--require-socket`, remote project roots, and an
-optional `--session` hint. Use `--list-targets`, `--list-projects`, and
-`--list-sessions` for non-interactive discovery.
-
-**Browser mirror (dev):** from the repo root, `npm run dev:code:web` runs **one** `ade code` in a **single PTY** and mirrors that TTY to the browser (xterm). Use Cursor’s browser tools against that page like any other local URL. This is not the same as running `ade code` in a terminal app **and** in the browser at once—that would be two separate processes.
-
-See `docs/features/ade-code/README.md` for the full attach/embedded handshake, slash command catalog, and right-pane drawers.
 
 ## `ade rpc --stdio`
 
@@ -532,8 +518,7 @@ ade machines list --text                           # includes presence: asleep/o
 ade machines rename <machine-key> "Build Mac"      # or --clear to fall back to the hostname
 ade machines remove <machine-key> --confirm REMOVE # revoke a machine and clear its Activity
 ade machines reconnect                             # re-pair THIS machine after it was removed
-ade machines connect <machine-key> --project ADE
-ade machines hop <device-id> --session chat-1
+ade machines connect <machine-key|device-id|name>
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
 ade report-issue --text                           # print a redacted diagnostic report + a prefilled GitHub issue URL (local files only; no brain needed)
@@ -718,8 +703,6 @@ ade chat fork session-id --model openai/gpt-5.6-sol --through-turn turn-id   # k
 ade chat side session-id "why Redis?"                             # ask the chat's read-only side chat (opens it when there is none); it sends to the main chat only when asked
 ade chat side session-id --end                                    # end (delete) the chat's side chat
 ade chat models --provider codex --json                          # model order + supported reasoning tiers
-ade code
-ade code --embedded
 ade tests run --lane lane-id --suite unit --wait
 ade proof list --arg ownerKind=chat --arg ownerId=session-id
 ade proof attach shots/result.png --caption "Checkout complete"
@@ -979,8 +962,7 @@ actions do not. `ai.piLoginStart` blocks until a human finishes Pi's own browser
 or device-code flow, and any prompt it raises is answered by a *second* call
 (`ai.piLoginSubmit`) carrying a `requestId` that only appears on the
 `piAuthStatus` runtime event — so the workflow is two processes plus an event
-drain, not one command. From a terminal the shorter path is `ade code`'s
-`/login`, which drops into `pi` and uses Pi's native interactive sign-in.
+drain, not one command.
 
 Three details when driving it through `ade actions run` anyway. The `piLogin`
 start/submit/cancel actions are CTO-only, so they need `--role cto`;
@@ -1111,7 +1093,7 @@ publisher lives in the brain, **the brain must keep running for the machine to
 stay reachable** — which is what the service step guarantees. The directory
 also marks a machine `online` only within a 90s `last_seen_at` window.
 
-An ADE account is required for shared account features; local `ade code`, project,
+An ADE account is required for shared account features; local `ade` CLI, project,
 lane, and PIN workflows already on this machine remain available while signed
 out. `ade login` uses Clerk OAuth with a local
 loopback callback when a browser is available. `--headless`, SSH sessions, and
@@ -1139,7 +1121,7 @@ separate and are read from their existing secure stores.
 status row (`ok` / `warn` / `fail`) per check. It exits non-zero when any row is
 `fail`. The rows are:
 
-- **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest known version. Latest-known comes from the on-disk `update-status.json` by default; pass `--online` to also fetch the latest release from GitHub (short timeout, best-effort). `warn` when the install is behind or missing.
+- **App** — the installed ADE desktop version (read from the `.app` bundle on disk) against the latest build on its track. With `--online` (short timeout, best-effort), latest comes from the Beta feed for a Beta install and from the latest GitHub release otherwise. Without it, or when that read fails, the on-disk `update-status.json` (the last `ade brain update`) counts only while it is newer than the installed app and on the same track. `warn` when the install is behind or missing.
 - **Brain** — whether the machine brain responds on its socket, plus its version, pid, and uptime. `fail` when it is not responding or when its build identity does not match the expected runtime for this CLI/role. A brain that is not answering *yet* is reported as `warn` (`starting`) rather than `fail`: when the login service is registered and the brain process behind it is alive and younger than the young-brain window (`RUNTIME_SERVICE_YOUNG_BRAIN_MS`, 2 min), it is still coming up — first launch, cold disk, large project database — and restarting it would only reset its clock. This is the CLI's read of the same `brain_starting` state the desktop recovery screen shows; `ade runtime status` and `ade brain status` report it as a `starting: true` field with the same wording. Nothing to repair: keep waiting for the endpoint.
 - **Wedge history** — the last wedge that was recovered, read from the runtime dir or the brain's reported `lastWedge`. `warn` when the most recent wedge is within the last 24h. Two things write that record: the in-process loop watchdog (reported as the blocking command and how long it blocked) and the external watchdog (`ade runtime watchdog-check`), which stops a brain whose heartbeat has gone stale and is reported as how long the brain went without a beat. A brain that is wedged right now shows up as a failing **Brain** row; the heartbeat itself has no separate row because a stale heartbeat plus a live brain is exactly what the watchdog converts into a restart within a minute.
 - **Sync port** — the sync host port the brain bound. `ok` on the default port, `warn` when bound elsewhere (with the base-port holders it found), `fail` when the brain is up but reported no port.
@@ -1243,7 +1225,6 @@ The installed `ade` command is the production CLI. Repository development uses r
 ```bash
 npm run setup
 npm run dev:desktop
-npm run dev:code
 npm run dev:runtime
 npm run dev:stop
 ```
@@ -1256,8 +1237,7 @@ The dev scripts run the same ADE runtime from source against a temporary endpoin
 
 From an ADE lane checkout under `.ade/worktrees/`, the dev scripts keep using
 that lane's source code, but default the ADE project root back to the primary
-checkout. `npm run dev:code` also passes the lane checkout as the workspace root
-so initial lane selection matches `ade code` launched directly from the lane.
+checkout.
 
 Full matrix:
 
@@ -1265,10 +1245,8 @@ Full matrix:
 npm run dev:desktop          # desktop only; dev endpoint; desktop may auto-create runtime
 npm run dev:desktop:attach   # desktop only; fail unless dev runtime is already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
-npm run dev:code             # terminal TUI only; starts dev runtime if missing
-npm run dev:code:attach      # terminal TUI only; fail unless dev runtime is already running
 npm run dev:runtime          # runtime only in the foreground
-npm run dev:all              # start shared dev runtime, then use attach commands in separate terminals
+npm run dev:all              # start shared dev runtime, then run `npm run dev:desktop:attach`
 npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
@@ -1277,10 +1255,9 @@ Local packaged builds are separate from dev-mode scripts:
 
 ```bash
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
-npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
 
-Use these when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`; beta fetches `origin/main`, fast-forwards the local `main` checkout when possible, and writes artifacts under `apps/desktop/release-beta`. Use the dev scripts when you want Vite/Electron live reload, the temp dev endpoint, and the dev-only Electron profile. Local channel packages include the current machine's runtime binary. GitHub release builds use and validate the full cross-platform runtime artifact set.
+Use it when you want a production-shaped local app without going through the GitHub release workflow. Alpha builds from the current checkout under `apps/desktop/release-alpha`. Beta is not a local build: it is an update track of the normal install, built from `main` by `.github/workflows/beta.yml`. Use the dev scripts when you want Vite/Electron live reload, the temp dev endpoint, and the dev-only Electron profile. Local channel packages include the current machine's runtime binary. GitHub release builds use and validate the full cross-platform runtime artifact set.
 
 ## Automations
 

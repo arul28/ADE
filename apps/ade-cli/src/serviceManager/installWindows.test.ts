@@ -225,12 +225,12 @@ describe("Windows background service helpers", () => {
     env: {
       ELECTRON_RUN_AS_NODE: "1",
       NODE_PATH: "C:\\Program Files\\ADE\\resources\\ade-cli\\node_modules",
-      ADE_HOME: "C:\\Users\\arul\\.ade-beta",
-      ADE_PACKAGE_CHANNEL: "beta",
+      ADE_HOME: "C:\\Users\\arul\\.ade-alpha",
+      ADE_PACKAGE_CHANNEL: "alpha",
     },
   };
   const taskUser = "ADEBOX\\arul";
-  const serviceName = "com.ade.runtime.beta";
+  const serviceName = "com.ade.runtime.alpha";
   const taskName = resolveWindowsTaskName({ serviceName, userName: taskUser });
   const readyPidRecord = {
     supervisorPid: 1234,
@@ -252,7 +252,7 @@ describe("Windows background service helpers", () => {
   function taskActionOutput(execute: string, argumentsText: string): string {
     return [execute, argumentsText].join(WINDOWS_TASK_ACTION_FIELD_SEPARATOR);
   }
-  // A legacy `ADE Runtime` task that this Beta install created before the
+  // A legacy `ADE Runtime` task that this Alpha install created before the
   // channel-scoped naming scheme existed.
   const ownLegacyAction = taskActionOutput(
     "C:\\Program Files\\ADE\\ade.exe",
@@ -283,7 +283,7 @@ describe("Windows background service helpers", () => {
         "-ExecutionPolicy",
         "Bypass",
         "-File",
-        "C:\\Users\\arul\\.ade-beta\\runtime\\brain-service.ps1",
+        "C:\\Users\\arul\\.ade-alpha\\runtime\\brain-service.ps1",
       ],
     });
 
@@ -380,28 +380,28 @@ describe("Windows background service helpers", () => {
       serviceName: "com.ade.runtime",
       userName: "ADEBOX\\arul",
     });
-    const betaArul = resolveWindowsTaskName({
-      serviceName: "com.ade.runtime.beta",
+    const alphaArul = resolveWindowsTaskName({
+      serviceName: "com.ade.runtime.alpha",
       userName: "ADEBOX\\arul",
     });
-    const betaOtherUser = resolveWindowsTaskName({
-      serviceName: "com.ade.runtime.beta",
+    const alphaOtherUser = resolveWindowsTaskName({
+      serviceName: "com.ade.runtime.alpha",
       userName: "ADEBOX\\other",
     });
 
     expect(stableArul).toMatch(/^ADE Runtime \(stable-[a-f0-9]{12}\)$/);
-    expect(betaArul).toMatch(/^ADE Runtime \(beta-[a-f0-9]{12}\)$/);
-    expect(new Set([stableArul, betaArul, betaOtherUser])).toHaveLength(3);
+    expect(alphaArul).toMatch(/^ADE Runtime \(alpha-[a-f0-9]{12}\)$/);
+    expect(new Set([stableArul, alphaArul, alphaOtherUser])).toHaveLength(3);
     expect(resolveWindowsTaskName({
-      serviceName: "com.ade.runtime.beta",
+      serviceName: "com.ade.runtime.alpha",
       userName: "adebox\\ARUL",
-    })).toBe(betaArul);
+    })).toBe(alphaArul);
   });
 
   it("resolves service identity from the command channel at operation time", async () => {
     expect(resolveRuntimeServiceName({})).toBe("com.ade.runtime");
-    expect(resolveRuntimeServiceName({ ADE_PACKAGE_CHANNEL: "beta" })).toBe(
-      "com.ade.runtime.beta",
+    expect(resolveRuntimeServiceName({ ADE_PACKAGE_CHANNEL: "alpha" })).toBe(
+      "com.ade.runtime.alpha",
     );
     const calls: Array<{ command: string; args: string[] }> = [];
     const result = await installWindowsService({
@@ -419,7 +419,7 @@ describe("Windows background service helpers", () => {
       userName: taskUser,
     });
 
-    expect(result.serviceName).toBe("com.ade.runtime.beta");
+    expect(result.serviceName).toBe("com.ade.runtime.alpha");
     expect(result.path).toBe(taskName);
   });
 
@@ -449,9 +449,9 @@ describe("Windows background service helpers", () => {
       env: {
         ELECTRON_RUN_AS_NODE: "1",
         NODE_PATH: "C:\\ADE deps\\100% & O'Brien",
-        ADE_HOME: "C:\\Users\\arul\\.ade-beta",
+        ADE_HOME: "C:\\Users\\arul\\.ade-alpha",
       },
-    }, { pidPath: "C:\\Users\\arul\\.ade-beta\\runtime\\brain.pid.json" });
+    }, { pidPath: "C:\\Users\\arul\\.ade-alpha\\runtime\\brain.pid.json" });
 
     expect(script).toContain(
       "[System.Environment]::SetEnvironmentVariable('ELECTRON_RUN_AS_NODE', '1', 'Process')",
@@ -648,7 +648,7 @@ describe("Windows background service helpers", () => {
       command: serviceCommand,
       launcherPath,
       pidRecord: readyPidRecord,
-      socketPath: expect.stringMatching(/^\\\\\.\\pipe\\ade-runtime-beta-/),
+      socketPath: expect.stringMatching(/^\\\\\.\\pipe\\ade-runtime-alpha-/),
     }));
     const scheduledCommand = renderWindowsCommand({
       command: windowsPowerShellCommand(),
@@ -1759,9 +1759,9 @@ describe("Windows background service helpers", () => {
 
   it("derives the launcher path from the channel-local ADE home", () => {
     expect(resolveWindowsServiceLauncherPath({
-      env: { ADE_HOME: "C:\\Users\\arul\\.ade-beta" },
+      env: { ADE_HOME: "C:\\Users\\arul\\.ade-alpha" },
       serviceName,
-    })).toMatch(/^C:\\Users\\arul\\\.ade-beta\\runtime\\brain-service-[a-f0-9]{12}\.ps1$/i);
+    })).toMatch(/^C:\\Users\\arul\\\.ade-alpha\\runtime\\brain-service-[a-f0-9]{12}\.ps1$/i);
   });
 });
 
@@ -1771,7 +1771,7 @@ describe("Windows runtime supervisor", () => {
       command: "C:\\Program Files\\ADE\\ade.exe",
       args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
     }, {
-      pidPath: "C:\\Users\\arul\\.ade-beta\\runtime\\brain.pid.json",
+      pidPath: "C:\\Users\\arul\\.ade-alpha\\runtime\\brain.pid.json",
       initialRestartDelayMs: 250,
       maxRestartDelayMs: 5_000,
       healthyRuntimeMs: 30_000,

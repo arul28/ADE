@@ -90,6 +90,25 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertFalse(sink.events.contains { $0.name == "ade_mobile_error" })
   }
 
+  func testFirstOpenRidesOnTheFirstAppOpenOfANewInstallOnly() throws {
+    let (analytics, sink, _) = makeAnalytics()
+
+    analytics.captureAppOpened(.coldStart, distribution: .testFlight)
+    analytics.captureAppOpened(.foreground, distribution: .testFlight)
+
+    let opens = sink.events.filter { $0.name == "ade_mobile_app_opened" }
+    XCTAssertEqual(opens.count, 2)
+    XCTAssertEqual(opens[0].properties["first_open"] as? Bool, true)
+    XCTAssertEqual(opens[0].properties["distribution"] as? String, "testflight")
+    XCTAssertNil(opens[1].properties["first_open"])
+
+    // An install that counted events under an earlier build is not new.
+    let (upgraded, upgradedSink, upgradedDefaults) = makeAnalytics()
+    upgradedDefaults.set(Data("{}".utf8), forKey: "ade.analytics.daily-budget.v2")
+    upgraded.captureAppOpened(.coldStart, distribution: .appStore)
+    XCTAssertNil(try XCTUnwrap(upgradedSink.events.first).properties["first_open"])
+  }
+
   func testScreenViewIsDeduplicatedWithinForegroundAndCanRepeatNextForeground() {
     let (analytics, sink, _) = makeAnalytics()
 
@@ -296,7 +315,7 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     ])
   }
 
-  func testDirectIdentifyLinksAnonymousHistoryWithoutSendingRawAccountData() throws {
+  func testDirectIdentifyLinksAnonymousHistoryAndSetsTheClerkIdOnThePerson() throws {
     let defaults = makeDefaults()
     let factory = ProductAnalyticsTestTransportFactory()
     let sink = DirectPostHogProductAnalyticsSink(
@@ -325,8 +344,9 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(identifyProperties["$anon_distinct_id"] as? String, anonymousID)
     XCTAssertEqual(identifyProperties["$geoip_disable"] as? Bool, true)
     XCTAssertNil(identifyProperties["email"])
-    XCTAssertFalse(String(data: try XCTUnwrap(requests[1].httpBody), encoding: .utf8)?.contains("user_123") == true)
+    // The Clerk id lives only on the person, never as the distinct id.
     let setProperties = try XCTUnwrap(identifyProperties["$set"] as? [String: Any])
+    XCTAssertEqual(setProperties["clerk_user_id"] as? String, "user_123")
     XCTAssertEqual(setProperties["plan"] as? String, "free")
     XCTAssertEqual(setProperties["platform"] as? String, "ios")
     XCTAssertNotNil(setProperties["app_version"] as? String)
@@ -420,6 +440,8 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
       "source",
       "surface",
       "platform",
+      "client",
+      "interactive",
       "$process_person_profile",
       "$geoip_disable",
     ]))
@@ -551,6 +573,8 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
         "screen",
         "surface",
         "platform",
+        "client",
+        "interactive",
         "$process_person_profile",
         "$geoip_disable",
       ])
@@ -558,6 +582,8 @@ final class ProductAnalyticsPolicyTests: XCTestCase {
     XCTAssertEqual(properties["screen"] as? String, "work")
     XCTAssertEqual(properties["surface"] as? String, "mobile")
     XCTAssertEqual(properties["platform"] as? String, "ios")
+    XCTAssertEqual(properties["client"] as? String, "ios")
+    XCTAssertEqual(properties["interactive"] as? Bool, true)
     XCTAssertEqual(properties["$process_person_profile"] as? Bool, false)
     XCTAssertEqual(properties["$geoip_disable"] as? Bool, true)
   }
@@ -701,7 +727,7 @@ private final class ProductAnalyticsTestSink: ProductAnalyticsSink {
     actions.append(.capture(event))
   }
 
-  func identify(userHash: String) {
+  func identify(userHash: String, accountId _: String) {
     identities.append(userHash)
     actions.append(.identify(userHash))
   }

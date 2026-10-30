@@ -1,6 +1,6 @@
 /** Shared formatting utilities for the renderer. */
 
-// Lives in shared so main-process and ADE Code text can use the same sizes.
+// Lives in shared so main-process and renderer text can use the same sizes.
 export { formatBytes } from "../../shared/formatting";
 
 /** Returns a compact relative time label (e.g. "now", "2m", "1h", "3d") for sidebar cards. */

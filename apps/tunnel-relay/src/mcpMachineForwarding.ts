@@ -9,6 +9,7 @@ import {
   MCP_MAX_REQUEST_BYTES,
   MCP_UNDELIVERED_HEADER,
   mcpErrorResponse,
+  type McpUndeliveredReason,
   readBytesCapped,
 } from "./relayShared";
 
@@ -36,7 +37,13 @@ const MCP_FORWARDED_REQUEST_HEADERS = [
   // Set by a brain that forwards a call to another computer on the account; the
   // target refuses a second hop and logs it. A client's copy only stops forwarding.
   "x-ade-mcp-via",
+  // Set with x-ade-mcp-via: the forwarded call's id, so a target that already
+  // ran it (the forwarder retried after a lost answer) does not run it twice.
+  "x-ade-mcp-call-id",
 ];
+/** Headers with a tighter cap than the 8 KiB default; a longer value is dropped. */
+const MCP_FORWARDED_HEADER_MAX_CHARS: Record<string, number> = { "x-ade-mcp-call-id": 128 };
+const MCP_FORWARDED_HEADER_DEFAULT_MAX_CHARS = 8_192;
 const MCP_RETURNED_RESPONSE_HEADERS = new Set([
   "content-type",
   "cache-control",
@@ -99,7 +106,7 @@ export async function forwardMcp(
   if (path.length > MCP_MAX_PATH_CHARS) return mcpErrorResponse(414, "uri_too_long", "Request address too long.");
   // On the account address, a refusal the brain never saw tells the Worker
   // it may try the account's next computer.
-  const undelivered = (reason: "offline" | "ade_mcp_off"): Record<string, string> => (
+  const undelivered = (reason: McpUndeliveredReason): Record<string, string> => (
     mount ? { [MCP_UNDELIVERED_HEADER]: reason } : {}
   );
   if (!control) {
@@ -115,7 +122,9 @@ export async function forwardMcp(
   // this socket) does not answer for it.
   if (mount && control.accountKey !== mount.key) {
     onStaleAccount?.(mount.key);
-    return mcpErrorResponse(404, "ade_mcp_off", "ADE MCP is off for this account on that computer.", undelivered("ade_mcp_off"));
+    // Not "off": this computer serves another account (or none), which is what
+    // an address left behind by a changed account secret looks like.
+    return mcpErrorResponse(404, "ade_mcp_off", "That computer is not on this ADE MCP address.", undelivered("not_member"));
   }
   const now = Date.now();
   if (now - fwd.windowStart >= 60_000) {
@@ -140,7 +149,8 @@ export async function forwardMcp(
   const headers: Record<string, string> = {};
   for (const name of MCP_FORWARDED_REQUEST_HEADERS) {
     const value = request.headers.get(name);
-    if (value !== null && value.length <= 8_192) headers[name] = value;
+    const max = MCP_FORWARDED_HEADER_MAX_CHARS[name] ?? MCP_FORWARDED_HEADER_DEFAULT_MAX_CHARS;
+    if (value !== null && value.length <= max) headers[name] = value;
   }
   const socket = control.socket;
   const rid = generateConnectionId();

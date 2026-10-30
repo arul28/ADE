@@ -1,7 +1,7 @@
 # Deeplinks
 
 Deeplinks are the shared URL contract that lets every ADE surface — desktop,
-ADE Code TUI, iOS, the marketing site, and external tools (Linear, GitHub
+iOS, the marketing site, and external tools (Linear, GitHub
 PR descriptions, chat apps) — point at the same lane, work session, branch, PR, or Linear
 issue. Two forms carry identical semantics:
 
@@ -208,17 +208,6 @@ ADE CLI — outbound + inbound:
   that `adeUrl` in final handoffs; if a PR was adopted through another
   path, `ade link pr <owner/repo> <number> --no-clipboard` mints the
   same URL.
-- `apps/ade-cli/src/tuiClient/deeplinkRow.ts` — pure helper used by the
-  TUI's `Ctrl+Y` keybinding. Resolves the focused row (lane / PR) to a
-  canonical `ade://` URL, including parsing GitHub PR URLs to lift
-  owner/repo/number when the right-pane only carries the URL.
-  `buildWebClientUrlForRow` in the same file resolves the focused row to
-  the hosted web-client form (`https://app.ade-app.dev/open?...`) instead.
-- `apps/ade-cli/src/tuiClient/keybindings/index.ts` — registers
-  `copy_deeplink` so `Ctrl+Y` over a highlighted lane or PR row builds
-  and copies the `ade://` link via `tuiClient/app.tsx`. The bindable
-  action set also includes `app:copyAdeWebLink`, which copies the
-  web-client form of the focused row instead.
 
 Apps/web — landing page + OG unfurl:
 
@@ -302,7 +291,7 @@ Send-to-Mac:
 | `ade://open/<place>` | `{ kind: "open", place }` | A page from `shared/openPlaces.ts` (PRs, Lanes, History, Connections…). No https form, and the protocol handler refuses it: it runs only from a click on its chip in a chat. |
 
 Validation lives in one place (`shared/deeplinks.ts`) so the parser, the
-TUI builders, and the web `/open` handler agree on what counts as
+builders, and the web `/open` handler agree on what counts as
 malformed.
 
 ## Portable envelopes and the resolution ladder
@@ -359,7 +348,6 @@ without loading full history.
                       ┌────────────────────────────────────────────┐
                       │ Producer                                    │
                       │   - ade link …            (CLI clipboard)   │
-                      │   - Ctrl+Y in ade code    (TUI copy)        │
                       │   - PR description footer (auto-rendered)   │
                       │   - Linear attachment     (post on lane)    │
                       │   - iOS share / chat app                    │
@@ -411,14 +399,14 @@ with the PR link included.
 Agent closeout still includes explicit links. `ade prs create` and the
 private `create_pr_from_lane` action return both `githubUrl` and
 `adeUrl` when available, and the text formatter prints them as separate
-rows. The GitHub PR body footer is automatic, but the final chat or TUI
+rows. The GitHub PR body footer is automatic, but the final chat
 handoff should still include the GitHub URL and the ADE HTTPS PR URL so
 the user can jump directly to either GitHub or the ADE PRs tab.
 
 ## Channel handling
 
 Only the **Stable** channel claims `ade://` as the OS-default handler.
-Beta and Alpha builds still install the single-instance lock and the
+Alpha builds still install the single-instance lock and the
 `open-url` / `second-instance` listeners (so a manual `duti` binding
 still routes deeplinks to them), but they skip
 `app.setAsDefaultProtocolClient` so they don't fight Stable for the
@@ -445,7 +433,7 @@ registration mechanics live in `protocolHandler.ts` behind the
 - **The HTTPS form is the social form.** When linking from chat apps,
   emails, or anywhere a preview matters, prefer the `https://ade-app.dev/open`
   shape so the unfurl works. Use `ade://` when the target is guaranteed
-  to be a machine with ADE installed (TUI copy, terminal share).
+  to be a machine with ADE installed (terminal share).
 - **Linear hand-off doesn't carry the GitHub repo.** The `linear-issue`
   shape only has the identifier (`ADE-123`) and optionally Linear's
   generated branch name. The desktop opens the Linear pane to that issue
@@ -467,7 +455,5 @@ registration mechanics live in `protocolHandler.ts` behind the
   footer integration.
 - [Sync and multi-device](../sync-and-multi-device/README.md) — the
   iOS Send-to-Mac sync command bounces deeplinks to a paired host.
-- [ADE Code](../ade-code/README.md) — `ade open` / `ade link` /
-  `ade linear install` subcommands, `Ctrl+Y` copy.
 - [System overview](../../ARCHITECTURE.md) — `IPC.appNavigate`, web /open
   route placement.

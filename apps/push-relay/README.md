@@ -56,11 +56,11 @@ its own (single D1 database, no Durable Objects, no queues).
 | DELETE | `/attention/account/machines/:machineKey` | Remove a machine from the account feed: purge and tombstone its items, drop its presence link, release the installs it seeded, drop its legacy `device_registrations`/`live_activity_tokens`, and revoke it so it cannot publish again. Only revokes a machine the account currently holds. Called by the account directory when the user removes a machine. |
 | POST | `/attention/account/machines/:machineKey/pairing` | Clear that revocation when the user deliberately pairs the machine again |
 | GET | `/attention/account/settings?since=<iso>&scope=<key>` | Read account settings changed after a cursor. `scope` is `all` or `repo:<normalized-repo>`. |
-| PUT | `/attention/account/settings` | Upsert a batch of settings. One invalid item rejects the whole batch. |
-| DELETE | `/attention/account/settings/:scope/:key` | Remove one setting. Idempotent, so a retry after a dropped response is not an error. |
+| PUT | `/attention/account/settings` | Upsert a batch of settings. One invalid item rejects the whole batch, unless the body asks for `itemResults` (see "Per-item answers and stale writes"). |
+| DELETE | `/attention/account/settings/:scope/:key[?writtenAt=&sentAt=]` | Remove one setting. Idempotent, so a retry after a dropped response is not an error. With `writtenAt`, `409 stale` when a newer row exists. |
 | GET | `/attention/account/vault?since=<iso>&scope=<key>` | Read vault items changed after a cursor. Values are opened with the Worker's key; an item the key cannot open returns `value: null`. |
-| PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. |
-| DELETE | `/attention/account/vault/:scope/:kind/:key` | Revoke one credential. Idempotent. |
+| PUT | `/attention/account/vault` | Upsert a batch of credentials. Values arrive as plaintext over TLS and are sealed before storage. Same `itemResults` option as settings. |
+| DELETE | `/attention/account/vault/:scope/:kind/:key[?writtenAt=&sentAt=]` | Revoke one credential. Idempotent. A key with `/` is sent encoded (`%2F`); one a proxy decoded arrives as several segments and is joined back. With `writtenAt`, `409 stale` when a newer row exists. |
 
 ### Account Activity semantics
 
@@ -157,9 +157,10 @@ client-facing write path.
   or a piece of hardware is meaningless on another computer, so it stays local
   by design. `scope_key` carries only the other axis: `all`, or
   `repo:<normalized-repo>`.
-- **A rejected batch writes nothing.** A partial success is the worst outcome:
-  the caller believes its settings landed, and the one that silently did not is
-  the one it never checks again.
+- **A rejected batch writes nothing** (without `itemResults`). A partial
+  success the caller cannot see is the worst outcome: it believes its settings
+  landed, and the one that silently did not is the one it never checks again.
+  The `400` names the first refused item (`index`, `reason`).
 - **Bounds.** 16 KB per value, 200 settings per write, 1,000 per read page
   (with an explicit `truncated` flag and a resumable `cursor`), and 5,000 per
   account. The read page reports truncation rather than leaving a client to
@@ -197,9 +198,54 @@ every machine.
   sign-out in this product's history, and syncing them would reproduce it on
   purpose. The Machines page shows a per-machine sign-in checklist instead.
 - **`refresh_owner` names the machine allowed to exchange a rotating
-  credential.** Nothing rotating is stored yet, so it is null everywhere; the
-  column exists so one can join later without a migration and without repeating
-  that bug.
+  credential** (Linear's refresh token, `linear_refresh_token`). The Worker
+  stores whatever owner the writer names: a fresh sign-in on another machine
+  legitimately claims the grant. What protects the grant from an old copy is the
+  stale-write rule below, not the owner.
+- **Item keys** are one or more `/`-separated segments: the first is the
+  original vocabulary (`[A-Za-z0-9][A-Za-z0-9._:-]*`), the rest also may start
+  with `_` or `-` (the MCP servers registry's
+  `mcp/<server>/<env|header|oauth>/<name>`). No segment is empty or starts with a
+  dot, so a key never holds `..`, `//`, or a leading or trailing `/`. 200
+  characters at most.
+
+### Per-item answers and stale writes
+
+Settings and the vault share one write protocol. A client that sends
+`itemResults: true` gets one answer per item, in request order, instead of
+all-or-nothing:
+
+- `{status: "written"}`;
+- `{status: "rejected", reason}`: this item cannot be stored as sent (`invalid
+  key`, `unknown kind`, `value too large`, …); the others still are;
+- `{status: "stale", current}`: the stored row is newer than this write, so it
+  was not applied. `current` is that row (the vault opens its value), because
+  the client skipped the key while its write was queued and its pull cursor is
+  already past it.
+
+With `itemResults`, each item may carry `writtenAt` (when the machine made the
+write, on its clock) and the body `sentAt` (when it sent the request, on the
+same clock). The Worker moves `writtenAt` onto its own clock by `now - sentAt`
+and refuses the item when the stored `updated_at` is later by more than 5 s.
+The check is the upsert's own `where`, so it is atomic per row. This is what
+stops a machine back after days offline from replacing newer rows with the
+values it queued then; correcting by `sentAt` keeps a machine with a wrong date
+from losing (or winning) every conflict. Without `writtenAt` nothing is refused,
+and a client that does not send `itemResults` sees the old protocol unchanged
+(it reads a `200` as "every item landed"). `DELETE` takes the same
+`writtenAt`/`sentAt` as query parameters and answers `409 {code: "stale",
+current}` instead of deleting a newer row.
+
+The brain's caches (`accountCacheStore`) send all of this. Against an older
+Worker that ignores it, the brain splits a refused batch until the refused
+items stand alone, parks them (kept locally with the reason, retried hourly,
+reported in `health()`), and checks a queued write older than a minute against
+the rows changed since before sending it.
+
+Deploy order: this Worker before the tunnel relay before the app. Every part is
+compatible in both directions (a new brain copes with this Worker as deployed
+before, and this Worker answers an old brain exactly as before), so the order
+only decides how soon a stuck machine stops being stuck.
 
 ### Publish semantics
 

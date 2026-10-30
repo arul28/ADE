@@ -545,7 +545,7 @@ describe("TunnelDurableObject in workerd", () => {
     const accountOne = (await hmacSha256Hex(secretOne, "ade-mcp-account")).slice(0, 40);
     const accountTwo = (await hmacSha256Hex(secretTwo, "ade-mcp-account")).slice(0, 40);
     const [keyF, keyG] = [machineKey("7"), machineKey("8")];
-    const accountState = async (accountKey: string): Promise<{ members: string[]; front: string | null }> => (
+    const accountState = async (accountKey: string): Promise<{ members: string[]; front: string | null; off?: string[] }> => (
       (await stubFor(`mcp-account:${accountKey}`).fetch("https://relay.internal/__mcp-account")).json()
     );
     // Membership changes travel to another object; wait on the account's own answer.
@@ -598,6 +598,22 @@ describe("TunnelDurableObject in workerd", () => {
       expect(await (await first.response).text()).toBe("from G");
       await first.settled();
       expect(await accountState(accountOne)).toEqual({ members: [keyF, keyG], front: keyG });
+
+      // A brain's redirect (the OAuth authorize form sending the browser to
+      // sign-in) reaches the client unchanged, on both addresses.
+      const signIn = "https://sign-in.example.test/oauth/authorize?client_id=ade";
+      for (const url of [`https://relay.test/a/${accountOne}/oauth/authorize`, `https://relay.test/m/${"6".repeat(40)}/oauth/authorize`]) {
+        const redirected = handleRequest(new Request(url, {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "approve=1",
+        }), env, createExecutionContext());
+        const frame = JSON.parse(String(await nextMessage(controlG))) as HttpFrame;
+        controlG.send(JSON.stringify({ t: "http_res", rid: frame.rid, status: 302, headers: { location: signIn }, body: "" }));
+        const answered = await redirected;
+        expect(answered.status).toBe(302);
+        expect(answered.headers.get("location")).toBe(signIn);
+      }
 
       // The per-machine address never carries a mount, even when a client asks.
       const direct = worker.fetch(new Request(`https://relay.test/m/${"5".repeat(40)}/mcp`, {
@@ -684,6 +700,33 @@ describe("TunnelDurableObject in workerd", () => {
       expect(await runDurableObjectAlarm(stubFor(keyF))).toBe(true);
       expect((await accountState(accountOne)).members).toEqual([keyG]);
       expect((await accountState(accountTwo)).members).toEqual([keyF]);
+
+      // An address no computer ever served says it may be an old one.
+      const neverServed = await accountCall("c".repeat(40));
+      const neverServedResponse = await neverServed.response;
+      await neverServed.settled();
+      expect(neverServedResponse.status).toBe(404);
+      expect(await neverServedResponse.json()).toMatchObject({ error: "ade_mcp_off", reason: "unknown_address" });
+
+      // Off on its only computer: the address says ADE MCP is off.
+      mcpState(controlF, { enabled: false, endpointKey: "5".repeat(40), account: { secret: secretTwo } });
+      await accountReaches(accountTwo, []);
+      const offAgain = await accountCall(accountTwo);
+      const offAgainResponse = await offAgain.response;
+      await offAgain.settled();
+      expect(await offAgainResponse.json()).toMatchObject({ error: "ade_mcp_off", reason: "off" });
+
+      // Turned back on with another account's secret: nothing serves the
+      // address it was off on any more, so it reads as an old address.
+      mcpState(controlF, { enabled: true, endpointKey: "5".repeat(40), account: { secret: secretOne } });
+      await accountReaches(accountOne, [keyG, keyF]);
+      for (let attempt = 0; attempt < 200; attempt += 1) {
+        if (!(await accountState(accountTwo)).off) break;
+      }
+      const moved = await accountCall(accountTwo);
+      const movedResponse = await moved.response;
+      await moved.settled();
+      expect(await movedResponse.json()).toMatchObject({ error: "ade_mcp_off", reason: "unknown_address" });
     } finally {
       // A control socket left idle at the end keeps workerd from shutting down.
       for (const key of [keyF, keyG]) {

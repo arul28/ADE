@@ -57,7 +57,6 @@ import path from "node:path";
 import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
 import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
-import { pathToFileURL } from "node:url";
 import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {
@@ -564,14 +563,10 @@ import {
   SYNC_HOST_MAX_PORT,
 } from "./services/sync/syncProtocol";
 import {
-  runAdeCodeRemote,
-  takeAdeCodeRemoteArgs,
-} from "./tuiClient/remoteLauncher";
-import {
   displayClusters,
   padDisplayEnd,
   terminalDisplayWidth,
-} from "./tuiClient/displayWidth";
+} from "./lib/displayWidth";
 import { copyToClipboard } from "./lib/clipboard";
 import { pickPrimaryPrRecord, prRecordNumber } from "./lib/primaryPr";
 import {
@@ -990,7 +985,6 @@ export type CliPlan =
         options: GlobalOptions,
       ) => Promise<boolean>;
     }
-  | { kind: "ade-code"; rest: string[] }
   | { kind: "desktop"; rest: string[] }
   | { kind: "runtime"; rest: string[] }
   | { kind: "brain"; rest: string[] }
@@ -1046,7 +1040,7 @@ export type CliPlan =
     }
   | { kind: "github-app-login"; maxWaitSec: number | null }
   | { kind: "account-login"; maxWaitSec: number | null; explicitHeadless: boolean }
-  | { kind: "account-machine-connect"; machine: string; remoteArgs: string[] };
+  | { kind: "account-machine-connect"; machine: string };
 
 export type CliConnection = {
   mode: "desktop-socket" | "runtime-socket" | "headless";
@@ -1308,8 +1302,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
     $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
@@ -1729,9 +1722,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade machines rename <machine-key> --clear
     $ ade machines remove <machine-key> --confirm REMOVE
     $ ade machines reconnect
-    $ ade machines connect <machine-key>
-    $ ade machines connect <device-id> --project <project-id|name|path>
-    $ ade machines hop <unambiguous-name> --session <session-id|title>
+    $ ade machines connect <machine-key|device-id|unambiguous-name>
 
   Machine keys and device ids are stable selectors. An exact display name is
   accepted only when it identifies one machine; ambiguous names fail with the
@@ -1744,8 +1735,8 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   lines) that the machine published to ADE Activity. It is recent work, not a
   full listing, and it never reads a whole transcript or changes the machine.
 
-  Sign in with \`ade login\`. \`connect\` and its \`hop\` alias securely save the
-  selected machine for that account, then launch ADE Code. Signing out removes
+  Sign in with \`ade login\`. \`connect\` securely saves the selected machine
+  for that account, so ADE desktop and the web client can open it. Signing out removes
   machines added through the account from this ADE install. Machines you pair
   directly with a PIN, SSH, or an address stay saved after sign-out.
 
@@ -1817,11 +1808,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   machine brain and starts it if needed.
 
     $ ade desktop
-    $ ade desktop --app-name "ADE Beta"
+    $ ade desktop --app-name "ADE Alpha"
 
   Flags:
-    --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
-                            or ADE Alpha based on the installed CLI wrapper.
+    --app-name <name>       Installed app name to open. Defaults to ADE, or
+                            ADE Alpha based on the installed CLI wrapper.
 `,
   jira: `${ADE_BANNER}
   ADE Jira
@@ -2133,49 +2124,15 @@ export const HELP_BY_COMMAND: Record<string, string> = {
 
   Manage the machine-scoped ADE project registry used by the ADE runtime.
 
-    $ ade projects list --text
+    $ ade projects list --text                      Projects whose folder is gone are hidden; --include-missing lists them
     $ ade projects add /path/to/project
+    $ ade projects clone owner/repo [--path <folder>] [--name <dir>]
+                                                    Clone a GitHub repository with this computer's GitHub sign-in and open it as a project
+    $ ade projects prune [--dry-run]                Remove projects whose folder is gone from ADE (never deletes a folder)
     $ ade projects remove <project-id>
     $ ade projects touch <project-id>
     $ ade projects inspect /path/to/checkout --json Classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 `,
-  code: `${ADE_BANNER}
-  ADE Code
-
-  Launch the terminal-native ADE Work chat. It uses the same project lanes,
-  chat sessions, transcript state, and slash commands as desktop ADE, but it
-  does not require the desktop app to be running.
-
-    $ ade code                                      Start the TUI for the current project
-    $ ade code --print-state                       Smoke-test attach/embed state
-    $ ade code --embedded                          Force the embedded runtime fallback
-    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no runtime endpoint exists
-    $ ade code --socket /tmp/ade.sock              Attach to a specific local endpoint
-    $ ade code --lane <id|name|branch>             Launch focused on a specific lane
-    $ ade code remote --target <machine> --project <project>
-                                                     Launch against a saved desktop remote machine
-    $ ade code remote --target <machine> --route <auto|lan|tailscale|relay>
-                                                     Choose or constrain the paired connection path
-    $ ade code remote session --target <machine> --project <project> --session <session>
-                                                     Open a specific remote chat or provider CLI terminal session
-    $ ade code remote --list-targets               List saved remote machines
-    $ ade code remote --target <machine> --list-projects
-                                                     List ADE projects available on the remote machine
-    $ ade code remote session --target <machine> --project <project> --list-sessions
-                                                     List remote chat and provider CLI terminal sessions
-    $ ade --project-root <path> code                Launch against a specific ADE project
-
-  Keys:
-    ctrl-o        Open or focus lanes and chats
-    ctrl-p        Open or focus details
-    ctrl-g        Split chat: add another chat tile
-    ctrl-w        Split chat: close focused tile
-    tab           Split chat: cycle focused tile
-    shift-tab     Cycle pane focus
-    esc           Return or cancel the active pane
-    ?             Help when it is the first prompt character
-    /             Command palette
-  `,
   new: `${ADE_BANNER}
   New ADE work session
 
@@ -2467,6 +2424,7 @@ export const HELP_BY_COMMAND: Record<string, string> = {
   active owner session automatically.
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
+    $ ade shell start -- npm test                   Without --lane: your own lane, else the project's primary lane
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
     $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
     $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
@@ -4697,9 +4655,8 @@ function parseScheduledWorkDelaySeconds(value: string): number {
 
 /**
  * Parse `ade session snooze --for <duration>`. The grammar and the 30-day cap
- * live in `sessionSnoozeDuration.ts` so `ade code`'s `/session snooze` resolves
- * a duration identically; this wrapper only turns the shared result union into
- * the `CliUsageError` the argv layer already knows how to report.
+ * live in `sessionSnoozeDuration.ts`; this wrapper only turns its result union
+ * into the `CliUsageError` the argv layer already knows how to report.
  */
 function parseSnoozeDurationMs(value: string): number {
   const parsed = parseSnoozeDuration(value);
@@ -9506,26 +9463,46 @@ function buildShellPlan(args: string[]): CliPlan {
       rows: readIntOption(args, ["--rows"], 36),
       tracked: !readFlag(args, ["--untracked"]),
     });
+    // A tracked shell belongs to a lane. Without --lane, the shell's own lane
+    // (an agent's), else the project's primary lane: its main checkout. So an
+    // app or script can run a command in a project without making a lane.
+    // With --machine the default is not a lane there: the command runs in this
+    // chat's work copy (cliMachineTargeting.ts reads `laneDefaulted`).
+    const ownLane = laneId ?? (process.env.ADE_LANE_ID?.trim() || null);
+    const followPlan = wait
+      ? {
+          followShell: true,
+          formatter: undefined,
+          formatText: (result: unknown) => {
+            const record = isRecord(result) ? result : {};
+            const code = typeof record.exitCode === "number" ? record.exitCode : null;
+            return `\n[shell ended${code === null ? "" : ` with exit code ${code}`} · terminal ${asString(record.terminalId) ?? "?"}]`;
+          },
+          exitCodeFromResult: (result: unknown) => {
+            const code = isRecord(result) ? result.exitCode : null;
+            return typeof code === "number" ? Math.min(Math.max(code, 0), 255) : 1;
+          },
+        }
+      : {};
+    const shellStart = { kind: "execute", label: "shell start", formatter: "pty-create", ...followPlan } as const;
+    const defaulted = laneId ? {} : { laneDefaulted: true };
+    if (ownLane) {
+      return { ...shellStart, steps: [actionStep("result", "pty", "create", { ...input, ...defaulted, laneId: ownLane })] };
+    }
     return {
-      kind: "execute",
-      label: "shell start",
-      formatter: "pty-create",
-      steps: [actionStep("result", "pty", "create", input)],
-      ...(wait
-        ? {
-            followShell: true,
-            formatter: undefined,
-            formatText: (result: unknown) => {
-              const record = isRecord(result) ? result : {};
-              const code = typeof record.exitCode === "number" ? record.exitCode : null;
-              return `\n[shell ended${code === null ? "" : ` with exit code ${code}`} · terminal ${asString(record.terminalId) ?? "?"}]`;
-            },
-            exitCodeFromResult: (result: unknown) => {
-              const code = isRecord(result) ? result.exitCode : null;
-              return typeof code === "number" ? Math.min(Math.max(code, 0), 255) : 1;
-            },
-          }
-        : {}),
+      ...shellStart,
+      steps: [
+        actionCallStep("lanes", "list_lanes", {}),
+        {
+          key: "result",
+          method: "ade/actions/call",
+          params: (values) => ({
+            name: "run_ade_action",
+            arguments: { domain: "pty", action: "create", args: { ...input, ...defaulted, laneId: primaryLaneId(values.lanes) } },
+          }),
+          unwrapToolResult: true,
+        },
+      ],
     };
   }
   if (sub === "write")
@@ -9591,6 +9568,18 @@ function buildShellPlan(args: string[]): CliPlan {
     label: `shell ${sub}`,
     steps: [actionStep("result", "pty", sub, collectGenericObjectArgs(args))],
   };
+}
+
+/** The primary lane (the project's main checkout) in a `list_lanes` answer. */
+function primaryLaneId(value: unknown): string {
+  const unwrapped = isRecord(value) && Array.isArray(value.lanes) ? value.lanes : value;
+  const lanes = Array.isArray(unwrapped) ? unwrapped.filter(isRecord) : [];
+  const primary = lanes.find((lane) => lane.laneType === "primary");
+  const id = primary ? asString(primary.id) : null;
+  if (!id) {
+    throw new CliUsageError("This project has no primary lane to run the shell in. Pass --lane <id> (see `ade lanes list --text`).");
+  }
+  return id;
 }
 
 function buildCliSessionStartPlan(
@@ -21937,7 +21926,7 @@ function hasHelpFlag(
 
 function buildCliPlan(
   command: string[],
-  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json">> = {
+  options: Pick<GlobalOptions, "socketPath" | "projectRoot"> & Partial<Pick<GlobalOptions, "json" | "machine">> = {
     socketPath: null,
     projectRoot: null,
   },
@@ -21962,16 +21951,6 @@ function buildCliPlan(
       : primaryHelpKey === "mac-desktop"
         ? MAC_DESKTOP_VALUE_CARRIER_FLAGS
         : VALUE_CARRIER_FLAGS;
-  // Remote ADE Code owns a dedicated, beginner-facing help surface in the TUI
-  // client. Keep ordinary `ade code --help` on the established top-level help
-  // page, but let the remote subcommand render its actual connection guidance.
-  if (
-    primary === "code"
-    && firstStandalonePositional([...args]) === "remote"
-    && hasHelpFlag(args, helpCarriers)
-  ) {
-    return { kind: "ade-code", rest: args };
-  }
   if (hasHelpFlag(args, helpCarriers)) {
     const helpKey = helpKeyWithSubcommand(primaryHelpKey, args);
     if (primaryHelpKey === "apple") {
@@ -22041,10 +22020,6 @@ function buildCliPlan(
       kind: "project-icon-worker",
       rootPath: args.slice(primaryIndex + 1).find((arg) => arg !== "--") ?? "",
     };
-  }
-  if (primary === "code") {
-    const rest = args;
-    return { kind: "ade-code", rest };
   }
   if (primary === "desktop") {
     return { kind: "desktop", rest: args };
@@ -22123,7 +22098,7 @@ function buildCliPlan(
     return { kind: "init", targetPath: firstPositional(args) };
   }
   if (primary === "projects" || primary === "project") {
-    return buildProjectsPlan(args);
+    return buildProjectsPlan(args, { remote: Boolean(options.machine?.trim()) });
   }
   if (primary === "machines" || primary === "machine") {
     return buildMachinesPlan(args);
@@ -22571,86 +22546,6 @@ function commandExists(command: string): boolean {
   return result.status === 0 && result.stdout.trim().length > 0;
 }
 
-function resolveAdeCodeSocketPath(projectRoot: string, socketPathOverride?: string | null): string {
-  return (
-    socketPathOverride?.trim() ||
-    process.env.ADE_RPC_URL?.trim() ||
-    process.env.ADE_RPC_SOCKET_PATH?.trim() ||
-    process.env.ADE_RUNTIME_SOCKET_PATH?.trim() ||
-    resolveReachableMachineRuntimeSocketPath() ||
-    path.join(projectRoot, ".ade", "ade.sock")
-  );
-}
-
-function buildAdeCodeArgs(rest: string[], options: GlobalOptions): string[] {
-  const roots = resolveRoots(options);
-  return [
-    "--project-root",
-    roots.projectRoot,
-    "--workspace-root",
-    roots.workspaceRoot,
-    ...(options.headless ? ["--embedded"] : []),
-    ...(options.requireSocket
-      ? [
-          "--socket",
-          resolveAdeCodeSocketPath(roots.projectRoot, options.socketPath),
-          "--require-socket",
-        ]
-      : []),
-    ...(isPackagedElectronCliRuntime() ? ["--prefer-service-repair"] : []),
-    ...rest,
-  ];
-}
-
-function resolveAdeCodeModulePath(): string {
-  const sourceModule = path.join(
-    CLI_PACKAGE_ROOT,
-    "src",
-    "tuiClient",
-    "cli.tsx",
-  );
-  const builtModule = CLI_ENTRY_PATH
-    ? path.join(path.dirname(CLI_ENTRY_PATH), "tuiClient", "cli.mjs")
-    : path.join(CLI_PACKAGE_ROOT, "dist", "tuiClient", "cli.mjs");
-  const runtimeRoot =
-    process.env.ADE_RUNTIME_ROOT?.trim() ||
-    process.env.ADE_RESOLVED_RUNTIME_ROOT?.trim() ||
-    null;
-  const runtimeModule = runtimeRoot
-    ? path.join(runtimeRoot, "tuiClient", "cli.mjs")
-    : null;
-  const candidates = [
-    runtimeModule,
-    builtModule,
-    isSourceCliEntryPath(CLI_ENTRY_PATH) ? sourceModule : null,
-  ].filter((candidate): candidate is string => Boolean(candidate));
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  throw new Error(
-    "ADE Code TUI module is missing. Run `npm --prefix apps/ade-cli run build` " +
-      "or reinstall ADE so the packaged runtime includes tuiClient/cli.mjs.",
-  );
-}
-
-async function runAdeCode(
-  rest: string[],
-  options: GlobalOptions,
-): Promise<{ output: string; exitCode: number }> {
-  const modulePath = resolveAdeCodeModulePath();
-  const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
-  const remoteArgs = takeAdeCodeRemoteArgs(rest);
-  if (remoteArgs) {
-    const roots = resolveRoots(options);
-    const exitCode = await runAdeCodeRemote(remoteArgs, runAdeCodeCli, {
-      accountProjectRoots: [roots.projectRoot],
-    });
-    return { output: "", exitCode };
-  }
-  const exitCode = await runAdeCodeCli(buildAdeCodeArgs(rest, options));
-  return { output: "", exitCode };
-}
-
 async function runAccountMachineConnect(
   plan: CliPlan & { kind: "account-machine-connect" },
   options: GlobalOptions,
@@ -22668,31 +22563,29 @@ async function runAccountMachineConnect(
     });
   }
 
-  let targetId: string;
+  let paired: Record<string, unknown>;
   try {
     const raw = await connection.request("account.call", {
       action: "pairMachine",
       args: { machine: plan.machine },
     });
-    const paired = unwrapActionEnvelope(raw);
-    targetId = isRecord(paired) ? asString(paired.targetId) ?? "" : "";
-    if (!targetId) {
+    const unwrapped = unwrapActionEnvelope(raw);
+    if (!isRecord(unwrapped) || !asString(unwrapped.targetId)) {
       throw new CliExecutionError("Account machine pairing did not return a saved remote target.", {
         machine: plan.machine,
       });
     }
+    paired = unwrapped;
   } finally {
     await connection.close();
   }
 
-  const modulePath = resolveAdeCodeModulePath();
-  const { runAdeCodeCli } = await import(pathToFileURL(modulePath).href);
-  const exitCode = await runAdeCodeRemote(
-    ["--target", targetId, ...plan.remoteArgs],
-    runAdeCodeCli,
-    { accountProjectRoots: [resolveRoots(options).projectRoot] },
-  );
-  return { output: "", exitCode };
+  const name = asString(paired.name) ?? plan.machine;
+  const result = {
+    ...paired,
+    message: `Saved ${name} on this ADE install. Open it from ADE desktop or the web client.`,
+  };
+  return { output: formatOutput(result, options, undefined), exitCode: 0 };
 }
 
 function runLocalCommand(
@@ -23789,7 +23682,7 @@ async function startHeadlessRpcTcpServer(args: {
 
   return {
     // The token rides in the URL so every existing ADE_RPC_URL consumer
-    // (child `ade` processes, the TUI's --socket flag) receives it without a
+    // (child `ade` processes, the SDK) receives it without a
     // second env var; parseRpcUrlAuthToken extracts it client-side.
     url: `tcp://127.0.0.1:${port}?token=${authToken}`,
     stop: () => stopHeadlessRpcServer(serverState),
@@ -24346,7 +24239,7 @@ function buildMachinesPlan(args: string[]): CliPlan {
       retryAfterRecovery: recoverAccountMachineReconnect,
     };
   }
-  if (sub === "connect" || sub === "hop" || sub === "code") {
+  if (sub === "connect") {
     const machine = readValue(args, ["--machine", "--target"])
       ?? firstStandalonePositional(args);
     if (!machine?.trim()) {
@@ -24357,10 +24250,9 @@ function buildMachinesPlan(args: string[]): CliPlan {
     return {
       kind: "account-machine-connect",
       machine: machine.trim(),
-      remoteArgs: args,
     };
   }
-  throw new CliUsageError("machines supports list, show, rename, remove, reconnect, connect, or hop.");
+  throw new CliUsageError("machines supports list, show, rename, remove, reconnect, or connect.");
 }
 
 function buildSyncPlan(args: string[]): CliPlan {
@@ -24578,7 +24470,22 @@ Usage:
   throw new CliUsageError(`Unsupported sync command: ${sub}`);
 }
 
-function buildProjectsPlan(args: string[]): CliPlan {
+/** How many projects `withoutMissingProjects` left out; kept off the JSON so `--json` stays the plain list. */
+const HIDDEN_MISSING_PROJECTS = Symbol("hiddenMissingProjects");
+
+/** The listed projects whose folder is not known to be gone, carrying how many were hidden. */
+function withoutMissingProjects(result: unknown): unknown {
+  if (!Array.isArray(result)) return result;
+  const kept = result.filter((project) => !isRecord(project) || project.exists !== false);
+  return Object.defineProperty(kept, HIDDEN_MISSING_PROJECTS, { value: result.length - kept.length, enumerable: false });
+}
+
+function hiddenMissingProjects(result: unknown): number {
+  const hidden = Array.isArray(result) ? (result as { [HIDDEN_MISSING_PROJECTS]?: unknown })[HIDDEN_MISSING_PROJECTS] : 0;
+  return typeof hidden === "number" ? hidden : 0;
+}
+
+function buildProjectsPlan(args: string[], target: { remote: boolean } = { remote: false }): CliPlan {
   const sub = firstPositional(args) ?? "list";
   // The registry lives only in the machine brain, so these never fall back to
   // a headless single-project runtime.
@@ -24588,12 +24495,69 @@ function buildProjectsPlan(args: string[]): CliPlan {
     machineAutoStart: true,
   };
   if (sub === "list" || sub === "ls") {
+    // Projects whose folder is gone (a deleted temp project, a drive that is
+    // not plugged in) are hidden unless asked for; the text says how many.
+    const includeMissing = readFlag(args, ["--include-missing", "--all"]);
     return {
       ...base,
       label: "projects list",
       machineList: "projects",
       formatter: "projects-list",
       steps: [{ key: "result", method: "projects.list" }],
+      shapeResult: (values) => (includeMissing ? values.result : withoutMissingProjects(values.result)),
+      formatText: (result) => {
+        const table = formatProjectsList(result);
+        const hidden = hiddenMissingProjects(result);
+        if (hidden === 0) return table;
+        return `${table}\n${hidden} project${hidden === 1 ? " whose folder is" : "s whose folders are"} gone ${hidden === 1 ? "is" : "are"} hidden: `
+          + "`ade projects list --include-missing` lists them, `ade projects prune` removes them from ADE (it never deletes folders).";
+      },
+    };
+  }
+  if (sub === "clone") {
+    // Clones with this computer's own GitHub sign-in (the brain's), then
+    // registers the folder as a project. `--path` is the folder to clone
+    // into; without it, beside the other projects. On another machine
+    // (`--machine`) the path is that machine's, sent as typed: it resolves
+    // and checks it, in its own OS's format (`C:\work` from a Mac).
+    const parentDir = readValue(args, ["--path", "--parent", "--parent-dir", "--into"]);
+    const name = readValue(args, ["--name"]);
+    const repo = requireValue(readValue(args, ["--repo", "--url"]) ?? firstPositional(args), "repository (GitHub URL or owner/name)");
+    return {
+      ...base,
+      label: "projects clone",
+      formatter: "projects-list",
+      // git clone runs up to five minutes in the brain.
+      minTimeoutMs: 6 * 60_000,
+      steps: [{
+        key: "result",
+        method: "projects.clone",
+        params: {
+          url: githubCloneUrl(repo),
+          ...(parentDir ? { parentDir: target.remote ? parentDir : path.resolve(parentDir) } : {}),
+          ...(name ? { name } : {}),
+          catalogVisibility: "recent",
+          registrationSource: "cli-explicit",
+        },
+      }],
+    };
+  }
+  if (sub === "prune") {
+    // Registry entries only: a project's folder is never touched.
+    const dryRun = readFlag(args, ["--dry-run"]);
+    return {
+      ...base,
+      label: "projects prune",
+      steps: [{ key: "result", method: "projects.pruneMissing", params: { dryRun } }],
+      formatText: (result) => {
+        const removed = isRecord(result) && Array.isArray(result.removed) ? result.removed.filter(isRecord) : [];
+        if (removed.length === 0) return "Every registered project's folder is there. Nothing to prune.";
+        const verb = dryRun ? "Would remove" : "Removed";
+        return [
+          `${verb} ${removed.length} project${removed.length === 1 ? "" : "s"} whose folder is gone (folders are never deleted):`,
+          ...removed.map((project) => `  ${String(project.displayName ?? "")}  ${String(project.rootPath ?? "")}  ${String(project.projectId ?? "")}`),
+        ].join("\n");
+      },
     };
   }
   if (sub === "add" || sub === "register") {
@@ -24661,8 +24625,16 @@ function buildProjectsPlan(args: string[]): CliPlan {
     };
   }
   throw new CliUsageError(
-    `projects supports list, add, remove, touch, or inspect; got '${sub}'.`,
+    `projects supports list, add, clone, remove, prune, touch, or inspect; got '${sub}'.`,
   );
+}
+
+/** `owner/name` → its GitHub URL; anything else (a URL, an ssh address) as given. */
+function githubCloneUrl(repo: string): string {
+  const trimmed = repo.trim();
+  return /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(trimmed)
+    ? `https://github.com/${trimmed.replace(/\.git$/, "")}.git`
+    : trimmed;
 }
 
 function withProjectId(
@@ -25040,7 +25012,7 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
  * follows for its scratch directory under the system temp dir.
  */
 const EPHEMERAL_RUNTIME_SCRATCH_PATTERN =
-  /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/;
+  /(^|[/\\])ade-(stdio-rpc|local-runtime)[^/\\]*/;
 
 function isEphemeralRuntimeScratchPath(candidate: string): boolean {
   const normalizedPath = path.resolve(candidate);
@@ -30370,8 +30342,8 @@ export function formatUsageSnapshot(value: unknown): string {
     if (line.id) accountLabelById.set(line.id, line.email ?? line.label ?? line.id);
   }
   // One account per provider is the normal case and naming it on every row is
-  // noise; more than one and the row has to say which. Same rule the TUI's
-  // `usageWindowAccountLabel` and the desktop's `buildLimitCards` apply.
+  // noise; more than one and the row has to say which. Same rule the
+  // desktop's `buildLimitCards` applies.
   const windowRows = windows.map((window) => {
     const provider = asString(window.provider) ?? "";
     // The snapshot arrives as loose JSON over the socket; name the fields the
@@ -32523,7 +32495,7 @@ function formatChatModels(value: unknown): string {
  *
  * The "wakes" line comes from the shared `snoozeWakeLabel`, so an open-ended
  * "until asked" deadline reads as `wakes  when asked` here exactly as it does on
- * desktop, iOS, and in `ade code` — and the raw timestamp (~100 years out, which
+ * desktop and iOS — and the raw timestamp (~100 years out, which
  * would read as corruption) is suppressed for that case.
  */
 function formatSessionLifecycle(value: unknown): string {
@@ -32610,7 +32582,7 @@ const ACTIVITY_SOURCE_LABEL: Record<SessionActivitySource, string> = {
  * to `ps` to diagnose.
  *
  * The word, its elapsed, and the snooze overlay all come from the shared
- * presentation helpers the Work rows and `ade code` use, so this line and the
+ * presentation helpers the Work rows use, so this line and the
  * `snoozed` / `wakes` lines below it cannot tell two different stories.
  * Undefined for the mutation acks that share this formatter — they carry no
  * `status`, and `renderKeyValues` drops the row.
@@ -36204,8 +36176,8 @@ export function detectAccountLoginMode(args: {
  * code says the machine is simply revoked.
  */
 export function accountReconnectNeedsFreshSignIn(result: unknown): boolean {
-  // The shared rule, so `ade machines reconnect`, the desktop and `ade code`
-  // start the browser step for exactly the same results.
+  // The shared rule, so `ade machines reconnect` and the desktop start the
+  // browser step for exactly the same results.
   const parsed = readReconnectResult(result);
   return parsed != null && reconnectNeedsFreshSignIn(parsed);
 }
@@ -37703,7 +37675,6 @@ async function runParsedCli(
   // cost (cheap no-op when already current).
   if (
     plan.kind === "skill" ||
-    plan.kind === "ade-code" ||
     plan.kind === "account-machine-connect" ||
     plan.kind === "brain" ||
     plan.kind === "runtime" ||
@@ -38004,9 +37975,6 @@ async function runParsedCli(
         exitCode: 0,
       };
     }
-    if (plan.kind === "ade-code") {
-      return await runAdeCode(plan.rest, parsed.options);
-    }
     if (plan.kind === "account-login") {
       return await runAccountLogin(plan, parsed.options);
     }
@@ -38253,7 +38221,6 @@ export {
   MAC_DESKTOP_VALUE_FLAGS,
   VALUE_CARRIER_FLAGS,
   buildCliPlan,
-  buildAdeCodeArgs,
   parseSnoozeDurationMs,
   resolveSnoozeUntilIso,
   checkLinearReadiness,
@@ -38277,7 +38244,6 @@ export {
   parseCliArgs,
   readRuntimeIdleExitMs,
   renderLaneGraph,
-  resolveAdeCodeModulePath,
   resolveRoots,
   runCli,
   startHeadlessRpcSocketServer,

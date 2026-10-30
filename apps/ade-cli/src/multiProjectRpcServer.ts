@@ -1,5 +1,6 @@
 import type { BrainKeepAwakeService } from "./services/power/brainKeepAwakeService";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
+import { isPathInside } from "../../desktop/src/main/services/shared/pathCompare";
 import { checkHostReachability } from "./services/sync/hostReachabilityCheck";
 import { ACTION_NOT_CALLABLE_CODE, encodeCodedErrorMessage } from "../../desktop/src/shared/codedError";
 import { createAdeRpcRequestHandler } from "./adeRpcServer";
@@ -17,7 +18,6 @@ import {
   getProjectWorkSummary,
 } from "../../desktop/src/main/services/projects/projectDetailService";
 import { inspectProjectPath } from "../../desktop/src/main/services/projects/projectPathInspector";
-import { withTimeout } from "../../desktop/src/main/services/shared/withTimeout";
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import { githubExtraHeaderGitEnv } from "../../desktop/src/main/services/git/gitTransportAuth";
@@ -54,6 +54,7 @@ import {
 import { createConnectionFrameDemand } from "./connectionFrameDemand";
 import { readAppControlFrameDemand } from "../../desktop/src/shared/appControlFrameDemand";
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { readProjectFolderPresence, readProjectFolderStates } from "./services/projects/projectFolderPresence";
 import {
   decodeProjectIconUpload,
   importProjectIconBytes,
@@ -525,6 +526,7 @@ const RUNTIME_METHODS = new Set([
   "projects.add",
   "projects.setCatalogVisibility",
   "projects.remove",
+  "projects.pruneMissing",
   "projects.touch",
   "projects.setIcon",
   "projects.removeIcon",
@@ -664,11 +666,13 @@ function readCreateProjectInput(
   return { name, parentDir };
 }
 
-function readCloneProjectInput(
+async function readCloneProjectInput(
   params: Record<string, unknown>,
-): CloneProjectInput {
+  fallbackParentDir: () => Promise<string>,
+): Promise<CloneProjectInput> {
   const url = readOptionalString(params.url);
-  const parentDir = readOptionalString(params.parentDir);
+  // No folder named (`ade projects clone`, ADE MCP's projects_clone): beside the other projects.
+  const parentDir = readOptionalString(params.parentDir) ?? await fallbackParentDir();
   const name = readOptionalString(params.name);
   const githubAuthHeader = readOptionalString(params.githubAuthHeader);
   if (!url)
@@ -681,9 +685,20 @@ function readCloneProjectInput(
       JsonRpcErrorCode.invalidParams,
       "projects.clone requires parentDir.",
     );
+  // A folder named from another computer (`--machine`) arrives as typed there:
+  // `~` means this computer's home, and a relative path would land wherever
+  // this brain happens to run, so it is refused.
+  const resolvedParentDir = /^~(?=$|[\\/])/.test(parentDir)
+    ? path.join(os.homedir(), parentDir.slice(1))
+    : parentDir;
+  if (!path.isAbsolute(resolvedParentDir))
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      `projects.clone needs a full folder path, not "${parentDir}".`,
+    );
   return {
     url,
-    parentDir,
+    parentDir: resolvedParentDir,
     ...(name ? { name } : {}),
     ...(githubAuthHeader ? { githubAuthHeader } : {}),
   };
@@ -1000,65 +1015,26 @@ export async function decorateProjectListWithIcons<T extends { rootPath: string;
   }));
 }
 
-/** Stats past this are left unknown, so a hung network mount can't stall the list. */
-const LIST_FOLDER_CHECK_BUDGET_MS = 250;
-/** How long one folder answer is reused; the list is read often and folders rarely move. */
-const FOLDER_PRESENCE_TTL_MS = 10_000;
-
 /**
- * One stat per folder at a time, its answer reused for a few seconds. A stat
- * on an unreachable drive holds a libuv thread until the OS gives up, so a
- * fresh stat on every list would pile up behind it and starve the brain's
- * other file, crypto and zlib work.
+ * Where a new project goes by default: beside the most recently opened
+ * project whose folder still exists, outside the temp folder (a registry
+ * keeps deleted test projects there), else `~/Projects`.
  */
-const folderPresence = new Map<string, { settledAt: number | null; check: Promise<boolean | undefined> }>();
-
-function checkFolderPresence(rootPath: string): Promise<boolean | undefined> {
-  const cached = folderPresence.get(rootPath);
-  // A pending stat is reused however long it takes.
-  if (cached && (cached.settledAt === null || Date.now() - cached.settledAt < FOLDER_PRESENCE_TTL_MS)) {
-    return cached.check;
-  }
-  const entry: { settledAt: number | null; check: Promise<boolean | undefined> } = {
-    settledAt: null,
-    check: fs.promises.stat(rootPath).then(
-      (stat) => stat.isDirectory(),
-      (error: NodeJS.ErrnoException) => (error?.code === "ENOENT" || error?.code === "ENOTDIR" ? false : undefined),
-    ),
-  };
-  folderPresence.set(rootPath, entry);
-  void entry.check.then(() => { entry.settledAt = Date.now(); });
-  return entry.check;
-}
-
-/**
- * Whether each project's folder is on this machine, by index: `false` when it
- * is gone, `undefined` when the check failed for another reason (no permission)
- * or ran out of time. Another machine choosing between several checkouts of a
- * repository uses it to skip a deleted copy. Async stats on the thread pool,
- * all at once, under one deadline: nothing blocks the event loop.
- */
-async function readProjectFolderPresence(
-  records: readonly { rootPath: string }[],
-  budgetMs = LIST_FOLDER_CHECK_BUDGET_MS,
-): Promise<Array<boolean | undefined>> {
-  const presence = new Array<boolean | undefined>(records.length).fill(undefined);
-  // Drop answers past their time, so a removed project's folder isn't kept forever.
-  for (const [rootPath, entry] of folderPresence) {
-    if (entry.settledAt !== null && Date.now() - entry.settledAt >= FOLDER_PRESENCE_TTL_MS) folderPresence.delete(rootPath);
-  }
-  const checks = Promise.all(records.map((record, index) =>
-    checkFolderPresence(record.rootPath).then((value) => { presence[index] = value; })));
-  await withTimeout(checks, budgetMs);
-  // A copy, so a stat that lands after the deadline can't change an answer
-  // that was already sent.
-  return [...presence];
-}
-
-function defaultParentDir(projectRegistry: ProjectRegistry): string {
-  const first = projectRegistry.list()[0]?.rootPath;
-  if (first) return path.dirname(first);
-  return path.join(os.homedir(), "Projects");
+async function defaultParentDir(projectRegistry: ProjectRegistry): Promise<string> {
+  const temps = [
+    os.tmpdir(),
+    ...(process.platform === "win32" ? [] : ["/tmp", "/private/tmp", "/var/folders", "/private/var/folders"]),
+  ];
+  const recent = [...projectRegistry.list()].sort((a, b) => b.lastOpenedAt - a.lastOpenedAt);
+  // Only a project whose own folder is there (so its parent is too): a
+  // deleted project's parent may be a folder nobody uses any more. Checked
+  // off the event loop, under the same budget as the project list.
+  const states = await readProjectFolderStates(recent);
+  const beside = recent
+    .filter((_record, index) => states[index] === "present")
+    .map((record) => path.dirname(record.rootPath))
+    .find((parent) => !temps.some((temp) => isPathInside(parent, temp)));
+  return beside ?? path.join(os.homedir(), "Projects");
 }
 
 async function inspectHandoffStorage(params: Record<string, unknown>) {
@@ -1236,7 +1212,7 @@ async function cloneRepositoryForRemoteAgent(
     .find((record) => gitRemoteIdentity(record.gitOriginUrl ?? null) === identity);
   if (existing) return existing;
   const repoName = match[2]!;
-  const parentDir = defaultParentDir(projectRegistry);
+  const parentDir = await defaultParentDir(projectRegistry);
   fs.mkdirSync(parentDir, { recursive: true });
   const preflight = await inspectHandoffStorage({ parentDir, repoName });
   if (preflight.blockingErrors.length) {
@@ -1347,6 +1323,12 @@ export function createMultiProjectRpcRequestHandler(
     "function"
       ? scopeRegistry.onDispose(disposeProjectRuntimeCaches)
       : null;
+  /** Forgets a project: its booted scope, this connection's handler, then its registry entry. Never its folder. */
+  const removeProject = async (projectId: ProjectId): Promise<boolean> => {
+    await scopeRegistry.dispose(projectId);
+    handlers.delete(projectId);
+    return projectRegistry.remove(projectId);
+  };
   let initializedParams: Record<string, unknown> | null = null;
   let notifier: JsonRpcNotifier | null = null;
   let nextSubscriptionId = 1;
@@ -3179,9 +3161,34 @@ export function createMultiProjectRpcRequestHandler(
           "projects.remove requires projectId.",
         );
       }
-      await scopeRegistry.dispose(projectId);
-      handlers.delete(projectId);
-      return { removed: projectRegistry.remove(projectId) };
+      return { removed: await removeProject(projectId) };
+    }
+
+    if (method === "projects.pruneMissing") {
+      // Removes registry entries whose folder is confirmed gone. Never a
+      // folder: a folder that could not be checked (no permission, a slow
+      // drive, a drive that is not plugged in) is kept.
+      // Never from the cached answer: a folder that came back since the last
+      // list must not lose its project (and its identity) to a stale "gone".
+      const dryRun = params.dryRun === true;
+      const records = projectRegistry.list();
+      const presence = await readProjectFolderPresence(records, { fresh: true });
+      const missing = records.filter((_record, index) => presence[index] === false);
+      const removed: typeof missing = [];
+      for (const record of missing) {
+        if (!dryRun) {
+          // Checked again right before it goes: the sweep above may be seconds old.
+          const [stillGone] = await readProjectFolderPresence([record], { fresh: true });
+          if (stillGone !== false) continue;
+          await removeProject(record.projectId);
+        }
+        removed.push(record);
+      }
+      return {
+        dryRun,
+        removed: removed.map((record) => ({ projectId: record.projectId, displayName: record.displayName, rootPath: record.rootPath })),
+        kept: records.length - removed.length,
+      };
     }
 
     if (method === "projects.touch") {
@@ -3272,7 +3279,7 @@ export function createMultiProjectRpcRequestHandler(
     }
 
     if (method === "projects.getDefaultParentDir") {
-      return defaultParentDir(projectRegistry);
+      return await defaultParentDir(projectRegistry);
     }
 
     if (method === "projects.getHandoffStoragePreflight") {
@@ -3295,7 +3302,7 @@ export function createMultiProjectRpcRequestHandler(
     if (method === "projects.clone") {
       const result =
         await createMachineProjectScaffoldService().cloneRepository(
-          readCloneProjectInput(params),
+          await readCloneProjectInput(params, () => defaultParentDir(projectRegistry)),
         );
       return await decorateProjectWithIcon(
         projectRegistry.add(

@@ -179,7 +179,7 @@ export function externalSessionPreviewChatId(provider: ExternalSessionProvider, 
 }
 
 /**
- * One session's detail. `messages` stays the text tail old clients (iOS, TUI)
+ * One session's detail. `messages` stays the text tail old clients (iOS)
  * read; `events` is the newest page of the full conversation as ADE chat
  * events (or the page before `args.before`), with no "Session imported from"
  * notice. `options.maxEvents` shrinks the page (the phone asks for fewer);
@@ -210,7 +210,7 @@ export async function loadExternalSessionDetail(
     ...(options.maxEvents != null ? { maxEvents: options.maxEvents } : {}),
     ...home,
   }).catch(() => null);
-  // `messages` is the text tail older iOS and TUI clients read. Without a
+  // `messages` is the text tail older iOS clients read. Without a
   // JSONL tail (a store-only Cursor chat) it comes from the preview events.
   const messages = suffix.length
     ? messagesFromRecords(args.provider, suffix)

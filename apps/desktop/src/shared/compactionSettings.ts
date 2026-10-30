@@ -66,7 +66,8 @@ export function claudeSubagentWindowIneffective(settings: ProviderCompactionSett
 export function compactionRuntimeSignature(provider: string, settings: ProviderCompactionSettings): string {
   switch (provider) {
     case "claude": return JSON.stringify([claudeCompactWindow(settings.atTokens), claudeCompactWindow(settings.subagentAtTokens)]);
-    case "codex": return JSON.stringify([settings.atTokens]);
+    case "codex":
+    case "copilot": return JSON.stringify([settings.atTokens]);
     case "pi":
     case "opencode": return JSON.stringify([settings.reserveTokens, settings.keepRecentTokens]);
     default: return "";

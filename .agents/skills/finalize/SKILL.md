@@ -119,7 +119,7 @@ Prompt each with:
 
 Wait for all simplifier agents to complete before moving to Phase 3.
 
-Docs, mobile, CLI, and TUI parity reviewers have moved to `/test` — they should run before `/finalize`. Do not re-spawn them here.
+Docs, mobile, and CLI parity reviewers have moved to `/test` — they should run before `/finalize`. Do not re-spawn them here.
 
 ---
 

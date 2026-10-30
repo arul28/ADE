@@ -64,7 +64,7 @@ vi.mock("./accountMachineDirectoryService", async (importActual) => ({
   },
 }));
 
-vi.mock("../../tuiClient/pairedRemoteConnector", async () => {
+vi.mock("./pairedRemoteConnector", async () => {
   const { startJsonRpcServer } = await import("../../jsonrpc");
   return {
     openPairedCandidate: async (args: { acceptTransport: (transport: unknown) => Promise<unknown> }) => {

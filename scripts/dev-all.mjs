@@ -12,7 +12,7 @@ function usage() {
     "Usage: npm run dev:all -- [options]",
     "",
     "Starts the shared dev runtime, building it first when it is not already running.",
-    "Then run npm run dev:desktop:attach and npm run dev:code:attach in separate terminals.",
+    "Then run npm run dev:desktop:attach in another terminal.",
     "",
     "Options:",
     "  --project-root <path>      Project root. Defaults to the primary checkout for ADE worktrees.",
@@ -72,8 +72,7 @@ async function main() {
   await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
   await ensureRuntime(options.socketPath, options.projectRoot);
   process.stdout.write("[ade] dev runtime is ready.\n");
-  process.stdout.write("[ade] terminal 1: npm run dev:desktop:attach\n");
-  process.stdout.write("[ade] terminal 2: npm run dev:code:attach\n");
+  process.stdout.write("[ade] next: npm run dev:desktop:attach\n");
 }
 
 main().catch((error) => {

@@ -239,7 +239,7 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/prMergeRailUtils.ts` | Shared merge helpers: `readLastMergeMethod` / `writeLastMergeMethod` (the last method the user picked, in `localStorage` under `ade:prs:lastMergeMethod`; every merge surface shares the key), `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), and `buildMergeCommandLineInstructions`. Used by the merge dialog, the Merge card, the `⋯` menu, and the detail pane (auto-merge uses the remembered method). |
 | `shared/prUnifiedChecks.ts` | Reconciler between GitHub `PrCheck` rows and `PrActionRun.jobs`. Produces `UnifiedCheckItem[]` so the Checks sub-tab can display Actions jobs and named checks in a single list with steps + duration + details URL. |
 | `apps/desktop/src/shared/prPipelineState.ts` | Canonical status/conclusion → pipeline-state mapping and worst-state ranking used by service graphing, chat cards, and renderer rollups so cancelled/unknown/running jobs cannot be classified differently by surface. `pipelineStateOf` accepts `waiting` (an Actions run parked on a deployment approval — runs carry it, checks do not) and folds it into `queued`. `STATE_RANK` is exported because three surfaces sort by it (graph rollup, live matrix rollup, list sections) and three hand-written copies is three chances to disagree about where `unknown` sits. |
-| `apps/desktop/src/shared/prChecksRollup.ts` | The canonical checks rollup — the single answer to "was this commit verified?". Two entry points: `rollupChecks(input)` for the service, which sees check runs, legacy commit statuses and required contexts separately; and `rollupPrChecks(rows)` for surfaces that only hold a flattened `PrCheck[]` (the ADE CLI, the `ade code` TUI, chat toolbars). State mapping delegates to `prPipelineState`, so the rollup can never disagree with the per-job rows rendered beneath it. Also exports `NON_CI_PRODUCER_APP_SLUGS`' predicates (`isCiProducerAppSlug`, `isCiProducerCheck`), the `COMMIT_STATUS_APP_SLUG` sentinel, `NO_CI_REASON`, and `CI_PENDING_GRACE_MS`. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
+| `apps/desktop/src/shared/prChecksRollup.ts` | The canonical checks rollup — the single answer to "was this commit verified?". Two entry points: `rollupChecks(input)` for the service, which sees check runs, legacy commit statuses and required contexts separately; and `rollupPrChecks(rows)` for surfaces that only hold a flattened `PrCheck[]` (the ADE CLI, chat toolbars). State mapping delegates to `prPipelineState`, so the rollup can never disagree with the per-job rows rendered beneath it. Also exports `NON_CI_PRODUCER_APP_SLUGS`' predicates (`isCiProducerAppSlug`, `isCiProducerCheck`), the `COMMIT_STATUS_APP_SLUG` sentinel, `NO_CI_REASON`, and `CI_PENDING_GRACE_MS`. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
 | `shared/PrReviewSubmitModal.tsx` | Modal that captures the optional review body and `Approve` / `Request changes` / `Comment` event before submitting through `ade.prs.submitReview`. |
 | `shared/PrManageLaneDialogHost.tsx` | Hosts the shared `ManageLaneDialog` (delete / archive / adopt / appearance) from PR surfaces. Owns the local delete-confirmation state so the lane dialog can mount without polluting the PR detail pane. |
 | `shared/GitHubPrSearchInput.tsx`, `shared/GitHubRepoSyncBar.tsx` | Repo-PR header chrome shared by the GitHub tab and detail views: the magnifying-glass search input and the "syncing…" toolbar that drives manual snapshot refreshes. |
@@ -274,7 +274,7 @@ Shared contracts:
 | `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink`. The same module owns the optional `GitHubStatus` credential-chain fields described in [GitHub connectivity model](#github-connectivity-model). |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict DTOs: predictions, overlaps, proposals and rebase needs. |
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
-| `apps/desktop/src/shared/prNextStep.ts` | `resolvePrNextStep` / `resolvePrNextStepFromStatus`: the one next step for a PR (kind, headline, tone, requirement chips, and the "Merge anyway" skip list). See [Overview (triage layout)](#overview-triage-layout). The Merge card uses it, and `prService` stores the short `PrLaneNextStep` (`kind`, `headline`, `tone`) on `PrLaneSummary.nextStep` for the `ade code` TUI. |
+| `apps/desktop/src/shared/prNextStep.ts` | `resolvePrNextStep` / `resolvePrNextStepFromStatus`: the one next step for a PR (kind, headline, tone, requirement chips, and the "Merge anyway" skip list). See [Overview (triage layout)](#overview-triage-layout). The Merge card uses it, and `prService` stores the short `PrLaneNextStep` (`kind`, `headline`, `tone`) on `PrLaneSummary.nextStep`. |
 | `apps/desktop/src/shared/prBotIdentity.ts` | `classifyPrAuthor`, `isPrBotAuthor`, `normalizeGithubLogin`: tells a review bot or agent from a person, from GitHub's bot flag and the known agent logins. |
 | `apps/desktop/src/shared/prConversationDigest.ts` | `buildPrConversationDigest`: the conversation in triage shape. Open threads are pinned, the rest is one section per push, and bot activity is one row per bot with thread and comment counts (`describeBotGroup`). Person entries are never folded. |
 | `apps/desktop/src/shared/prBodyBotSections.ts` | `splitPrBodyBotSections`: removes the blocks that review bots write into the PR description (CodeRabbit release notes, the Cursor summary, the Devin review badge) by their HTML comment markers. The description keeps only the author's text. Each block becomes a synthetic comment (id prefix `desc-bot:`) from that bot, which the digest folds into the bot's row with the note "from the PR description". No text is dropped. |
@@ -331,7 +331,7 @@ unmapped summaries. See [Lane PR resolution](#lane-pr-resolution-mapped--unmappe
 
 `apps/desktop/src/shared/prChecksRollup.ts` is the only place that decides
 whether a commit was verified. Every surface — PR rows, Lanes, the workspace
-graph, PR detail, the Work-chat `pr_ci` card, iOS, and the `ade code` TUI —
+graph, PR detail, the Work-chat `pr_ci` card, and iOS —
 reads that verdict instead of counting rows itself.
 
 The rollup answers **"was this code verified?"**, not "did anything succeed?".
@@ -370,8 +370,8 @@ at all.
 `PrCheck.appSlug` carries the producing GitHub App's slug. Legacy combined-status
 contexts get the literal `commit_status`, and those **are** CI — Jenkins,
 Buildkite and CircleCI report that way. An absent slug is treated as CI by
-`isCiProducerCheck` (the flattened-row path) because persisted rows, older hosts
-and TUI action payloads predate the field; failing those closed would report "CI
+`isCiProducerCheck` (the flattened-row path) because persisted rows and older hosts
+predate the field; failing those closed would report "CI
 has not run" for every legacy payload whose CI genuinely passed. The
 payload-level predicate `isCiProducerAppSlug` is stricter and refuses to vouch
 for an unattributed run.
@@ -381,7 +381,7 @@ for an unattributed run.
 `PrChecksStatus` has five values. `none` means nothing was observed **and**
 nothing led ADE to expect anything — a repo without CI stays quiet. `not_run`
 means something was expected and nothing verified the commit; it is the only one
-of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the Work-chat `pr_ci` card, and the TUI. The
+of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the Work-chat `pr_ci` card. The
 merge checklist and `deriveMergeBlockers` surface it as a neutral "No CI has run
 on this commit" row rather than a pass.
 
@@ -971,7 +971,7 @@ edge and writes a PK-only CRR tombstone in
 `pull_request_chat_session_dismissals` so the current-branch fallback cannot
 revive it. `selectPrsForChat` is edges-first: a zero-edge chat may display
 unedged current-branch PRs with no silent write, and it never shows a PR
-another chat claimed. PR cards, the desktop Work peek, TUI `/pr`, the iOS
+another chat claimed. PR cards, the desktop Work peek, the iOS
 peek, and merge auto-settlement all use those explicit edges; rows created
 before this table existed fall back to the lane's recent eligible Work chat so
 old data stays useful. Deleting a chat (`sessionService.deleteSession`, the
@@ -1067,11 +1067,11 @@ and a guess should stay bounded.
 
 A merge outranks pending input, background work, and every other ordinary
 settlement blocker. It does **not** outrank a chat turn that is running right
-now, because settle teardown refuses to interrupt one for a machine-initiated
-settle (see
-[`settle-teardown-design.md`](../terminals-and-sessions/settle-teardown-design.md)
-— `mayInterruptActiveTurn`). Attempting anyway would just abort on every poll
-for as long as the turn runs. It also does not settle a chat that still has
+now, because a working chat cannot be settled: the settle check
+(`settleTurnCheck.ts`, see
+[`terminals-and-sessions/README.md`](../terminals-and-sessions/README.md))
+refuses it with `turn_running` for every caller. Attempting anyway would just
+abort on every poll for as long as the turn runs. It also does not settle a chat that still has
 other open or draft linked PRs — fallback unedged PRs do not count.
 
 So `hasActiveChatTurn(sessionId)` and `sessionHasOpenLinkedPrs` are checked
@@ -1092,10 +1092,9 @@ before each `settleSessions…` call. The active-turn gate is deliberately narro
   turns, so reading it would defer forever and no merged PR would ever be
   settled or announced.
 - A **thrown** liveness read counts as active and defers this poll. An
-  unreachable liveness source is not evidence the turn ended, and teardown is
-  not a backstop here — a `readActiveWork` that fails the same way returns
-  `timedOutResidue` with no `abortedBy`, so the settle would slip through
-  unnoticed.
+  unreachable liveness source is not evidence the turn ended. The settle check
+  fails closed the same way (a turn read that does not answer in 10s refuses
+  with `status_unknown`); this gate keeps the deferral cheap.
 
 There is no per-abort-reason bookkeeping and no set of previously-aborted
 sessions. The gate re-reads liveness on every attempt, so *every* abort reason
@@ -1902,6 +1901,12 @@ The PR page loads only what the visible surface needs:
   demand.
 - Background refresh updates only the stale subset using
   fingerprints, not every PR on every cycle.
+- A refresh that changes nothing in the row except its sync time does not
+  write the row: `pull_requests` is a synced table, and each write went to
+  every phone and peer. `prService` keeps that time in memory (applied to
+  every row read, so staleness and summaries see it) and writes it only with a
+  real change or once the stored `last_synced_at` is 15 minutes old. After a
+  restart a row reads as stale and refreshes once.
 
 ## Merge flow
 
@@ -1964,7 +1969,7 @@ The desktop merge-result banner (`PrDetailPane`, shown in the PRs tab and the
 Work tools pane) lists those commits with **Merge with these**, which re-runs
 the same merge — method, commit message, and override — against the new head,
 and **See what changed**, which opens GitHub's compare of only the new commits.
-Nothing merges without that click. The TUI and iOS show the server's message
+Nothing merges without that click. iOS shows the server's message
 (`error`); their next tap carries the refreshed head.
 
 `land` itself resolves through `resolvePrTarget`, so merging never required a
@@ -1990,10 +1995,6 @@ Where each surface stands:
   That is the *only* accepted spelling — `--delete-branch` already means the
   **local** branch in `ade lanes delete`, so accepting it here would give one
   flag two opposite meanings.
-- **`/pr land` in the `ade code` TUI** takes a `delete-remote-branch` token
-  alongside `bypass`, and the confirmation step states which way it will go
-  ("The remote branch is kept. Add `delete-remote-branch` to remove it after the
-  merge.").
 - **Remote/mobile** callers pass it through `parseLandPrArgs` in
   `syncRemoteCommandService`; without that pass-through an explicit request to
   delete would silently merge and keep the branch.
@@ -2107,8 +2108,7 @@ ADE supports agent-driven resolution of PR issues for two scopes:
 > live today as `pr_*` RPC tools dispatched from
 > `apps/ade-cli/src/adeRpcServer.ts` — `pr_get_checks`,
 > `pr_get_review_comments`, `pr_rerun_failed_checks`,
-> `pr_reply_to_review_thread`, `pr_resolve_review_thread` — and an agent (or the
-> TUI) can call them directly. `pr_get_check_log` and
+> `pr_reply_to_review_thread`, `pr_resolve_review_thread` — and an agent can call them directly. `pr_get_check_log` and
 > `pr_refresh_issue_inventory` are named but unimplemented. See
 > [chat/tool-system.md](../chat/tool-system.md#pr-issue-resolution).
 
@@ -2150,7 +2150,7 @@ only a conflict tinting the glyph. CI cards use a stable
 into one episode and pending → terminal updates merge
 in place rather than append. Review cards include the latest reviewer and
 unresolved-thread count. Every card carries a PR `navTarget`; CI targets include
-`detailTab: "checks"` on desktop, iOS, and TUI/deeplink fallback. Rows without a
+`detailTab: "checks"` on desktop, iOS, and deeplink fallback. Rows without a
 chat edge use the recent eligible Work chat in the PR's lane as a compatibility
 fallback, so older PRs do not lose cards while new chat-specific links settle
 the routing.
@@ -2181,7 +2181,9 @@ Cards are news for the user; they never start a turn. **Watch** and **Ship**
 are how a chat asks to be woken when its PR changes. Source:
 `shared/prWatch.ts` (pure evaluator, wake text, wake card),
 `main/services/prs/prChatWatchStore.ts` (rows), `main/services/prs/prWatchService.ts`
-(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control).
+(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control),
+`renderer/components/chat/PrWatchWakeLine.tsx` (the wake's line in the
+transcript; iOS `WorkPrWatchWakeLine`).
 
 - **Turning it on.** Beside the header PR pill, while the PR is open, sits
   one icon button with a caret: a slashed eye (off), an eye (Watch, sky) or a
@@ -2246,15 +2248,18 @@ are how a chat asks to be woken when its PR changes. Source:
   boundary of a running one. What the agent was told is recorded only after
   delivery succeeds, guarded so a watch stopped or restarted mid-read is not
   overwritten (a mode switch mid-read keeps the told state, so nothing is told
-  twice, and the switched watch runs again right after the pass). The transcript shows the wake as its card (`pr_watch_wake`,
-  "Agent notified · watching"), with the exact text folded underneath — never
-  as a user bubble.
+  twice, and the switched watch runs again right after the pass). The transcript shows the wake as one divider line (`pr_watch_wake`,
+  "Watching PR #1991 · 8 new comments ›", then a PR icon that opens the PR in
+  the chat's tools pane; "Shipping" or "Stopped watching" by the watch's state
+  when it was sent). A wake about checks shows their counts with check icons
+  in place of words. Clicking the line shows what changed and the exact text
+  the agent got. It is never a user bubble.
 - **Stopping.** The PR merging or closing (one last wake, which still carries
   remarks left on the way out), the user or agent
   turning it off, the chat being archived or deleted, 10 comment-only wakes in
   a row (a bot loop), or 15 minutes of GitHub being unreadable (one last wake
-  with the reason). A settled chat keeps its watch but is not woken until it is
-  unsettled. GitHub rate-limit pauses pause the reactor too.
+  with the reason). A settled chat keeps its watch and is still woken (settle stops
+  nothing); the wake's turn takes it out of settled. GitHub rate-limit pauses pause the reactor too.
 - **Machine-local.** Both tables are excluded from CRR sync: the watch wakes
   the chat on the machine that runs it, and a synced row would let a second
   machine wake its own copy of the chat as well.

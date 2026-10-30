@@ -17,12 +17,11 @@ Agent-focused command-line interface for ADE.
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -181,12 +180,11 @@ Agent-focused command-line interface for ADE.
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -346,43 +344,6 @@ ADE Triage
     your project.
     Set ADE_TRIAGE_NO_FETCH=1 to skip the playbook fetch entirely.
 
-## ade code --help
-ADE Code
-
-  Launch the terminal-native ADE Work chat. It uses the same project lanes,
-  chat sessions, transcript state, and slash commands as desktop ADE, but it
-  does not require the desktop app to be running.
-
-    $ ade code                                      Start the TUI for the current project
-    $ ade code --print-state                       Smoke-test attach/embed state
-    $ ade code --embedded                          Force the embedded runtime fallback
-    $ ade code --require-socket                    Fail instead of starting an embedded runtime when no runtime endpoint exists
-    $ ade code --socket /tmp/ade.sock              Attach to a specific local endpoint
-    $ ade code --lane <id|name|branch>             Launch focused on a specific lane
-    $ ade code remote --target <machine> --project <project>
-                                                     Launch against a saved desktop remote machine
-    $ ade code remote --target <machine> --route <auto|lan|tailscale|relay>
-                                                     Choose or constrain the paired connection path
-    $ ade code remote session --target <machine> --project <project> --session <session>
-                                                     Open a specific remote chat or provider CLI terminal session
-    $ ade code remote --list-targets               List saved remote machines
-    $ ade code remote --target <machine> --list-projects
-                                                     List ADE projects available on the remote machine
-    $ ade code remote session --target <machine> --project <project> --list-sessions
-                                                     List remote chat and provider CLI terminal sessions
-    $ ade --project-root <path> code                Launch against a specific ADE project
-
-  Keys:
-    ctrl-o        Open or focus lanes and chats
-    ctrl-p        Open or focus details
-    ctrl-g        Split chat: add another chat tile
-    ctrl-w        Split chat: close focused tile
-    tab           Split chat: cycle focused tile
-    shift-tab     Cycle pane focus
-    esc           Return or cancel the active pane
-    ?             Help when it is the first prompt character
-    /             Command palette
-
 ## ade skill --help
 ADE Skills
 
@@ -403,11 +364,20 @@ ADE Skills
 ## ade lanes --help
 Lanes
 
-  Every git worktree of the project is a lane. "ade lanes list" reconciles lane
-  rows against git on each call, so a worktree you created by hand shows up as a
-  lane with no attach step, and a lane whose worktree is gone from git and disk
-  stops being listed. Most commands accept either --lane <lane-id> or a
-  positional lane id.
+  New work off the project default (usually what you want)   ade lanes create --name <n>
+  Continue work that is in another lane / branch             ade lanes create --name <n> --from <branch> --on local
+  ...and bring its uncommitted changes too (copied)          ade lanes create --name <n> --from <branch> --on uncommitted
+  Work directly on an existing branch                        ade lanes create --name <n> --existing-branch <branch>
+
+  ade lanes create [--name <name>] [--description <text>]
+                   [--from default|primary|<branch>] [--on remote|local|uncommitted] [--branch-name <branch>]
+                   [--existing-branch <branch>]   (no new branch: the lane works directly on <branch>)
+                   [--template <id>|--no-template]
+                   [--linear-issue-json '{...}' [--start-chat --type subagent|peer --provider <p> --model <m>]]
+                   [--linear-issues-json '[{...},{...}]'] [--text|--json]
+  ade lanes defaults [--text|--json]
+  ade lanes defaults set [--from default|primary] [--on remote|local|uncommitted] [--template <id>|--no-template]
+  ade lanes list | show | archive | unarchive | delete | appearance | templates | actions
 
   The project is the shell's project (ADE_PROJECT_ROOT, else the checkout you
   stand in). --project-root <dir>, before or after the subcommand, names
@@ -417,18 +387,14 @@ Lanes
   away (best effort; the lane still works locally if the push fails), so the
   branch is ready for a PR.
 
-    $ ade lanes list --text                        Show lane stack graph and branch names (adopts new worktrees)
+    $ ade lanes list --text                        List lanes and their branches (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
                                                     Restore the worktree to the lane's recorded branch (refuses if dirty)
     $ ade lane drift resolve --lane <lane> --keep-head
                                                     Re-point the lane (and its name) at the live HEAD branch
-    $ ade lanes create --name <name>                Create a lane from the current project context
-    $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
-    $ ade lanes create --name <name> --template <id> Set up the new lane with a template
-    $ ade lanes create --name <name> --no-template  Create the worktree without environment setup
-    $ ade lanes templates list --text                List this machine's lane templates
+    $ ade lanes templates list --text                List this project's lane templates
     $ ade lanes templates show <id>                  Show one lane template
     $ ade lanes templates save --json '<...>'        Save a LaneTemplate JSON object
     $ ade lanes templates default [<id>] [--clear]  Read or change the default lane template
@@ -436,25 +402,11 @@ Lanes
     $ ade lanes templates delete <id>                Delete a lane template
     $ ade lanes deps [--refresh] --text              Check lockfiles and installed dependencies
     $ ade lanes templates list --machine "<name>" --text
-                                                    Templates are stored per machine; --machine targets that computer
+                                                    Templates follow your account per repository; --machine reads them via that computer
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
     $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
                                                     Unlink one issue (or all non-primary links) from a lane
-    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --type subagent --provider codex --model <m>]
-                                                    Create a lane from an issue, optionally auto-launching an agent
-                                                    Spawn flags: --type subagent|peer, --chat-parent <session>, --no-parent
-    $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
-                                                    Create one lane per issue (partial success, no orphans)
-    $ ade lanes create --base <ref>                 Override the base ref (omit to use the configured new-lane base, remote-first by default)
-    $ ade lanes create --parent <lane> --name <name>
-                                                    Create from a parent lane's HEAD
-    $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
-    $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
-                                                    Child lanes carry the parent's unmerged work
-    $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
-                                                    worktree (fails if the branch is already checked out somewhere —
-                                                    that worktree is already a lane)
     $ ade lanes archive <lane>                      Archive a lane in ADE; also brings down the Docker services
                                                     its env init started (best-effort — a failed teardown still archives)
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
@@ -466,9 +418,7 @@ Lanes
                                                     and restarts Docker in the background (watch lane env init events).
                                                     Run "ade lanes action initEnv --arg laneId=<lane>" for the full sequence
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
-    $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
-    $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
-                                                    Reparent and stack onto a specific branch (e.g. origin/main)
+    $ ade lanes rename <lane> --name "<name>"       Rename a lane (its branch keeps its name)
     $ ade lanes appearance <lane> --emoji 🐛        Set a lane emoji (use --emoji "" to clear)
     $ ade lanes actions --text                      List callable lane service methods
 
@@ -504,6 +454,7 @@ Git
                                                     pop/drop resolve the saved stash OID before changing it
     $ ade git rebase --lane <lane>                  Rebase the lane onto its base
     $ ade git rebase continue --lane <lane>         Continue an in-progress rebase
+    $ ade git merge --lane <lane>                   Merge origin/<base> into the lane; undone on conflict
     $ ade git conflict show --lane <lane> --text    Inspect merge/rebase conflict state
     $ ade git conflict resolve --kind rebase        Continue after manual conflict resolution
     $ ade git tag <sha> --name v1.0.0 --lane <lane> Create a tag on a commit
@@ -638,6 +589,8 @@ Pull requests
                                                       --pr takes an ADE PR id (from 'ade prs list'), not a GitHub number or URL
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
+    $ ade prs assignees <pr> --add alice --remove bob
+                                                    Add or remove assignees; anyone not named is kept
     $ ade prs reviewers request <pr> alice bob      Request reviewers
 
 ## ade shell --help
@@ -684,6 +637,24 @@ Attached terminal
     $ ade terminal write --terminal <session-id> --data "y\n"
     $ ade terminal signal --terminal <session-id> --signal SIGINT
 
+  Watch a terminal instead of polling it. ADE wakes your chat when the
+  terminal prints something new (after it goes quiet for a few seconds), with
+  the last ~4 KB cleaned of colors and redraws. Output already on screen when
+  the watch starts never wakes you. The terminal exiting ends the watch with
+  one last wake that carries the exit code.
+
+    $ ade terminal watch <terminal-id> --text        Wake this chat on new output
+    $ ade terminal watch <terminal-id> --match error Only on lines containing "error"
+    $ ade terminal watch <terminal-id> --match "ready|listening" --lifetime 30m
+    $ ade terminal watch --command "npm run dev" --match "error|ready"
+                                                    Start a shell in the chat's lane and watch it
+    $ ade terminal watches --text                   This chat's watches (--all for every chat)
+    $ ade terminal unwatch <watch-id>               Stop one quietly (no id: all of this chat's)
+
+  Lifetime defaults to 2h (max 24h). A watch stops itself after 20 wakes in
+  an hour. Watches run on the machine that runs the chat, watch only that
+  machine's terminals, and end if that machine's ADE restarts.
+
 ## ade chat --help
 Work chats
 
@@ -729,7 +700,9 @@ Work chats
                                                     the default lane template, then creates the chat and sends the prompt.
                                                     Returns at once with the reserved launch/lane/chat ids; --wait polls
                                                     until it completes (exit 0) or fails/cancels/times out (exit 1),
-                                                    printing a stage line to stderr with --text. Also: --base <ref>,
+                                                    printing a stage line to stderr with --text. Choose a start with
+                                                    --from default|primary|<branch> and --on remote|local|uncommitted,
+                                                    or work directly on --existing-branch <branch>. Also:
                                                     --lane-name, --title, --effort, --permissions, --fast, --launch-id,
                                                     --lane-id (UUIDs; generated when omitted). The chat is top-level;
                                                     use 'ade new chat --lane auto --type ...' for a parented child.
@@ -741,9 +714,12 @@ Work chats
     $ ade chat status <session>                     Live turn status: RUNNING / BLOCKED / WAITING / IDLE
                                                     Exit 0 running or waiting (turn ended, background
                                                     agents/shells still running), 1 idle, 2 blocked. Use --text.
-                                                    Adds a 'pending' line while an effort/fast-mode change
-                                                    waits for background work.
+                                                    Adds an 'effort' line while the running work keeps an
+                                                    older effort than the one picked, and a 'pending' line
+                                                    while a fast-mode change waits for background work.
                                                     Adds a 'resume' line while a usage limit is live.
+    $ ade chat locate <session> --text              Which machine on your account has this chat. A chat command
+                                                    whose id is not found here looks there by itself
     $ ade chat resume-now <session>                 Send the usage-limit continue prompt now (alias: resume)
                                                     Exit 1 when the host reports no live usage limit.
     $ ade chat continue-on-account <session>        Continue a usage-limited chat on another account that still has room
@@ -756,11 +732,15 @@ Work chats
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     --clear takes that hand back down (alias: 'ade chat unask'):
-                                                    only the marker this chat raised, never one the user raised.
+                                                    only the marker this chat or a subagent it started raised
+                                                    (--session <subagent>), never one the user raised.
                                                     Clear it when you asked and then kept working anyway, so the
                                                     row stops saying "Needs you" about a question nobody is on.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a
                                                     merged PR) settles a session — report your outcome with 'chat note'.
+    $ ade chat inbox --text                         Every chat in the project that waits on you, each with its question
+                                                    or approval inline and the exact 'chat respond' that answers it
+                                                    (--all-machines: every machine on your account)
     $ ade chat pending <session> --text             The questions/approvals a chat is blocked on: item id, options,
                                                     and the exact 'chat respond' command for each
     $ ade chat respond <session> --option 2         Answer the chat's pending question (alias: answer). Finds the one
@@ -890,7 +870,9 @@ Work chats
     $ ade chat interrupt <session> --mode <mode>    stop_and_clear | stop_only | stop_and_background | stop_and_clear_and_background
                                                     | stop_and_clear_and_children | stop_everything_and_children
     $ ade chat stop-task <session> <taskId>         Stop one Claude or OpenCode background task; siblings keep running
-    $ ade chat restart <session> [--stop]           Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP)
+    $ ade chat restart [<session>] [--stop | --after-turn]
+                                                    Restart the agent session: fresh process, same conversation (picks up new skills/plugins/MCP).
+                                                    With no session, restarts your own chat once this turn ends (--stop is ignored for your own chat)
     $ ade chat archive <session>                    Archive a chat (hidden from lists; ade chat unarchive <session> brings it back)
                                                     --dry-run prints the call without running it
     $ ade chat demote <session>                     Take over a subagent: it becomes a peer and reports stop
@@ -1000,12 +982,11 @@ Agent-focused command-line interface for ADE.
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -1268,12 +1249,11 @@ Agent-focused command-line interface for ADE.
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)
@@ -1442,6 +1422,7 @@ Proof and computer use
     $ ade proof prune                               Preview broken proof records (does not delete)
     $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Record the lane's Mac Desktop display
+    $ ade proof record --seconds 36 --plain         Same, in real time (no still stretches cut)
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
     $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":".ade/tmp/proof.png"}]}' Ingest external visual proof artifacts
 
@@ -1565,17 +1546,19 @@ Apple Development
     $ ade apple stop --text                     Power the lane's device OFF (session-only: shutdown)
     $ ade apple device-list --installed --text   Installed simulators for a picker
     $ ade apple device-list --text               The one device this lane owns
-    $ ade apple device-detach --text             Give up the lane's device; the simulator stays installed
+    $ ade apple device-detach --text             Give up the lane's device (an ADE-made one is deleted ~5-20 min later)
     $ ade apple device-promote --device <id>     Make an extra device the lane's own (the old one is kept)
     $ ade apple device-delete --text             Delete the lane's ADE device (attached devices refuse)
     $ ade apple device-cleanup --text            Delete leftover ADE devices, release ended lanes
     $ ade apple test --scheme ADE --text         xcodebuild test on the lane's device, cache in the lane
+    $ ade apple install --device <id> --launch   Build once, install (and start) on an extra device
 
   Recording:
     $ ade apple record-start --text              Start a manual recording
     $ ade apple record-stop --keep --text        Stop and keep (or --discard)
     $ ade apple record-list --text               List recordings for this lane
     $ ade apple record-delete --id <id> --text   Delete a recording this chat owns
+    $ ade apple auto-record off --text           Agent input on this lane starts no recording (--no-record: one command)
     $ ade apple frame --out shot.png --text      Grab one decoded stream frame
 
   Device tools:
@@ -1604,15 +1587,19 @@ Apple Development
     $ ade apple app-state --bundle-id <id>       Report running state and pid
     $ ade apple foreground --text                Which app the device has in front
     $ ade apple foreground --wait 10 --text      Same, waiting up to 10 s for an app after a launch
-    $ ade apple lease --wait 300 --text          Take a turn on the lane's device (queues behind others)
+    $ ade apple lease --wait 300 --holder <name> Take a turn on the lane's device (queues behind others, same chat too)
+    $ ade apple lease --token <t>                Renew your turn (only the token renews)
     $ ade apple lease release --token <t>        Hand the device to the next agent in line
+    $ ade apple window --left --text             Lay out the front app's iPad window (--size WxH, --fill, --split, ...)
 
   Event log:
     $ ade apple log-start --bundle-id <id>       Start the device event log
     $ ade apple log --since <cursor> --text      Read new rows
     $ ade apple log-stop --text                  Stop the log
 
-  --bundle-id is required: "log stream" reads the whole device. There is one
+  --bundle-id is required: "log stream" reads the whole device. It keeps the
+  app's own process and its bundle-id subsystem; --subsystem <prefix> and
+  --process <name> name others. There is one
   log process per host, so the chat that started the running log is the only
   one that can stop it; --force takes it.
 
@@ -1620,6 +1607,7 @@ Apple Development
     $ ade apple snapshot --text                  Read the refs on screen first
     $ ade apple find-element --label Continue    Find one element by query
     $ ade apple tap-element --label Continue     Tap the element, not a pixel
+    $ ade apple tap-element --label Photo --hold-ms 1000   Long-press the element
     $ ade apple fill-element --identifier email --value ada@example.com
     $ ade apple wait-for-element --label Welcome --timeout-ms 8000
     $ ade apple wait-for-element --label Spinner --gone
@@ -1629,6 +1617,7 @@ Apple Development
   Input and selection:
     $ ade --socket apple select --x 120 --y 420  Add simulator UI context to chat
     $ ade apple tap 120 420                      Tap in the simulator
+    $ ade apple long-press 120 420 --duration-ms 1000   Hold a press (context menus)
     $ ade apple drag 120 700 120 250             Drag in the simulator
     $ ade apple swipe 120 700 120 250            Swipe in the simulator
     $ ade apple scroll down --anchor-x 200 --anchor-y 500  Scroll the view under a point
@@ -1818,6 +1807,7 @@ ADE browser
     $ ade --socket browser switch --tab <tab-id>
     $ ade --socket browser close --tab <tab-id>
     $ ade --socket browser dev-servers --text      Dev servers running in this lane
+    $ ade --socket browser dev-servers stop 5173   Stop a server this chat started
     $ ade --socket browser actions --text          List built_in_browser actions
 
   "dev-servers" lists the dev servers this machine's runtime knows for the
@@ -1825,7 +1815,10 @@ ADE browser
   ADE terminals or in an agent's own shell, plus listening ports whose process
   runs from the lane's worktree (a server started in the background shows up a
   few seconds after the command that started it returns). It needs no desktop.
-  ADE never connects to a port to find it.
+  ADE never connects to a port to find it. "dev-servers stop <port>" stops a
+  server this chat's agent started (SIGTERM to its process group, SIGKILL after
+  3s; taskkill /T on Windows). It refuses a port held by anything else, and
+  never stops ADE, an agent CLI or a terminal.
 
   No desktop on this machine
 
@@ -2027,12 +2020,11 @@ Agent-focused command-line interface for ADE.
     $ ade account token create                      Print a durable token for ADE_ACCOUNT_TOKEN
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines show <name|key> --text           Read one machine's status, projects, lanes and recent chats
-    $ ade machines connect <id|name>                Connect ADE Code to an account machine
-    $ ade code                                      Open ADE Work chat in the terminal
+    $ ade machines connect <id|name>                Save an account machine on this install
     $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed ADE desktop app
-    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac Desktop
-                                                     or Windows Desktop)
+    $ ade screen start | observe | click | proof    Drive this lane's screen (Mac, Windows
+                                                     or Linux Desktop)
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
                                                      Build a shareable deeplink (copies to clipboard)

@@ -25,6 +25,8 @@ export const EVENTS = Object.freeze({
   PUBLISH_FAILING: "ade_publish_failing",
   RELAY_SUPPRESSED: "ade_relay_suppressed",
   ACCOUNT_SESSION_UNREADABLE: "ade_account_session_unreadable",
+  // Recorded server-side by the account-directory Worker's Clerk webhook.
+  SIGNED_UP: "ade_signed_up",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
@@ -71,6 +73,9 @@ export const PROPERTIES = Object.freeze({
   TIME_SINCE_INSTALL_SECONDS: "time_since_install_seconds",
   USER_ACTION: "user_action",
   CTA_LABEL: "cta_label",
+  REFERRING_DOMAIN: "$referring_domain",
+  UTM_SOURCE: "utm_source",
+  FIRST_OPEN: "first_open",
   POSITION: "position",
 });
 
@@ -84,6 +89,13 @@ const eventNode = (event, customName, options = {}) => ({
   ...(options.math ? { math: options.math } : {}),
   ...(options.mathProperty ? { math_property: options.mathProperty } : {}),
 });
+
+/** Every button that starts a download: the Mac/Windows dialog openers, the dialog's own buttons, and iPhone. */
+// Buttons that start a download (or open TestFlight). download_for_mac and
+// download_for_windows only open the install dialog, so they are left out.
+const DOWNLOAD_CTA_LABELS = Object.freeze([
+  "download_for_ios", "download_mac_arm64", "download_mac_x64", "download_windows_x64",
+]);
 
 const eventProperty = (key, value, operator = "exact") => ({
   key,
@@ -262,7 +274,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "active-installations-by-surface",
           "Feature-active installations by surface",
-          "Unique installations with successful feature activity on desktop, mobile, TUI, web, or API surfaces.",
+          "Unique installations with successful feature activity on desktop, mobile, CLI, web, or API surfaces. Before the CLI surface was renamed it was reported as `tui`.",
           trends({
             series: [eventNode(EVENTS.FEATURE_USED, "Feature-active installations", { math: "dau" })],
             breakdown: PROPERTIES.SURFACE,
@@ -452,6 +464,52 @@ export const dashboardSpec = Object.freeze({
             interval: "month",
             display: "ActionsBarValue",
             breakdown: PROPERTIES.CTA_LABEL,
+          }),
+        ),
+        insight(
+          "download-clicks-by-referrer",
+          "Download clickers by referring site",
+          "Unique visitors pressing a button that starts a download or opens TestFlight each week, by the site that sent their visit ($direct when none). Installs cannot be tied to one visit, so compare these per source with the installs card below.",
+          trends({
+            series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
+              math: "dau",
+              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+            })],
+            breakdown: PROPERTIES.REFERRING_DOMAIN,
+            breakdownLimit: 10,
+          }),
+        ),
+        insight(
+          "download-clicks-by-campaign",
+          "Download clickers by campaign source",
+          "Unique visitors pressing a button that starts a download or opens TestFlight each week, by the utm_source of the link they arrived on. Untagged visits show as none.",
+          trends({
+            series: [eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
+              math: "dau",
+              properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+            })],
+            breakdown: PROPERTIES.UTM_SOURCE,
+            breakdownLimit: 10,
+          }),
+        ),
+        insight(
+          "downloads-vs-installs",
+          "Download clicks vs installs, first iOS opens and sign-ups",
+          "Weekly: visitors who pressed a download button, new desktop/brain installs (development builds excluded), first opens of the iOS app, and new accounts. The gap between the first line and the rest is the download-to-launch drop-off.",
+          trends({
+            series: [
+              eventNode(EVENTS.MARKETING_CTA_CLICKED, "Download clickers", {
+                math: "dau",
+                properties: [eventProperty(PROPERTIES.CTA_LABEL, DOWNLOAD_CTA_LABELS)],
+              }),
+              eventNode(EVENTS.APP_INSTALLED, "New installs", {
+                properties: [eventProperty(PROPERTIES.INSTALL_SOURCE, "development", "is_not")],
+              }),
+              eventNode(EVENTS.MOBILE_APP_OPENED, "First iOS opens", {
+                properties: [eventProperty(PROPERTIES.FIRST_OPEN, "true")],
+              }),
+              eventNode(EVENTS.SIGNED_UP, "Sign-ups"),
+            ],
           }),
         ),
         insight(

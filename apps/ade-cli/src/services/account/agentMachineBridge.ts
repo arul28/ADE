@@ -28,7 +28,7 @@ import {
   type RemoteCallerClaim,
 } from "../../../../desktop/src/shared/runtimeClientNames";
 import type { AdeAccountMachine } from "../../../../desktop/src/shared/types/account";
-import { withTimeout } from "../../tuiClient/remoteLaunchBudget";
+import { withTimeout } from "../../lib/remoteLaunchBudget";
 import type { ExternalWakeDeliveryResult } from "../../../../desktop/src/main/services/chat/externalChats";
 import {
   MACHINE_BRIDGE_DEFAULT_CALL_TIMEOUT_MS,

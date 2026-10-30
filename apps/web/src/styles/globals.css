@@ -130,10 +130,6 @@ body {
   will-change: transform;
 }
 
-.hero-splash-carousel:hover .animate-splash-marquee-ltr {
-  animation-play-state: paused;
-}
-
 /* ── Gradient text shimmer ──────────────────── */
 @keyframes gradient-shift {
   from { background-position: 0% center; }
@@ -168,12 +164,6 @@ body {
   to { background-position: 250% center; }
 }
 
-/* ShipShowcase tab-rotation progress bar — compositor-only transform fill. */
-@keyframes ship-progress {
-  from { transform: scaleX(0); }
-  to { transform: scaleX(1); }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .animate-marquee,
   .animate-marquee-reverse,
@@ -188,10 +178,6 @@ body {
     -webkit-background-clip: unset;
     background-clip: unset;
     color: var(--color-violet-bright);
-  }
-
-  .hero-splash-carousel .animate-splash-marquee-ltr {
-    transform: translateX(0);
   }
 }
 

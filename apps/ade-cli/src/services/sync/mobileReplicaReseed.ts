@@ -39,7 +39,12 @@ export function createMobileReplicaReseedCache(targetDbVersion: number): MobileR
   };
 }
 
-export function advanceMobileReplicaReseedCache(args: {
+/**
+ * One step of the reseed build: export the next db_version window and fold it into the cache. The
+ * export is awaited, so the host can read it off the event loop (`exportChangesSinceOffThread`):
+ * on a real project one window held the brain 30-50 ms when read on its own connection.
+ */
+export async function advanceMobileReplicaReseedCache(args: {
   cache: MobileReplicaReseedCache;
   versionWindow: number;
   exportChangesSince: (
@@ -50,10 +55,10 @@ export function advanceMobileReplicaReseedCache(args: {
       excludeTables: readonly string[];
       rejectOversizedVersionGroup: true;
     },
-  ) => CrsqlChangeRow[];
+  ) => CrsqlChangeRow[] | Promise<CrsqlChangeRow[]>;
   excludeTables: readonly string[];
   includeChange: (change: CrsqlChangeRow) => boolean;
-}): MobileReplicaReseedCache {
+}): Promise<MobileReplicaReseedCache> {
   const { cache } = args;
   if (cache.status !== "building") return cache;
 
@@ -63,7 +68,7 @@ export function advanceMobileReplicaReseedCache(args: {
   );
   let exported: CrsqlChangeRow[];
   try {
-    exported = args.exportChangesSince(cache.scanFromDbVersion, {
+    exported = await args.exportChangesSince(cache.scanFromDbVersion, {
       maxRows: MOBILE_REPLICA_RESEED_BUILD_ROWS_PER_POLL,
       throughDbVersion: scanThroughDbVersion,
       excludeTables: args.excludeTables,

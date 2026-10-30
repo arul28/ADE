@@ -197,16 +197,14 @@
     },
     {
       "id": "mobile-and-clients",
-      "title": "Mobile, terminal, and web clients",
+      "title": "Mobile and web clients",
       "sources": [
         "apps/ios/**",
-        "apps/web/**",
-        "apps/ade-cli/src/tuiClient/**"
+        "apps/web/**"
       ],
       "pages": [
         "tools/ios-companion",
         "tools/ios-simulator",
-        "tools/ade-code",
         "tools/remote-machines"
       ]
     },

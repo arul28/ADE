@@ -1,8 +1,8 @@
 /**
  * Copy for the Claude `resume_return` dialog.
  *
- * Shared because the sentence is written once and read on four surfaces: the
- * desktop card, the hosted web client, the phone, and `ade code`. All four
+ * Shared because the sentence is written once and read on three surfaces: the
+ * desktop card, the hosted web client, and the phone. All three
  * render the same `PendingInputRequest` the main process built with this
  * helper, so the formatting lives next to the contract rather than in whichever
  * client drew the card first.

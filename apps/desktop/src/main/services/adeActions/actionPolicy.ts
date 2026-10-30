@@ -211,7 +211,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, CtoOnlyRule>> 
   // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
   // is a subjective judgment and agents are unreliable at it, so settlement is
   // reachable only from surfaces that connect at cto role — the desktop
-  // renderer's remote-runtime client and the `ade code` TUI, both of which are
+  // renderer's remote-runtime client, which is
   // driven by the user — plus the deterministic PR-merge policy, which never
   // goes through this bridge at all. A session-bound agent CLI authenticates as
   // `agent` and is refused here. Do not add a self-service
@@ -979,7 +979,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "get",
     "getDelta",
     "getLifecycleSettings",
-    "getSettleResidue",
     "list",
     "moveOnBoard",
     "readTranscriptTail",

@@ -2,14 +2,15 @@
 // call stack that started it (see docs/perf/macos-baseline.md, "Idle").
 // Load it into a dev app and its brain with
 //   NODE_OPTIONS="--require <abs path>/spawn-trace.cjs"
-// Each process appends JSON lines to $ADE_SPAWN_TRACE_DIR (default /tmp)/spawns-<pid>.log;
+// Each process appends JSON lines to $ADE_SPAWN_TRACE_DIR (default the OS temp dir)/spawns-<pid>.log;
 // summarize them with spawn-report.mjs. Never load it into the installed app.
 const cp = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const util = require("node:util");
 
-const out = path.join(process.env.ADE_SPAWN_TRACE_DIR || "/tmp", `spawns-${process.pid}.log`);
+const out = path.join(process.env.ADE_SPAWN_TRACE_DIR || os.tmpdir(), `spawns-${process.pid}.log`);
 
 function record(kind, file, args) {
   try {
@@ -25,7 +26,7 @@ function record(kind, file, args) {
       at: Date.now(),
       kind,
       cmd: String(file),
-      args: (Array.isArray(args) ? args : []).slice(0, 4).map((arg) => String(arg).slice(0, 60)),
+      args: (Array.isArray(args) ? args : []).slice(0, 16).map((arg) => String(arg).slice(0, 60)),
       stack: frames,
     })}\n`);
   } catch {

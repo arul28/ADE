@@ -115,7 +115,7 @@ import type {
   ReactToPrCommentArgs,
 } from "../../../shared/types";
 import { GITHUB_CREDENTIAL_STORE_UNREADABLE_COPY } from "../../../shared/types";
-import type { AdeDb } from "../state/kvDb";
+import type { AdeDb, SqlValue } from "../state/kvDb";
 import { createRetentionPruneGate } from "../state/dbMaintenanceApi";
 import type { Logger } from "../logging/logger";
 import { createPrListFilterOps } from "./prListFilters";
@@ -904,6 +904,8 @@ export const GITHUB_SNAPSHOT_TTL_MS = 120_000;
 export const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
 const BACKGROUND_REFRESH_MIN_STALE_MS = 2 * 60_000;
 const BACKGROUND_REFRESH_CLOSED_STALE_MS = 15 * 60_000;
+/** How old a stored `last_synced_at` may get before an unchanged refresh writes it again. */
+const PR_SYNCED_AT_PERSIST_MS = 15 * 60_000;
 const MERGEABILITY_POLL_DELAYS_MS = [500, 1_000, 2_000] as const;
 
 // reconcile-on-focus throttle constants. The min-interval collapses a burst of
@@ -1118,6 +1120,20 @@ function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): bool
     || Number(row.deletions ?? 0) !== Number(summary.deletions ?? 0)
     || (Object.prototype.hasOwnProperty.call(summary, "mergeConflicts") && rowMergeConflicts(row) !== (summary.mergeConflicts ?? null))
     || (Object.prototype.hasOwnProperty.call(summary, "behindBaseBy") && normalizeBehindBaseBy(row.behind_base_by) !== normalizeBehindBaseBy(summary.behindBaseBy));
+}
+
+/**
+ * With no material change, would an upsert of `summary` rewrite anything but
+ * `last_synced_at`? The columns the upsert writes that `hasMaterialSummaryChange`
+ * does not compare, plus a detached row (its reattach must run).
+ */
+function onlySyncTimeWouldChange(row: PullRequestRow, summary: PrSummary): boolean {
+  return !row.detached_at
+    && row.repo_owner === summary.repoOwner
+    && row.repo_name === summary.repoName
+    && (row.created_at ?? null) === (summary.createdAt ?? null)
+    && (row.updated_at ?? null) === (summary.updatedAt ?? null)
+    && (row.merged_at ?? null) === (summary.mergedAt ?? null);
 }
 
 function parsePrLocator(raw: string): { owner?: string; repo?: string; number: number } {
@@ -1687,14 +1703,35 @@ export function createPrService({
     return nextBody;
   };
 
+  /**
+   * When a PR was last refreshed by a refresh that changed nothing in its row.
+   * Writing `last_synced_at` for those (open PRs refresh every 2 minutes) was a
+   * synced change, so every idle sweep sent each phone and peer a change per
+   * open PR. The time lives here instead and reaches the row only with a real
+   * change, or once the stored time is PR_SYNCED_AT_PERSIST_MS old. Lost on a
+   * restart: the row then reads as stale and refreshes once.
+   */
+  const syncedAtOverlay = new Map<string, string>();
+  const withSyncedAtOverlay = (row: PullRequestRow): PullRequestRow => {
+    const overlay = syncedAtOverlay.get(row.id);
+    return overlay && parseIsoMs(overlay) > parseIsoMs(row.last_synced_at) ? { ...row, last_synced_at: overlay } : row;
+  };
+  /** Every read of `pull_requests` rows goes through these, so each sees the overlay. */
+  const getPrRow = (sql: string, params: SqlValue[]): PullRequestRow | null => {
+    const row = db.get<PullRequestRow>(sql, params);
+    return row ? withSyncedAtOverlay(row) : null;
+  };
+  const allPrRows = (sql: string, params: SqlValue[]): PullRequestRow[] =>
+    db.all<PullRequestRow>(sql, params).map(withSyncedAtOverlay);
+
   const getRowById = (prId: string): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+    getPrRow(
       `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
       [prId, projectId]
     );
 
   const getRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+    getPrRow(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -1715,7 +1752,7 @@ export function createPrService({
    * lane was deleted or moved on, so it must never block re-mapping.
    */
   const getLiveRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
-    db.get<PullRequestRow>(
+    getPrRow(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -1739,7 +1776,7 @@ export function createPrService({
     // No repo context: check for ambiguity across repos in this project. If
     // multiple rows match `github_pr_number`, refuse to guess — the caller
     // must disambiguate with a full URL. If exactly one row matches, accept it.
-    const matches = db.all<PullRequestRow>(
+    const matches = allPrRows(
       `select ${PR_COLUMNS}
          from pull_requests
         where project_id = ?
@@ -2011,7 +2048,7 @@ export function createPrService({
   };
 
   const getRowForLane = (laneId: string): PullRequestRow | null => {
-    const rows = db.all<PullRequestRow>(
+    const rows = allPrRows(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2203,7 +2240,7 @@ export function createPrService({
   const getDisplayCandidateForCurrentLaneBranch = (laneId: string): LanePrDisplayCandidate | null => {
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
-    const mappedRows = db.all<PullRequestRow>(
+    const mappedRows = allPrRows(
       `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ? and ${LIVE_PR_ROWS}`,
       [laneId, projectId],
     );
@@ -2219,7 +2256,7 @@ export function createPrService({
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
 
-    const rows = db.all<PullRequestRow>(
+    const rows = allPrRows(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2245,7 +2282,7 @@ export function createPrService({
     // back to the lane-level lookup. Otherwise the PR row will look "missing"
     // and downstream callers will redundantly create or refetch state.
     if (!normalizedHead) return getRowForLane(laneId);
-    return db.get<PullRequestRow>(
+    return getPrRow(
       `
         select ${PR_COLUMNS}
           from pull_requests
@@ -2261,14 +2298,14 @@ export function createPrService({
   };
 
   const listRows = (): PullRequestRow[] =>
-    db.all<PullRequestRow>(
+    allPrRows(
       `select ${PR_COLUMNS} from pull_requests where project_id = ? order by updated_at desc`,
       [projectId]
     );
 
   /**
    * The next step and the agent reviewers for a lane's PR, from the cached
-   * snapshot only — `listPrsByLane` is a 30s TUI poll and must stay local.
+   * snapshot only — `listPrsByLane` is a 30s poll and must stay local.
    * Review threads are not in the snapshot, so thread counts do not appear.
    */
   const lanePrInsights = (
@@ -5505,13 +5542,32 @@ export function createPrService({
     if (materiallyChanged) {
       invalidateGithubSnapshotCache();
     }
-    upsertRow(updated);
+    // Nothing the upsert writes would change except the sync time: keep that in
+    // memory (see `syncedAtOverlay`) until the stored one is old. Decided
+    // against the row as stored NOW, not the one read before the GitHub
+    // requests: a backfill or an overlapping refresh may have written it since.
+    const stored = db.get<PullRequestRow>(
+      `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
+      [row.id, projectId],
+    );
+    const storedSyncedAtMs = parseIsoMs(stored?.last_synced_at ?? null);
+    const rowUnchanged = Boolean(stored)
+      && !hasMaterialSummaryChange(stored!, updated)
+      && onlySyncTimeWouldChange(stored!, updated);
+    if (rowUnchanged && storedSyncedAtMs > 0 && Date.now() - storedSyncedAtMs < PR_SYNCED_AT_PERSIST_MS) {
+      syncedAtOverlay.set(row.id, updated.lastSyncedAt ?? nowIso());
+    } else {
+      syncedAtOverlay.delete(row.id);
+      upsertRow(updated);
+    }
 
     // Keep `head_sha` in sync so downstream features (AI summary cache, deployments)
     // can reliably reference the latest commit on the PR head branch.
     // A failed checks fetch kept the previous rollup on purpose. Writing the
     // new SHA anyway would pair that old red with the new commit.
-    if (headSha && !checkRunsFetchFailed) {
+    // Compared with the stored SHA, so this refresh's rollup and SHA stay paired
+    // even when an overlapping refresh wrote another head meanwhile.
+    if (headSha && !checkRunsFetchFailed && headSha !== (stored?.head_sha ?? null)) {
       try {
         db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
       } catch (err) {
@@ -7877,7 +7933,7 @@ export function createPrService({
         });
       }
       // A PR with no local row has no lane to archive, but the head branch is
-      // still deletable — and the CLI, TUI and mobile all offer it. Reporting
+      // still deletable — and the CLI and mobile both offer it. Reporting
       // `branchDeleted: false` unconditionally made that opt-in a silent no-op
       // for exactly the PRs this branch exists to support.
       const branchDeleted = args.deleteRemoteBranch
@@ -9369,7 +9425,7 @@ export function createPrService({
     if (eventName === "status" && fallbackRepo) {
       const sha = asString(payload.sha).trim();
       if (sha) {
-        const rows = db.all<PullRequestRow>(
+        const rows = allPrRows(
           `select ${PR_COLUMNS}
              from pull_requests
             where project_id = ?
@@ -10399,7 +10455,7 @@ export function createPrService({
       } catch (error) {
         const number = Number(/^#?(\d+)$/.exec(target)?.[1] ?? Number.NaN);
         const candidates = Number.isInteger(number)
-          ? db.all<PullRequestRow>(
+          ? allPrRows(
             `select ${PR_COLUMNS} from pull_requests where project_id = ? and github_pr_number = ? and ${LIVE_PR_ROWS}`,
             [projectId, number],
           )

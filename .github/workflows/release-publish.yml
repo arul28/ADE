@@ -19,7 +19,15 @@ name: Release publish
 # the actual enforcement. Do not merge this job back into release-core.yml.
 #
 # The publish gate that used to live on this job's `if:` now lives in
-# release.yml, reconstructed from release-core.yml's build-result outputs.
+# release.yml (and beta.yml), reconstructed from release-core.yml's
+# build-result outputs.
+#
+# A stable tag (vX.Y.Z) ends as a private draft, which the release skill makes
+# public after verify-desktop-draft.sh. A beta or preview tag (anything with a
+# prerelease part) is a GitHub prerelease, never "latest", and beta.yml passes
+# make_public so this job undrafts it itself -- but only after every asset is
+# attached and the remote inventory matches, never before (T3 #26917). Every
+# release, stable and beta, carries release-manifest.json.
 
 on:
   workflow_call:
@@ -32,6 +40,20 @@ on:
         description: Commit SHA or ref the release must resolve to.
         required: true
         type: string
+      release_notes:
+        description: >-
+          Release notes in Markdown. Empty uses GitHub's generated notes, as
+          stable releases always have.
+        required: false
+        default: ""
+        type: string
+      make_public:
+        description: >-
+          Undraft the release once its asset inventory is verified. Prerelease
+          tags only; a stable release is made public by the release skill.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -232,6 +254,18 @@ jobs:
             --archive release-assets/runtime/ade-win32-x64.native.tar.gz \
             --target win32-x64
 
+      # Read from the released commit's source; fails the publish when the
+      # numbers cannot be parsed, rather than shipping a guessed manifest. See
+      # scripts/release-tools/release-manifest.mjs and docs/plans/beta-track.md.
+      - name: Write release manifest
+        env:
+          TAG_NAME: ${{ inputs.release_tag }}
+        run: >-
+          node scripts/release-tools/release-manifest.mjs
+          --tag "$TAG_NAME"
+          --commit "$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          --out release-assets/publish/release-manifest.json
+
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -239,6 +273,7 @@ jobs:
           TARGET_REF: ${{ inputs.target_ref }}
           GH_REPO: ${{ github.repository }}
           PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
         run: |
           set -euo pipefail
           shopt -s nullglob
@@ -307,7 +342,7 @@ jobs:
             echo "::error::Published checksum manifest does not name the exact published standalone asset set."
             exit 1
           fi
-          files+=("$published_checksums")
+          files+=("$published_checksums" release-assets/publish/release-manifest.json)
 
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No release artifacts were found after validation."
@@ -334,12 +369,30 @@ jobs:
             done
             gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
-            gh release create "$TAG_NAME" "${files[@]}" \
-              --repo "$GH_REPO" \
-              --draft \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              --target "$TARGET_REF"
+            # A draft does not create its tag; GitHub makes it on publish. The
+            # target checks below read the tag, and a tag made only at publish
+            # would let a prerelease go public before anything checked where
+            # it points. So a missing tag is created here, at the commit this
+            # run built and verify vetted. A tag pushed by GITHUB_TOKEN starts
+            # no workflow, so this cannot re-trigger release.yml.
+            approved_target="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            if ! git ls-remote --exit-code --tags origin "refs/tags/$TAG_NAME" >/dev/null 2>&1; then
+              gh api --method POST "repos/$GH_REPO/git/refs" \
+                -f ref="refs/tags/$TAG_NAME" -f sha="$approved_target" >/dev/null
+            fi
+            create_args=(--repo "$GH_REPO" --draft --title "$TAG_NAME" --target "$TARGET_REF")
+            # Beta and preview tags are prereleases and never "latest", so a
+            # stable machine's releases/latest lookup can never land on one.
+            case "$TAG_NAME" in
+              *-*) create_args+=(--prerelease --latest=false) ;;
+            esac
+            if [ -n "$RELEASE_NOTES" ]; then
+              printf '%s\n' "$RELEASE_NOTES" > "$RUNNER_TEMP/release-notes.md"
+              create_args+=(--notes-file "$RUNNER_TEMP/release-notes.md")
+            else
+              create_args+=(--generate-notes)
+            fi
+            gh release create "$TAG_NAME" "${files[@]}" "${create_args[@]}"
           fi
 
           approved_target="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
@@ -369,3 +422,29 @@ jobs:
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
           RELEASE_TAG: ${{ inputs.release_tag }}
         run: node scripts/sentry/sentry-release.mjs set-commits --version "$RELEASE_TAG"
+
+      # Last step, after the inventory check above passed: the release goes
+      # public with every asset already attached (T3 #26917). Prerelease tags
+      # only. A stable release stays a draft for the release skill, which runs
+      # verify-desktop-draft.sh first and then undrafts it with its own token,
+      # which is also what starts update-brew-tap.yml and
+      # publish-runtime-packages.yml (both skip prereleases, and a release
+      # undrafted with GITHUB_TOKEN starts no workflow at all).
+      - name: Make the prerelease public
+        if: ${{ inputs.make_public }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ inputs.release_tag }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          case "$TAG_NAME" in
+            *-*) ;;
+            *) echo "::error::make_public is for prerelease tags only; $TAG_NAME is made public by the release skill."; exit 1 ;;
+          esac
+          gh release edit "$TAG_NAME" --repo "$GH_REPO" --draft=false --prerelease --latest=false
+          state="$(gh release view "$TAG_NAME" --repo "$GH_REPO" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
+          if [ "$state" != "false true" ]; then
+            echo "::error::$TAG_NAME should be a public prerelease, but isDraft/isPrerelease is $state."
+            exit 1
+          fi

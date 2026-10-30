@@ -276,7 +276,7 @@ function defaultChannelRuntimeSocketPaths(): Set<string> {
   } = process.env;
   // Every name each channel's brain answers on: on Windows that includes the
   // pipe names an older ADE derived (`resolveMachineEndpointNames`).
-  return new Set([".ade", ".ade-alpha", ".ade-beta"].flatMap((homeName) =>
+  return new Set([".ade", ".ade-alpha"].flatMap((homeName) =>
     resolveMachineEndpointNames({
       ...channelEnv,
       ADE_HOME: path.join(os.homedir(), homeName),

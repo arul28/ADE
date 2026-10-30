@@ -723,6 +723,67 @@ describe("laneService list repairs", () => {
     }
   });
 
+  it("follows the primary checkout's branch, reading git again only when HEAD changes", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-primary-head-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    const headFile = path.join(repoRoot, ".git", "HEAD");
+
+    try {
+      fs.mkdirSync(path.dirname(headFile), { recursive: true });
+      fs.writeFileSync(headFile, "ref: refs/heads/main\n");
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-primary-head", repoRoot, "demo", "main", now, now],
+      );
+      db.run(
+        `
+          insert into lanes(
+            id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+            attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `,
+        ["lane-main", "proj-primary-head", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", now, null],
+      );
+
+      // git answers from the HEAD file, as the real rev-parse does.
+      let headReads = 0;
+      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (args[0] === "rev-parse" && args[1] === "--symbolic-full-name" && args[2] === "HEAD") {
+          headReads += 1;
+          const ref = fs.readFileSync(headFile, "utf8").replace(/^ref:\s*/, "").trim();
+          return { exitCode: 0, stdout: `${ref}\n`, stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-primary-head",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+      const primaryBranch = async () => (await service.list({ includeStatus: false })).find((lane) => lane.id === "lane-main")?.branchRef;
+
+      expect(await primaryBranch()).toBe("main");
+      expect(await primaryBranch()).toBe("main");
+      expect(headReads).toBe(1);
+
+      // A checkout writes HEAD.lock and renames it over HEAD.
+      fs.writeFileSync(`${headFile}.lock`, "ref: refs/heads/feature/next\n");
+      fs.renameSync(`${headFile}.lock`, headFile);
+
+      expect(await primaryBranch()).toBe("feature/next");
+      expect(headReads).toBe(2);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
   it("dedupes duplicate lane rows sharing a managed worktree, keeping the creator row", async () => {
     const repoRoot = makeTempRepoRoot("ade-lane-service-repair-dup-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());

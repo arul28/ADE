@@ -41,6 +41,7 @@ import {
   type ProductAnalyticsService,
 } from "./productAnalyticsService";
 import { createUsageProductAnalyticsExporter } from "./usageProductAnalyticsExporter";
+import { detectInstallSource } from "./installSource";
 import {
   usageScopeSelectedCapture,
   USAGE_SCOPE_ANALYTICS_MIN_INTERVAL_MS,
@@ -56,6 +57,7 @@ function makeHarness(options: {
   appVersion?: string;
   runtimeMode?: string;
   captureClientMessage?: ProductAnalyticsClient["capture"];
+  flush?: () => Promise<void>;
 } = {}) {
   const root = options.root ?? fs.mkdtempSync(path.join(os.tmpdir(), "ade-product-analytics-"));
   const messages = options.messages ?? [];
@@ -64,7 +66,10 @@ function makeHarness(options: {
   const shutdownArgs: Array<[number | undefined, { flush?: boolean } | undefined]> = [];
   const client: ProductAnalyticsClient = {
     capture: options.captureClientMessage ?? ((message) => messages.push(message)),
-    flush: async () => { flushes += 1; },
+    flush: async () => {
+      flushes += 1;
+      await options.flush?.();
+    },
     shutdown: async (timeoutMs, shutdownOptions) => {
       shutdowns += 1;
       shutdownArgs.push([timeoutMs, shutdownOptions]);
@@ -112,6 +117,11 @@ describe("productAnalyticsService", () => {
       ok: false,
       reason: "invalid_surface",
     });
+    // Older clients still name the command line `tui`.
+    expect(parseProductAnalyticsCapture({ event: "ade_app_opened", surface: "tui" })).toMatchObject({
+      ok: true,
+      value: { surface: "cli" },
+    });
     const harness = makeHarness();
     const result = harness.service.capture({
       event: "ade_feature_used",
@@ -135,6 +145,9 @@ describe("productAnalyticsService", () => {
     expect(message.uuid).toBe("11111111-1111-4111-8111-111111111111");
     expect(message.properties).toMatchObject({
       surface: "desktop",
+      client: "desktop",
+      interactive: true,
+      is_internal: false,
       feature: "work",
       action: "work.startCliSession",
       outcome: "success",
@@ -1134,8 +1147,8 @@ describe("productAnalyticsService", () => {
     const harness = makeHarness({ dailyBudget: 25, now: () => nowMs });
     const input = {
       event: "ade_screen_viewed" as const,
-      surface: "tui" as const,
-      dedupeKey: "tui:details_help",
+      surface: "cli" as const,
+      dedupeKey: "cli:details_help",
       minimumIntervalMs: 60_000,
       properties: { screen: "details_help" },
     };
@@ -1389,6 +1402,91 @@ describe("productAnalyticsService", () => {
     fs.rmSync(first.root, { recursive: true, force: true });
   });
 
+  it("re-sends an undelivered milestone with its first uuid and moment, and keeps a delivered one to one send", async () => {
+    let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    let deliveryFails = true;
+    const first = makeHarness({
+      now: () => nowMs,
+      flush: async () => {
+        if (deliveryFails) throw new Error("network unavailable");
+      },
+    });
+    const activate = (harness: ReturnType<typeof makeHarness>) => harness.service.captureInternal({
+      event: "ade_activated",
+      surface: "api",
+      properties: { trigger: "work_session_completed" },
+    });
+
+    expect(activate(first)).toEqual({ accepted: true, reason: "accepted" });
+    await vi.waitFor(() => expect(first.flushes).toBe(1));
+    // Still in flight as far as anyone can tell: a second turn does not send.
+    nowMs += 60_000;
+    expect(activate(first)).toEqual({ accepted: false, reason: "duplicate" });
+
+    // The process that sent it is gone and delivery never confirmed. The next
+    // day (the event's own daily cap is one), a new process sends it again.
+    nowMs += 24 * 60 * 60_000;
+    deliveryFails = false;
+    const restarted = makeHarness({ root: first.root, messages: first.messages, now: () => nowMs });
+    expect(activate(restarted)).toEqual({ accepted: true, reason: "accepted" });
+    const activations = () => first.messages.filter((message) => message.event === "ade_activated");
+    const [sent, resent] = activations() as Array<{ uuid: string; timestamp?: Date }>;
+    expect(resent?.uuid).toBe(sent?.uuid);
+    expect(resent?.timestamp?.getTime()).toBe(Date.parse("2026-07-13T12:00:00.000Z"));
+
+    // Delivered and confirmed: never again, in this process or the next.
+    await vi.waitFor(() => {
+      const state = JSON.parse(fs.readFileSync(path.join(first.root, "analytics.json"), "utf8"));
+      expect(state.activatedAtMs).toBe(Date.parse("2026-07-13T12:00:00.000Z"));
+    });
+    nowMs += 24 * 60 * 60_000;
+    const later = makeHarness({ root: first.root, messages: first.messages, now: () => nowMs });
+    expect(activate(later)).toEqual({ accepted: false, reason: "duplicate" });
+    expect(activations()).toHaveLength(2);
+    fs.rmSync(first.root, { recursive: true, force: true });
+  });
+
+  it("marks the first app open once per client, and none for an install that predates the marker", () => {
+    let nowMs = Date.parse("2026-07-13T12:00:00.000Z");
+    const harness = makeHarness({ now: () => nowMs });
+    const open = (surface: "desktop" | "cli" | "web") => {
+      nowMs += 60_000;
+      harness.service.capture({ event: "ade_app_opened", surface });
+      return harness.messages.at(-1)?.properties as Record<string, unknown>;
+    };
+    expect(open("desktop").first_open).toBe(true);
+    expect(open("desktop")).not.toHaveProperty("first_open");
+    expect(open("cli")).toMatchObject({ first_open: true, client: "cli" });
+    expect(open("web")).toMatchObject({ first_open: true, client: "web" });
+
+    const statePath = path.join(harness.root, "analytics.json");
+    const existing = JSON.parse(fs.readFileSync(statePath, "utf8")) as Record<string, unknown>;
+    delete existing.openedSurfaces;
+    fs.writeFileSync(statePath, `${JSON.stringify(existing)}\n`);
+    const upgraded = makeHarness({ root: harness.root });
+    upgraded.service.capture({ event: "ade_app_opened", surface: "mobile" });
+    expect(upgraded.messages[0]?.properties).not.toHaveProperty("first_open");
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
+  it.each([
+    ["dev build", { isPackaged: false, execPath: "/Applications/ADE.app/Contents/MacOS/ADE" }, "development"],
+    ["configured", { isPackaged: true, execPath: "/x/ADE", configuredSource: "install_script" }, "install_script"],
+    ["mac app", { isPackaged: true, execPath: "/Applications/ADE.app/Contents/MacOS/ADE" }, "direct_download"],
+    ["mac app from a cask", {
+      isPackaged: true,
+      execPath: "/Applications/ADE.app/Contents/MacOS/ADE",
+      caskroomExists: () => true,
+    }, "homebrew"],
+    ["windows installer", { isPackaged: true, execPath: "C:\\Users\\a\\AppData\\Local\\Programs\\ADE\\ADE.exe" }, "direct_download"],
+    ["brain installer", { isPackaged: true, execPath: "/home/a/.ade/bin/ade" }, "install_script"],
+    ["brain installer, windows", { isPackaged: true, execPath: "C:\\Users\\a\\.ade\\bin\\ade.exe" }, "install_script"],
+    ["brain under a Homebrew node", { isPackaged: true, execPath: "/opt/homebrew/Cellar/node@22/22.1.0/bin/node" }, "unknown"],
+  ])("detects the install source: %s", (_label, input, expected) => {
+    expect(detectInstallSource({ realpath: (candidate) => candidate, caskroomExists: () => false, ...input }))
+      .toBe(expected);
+  });
+
   it("migrates legacy analytics state without backfilling false install or activation events", () => {
     const first = makeHarness();
     first.service.capture({ event: "ade_app_opened", surface: "desktop" });
@@ -1434,10 +1532,15 @@ describe("productAnalyticsService", () => {
     expect(identify.distinctId).toMatch(/^ade_user_[0-9a-f]{32}$/);
     expect(identify.properties).toMatchObject({
       $anon_distinct_id: anonymousId,
-      $set: { plan: "free", platform: process.platform, app_version: "1.2.3" },
+      $set: {
+        plan: "free",
+        platform: process.platform,
+        app_version: "1.2.3",
+        clerk_user_id: "clerk_user_private_123",
+        is_internal: false,
+      },
       $geoip_disable: true,
     });
-    expect(JSON.stringify(identify)).not.toContain("clerk_user_private_123");
     expect(harness.service.identifyAccount("clerk_user_private_123")).toEqual({
       accepted: false,
       reason: "duplicate",
@@ -1782,7 +1885,7 @@ describe("product analytics producers", () => {
     expect(captures).toHaveLength(3);
   });
 
-  it("keeps the settle-teardown properties through the sanitizer", () => {
+  it("keeps the settle reconcile properties through the sanitizer", () => {
     // Both of these were silently dropped when first added: `action` is
     // allowlisted separately from the event's key list, and `count_bucket` was
     // registered in the key list and the value allowlist but never in the
@@ -1791,29 +1894,21 @@ describe("product analytics producers", () => {
     // looks populated.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
-      action: "settle_teardown_residue",
-      outcome: "no_stop_control",
-      provider: "codex",
+      action: "settle_remote_write_reconciled",
+      outcome: "partial",
       count_bucket: "2_5",
     })).toEqual({
       feature: "work",
-      action: "settle_teardown_residue",
-      outcome: "no_stop_control",
-      provider: "codex",
-      count_bucket: "2_5",
-    });
-
-    expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
-      feature: "work",
       action: "settle_remote_write_reconciled",
       outcome: "partial",
-    })).toMatchObject({ action: "settle_remote_write_reconciled" });
+      count_bucket: "2_5",
+    });
 
     // The bucket is still a closed set: a raw count must not slip through and
     // widen the dimension.
     expect(sanitizeProductAnalyticsProperties("ade_feature_used", {
       feature: "work",
-      action: "settle_teardown_residue",
+      action: "settle_remote_write_reconciled",
       count_bucket: "37",
     })).not.toHaveProperty("count_bucket");
   });
@@ -2436,7 +2531,7 @@ describe("usage product analytics exporter", () => {
       });
       recordUsageInteraction(db, {
         projectId: "project-private",
-        client: "tui",
+        client: "cli",
         action: "work.startCliSession",
         sessionId: "session-cli",
         occurredAt: "2026-07-13T12:01:00.000Z",
@@ -2464,7 +2559,7 @@ describe("usage product analytics exporter", () => {
       });
 
       await expect(exporter.runOnce()).resolves.toBe(2);
-      expect(captures).toHaveLength(3);
+      expect(captures).toHaveLength(4);
       expect(captures[0]).toMatchObject({
         event: "ade_feature_used",
         surface: "desktop",
@@ -2473,8 +2568,14 @@ describe("usage product analytics exporter", () => {
       });
       expect(captures[2]).toMatchObject({
         event: "ade_work_session_started",
-        surface: "tui",
+        surface: "cli",
         properties: { feature: "cli", outcome: "started" },
+      });
+      // An agent CLI has no turns ADE sees, so its start is the activation.
+      expect(captures[3]).toMatchObject({
+        event: "ade_activated",
+        surface: "cli",
+        properties: { trigger: "cli_session_started" },
       });
       expect(analytics.flush).toHaveBeenCalledTimes(1);
       expect(db.get<{ count: number }>(
@@ -2487,7 +2588,7 @@ describe("usage product analytics exporter", () => {
     await withUsageDb("ade-analytics-retry-", async (db) => {
       recordUsageInteraction(db, {
         projectId: "project",
-        client: "tui",
+        client: "cli",
         action: "git.commit",
         occurredAt: "2026-07-13T12:00:00.000Z",
       });

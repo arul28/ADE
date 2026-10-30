@@ -44,24 +44,6 @@ Connecting a remote does not move ADE off your own machine. The desktop app rema
 Remote machines run macOS, Linux, or Windows. A Windows desktop can drive them when it is running an installed release build — a locally packaged Windows build ships no macOS or Linux runtime payloads and will refuse. Windows targets must be Windows 10 22H2 or Windows 11 x64 with OpenSSH Server and PowerShell 5.1 or newer; WSL, ARM64, and Windows Server are not supported. See [ADE on Windows](/getting-started/windows).
 </Note>
 
-<Note>
-`ade code` can attach to the same saved remote machines from a terminal — useful when you are already SSH'd somewhere and want the TUI instead of the desktop window. See [ade code](/tools/ade-code).
-</Note>
-
-<AccordionGroup>
-  <Accordion title="Attach to a remote from the terminal" icon="terminal">
-    `ade code remote` reads the same saved remote-machine registry as the desktop app:
-
-    ```bash
-    ade code remote --list-targets                       # list saved remote machines
-    ade code remote --target mac --project ADE           # attach to a remote project
-    ade code remote session --target mac --project ADE --session chat-1
-    ```
-
-    Run `ade code remote --help` to see every flag.
-  </Accordion>
-</AccordionGroup>
-
 ## ADE Relay: the internet fallback
 
 ADE Relay is how your phone, another Mac, or the web client reach a machine when they cannot connect directly. Relay uses ADE-hosted infrastructure, so both devices must be signed in to the same ADE account.
@@ -92,6 +74,8 @@ Relay is a transport, not cloud storage, and it does not store your ADE project 
 
 If Relay is unavailable: confirm both devices are signed in to the same account, keep ADE running on the machine you want to reach, then open **Connections** and try again. ADE shows the route that failed and the next action to take. To avoid Relay entirely, connect over the same local network, Tailscale, or an SSH setup you configured yourself.
 
+**Settings › Account › Connections** shows the order clients try routes in (local network, then Tailscale, then ADE Relay) and a Tailscale setup checklist read from this computer. With Tailscale HTTPS set up, the web client reaches the computer over your tailnet. Each computer under **Your computers** has its own **ADE Relay** switch; turning it off keeps that computer off the relay, and ADE warns you first about what stops working.
+
 ## Or install the brain on the box instead
 
 SSH remotes are driven by your desktop: it bootstraps the runtime on the far side and tunnels the connection. The alternative is to install ADE's brain on that machine directly and connect it to your account:
@@ -106,9 +90,6 @@ The machine then publishes itself to your account directory and is reachable fro
 <CardGroup cols={2}>
   <Card title="Connect a machine" icon="server" href="/getting-started/connect-machine">
     Install the brain on a server and put it on your account.
-  </Card>
-  <Card title="ade code (terminal)" icon="rectangle-terminal" href="/tools/ade-code">
-    Drive ADE from a fast terminal UI, locally or over SSH.
   </Card>
   <Card title="Architecture" icon="sitemap" href="/architecture">
     How the control plane, runtime, and clients fit together.

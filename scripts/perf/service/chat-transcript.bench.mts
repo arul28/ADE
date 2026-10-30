@@ -5,7 +5,7 @@
 // display filter and the incremental row builder (a turn streaming). Every
 // 50 events the incremental rows are checked against a full pass.
 // `stepsOverFrame` counts streamed events that cost more than 4 ms.
-// With no argument: the five largest files in <project>/.ade/transcripts, where
+// With no argument: the five largest chats in <project>/.ade/transcripts (transcript-files.mts), where
 // <project> is $ADE_PROJECT_ROOT or the checkout this script is in.
 // Transcripts are only read.
 //
@@ -13,9 +13,8 @@
 // first section cannot reach. Set RESIDENT_STREAM_EVENTS to stream more than
 // the default 300 events; a run long enough to cross one trim step is what
 // shows the trim itself rather than only the steady state.
-import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { largestTranscripts, loadTranscript } from "./transcript-files.mts";
 import type { AgentChatEventEnvelope } from "../../../apps/desktop/src/shared/types/chat";
 import { agentChatEventIdentityKey, mergeAgentChatLiveEvents } from "../../../apps/desktop/src/shared/chatHistoryMerge";
 import {
@@ -35,38 +34,11 @@ const CHECK_EVERY = 50;
 /** One frame at 240 Hz: a step over this drops a frame on a fast display. */
 const FRAME_MS = 4;
 
-function defaultTranscripts(): string[] {
-  const here = path.dirname(fileURLToPath(import.meta.url));
-  const checkout = path.resolve(here, "../../..");
-  // A lane worktree lives under <project>/.ade/worktrees/<lane>.
-  const marker = `${path.sep}.ade${path.sep}worktrees${path.sep}`;
-  const project = process.env.ADE_PROJECT_ROOT
-    ?? (checkout.includes(marker) ? checkout.slice(0, checkout.indexOf(marker)) : checkout);
-  const dir = path.join(project, ".ade", "transcripts");
-  return readdirSync(dir)
-    .filter((name) => name.endsWith(".chat.jsonl"))
-    .map((name) => path.join(dir, name))
-    .map((file) => ({ file, size: statSync(file).size }))
-    .sort((a, b) => b.size - a.size)
-    .slice(0, 5)
-    .map((entry) => entry.file);
-}
 
-function load(file: string): AgentChatEventEnvelope[] {
-  return readFileSync(file, "utf8").split("\n").flatMap((line) => {
-    try {
-      const parsed = JSON.parse(line);
-      return parsed?.event?.type ? [parsed as AgentChatEventEnvelope] : [];
-    } catch {
-      return [];
-    }
-  });
-}
-
-const files = process.argv.slice(2).length ? process.argv.slice(2) : defaultTranscripts();
+const files = process.argv.slice(2).length ? process.argv.slice(2) : largestTranscripts(5);
 const rows: Record<string, unknown>[] = [];
 for (const file of files) {
-  const envelopes = load(file);
+  const envelopes = loadTranscript(file);
   if (envelopes.length <= STREAMED_EVENTS) continue;
   const split = envelopes.length - STREAMED_EVENTS;
   let events = mergeAgentChatLiveEvents([], envelopes.slice(0, split));
@@ -276,8 +248,15 @@ function replayAtResidentCap(args: {
         mismatches += 1;
       }
       // The newest event is on screen, not queued behind a window that could
-      // not take it.
-      if (events[events.length - 1] !== envelope) drops += 1;
+      // not take it. A repeated tool call is folded into its first entry (same
+      // logical item) instead of appended, so it is on screen there rather than
+      // last. An evicted newer event is caught by `missing` below.
+      const newestKey = agentChatEventIdentityKey(envelope);
+      const newestToolKey = logicalToolItemKey(envelope);
+      const newestOnScreen = events[events.length - 1] === envelope
+        || events.some((entry) => agentChatEventIdentityKey(entry) === newestKey
+          || (newestToolKey !== null && logicalToolItemKey(entry) === newestToolKey));
+      if (!newestOnScreen) drops += 1;
       if (!timestampsAreAscending(events)) reordered += 1;
       if (events.length > maxEvents || residentBytes(events) > maxBytes) overBudget += 1;
       // Every event of this run is still resident. A repeated tool call is
@@ -321,7 +300,7 @@ function replayAtResidentCap(args: {
   };
 }
 
-const residentSource = load(defaultTranscripts()[0]!);
+const residentSource = loadTranscript(largestTranscripts(5)[0]!);
 const residentScenarios = [
   {
     scenario: "below-cap",

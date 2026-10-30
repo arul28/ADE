@@ -10,11 +10,12 @@ Never send any of the following to PostHog:
 
 - prompts, responses, transcripts, code, diffs, file contents, terminal output, clipboard contents, screenshots, recordings, or proof artifacts;
 - project, repository, lane, branch, file, or directory names and paths;
-- command text or arguments, URLs, referrers, issue titles, PR titles, user-entered labels, raw errors, stack traces, or local log messages;
-- credentials, tokens, email addresses, raw account identifiers, device names, or other user-provided strings;
+- command text or arguments, URLs, referrers, issue titles, PR titles, user-entered labels, raw errors, stack traces, or local log messages (the one exception is the public marketing site's own page address, referrer, and campaign tags; see [Public marketing site](#public-marketing-site));
+- credentials, tokens, email addresses, device names, or other user-provided strings;
+- raw account identifiers anywhere but the person profile: `$identify` and the server-side `ade_signed_up` set the Clerk user id as the person property `clerk_user_id`, never as a distinct id or an event property;
 - raw project IDs, session IDs, or other stable local database identifiers.
 
-No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets only plan, platform, and app version. ADE does not send the account ID, email, name, provider, or token.
+No PostHog SDK is linked. ADE calls the Capture API directly so autocapture, automatic pageviews, session replay, surveys, feature flags, remote config, automatic crash capture, and SDK-managed offline queues remain absent from PostHog. (Crash capture lives in Sentry. These boundaries are PostHog's; Sentry's are in its own section below.) Ordinary events disable person profiles and GeoIP with `$process_person_profile: false` and `$geoip_disable: true`. The sole exception is a quota-counted `$identify` call after ADE knows a signed-in account; it links the current anonymous history to a one-way hash of the account ID and sets plan, platform, app version, `clerk_user_id` (the Clerk user id, so a profile can be found in Clerk) and, on desktop, `is_internal`. The distinct id stays the hash, so history recorded before this did not split. ADE does not send the email, name, or token.
 
 Only closed event names, closed property keys, and coarse allowlisted values may cross the analytics boundary. Desktop/runtime raw project and session IDs are installation-salted and hashed before capture. Local deduplication keys are also hashed and are never transmitted.
 
@@ -59,6 +60,7 @@ The log tails go as ADE wrote them, on purpose: they hold paths, action argument
 - on iOS, a Live Inspect reply the app cannot decode (`area: live_inspect`, `LiveInspectMarkupModel.fail`): the host and app disagree on the format. Offline machines, timeouts and older hosts are shown to the user and not reported.
 - a Linux lane screen that fails on its host (`linux_screen.<kind>`, `linuxDesktop/linuxScreenTelemetry.ts`), as a warning with a fixed description per kind and structured fields only (the helper's error text can carry Xvfb or ffmpeg output, so it stays in the local log), once per kind and detail per process: the helper not starting or exiting with lanes up (`helper_start_failed`, `helper_lost`), `display.create` failing for anything but a caller's mistake (`display_create_failed`), an accessibility bus that would not start (`display_degraded`), a recording whose encoder died (`recording_interrupted`), and an `ade screen setup` that failed or left something missing (`setup_failed`). Each carries the host as tags: `linux.distro`, `linux.distro_version`, `linux.distro_like` (from `/etc/os-release`), `linux.container` and `arch`, because only Ubuntu x64 is exercised by hand. What a host lacks before setup, a sudo that needs a password and a missing window manager are Sentry Logs (`linux_screen.host_report`, `linux_screen.setup_needs_user`, `linux_screen.display_degraded`), searchable by the same fields;
 - a recording whose demo every engine failed to make (`demo_video.all_engines_failed`, tagged `platform`, `arch` and on Linux the distribution, with the failed stage but not the engines' errors, which can carry ffmpeg's stderr), once per process per engine set: the user gets the uncut recording, and nothing else says the demo pipeline is broken on that machine;
+- a Copilot chat failure ADE could have caused (`main/services/chat/copilotSentry.ts`), tagged `provider: copilot`, `copilot.kind` and `copilot.model` and grouped per kind and cause: a `session.error` that is not sign-in, rate limit, quota or an outage (`session_error`, titled by its kind alone and grouped by error type and code, because a provider's message can quote the request; the message and both GitHub request ids are in the scrubbed extra), a failed turn that was not interrupted (`turn_failed`), the SDK worker dying under a live chat (`worker_exited`), the runtime refusing to list or run a slash command (`commands_list_failed`, `command_failed`), a refused model or permission change (`setting_failed`), and a permission or question handler that threw (`handler_failed`). Each sent turn leaves a `copilot` breadcrumb with its model, agent mode, permission level, attachment count and the command name, never the prompt. Its other failures (a lost conversation, a model list or MCP sign-in lookup that failed) are `agent_chat.copilot_*` warn lines, so Sentry Logs only;
 - on iOS, a chat that is working but draws no messages (`chat.empty_thread.<kind>`, `runEmptyThreadProbe` in `WorkSessionDestinationView.swift`), at most once per time the chat is opened. It carries the chat stream trace from `ChatStreamTrace` (subscribes, history replies applied or dropped and why, live events, socket closes) and the `chat.stream` breadcrumbs, names and counts only.
 
 **What is a Sentry Log, not an issue.** Things the user is shown or can fix, which say nothing new about ADE's code:
@@ -385,7 +387,6 @@ Shared desktop/runtime boundary:
 Attached clients and native surfaces:
 
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` binds paired-client consent, surface, and project identity at the host boundary. `syncHostService.ts` keeps consent peer-scoped, and `syncRemoteCommandService.ts` exposes only the runtime-scoped analytics commands.
-- `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's browser-local opt-out. Hosted web is default-on; an explicit "false" preference in browser storage disables capture and is reasserted on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
 - `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, default-on behavior, and direct transport. There is no native analytics preference or consent prompt. `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
@@ -399,13 +400,13 @@ Build and operations:
 
 ## Architecture by surface
 
-### Desktop, runtime, TUI, and hosted web client
+### Desktop, runtime, and hosted web client
 
-The canonical service is `apps/desktop/src/main/services/analytics/productAnalyticsService.ts`. The desktop main process and the ADE runtime use the same machine-scoped service and durable state file. `ade code` and the hosted web client send allowlisted capture requests through the runtime action registry; they do not own independent PostHog clients.
+The canonical service is `apps/desktop/src/main/services/analytics/productAnalyticsService.ts`. The desktop main process and the ADE runtime use the same machine-scoped service and durable state file. The hosted web client sends allowlisted capture requests through the runtime action registry; they do not own independent PostHog clients.
 
 Machine analytics state lives under the active channel home at `secrets/product-analytics.json`, with a sibling `.disabled` marker for fail-closed opt-out during lock contention. It is not project state and never enters cr-sqlite replication. The project-local `usage_events` mutation ledger is also excluded from CRR sync; its analytics export marker prevents pre-analytics, opted-out, expired, or already-handled rows from being uploaded later.
 
-The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The allowed events are:
+The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. Every event carries one `surface`: `desktop`, `mobile`, `cli` (the `ade` command line), `web`, or `api`. Builds before ADE Code was removed called the command line `tui`; `normalizeAdeUsageClientSurface` (`shared/types/usage.ts`) reads that as `cli` at every intake, and the `usage_events` ledger rewrites stored `tui` rows to `cli` when the database opens. PostHog history from before the rename keeps `surface: "tui"`. The allowed events are:
 
 - `ade_app_installed`
 - `ade_app_opened`
@@ -431,6 +432,73 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_relay_suppressed`
 - `ade_account_session_unreadable`
 - `ade_brain_action_failed`
+
+#### Properties on every event, milestones, and first opens
+
+The service adds three properties to every event it sends, so active-user
+counts can be cut by app and stripped of activity no person caused. None
+adds an event.
+
+- `client` — the app a person used: `desktop`, `web`, `cli` (the `ade` command line), `ios` (a
+  host-recorded mutation from the phone, surface `mobile`), or `runtime` (the
+  brain or CLI, surface `api`, which cannot see a client). `platform` stays
+  the OS of the machine that sent the event, so a phone action recorded by a
+  Mac still says `darwin`; filter phone use with `client = ios`.
+- `interactive` — `false` for events no person caused: `ade_daily_usage_summary`,
+  `ade_analytics_budget`, the `ade_update_*` events, `ade_brain_recovered`,
+  `ade_renderer_recovered`, `ade_publish_failing`, `ade_relay_suppressed`,
+  `ade_account_session_unreadable`, `ade_tool_fetched`,
+  `ade_brain_action_failed`, and an automation's work session. `true`
+  otherwise (`productAnalyticsEventContext` in `productAnalyticsPolicy.ts`).
+  A monthly-active count filters `interactive != false` (events sent before
+  this property existed have none).
+- `is_internal` — `true` on an ADE team install, marked with
+  `ADE_ANALYTICS_INTERNAL=1` in the environment or an empty
+  `secrets/product-analytics.json.internal` file beside the state file. Read
+  once per process. Desktop `$identify` also sets it on the person.
+
+`ade_app_installed` and `ade_activated` are once per installation, and a
+milestone counts as sent only once delivery is confirmed. The service sends it
+at once instead of in the next ten-second batch (a chat runtime can be
+reclaimed before the batch timer fires) and records it as pending with its
+uuid and moment. When the send is confirmed the milestone is final. When it is
+not (the network failed or the process died), the next trigger after two
+minutes sends it again with the same uuid and timestamp, so PostHog keeps one;
+the one-per-day event cap means a retry lands the next UTC day at the latest.
+`ade_activated` fires on the first completed chat turn
+(`trigger: "work_session_completed"`) or the first agent CLI session started
+or imported (`trigger: "cli_session_started"`), since ADE sees no turns inside
+a CLI.
+
+`install_source` is `direct_download` (the Mac app in an `Applications`
+folder, the Windows installer's `ADE.exe`, or an AppImage), `homebrew` (a
+Homebrew path, or the Mac app with a `Caskroom/ade` entry, since the cask copies
+the app to `/Applications`), `install_script` (the standalone brain from
+`install.sh` / `install.ps1` in `~/.ade/bin`), `development`, or `unknown`
+(including a brain run by a plain `node`). The brain reads its own location
+for this, because on a brain-only machine it is the first to record the
+install.
+
+The first `ade_app_opened` from each client carries `first_open: true`, once
+per installation per client (`openedSurfaces` in the state file), so a first
+TUI or hosted-web open is visible without a new event. A state file written
+before this existed reports no first open on any client.
+
+#### Sign-up (server-side)
+
+`ade_signed_up` is recorded by the account-directory Worker, not by an app,
+because sign-up happens on Clerk's own pages
+(`apps/account-directory/src/signupAnalytics.ts`, `POST /webhooks/clerk`).
+Clerk's `user.created` webhook, Svix-signed with
+`CLERK_WEBHOOK_SIGNING_SECRET`, becomes one event per account under the same
+`ade_user_…` hash the apps identify with. It carries `signup_method` (`github`,
+`google`, `apple`, `microsoft`, `gitlab`, `discord`, `linear`, `other_oauth`,
+or `email`), `client: "account"`, and `$set_once` `clerk_user_id` and
+`signed_up_at`; never the email or name. A retried delivery keeps its
+`svix-id`, which derives the event uuid, so PostHog keeps one. It needs
+`CLERK_WEBHOOK_SIGNING_SECRET` and `POSTHOG_PROJECT_TOKEN` set on the Worker
+and a Clerk webhook subscribed to `user.created`; until then the route answers
+503 and records nothing. Volume is one event per new account.
 
 The new product facts reuse `ade_feature_used`; they do not add an event name or
 raise a ceiling. The taxonomy is closed at the producer and again by
@@ -543,6 +611,17 @@ key per preference combination bounds this to at most four accepted events per
 installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
+Starting a switch in **Settings › About › Update track** records the same
+`ade_feature_used` event at the update-service owner boundary
+(`startTrackSwitch`), with `feature: "updates"`, `action: "track_switch"`, and
+a closed `outcome`: `to_beta` or `to_stable`. Choosing the running build's
+track again (a cancel) records nothing. It carries no version, path or
+database detail. A one-hour deduplication key per direction bounds it to at
+most 48 accepted events per installation per UTC day in theory, and in
+practice one or two, within the existing `ade_feature_used` ceilings. Beta
+builds report errors to Sentry with the environment `beta` (version read
+from the build), so Beta issues never mix with production ones.
+
 Pressing **Fix it** on the macOS banner that says ADE will ask for a password on
 every update (its app bundle belongs to root or another account) records the
 same `ade_feature_used` event at the IPC owner that runs the fix
@@ -575,17 +654,8 @@ OS-driven mechanics that can fire dozens of times a day on a laptop, which is
 exactly the high-frequency shape this document says to aggregate or leave
 untracked. They stay local operational logs.
 
-Settle teardown records two things at the session-service owner boundary, both
-on the existing `ade_feature_used` event with `feature: "work"`.
-
-`action: "settle_teardown_residue"` fires when a settle landed but a stop could
-not be confirmed (the design's 3d option 3). It carries `provider`, a coarse
-`outcome` reason (`no_stop_control`, `timeout`, or `rejected`) and a bucketed
-`count_bucket` (`1`, `2_5`, `6_plus`). **One event per settle, never one per
-failed job** — a fleet that fails to stop must not become a burst — and the
-bucket exists so a large fleet cannot widen the dimension either. No session id,
-task id, command, or error text is recorded; the human-readable residue detail
-stays on the local diagnostics row and never enters the payload.
+Settle records one thing at the session-service owner boundary, on the
+existing `ade_feature_used` event with `feature: "work"`.
 
 `action: "settle_remote_write_reconciled"` fires when an inbound changeset
 carried settle-tuple columns and the session layer re-asserted them through the
@@ -886,8 +956,7 @@ raised.
 The external sessions service (`externalSessions/externalSessionsService.ts`)
 records one `work/session_<continue|copy>_<chat|cli>` per import attempt that
 passed its argument checks, through its `onImportOutcome` hook: `desktop` from
-the desktop main process, `api` from the brain (which also serves the TUI and
-the phone). It carries no session id, title, folder, lane, or model. Imports are
+the desktop main process, `api` from the brain (which also serves the phone). It carries no session id, title, folder, lane, or model. Imports are
 user-initiated and rare; the hourly per-key deduplication bounds the worst case
 to 4 actions × 2 outcomes × the provider families per hour, well inside the
 existing `ade_feature_used` daily and per-minute limits, so no ceiling changes.
@@ -1381,7 +1450,7 @@ deduplication key turns an error loop into one accepted event an hour, and the
 event's own 20-per-day / 3-per-minute caps bound the rest without touching
 `ade_error`'s budget.
 
-The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
+The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
 
@@ -1549,6 +1618,8 @@ untouched — no card asks that question yet.
 
 Native UI analytics lives in `apps/ios/ADE/Services/ProductAnalytics.swift`. It uses a separate installation identity and `ade_mobile_*` event namespace so phone engagement cannot inflate desktop activation or retention. After sign-in, it sends the same one-way account hash used by desktop in a quota-counted `$identify` event; the raw account ID is never sent, and sign-out rotates the anonymous installation identity.
 
+Every native event carries `client: "ios"` and `interactive` (`false` only for `ade_mobile_analytics_budget`). The app-open event carries `distribution` (`testflight`, `app_store`, or `development`, read from the App Store receipt name), and the first open of a new install also carries `first_open: true`, once; an install that already has a stored budget from an earlier build reports none. Both are properties of the existing `ade_mobile_app_opened` and add no event.
+
 iOS analytics is default-on when the public capture configuration is present; the former affirmative opt-in, its consent prompt, and its Settings opt-out have been removed. A stored `ade.analytics.enabled` false from an earlier build is ignored; only `DO_NOT_TRACK=1` in the launch environment turns it off. Its restart-safe ceiling remains 20 events per UTC day, with the existing event-specific limits of 3 app opens, 10 screen views, 7 feature events, 2 coarse errors, and 1 budget summary. Sign-in, machine-adoption, pairing, and quick-connect events use separate `ade_mobile_*` names with closed coarse enum properties and a limit of 2 events each. Foreground duplicate screens and outcomes are suppressed. The transport has no retry loop, redirects, cookies, cache, credential storage, background session, or persistent event queue.
 
 Taking Control of a Mac's simulator from the phone records `ade_mobile_feature_used` with `feature: "simulator_control"`, `outcome: "started"` and nothing else: no device, lane, machine, stream or gesture detail. It answers the same question as the desktop's `ios_live_view` (does anyone drive a simulator that is not on this Mac), and the existing per-foreground deduplication and the 7-feature-events-per-day limit bound it; no ceiling was raised. Gestures, frames and the speed readout are never events.
@@ -1563,6 +1634,28 @@ The same preference gates the Freebuff ad pixel (`apps/web/src/lib/freebuffPixel
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
+Every event also carries the visit's attribution
+(`readMarketingLanding`, `marketingCurrentUrl` in `marketingAnalytics.ts`, wired
+in `marketingAnalyticsBrowser.ts`): `$current_url` (origin and path, plus only
+`utm_*`; other query parameters and the fragment are dropped, since `/pair`
+and `/open` links can carry codes), `$host`, `$pathname`, `$referrer` (the
+external referrer's origin and path, or `$direct`), `$referring_domain`, and
+any `utm_source` / `utm_medium` / `utm_campaign` / `utm_term` / `utm_content`
+from the landing URL. The landing is read once per tab session
+(sessionStorage), so moving between pages keeps the source the visit arrived
+with; a referrer from this site itself counts as `$direct`. The first source
+the browser ever arrived from rides along as `first_referring_domain` and
+`first_utm_source` / `first_utm_medium` / `first_utm_campaign`
+(localStorage, forgotten on opt-out). These are properties of the existing
+events and add none; the site sends no `$pageview`, because
+`ade_marketing_screen_viewed` already marks each real page view.
+
+An install cannot be tied to the visit that downloaded it: the installers are
+fixed files on GitHub, and the iPhone button opens a TestFlight public link,
+which takes no campaign tag. Download clicks carry the visit's source, so
+installs are attributed by comparing download clicks per source with
+`ade_app_installed` over the same days, not person by person.
+
 The install dialog (the modal behind every Mac/Windows download button and the
 Linux brain link) uses the existing taxonomy: opening it records one feature
 event per platform (`install_dialog_mac` / `install_dialog_windows` /
@@ -1571,8 +1664,8 @@ reports identically), copying a command records
 `copy_install_command_<platform>` or `copy_brew_command`, and the direct
 download buttons record the CTA event with closed labels
 (`download_mac_arm64`, `download_mac_x64`, `download_windows_x64`) at position
-`install_dialog`. Events carry no installer URL, release tag, platform
-fingerprint, or referrer, and fit inside the unchanged 12-CTA / 16-feature /
+`install_dialog`. Events carry no installer URL, release tag, or platform
+fingerprint beyond the attribution above, and fit inside the unchanged 12-CTA / 16-feature /
 40-event public-site ceilings. The `/install.sh`, `/install.ps1`, and
 `/download/*` Vercel redirect endpoints are deliberately analytics-free — the
 dialog's client-side click is the funnel signal, and a test pins that the
@@ -1610,7 +1703,7 @@ The full-access personal key belongs only in encrypted ADE secrets. When running
 
 ## PostHog dashboards
 
-`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has five managed dashboards and thirty-four managed insights:
+`scripts/posthog/dashboard-spec.mjs` is the declarative source of truth. `scripts/posthog/provision.mjs` validates and idempotently upserts the managed objects. The project currently has five managed dashboards and thirty-seven managed insights:
 
 - ADE · Growth and retention
 - ADE · Surface and feature adoption

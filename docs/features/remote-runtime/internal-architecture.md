@@ -35,7 +35,7 @@ runtime connection, runtime disconnection, and sync authority transfer.
 
 Project-scoped operations are routed through `ade/actions/call` and carry `params.projectId`. The ade-cli multi-project RPC handler (`createMultiProjectRpcRequestHandler`) looks up the per-project service scope via `ProjectScopeRegistry.get(projectId)` and forwards the request to the cached single-project handler created from `createAdeRpcRequestHandler({ runtime, … })`.
 
-`ade/initialize` advertises `runtimeInfo.multiProject: true`, `runtimeInfo.packageChannel` (when set on the daemon environment), and `capabilities.projects: true`. Clients use the multi-project flag to decide whether to send `projectId` per request (multi-project runtime) or treat the runtime as already bound to one project (embedded `ade code --embedded`). `validateRemoteRuntimeInitializeResult` enforces both top-level capabilities, normalizes the per-method `capabilities.machineProjects` flags (`browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`), and turns version mismatch / channel mismatch / missing capabilities into a `RemoteRuntimeInitializeInfo.compatibilityWarnings` array instead of throwing. Those warnings flow back to `bootstrapRemoteRuntime`, are returned on `RemoteRuntimeConnectResult.compatibilityWarnings`, and are surfaced inline under the remote target's connection chip.
+`ade/initialize` advertises `runtimeInfo.multiProject: true`, `runtimeInfo.packageChannel` (when set on the daemon environment), and `capabilities.projects: true`. Clients use the multi-project flag to decide whether to send `projectId` per request (multi-project runtime) or treat the runtime as already bound to one project (embedded `--headless`). `validateRemoteRuntimeInitializeResult` enforces both top-level capabilities, normalizes the per-method `capabilities.machineProjects` flags (`browseDirectories`, `getDetail`, `getWorkSummary`, `getDefaultParentDir`, `create`, `clone`, `listMyGitHubRepos`), and turns version mismatch / channel mismatch / missing capabilities into a `RemoteRuntimeInitializeInfo.compatibilityWarnings` array instead of throwing. Those warnings flow back to `bootstrapRemoteRuntime`, are returned on `RemoteRuntimeConnectResult.compatibilityWarnings`, and are surfaced inline under the remote target's connection chip.
 
 `RemoteRuntimeCapabilities` (in `apps/desktop/src/shared/types/remoteRuntime.ts`) is the structured shape both the connect result and the connection status carry. `RemoteConnectionPool.assertMachineProjectCapability` maps `projects.*` RPC method names to the matching capability flag and rejects the call with a self-describing message before it leaves the desktop when the remote did not advertise that capability — the connection stays open for everything else.
 
@@ -61,7 +61,7 @@ The runtime transport itself is an SSH `exec` channel running `ade rpc --stdio` 
 
 Short SSH exec probes use `ADE_REMOTE_SSH_EXEC_TIMEOUT_MS` (default 30 s). Connect failures are normalized before surfacing to the renderer so handshake timeouts, connection resets before ready, and local TCP port exhaustion have actionable messages.
 
-`ade code remote` uses the system OpenSSH client rather than the desktop's
+The ADE CLI uses the system OpenSSH client rather than the desktop's
 `ssh2` transport, but preserves the same config identity. The destination stays
 the saved target hostname (and therefore remains the `Host` pattern selector in
 `~/.ssh/config`); alternate LAN/tailnet addresses are supplied with
@@ -88,7 +88,7 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 2. Detect platform and architecture with `uname -sm` (`normalizeRemoteArch` accepts darwin/linux × arm64/x64).
 3. Read the preferred channel home's `bin/ade.version`, `bin/ade.sha256`, and `bin/ade --version` when present.
 4. Locate the bundled `ade-<platform-arch>` binary, `ade-<platform-arch>.native.tar.gz` archive, packaged `ptyHostWorker.cjs`, and bundled `agent-skills/` root in desktop resources.
-5. If the desktop has no bundled binary for that arch and no executable was found in the preferred home, probe the alternate channel homes (`~/.ade`, `~/.ade-alpha`, `~/.ade-beta`) for a working `ade --version`. The first home that responds is adopted as the active layout and the reason is captured for the connection's `compatibilityWarnings` (`Using remote runtime home <home> because <preferred> did not contain an ADE service for <arch>`).
+5. If the desktop has no bundled binary for that arch and no executable was found in the preferred home, probe the alternate channel homes (`~/.ade`, `~/.ade-alpha`) for a working `ade --version`. The first home that responds is adopted as the active layout and the reason is captured for the connection's `compatibilityWarnings` (`Using remote runtime home <home> because <preferred> did not contain an ADE service for <arch>`).
 6. If the local bundle is present and the selected installed version or SHA does not match the desktop bundle, upload the binary to `<layout>/bin/ade` (mode 700 dir, +x file, write `<layout>/bin/ade.version` and `<layout>/bin/ade.sha256`). Uploads prefer SFTP; when that cannot start safely, ADE writes bounded SSH chunks and can fall back to OpenSSH for chunks that did not enter the existing channel.
 7. If the native deps archive is present and either the runtime was just uploaded or the remote `<layout>/runtime/<arch>/.ade-version` doesn't match, upload and extract it to `<layout>/runtime/<platform-arch>/`.
 8. If the PTY host worker is available locally and the remote worker hash is missing or stale, upload it to `<layout>/runtime/ptyHostWorker.cjs` with a sidecar `.sha256`. When the remote has `node`, the runtime environment points `ADE_PTY_HOST_WORKER_PATH` and `ADE_PTY_HOST_WORKER_NODE` at that worker; otherwise it points `ADE_PTY_HOST_WORKER_COMMAND` at the uploaded `ade` binary so the static runtime can run the internal worker entry.
@@ -102,7 +102,7 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 
 If no bundled runtime exists locally and no channel home on the remote can start a compatible RPC, bootstrap fails with an explicit install/build error rather than silently shipping the wrong version.
 
-Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the preferred home; `resolveRemoteRuntimeLayoutCandidates` enumerates that preferred home plus the stable / alpha / beta layouts (deduped by `homeDirName`) for the fallback walk. Stable uploads to `~/.ade/`; alpha to `~/.ade-alpha/`; beta to `~/.ade-beta/`. Runtime binaries, native deps, PTY worker artifacts, and bundled ADE agent skills all stay inside the selected home. Channel builds also pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` in the environment prefix so the channel binary doesn't fight a stable login service for the socket.
+Channel layout: `resolveRemoteRuntimeLayout` reads `ADE_PACKAGE_CHANNEL` for the preferred home; `resolveRemoteRuntimeLayoutCandidates` enumerates that preferred home plus the stable / alpha layouts (deduped by `homeDirName`) for the fallback walk. Stable uploads to `~/.ade/`; alpha to `~/.ade-alpha/`. Beta is an update track and uses `~/.ade/`. Runtime binaries, native deps, PTY worker artifacts, and bundled ADE agent skills all stay inside the selected home. Channel builds also pass `ADE_DISABLE_RUNTIME_SERVICE_INSTALL=1` in the environment prefix so the channel binary doesn't fight a stable login service for the socket.
 
 ### One-time machine trust reset
 
@@ -307,9 +307,9 @@ hello with the already-pinned DPoP key may rotate and return a fresh paired
 secret; this makes credential delivery retryable when the previous `hello_ok`
 was lost without allowing a different account or key to take over the record.
 
-### ADE Code saved-target resolution and launch budget
+### Saved-target resolution and launch budget
 
-The desktop Machines panel and `ade code remote` share
+The desktop Machines panel and `ade machines connect` share
 `RemoteTargetRegistry` plus `DesktopPairedMachineStore`. Selecting an account
 directory machine asks `AccountMachineDirectoryService` to perform account
 adoption over the exact allowlisted WSS relay, persist the resulting paired
@@ -331,15 +331,7 @@ error for that shape. ADE never downgrades an account-created target to SSH;
 only a route with `source: "manual"` is eligible for SSH fallback; Bonjour and
 Tailscale discovery routes are never inferred as SSH configuration.
 
-`remoteLauncher.ts` gives target resolution, account adoption, paired route
-dials, and every SSH route × channel-home × absolute/PATH binary probe one shared
-45-second startup budget. Every child process, WebSocket open, and paired hello
-wait is bounded by the smaller of its normal per-attempt cap and the budget that
-remains. `SIGINT`/`SIGTERM` abort the active wait and close the corresponding
-child/socket; exhaustion returns the collected route/runtime diagnostics instead
-of polling indefinitely. After project/session selection, a paired bridge
-reconnect receives a fresh bounded startup budget; the deadline does not limit
-the connected ADE Code session itself.
+`pairedRemoteConnector.ts` and `remoteLaunchBudget.ts` (`apps/ade-cli/src/services/account/`, `apps/ade-cli/src/lib/`) bound target resolution, account adoption, and paired route dials with one shared startup budget, so `ade machines connect` returns collected route diagnostics instead of polling indefinitely.
 
 ## Local runtime routing
 

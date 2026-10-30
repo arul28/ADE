@@ -46,3 +46,11 @@ export const GithubCopilot = brand("GitHub Copilot");
 export const LmStudio = brand("LM Studio");
 export const Ollama = brand("Ollama");
 export const Qwen = brand("Qwen");
+// Settings → ADE MCP's app gallery uses these.
+export const Amp = brand("Amp");
+export const ClaudeCode = brand("Claude Code");
+export const GeminiCLI = brand("Gemini CLI");
+export const Goose = brand("Goose");
+export const Mistral = brand("Mistral");
+export const Perplexity = brand("Perplexity");
+export const Windsurf = brand("Windsurf");

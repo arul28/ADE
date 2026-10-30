@@ -2,7 +2,7 @@ import path from "node:path";
 import { lookupOpenPrForBranch } from "./ghOpenPrLookup";
 import { resolveGithubSshAliasUrl } from "../github/githubSshAlias";
 import { runGitPushOrThrow } from "./gitPushFailure";
-import { branchNameFromHeadRef, getHeadSha, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
+import { branchNameFromHeadRef, getHeadSha, gitBranchRefsIdentity, gitStdoutOrThrow, gitWorktreeRootCached, resolveGitCommit, runGit, runGitOrThrow, runGitRepoCached } from "./git";
 import { detectConflictKind } from "./gitConflictState";
 import { runGitWithGithubAuthFallbackOrThrow } from "./gitTransportAuth";
 import type {
@@ -410,24 +410,25 @@ export function createGitOperationsService({
     );
   }
 
+  // Every git operation checks its lane folder first. The answer is kept while
+  // the folder and its `.git` entry are the same (gitWorktreeRootCached), so
+  // the check stops starting a git process per call (~30 ms on Windows).
   async function assertLaneWorktreeRoot(lane: LaneInfo): Promise<void> {
-    try {
-      const topLevelRes = await runGit(
-        ["rev-parse", "--path-format=absolute", "--show-toplevel"],
-        { cwd: lane.worktreePath, timeoutMs: 8_000 },
-      );
-      if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return;
-      if (topLevelRes.exitCode !== 0) {
-        throw laneWorktreeMissingError(lane);
+    const isRoot = await gitWorktreeRootCached(lane.worktreePath, async () => {
+      try {
+        const topLevelRes = await runGit(
+          ["rev-parse", "--path-format=absolute", "--show-toplevel"],
+          { cwd: lane.worktreePath, timeoutMs: 8_000 },
+        );
+        if (!topLevelRes || typeof topLevelRes.exitCode !== "number") return true;
+        if (topLevelRes.exitCode !== 0) return false;
+        const topLevel = topLevelRes.stdout.trim();
+        return !topLevel || normAbs(topLevel) === normAbs(lane.worktreePath);
+      } catch {
+        return false;
       }
-      const topLevel = topLevelRes.stdout.trim();
-      if (topLevel && normAbs(topLevel) !== normAbs(lane.worktreePath)) {
-        throw laneWorktreeMissingError(lane);
-      }
-    } catch (error) {
-      if (isMissingWorktreeError(error)) throw error;
-      throw laneWorktreeMissingError(lane);
-    }
+    });
+    if (!isRoot) throw laneWorktreeMissingError(lane);
   }
 
   const runLaneOperation = async <T>({
@@ -616,6 +617,18 @@ export function createGitOperationsService({
       throw new Error("No redoable git undo operation found for this lane.");
     }
     return { operation: latest, redoHeadSha };
+  }
+
+  /**
+   * A read of one commit object (its files, its message), which never changes
+   * for a full object id: kept in the repo cache under that id, so the History
+   * page's detail panel stops starting git for it on every open (~30 ms each on
+   * Windows). A ref or short id can move, so it asks git every time.
+   */
+  async function readCommitObject(worktreePath: string, sha: string, kind: string, args: string[]): Promise<string> {
+    const opts = { cwd: worktreePath, timeoutMs: 12_000 };
+    if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(sha)) return await runGitOrThrow(args, opts);
+    return gitStdoutOrThrow(await runGitRepoCached(args, opts, { key: `commit-${kind}:${sha.toLowerCase()}`, cacheClass: "stable" }), args, opts);
   }
 
   function normalizeCommitShaArg(commitSha: string): string {
@@ -1171,10 +1184,7 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
-      const res = await runGitOrThrow(["show", "--pretty=format:", "--name-only", "-z", sha, "--"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 12_000
-      });
+      const res = await readCommitObject(lane.worktreePath, sha, "files", ["show", "--pretty=format:", "--name-only", "-z", sha, "--"]);
       return parseDiffNameOnly(res);
     },
 
@@ -1182,10 +1192,7 @@ export function createGitOperationsService({
       const lane = laneService.getLaneBaseAndBranch(args.laneId);
       await assertLaneWorktreeRoot(lane);
       const sha = normalizeCommitShaArg(args.commitSha);
-      const res = await runGitOrThrow(["show", "-s", "--format=%B", sha, "--"], {
-        cwd: lane.worktreePath,
-        timeoutMs: 12_000
-      });
+      const res = await readCommitObject(lane.worktreePath, sha, "message", ["show", "-s", "--format=%B", sha, "--"]);
       const message = res.trimEnd();
       const MAX = 8000;
       if (message.length > MAX) {
@@ -1714,10 +1721,19 @@ export function createGitOperationsService({
         "%(authorname)",
         "%(subject)",
       ].join("\t");
-      const out = await runGitOrThrow(
-        ["for-each-ref", "--sort=refname", `--format=${FORMAT}`, "refs/heads", "refs/remotes"],
-        { cwd: lane.worktreePath, timeoutMs: 15_000 }
-      );
+      // Kept while the refs, HEAD and config it reads are unchanged: the History
+      // page waits on this list each time it opens, and the read is ~80 ms on
+      // Windows. Lane ownership below is read fresh every time.
+      const refArgs = ["for-each-ref", "--sort=refname", `--format=${FORMAT}`, "refs/heads", "refs/remotes"];
+      const refOpts = { cwd: lane.worktreePath, timeoutMs: 15_000 };
+      const refsIdentity = await gitBranchRefsIdentity(lane.worktreePath);
+      const out = refsIdentity
+        ? gitStdoutOrThrow(
+          await runGitRepoCached(refArgs, refOpts, { key: `branches:${lane.worktreePath}:${refsIdentity}`, cacheClass: "stable" }),
+          refArgs,
+          refOpts,
+        )
+        : await runGitOrThrow(refArgs, refOpts);
       const branchProfiles = new Set<string>();
       try {
         for (const profile of laneService.listBranchProfiles(args.laneId)) {

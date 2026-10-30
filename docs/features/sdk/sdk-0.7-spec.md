@@ -217,7 +217,7 @@ Plan, in order of savings:
 3. Strip declarations, docs, examples and tests from copied packages
    (up to ~37 MB, overlapping later steps). Licenses stay.
 4. Drop the copied `@factory/droid-sdk` if tsup already bundles it (17.4 MB).
-5. Embedded-only npm packages exclude the TUI bundle and UI packages,
+5. Embedded-only npm packages exclude UI packages,
    `@linear/sdk` and cr-sqlite (~33.5 MB). The CLI installer keeps them.
 6. `@ade-dev/sdk` / `@ade-dev/chat-ui`: stop publishing sourcemaps
    (66% / 62% of each package).

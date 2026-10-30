@@ -245,11 +245,18 @@ beforeEach(() => {
   mockState.spawnSync.mockReset();
   mockState.spawnSync.mockReturnValue({ status: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) });
   mockState.resolveCodexExecutable.mockReset();
+  // The mocked spawn is the boundary; on Windows the app-server would start
+  // on the off-thread spawner instead and skip it.
+  vi.stubEnv("ADE_DISABLE_OFF_THREAD_SPAWN", "1");
   // Per-account rate-limit memory outlives a poll by design; a test that
   // exercises a 429 must not hand its cooldown to the next one.
   _testing.resetAccountRateLimitsForTest();
   // Cost figures price from a real models.dev extract, as they do in the app.
   _pricingTesting.installModelsDevPricingForTest(MODELS_DEV_FIXTURE);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 describe("claudePollAllowsKeychain", () => {
@@ -6304,7 +6311,7 @@ describe("ADE database usage aggregation", () => {
   it("normalizes client actions while excluding reads and terminal keystrokes", async () => {
     const db = await createStatsDb();
     expect(usageClientSurfaceFromRpcName("ade-desktop")).toBe("desktop");
-    expect(usageClientSurfaceFromRpcName("ade-code")).toBe("tui");
+    expect(usageClientSurfaceFromRpcName("ade-cli")).toBe("cli");
     expect(usageClientSurfaceFromRpcName("ade-web-client")).toBe("web");
     expect(usageClientSurfaceFromPeer("phone", "ios")).toBe("mobile");
     expect(usageActionFromIpcChannel("ade.agentChat.send")).toBe("chat.send");

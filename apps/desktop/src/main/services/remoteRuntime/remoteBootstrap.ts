@@ -193,7 +193,7 @@ export function validateRemoteRuntimeInitializeResult(args: {
   };
 }
 
-type RemoteRuntimeChannel = "alpha" | "beta" | null;
+type RemoteRuntimeChannel = "alpha" | null;
 
 type WindowsRemotePlatform = {
   platform: "win32";
@@ -299,7 +299,7 @@ async function detectRemotePlatform(client: Client): Promise<DetectedRemotePlatf
 
 type RemoteRuntimeLayout = {
   channel: RemoteRuntimeChannel;
-  homeDirName: ".ade" | ".ade-alpha" | ".ade-beta";
+  homeDirName: ".ade" | ".ade-alpha";
   homeDirExpr: string;
   binDirExpr: string;
   binDirRelative: string;
@@ -331,17 +331,13 @@ type RemoteRuntimeLayout = {
 
 function normalizeRemoteRuntimeChannel(value: unknown): RemoteRuntimeChannel {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
-  if (normalized === "alpha" || normalized === "beta") return normalized;
-  return null;
+  return normalized === "alpha" ? normalized : null;
 }
 
 export function resolveRemoteRuntimeLayout(env: NodeJS.ProcessEnv = process.env): RemoteRuntimeLayout {
   const channel = normalizeRemoteRuntimeChannel(env.ADE_PACKAGE_CHANNEL);
-  const homeDirName = channel === "alpha"
-    ? ".ade-alpha"
-    : channel === "beta"
-      ? ".ade-beta"
-      : ".ade";
+  // Beta is an update track of the normal install and lives in ~/.ade.
+  const homeDirName = channel === "alpha" ? ".ade-alpha" : ".ade";
   const homeDirExpr = `$HOME/${homeDirName}`;
   const binDirExpr = `${homeDirExpr}/bin`;
   const runtimeDirExpr = `${homeDirExpr}/runtime`;
@@ -375,7 +371,6 @@ export function resolveRemoteRuntimeLayoutCandidates(env: NodeJS.ProcessEnv = pr
   const preferred = resolveRemoteRuntimeLayout(env);
   const candidateEnvs: NodeJS.ProcessEnv[] = [
     {},
-    { ADE_PACKAGE_CHANNEL: "beta" } as NodeJS.ProcessEnv,
     { ADE_PACKAGE_CHANNEL: "alpha" } as NodeJS.ProcessEnv,
   ];
   const candidates = [preferred, ...candidateEnvs.map((candidateEnv) => resolveRemoteRuntimeLayout(candidateEnv))];

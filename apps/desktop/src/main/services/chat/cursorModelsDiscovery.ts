@@ -62,7 +62,7 @@ let sdkCacheGeneration = 0;
 const TTL_MS = 120_000;
 // Serve last-known-good rows well past the freshness window (revalidating in
 // the background) so passive consumers — status/availableModelIds, the mobile
-// app, the TUI — never watch a verified provider's models blink out two
+// app — never watch a verified provider's models blink out two
 // minutes after the last active probe.
 const POSITIVE_TTL_MS = 6 * 60 * 60_000;
 const SDK_MODEL_LIST_TIMEOUT_MS = 5_000;
@@ -896,7 +896,7 @@ async function fetchCursorModelsFromSdk(
     // Authoritative empty result: the fetch returned without throwing, so both
     // the SDK and the official API reported zero models for this key (timeouts
     // and auth/transient failures throw and never reach here). Drop the stale
-    // rows so passive cached-or-fallback readers (status/mobile/TUI) don't
+    // rows so passive cached-or-fallback readers (status/mobile) don't
     // resurrect models the provider just reported as gone.
     sdkCached = null;
   }

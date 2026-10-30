@@ -3,12 +3,10 @@ import {
   AGENT_CHAT_STOP_MODES,
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
-  SETTLE_TEARDOWN_STOP_MODE,
   chatStopModeCopy,
   formatBackgroundJobCount,
   isAgentChatStopMode,
   parseAgentChatStopMode,
-  resolveAgentChatStopModeAlias,
   shouldDeclarePerTaskStopAffordance,
   providerStopModeSupport,
   stopModeAvailable,
@@ -53,12 +51,6 @@ describe("chat stop matrix", () => {
     expect(stopModeStopsBackground("stop_and_clear")).toBe(false);
   });
 
-  it("keeps the user's queue on settle while still stopping background work", () => {
-    expect(SETTLE_TEARDOWN_STOP_MODE).toBe("stop_and_background");
-    expect(stopModeClearsQueue(SETTLE_TEARDOWN_STOP_MODE)).toBe(false);
-    expect(stopModeStopsBackground(SETTLE_TEARDOWN_STOP_MODE)).toBe(true);
-  });
-
   it("parses unknown stored modes back to the default instead of inventing a fifth axis", () => {
     expect(parseAgentChatStopMode("stop_only")).toBe("stop_only");
     expect(parseAgentChatStopMode("stop_and_clear_and_background")).toBe("stop_and_clear_and_background");
@@ -96,12 +88,4 @@ describe("chat stop matrix", () => {
     expect(CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE).toBe(true);
   });
 
-  it("resolves hyphen, underscore, and flag aliases to the four-mode matrix", () => {
-    expect(resolveAgentChatStopModeAlias("keep-queue")).toBe("stop_only");
-    expect(resolveAgentChatStopModeAlias("clear-queue")).toBe("stop_and_clear");
-    expect(resolveAgentChatStopModeAlias("background")).toBe("stop_and_background");
-    expect(resolveAgentChatStopModeAlias("clear-and-background")).toBe("stop_and_clear_and_background");
-    expect(resolveAgentChatStopModeAlias("stop_and_clear")).toBe("stop_and_clear");
-    expect(resolveAgentChatStopModeAlias("nope")).toBeNull();
-  });
 });

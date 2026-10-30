@@ -33,6 +33,7 @@ import {
   Server,
   Smartphone,
   Sparkles,
+  SquareTerminal,
   Webhook,
 } from "lucide-react";
 import { cn } from "../../lib/cn";
@@ -284,14 +285,7 @@ export function FeatureWall() {
           glow="rgba(94,234,212,0.16)"
         />
 
-        <Tile span="2x1" className="p-0">
-          <img src="/images/hero-v2/terminal.webp" alt="ADE Code in a terminal" loading="lazy" className="absolute inset-0 h-full w-full object-cover object-left-top opacity-60" />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#111116] via-[#111116]/75 to-transparent" />
-          <div className="absolute bottom-0 p-5 sm:p-6">
-            <div className="font-mono text-[12px] text-white/60">ade code</div>
-            <div className="text-[19px] font-semibold text-white">The same chats in your terminal.</div>
-          </div>
-        </Tile>
+        <Small span="2x1" icon={SquareTerminal} title="ade CLI" body="Agents and scripts drive every lane, chat and PR from the command line." tint="text-violet-300" />
         <Small icon={Repeat2} title="Hand off" body="Move a chat to another model or machine." tint="text-pink-300" />
         <Small icon={ListTodo} title="Issues" body="Linear, Jira and GitHub. Start work from any." tint="text-indigo-300" />
 

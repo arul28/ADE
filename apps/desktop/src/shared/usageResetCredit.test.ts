@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   RESET_CREDIT_OUTCOME_TEXT,
-  resetCreditApplied,
   resetCreditOutcomeKey,
   resetCreditOutcomeText,
 } from "./usageResetCredit";
@@ -86,25 +85,3 @@ describe("resetCreditOutcomeKey", () => {
   });
 });
 
-describe("resetCreditApplied", () => {
-  it("is true only for the answers that really cleared the windows", () => {
-    expect(resetCreditApplied({ ok: true, status: "reset" })).toBe(true);
-    expect(resetCreditApplied({ ok: true })).toBe(true);
-    expect(resetCreditApplied({ ok: true, status: "failure" })).toBe(false);
-    expect(resetCreditApplied({ ok: false, status: "nothingToReset" })).toBe(false);
-    expect(resetCreditApplied({ ok: false, status: "noCredit" })).toBe(false);
-    expect(resetCreditApplied(null)).toBe(false);
-  });
-
-  it("is false for a failing host that echoes the success sentence back", () => {
-    // The verdict reads the outcome, not the rendered copy: a host whose own
-    // explanation happens to be worded exactly like the applied-reset line must
-    // not be reported as a reset that happened.
-    const echo = {
-      ok: false,
-      message: RESET_CREDIT_OUTCOME_TEXT.reset,
-    } as UsageResetCreditResult;
-    expect(resetCreditOutcomeText(echo)).toBe(RESET_CREDIT_OUTCOME_TEXT.reset);
-    expect(resetCreditApplied(echo)).toBe(false);
-  });
-});

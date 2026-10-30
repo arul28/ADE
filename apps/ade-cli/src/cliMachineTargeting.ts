@@ -65,7 +65,7 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
  * Commands whose own `--machine` flag means something else (a draft's sending
  * machine, the machine `ade machines` acts on). They keep the flag.
  */
-const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help", "code"]);
+const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "machines", "help"]);
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
@@ -459,11 +459,14 @@ function isShellOrTerminalAction(params: JsonObject): boolean {
  */
 function withRemoteShellArgs(params: JsonObject, workspaceRoot: string): JsonObject {
   const toolArgs = isRecord(params.arguments) ? params.arguments : {};
-  const { chatSessionId: _chatSessionId, workCopy, ...args } = isRecord(toolArgs.args) ? toolArgs.args : {};
+  const { chatSessionId: _chatSessionId, workCopy, laneDefaulted, ...args } = isRecord(toolArgs.args) ? toolArgs.args : {};
   let nextArgs: JsonObject = args;
-  if (toolArgs.domain === "pty" && toolArgs.action === "create" && !asString(args.laneId)) {
+  // A lane filled in by default (this shell's lane here, or the primary lane)
+  // is not a lane the caller chose there: use the work copy instead.
+  if (toolArgs.domain === "pty" && toolArgs.action === "create" && (laneDefaulted === true || !asString(args.laneId))) {
+    const { laneId: _laneId, ...rest } = args;
     nextArgs = {
-      ...args,
+      ...rest,
       remoteWork: {
         ...readLocalWorkSource(workspaceRoot),
         ...(isRecord(workCopy) ? workCopy : {}),

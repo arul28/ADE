@@ -255,7 +255,7 @@ export const MODEL_PICKER_MAX_RECENTS = MAX_RECENTS;
 // Process-wide singleton shared across the JSON-RPC server (adeRpcServer) and
 // the sync host (syncRemoteCommandService) so favorites + recents stay
 // consistent within a process. The per-project cr-sqlite DB is the source of
-// truth (it converges desktop/TUI/iOS via CRR replication); the singleton just
+// truth (it converges desktop/iOS via CRR replication); the singleton just
 // avoids re-running the legacy-file migration on every call. Keyed by the db
 // handle so a runtime project switch (new db) rebuilds the store.
 let sharedStoreInstance: ModelPickerStore | null = null;

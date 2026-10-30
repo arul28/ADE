@@ -5,6 +5,8 @@ import {
   waitFor,
 } from "./agentChatService.testHarness";
 import { describe, expect, it } from "vitest";
+import { AdeExpectedError } from "../../../shared/expectedError";
+import { connectSentry } from "../../../shared/sentry/capture";
 
 // ---------------------------------------------------------------------------
 // GitHub Copilot (SDK provider)
@@ -158,5 +160,66 @@ describe("copilot chat runtime", () => {
     expect(done.status).toBe("failed");
     expect(errors).toHaveLength(1);
     expect(errors[0]).toMatchObject({ message: "You have hit the rate limit.", errorInfo: { category: "rate_limit" } });
+  });
+
+  // Which Copilot failures reach Sentry as issues, and what they carry. The
+  // SDK is the process boundary: `connectSentry` takes a fake one. A provider's
+  // message can quote the request, so a session error's title is its kind alone.
+  it.each([
+    ["an unexpected session error", { sessionError: { message: "messages.3 rejected: fix the login bug in auth.ts", errorType: "query", errorCode: "invalid_request_body", statusCode: 400 } },
+      { title: "Copilot session error", fingerprint: ["copilot", "session_error", "query", "invalid_request_body"] }],
+    ["a rate limit", { sessionError: { message: "You have hit the rate limit.", errorType: "rate_limit" } }, null],
+    ["a GitHub outage", { sessionError: { message: "Service unavailable", errorType: "query", statusCode: 503 } }, null],
+    ["a send ADE could not make", { sendError: new Error("Copilot SDK send failed: worker refused the attachment") },
+      { title: "Copilot SDK send failed: worker refused the attachment", fingerprint: ["copilot", "turn_failed", "Copilot SDK send failed: worker refused the attachment"] }],
+    ["an offline send", { sendError: new AdeExpectedError("fetch failed", "network") }, null],
+  ] as const)("reports %s to Sentry only when ADE could be at fault", async (_label, trigger, expected) => {
+    const captured: Array<{ title: string; fingerprint?: string[]; tags: Record<string, string> }> = [];
+    let scope: { fingerprint?: string[]; tags: Record<string, string> } = { tags: {} };
+    connectSentry({
+      withScope: (callback) => {
+        scope = { tags: {} };
+        callback({
+          setTag: (key, value) => { scope.tags[key] = value; },
+          setExtras: () => undefined,
+          setFingerprint: (value) => { scope.fingerprint = value; },
+          setLevel: () => undefined,
+        });
+      },
+      captureException: (error) => { captured.push({ title: (error as Error).message, fingerprint: scope.fingerprint, tags: scope.tags }); },
+      addBreadcrumb: () => undefined,
+      logger: { warn: () => undefined, error: () => undefined },
+    });
+    const events: AgentChatEventEnvelope[] = [];
+    const harness = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+    const session = await harness.service.createSession({
+      laneId: "lane-1", provider: "copilot", model: "auto", modelId: "github-copilot/auto",
+    } as never);
+    const dones = () => events.filter((envelope) => envelope.event.type === "done");
+    await harness.service.sendMessage({ sessionId: session.id, text: "open the runtime" });
+    await waitFor(() => dones().length === 1);
+    expect(captured, "a clean first turn reports nothing").toHaveLength(0);
+    const pooled = mockState.copilotPooled;
+    pooled.send.mockImplementation(async (chatId: string) => {
+      if ("sendError" in trigger) throw trigger.sendError;
+      queueMicrotask(() => {
+        pooled.bridge.onEvent?.(chatId, { type: "session.error", data: trigger.sessionError });
+        pooled.bridge.onEvent?.(chatId, { type: "session.idle", data: {} });
+      });
+      return "copilot-message-2";
+    });
+
+    await harness.service.sendMessage({ sessionId: session.id, text: "fix the login bug" });
+    await waitFor(() => dones().length === 2);
+
+    expect((dones()[1]!.event as { status: string }).status).toBe("failed");
+    if (!expected) {
+      expect(captured).toHaveLength(0);
+      return;
+    }
+    expect(captured).toHaveLength(1);
+    expect(captured[0]).toMatchObject({ title: expected.title, fingerprint: [...expected.fingerprint] });
+    expect(captured[0]!.tags).toMatchObject({ provider: "copilot" });
+    expect(captured[0]!.title).not.toContain("login bug");
   });
 });

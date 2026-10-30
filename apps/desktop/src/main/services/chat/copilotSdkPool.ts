@@ -5,6 +5,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
+import { reportCopilotProblem } from "./copilotSentry";
+import { markExpected } from "../../../shared/expectedError";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
 import { copilotVersionRejectionMessage, detectCopilotVersionRejection } from "../ai/providerVersionRejection";
@@ -18,6 +20,9 @@ import type {
   AgentChatCopilotContextTier,
 } from "../../../shared/types/chat";
 import type {
+  CopilotSdkAgentMode,
+  CopilotSlashCommandInfo,
+  CopilotSlashCommandResult,
   CopilotSdkSessionConfig,
   CopilotSdkAttachment,
   CopilotSdkWorkerInit,
@@ -52,7 +57,9 @@ export type CopilotSdkPooled = {
   bridge: CopilotSdkBridge;
   request<T = unknown>(type: CopilotSdkWorkerRequest["type"], payload?: unknown): Promise<T>;
   openSession(config: CopilotSdkSessionConfig, resume: boolean): Promise<{ sessionId: string; events: unknown[]; permissionMode?: string; permissionError?: string | null }>;
-  send(chatId: string, prompt: string, attachments?: CopilotSdkAttachment[], mode?: "enqueue" | "immediate", agentMode?: "autopilot"): Promise<unknown>;
+  send(chatId: string, prompt: string, attachments?: CopilotSdkAttachment[], mode?: "enqueue" | "immediate", agentMode?: CopilotSdkAgentMode, displayPrompt?: string): Promise<unknown>;
+  listCommands(chatId: string): Promise<CopilotSlashCommandInfo[]>;
+  invokeCommand(chatId: string, name: string, input?: string): Promise<CopilotSlashCommandResult>;
   setModel(chatId: string, model: string, reasoningEffort?: string | null, options?: { contextTier?: AgentChatCopilotContextTier; autoTier?: AgentChatCopilotAutoTier | null }): Promise<void>;
   setAutoTier(chatId: string, autoTier: AgentChatCopilotAutoTier | null): Promise<{ status: "unchanged" | "pending"; [key: string]: unknown }>;
   setPermissionMode(chatId: string, permissionMode: string): Promise<{ mode: string; error?: string | null }>;
@@ -133,7 +140,9 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       });
     },
     openSession: (config, resume) => pooled.request(resume ? "resume" : "create", config),
-    send: (chatId, prompt, attachments, mode, agentMode) => pooled.request("send", { chatId, prompt, attachments, mode, agentMode }),
+    send: (chatId, prompt, attachments, mode, agentMode, displayPrompt) => pooled.request("send", { chatId, prompt, attachments, mode, agentMode, displayPrompt }),
+    listCommands: async (chatId) => (await pooled.request<{ commands?: CopilotSlashCommandInfo[] }>("commands", { chatId }))?.commands ?? [],
+    invokeCommand: (chatId, name, input) => pooled.request("command", { chatId, name, ...(input ? { input } : {}) }),
     setModel: async (chatId, model, reasoningEffort, options = {}) => { await pooled.request("set_model", { chatId, model, reasoningEffort, ...options }); },
     setAutoTier: (chatId, autoTier) => pooled.request("set_auto_tier", { chatId, autoTier }),
     setPermissionMode: (chatId, permissionMode) => pooled.request("set_permission_mode", { chatId, permissionMode }),
@@ -169,7 +178,11 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
       if (!waiter) return;
       waiters.delete(message.requestId);
       if (message.ok) waiter.resolve(message.result);
-      else waiter.reject(new Error(copilotUpdateRequiredMessage(message.error, logger) ?? `Copilot SDK ${waiter.type} failed: ${message.error}`));
+      else {
+        // A runtime GitHub no longer accepts needs an ADE update, not a bug report.
+        const updateRequired = copilotUpdateRequiredMessage(message.error, logger);
+        waiter.reject(updateRequired ? markExpected(new Error(updateRequired), "environment") : new Error(`Copilot SDK ${waiter.type} failed: ${message.error}`));
+      }
       return;
     }
     if (message.type === "event") { bridge.onEvent?.(message.chatId, message.event); return; }
@@ -189,6 +202,7 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
         // Copilot waits on every request until it gets an answer, so a failed
         // handler still answers, with the fallback that never approves.
         logger?.warn("agent_chat.copilot_sdk_handler_failed", { type: message.type, error: error instanceof Error ? error.message : String(error) });
+        reportCopilotProblem("handler_failed", { error, tags: { "copilot.request": message.type } });
         respond(waiter.fallback);
       });
   });

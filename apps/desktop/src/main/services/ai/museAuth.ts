@@ -18,10 +18,10 @@
  *
  * Nothing here returns or logs a credential value.
  */
-import os from "node:os";
 import path from "node:path";
 import { readFileSync } from "node:fs";
 import { getApiCredentialKey, getApiKey, listApiCredentials } from "./apiKeyStore";
+import { museConfigDir } from "../shared/providerConfigHomes";
 
 /** The variable Muse reads an API key from. ADE passes a stored key the same way, never on argv. */
 export const MUSE_API_KEY_ENV = "META_API_KEY";
@@ -34,10 +34,7 @@ export const MUSE_API_KEY_ENV = "META_API_KEY";
 export const MUSE_CREDENTIAL_PROVIDER = "meta";
 
 export function resolveMuseConfigDir(env: NodeJS.ProcessEnv = process.env): string {
-  const xdg = env.XDG_CONFIG_HOME?.trim();
-  if (xdg) return path.join(xdg, "muse");
-  const home = env.HOME?.trim() || env.USERPROFILE?.trim() || os.homedir();
-  return path.join(home, ".config", "muse");
+  return museConfigDir({ env });
 }
 
 export function museAuthFilePath(env: NodeJS.ProcessEnv = process.env): string {

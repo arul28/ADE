@@ -155,6 +155,30 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
+  it("leaves an unchanged identity alone on later reads: no file rewrite, no synced write", async () => {
+    // Every CTO operator action reads the identity; a write per read was a
+    // synced database version every paired device then had to apply.
+    const fixture = await createStateFixture();
+    const service = createCtoStateService({
+      db: fixture.db,
+      projectId: fixture.projectId,
+      adeDir: fixture.adeDir,
+    });
+    expect(fixture.db.sync.isAvailable?.(), "cr-sqlite loaded, so database versions are counted").toBe(true);
+    const identityPath = path.join(fixture.adeDir, "cto", "identity.yaml");
+
+    const first = service.getIdentity();
+    const fileBefore = fs.statSync(identityPath, { bigint: true });
+    const versionBefore = fixture.db.sync.getDbVersion();
+    for (let read = 0; read < 3; read += 1) expect(service.getIdentity()).toEqual(first);
+    const fileAfter = fs.statSync(identityPath, { bigint: true });
+
+    expect([fileAfter.ino, fileAfter.mtimeNs]).toEqual([fileBefore.ino, fileBefore.mtimeNs]);
+    expect(fixture.db.sync.getDbVersion()).toBe(versionBefore);
+
+    fixture.db.close();
+  });
+
   it("recreates files from DB-only state", async () => {
     const fixture = await createStateFixture();
     const identityPayload = {

@@ -253,13 +253,21 @@ function readLocalNetworkMetadata(): LocalNetworkMetadata {
 }
 
 /**
- * This computer's MagicDNS name, from the shared `tailscale status` reader
- * (which caches for a minute). Answers from the last read and refreshes in
- * the background, so a device lookup never waits on the CLI.
+ * How old a `tailscale status` answer the device's MagicDNS name may come from.
+ * The name changes only when the tailnet is renamed or the machine re-joins, and
+ * device lookups run all the time, so with the reader's one-minute default the
+ * brain started the Tailscale CLI about every 90 s while idle.
+ */
+const TAILSCALE_DNS_NAME_MAX_AGE_MS = 5 * 60_000;
+
+/**
+ * This computer's MagicDNS name, from the shared `tailscale status` reader.
+ * Answers from the last read and refreshes in the background, so a device
+ * lookup never waits on the CLI.
  */
 function readLocalTailscaleDnsName(): string | null {
   if (!tailscaleStatusRefreshInFlight && externalIdentityProbesEnabled()) {
-    const refresh = readTailscaleLocalStatus().then((status) => {
+    const refresh = readTailscaleLocalStatus({ maxAgeMs: TAILSCALE_DNS_NAME_MAX_AGE_MS }).then((status) => {
       tailscaleDnsNameCache = status.dnsName;
     }).finally(() => {
       if (tailscaleStatusRefreshInFlight === refresh) {

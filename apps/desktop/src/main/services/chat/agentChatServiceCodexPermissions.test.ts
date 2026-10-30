@@ -163,7 +163,7 @@ describe("createAgentChatService", () => {
       const turnStart = mockState.codexRequestPayloads.find((payload) => payload.method === "turn/start");
       expect((turnStart?.params as { serviceTier?: unknown } | undefined)?.serviceTier).toBe("ultrafast");
 
-      // The TUI and the phone know Fast only and resend it with other changes.
+      // The phone knows Fast only and resend it with other changes.
       const fromFastOnlyClient = await service.updateSession({
         sessionId: session.id,
         fastMode: true,

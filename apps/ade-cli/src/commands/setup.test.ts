@@ -293,14 +293,14 @@ describe("release asset helpers", () => {
 
 describe("defaultDesktopAppPath", () => {
   it("follows the package channel instead of hardcoding the stable name", () => {
-    // Hardcoding `ADE` made the post-install launch a silent no-op on beta.
+    // Hardcoding `ADE` made the post-install launch a silent no-op on Alpha.
     expect(
       defaultDesktopAppPath("win32", {
         LOCALAPPDATA: path.join("C:", "Users", "a", "AppData", "Local"),
-        ADE_PACKAGE_CHANNEL: "beta",
+        ADE_PACKAGE_CHANNEL: "alpha",
       }),
     ).toBe(
-      path.join("C:", "Users", "a", "AppData", "Local", "Programs", "ADE Beta", "ADE Beta.exe"),
+      path.join("C:", "Users", "a", "AppData", "Local", "Programs", "ADE Alpha", "ADE Alpha.exe"),
     );
     expect(defaultDesktopAppPath("darwin", { ADE_PACKAGE_CHANNEL: "alpha" }))
       .toBe("/Applications/ADE Alpha.app");

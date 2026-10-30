@@ -3,7 +3,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   acquireCursorSdkConnection,
   buildCursorSdkPaths,
@@ -38,6 +38,7 @@ const tempDirs: string[] = [];
 
 vi.mock("node:child_process", () => ({
   fork: (...args: unknown[]) => forkMock(...args),
+  spawnSync: () => ({ status: 0, stdout: "", stderr: "" }),
 }));
 
 /** A worker response body; `null` means the worker never answers that request type. */
@@ -355,8 +356,13 @@ function poolArgs(tag: string, extra: { activityRuntimeSocketPath?: string } = {
   };
 }
 
+beforeEach(() => {
+  vi.stubEnv("ADE_HOME", makeTempDir("ade-cursor-test-home-"));
+});
+
 afterEach(() => {
   forkMock.mockReset();
+  vi.unstubAllEnvs();
   for (const dir of tempDirs.splice(0)) {
     fs.rmSync(dir, { recursive: true, force: true });
   }

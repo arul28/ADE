@@ -482,7 +482,7 @@ describe("AccountMachineDirectoryService", () => {
     });
   });
 
-  it("pairs stale directory presence through a verified account relay and saves an ADE Code target", async () => {
+  it("pairs stale directory presence through a verified account relay and saves a paired machine target", async () => {
     const onStage = vi.fn();
     const pairWithAccountMachine = vi.fn(async (): Promise<Pick<
       DesktopPairedMachineCredentials,
@@ -522,7 +522,7 @@ describe("AccountMachineDirectoryService", () => {
         lastSeenAt: 1,
         pubkey: "ed25519:directory-key",
       })]),
-      deviceName: () => "ADE Code test",
+      deviceName: () => "ADE CLI test",
       pairedStore: { pairWithAccountMachine },
       targetRegistry: { save },
       appVersion: "1.2.3",
@@ -542,7 +542,7 @@ describe("AccountMachineDirectoryService", () => {
         pubkey: "ed25519:directory-key",
       }),
       "account-token",
-      "ADE Code test",
+      "ADE CLI test",
       {
         appVersion: "1.2.3",
         relayBaseUrls: ["https://relay.example"],
@@ -628,7 +628,7 @@ describe("AccountMachineDirectoryService", () => {
       accountOwnerUserId: "user-a",
       deviceId: "client-a",
       siteId: "client-site-a",
-      deviceName: "ADE Code",
+      deviceName: "ADE CLI",
       secret: "paired-secret",
       dpopPrivateKey: "private-key",
       dpopPublicKey: "public-key",

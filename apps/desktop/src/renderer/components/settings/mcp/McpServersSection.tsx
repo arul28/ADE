@@ -580,7 +580,7 @@ function MissingSecret({
  * is the one row here that `REGISTRY_MCP_PROVIDER_IDS` does not drive, so it changes
  * only when someone edits it.
  */
-const NOT_SERVED_YET = "Copilot, Grok, Qwen, Devin, and personal chats";
+const NOT_SERVED_YET = "Grok, Qwen, Devin, and personal chats";
 
 /**
  * Which agents the registry reaches.

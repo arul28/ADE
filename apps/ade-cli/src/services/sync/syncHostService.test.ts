@@ -7843,6 +7843,46 @@ describe("outbound changeset ack retries", () => {
     }
   });
 
+  it("gives a cold phone its first screen before a reseed that is already built", async () => {
+    const { projectRoot, cleanup } = createTempProjectRoot();
+    const state = {
+      dbVersion: SYNC_HOST_MOBILE_REPLICA_RESEED_GAP + 2_501,
+      changes: Array.from({ length: 2_500 }, (_, index) => makeChange(index + 1, index)),
+    };
+    const { host } = createControlledChangesetHost(projectRoot, state);
+    const clock = createHostClock();
+    const capabilities = ["changesetAck", SYNC_CHUNKED_ENVELOPES_CAPABILITY];
+    let early: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    let late: Awaited<ReturnType<typeof connectPeer>> | null = null;
+    const batches = (peer: NonNullable<typeof early>) => peer.envelopes
+      .filter((envelope) => envelope.type === "changeset_batch")
+      .map((envelope) => envelope.payload as SyncChangesetBatchPayload);
+    try {
+      const port = await host.waitUntilListening();
+      early = await connectPeer(port, host.getBootstrapToken(), "ios-builds-reseed", { capabilities });
+      await finishPhoneFirstScreen(early, clock);
+      // The first phone's reseed means the shared compact state is built.
+      await waitForValue(() => batches(early!).find((batch) => batch.reason === "catchup"), "first phone's reseed");
+
+      late = await connectPeer(port, host.getBootstrapToken(), "ios-cold-after-ready", { capabilities });
+      // Its first batch is the ordinary one that carries the project row, not the
+      // whole compacted state its first screen would otherwise wait behind.
+      const first = await finishPhoneFirstScreen(late, clock);
+      expect(first.fromDbVersion).toBe(0);
+      expect(first.changes.length).toBeLessThan(2_500);
+      // The reseed still follows, from where that batch left the phone.
+      const reseed = await waitForValue(() => batches(late!).find((batch) => batch.reason === "catchup"), "cold phone's reseed");
+      expect(reseed.fromDbVersion).toBe(first.toDbVersion);
+      expect(reseed.toDbVersion).toBe(state.dbVersion);
+    } finally {
+      clock.restore();
+      early?.ws.close();
+      late?.ws.close();
+      await host.dispose();
+      cleanup();
+    }
+  });
+
   it("retries an abandoned far-behind replica reseed from its old cursor after recovery backoff", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     // More rows than the first batch carries, and still more than the gap
@@ -12927,7 +12967,7 @@ describe("mobile chat wire (mobileChatSlimV1)", () => {
     expect(sharedBytes).toBeGreaterThan(8_000);
     expect(mobileBytes).toBeLessThan(3_000);
     expect((mobile.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBe(true);
-    // The shared wire — desktop, hosted web, the TUI — is untouched.
+    // The shared wire — desktop and hosted web — is untouched.
     expect((shared.event as { resultTruncatedForMobile?: boolean }).resultTruncatedForMobile).toBeUndefined();
   });
 

@@ -21,8 +21,11 @@ import type { PushRegistrationStore } from "./pushRegistrationStore";
 import {
   decodeAccountSettingRecord,
   decodeAccountVaultItem,
+  decodeAccountWriteResults,
 } from "./accountRelayRows";
 import type {
+  AccountStaleDelete,
+  AccountWriteResult,
   AccountSettingRecord,
   AccountSettingWrite,
   AccountSettingsPage,
@@ -35,6 +38,9 @@ import type {
 export {
   decodeAccountSettingRecord,
   decodeAccountVaultItem,
+  decodeAccountWriteResults,
+  type AccountStaleDelete,
+  type AccountWriteResult,
   type AccountSettingRecord,
   type AccountSettingWrite,
   type AccountSettingsPage,
@@ -229,6 +235,27 @@ export class PushRelayRequestError extends Error {
     // relay reports its failures itself, and the caller tries again later.
     if (status === 429 || status >= 500) markExpected(this, "environment");
   }
+}
+
+/**
+ * `writtenAt`/`sentAt` for a delete the relay may refuse as older than its
+ * row, and `deviceId` so a row this device wrote itself is never refused.
+ */
+function staleCheckQuery(writtenAt: string | null | undefined, deviceId?: string | null): Record<string, string> | undefined {
+  if (!writtenAt) return undefined;
+  return { writtenAt, sentAt: new Date().toISOString(), ...(deviceId ? { deviceId } : {}) };
+}
+
+/** A 409 from a delete: `stale` with the newer row, or a refusal to throw. */
+function readStaleDelete<TRow>(
+  action: string,
+  body: Record<string, unknown>,
+  decodeRow: (row: unknown) => TRow | null,
+): AccountStaleDelete<TRow> {
+  if (body.code !== "stale") {
+    throw new PushRelayRequestError(action, 409, typeof body.error === "string" ? body.error : "HTTP 409");
+  }
+  return { stale: true, current: body.current == null ? null : decodeRow(body.current) };
 }
 
 /** What the relay did with one custom notification. */
@@ -1049,30 +1076,45 @@ export function createPushRelayClient(args: {
     async putAccountSettings(
       settings: AccountSettingWrite[],
       deviceId: string | null,
-    ): Promise<{ updatedAt: string | null } | null> {
+    ): Promise<{ updatedAt: string | null; results?: AccountWriteResult<AccountSettingRecord>[] } | null> {
       if (!args.getAccountAccessToken) return null;
       if (!(args.getAccountUserId?.() ?? undefined)) return null;
       if (!settings.length) return { updatedAt: null };
       const result = await accountRequest("putAccountSettings", "PUT", "/attention/account/settings", {
-        body: { settings, ...(deviceId ? { deviceId } : {}) },
+        // `itemResults`: answer per item and refuse a write older than the
+        // stored row (`writtenAt`, corrected by `sentAt`). An older relay
+        // ignores both and answers the whole batch.
+        body: { settings, ...(deviceId ? { deviceId } : {}), itemResults: true, sentAt: new Date().toISOString() },
       });
       if (!result.asked) return null;
+      const results = decodeAccountWriteResults(result.body.results, settings.length, decodeAccountSettingRecord);
       return {
         updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+        ...(results ? { results } : {}),
       };
     },
 
-    /** The way out. A reset that cannot reach the account is not a reset. */
-    async deleteAccountSetting(scope: string, key: string): Promise<boolean | null> {
+    /**
+     * The way out. A reset that cannot reach the account is not a reset.
+     * With `writtenAt`, a relay that has a newer row answers `stale` with it.
+     */
+    async deleteAccountSetting(
+      scope: string,
+      key: string,
+      options?: { writtenAt?: string | null; deviceId?: string | null },
+    ): Promise<boolean | AccountStaleDelete<AccountSettingRecord> | null> {
       const result = await accountRequest(
         "deleteAccountSetting",
         "DELETE",
         `/attention/account/settings/${encodeURIComponent(scope)}/${encodeURIComponent(key)}`,
-        { allowStatuses: [404] },
+        { allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
       );
       if (!result.asked) return null;
       // Already gone is the desired end state, not a failure.
       if (result.status === 404) return false;
+      if (result.status === 409) {
+        return readStaleDelete("deleteAccountSetting", result.body, decodeAccountSettingRecord);
+      }
       return result.body.deleted === true;
     },
 
@@ -1105,34 +1147,42 @@ export function createPushRelayClient(args: {
     async putAccountVault(
       items: AccountVaultWrite[],
       deviceId: string | null,
-    ): Promise<{ updatedAt: string | null } | null> {
+    ): Promise<{ updatedAt: string | null; results?: AccountWriteResult<AccountVaultItem>[] } | null> {
       if (!args.getAccountAccessToken) return null;
       if (!(args.getAccountUserId?.() ?? undefined)) return null;
       if (!items.length) return { updatedAt: null };
       const result = await accountRequest("putAccountVault", "PUT", "/attention/account/vault", {
-        body: { items, ...(deviceId ? { deviceId } : {}) },
+        // See putAccountSettings: per-item answers and the stale-write check.
+        body: { items, ...(deviceId ? { deviceId } : {}), itemResults: true, sentAt: new Date().toISOString() },
         couldNotAsk: [503],
       });
       if (!result.asked) return null;
+      const results = decodeAccountWriteResults(result.body.results, items.length, decodeAccountVaultItem);
       return {
         updatedAt: typeof result.body.updatedAt === "string" ? result.body.updatedAt : null,
+        ...(results ? { results } : {}),
       };
     },
 
-    /** Revoking has to work from any machine, including one you no longer have. */
+    /**
+     * Revoking has to work from any machine, including one you no longer have.
+     * With `writtenAt`, a relay that has a newer row answers `stale` with it.
+     */
     async deleteAccountVaultItem(
       scope: string,
       kind: string,
       key: string,
-    ): Promise<boolean | null> {
+      options?: { writtenAt?: string | null; deviceId?: string | null },
+    ): Promise<boolean | AccountStaleDelete<AccountVaultItem> | null> {
       const result = await accountRequest(
         "deleteAccountVaultItem",
         "DELETE",
         `/attention/account/vault/${encodeURIComponent(scope)}/${encodeURIComponent(kind)}/${encodeURIComponent(key)}`,
-        { couldNotAsk: [503], allowStatuses: [404] },
+        { couldNotAsk: [503], allowStatuses: [404, 409], query: staleCheckQuery(options?.writtenAt, options?.deviceId) },
       );
       if (!result.asked) return null;
       if (result.status === 404) return false;
+      if (result.status === 409) return readStaleDelete("deleteAccountVaultItem", result.body, decodeAccountVaultItem);
       return result.body.deleted === true;
     },
 

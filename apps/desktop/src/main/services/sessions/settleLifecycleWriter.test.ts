@@ -381,14 +381,11 @@ describe("settle-lifecycle writer", () => {
       // meaningless there, and on the CRR `terminal_sessions` row it would add a
       // per-column clock entry to the throttled preview write path.
       expect(clockTable("session_lifecycle_revisions")).toBeNull();
-      // Residue describes processes on THIS host. Replicated, it would show a
-      // peer "1 job could not be stopped" for a machine it cannot see.
-      expect(clockTable("session_settle_residue")).toBeNull();
       // Positive control: proves the assertions above can fail.
       expect(clockTable("terminal_sessions")).not.toBeNull();
     }
 
-    for (const table of ["session_lifecycle_revisions", "session_settle_residue"]) {
+    for (const table of ["session_lifecycle_revisions"]) {
       expect(
         db.get<{ name: string }>(
           "select name from sqlite_master where type = 'table' and name = ?",

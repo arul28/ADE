@@ -1,4 +1,5 @@
 import { execFile } from "node:child_process";
+import { execFileOffThread, offThreadSpawnEnabled } from "../../../../desktop/src/main/services/shared/offThreadSpawn";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import {
   buildWindowsPortHolderQueryArgs,
@@ -24,6 +25,12 @@ export function execFileText(
   args: string[],
   timeoutMs: number = PORT_INSPECT_TIMEOUT_MS,
 ): Promise<string | null> {
+  // On Windows a process start runs on the calling thread; a PowerShell start
+  // held the brain ~200 ms there while it bound its sync port.
+  if (offThreadSpawnEnabled()) {
+    return execFileOffThread(command, args, { timeoutMs, maxBuffer: 1024 * 1024 })
+      .then((result) => (result.error || result.exitCode !== 0 ? null : result.stdout));
+  }
   return new Promise((resolve) => {
     execFile(
       command,

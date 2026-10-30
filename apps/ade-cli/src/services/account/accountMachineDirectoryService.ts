@@ -547,7 +547,7 @@ export class AccountMachineDirectoryService {
     const credentials = await pairedStore.pairWithAccountMachine(
       machine,
       token,
-      this.options.deviceName?.() ?? `ADE Code on ${os.hostname()}`,
+      this.options.deviceName?.() ?? `ADE CLI on ${os.hostname()}`,
       {
         ...options,
         appVersion: this.options.appVersion,

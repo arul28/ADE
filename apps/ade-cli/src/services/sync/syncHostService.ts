@@ -3293,6 +3293,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   /** When the cached reseed was found too large (see MOBILE_REPLICA_RESEED_TOO_LARGE_REUSE_MS). */
   let mobileReplicaReseedTooLargeAtMs: number | null = null;
   let mobileReplicaReseedAdvancedPollGeneration = -1;
+  // A build step reads off the event loop, so a later poll can arrive while it runs; two steps on one
+  // cache would scan the same window twice.
+  let mobileReplicaReseedStepInFlight = false;
   // Constructing the cache is shared, but gzip/frame generation happens once
   // per recipient. Admit only one fresh compact send per poll so a reconnect
   // burst cannot monopolize the event loop or outbound socket budget.
@@ -5296,11 +5299,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     return payload ? sendChangesetBatchPayload(peer, payload) : null;
   }
 
-  function buildMobileReplicaReseedStep(
+  async function buildMobileReplicaReseedStep(
     targetDbVersion: number,
     peerDbVersion: number,
     pollGeneration: number,
-  ): MobileReplicaReseedCache {
+  ): Promise<MobileReplicaReseedCache> {
     const cachedTargetLag = mobileReplicaReseedCache
       ? targetDbVersion - mobileReplicaReseedCache.targetDbVersion
       : 0;
@@ -5334,19 +5337,29 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cache = mobileReplicaReseedCache;
     if (cache.status !== "building") return cache;
     if (pollGeneration <= mobileReplicaReseedAdvancedPollGeneration) return cache;
+    if (mobileReplicaReseedStepInFlight) return cache;
     mobileReplicaReseedAdvancedPollGeneration = pollGeneration;
+    mobileReplicaReseedStepInFlight = true;
     let advancedCache = cache;
-    for (let emptyWindows = 0; emptyWindows < MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL; emptyWindows += 1) {
-      advancedCache = advanceMobileReplicaReseedCache({
-        cache: advancedCache,
-        versionWindow: SYNC_EXPORT_VERSION_WINDOW,
-        exportChangesSince: args.db.sync.exportChangesSince,
-        excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
-        includeChange: (change) =>
-          !isHostAuthoritativeTable(change)
-          && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
-      });
-      if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
+    try {
+      for (let emptyWindows = 0; emptyWindows < MOBILE_REPLICA_RESEED_MAX_EMPTY_WINDOWS_PER_POLL; emptyWindows += 1) {
+        // Read off the event loop, as the catch-up batches are: a window read on this thread held
+        // the brain 30-50 ms on a real project while a cold phone connected.
+        advancedCache = await advanceMobileReplicaReseedCache({
+          cache: advancedCache,
+          versionWindow: SYNC_EXPORT_VERSION_WINDOW,
+          exportChangesSince: args.db.sync.exportChangesSinceOffThread ?? args.db.sync.exportChangesSince,
+          excludeTables: MOBILE_REPLICA_RESEED_EXCLUDED_TABLES,
+          includeChange: (change) =>
+            !isHostAuthoritativeTable(change)
+            && !MOBILE_CHANGESET_EXCLUDED_TABLES.has(change.table),
+        });
+        // A newer build replaced this one while the read ran; that one is current.
+        if (mobileReplicaReseedCache !== cache) return mobileReplicaReseedCache ?? cache;
+        if (advancedCache.status !== "building" || !advancedCache.lastAdvanceWasEmpty) break;
+      }
+    } finally {
+      mobileReplicaReseedStepInFlight = false;
     }
     if (advancedCache.status === "too_large") {
       mobileReplicaReseedTooLargeAtMs = Date.now();
@@ -6055,7 +6068,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   /**
    * Whether this peer asked for the slim mobile chat wire. Desktop, hosted web
-   * and the TUI never announce it, so their bytes are untouched.
+   * never announce it, so their bytes are untouched.
    */
   function peerWantsSlimChat(peer: PeerState): boolean {
     return peer.metadata?.capabilities?.includes(SYNC_MOBILE_CHAT_SLIM_CAPABILITY) === true;
@@ -6403,18 +6416,36 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         && peerSupportsMobileReplicaReseed(peer)
         && replicaLag > SYNC_HOST_MOBILE_REPLICA_RESEED_GAP
       ) {
-        const reseed = buildMobileReplicaReseedStep(
+        const reseedFromDbVersion = peer.lastKnownServerDbVersion;
+        const reseed = await buildMobileReplicaReseedStep(
           currentDbVersion,
-          peer.lastKnownServerDbVersion,
+          reseedFromDbVersion,
           pollGeneration,
         );
-        // A phone that has nothing yet gets one ordinary batch while the
-        // reseed builds (several polls on a big project): it carries the
-        // project row its first screen waits for. The reseed sends the whole
-        // compacted state from the phone's cursor later, so nothing is lost.
-        if (reseed.status === "building") {
-          if (peer.changesetBatchesSent > 0) return;
-        } else {
+        // The peer may have moved on while the build read ran, as after a batch export below.
+        if (
+          disposed
+          || peer.ws.readyState !== WebSocket.OPEN
+          || !peer.authenticated
+          || peer.pendingChangesetBatch
+          || peer.lastKnownServerDbVersion !== reseedFromDbVersion
+        ) {
+          return;
+        }
+        // A phone that has nothing yet gets one ordinary batch first, while
+        // the reseed builds (several polls on a big project) and also once it
+        // is ready: that batch carries the project row its first screen waits
+        // for, and a ready reseed is the whole compacted state (up to 4 MB),
+        // which held a 3G phone's first screen 4.4 s for a 170 KB state. The
+        // reseed sends everything from the phone's cursor next, so nothing is
+        // lost; this is the order a phone already gets while it builds. A
+        // ready reseed waits only while the phone has scanned nothing: when
+        // its first window holds nothing for it, no batch goes out but its
+        // cursor moves, and the reseed is next.
+        const firstBatchGoesFirst = peer.changesetBatchesSent === 0
+          && (reseed.status === "building" || (reseed.status === "ready" && reseedFromDbVersion === 0));
+        if (!firstBatchGoesFirst) {
+          if (reseed.status === "building") return;
           if (reseed.status === "ready") {
             if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
             mobileReplicaReseedLaunchPollGeneration = pollGeneration;

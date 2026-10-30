@@ -94,10 +94,6 @@ function joinAfter(after: string): string {
   return after.startsWith("\n") ? after : `\n${after}`;
 }
 
-function escapeMarkdown(value: string): string {
-  return value.replace(/[\\`*_{}\[\]()#+\-.!|>]/g, "\\$&");
-}
-
 function escapeMarkdownLinkText(value: string): string {
   return value.replace(/[\]\\]/g, "\\$&");
 }
@@ -140,13 +136,3 @@ export function ensureGitHubPrIssueLinkSection(
   return trimmed ? `${trimmed}\n\n${block}\n` : `${block}\n`;
 }
 
-export function parseGitHubIssueRef(value: string): { owner?: string; repo?: string; number: number } | null {
-  const trimmed = value.trim();
-  const full = trimmed.match(/^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)#(\d+)$/);
-  if (full?.[1] && full[2] && full[3]) {
-    return { owner: full[1], repo: full[2], number: Number(full[3]) };
-  }
-  const hash = trimmed.match(/^#?(\d+)$/);
-  if (hash?.[1]) return { number: Number(hash[1]) };
-  return null;
-}

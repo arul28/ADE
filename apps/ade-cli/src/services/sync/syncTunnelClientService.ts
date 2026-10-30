@@ -406,6 +406,8 @@ export type TunnelRemoteMcpHost = {
   accountSecret(): string | null;
   onEnabledChange(listener: (enabled: boolean) => void): () => void;
   handleHttp(request: RemoteMcpHttpRequest): Promise<RemoteMcpHttpResponse>;
+  /** The control socket opened or closed, so the host can note it without polling. */
+  relayConnectionChanged?(): void;
 };
 
 /** Parses a host control frame; returns null for anything unrecognized. */
@@ -1110,6 +1112,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         lastControlOpenAt = new Date().toISOString();
         // A new control socket starts "off" at the relay; say what is true.
         sendRemoteMcpState(socket);
+        notifyRemoteMcpConnection();
         socketLivenessStop = armControlLiveness(
           socket,
           () => {
@@ -1331,6 +1334,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
         controlOpenedAtMs = null;
         control = null;
         advanceControlGeneration();
+        notifyRemoteMcpConnection();
         for (const pendingOpen of [...pendingBridgeOpens]) {
           if (pendingOpen.controlSocket === socket) {
             pendingOpen.reject(RELAY_CLOSE_BRIDGE_REJECTED, "relay control unavailable");
@@ -1721,6 +1725,14 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
    * machine to the account address; leaving it out takes it off. An older
    * relay ignores `account` (and the whole message, older still).
    */
+  const notifyRemoteMcpConnection = (): void => {
+    try {
+      remoteMcp?.relayConnectionChanged?.();
+    } catch (error) {
+      log.warn?.("sync_tunnel.remote_mcp_connection_notify_failed", { error: error instanceof Error ? error.message : String(error) });
+    }
+  };
+
   const sendRemoteMcpState = (controlSocket: WebSocket | null, force = false): void => {
     if (!controlSocket || (!remoteMcp && !force)) return;
     const enabled = remoteMcp?.isEnabled() === true;
@@ -2059,6 +2071,7 @@ export function createSyncTunnelClientService(args: SyncTunnelClientArgs): SyncT
     controlOpenedAtMs = null;
     clearBridgeValidation();
     if (!socket) resetSelfProbeForControlGeneration();
+    notifyRemoteMcpConnection();
   };
 
   const reconcileAccountEligibility = async (): Promise<void> => {

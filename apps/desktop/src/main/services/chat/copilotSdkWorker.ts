@@ -22,15 +22,6 @@ type UserInputResponse = { answer: string; wasFreeform: boolean };
 type McpAuthResult = { kind: "cancelled" } | { kind: "token"; accessToken: string; expiresIn: number };
 let client: Client | null = null;
 const sessions = new Map<string, Session>();
-/**
- * The prompt each pending permission request carries. SDK 1.0.22 hands the
- * permission handler only `permissionRequest`, while the safety judge's
- * recommendation (`assistedApproval`) and the session-approval data live on the
- * event's `promptRequest`. The SDK calls the handler and then the event
- * listeners in one synchronous dispatch, with the same request object, so the
- * handler waits a microtask and reads it from here.
- */
-const permissionPrompts = new WeakMap<object, unknown>();
 const waiters = new Map<string, { chatId: string; type: CopilotSdkWaiterType; resolve: (value: unknown) => void }>();
 let disposed = false;
 /** A title or summary call; the SDK default (60 s) is too tight for a cold runtime. */
@@ -141,17 +132,20 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
     enableConfigDiscovery: !config.utility,
     // Rewind needs Copilot to snapshot file changes per turn.
     enableFileChangeTracking: !config.utility,
-    infiniteSessions: { enabled: !config.utility },
+    infiniteSessions: config.utility
+      ? { enabled: false }
+      : { enabled: true, ...(config.backgroundCompactionThreshold ? { backgroundCompactionThreshold: config.backgroundCompactionThreshold } : {}) },
     availableTools: config.utility ? [] : undefined,
     skipCustomInstructions: config.utility,
     onPermissionRequest: config.utility
       ? () => ({ kind: "reject" as const })
-      : async (request) => {
-        await Promise.resolve();
-        const promptRequest = permissionPrompts.get(request);
-        permissionPrompts.delete(request);
-        return waitFor<CopilotSdk.PermissionRequestResult>("permission_request", config.chatId, promptRequest ? { ...request, promptRequest } : request);
-      },
+      // The safety judge's recommendation (`assistedApproval`), managed policy
+      // and the session-approval data live on the invocation's `promptRequest`.
+      : (request, invocation) => waitFor<CopilotSdk.PermissionRequestResult>(
+        "permission_request",
+        config.chatId,
+        invocation.promptRequest ? { ...request, promptRequest: invocation.promptRequest } : request,
+      ),
     onUserInputRequest: config.utility
       ? undefined
       : (request) => waitFor<UserInputResponse>("user_input_request", config.chatId, request),
@@ -174,9 +168,6 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
 
 function watchSession(chatId: string, session: Session): void {
   session.on((event) => {
-    if (event.type === "permission.requested" && event.data.promptRequest) {
-      permissionPrompts.set(event.data.permissionRequest, event.data.promptRequest);
-    }
     if (event.type === "session.task_complete") {
       postLog("info", "Copilot task completion event", {
         chatId,
@@ -261,7 +252,15 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
   }
   if (req.type === "send") {
     const session = requireSession(req.payload.chatId);
-    return { result: await session.send({ prompt: req.payload.prompt, attachments: req.payload.attachments, mode: req.payload.mode, ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}) }) };
+    return {
+      result: await session.send({
+        prompt: req.payload.prompt,
+        attachments: req.payload.attachments,
+        mode: req.payload.mode,
+        ...(req.payload.agentMode ? { agentMode: req.payload.agentMode } : {}),
+        ...(req.payload.displayPrompt ? { displayPrompt: req.payload.displayPrompt } : {}),
+      }),
+    };
   }
   if (req.type === "set_model") {
     const session = requireSession(req.payload.chatId);
@@ -304,6 +303,15 @@ async function dispatch(req: CopilotSdkWorkerRequest): Promise<unknown> {
     if (!req.payload.eventId) throw new Error("Copilot rewind requires an event id.");
     if (req.payload.action === "preview") return session.rpc.history.previewRewind({ eventId: req.payload.eventId });
     return session.rpc.history.rewind({ eventId: req.payload.eventId, mode: "conversation-and-files" });
+  }
+  if (req.type === "commands") {
+    // Copilot's own slash commands and the skills it loaded, as its CLI lists them.
+    const session = requireSession(req.payload.chatId);
+    return session.rpc.commands.list({ includeBuiltins: true, includeSkills: true, includeClientCommands: false });
+  }
+  if (req.type === "command") {
+    const session = requireSession(req.payload.chatId);
+    return session.rpc.commands.invoke({ name: req.payload.name, ...(req.payload.input ? { input: req.payload.input } : {}) });
   }
   if (req.type === "usage_metrics") {
     const session = requireSession(req.payload.chatId);

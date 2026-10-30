@@ -157,6 +157,10 @@ function makeRemoteConnectionSnapshot(
 function resetStore() {
   useAppStore.setState({
     project: { rootPath: "/Users/arul/ADE", name: "ADE" } as any,
+    // Set every flag the project surface reads, so no test depends on what an
+    // earlier test left in the shared store (the Linear button needs both).
+    projectHydrated: true,
+    showWelcome: false,
     projectBinding: {
       kind: "local",
       key: "local:/Users/arul/ADE",
@@ -1825,6 +1829,12 @@ describe("TopBar", () => {
       id: "lane-linear",
       name: "ADE-123 Add Linear quick view",
     }));
+    // The issue list fills from a search that starts after a debounce, which restarts each time the
+    // quick view's filters change while it loads. Wait on that search, not on a 1 s window.
+    let markSearched!: () => void;
+    const searched = new Promise<void>((resolve) => { markSearched = resolve; });
+    // The issue detail (and its "Lane only" action) is a lazy chunk; load it before the dialog asks.
+    await import("./LinearIssueDetailPane");
     globalThis.window.ade.cto = {
       getLinearConnectionStatus: vi.fn(async () => ({
         tokenStored: true,
@@ -1873,12 +1883,16 @@ describe("TopBar", () => {
         users: [{ id: "user-1", name: "arul", displayName: "Arul", email: null, active: true }],
         states: [{ id: "state-1", name: "In Progress", type: "started", teamId: "team-1", teamKey: "ADE" }],
       })),
-      searchLinearIssues: vi.fn(async () => ({
-        issues: [issue],
-        pageInfo: { hasNextPage: false, endCursor: null },
-      })),
+      searchLinearIssues: vi.fn(async () => {
+        markSearched();
+        return { issues: [issue], pageInfo: { hasNextPage: false, endCursor: null } };
+      }),
     } as any;
     globalThis.window.ade.lanes.create = createLane as any;
+    // The issue list is virtualized, and jsdom lays nothing out: once the list measures its scroll
+    // element (0 px tall here) it renders no rows, so whether the issue showed depended on timing.
+    // Give it the viewport a real window has.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 720, width: 900, height: 720, toJSON() {} } as DOMRect);
 
     // The launch modal is app-wide (mounted once in AppShell), so mount it beside the bar.
     render(<><TopBar /><IssueLaunchHost /></>);
@@ -1890,6 +1904,10 @@ describe("TopBar", () => {
 
     fireEvent.click(await screen.findByRole("button", { name: /linear quick view/i }));
 
+    await searched;
+    await act(async () => {
+      await flushMicrotasks();
+    });
     await waitFor(() => {
       expect(screen.getAllByText("Add Linear quick view").length).toBeGreaterThan(0);
     });

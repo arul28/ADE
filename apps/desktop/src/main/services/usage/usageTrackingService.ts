@@ -9,7 +9,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
@@ -116,6 +116,7 @@ import { resolveCodexExecutable } from "../ai/codexExecutable";
 import { requirePinnedProviderExecutable } from "../ai/pinnedProviderTools";
 import { CODEX_NO_UPDATE_CHECK_ARGS, providerSelfUpdateEnv } from "../../../shared/pinnedToolSpawnEnv";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
+import { offThreadSpawnEnabled, OffThreadChild, spawnOffThread, terminateOffThreadChildTree } from "../shared/offThreadSpawn";
 import { stripAnsi } from "../../utils/ansiStrip";
 import {
   dynamicTokenPricingUpdatedAt,
@@ -1623,6 +1624,19 @@ type CodexAppServerRpcRequest = {
  * closing stdin right after the write returned only the `initialize` reply and
  * silently dropped the read.
  */
+/** What runCodexAppServerJsonRpc needs from a child; ChildProcess and OffThreadChild both fit. */
+type CodexRpcChild = {
+  stdout: { on(event: "data", listener: (chunk: Buffer) => void): unknown } | null;
+  stderr: { on(event: "data", listener: (chunk: Buffer) => void): unknown } | null;
+  stdin: {
+    on(event: "error", listener: (error: Error) => void): unknown;
+    write(text: string): boolean;
+    end(): unknown;
+  } | null;
+  on(event: "error", listener: (error: Error) => void): unknown;
+  on(event: "close", listener: (code: number | null) => void): unknown;
+};
+
 async function runCodexAppServerJsonRpc(args: {
   logger: Logger;
   configHome?: string;
@@ -1681,12 +1695,21 @@ async function runCodexAppServerJsonRpc(args: {
         }
         callback();
       };
-      const child = spawn(invocation.command, invocation.args, {
-        stdio: ["pipe", "pipe", "pipe"],
-        env,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-        windowsHide: true,
-      });
+      // On Windows a process start runs on the calling thread, and this one
+      // (often during a project open) held the brain ~500 ms there, so a
+      // native codex.exe starts on the off-thread spawner. A .cmd shim needs
+      // verbatim cmd.exe arguments and keeps the direct start.
+      const child: CodexRpcChild = offThreadSpawnEnabled() && !invocation.windowsVerbatimArguments
+        ? spawnOffThread(invocation.command, invocation.args, {
+          envPatch: configHome ? { [PROVIDER_INSTANCE_ENV_KEY.codex]: configHome } : undefined,
+          keepStdinOpen: true,
+        })
+        : spawn(invocation.command, invocation.args, {
+          stdio: ["pipe", "pipe", "pipe"],
+          env,
+          windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+          windowsHide: true,
+        });
 
       let stdout = "";
       let stderr = "";
@@ -1735,7 +1758,8 @@ async function runCodexAppServerJsonRpc(args: {
       });
 
       timer = setTimeout(() => {
-        terminateProcessTree(child, "SIGKILL", (detail) => {
+        if (child instanceof OffThreadChild) terminateOffThreadChildTree(child, "SIGKILL");
+        else terminateProcessTree(child as ChildProcess, "SIGKILL", (detail) => {
           logger.warn("usage.poll.codex_cli_rpc_taskkill_failed", {
             ...detail,
             error: detail.error ? getErrorMessage(detail.error) : null,

@@ -4,7 +4,7 @@ Two related but distinct flows:
 
 - **Onboarding** — the fastest path to a usable installation and a usable
   project. Covers registering the project with the runtime so every client
-  (desktop, `ade code`, iOS) sees it. Opening or creating a project lands on
+  (desktop, iOS) sees it. Opening or creating a project lands on
   Work immediately; AI runtimes, GitHub, and Linear live in Settings. There is
   no blocking project setup dashboard.
 - **Settings** — long-lived configuration organized by tab. Project
@@ -14,7 +14,7 @@ Two related but distinct flows:
   `ade-state.json`.
 
 ADE account identity is required for a fresh launch on every client. The
-desktop, `ade code`, CLI, hosted web client, and iOS gate account-backed
+desktop, CLI, hosted web client, and iOS gate account-backed
 surfaces on the signed-in account; a lost or unreadable session is reported as
 its actual state rather than being treated as an optional guest account.
 
@@ -30,7 +30,7 @@ directories. Onboarding writes to both.
 
 | Scope | Location | Owner | Contents |
 |---|---|---|---|
-| Machine | `~/.ade/` (`ADE_HOME` overrides; channel builds use `~/.ade-alpha/` / `~/.ade-beta/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
+| Machine | `~/.ade/` (`ADE_HOME` overrides; the Alpha channel build uses `~/.ade-alpha/`) | ADE runtime (`ade serve`) | Runtime endpoint (`sock/ade.sock`), project registry (`projects.json`), provider-account registry (`provider-instances.json`) and the config homes it names (`provider-homes/<provider>/<id>/`), encrypted credential store (`secrets/`), bundled binary (`bin/ade`), native runtime deps (`runtime/<arch>/`), service log files. |
 | Desktop installation | `<Electron userData>/ade-state.json` | Desktop main process | Recent projects, update handoff/reconciliation state, and machine-local automatic-install preferences. |
 | Project (local) | `<project>/.ade/local.yaml` | `projectConfigService` | Per-user, gitignored overrides for ports, env vars, and machine-specific paths. |
 | Project (data) | `<project>/.ade/` | various services | Lanes, attachments, kvDb, generated assets. The shared `.ade/.gitignore` whitelists only authored files. |
@@ -38,7 +38,7 @@ directories. Onboarding writes to both.
 The ADE runtime is the seam that ties machine and project scope
 together: it owns `~/.ade/projects.json`, lazily builds an `AdeRuntime`
 per project root on first project-scoped JSON-RPC call, and is the
-single runtime through which desktop, `ade code`, and SSH-attached
+single runtime through which desktop and SSH-attached
 desktops see live lanes, agent chats, and work sessions.
 
 The desktop app, the brain, the `ade` CLI and a project move all write
@@ -136,6 +136,20 @@ Main process:
   has no row for them. A cold empty cache does not seed, because that cache
   has not merged the Worker yet. Vault writes that fail while the brain is
   down retry a few times on an unref'd timer.
+  One item the Worker refuses never blocks the queue: the store asks for
+  per-item answers (and, against an older Worker that refuses whole batches,
+  splits the batch until the bad item stands alone), parks that item locally
+  with its reason, sends the rest, and still pulls. Parked items retry hourly
+  or when written again. Each queued write carries the time it was made; the
+  Worker refuses one older than the stored row (corrected for the computer's
+  clock, and never for the device that wrote that row), and the store adopts
+  the newer row instead, so a computer whose queue was stuck for days cannot
+  overwrite newer values (a rotated Linear token) when it unjams. Both stores
+  expose `health()` (ok / failing / unavailable, last sync, pending, parked,
+  a plain error sentence), which Settings › ADE MCP shows, and log failures,
+  rate-limited, to `<ade home>/runtime/brain.jsonl` whoever created the store.
+  An ADE from before this check uploads its queue unchecked once the Worker
+  accepts it.
 - `apps/desktop/src/main/services/account/accountMigrationRunner.ts` and
   `apps/ade-cli/src/services/account/accountMigrationReceipt.ts` — silent,
   receipt-backed sign-in migration and hydration for provider API keys, Linear
@@ -145,7 +159,7 @@ Main process:
   those pending sources.
 - `apps/ade-cli/src/services/account/sharedAccountAuthService.ts`,
   `cliRefreshBroker.ts`, and `apps/desktop/src/main/services/account/accountBridge.ts` —
-  the brain-owned refresh broker used by desktop, CLI, and ADE Code; a
+  the brain-owned refresh broker used by desktop and CLI; a
   non-brain local exchange is only the explicit unavailable-brain fallback.
 - `apps/ade-cli/src/services/account/accountSessionRotationJournal.ts` — the
   crash-safe refresh-rotation journal (`account.session.rotation.v1`), kept in
@@ -192,7 +206,7 @@ Main process:
   in `adeActions/actionPolicy.ts`), so no agent or automation can reach them.
 - `apps/desktop/src/shared/archive.ts` and `shared/types/archive.ts` — the one
   archive vocabulary (kinds, stale threshold, labels, `isArchiveStale`) shared
-  by the service, the Settings page, the reminder, ADE Code, and `ade archive`.
+  by the service, the Settings page, the reminder, and `ade archive`.
 - `apps/desktop/src/renderer/components/settings/ArchiveSection.tsx` — the
   Project → Storage & cleanup → Archive page: the list split at the two-week line, the
   selection bar, restore, and delete. Deleting batches non-lane items together
@@ -568,7 +582,7 @@ Renderer — onboarding:
   remove, and the missing-directory recovery row. Custom names are account-wide
   and win for display without replacing the hostname the machine continues to
   report; list refreshes propagate the new display name through Connections,
-  desktop pairing, ADE Code, hosted web, and iOS. Absence from the directory is
+  desktop pairing, hosted web, and iOS. Absence from the directory is
   not proof of removal: a publish gap, a split sync listener, or an expired
   sign-in all produce the same empty row. `describeThisComputerMissing`
   therefore claims removal only when the directory's own refusal says so (then
@@ -600,10 +614,7 @@ Renderer — onboarding:
   in `renderer/lib/thisComputerRefusal.ts`. The outcome words
   (`describeReconnectOutcome`, `reconnectNeedsFreshSignIn`, `readReconnectResult`
   and the `ReconnectOutcome` type) live in `shared/reconnectOutcome.ts`, which
-  has no renderer or Node globals. `ade machines reconnect --text` and the
-  `ade code` `/reconnect` notice (`reconnectOutcomeNotice` in
-  `tuiClient/activityPane.ts`) read that module too, so the desktop, the CLI and
-  ADE Code say the same thing. The shell bar, the Connections pane and the
+  has no renderer or Node globals. `ade machines reconnect --text` reads that module too, so the desktop and the CLI say the same thing. The shell bar, the Connections pane and the
   Machines list share the flow and both copy modules. `AccountPage` re-exports
   `describeThisComputerMissing` for existing tests.
 - `apps/desktop/src/renderer/components/onboarding/FirstRunFlow.tsx` +
@@ -1707,8 +1718,8 @@ Renderer — settings:
 - `apps/desktop/src/main/services/usage/usageStatsStore.ts` — aggregates the
   project database and owns the low-volume `usage_events` ledger. Only
   successful, meaningful user mutations are recorded; read/poll IPC is
-  ignored. Desktop IPC, ADE Code/TUI RPC, paired mobile commands, paired web
-  commands, and API callers are attributed as `desktop`, `tui`, `mobile`,
+  ignored. Desktop IPC, CLI/terminal RPC, paired mobile commands, paired web
+  commands, and API callers are attributed as `desktop`, `tui` (terminal/CLI), `mobile`,
   `web`, and `api`. `usage_events` is local-only (excluded from CRR
   replication) because every controller action is recorded once on the runtime
   that executes it.
@@ -2263,8 +2274,8 @@ the General settings tab via `AdeCliSection`:
 5. Register projects with the runtime. Opening a project on desktop
    calls `LocalRuntimeConnectionPool.ensureProject(rootPath)`, which
    issues `projects.add { rootPath }` against the daemon. The project
-   then appears in `projects.list` to every other client (`ade code`,
-   iOS, SSH-attached desktops) without an extra step.
+   then appears in `projects.list` to every other client (iOS,
+   SSH-attached desktops) without an extra step.
 
 ### Project layer (per project)
 
@@ -3054,7 +3065,7 @@ desktop the first caller can run before the runtime pool exists; installing the
 broker separately means startup order cannot decide whether a process refreshes
 locally.
 
-**The broker probes dynamically.** CLI and TUI install it unconditionally on
+**The broker probes dynamically.** The CLI installs it unconditionally on
 their non-brain paths, then probe the brain socket for each refresh. A missing
 brain returns null so the service safely uses its local exchange; a brain that
 was reachable but fails still raises transient
@@ -3181,7 +3192,7 @@ the previous two-way behaviour instead of reporting a state it cannot compute.
   `lastPort` is 8788. A replacement brain that lands on 8788 keeps retrying
   8787 at runtime so phones that saved 8787 reconnect without a restart.
   The "ADE is already running with phone sync" dialog is the cross-channel
-  case (ADE vs ADE Beta) and is intentional. Full bind/reap/migrate contract:
+  case (ADE vs ADE Alpha) and is intentional. Full bind/reap/migrate contract:
   [sync and multi-device](../sync-and-multi-device/README.md).
 - **Config reload.** On save, dependent services receive reload
   callbacks (the config service iterates listeners). A hot reload is
@@ -3243,8 +3254,7 @@ Archiving **hides** a lane, chat, or shell; ADE never deletes an archived item
 on its own. The one thing ADE deletes by itself is a dead App Control shell
 (below), which it removes instead of archiving.
 The archive is the one place the three kinds are listed together, so it has a
-Project → Storage & cleanup → Archive page, an `ade archive` CLI, an ADE Code
-weekly notice, and a weekly desktop banner that all read the same
+Project → Storage & cleanup → Archive page, an `ade archive` CLI, and a weekly desktop banner that both read the same
 `archive.list` / `archive.summary` result.
 
 - **Dead App Control shells are deleted.** A shell App Control started
@@ -3261,8 +3271,8 @@ weekly notice, and a weekly desktop banner that all read the same
   CLI refuses `ade archive delete` and points at Settings. Deleting a lane keeps
   its branch; a dirty worktree is refused unless the person confirms a forced
   delete.
-- **The reminder asks, never acts.** The desktop banner and the ADE Code notice
-  appear at most once per project per week when something has been archived for
+- **The reminder asks, never acts.** The desktop banner
+  appears at most once per project per week when something has been archived for
   at least 14 days, and every answer (review, snooze, dismiss) pushes the next
   ask a week out.
 

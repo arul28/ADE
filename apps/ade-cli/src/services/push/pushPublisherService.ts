@@ -1995,7 +1995,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         // Resolved through the shared reader, not `event.requestKind` alone:
         // the CLI talks to whatever host is installed, and one that predates
         // the top-level field still carries the kind in `detail.request`. The
-        // TUI transcript reads it the same way. Neither present is an approval,
+        // the transcript reads it the same way. Neither present is an approval,
         // which is what a host with no question support meant.
         const isQuestion = isQuestionKind(approvalRequestKind(event));
         setRunPhase(run, isQuestion ? "waiting_for_input" : "waiting_for_approval");
@@ -2468,7 +2468,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     async start(): Promise<void> {
       if (disposed || warmed) return;
       warmed = true;
-      void relayApnsConfigured().catch(() => {});
+      // On the next turn: the relay health request builds a TLS context
+      // synchronously (about 30 ms on Windows), and start() runs inside a
+      // project's open, which already holds the event loop.
+      setImmediate(() => {
+        if (!disposed) void relayApnsConfigured().catch(() => {});
+      });
       reconcilePending = true;
       scheduleFlush(true);
     },

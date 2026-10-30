@@ -9,6 +9,7 @@
  */
 import { doNotTrackRequested, isTruthyEnvFlag } from "../doNotTrack";
 import { normalizeAppPackageChannel } from "../packageChannel";
+import { updateTrackOfVersion } from "../updateTrack";
 
 /**
  * Public DSNs for the `ade-app` organization. A DSN only lets a client submit
@@ -52,10 +53,21 @@ export function resolveSentryDsn(surface: SentrySurface, env: Env): string {
   return env.ADE_SENTRY_DSN?.trim() || SENTRY_DSNS[surface];
 }
 
-export function resolveSentryEnvironment(args: { env: Env; packaged: boolean }): SentryEnvironment {
+/**
+ * `production` for Stable, `beta` for a Beta-track build (read from its
+ * version), `alpha` for an Alpha package, `development` otherwise. Beta gets
+ * its own environment from its first build, so its errors never read as
+ * Stable's (T3 #24340), and promoting a beta can ask "any new issues?".
+ */
+export function resolveSentryEnvironment(args: {
+  env: Env;
+  packaged: boolean;
+  version?: string | null;
+}): SentryEnvironment {
   if (!args.packaged) return "development";
   const channel = normalizeAppPackageChannel(args.env.ADE_PACKAGE_CHANNEL);
-  return channel === "stable" ? "production" : channel;
+  if (channel === "alpha") return "alpha";
+  return updateTrackOfVersion(args.version) === "beta" ? "beta" : "production";
 }
 
 /** One release name across desktop, brain, web client and Workers. */

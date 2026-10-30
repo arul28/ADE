@@ -1,6 +1,6 @@
 // Grammar + send-time expansion for composer @-mentions of ADE chats, lanes,
-// terminals, pull requests, and account machines. Pure and surface-agnostic on purpose: the desktop composer,
-// the `ade code` TUI, and iOS all serialize the same chip tokens, and the chat
+// terminals, pull requests, and account machines. Pure and surface-agnostic on purpose: the desktop composer
+// and iOS both serialize the same chip tokens, and the chat
 // service expands them in exactly one place (see `prepareChatMentionExpansion`
 // callers in agentChatService).
 //

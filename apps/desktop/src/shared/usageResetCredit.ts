@@ -64,14 +64,3 @@ export function resetCreditOutcomeText(result: UsageResetCreditResult | null): s
   return RESET_CREDIT_OUTCOME_TEXT[key];
 }
 
-/**
- * Did the credit actually clear the windows?
- *
- * The verdict reads the outcome key, never the rendered sentence: a surface
- * that tests `text === "Reset applied…"` both stops recognizing a success the
- * moment that copy is reworded, and reports an *applied* reset for a failing
- * host that happens to echo that exact sentence back.
- */
-export function resetCreditApplied(result: UsageResetCreditResult | null): boolean {
-  return resetCreditOutcomeKey(result) === "reset";
-}

@@ -90,7 +90,7 @@ export function CompactionSettings({ provider, value, account = false, onChange 
           ? "No effect: subagents can only compact earlier than the main chat. Pick a lower number, or raise Compact at."
           : "Subagents can only compact earlier than the main chat, never later. Applies at the next query start."}
           control={windowSelect("subagentAtTokens", "Subagents compact at", "Auto (same as the main chat)")} />
-      </> : provider === "codex" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
+      </> : provider === "codex" || provider === "copilot" ? <ModernRow title="Compact at" hint="Token count, capped at the active model window. Empty is Auto." control={control("atTokens", "Compact at")} /> : <>
         <ModernRow title={provider === "opencode" ? "Compaction buffer" : "Reserve tokens"} control={control("reserveTokens", "Reserve tokens")} />
         <ModernRow title="Keep recent tokens" control={control("keepRecentTokens", "Keep recent tokens")} />
       </>}

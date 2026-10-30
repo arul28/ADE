@@ -199,7 +199,7 @@ describe("account vault store", () => {
     await store.sync();
 
     expect(relay.putAccountVault).not.toHaveBeenCalled();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai");
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "openai", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   it("queues a revocation and clears it locally at once", async () => {
@@ -211,7 +211,7 @@ describe("account vault store", () => {
     expect(store.get("all", "provider_key", "anthropic")).toBeNull();
 
     await store.sync();
-    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic");
+    expect(relay.deleteAccountVaultItem).toHaveBeenCalledWith("all", "provider_key", "anthropic", { writtenAt: expect.any(String), deviceId: "this-machine" });
   });
 
   // Settings survive a sign-out; the vault does not. Leaving synced keys
@@ -653,5 +653,136 @@ describe("account vault store", () => {
     expect(store.list("all")).toEqual([
       expect.objectContaining({ key: "anthropic", readable: true }),
     ]);
+  });
+
+  // A machine once stopped syncing for eight days: one key the relay would
+  // not store failed every batch, the queue never emptied, and because the
+  // upload runs before the pull it never pulled again either.
+  describe("when the relay refuses or supersedes a queued write", () => {
+    const MCP_KEY = "mcp/openrouter/oauth/token";
+    const LANDED = "2026-09-16T00:00:00.000Z";
+
+    it("parks the one write an older relay refuses, sends the rest, keeps pulling, and says so", async () => {
+      const store = makeStore();
+      store.set("all", "secret", MCP_KEY, "oauth-json");
+      store.set("all", "provider_key", "anthropic", "sk-live-abc");
+      // An older relay: all or nothing, so a batch with the slash key fails whole.
+      relay.putAccountVault.mockImplementation(async (items: Array<{ key: string }>) => {
+        if (items.some((entry) => entry.key.includes("/"))) throw new PushRelayRequestError("putAccountVault", 400, "invalid item");
+        return { updatedAt: LANDED };
+      });
+      relay.getAccountVault.mockResolvedValue({
+        items: [item("openai", "from-another-machine", "2026-09-16T00:00:01.000Z")],
+        cursor: null,
+        truncated: false,
+      });
+
+      expect(await store.sync()).toBe("ready");
+
+      const sent = relay.putAccountVault.mock.calls.flatMap(([items]) => (items as Array<{ key: string }>).map((entry) => entry.key));
+      expect(sent).toContain("anthropic");
+      expect(store.get("all", "provider_key", "openai")).toBe("from-another-machine");
+      // Kept here, still owed to the account, and reported without its value.
+      expect(store.get("all", "secret", MCP_KEY)).toBe("oauth-json");
+      expect(store.pendingKeys("all", "secret")).toEqual([MCP_KEY]);
+      const health = store.health();
+      expect(health).toMatchObject({ state: "failing", parked: 1, pendingChanges: 0 });
+      expect(health.lastError).toContain("invalid item");
+      expect(health.lastError).not.toContain("oauth-json");
+
+      // Parked: not resent on the next pass, but a new write of it goes at once.
+      relay.putAccountVault.mockClear();
+      await store.sync();
+      expect(relay.putAccountVault).not.toHaveBeenCalled();
+      relay.putAccountVault.mockResolvedValue({ updatedAt: LANDED });
+      store.set("all", "secret", MCP_KEY, "oauth-json-2");
+      await store.sync();
+      expect(relay.putAccountVault).toHaveBeenCalledWith([expect.objectContaining({ key: MCP_KEY })], "this-machine");
+      expect(store.health()).toMatchObject({ state: "ok", parked: 0, lastError: null });
+    });
+
+    it("keeps pulling when the account refuses writes as a whole (vault full)", async () => {
+      const store = makeStore();
+      store.set("all", "provider_key", "anthropic", "sk-live-abc");
+      relay.putAccountVault.mockRejectedValue(new PushRelayRequestError("putAccountVault", 507, "account vault limit reached"));
+      relay.getAccountVault.mockResolvedValue({
+        items: [item("openai", "from-another-machine", "2026-09-16T00:00:01.000Z")],
+        cursor: null,
+        truncated: false,
+      });
+
+      expect(await store.sync()).toBe("failed");
+
+      expect(store.get("all", "provider_key", "openai")).toBe("from-another-machine");
+      expect(store.pendingKeys("all", "provider_key")).toEqual(["anthropic"]);
+      expect(store.health()).toMatchObject({ state: "failing", pendingChanges: 1 });
+      expect(store.health().lastError).toContain("507");
+    });
+
+    // A relay that checks: an eight-day-old rotating token must not replace
+    // the one another machine rotated since, or every machine is signed out.
+    it("drops a write the relay says a newer row replaced, and adopts that row", async () => {
+      const store = makeStore();
+      store.set("all", "linear_refresh_token", "default", "eight-days-old");
+      relay.putAccountVault.mockResolvedValue({
+        updatedAt: null,
+        results: [{
+          status: "stale",
+          current: { ...item("default", "rotated", "2026-09-16T00:00:00.000Z"), kind: "linear_refresh_token", refreshOwner: "other-machine" },
+        }],
+      });
+
+      await store.sync();
+
+      expect(store.get("all", "linear_refresh_token", "default")).toBe("rotated");
+      expect(store.list("all")).toEqual([expect.objectContaining({ key: "default", refreshOwner: "other-machine" })]);
+      expect(store.pendingKeys("all", "linear_refresh_token")).toEqual([]);
+      expect(relay.putAccountVault).toHaveBeenCalledWith(
+        [expect.objectContaining({ key: "default", writtenAt: expect.any(String) })],
+        "this-machine",
+      );
+    });
+
+    // An older relay cannot refuse it, so the store reads what changed since
+    // the queued write first. A write newer than the account's row still goes.
+    // A relay that refuses stale writes itself (learned before a restart) is
+    // trusted with it: the local check judges by this machine's clock.
+    it.each([
+      { relayKind: "an older relay", perItem: false, sent: ["openai"], anthropic: "replaced-yesterday" },
+      { relayKind: "a relay known to check it itself", perItem: true, sent: ["anthropic", "openai"], anthropic: "eight-days-old" },
+    ])("checks an old queued write against the account before sending it to $relayKind", async ({ perItem, sent, anthropic }) => {
+      const day = 24 * 60 * 60_000;
+      let clock = Date.parse("2026-09-08T00:00:00.000Z");
+      if (perItem) {
+        relay.putAccountVault.mockImplementation(async (items: unknown[]) => ({
+          updatedAt: LANDED,
+          results: items.map(() => ({ status: "written" })),
+        }));
+      }
+      const store = makeStore({ now: () => clock });
+      store.set("all", "provider_key", "github", "synced-earlier");
+      await store.sync();
+      store.set("all", "provider_key", "anthropic", "eight-days-old");
+      store.set("all", "provider_key", "openai", "still-newest");
+      clock += 8 * day;
+      relay.getAccountVault.mockImplementation(async (options?: { since?: string | null }) => ({
+        items: options?.since === null
+          ? []
+          : [
+            item("anthropic", "replaced-yesterday", new Date(clock - day).toISOString()),
+            item("openai", "older-than-mine", new Date(clock - 9 * day).toISOString()),
+          ],
+        cursor: null,
+        truncated: false,
+      }));
+      relay.putAccountVault.mockClear();
+      const restarted = makeStore({ now: () => clock });
+      await restarted.sync();
+
+      const keys = relay.putAccountVault.mock.calls.flatMap(([items]) => (items as Array<{ key: string }>).map((entry) => entry.key));
+      expect(keys).toEqual(sent);
+      expect(restarted.get("all", "provider_key", "anthropic")).toBe(anthropic);
+      expect(restarted.get("all", "provider_key", "openai")).toBe("still-newest");
+    });
   });
 });

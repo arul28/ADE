@@ -9,8 +9,10 @@ REPO="${GH_REPO:-arul28/ADE}"
 
 git fetch origin --tags --prune -q
 
-# Desktop: product files changed since the newest v* tag.
-DESKTOP_LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | head -n 1)"
+# Desktop: product files changed since the newest stable tag. Beta tags
+# (vX.Y.Z-beta.N) are not releases of the stable tier, and git's version sort
+# puts v1.2.127-beta.3 above v1.2.127, so they are filtered out.
+DESKTOP_LAST_TAG="$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -n 1)"
 desktop_changes="$(git diff --name-only "$DESKTOP_LAST_TAG..origin/main" -- \
   apps/desktop apps/ade-cli packages \
   .github/workflows/release.yml .github/workflows/release-core.yml \
@@ -27,12 +29,16 @@ echo "desktop: changed_files=$desktop_changes since=$DESKTOP_LAST_TAG next=$next
 echo "ios:     changed_files=$ios_changes since=$IOS_LAST_TAG"
 
 # Cloudflare: each surface's baseline is the newest deploy-web.yml run on main
-# whose job for that surface succeeded. Unknown baseline counts as changed.
+# whose job for that surface succeeded. A surface with no successful job in
+# the scanned runs has not changed in that window (its job is path-filtered),
+# so its baseline is the run of the last commit that changed it: deployed
+# there means unchanged since. A failed or missing job there stays UNKNOWN.
 surfaces="webclient account-directory webhook-relay tunnel-relay push-relay"
 found=""   # "name=sha" pairs; bash 3.2 (macOS) has no associative arrays
 base_of() { for p in $found; do [ "${p%%=*}" = "$1" ] && { echo "${p#*=}"; return; }; done; }
-for id in $(gh run list --repo "$REPO" --workflow deploy-web.yml --branch main \
-  --json databaseId --limit 60 --jq '.[].databaseId'); do
+for run in $(gh run list --repo "$REPO" --workflow deploy-web.yml --branch main \
+  --json databaseId,headSha --limit 60 --jq '.[] | "\(.databaseId)=\(.headSha)"'); do
+  id="${run%%=*}"
   ok="$(gh run view "$id" --repo "$REPO" --json headSha,jobs \
     --jq '.headSha as $s | [.jobs[] | select(.conclusion=="success") | .name + "=" + $s] | join(" ")')"
   for pair in $ok; do
@@ -50,6 +56,19 @@ for s in $surfaces; do
     paths="apps/$s"
   fi
   b="$(base_of "$s")"
+  if [ -z "$b" ]; then
+    last="$(git log -n 1 --format=%H origin/main -- $paths)"
+    if [ -n "$last" ]; then
+      for id in $(gh run list --repo "$REPO" --workflow deploy-web.yml --commit "$last" \
+        --json databaseId --jq '.[].databaseId' 2>/dev/null); do
+        if [ "$(gh run view "$id" --repo "$REPO" --json jobs \
+          --jq "[.jobs[] | select(.name==\"$s\" and .conclusion==\"success\")] | length")" != 0 ]; then
+          b="$last"
+          break
+        fi
+      done
+    fi
+  fi
   if [ -z "$b" ]; then
     echo "cloudflare $s: baseline=UNKNOWN -> reconcile (gh workflow run deploy-web.yml)"
   else

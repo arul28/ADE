@@ -9,10 +9,10 @@ keeps the short version; this is the full reference.
 | --- | --- |
 | Brain | The always-on, machine-owned ADE process for one channel. It carries the sync websocket, project catalog, local RPC endpoint, and executor authority. |
 | Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role, but "brain" is the authority/lifecycle term. |
-| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/beta/alpha brain service. |
+| Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; use it for dev/test work instead of the automated stable/alpha brain service. |
 | Machine | A physical computer with a per-channel ADE home and stable sync device identity. |
-| Channel | A release lane such as stable, beta, alpha, or dev. Each channel has its own ADE home. |
-| Client | A surface that attaches to the brain: desktop, `ade code`, ADE Mobile, or an SSH-bound desktop window. |
+| Channel | A build lane such as stable, alpha, or dev. Each channel has its own ADE home. Beta is an update track of stable, not a channel. |
+| Client | A surface that attaches to the brain: desktop, ADE Mobile, or an SSH-bound desktop window. |
 | Project | A registered repo with one ADE database at `<project>/.ade/ade.db`. |
 | Lane | A task worktree under `.ade/worktrees/` that shares the project database. |
 | Catalog | The machine-level project list served by the brain to clients and ADE Mobile. |
@@ -30,8 +30,8 @@ This table describes the current code behavior.
 | Phone pairing / PIN | Yes. | No. |
 | Mobile/machine catalog authority | Yes. | No; it may expose registry data to explicitly attached clients, but ADE Mobile ignores manual runtimes. |
 | Runs agents, PTYs, git, lanes, PR work | Yes. | Yes. |
-| Clients | Desktop, `ade code`, and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
-| Survives client close | Yes, when service-owned. Desktop/TUI fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
+| Clients | Desktop and ADE Mobile attach to it; SSH-bound desktop windows attach to the remote machine's ADE transport. | Only clients explicitly pointed at its endpoint attach to it. |
+| Survives client close | Yes, when service-owned. Desktop fallback spawns still exist for recovery and dev paths. | Only while that foreground process is still running. |
 
 ## What to rebuild after a change
 
@@ -41,8 +41,6 @@ This table describes the current code behavior.
 | iOS sync protocol, project catalog, pairing, or remote-command change | Rebuild/restart the target brain from the lane, then build the iOS app from the same lane. | The phone and brain both need the new contract. |
 | Desktop renderer UI change | Run/build Desktop from the lane and let it attach to the channel brain. | Renderer code is client-side unless it depends on new brain APIs. |
 | Desktop main/preload/runtime-bridge change | Run/build Desktop from the lane; rebuild/restart the brain only if the runtime RPC contract or brain behavior changed. | Electron main is a client/bridge, but some handlers route through the brain. |
-| `ade code` / TUI UI change | Build/run `ade code` from the lane and attach to the existing brain. | The TUI is a client of the brain. |
-| TUI command that depends on new RPC or shared types | Rebuild/restart the brain from the lane, then run the lane's `ade code`. | Both sides of the RPC contract must match. |
 | Brain, sync, project catalog, pairing, agents, PTYs, lanes, PR workflows, or CLI runtime service change | Rebuild the ADE CLI/brain from the lane and restart the target brain before testing clients. | These live in the always-on process; existing installed brains keep running old code. |
 | Manual runtime behavior | Start `ade runtime run --socket <path>` from the lane and point a client at that endpoint. | Manual runtimes are standalone and sync is always off. |
 | Remote runtime / SSH transport change | Test with a remote target using the lane-built desktop/runtime artifacts. | SSH-bound windows talk to the remote ADE transport, not the local mobile brain. |
@@ -147,7 +145,7 @@ When these commands are run from an ADE lane worktree under `.ade/worktrees/`,
 they still run code from that lane checkout, but they open the primary checkout's
 project data by default. For example, running from
 `/path/to/ADE/.ade/worktrees/my-lane` opens `/path/to/ADE` as the ADE project
-and uses the lane path as the workspace root for `dev:code`.
+and uses the lane path as the workspace root.
 
 Dev command matrix:
 
@@ -156,10 +154,8 @@ npm run dev:desktop          # refresh shared dev runtime, then launch desktop
 npm run dev:desktop:attach   # desktop only; fail if dev runtime is not already running
 npm run dev:desktop:clean    # desktop only; clear Vite cache before launch
 npm run dev:desktop -- --first-run  # walk setup as a brand-new user, isolated from your ADE (below)
-npm run dev:code:web          # `ade code` in the browser (PTY + inspector WebSocket)
-npm run dev:code:attach      # terminal TUI only; fail if dev runtime is not already running
 npm run dev:runtime          # runtime only in the foreground
-npm run dev:all              # start shared dev runtime, then run desktop/code attach commands in separate terminals
+npm run dev:all              # start shared dev runtime, then run `npm run dev:desktop:attach`
 npm run dev:stop             # stop the dev runtime
 npm stop dev                 # same as dev:stop
 ```
@@ -256,7 +252,6 @@ Override it when needed:
 
 ```bash
 npm run dev:desktop -- --socket /tmp/my-ade-dev.sock
-npm run dev:code -- --socket /tmp/my-ade-dev.sock
 ADE_DEV_RUNTIME_SOCKET_PATH=/tmp/my-ade-dev.sock npm run dev:runtime
 ADE_DESKTOP_BRIDGE_SOCKET_PATH=/tmp/my-bridge.sock npm run dev:desktop
 ```
@@ -437,10 +432,10 @@ checkout's packages into new lanes. Run `npm run setup` inside the worktree
 first, or give the project a default lane template that installs or copies
 them (Settings › Lane templates › Set up with an agent).
 
-When launching that same flow through ADE App Control from a running Alpha/Beta
+When launching that same flow through ADE App Control from a running Alpha
 ADE window, also clear the packaged-channel environment variables inherited from
 the host app (and use an absolute lane cwd). Otherwise the dev Electron app can
-reuse the Alpha/Beta profile and lose the single-instance lock instead of opening
+reuse the Alpha profile and lose the single-instance lock instead of opening
 the lane build:
 
 ```bash
@@ -540,54 +535,46 @@ To test auto-runtime creation, use the default dev commands after stopping the d
 ```bash
 npm run dev:stop
 npm run dev:desktop          # tests the desktop wrapper creating the dev runtime
-npm run dev:stop
-npm run dev:code             # tests TUI wrapper creating the dev runtime
 ```
 
-## Rebuild ADE Alpha or Beta locally
+## Rebuild ADE Alpha locally
 
-Use these commands when you need a local packaged macOS channel build without
+Use this command when you need a local packaged macOS Alpha build without
 waiting for the GitHub release workflow.
 
 ```bash
 npm run package:alpha        # current checkout -> ADE Alpha.app, ade-alpha, ~/.ade-alpha
-npm run package:beta         # origin/main -> ADE Beta.app, ade-beta, ~/.ade-beta
 ```
+
+Beta is not a local build. It is an update track of the normal ADE install.
+Switch to it in Settings > About > Updates. The Beta builds come from
+`.github/workflows/beta.yml`. To build one branch once, run
+`gh workflow run beta.yml -f preview_ref=<branch>`. See
+[Update tracks](../features/onboarding-and-settings/desktop-auto-update.md#update-tracks-stable-and-beta).
 
 The build prints one line about code signing. "Signing identity: ADE Local"
 means macOS keeps the app's Screen Recording and Accessibility grants across
 rebuilds. The ad-hoc warning means it does not; set up the certificate once as
-described in [Alpha/Beta builds and macOS permission grants](#alphabeta-builds-and-macos-permission-grants).
+described in [Alpha builds and macOS permission grants](#alpha-builds-and-macos-permission-grants).
 
-`package:alpha` builds exactly the checkout you are in. `package:beta` is
-release-like: it fetches `origin/main`, fast-forwards the local `main` checkout
-when possible, and builds that checkout as `ADE Beta`. It does not create a
+`package:alpha` builds exactly the checkout you are in. It does not create a
 packaging worktree.
-
-To smoke-test the Beta channel from a PR branch before it lands on `main`, pass
-the branch checkout explicitly:
-
-```bash
-node scripts/package-channel.mjs beta --repo "$PWD" --skip-install
-```
 
 Local channel outputs:
 
 ```text
 apps/desktop/release-alpha/mac-arm64/ADE Alpha.app
 apps/desktop/release-alpha/ADE-Alpha-local.zip
-apps/desktop/release-beta/mac-arm64/ADE Beta.app
-apps/desktop/release-beta/ADE-Beta-local.zip
 ```
 
-Every channel build carries a per-build version of the form
-`<base>-<channel>.<yyyymmddHHMM>`, where `<base>` is the newest `v*` tag
+Every Alpha build carries a per-build version of the form
+`<base>-alpha.<yyyymmddHHMM>`, where `<base>` is the newest `v*` tag
 reachable from HEAD (or the `apps/desktop/package.json` version when no tag
 exists) and the timestamp is UTC — for example `1.2.75-alpha.202609211035`.
 The stamp is written into the packaged app's `version` (electron-builder
 `extraMetadata.version`, so `app.getVersion()` reports it), into
 `ADE_CLI_VERSION` for the bundled CLI build, and through `ADE_DESKTOP_VERSION`
-for the Windows packaging wrapper. This is what stops a fresh Alpha/Beta app
+for the Windows packaging wrapper. This is what stops a fresh Alpha app
 from reusing a brain left by an earlier build: the runtime compatibility gate
 treats equal versions as compatible, so a build has to identify itself with a
 version that changes every time. The desktop never writes the stamp back into
@@ -597,30 +584,29 @@ Install the build you want to test by replacing the matching app in
 `/Applications`:
 
 ```bash
-rm -rf "/Applications/ADE Beta.app"
-ditto "apps/desktop/release-beta/mac-arm64/ADE Beta.app" "/Applications/ADE Beta.app"
-xattr -dr com.apple.quarantine "/Applications/ADE Beta.app" 2>/dev/null || true
+rm -rf "/Applications/ADE Alpha.app"
+ditto "apps/desktop/release-alpha/mac-arm64/ADE Alpha.app" "/Applications/ADE Alpha.app"
+xattr -dr com.apple.quarantine "/Applications/ADE Alpha.app" 2>/dev/null || true
 ```
 
-Use `ADE Alpha.app` and `release-alpha` for Alpha. If the Dock already has an
-ADE Alpha/Beta icon, remove and re-pin it after installing from `/Applications`;
+If the Dock already has an
+ADE Alpha icon, remove and re-pin it after installing from `/Applications`;
 Dock icons keep the exact bundle path they were pinned from, so an old icon can
 launch a stale `apps/desktop/release-*` build even after `/Applications` was
 updated.
 
 Replacing the app bundle does not replace a brain process that is already
 running for that channel. Before restarting the channel brain, close or finish
-any active ADE Desktop, ADE Code, agent, or mobile sessions that depend on it.
+any active ADE Desktop, agent, or mobile sessions that depend on it.
 Then restart and verify the channel brain through the CLI:
 
 ```bash
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain status --text
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain restart --text
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade doctor --text
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade sync status --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain status --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain restart --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade doctor --text
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade sync status --text
 ```
 
-For Alpha, use `ADE_PACKAGE_CHANNEL=alpha` and `ADE_HOME="$HOME/.ade-alpha"`.
 Do not kill ADE brain processes directly during normal testing; the channel
 brain owns the mobile sync websocket and may have desktop, terminal, or phone
 clients attached. If you intentionally leave an old incompatible brain running,
@@ -634,33 +620,33 @@ first launch after an update, and the installed service is expected to report th
 same runtime build hash as the packaged desktop CLI:
 
 ```bash
-launchctl print gui/$(id -u)/com.ade.runtime.beta
-ls -l ~/Library/LaunchAgents/com.ade.runtime.beta.plist ~/.ade-beta/sock/ade.sock
+launchctl print gui/$(id -u)/com.ade.runtime.alpha
+ls -l ~/Library/LaunchAgents/com.ade.runtime.alpha.plist ~/.ade-alpha/sock/ade.sock
 ```
 
 Set or rotate the channel's mobile pairing PIN from **Connections > Mobile**,
 or from the CLI against that channel home:
 
 ```bash
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin generate
-ADE_PACKAGE_CHANNEL=beta ADE_HOME="$HOME/.ade-beta" ade brain pin set 123456
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain pin generate
+ADE_PACKAGE_CHANNEL=alpha ADE_HOME="$HOME/.ade-alpha" ade brain pin set 123456
 ```
 
-For Alpha, use `com.ade.runtime.alpha` and `~/.ade-alpha`. These builds do not
+This build does not
 replace the production `ADE.app`, production `ade`, or `~/.ade` runtime/state.
-Alpha and Beta also use separate Electron profile directories
-(`ade-desktop-alpha` / `ade-desktop-beta`) so browser storage and window state
+Alpha also uses a separate Electron profile directory
+(`ade-desktop-alpha`) so browser storage and window state
 do not collide with dev or stable. Local channel packages include this Mac's
 runtime binary. Release builds still require the full cross-platform runtime
 artifact set used by remote runtime bootstrap.
 
-### Alpha/Beta builds and macOS permission grants
+### Alpha builds and macOS permission grants
 
-`npm run package:alpha` and `npm run package:beta` sign the app locally. There is
+`npm run package:alpha` signs the app locally. There is
 no Developer ID certificate behind a channel build, so the default is an ad-hoc
 signature, and the app's designated requirement is its cdhash. The cdhash changes
 on every build, so macOS treats each rebuild as a new app and drops its Screen
-Recording and Accessibility grants. Re-adding ADE Alpha or ADE Beta in System
+Recording and Accessibility grants. Re-adding ADE Alpha in System
 Settings works until the next build.
 
 A self-signed code-signing certificate makes the designated requirement the
@@ -675,7 +661,7 @@ Create the certificate once:
 3. Run a channel build and press `Always Allow` on the keychain prompt, so later
    builds can use the private key without prompting.
 
-Then remove ADE Alpha or ADE Beta from Screen Recording and from Accessibility,
+Then remove ADE Alpha from Screen Recording and from Accessibility,
 add it back once, and the grants are stored against the new requirement.
 
 The dev launcher (`npm run dev:desktop`) signs the lane's Electron in

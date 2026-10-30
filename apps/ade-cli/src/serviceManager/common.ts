@@ -154,7 +154,7 @@ export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env):
   if (explicit) return explicit;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel === "alpha") return "com.ade.runtime.alpha";
-  if (channel === "beta") return "com.ade.runtime.beta";
+  // Beta is an update track of the normal install: same service as Stable.
   return "com.ade.runtime";
 }
 
@@ -170,7 +170,6 @@ export const ADE_RUNTIME_SERVICE_NAME = resolveRuntimeServiceName();
 export function resolveAssociatedAppBundleId(env: NodeJS.ProcessEnv = process.env): string {
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel === "alpha") return "com.ade.desktop.alpha";
-  if (channel === "beta") return "com.ade.desktop.beta";
   return "com.ade.desktop";
 }
 
@@ -1389,9 +1388,8 @@ export function loadLaunchAgent(
  *
  * Every path that could otherwise reach `spawnDaemon` has to see this and
  * stop: an unmanaged brain on a supervised socket is a second brain, and the
- * user's actual problem is only that the first one is still starting. The TUI
- * client and the machine-daemon path had a class each for exactly this, which
- * meant two places to keep the "do not spawn a rival" rule.
+ * user's actual problem is only that the first one is still starting. This is
+ * the one place that keeps the "do not spawn a rival" rule.
  */
 export type RuntimeServiceStillStartingReason =
   /** The socket has not answered yet; nothing has been waited out. */

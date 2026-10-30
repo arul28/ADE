@@ -116,6 +116,14 @@ Call **AskUserQuestion** with `multiSelect: true` for the menu of extras. Each o
 
 Selected items → **LockedExtras**.
 
+Also settle how outside agents use the feature through ADE MCP
+(`docs/features/ade-mcp/README.md`), as two choices in the same
+**AskUserQuestion** round: how they reach it (the `ade` tool as is, or a typed
+tool) and how they see it (plain text, or a card in the chat app; a card hangs
+off a typed tool, so a card means a typed tool too). Record both in
+**LockedFunctional**; a new tool or card is new behavior, so run the
+**Cascade rule** for it. `/test`'s ADE MCP parity pass checks the result.
+
 If the user adds a new functional idea in free-text → **Cascade rule**.
 
 ## Cascade rule (the core contract)

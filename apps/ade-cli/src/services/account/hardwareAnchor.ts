@@ -29,7 +29,7 @@ import { canonicalWindowsPath } from "../projects/machineLayout";
  *    A raw platform UUID is a stable, cross-application device fingerprint; a
  *    per-account hash of one is not.
  * 2. An anchor identifies an ADE INSTALL, not a chassis. The platform UUID is
- *    shared by every ADE on the box — Stable in `~/.ade`, Beta in `~/.ade-beta`,
+ *    shared by every ADE on the box — `~/.ade`, Alpha in `~/.ade-alpha`,
  *    a second OS user's `~/.ade` — and hashing it alone made all of them one
  *    machine that took turns superseding each other's directory row. Folding in
  *    the ADE home path separates them while preserving the north star: a wipe

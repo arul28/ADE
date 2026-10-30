@@ -8,7 +8,7 @@ export function claudeSlashCommandKey(value: string): string {
 /**
  * Claude Code commands that only make sense in a real terminal (exit the
  * process, paint a TUI statusline). Agent chat surfaces — Work, automation,
- * personal, desktop, iOS, TUI — must never list them.
+ * personal, desktop, iOS — must never list them.
  */
 export const CLAUDE_TERMINAL_ONLY_SLASH_COMMANDS = ["/exit", "/quit", "/statusline"] as const;
 

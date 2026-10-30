@@ -9,6 +9,7 @@ import type { Logger } from "../logging/logger";
 import { isSqliteBusyOrLockedError } from "./sqliteErrors";
 import { safeJsonParse } from "../shared/utils";
 import { isNoSpaceError, readVolumeSpace } from "../storage/volume";
+import { snapshotDatabaseBeforeVersionChange, writeDbCompatRecord } from "./dbCompatRecord";
 import { classifyStorageFault } from "../storage/storageErrnoClassifier";
 import { resolveCrsqliteExtensionPath } from "./crsqliteExtension";
 import {
@@ -1388,10 +1389,6 @@ const LOCAL_ONLY_CRR_EXCLUDED_TABLES = new Set([
   // off the host that issued it, and putting it on the CRR `terminal_sessions`
   // row would add a per-column clock entry to the per-output-chunk write path.
   "session_lifecycle_revisions",
-  // Host-local record of work a settle teardown could not confirm it stopped.
-  // Not replicated: it describes processes on THIS host, and a peer showing
-  // "1 job could not be stopped" for a machine it cannot see would be a lie.
-  "session_settle_residue",
 ]);
 
 /**
@@ -1839,6 +1836,9 @@ const RETIRED_TABLE_DROPS = [
   { tables: RETIRED_PR_AI_SUMMARY_TABLES, tag: "retired-pr-ai-summary-schema", event: "db.retired_pr_ai_summary_schema_cleaned" },
   { tables: RETIRED_PR_WORKFLOW_TABLES, tag: "retired-pr-workflow-schema", event: "db.retired_pr_workflow_schema_cleaned" },
   { tables: RETIRED_PROJECT_NOTES_TABLES, tag: "retired-project-notes-schema", event: "db.retired_project_notes_schema_cleaned" },
+  // Settle used to stop a chat's work and record here what it could not stop.
+  // Settle no longer stops anything; the table was always local-only.
+  { tables: ["session_settle_residue"], tag: "retired-settle-residue-schema", event: "db.retired_settle_residue_schema_cleaned" },
 ] as const;
 
 function dropRetiredSchema(db: DatabaseSyncType, drop: (typeof RETIRED_TABLE_DROPS)[number], logger?: Logger): void {
@@ -3233,7 +3233,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   `);
 
   // Machine-local process liveness registry. Every ADE process (desktop main,
-  // TUI runtime, ade-serve daemon) writes its process incarnation here on boot
+  // ade-serve daemon) writes its process incarnation here on boot
   // and refreshes last_seen on a timer. The composite key preserves stale
   // local incarnations when the OS reuses a pid, so reconcile can detach the
   // old owner without treating synced remote-machine rows as local.
@@ -3517,6 +3517,9 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   }
   db.run("create index if not exists idx_usage_events_occurred on usage_events(occurred_at)");
   db.run("create index if not exists idx_usage_events_client_occurred on usage_events(client_surface, occurred_at)");
+  // `tui` was the command-line surface's name before ADE Code was removed.
+  // Runs after the index, so a table with nothing left to rename is not scanned.
+  db.run("update usage_events set client_surface = 'cli' where client_surface = 'tui'");
   db.run("create index if not exists idx_usage_events_project_occurred on usage_events(project_id, occurred_at)");
   db.run("create index if not exists idx_usage_events_analytics_pending on usage_events(analytics_exported_at, occurred_at)");
 
@@ -4773,16 +4776,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
     )
   `);
 
-  // What a settle teardown could not confirm it stopped (design 3d, option 3).
-  // Replaced wholesale per settle, so the row always describes the LAST settle
-  // rather than accumulating history the user cannot clear.
-  db.run(`
-    create table if not exists session_settle_residue (
-      session_id text primary key,
-      recorded_at text not null,
-      items text not null
-    )
-  `);
 
   // Machine-local runtime guard for PR automation. This table intentionally
   // has no PRIMARY KEY so cr-sqlite does not register it as a CRR table.
@@ -4827,8 +4820,8 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   }
 
   // Model-picker favorites + recents. Per-project (the DB instance is the
-  // scope, so no project_id column is needed) and CRR-replicated so desktop,
-  // TUI, and iOS converge on the same set for a project. PK-only by design:
+  // scope, so no project_id column is needed) and CRR-replicated so desktop
+  // and iOS converge on the same set for a project. PK-only by design:
   // CRR-converted tables cannot carry any UNIQUE index besides the primary key
   // (`crsql_as_crr` rejects them with "Table … has unique indices besides the
   // primary key. This is not allowed for CRRs"), so the model_id PK is the
@@ -4933,6 +4926,13 @@ function mapExportedChangeRows(rows: ExportedChangeRow[]): CrsqlChangeRow[] {
 export type OpenKvDbOptions = {
   /** Conservative by default: compaction is unsafe unless zero sync peers is proven. */
   hasSyncPeers?: () => boolean;
+  /**
+   * The version of the app or brain opening the file. With it, the file is
+   * copied before the first open by a new version and `<db>.compat.json` is
+   * written after the migrations (`dbCompatRecord.ts`). Without it (tests,
+   * tools), neither happens.
+   */
+  appVersion?: string | null;
 };
 
 function sqliteFootprintBytes(dbPath: string): number {
@@ -4982,6 +4982,7 @@ export async function openKvDb(
     isCrsqliteLoaded: () => crsqliteLoaded,
   });
   const hadCrsqlMetadataBeforeOpen = hasCrsqlMetadataBeforeOpen(db);
+  const appVersion = options.appVersion?.trim() || null;
 
   try {
     // Inside the try so a conversion error that is not a lock still closes the
@@ -4990,6 +4991,11 @@ export async function openKvDb(
 
     if (existedBeforeOpen && !hadCrsqlMetadataBeforeOpen) {
       writeMigrationBackupIfNeeded(dbPath);
+    }
+    // Before anything below can change the file: the copy a broken migration
+    // is undone from (docs/plans/beta-track.md).
+    if (existedBeforeOpen && appVersion) {
+      await snapshotDatabaseBeforeVersionChange({ db, dbPath, appVersion, logger });
     }
 
     if (extensionPath && rawHasTable(db, "crsql_site_id")) {
@@ -5119,6 +5125,7 @@ export async function openKvDb(
     logger.error("db.init_failed", { dbPath, error: err, errorText: String(err) });
     throw err;
   }
+  if (appVersion) writeDbCompatRecord(dbPath, appVersion, logger);
 
   const getString = (key: string): string | null => {
     const row = getRow<{ value: string }>(db, "select value from kv where key = ? limit 1", [key]);

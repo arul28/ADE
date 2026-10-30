@@ -293,6 +293,9 @@ export class TunnelDurableObject implements DurableObject {
         desired,
         joined: att.mcpAccountKey ?? null,
         stale,
+        // Left with ADE MCP off here: the account address says "off", not
+        // "nothing serves this address".
+        leaveReason: att.mcp === true ? "moved" : "off",
       });
     } catch (error) {
       // A storage step threw: keep what the brain wants and let the alarm try

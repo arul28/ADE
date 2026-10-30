@@ -16,13 +16,12 @@ export type PackagedSyncHostConflictDialogContent = {
 };
 
 export function resolveLaunchingDesktopAppName(
-  channel: "alpha" | "beta" | null,
+  channel: "alpha" | null,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
   const fromEnv = env.ADE_DESKTOP_APP_NAME?.trim();
   if (fromEnv) return fromEnv;
   if (channel === "alpha") return "ADE Alpha";
-  if (channel === "beta") return "ADE Beta";
   return "ADE";
 }
 
@@ -112,7 +111,7 @@ export function buildPackagedSyncHostConflictDialogContent(args: {
 
 export type PackagedSyncHostLaunchGateDeps = {
   isPackaged: boolean;
-  channel: "alpha" | "beta" | null;
+  channel: "alpha" | null;
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   detectConflict?: (env: NodeJS.ProcessEnv) => SyncHostSingletonConflict | null | undefined;

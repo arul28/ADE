@@ -7,7 +7,7 @@ import { syntheticCallerId } from "../../../../desktop/src/shared/syntheticCalle
 
 /**
  * The slice of a JSON-RPC client this broker needs. Deliberately structural so
- * the CLI, the TUI, and the tests can each supply their own transport — the
+ * the CLI and the tests can each supply their own transport — the
  * broker itself never opens a socket it was not handed a way to open.
  */
 export type CliRefreshBrokerClient = {
@@ -28,8 +28,8 @@ export type CliRefreshBrokerDeps = {
   connect: () => Promise<CliRefreshBrokerClient | null>;
   /**
    * Cheap "is there a brain listening" probe, used immediately before each
-   * token request. Keeping this dynamic matters because the TUI can start the
-   * brain after the CLI installs its process-wide broker.
+   * token request. Keeping this dynamic matters because a brain can start
+   * after the CLI installs its process-wide broker.
    *
    * Deliberately separate from `connect`: install runs on EVERY `ade` command,
    * so it must not perform a handshake, must not hang on a socket that accepts
@@ -55,7 +55,7 @@ async function connectQuietly(
 }
 
 /**
- * The CLI/TUI half of the single-refresher rule.
+ * The CLI half of the single-refresher rule.
  *
  * The rotating refresh token is single-use, so exactly one process per machine
  * may exchange it, and that process is the brain. Mirrors
@@ -67,8 +67,7 @@ async function connectQuietly(
  * headless machine with no brain has no second refresher to race, so it keeps
  * its local exchange — a null token is what leaves the service on that path.
  *
- * Never installed by the brain itself: see the call sites in `cli.ts` and
- * `tuiClient/cli.tsx`.
+ * Never installed by the brain itself: see the call site in `cli.ts`.
  */
 export async function createCliRefreshBroker(
   deps: CliRefreshBrokerDeps,
@@ -126,7 +125,7 @@ export async function installCliRefreshBroker(
   }
 }
 
-/** Install the standard machine-brain transport for a CLI or TUI client. */
+/** Install the standard machine-brain transport for a CLI client. */
 export async function installMachineBrainRefreshBroker(args: {
   clientName: string;
   version: string;
@@ -153,7 +152,7 @@ export async function connectMachineBrainForRefresh(args: {
   protocolVersion: number | string;
   socketPath?: string | null;
 } ): Promise<CliRefreshBrokerClient | null> {
-  const { JsonRpcClient } = await import("../../tuiClient/jsonRpcClient");
+  const { JsonRpcClient } = await import("../../lib/jsonRpcClient");
   const socketPath = await resolveMachineBrainSocketPath(args.socketPath);
   let client: CliRefreshBrokerClient;
   try {

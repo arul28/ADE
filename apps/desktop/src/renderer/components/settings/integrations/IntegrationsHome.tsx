@@ -95,7 +95,7 @@ export function IntegrationsHome({
               key={id}
               type="button"
               className="ade-ig-tile"
-              style={integrationThemeVars(brand)}
+              style={integrationThemeVars(brand.accent)}
               data-testid={`integration-tile-${id}`}
               onClick={() => onOpen(id)}
             >

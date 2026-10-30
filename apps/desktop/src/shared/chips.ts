@@ -18,7 +18,7 @@
 // and token are the same string. The fix is not a clipboard patch on its own —
 // it is this: one `Chip` that always carries its canonical `token` next to its
 // display `label`, produced from all three grammars, consumed by the composer,
-// the sent-message list, the TUI, and iOS.
+// the sent-message list and iOS.
 //
 // Design invariants:
 //   - `token` is the canonical plain text. Copy, cut, drafts, and the plain
@@ -121,8 +121,8 @@ export type ChipMatch = Chip & {
 };
 
 /**
- * One glyph per kind. Short strings rather than icon components so the TUI and
- * any non-React surface render from the same table; the desktop maps these to
+ * One glyph per kind. Short strings rather than icon components so a
+ * non-React surface renders from the same table; the desktop maps these to
  * its icon set.
  */
 export const CHIP_GLYPH: Record<ChipKind, string> = {
@@ -154,42 +154,6 @@ export const CHIP_GLYPH: Record<ChipKind, string> = {
 
 export function chipGlyph(kind: ChipKind): string {
   return CHIP_GLYPH[kind];
-}
-
-/**
- * Terminal-safe glyphs. The table above uses emoji, which render at two cells
- * in some terminals and one in others, so a chip strip drawn with them makes
- * the TUI's column arithmetic wrong. These are all single-cell ASCII.
- */
-export const CHIP_GLYPH_ASCII: Record<ChipKind, string> = {
-  file: "F",
-  folder: "D",
-  chat: "C",
-  lane: "L",
-  terminal: "T",
-  commit: "c",
-  branch: "b",
-  artifact: "a",
-  pr: "#",
-  issue: "i",
-  repo: "R",
-  actions_run: "r",
-  linear_issue: "N",
-  web_page: ">",
-  model: "M",
-  permission: "P",
-  skill: "/",
-  ade_link: "A",
-  machine: "M",
-  mcp: "m",
-  attachment: "I",
-  browser_tab: "B",
-  setting: "S",
-  place: ">",
-};
-
-export function chipGlyphAscii(kind: ChipKind): string {
-  return CHIP_GLYPH_ASCII[kind];
 }
 
 /** Display text. An enriched title wins only where the label is the raw URL. */

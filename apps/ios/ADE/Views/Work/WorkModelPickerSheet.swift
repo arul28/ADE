@@ -14,7 +14,7 @@ enum WorkModelPickerScope: Equatable {
 /// Favorites and recents are sourced from the cross-surface RPC contract
 /// (`modelPicker.getFavorites` / `getRecents` / `toggleFavorite` /
 /// `pushRecent`) so the same starred and recently-used models follow the user
-/// between the desktop, the TUI, and the iOS app.
+/// between the desktop and the iOS app.
 struct WorkModelPickerSheet: View {
   @Environment(\.dismiss) private var dismiss
   @EnvironmentObject private var syncService: SyncService
@@ -1442,7 +1442,7 @@ struct ModelPickerContentPane: View {
     }
     switch selection {
     case .favorites:
-      return "Tap the star on any model to pin it here. Favorites sync between desktop, TUI, and mobile."
+      return "Tap the star on any model to pin it here. Favorites sync between desktop and mobile."
     case .recents:
       return "Models you pick here will appear in the recents list, on every paired surface."
     case .providerGroup(let key, _):

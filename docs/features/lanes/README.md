@@ -23,7 +23,7 @@ In **Create new branch** mode, choose **Start from**: the project default branch
 
 **Use existing branch** opens the chosen branch directly without creating a branch. A branch already open in another folder cannot be selected.
 
-Settings → Lanes → New lanes saves the default or primary branch start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, phone, and `ade code` use these defaults. Run `ade lanes defaults --text` to inspect them.
+Settings → Lanes → New lanes saves the default or primary branch start choice and template per account and repository. If the repository has no remote, defaults are saved on this computer. Auto-create lane, `ade lanes create` without flags, the New lane dialog's first choice, and phone use these defaults. Run `ade lanes defaults --text` to inspect them.
 
 A lane compares against its open PR's base branch, or the project's default branch when there is no open PR, just as GitHub does. The primary lane compares to its upstream. The Lanes tab shows a quiet notice when work is behind or built on work now in the base: **N behind <base>** or **Built on work now in <base>**.
 
@@ -219,7 +219,7 @@ Shared code:
 - **`ade lanes create` from an agent shell.** The project is the shell's (`ADE_PROJECT_ROOT`, else the checkout the shell stands in). `--project-root <dir>`, before or after the subcommand, names another project; when it differs from the shell's, `runCli` drops the shell's `ADE_LANE_ID` and `ADE_WORKSPACE_ROOT` for that command (`dropShellScopeForOtherProject`, with a note on stderr), so the lane is created in the named project rather than the agent's own. A created lane's branch is pushed to `origin` with upstream tracking right away, best effort (an automatic lane's temporary branch is not), so it is ready for a PR; `ade help lanes` says so.
 - `src/shared/uuid.ts` — `isUuid` and `requireNormalizedUuid` (trim + lowercase or throw). Every caller-reserved id (a reserved lane id, a chat launch id) goes through it so the same id always maps to the same row and file name; deep-link lane-id validation uses `isUuid` too.
 - `src/shared/editorTargets.ts` — `EDITOR_TARGETS`, `OpenPathTarget`, `OpenInTarget`, `resolveOpenInTarget` / `canOfferOpenIn` / `isRemoteEditorOpenRequest` / `buildRemoteEditorUrl`. The lane (and Work session) **Open in** submenu is this shape: a worktree path plus optional SSH remote. Paired remotes (`transport: "paired"`) are excluded. See [Opening in an external editor](../files-and-editor/README.md#opening-in-an-external-editor).
-- `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the TUI/CLI.
+- `src/shared/laneLinearIssue.ts` — `parseLaneLinearIssueValue`, `parseLaneLinearIssueJson`, `finalizeLaneLinearIssue`, `laneLinearIssueMissingFields`, `isLinkableLaneLinearIssue`. Validates, normalizes, and checks completeness of `LaneLinearIssue` payloads. Used by `laneService` (create, link), `chatContextAttachments` (attachment hydration), and the CLI.
 - `src/shared/laneJiraIssue.ts` — parses, normalizes, and converts Jira issue snapshots used by lane and session links.
 - `src/shared/chatContextAttachments.ts` — builds and normalizes Linear, GitHub, and Jira chat context attachments using their shared issue parsers.
 - `src/shared/types.ts` — `LaneSummary`, `LaneStatus`, `CreateLaneArgs`, rebase args/results, `RebaseTargetCommit`, overlay types, port/proxy/OAuth/diagnostics types.
@@ -731,12 +731,9 @@ that machine's own numbers and is never marked stale by this one.
    Every file is realpath-confined to `.ade/artifacts`; a capture also owned by
    a chat in another lane survives, and archive remains non-destructive.
    Generic ADE action calls
-   (`lane.delete` through `ade actions run` / TUI `/ade`) use the same
+   (`lane.delete` through `ade actions run`) use the same
    teardown path, including lane-environment cleanup and port lease
-   release. The ADE Code TUI also surfaces this through a dedicated
-   `/lane delete` slash command that opens a right-pane confirmation
-   form (lane name + branch ref + dirty flag, with a force toggle when
-   the lane is dirty) before issuing the action.
+   release.
 
 ## Reserved ids, checkout progress, and cancellation
 
@@ -883,8 +880,8 @@ Rails checked before `git worktree remove`, for every lane:
   `git worktree remove` after it verifies as the worktree root;
 - an external directory Git no longer registers is left on disk, the lane
   row is deleted, and `DeleteLaneResult.leftoverWorktree` names the path.
-  The desktop dialog can reveal it or delete that directory. The CLI and TUI
-  report the path. A symlink is reported and not deleted;
+  The desktop dialog can reveal it or delete that directory. The CLI
+  reports the path. A symlink is reported and not deleted;
 - the dirty-state check and `--force` confirmation flow are unchanged for a
   directory Git still recognizes.
 
@@ -985,7 +982,7 @@ iOS create/manage sheets seed and edit the same `lanes.color` field.
 
 A lane may have one emoji in addition to its color. The emoji appears with the
 lane name in the Work sidebar and the Lanes page, and in lane pickers, the iOS
-lane list and Work hub, and the TUI. The create and Manage Lane rename fields
+lane list and Work hub. The create and Manage Lane rename fields
 have an emoji slot at the left of the name. Opening it lazy-loads a searchable,
 categorized picker backed by 1,870 Unicode emoji names, with developer choices
 first, and accepts any single emoji grapheme in its text field. Jev uses a
@@ -1201,10 +1198,7 @@ remote commands `lanes.getBranchDrift` and `lanes.resolveBranchDrift` in
 `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts` (both
 `viewerAllowed`; resolve is `queueable`), with the matching
 `SyncRemoteCommandAction` union members in
-`apps/desktop/src/shared/types/sync.ts`. The `ade code` TUI calls them via
-`adeApi.ts`, where `lanes.resolveBranchDrift` degrades to
-`{ ok: false, error: "unsupported" }` against a host that does not expose
-it.
+`apps/desktop/src/shared/types/sync.ts`.
 
 ## IPC surface
 

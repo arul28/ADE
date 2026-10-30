@@ -107,7 +107,7 @@ describe("active-turn dispatch modes", () => {
     // Codex gained inline, not interrupt: there is no cancel-and-resend.
     expect(supportsActiveTurnDispatchMode("codex", "inline")).toBe(true);
     expect(supportsActiveTurnDispatchMode("codex", "interrupt")).toBe(false);
-    // The host rejection the renderer and TUI both show verbatim. Cursor now
+    // The host rejection the renderer shows verbatim. Cursor now
     // names both modes, so the sentence pluralises.
     expect(unsupportedActiveTurnDispatchModeMessage("cursor", "nonsense"))
       .toBe("Cursor sessions support only the \"inline\" and \"interrupt\" active-turn dispatch modes.");

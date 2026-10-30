@@ -16,13 +16,19 @@
  */
 import {
   accountPageResult,
+  accountRefusalResult,
+  accountWriteResults,
   buildAccountPageQuery,
   countAndGuard,
+  decodePathSegment,
   isRecord,
   json,
   parseAccountScopeKey,
   parseSinceParam,
   requiredString,
+  staleWriteThreshold,
+  writeClock,
+  type AccountItemVerdict,
   type AttentionRelayEnv,
 } from "./attentionShared";
 
@@ -66,6 +72,8 @@ type ParsedWrite = {
   key: string;
   valueJson: string;
   changedAt: string | null;
+  /** Client clock; see `staleWriteThreshold`. */
+  writtenAt: unknown;
 };
 
 function parseSettingKey(value: unknown): string | null {
@@ -77,29 +85,33 @@ function parseSettingKey(value: unknown): string | null {
   return /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(key) ? key : null;
 }
 
-function parseWriteItem(value: unknown): ParsedWrite | null {
-  if (!isRecord(value)) return null;
+type SettingVerdict = AccountItemVerdict<ParsedWrite>;
+
+function checkWriteItem(value: unknown): SettingVerdict {
+  if (!isRecord(value)) return { ok: false, reason: "invalid setting" };
   const scope = parseAccountScopeKey(value.scope);
+  if (!scope) return { ok: false, reason: "invalid scope" };
   const key = parseSettingKey(value.key);
-  if (!scope || !key) return null;
+  if (!key) return { ok: false, reason: "invalid key" };
   // `undefined` is not a value — a caller that means "remove this" uses DELETE,
   // so that the reverse of a write is explicit rather than a special case of it.
-  if (value.value === undefined) return null;
+  if (value.value === undefined) return { ok: false, reason: "no value" };
   let valueJson: string;
   try {
     valueJson = JSON.stringify(value.value);
   } catch {
-    return null;
+    return { ok: false, reason: "invalid value" };
   }
-  if (typeof valueJson !== "string" || valueJson.length > MAX_SETTING_VALUE_BYTES) return null;
+  if (typeof valueJson !== "string") return { ok: false, reason: "invalid value" };
+  if (valueJson.length > MAX_SETTING_VALUE_BYTES) return { ok: false, reason: "value too large" };
   const changedAtRaw = typeof value.changedAt === "string" ? value.changedAt.trim() : "";
   const changedAt = changedAtRaw && !Number.isNaN(Date.parse(changedAtRaw))
     ? new Date(changedAtRaw).toISOString()
     : null;
-  return { scope, key, valueJson, changedAt };
+  return { ok: true, write: { scope, key, valueJson, changedAt, writtenAt: value.writtenAt } };
 }
 
-function rowToSetting(row: {
+type SettingRowRecord = {
   scope_key: string;
   setting_key: string;
   value_json: string;
@@ -107,7 +119,22 @@ function rowToSetting(row: {
   changed_at: string | null;
   writer_device_id: string | null;
   deleted: number;
-}): AccountSettingRow {
+};
+
+async function readSettingRow(
+  env: AttentionRelayEnv,
+  userId: string,
+  scope: string,
+  key: string,
+): Promise<SettingRowRecord | null> {
+  return await env.DB.prepare(`
+    select scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id, deleted
+    from account_settings
+    where user_id = ? and scope_key = ? and setting_key = ?
+  `).bind(userId, scope, key).first<SettingRowRecord>();
+}
+
+function rowToSetting(row: SettingRowRecord): AccountSettingRow {
   let value: unknown = null;
   try {
     value = JSON.parse(row.value_json);
@@ -199,17 +226,32 @@ async function handleWrite(
     );
   }
   const writerDeviceId = requiredString(body.deviceId, 128);
+  // Per-item answers and the stale check are opt-in (see the vault): a client
+  // that does not ask reads a 200 as "every setting landed".
+  const itemResults = body.itemResults === true;
+  const clock = writeClock(body.sentAt);
 
-  const parsed: ParsedWrite[] = [];
-  for (const item of body.settings) {
-    const write = parseWriteItem(item);
+  const verdicts = body.settings.map(checkWriteItem);
+  const firstRefusal = verdicts.find((verdict) => !verdict.ok);
+  if (firstRefusal && !itemResults) {
     // One bad item fails the whole batch. A partial success is the worst
     // outcome here: the caller believes its settings landed, and the one that
     // silently did not is the one it will never look at again.
-    if (!write) return json({ ok: false, error: "invalid setting" }, { status: 400 });
-    parsed.push(write);
+    const index = verdicts.indexOf(firstRefusal);
+    return json(
+      { ok: false, error: "invalid setting", index, reason: (firstRefusal as { reason: string }).reason },
+      { status: 400 },
+    );
   }
-  if (!parsed.length) return json({ ok: true, written: 0, updatedAt: null });
+  const parsed = verdicts.flatMap((verdict) => (verdict.ok ? [verdict.write] : []));
+  if (!parsed.length) {
+    return json({
+      ok: true,
+      written: 0,
+      updatedAt: null,
+      ...(itemResults ? { results: verdicts.map(accountRefusalResult) } : {}),
+    });
+  }
 
   if (await countAndGuard({
     env,
@@ -228,9 +270,13 @@ async function handleWrite(
   // Stamped here, never by the caller. Machine clocks disagree, and ADE has
   // already had one sync bug caused by trusting a peer's clock for ordering.
   // Last-writer-wins therefore means "last to reach the server", which is
-  // well-defined and cannot be moved by a machine with a wrong date.
-  const updatedAt = new Date().toISOString();
-  await env.DB.batch(parsed.map((write) => env.DB.prepare(`
+  // well-defined and cannot be moved by a machine with a wrong date. The one
+  // exception is a write made before the stored row was (`staleWriteThreshold`,
+  // corrected by the request's own `sentAt`), refused per item, unless this
+  // same device wrote the stored row: its own earlier write may still have
+  // been in flight. (No `deviceId`: `= null` is never true, so the full check holds.)
+  const updatedAt = new Date(clock.nowMs).toISOString();
+  const outcomes = await env.DB.batch(parsed.map((write) => env.DB.prepare(`
     insert into account_settings(
       user_id, scope_key, setting_key, value_json, updated_at, changed_at, writer_device_id, deleted
     )
@@ -241,6 +287,7 @@ async function handleWrite(
       changed_at = excluded.changed_at,
       writer_device_id = excluded.writer_device_id,
       deleted = 0
+    where account_settings.updated_at <= ? or account_settings.writer_device_id = ?
   `).bind(
     userId,
     write.scope,
@@ -249,36 +296,63 @@ async function handleWrite(
     updatedAt,
     write.changedAt,
     writerDeviceId,
+    staleWriteThreshold(clock, itemResults ? write.writtenAt : null),
+    writerDeviceId,
   )));
 
-  return json({ ok: true, written: parsed.length, updatedAt });
+  if (!itemResults) return json({ ok: true, written: parsed.length, updatedAt });
+
+  const { results, written } = await accountWriteResults(verdicts, outcomes, async (write): Promise<AccountSettingRow | null> => {
+    const row = await readSettingRow(env, userId, write.scope, write.key);
+    return row ? rowToSetting(row) : null;
+  });
+  return json({ ok: true, written, updatedAt: written > 0 ? updatedAt : null, results });
 }
 
 /**
  * The way out. A setting you can set and never unset is a one-way door, and the
  * reset controls on every preference page need this to mean something.
+ *
+ * With `?writtenAt=` (and `sentAt`), a delete made before the stored row was
+ * last written is refused with `409 stale` and the stored row, unless the
+ * deleting device (`?deviceId=`) wrote that row itself.
  */
 async function handleDelete(
   env: AttentionRelayEnv,
   userId: string,
-  scopeRaw: string,
-  keyRaw: string,
+  url: URL,
+  scopeRaw: string | null,
+  keyRaw: string | null,
 ): Promise<Response> {
   const scope = parseAccountScopeKey(scopeRaw);
   const key = parseSettingKey(keyRaw);
   if (!scope || !key) {
     return json({ ok: false, error: "invalid setting" }, { status: 400 });
   }
-  const updatedAt = new Date().toISOString();
+  const clock = writeClock(url.searchParams.get("sentAt"));
+  const threshold = staleWriteThreshold(clock, url.searchParams.get("writtenAt"));
+  const deviceId = requiredString(url.searchParams.get("deviceId"), 128);
+  const updatedAt = new Date(clock.nowMs).toISOString();
   const result = await env.DB.prepare(`
     update account_settings
-    set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = null
+    set deleted = 1, value_json = 'null', updated_at = ?, writer_device_id = ?
     where user_id = ? and scope_key = ? and setting_key = ? and deleted = 0
-  `).bind(updatedAt, userId, scope, key).run();
+      and (updated_at <= ? or writer_device_id = ?)
+  `).bind(updatedAt, deviceId, userId, scope, key, threshold, deviceId).run();
+  const deleted = (result.meta?.changes ?? 0) > 0;
+  if (!deleted && url.searchParams.has("writtenAt")) {
+    const row = await readSettingRow(env, userId, scope, key);
+    if (row && !row.deleted && row.updated_at > threshold) {
+      return json(
+        { ok: false, error: "a newer value exists", code: "stale", current: rowToSetting(row) },
+        { status: 409 },
+      );
+    }
+  }
   // Idempotent on purpose: a retry after a dropped response must not be an
   // error, or a flaky network turns a reset into a stuck one. The row stays as
   // a tombstone so a `since` pull can tell other machines to drop the key.
-  return json({ ok: true, deleted: (result.meta?.changes ?? 0) > 0 });
+  return json({ ok: true, deleted });
 }
 
 /**
@@ -308,8 +382,9 @@ export async function handleAccountSettingsRoute(
     return await handleDelete(
       env,
       userId,
-      decodeURIComponent(route[1] ?? ""),
-      decodeURIComponent(route[2] ?? ""),
+      url,
+      decodePathSegment(route[1]),
+      decodePathSegment(route[2]),
     );
   }
   return null;

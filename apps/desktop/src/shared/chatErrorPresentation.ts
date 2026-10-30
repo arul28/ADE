@@ -1,7 +1,7 @@
 import { providerDisplayLabel } from "./pendingInputLabels";
 
 /**
- * Host-emitted failed-turn copy. Clients (desktop, iOS, hosted web, CLI/TUI)
+ * Host-emitted failed-turn copy. Clients (desktop, iOS, hosted web, CLI)
  * render this instead of inventing "Error" / "Unknown" titles or dumping the
  * raw SDK sentence as the card body.
  *

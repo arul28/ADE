@@ -46,7 +46,7 @@ import {
  *
  * Everything here is deliberately CLI-only and brain-free. The machine this runs
  * on is the machine where ADE will not come up, so nothing may depend on the
- * brain answering, and there is no desktop/TUI/iOS surface to mirror: those
+ * brain answering, and there is no desktop/iOS surface to mirror: those
  * clients cannot help when the thing that hosts them is down.
  *
  * The pieces live next door: `triagePlaybook.ts` resolves the playbook,

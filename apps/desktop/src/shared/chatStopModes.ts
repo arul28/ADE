@@ -28,13 +28,6 @@ export type AgentChatStopMode = (typeof AGENT_CHAT_STOP_MODES)[number];
 
 export const DEFAULT_AGENT_CHAT_STOP_MODE: AgentChatStopMode = "stop_and_clear";
 
-/**
- * Settle teardown keeps the user's queued prompts (those are unrecoverable)
- * and still stops background work (the reason settle exists). After the
- * matrix, that combination is `stop_and_background`, not `stop_only`.
- */
-export const SETTLE_TEARDOWN_STOP_MODE: AgentChatStopMode = "stop_and_background";
-
 export function isAgentChatStopMode(value: unknown): value is AgentChatStopMode {
   return typeof value === "string"
     && (AGENT_CHAT_STOP_MODES as readonly string[]).includes(value);
@@ -45,38 +38,6 @@ export function parseAgentChatStopMode(
   fallback: AgentChatStopMode = DEFAULT_AGENT_CHAT_STOP_MODE,
 ): AgentChatStopMode {
   return isAgentChatStopMode(value) ? value : fallback;
-}
-
-const AGENT_CHAT_STOP_MODE_ALIASES: Record<string, AgentChatStopMode> = {
-  stop_only: "stop_only",
-  "stop-only": "stop_only",
-  "--stop-only": "stop_only",
-  "keep-queue": "stop_only",
-  "--keep-queue": "stop_only",
-  stop_and_clear: "stop_and_clear",
-  "stop-and-clear": "stop_and_clear",
-  "clear-queue": "stop_and_clear",
-  "--clear-queue": "stop_and_clear",
-  stop_and_background: "stop_and_background",
-  "stop-and-background": "stop_and_background",
-  background: "stop_and_background",
-  "turn-and-background": "stop_and_background",
-  stop_and_clear_and_background: "stop_and_clear_and_background",
-  "stop-and-clear-and-background": "stop_and_clear_and_background",
-  "clear-and-background": "stop_and_clear_and_background",
-  stop_and_clear_and_children: "stop_and_clear_and_children",
-  "stop-and-clear-and-children": "stop_and_clear_and_children",
-  children: "stop_and_clear_and_children",
-  "clear-and-children": "stop_and_clear_and_children",
-  stop_everything_and_children: "stop_everything_and_children",
-  "stop-everything-and-children": "stop_everything_and_children",
-  everything: "stop_everything_and_children",
-};
-
-/** Hyphen, underscore, and composer-flag aliases for the four-mode matrix. */
-export function resolveAgentChatStopModeAlias(value: string): AgentChatStopMode | null {
-  const key = value.trim().toLowerCase();
-  return AGENT_CHAT_STOP_MODE_ALIASES[key] ?? null;
 }
 
 /**

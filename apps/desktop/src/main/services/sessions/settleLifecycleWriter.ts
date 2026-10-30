@@ -16,12 +16,12 @@ export type SettleLifecycleIntent =
   /**
    * Real activity: drop the whole declaration, keep-active pin included.
    *
-   * `cause` is what makes teardown possible at all. Stopping a process EMITS
-   * OUTPUT, so C4 fires *because* teardown is running — if that cleared the
-   * settle or tripped abort, every real teardown would self-abort and a settle
-   * could never land. Mechanical exhaust is therefore swallowed during the
-   * settling window; a human decision aborts it. Outside the window both behave
-   * identically, exactly as before.
+   * `cause` decides what a clear does to a settle still in its window. A
+   * resting session's own output (a background shell printing, which settle
+   * leaves running) is mechanical exhaust and is swallowed during the window,
+   * or a chat with live background work could never be settled; a turn start
+   * or other human-level signal aborts the settle. Outside the window both
+   * behave identically.
    */
   | { kind: "clearOnActivity"; cause: SettleClearCause; settleNudgeTurnId?: string }
   /** Declared unsettle: drops a `'settled'` pin but preserves `'active'`. */
@@ -44,7 +44,7 @@ export type SettleLifecycleIntent =
  * Who asked for the clear.
  *
  * - `mechanical` — C4 `setLastOutputPreview`, C5 `touchSessionActivity`. Output
- *   and activity bookkeeping, largely produced by the teardown itself.
+ *   and activity bookkeeping, including what background work prints.
  * - `turn_start` / `turn_failed` / `attention_requested` — C3, C6, C7. Durable
  *   signals of intent that outrank a settle in canonical precedence.
  */
@@ -83,8 +83,8 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
   // anywhere else may assign those columns. `settleLifecycleChokepoint.test.ts`
   // enforces that by scanning this file.
   //
-  // The point is the REVISION. A settle decision is taken at t0 and (once
-  // teardown exists) applied at t0 + T, and the world is free to move in
+  // The point is the REVISION. A settle decision is taken at t0 and (after the
+  // awaited turn check) applied at t0 + T, and the world is free to move in
   // between. The revision is the detector that window needs: bumped in the same
   // transaction as the column write, so there is no gap between "the world
   // changed" and "the revision says so".
@@ -182,7 +182,7 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
         // have seen, which is `max(persisted, inProcess)`. Incrementing the
         // private counter alone is not enough: if a sibling ADE process has
         // pushed the table ahead of it, `max` would return the same number
-        // across a real mutation, and a teardown holding that token would accept
+        // across a real mutation, and a settle holding that token would accept
         // a decision the world has already invalidated. Reading here is safe —
         // this branch is the rare one, not the output path.
         let anchor = inProcessLifecycleRevisions.get(id) ?? 0;
@@ -323,7 +323,7 @@ export function createSettleLifecycleWriter(db: AdeDb): SettleLifecycleWriter {
     // preview write silently stopped landing. Over-bumping is the safe
     // direction anyway (a spent revision costs a re-taken settle; a missed one
     // accepts a stale decision), and step 2's swallow rule is what keeps a
-    // session's own idle output from invalidating its teardown.
+    // session's own idle output from invalidating its settle.
     if (changed <= 0) return;
     // Immediately adjacent, with no `await` between, and `bumpLifecycleRevisions`
     // cannot throw. `AdeDb` exposes no transaction helper and an explicit BEGIN

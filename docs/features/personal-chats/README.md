@@ -51,7 +51,7 @@ implementation details only:
 - project delete/forget operations cannot remove personal chat state.
 
 The runtime is channel-scoped with the rest of ADE machine state, so stable,
-beta, alpha, and isolated development homes do not share conversations. It is
+alpha, and isolated development homes do not share conversations. It is
 chat-only and remains lazy for fresh installs; when existing personal-chat
 state is present, the brain prewarms it in the background so opening Chats does
 not pay the cold-start cost. It does not run its own sync listener and
@@ -385,7 +385,6 @@ themselves are not trimmed.
 | Hosted web | The project picker and shell can enter `/chats` without selecting a project. The adapter uses runtime-scoped commands and personal chat subscriptions; browser-native ADE Browser is absent, while terminal IO runs on the paired machine. |
 | iOS | The Hub card is the only entry. It shows live count/attention state and pushes a native searchable list, new-chat model sheet, and reused Work transcript destination with project/lane actions suppressed. Chat Info uses the personal action descriptors for durable-schedule Cancel and per-chat Pause/Resume; schedule creation remains an API capability rather than a native control. The list merges the focused machine's chats with every live fleet machine that advertises `personalChats.list`, requests each machine independently with a timeout, and badges a row with its machine when chats come from multiple machines. Chat actions, transcript subscriptions, and model-catalog requests follow the owning machine without changing focus. A failed machine keeps its cached rows and shows its name with Retry; the new-chat screen has a machine picker. Personal summaries are cached per machine for offline list display; create and schedule mutations require a live host, while sends may queue. |
 | ADE CLI | `ade chat ... --personal` reaches the machine RPC directly. `--personal` is mutually exclusive with lane/Linear project context and requires a running brain. |
-| ADE Code TUI | Deliberately out of scope for the initial release. No personal-chat drawer or slash command is added. |
 
 ## UX contract
 
@@ -402,8 +401,7 @@ themselves are not trimmed.
   chat wins over the remembered one.
 - iOS: the Hub is the only entry point. It pushes a native Chats page, then a
   new-chat or existing-chat destination without selecting a project.
-- TUI: deliberately out of scope for the initial release. The regular `ade`
-  CLI commands are supported.
+- CLI: the regular `ade` CLI commands are supported.
 
 ## Gotchas
 
