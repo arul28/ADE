@@ -57,21 +57,27 @@ function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; activ
   const [shells, setShells] = useState<ChatTerminalSession[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const terminalKey = use.terminalIds.join(",");
+  const [readNonce, setReadNonce] = useState(0);
   useEffect(() => {
     if (!active || pin === "unreachable") return;
     let cancelled = false;
     void listRemoteWorkShells(use, pin)
-      .then((rows) => { if (!cancelled) setShells(rows); })
+      .then((rows) => {
+        if (cancelled) return;
+        setShells(rows);
+        setError(null);
+      })
       .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason)); });
     return () => { cancelled = true; };
     // Keyed on the pin's key and the terminal ids, not the objects.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active, pinKey, terminalKey]);
+  }, [active, pinKey, terminalKey, readNonce]);
 
   const stop = (terminalId: string) => {
     if (pin === "unreachable") return;
     void window.ade.terminal.signal({ terminalId, signal: "SIGINT" }, pin)
-      .then(() => setShells((rows) => rows?.map((row) => (row.terminalId === terminalId ? { ...row, status: "completed" } : row)) ?? rows))
+      // Read the list again rather than assume it stopped: a command may handle SIGINT.
+      .then(() => setReadNonce((value) => value + 1))
       .catch((reason: unknown) => showToast({
         tone: "error",
         title: `Couldn't stop the command on ${use.machineName}`,
