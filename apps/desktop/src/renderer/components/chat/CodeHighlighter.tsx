@@ -6,6 +6,7 @@ import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColo
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import type { Element as HastElement, Root as HastRoot } from "hast";
 import type { BundledLanguage, GrammarState as ShikiGrammarState } from "shiki";
+import { captureError } from "../../../shared/sentry/capture";
 import { LRUCache } from "./lruCache";
 
 /* ── LRU cache for highlighted HTML ── */
@@ -62,7 +63,9 @@ function ensureLanguage(highlighter: ShikiHighlighter, lang: BundledLanguage): P
   let load = languageLoads.get(lang);
   if (!load) {
     load = highlighter.loadLanguage(lang).catch((error: unknown) => {
+      // The next block tries again; the block shows as plain code meanwhile.
       languageLoads.delete(lang);
+      captureError(error, { fingerprint: ["code-highlighter", "grammar-load"], tags: { lang }, level: "warning", handled: true });
       throw error;
     });
     languageLoads.set(lang, load);

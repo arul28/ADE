@@ -17,6 +17,7 @@
  * it stays in step with the label's CSS sheen.
  */
 
+import { captureError } from "../../../shared/sentry/capture";
 import ThinkingGlyphWorker from "./thinkingGlyph.worker?worker";
 import type { GlyphState, WorkerMessage } from "./thinkingGlyph.worker";
 
@@ -28,11 +29,28 @@ function sharedWorker(): Worker | null {
   if (worker || workerFailed) return worker;
   try {
     worker = new ThinkingGlyphWorker();
-  } catch {
+    // The worker carries no SDK; its errors are reported here, once. Later
+    // indicators keep the CSS glyph.
+    worker.addEventListener("error", (event) => {
+      reportGlyphFailure("worker_error", new Error(event.message || "thinking glyph worker error"));
+      workerFailed = true;
+      worker?.terminate();
+      worker = null;
+    }, { once: true });
+  } catch (error) {
+    reportGlyphFailure("worker_start", error);
     workerFailed = true;
     worker = null;
   }
   return worker;
+}
+
+/** One report per renderer for each way the painted glyph can fail; the CSS glyph takes over. */
+const reportedGlyphFailures = new Set<string>();
+function reportGlyphFailure(kind: "worker_start" | "worker_error" | "transfer", error: unknown): void {
+  if (reportedGlyphFailures.has(kind)) return;
+  reportedGlyphFailures.add(kind);
+  captureError(error, { fingerprint: ["thinking-glyph", kind], tags: { kind }, level: "warning", handled: true });
 }
 
 /** Whether this renderer can paint the glyph off the main thread. */
@@ -56,7 +74,8 @@ export function attachThinkingGlyph(canvas: HTMLCanvasElement, frames: readonly 
   let offscreen: OffscreenCanvas;
   try {
     offscreen = canvas.transferControlToOffscreen();
-  } catch {
+  } catch (error) {
+    reportGlyphFailure("transfer", error);
     return null;
   }
   const id = nextId++;
