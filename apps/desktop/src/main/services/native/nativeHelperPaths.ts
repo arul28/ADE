@@ -329,10 +329,15 @@ function readBundleIdentifier(appPath: string): string | null {
 }
 
 /**
- * The version in a Windows executable's version resource (`VS_FIXEDFILEINFO`'s
- * product version, as `1.2.125`). Read straight from the file's `.rsrc`
- * section: no PowerShell on a path the brain answers often. Null when the file
- * is not a PE image or carries no version.
+ * The version in a Windows executable's version resource, as `1.2.125` or
+ * `1.2.127-beta.1`. Read straight from the file's `.rsrc` section: no
+ * PowerShell on a path the brain answers often. Null when the file is not a PE
+ * image or carries no version.
+ *
+ * `VS_FIXEDFILEINFO` holds numbers only, so a beta build reads there as its
+ * stable version. electron-builder writes the full version into the
+ * `FileVersion` string that follows it; that string wins when its numbers
+ * agree with the fixed ones.
  */
 function readWindowsExecutableVersion(executablePath: string): string | null {
   let fd: number | null = null;
@@ -361,7 +366,9 @@ function readWindowsExecutableVersion(executablePath: string): string | null {
         if (at % 4 !== 0) continue;
         const productMs = section.readUInt32LE(at + 16);
         const productLs = section.readUInt32LE(at + 20);
-        return `${productMs >>> 16}.${productMs & 0xffff}.${productLs >>> 16}`;
+        const fixed = `${productMs >>> 16}.${productMs & 0xffff}.${productLs >>> 16}`;
+        const full = readVersionString(section.subarray(at, read), "FileVersion");
+        return full && full.startsWith(`${fixed}-`) && /^\d+\.\d+\.\d+-[0-9A-Za-z.-]+$/.test(full) ? full : fixed;
       }
       return null;
     }
@@ -380,6 +387,25 @@ function readWindowsExecutableVersion(executablePath: string): string | null {
 }
 
 const VS_FIXEDFILEINFO_SIGNATURE = Buffer.from([0xbd, 0x04, 0xef, 0xfe]);
+
+/**
+ * One value of a version resource's `StringFileInfo` table: the UTF-16 key,
+ * its padding, then the UTF-16 value. Null when the key is absent.
+ */
+function readVersionString(versionInfo: Buffer, key: string): string | null {
+  const at = versionInfo.indexOf(Buffer.from(`${key}\0`, "utf16le"));
+  if (at < 0 || at % 2 !== 0) return null;
+  let cursor = at + (key.length + 1) * 2;
+  while (cursor + 1 < versionInfo.length && versionInfo.readUInt16LE(cursor) === 0) cursor += 2;
+  const end = Math.min(versionInfo.length - 1, cursor + 128);
+  let value = "";
+  for (; cursor < end; cursor += 2) {
+    const unit = versionInfo.readUInt16LE(cursor);
+    if (unit === 0) return value || null;
+    value += String.fromCharCode(unit);
+  }
+  return null;
+}
 
 /** Versions already read from an executable, by its path and file identity. */
 const executableVersionCache = new Map<string, { stamp: string; version: string | null }>();

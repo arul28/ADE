@@ -115,6 +115,8 @@ function renameReplacing(from: string, to: string): void {
 }
 
 const SNAPSHOT_SUFFIX = ".bak";
+/** 1.2.127 is the first release that writes the compat record. */
+const UNRECORDED_VERSION_LABEL = "before-1.2.127";
 const SNAPSHOTS_KEPT = 3;
 const SNAPSHOT_HEADROOM_BYTES = 256 * 1024 * 1024;
 /** Pages copied per step; small steps keep the event loop free on big files. */
@@ -186,10 +188,11 @@ export async function snapshotDatabaseBeforeVersionChange(args: {
   // Named by both versions (`ade.db.pre-1.2.127-from-1.2.128-beta.3.bak`):
   // a file that goes back and forth between versions gets a copy for each
   // move, so a return to an older build never reuses, or overwrites, the copy
-  // taken before an earlier upgrade.
+  // taken before an earlier upgrade. A file with no record was last opened by
+  // a build from before records: `-from-before-1.2.127`.
   const destination = path.join(
     path.dirname(dbPath),
-    `${snapshotPrefix(dbPath)}${safeVersionLabel(appVersion)}-from-${safeVersionLabel(lastOpenedVersion ?? "unknown")}${SNAPSHOT_SUFFIX}`,
+    `${snapshotPrefix(dbPath)}${safeVersionLabel(appVersion)}-from-${safeVersionLabel(lastOpenedVersion ?? UNRECORDED_VERSION_LABEL)}${SNAPSHOT_SUFFIX}`,
   );
   // The same move again (the file went back and forth twice): the first copy
   // of this move is already there; keep it.
