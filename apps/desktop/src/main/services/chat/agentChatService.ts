@@ -60137,6 +60137,8 @@ export function createAgentChatService(args: {
         }
         return { kind: "cancelled" };
       };
+      // The threshold this session opened with, so a later change reopens it.
+      runtimeCompactionSettings.set(runtime, compactionSignatureFor(managed));
       managed.runtime = runtime;
       persistChatState(managed);
       for (const event of openingEvents.splice(0)) acquired.pooled.bridge.onEvent?.(managed.session.id, event);
