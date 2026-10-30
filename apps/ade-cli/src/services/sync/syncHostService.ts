@@ -6442,14 +6442,10 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
         // ready reseed waits only while the phone has scanned nothing: when
         // its first window holds nothing for it, no batch goes out but its
         // cursor moves, and the reseed is next.
-        if (
-          peer.changesetBatchesSent === 0
-          && (reseed.status === "building" || (reseed.status === "ready" && reseedFromDbVersion === 0))
-        ) {
-          // The first batch goes out below.
-        } else if (reseed.status === "building") {
-          return;
-        } else {
+        const firstBatchGoesFirst = peer.changesetBatchesSent === 0
+          && (reseed.status === "building" || (reseed.status === "ready" && reseedFromDbVersion === 0));
+        if (!firstBatchGoesFirst) {
+          if (reseed.status === "building") return;
           if (reseed.status === "ready") {
             if (mobileReplicaReseedLaunchPollGeneration === pollGeneration) return;
             mobileReplicaReseedLaunchPollGeneration = pollGeneration;
