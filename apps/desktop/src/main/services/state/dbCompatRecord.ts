@@ -250,6 +250,8 @@ function listDatabaseSnapshots(dbPath: string): Array<{ path: string; modifiedAt
 async function pruneDatabaseSnapshots(dbPath: string, logger: Logger): Promise<void> {
   for (const stale of listDatabaseSnapshots(dbPath).slice(SNAPSHOTS_KEPT)) {
     try {
+      // A database kept aside by "Go back" keeps its journal files beside it.
+      for (const side of ["-wal", "-shm", "-journal"]) await fsp.rm(`${stale.path}${side}`, { force: true });
       await fsp.rm(stale.path, { force: true });
     } catch (error) {
       logger.warn("db.snapshot_prune_failed", {

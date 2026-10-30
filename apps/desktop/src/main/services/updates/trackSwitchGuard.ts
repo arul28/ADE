@@ -1,12 +1,4 @@
-import path from "node:path";
-
-import {
-  resolveMachineAdeLayout,
-  resolvePersonalChatsStateRoot,
-} from "../../../../../ade-cli/src/services/projects/machineLayout";
-import { ProjectRegistry } from "../../../../../ade-cli/src/services/projects/projectRegistry";
 import { fetchReleaseManifestJson } from "../../../../../ade-cli/src/lib/releaseAssets";
-import { resolveAdeLayout } from "../../../shared/adeLayout";
 import {
   BETA_FEED_MANIFEST_URL,
   LATEST_STABLE_MANIFEST_URL,
@@ -20,6 +12,7 @@ import type { TrackSwitchCheckResult } from "../../../shared/types";
 import { DB_COMPAT_LEVEL, LEGACY_DB_COMPAT_LEVEL } from "../../../shared/releaseCompat";
 import type { Logger } from "../logging/logger";
 import { dbCompatLevelOf } from "../state/dbCompatRecord";
+import { listLocalDatabases } from "../startupRecovery/databaseCopies";
 
 export type TrackSwitchGuardDeps = {
   /** Resolves the parsed JSON, `null` for a 404, and throws on other failures. */
@@ -27,25 +20,6 @@ export type TrackSwitchGuardDeps = {
   /** Every database file on this machine. Injected in tests. */
   listDatabasePaths?: () => Array<{ label: string; dbPath: string }>;
 };
-
-function defaultListDatabasePaths(): Array<{ label: string; dbPath: string }> {
-  const layout = resolveMachineAdeLayout();
-  const databases = [
-    { label: "this computer's ADE data", dbPath: path.join(layout.adeDir, "ade.db") },
-    // Personal chats run a runtime of their own on this state root.
-    {
-      label: "your personal chats",
-      dbPath: resolveAdeLayout(resolvePersonalChatsStateRoot(layout)).dbPath,
-    },
-  ];
-  for (const project of new ProjectRegistry(layout).list()) {
-    databases.push({
-      label: project.displayName || path.basename(project.rootPath),
-      dbPath: resolveAdeLayout(project.rootPath).dbPath,
-    });
-  }
-  return databases;
-}
 
 /**
  * Before a machine moves to the other update track: can the build it would
@@ -65,7 +39,7 @@ export async function checkTrackSwitch(args: {
 }): Promise<TrackSwitchCheckResult> {
   const { target, runningVersion } = args;
   const fetchJson = args.deps?.fetchJson ?? fetchReleaseManifestJson;
-  const listDatabasePaths = args.deps?.listDatabasePaths ?? defaultListDatabasePaths;
+  const listDatabasePaths = args.deps?.listDatabasePaths ?? listLocalDatabases;
   const runningTrack = updateTrackOfVersion(runningVersion);
   const targetLabel = updateTrackLabel(target);
 
