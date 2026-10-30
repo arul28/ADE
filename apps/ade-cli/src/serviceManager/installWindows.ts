@@ -1514,6 +1514,22 @@ async function installWindowsServiceImpl(
     existingLauncher = null;
   }
   const launcherUnchanged = existingLauncher === renderedLauncher;
+  // Resolved before anything is torn down: a host that will not hand over a
+  // trusted conhost.exe fails here, with the old supervisor still running.
+  let launcherCommand: string;
+  try {
+    launcherCommand = windowsLauncherCommand(launcherPath);
+  } catch (error) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: error instanceof Error
+        ? `Unable to resolve the Windows brain launcher command: ${error.message}`
+        : "Unable to resolve the Windows brain launcher command.",
+    };
+  }
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
     fs.writeFileSync(launcherPath, renderedLauncher, {
@@ -1573,7 +1589,7 @@ async function installWindowsServiceImpl(
     if (running.ready) {
       const registration = run(
         windowsRegCommand(),
-        buildWindowsRunKeyAddArgs(taskName, windowsLauncherCommand(launcherPath)),
+        buildWindowsRunKeyAddArgs(taskName, launcherCommand),
         { encoding: "utf8", windowsHide: true },
       );
       const prune = registration.status === 0
@@ -1752,10 +1768,9 @@ async function installWindowsServiceImpl(
     });
     if (outcome === "not-proven" || outcome === "failed") unverifiedStalePids.push(stalePid);
   }
-  const command = windowsLauncherCommand(launcherPath);
   const registration = run(
     windowsRegCommand(),
-    buildWindowsRunKeyAddArgs(taskName, command),
+    buildWindowsRunKeyAddArgs(taskName, launcherCommand),
     { encoding: "utf8", windowsHide: true },
   );
   if (registration.status !== 0) {

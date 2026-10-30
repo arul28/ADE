@@ -3,14 +3,14 @@
  * ADE knows about, and nothing when it restarts for one.
  *
  * The brain watches itself, so a loop is reported with or without a desktop
- * window open (a machine driven only from a phone has none). Every brain
- * records its start in `runtime/brain-starts.json` and, when it stops in an
- * orderly way (an update, the restart button, a shutdown request), marks that
- * start stopped. A start counts toward a loop when the brain before it died
- * without that mark, was the same build, and is gone; or when the build goes
- * back to one an earlier brain in the window already left (two installs
- * replacing each other, 2026-10-19). An update replacing the brain counts
- * for nothing. The report carries the service's state and logs
+ * window open (a machine driven only from a phone has none). Every service
+ * brain records its start in `runtime/brain-starts.json` and, when it stops in
+ * an orderly way (an update, the restart button, a shutdown request), marks
+ * that start stopped. A start counts toward a loop when the brain before it
+ * died without that mark, was the same build, and is gone; or when the build
+ * goes back to one an earlier brain in the window already left (two installs
+ * replacing each other, 2026-10-19). An update replacing the brain counts for
+ * nothing. The report carries the service's state and logs
  * (`brainServiceDiagnostics.ts`) like every brain report.
  *
  * Kept from spamming Sentry by construction:
@@ -19,29 +19,30 @@
  *   - a loop is one report, sent by the first brain that stays up for
  *     `LOOP_QUIET_MS`, or by whichever brain is up `LOOP_REPORT_MAX_DELAY_MS`
  *     after the loop was found, so its later restarts are in that report;
- *   - a machine reports at most once a day, recorded on disk in
- *     `runtime/sentry-brain-restart-loop.json`;
+ *   - a machine reports at most once a day (`lastReportedAt` in the same file);
  *   - every report has one fingerprint per platform: one issue in Sentry,
  *     with a count of the machines it happened on.
+ *
+ * Every doubt resolves toward no report: two brains writing the file at once
+ * can lose a start, a reused pid reads as alive, and a brain the computer
+ * killed by restarting is not counted (it started before this boot).
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { captureProblem, flushSentry, isSentryActive } from "../../../desktop/src/shared/sentry/capture";
+import { isPidAlive } from "../serviceManager/common";
 import { writeJsonAtomic } from "../services/runtime/atomicJson";
-import { isProcessAlive } from "./brainServiceDiagnostics";
 
-export const RESTART_LOOP_THRESHOLD = 3;
-export const RESTART_LOOP_WINDOW_MS = 10 * 60_000;
+const RESTART_LOOP_THRESHOLD = 3;
+const RESTART_LOOP_WINDOW_MS = 10 * 60_000;
 const LOOP_QUIET_MS = 2 * 60_000;
 const LOOP_REPORT_MAX_DELAY_MS = 5 * 60_000;
-export const RESTART_LOOP_REPORT_COOLDOWN_MS = 24 * 60 * 60_000;
+const RESTART_LOOP_REPORT_COOLDOWN_MS = 24 * 60 * 60_000;
 const STARTS_KEPT = 20;
-const REPORTED_STARTS_LIMIT = 20;
+const BRAIN_STARTS_FILE = "brain-starts.json";
 
-export const BRAIN_STARTS_FILE = "brain-starts.json";
-export const RESTART_LOOP_REPORT_FILE = "sentry-brain-restart-loop.json";
-
-export type BrainStart = {
+type BrainStart = {
   pid: number;
   at: string;
   /** Version and bundle identity; a different value is a different build. */
@@ -52,162 +53,180 @@ export type BrainStart = {
   buildFlipFlop: boolean;
 };
 
-type BrainStartsFile = { starts: BrainStart[]; loopFoundAt?: string | null };
-
-export type BrainRestartLoopReport = { foundAt: string; starts: BrainStart[] };
-
-export type BrainRestartLoopDeps = {
-  runtimeDir: string;
-  build: string | null;
-  pid?: number;
-  now?: () => number;
-  isAlive?: (pid: number) => boolean;
-  report?: (loop: BrainRestartLoopReport) => void;
+type BrainStartsState = {
+  starts: BrainStart[];
+  /** A loop waiting for its report. */
+  loopFoundAt: string | null;
+  lastReportedAt: string | null;
 };
 
 /** This brain's own start, for `markBrainStoppedCleanly`. */
-let current: { runtimeDir: string; pid: number; now: () => number; at: string } | null = null;
+let current: { startsPath: string; pid: number; at: string } | null = null;
 
 /**
  * Records this brain's start and, when it completes a loop, schedules the
  * report. Does nothing where Sentry is off (source checkouts, tests, opted-out
  * machines), so no file is written there either.
  */
-export function startBrainRestartLoopWatch(deps: BrainRestartLoopDeps): void {
+export function startBrainRestartLoopWatch(options: { runtimeDir: string; build: string | null }): void {
   if (!isSentryActive()) return;
-  const resolved = {
-    runtimeDir: deps.runtimeDir,
-    build: deps.build,
-    pid: deps.pid ?? process.pid,
-    now: deps.now ?? Date.now,
-    isAlive: deps.isAlive ?? isProcessAlive,
-    report: deps.report,
-  };
-  const nowMs = resolved.now();
-  const at = new Date(nowMs).toISOString();
-  current = { runtimeDir: resolved.runtimeDir, pid: resolved.pid, now: resolved.now, at };
-  const startsPath = path.join(resolved.runtimeDir, BRAIN_STARTS_FILE);
-  const state = readStartsFile(startsPath);
-  const inWindow = (start: BrainStart): boolean => nowMs - Date.parse(start.at) <= RESTART_LOOP_WINDOW_MS;
-  const previous = state.starts[state.starts.length - 1];
-  const buildFlipFlop = Boolean(
-    resolved.build
-      && previous
-      && previous.build !== resolved.build
-      && state.starts.slice(0, -1).some((start) => inWindow(start) && start.build === resolved.build),
-  );
-  const previousCrashed = Boolean(
-    previous
-      && !previous.stoppedAt
-      && previous.build === resolved.build
-      && previous.pid !== resolved.pid
-      && !resolved.isAlive(previous.pid),
-  );
-  const counted = Boolean(previous && inWindow(previous) && (buildFlipFlop || previousCrashed));
-  state.starts = [...state.starts, { pid: resolved.pid, at, build: resolved.build, counted, buildFlipFlop }].slice(-STARTS_KEPT);
-
-  let loopFoundAtMs = state.loopFoundAt ? Date.parse(state.loopFoundAt) : Number.NaN;
-  if (!(nowMs - loopFoundAtMs <= RESTART_LOOP_WINDOW_MS + LOOP_REPORT_MAX_DELAY_MS)) loopFoundAtMs = Number.NaN;
-  if (
-    Number.isNaN(loopFoundAtMs)
-    && state.starts.filter((start) => start.counted && inWindow(start)).length >= RESTART_LOOP_THRESHOLD
-    && !reportedRecently(resolved.runtimeDir, nowMs)
-  ) {
-    loopFoundAtMs = nowMs;
-  }
-  state.loopFoundAt = Number.isNaN(loopFoundAtMs) ? null : new Date(loopFoundAtMs).toISOString();
+  const nowMs = Date.now();
+  const startsPath = path.join(options.runtimeDir, BRAIN_STARTS_FILE);
+  const { state, loopFoundAtMs } = recordStart(readStartsFile(startsPath), {
+    pid: process.pid,
+    build: options.build,
+    nowMs,
+  });
+  current = { startsPath, pid: process.pid, at: new Date(nowMs).toISOString() };
   writeStartsFile(startsPath, state);
-  if (Number.isNaN(loopFoundAtMs)) return;
-
+  if (loopFoundAtMs === null) return;
   // This brain sends the report if it lives long enough; if it dies first,
   // the next one finds `loopFoundAt` and takes over.
   const delayMs = Math.max(0, Math.min(LOOP_QUIET_MS, loopFoundAtMs + LOOP_REPORT_MAX_DELAY_MS - nowMs));
-  const timer = setTimeout(() => sendLoopReport(resolved), delayMs);
-  timer.unref?.();
+  setTimeout(() => sendLoopReport(startsPath), delayMs).unref();
 }
 
 /** This brain is stopping in an orderly way: its start does not count as a crash for the next one. */
 export function markBrainStoppedCleanly(): void {
   if (!current) return;
-  const { runtimeDir, pid, now, at } = current;
+  const { startsPath, pid, at } = current;
   current = null;
-  const startsPath = path.join(runtimeDir, BRAIN_STARTS_FILE);
   const state = readStartsFile(startsPath);
   const own = state.starts.find((start) => start.pid === pid && start.at === at);
   if (!own) return;
-  own.stoppedAt = new Date(now()).toISOString();
+  own.stoppedAt = new Date().toISOString();
   writeStartsFile(startsPath, state);
 }
 
-function sendLoopReport(deps: { runtimeDir: string; now: () => number; report?: (loop: BrainRestartLoopReport) => void }): void {
-  const nowMs = deps.now();
-  const startsPath = path.join(deps.runtimeDir, BRAIN_STARTS_FILE);
+/** The file with this start added, and when the loop waiting for a report was found (null: none). */
+function recordStart(
+  state: BrainStartsState,
+  start: { pid: number; build: string | null; nowMs: number },
+): { state: BrainStartsState; loopFoundAtMs: number | null } {
+  const { nowMs } = start;
+  // A start "after" now means the clock went back; it counts for nothing.
+  const inWindow = (entry: BrainStart): boolean => {
+    const ageMs = nowMs - Date.parse(entry.at);
+    return ageMs >= 0 && ageMs <= RESTART_LOOP_WINDOW_MS;
+  };
+  const previous = state.starts.at(-1);
+  const buildFlipFlop = Boolean(
+    start.build
+      && previous
+      && previous.build !== start.build
+      && state.starts.slice(0, -1).some((entry) => inWindow(entry) && entry.build === start.build),
+  );
+  // A restart, sign-out or power cut kills the brain with no orderly stop.
+  const bootMs = nowMs - os.uptime() * 1000;
+  const previousCrashed = Boolean(
+    previous
+      && Date.parse(previous.at) >= bootMs
+      && !previous.stoppedAt
+      && previous.build === start.build
+      && previous.pid !== start.pid
+      && !isPidAlive(previous.pid),
+  );
+  const counted = Boolean(previous && inWindow(previous) && (buildFlipFlop || previousCrashed));
+  const starts = [
+    ...state.starts,
+    { pid: start.pid, at: new Date(nowMs).toISOString(), build: start.build, counted, buildFlipFlop },
+  ].slice(-STARTS_KEPT);
+
+  // A pending loop is kept until some brain sends it, unless it is far older
+  // than any brain could have taken to.
+  const pendingMs = state.loopFoundAt ? Date.parse(state.loopFoundAt) : Number.NaN;
+  let loopFoundAtMs: number | null =
+    nowMs - pendingMs <= RESTART_LOOP_WINDOW_MS + LOOP_REPORT_MAX_DELAY_MS ? pendingMs : null;
+  if (
+    loopFoundAtMs === null
+    && starts.filter((entry) => entry.counted && inWindow(entry)).length >= RESTART_LOOP_THRESHOLD
+    && !reportedRecently(state, nowMs)
+  ) {
+    loopFoundAtMs = nowMs;
+  }
+  return {
+    state: {
+      starts,
+      loopFoundAt: loopFoundAtMs === null ? null : new Date(loopFoundAtMs).toISOString(),
+      lastReportedAt: state.lastReportedAt,
+    },
+    loopFoundAtMs,
+  };
+}
+
+function sendLoopReport(startsPath: string): void {
+  const nowMs = Date.now();
   const state = readStartsFile(startsPath);
-  if (!state.loopFoundAt) return;
   const foundAt = state.loopFoundAt;
-  state.loopFoundAt = null;
-  writeStartsFile(startsPath, state);
   // Another brain on this machine may have sent it meanwhile.
-  if (reportedRecently(deps.runtimeDir, nowMs)) return;
+  if (!foundAt || reportedRecently(state, nowMs)) return;
   // Recorded before the report goes, so a report that throws cannot repeat.
-  writeReportedAt(deps.runtimeDir, nowMs);
+  writeStartsFile(startsPath, { ...state, loopFoundAt: null, lastReportedAt: new Date(nowMs).toISOString() });
   const since = Date.parse(foundAt) - RESTART_LOOP_WINDOW_MS;
-  const starts = state.starts.filter((start) => Date.parse(start.at) >= since).slice(-REPORTED_STARTS_LIMIT);
+  const starts = state.starts.filter((start) => Date.parse(start.at) >= since);
+  const counted = starts.filter((start) => start.counted);
   try {
-    (deps.report ?? reportBrainRestartLoop)({ foundAt, starts });
-  } catch {
-    // Reporting is best effort.
+    captureProblem("The brain kept restarting", {
+      level: "warning",
+      fingerprint: ["brain", "restart_loop", process.platform],
+      tags: { "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop) },
+      extra: { restartCount: counted.length, foundAt, starts },
+    });
+    // A brain in a loop may not live long enough for the SDK's own send.
+    void flushSentry(2_000);
+  } catch (error) {
+    process.stderr.write(`ADE brain could not report its restart loop: ${errorText(error)}
+`);
   }
 }
 
-/** The issue. Its contexts and files come from the diagnostics every brain report carries. */
-function reportBrainRestartLoop(loop: BrainRestartLoopReport): void {
-  const counted = loop.starts.filter((start) => start.counted);
-  captureProblem("The brain kept restarting", {
-    level: "warning",
-    fingerprint: ["brain", "restart_loop", process.platform],
-    tags: { "brain.restart_loop.flip_flop": counted.some((start) => start.buildFlipFlop) },
-    extra: { restartCount: counted.length, foundAt: loop.foundAt, starts: loop.starts },
-  });
-  // A brain in a loop may not live long enough for the SDK's own send.
-  void flushSentry(2_000);
+function reportedRecently(state: BrainStartsState, nowMs: number): boolean {
+  const ageMs = nowMs - (state.lastReportedAt ? Date.parse(state.lastReportedAt) : Number.NaN);
+  // A report "after" now means the clock went back; it blocks nothing.
+  return ageMs >= 0 && ageMs < RESTART_LOOP_REPORT_COOLDOWN_MS;
 }
 
-function readStartsFile(filePath: string): BrainStartsFile {
+function readStartsFile(filePath: string): BrainStartsState {
   try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Partial<BrainStartsFile>;
-    const starts = Array.isArray(parsed.starts)
-      ? parsed.starts.filter((start): start is BrainStart =>
-        Boolean(start) && typeof start.pid === "number" && typeof start.at === "string" && Number.isFinite(Date.parse(start.at)))
-      : [];
-    return { starts, loopFoundAt: typeof parsed.loopFoundAt === "string" ? parsed.loopFoundAt : null };
-  } catch {
-    return { starts: [] };
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<string, unknown>;
+    const starts = Array.isArray(parsed.starts) ? parsed.starts.filter(isBrainStart) : [];
+    return {
+      starts,
+      loopFoundAt: typeof parsed.loopFoundAt === "string" ? parsed.loopFoundAt : null,
+      lastReportedAt: typeof parsed.lastReportedAt === "string" ? parsed.lastReportedAt : null,
+    };
+  } catch (error) {
+    // Absent is the first start on this machine; anything else starts over.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      process.stderr.write(`ADE brain is starting its restart record over: ${errorText(error)}
+`);
+    }
+    return { starts: [], loopFoundAt: null, lastReportedAt: null };
   }
 }
 
-function writeStartsFile(filePath: string, state: BrainStartsFile): void {
+function isBrainStart(value: unknown): value is BrainStart {
+  if (!value || typeof value !== "object") return false;
+  const start = value as Record<string, unknown>;
+  return typeof start.pid === "number"
+    && typeof start.at === "string"
+    && Number.isFinite(Date.parse(start.at))
+    && (typeof start.build === "string" || start.build === null)
+    && (start.stoppedAt === undefined || typeof start.stoppedAt === "string")
+    && typeof start.counted === "boolean"
+    && typeof start.buildFlipFlop === "boolean";
+}
+
+function writeStartsFile(filePath: string, state: BrainStartsState): void {
   try {
     writeJsonAtomic(filePath, state, `${process.pid}`);
-  } catch {
+  } catch (error) {
     // Without the record a loop goes unreported; the brain itself is unaffected.
+    process.stderr.write(`ADE brain could not save its restart record: ${errorText(error)}
+`);
   }
 }
 
-function reportedRecently(runtimeDir: string, nowMs: number): boolean {
-  try {
-    const parsed = JSON.parse(fs.readFileSync(path.join(runtimeDir, RESTART_LOOP_REPORT_FILE), "utf8")) as { lastReportedAt?: unknown };
-    const atMs = typeof parsed.lastReportedAt === "string" ? Date.parse(parsed.lastReportedAt) : Number.NaN;
-    return Number.isFinite(atMs) && nowMs - atMs < RESTART_LOOP_REPORT_COOLDOWN_MS;
-  } catch {
-    return false;
-  }
-}
-
-function writeReportedAt(runtimeDir: string, nowMs: number): void {
-  try {
-    writeJsonAtomic(path.join(runtimeDir, RESTART_LOOP_REPORT_FILE), { lastReportedAt: new Date(nowMs).toISOString() }, `${process.pid}`);
-  } catch {
-    // Without the file the next loop may report again a day early; never worse.
-  }
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

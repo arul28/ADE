@@ -1697,7 +1697,7 @@ export class LocalRuntimeConnectionPool {
       lastWedge: status.lastWedge,
       ...this.connectionStats,
       projects: [...this.projectsByRoot.entries()].map(([rootPath, project]) => ({ rootPath, projectId: project.projectId })),
-      history: this.brainHistory,
+      history: [...this.brainHistory],
     };
   }
 
@@ -3859,6 +3859,14 @@ export class LocalRuntimeConnectionPool {
       serviceState: this.serviceInstallStatus.state,
       serviceMessage: this.serviceInstallStatus.message,
     });
+    // The same signal as a regular repair, so Sentry sees a repair that keeps
+    // going every minute and not one that stopped after the first try.
+    this.noteBrainHistory("repair_attempt", { reason: "isolated_recovery", serviceState: this.serviceInstallStatus.state });
+    forwardSignalToSentry(
+      "local_runtime.service_repair_attempt",
+      { reason: "isolated_recovery", serviceState: this.serviceInstallStatus.state },
+      "isolated_recovery",
+    );
     // The probe above just failed, so whatever owns the primary endpoint is not
     // usable — either absent or answering with the wrong identity. A plain
     // install can early-return "already running" on the responsive-but-wrong
@@ -3958,12 +3966,15 @@ export class LocalRuntimeConnectionPool {
       this.clearVersionSkewStatus(runtimeInfo.version);
     }
     this.setActiveClient(client);
-    this.noteConnectedRuntime(options.isMachineService === true);
+    // The machine endpoint can be answered by the app's own child (the
+    // fallback brain binds it when the service is down); that is not the service.
+    const machineService = options.isMachineService === true && runtimeInfo.pid !== this.ownedRuntimeChild?.pid;
+    this.noteConnectedRuntime(machineService);
     this.noteBrainHistory("connected", {
       pid: runtimeInfo.pid,
       version: runtimeInfo.version,
       buildHash: runtimeInfo.buildHash,
-      machineService: options.isMachineService === true,
+      machineService,
     });
     this.activeRuntimePid = runtimeInfo.pid;
     this.activeRuntimeSyncPort = runtimeInfo.syncPort;

@@ -22,7 +22,7 @@ import {
   type DiagnosticAttachment,
   type DiagnosticEvent,
 } from "../../../desktop/src/shared/sentry/diagnostics";
-import { resolveRuntimeServiceName } from "../serviceManager/common";
+import { isPidAlive, resolveRuntimeServiceName } from "../serviceManager/common";
 import {
   resolveWindowsBrainOutputLogPath,
   resolveWindowsServicePidPath,
@@ -30,7 +30,7 @@ import {
 } from "../serviceManager/installWindows";
 import { readWindowsServicePidRecord } from "../serviceManager/windowsSupervisor";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
-import { BRAIN_HEARTBEAT_FILE } from "../services/runtime/brainHeartbeat";
+import { readBrainHeartbeat } from "../services/runtime/brainHeartbeat";
 
 /** The state files are a few hundred bytes; anything far larger is not one of them. */
 const STATE_FILE_MAX_BYTES = 64 * 1024;
@@ -38,11 +38,12 @@ const STATE_TEXT_MAX_CHARS = 500;
 
 export function registerBrainServiceSentryDiagnostics(options: {
   /** Events this machine's service says nothing about (a call to another machine's brain). */
-  skipFilesFor?: (event: DiagnosticEvent) => boolean;
+  skipFor?: (event: DiagnosticEvent) => boolean;
 } = {}): void {
-  registerSentryDiagnosticContext("brain_service", () => brainServiceContext());
+  registerSentryDiagnosticContext("brain_service", (event) =>
+    (options.skipFor?.(event) ? null : brainServiceContext()));
   registerSentryDiagnosticAttachment("brain-service-logs", (event) =>
-    (options.skipFilesFor?.(event) ? null : brainServiceLogsAttachment()));
+    (options.skipFor?.(event) ? null : brainServiceLogsAttachment()));
 }
 
 /**
@@ -50,7 +51,7 @@ export function registerBrainServiceSentryDiagnostics(options: {
  * supervisor's own record (restart count, last exit, next restart); on every
  * platform the brain's heartbeat, the last startup failure and the last update.
  */
-export function brainServiceContext(env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): Record<string, unknown> {
+function brainServiceContext(env: NodeJS.ProcessEnv = process.env, nowMs = Date.now()): Record<string, unknown> {
   const { runtimeDir } = resolveMachineAdeLayout(env);
   const context: Record<string, unknown> = { serviceName: resolveRuntimeServiceName(env) };
   if (process.platform === "win32") {
@@ -58,19 +59,18 @@ export function brainServiceContext(env: NodeJS.ProcessEnv = process.env, nowMs 
     context.supervisor = record
       ? {
         ...record,
-        running: isProcessAlive(record.supervisorPid),
+        running: isPidAlive(record.supervisorPid),
         brainUptimeSec: record.runtimeStartedAtMs ? Math.round((nowMs - record.runtimeStartedAtMs) / 1000) : null,
       }
       : null;
   }
-  const heartbeat = readStateFile(path.join(runtimeDir, BRAIN_HEARTBEAT_FILE));
+  const heartbeat = readBrainHeartbeat(runtimeDir);
   if (heartbeat) {
-    const beatMs = typeof heartbeat.ts === "number" ? heartbeat.ts : null;
     context.heartbeat = {
-      pid: heartbeat.pid ?? null,
+      pid: heartbeat.pid,
       // A live pid with an old beat is a wedged brain, not a dead one.
-      secondsSinceBeat: beatMs ? Math.round((nowMs - beatMs) / 1000) : null,
-      startedAt: typeof heartbeat.startedAt === "number" ? new Date(heartbeat.startedAt).toISOString() : null,
+      secondsSinceBeat: Math.round((nowMs - heartbeat.ts) / 1000),
+      startedAt: new Date(heartbeat.startedAt).toISOString(),
     };
   }
   const failure = readStateFile(path.join(runtimeDir, "last-failure.json"));
@@ -97,6 +97,8 @@ function brainServiceLogsAttachment(env: NodeJS.ProcessEnv = process.env): Diagn
     // launchd on macOS, the systemd unit on Linux (`renderSystemdUnit`).
     const manager = process.platform === "darwin" ? "launchd" : "systemd";
     files.push(
+      // What the last trim kept (`copytruncateLogIfOversized`); absent until the first one.
+      { label: `${manager} stderr, before the last trim`, filePath: path.join(runtimeDir, `${manager}.err.log.1`), maxBytes: 16_000 },
       { label: `${manager} stderr`, filePath: path.join(runtimeDir, `${manager}.err.log`), maxBytes: 64_000 },
       { label: `${manager} stdout`, filePath: path.join(runtimeDir, `${manager}.out.log`), maxBytes: 32_000 },
     );
@@ -152,14 +154,4 @@ function pick(record: Record<string, unknown>, keys: readonly string[]): Record<
     picked[key] = typeof value === "string" ? value.slice(0, STATE_TEXT_MAX_CHARS) : value;
   }
   return picked;
-}
-
-export function isProcessAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM: it exists and belongs to someone else.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
 }

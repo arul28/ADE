@@ -220,11 +220,11 @@ export function resolveDevSpawnInvocation(
 }
 
 /**
- * The spawn for `dev-detached.mjs`. On Windows a bare `npm` is `npm.cmd`,
- * which `spawn` cannot find without a shell, so `npm` goes through
- * `resolveNpmInvocation` and any other `.cmd`/`.bat` through
- * `resolveDevSpawnInvocation`. `windowsHide` stops the detached child from
- * opening a console window of its own.
+ * The spawn for a detached dev command: `dev-detached.mjs` on macOS and Linux,
+ * `dev-console-host.mjs` inside its hidden console on Windows. On Windows a
+ * bare `npm` is `npm.cmd`, which `spawn` cannot find without a shell, so `npm`
+ * goes through `resolveNpmInvocation` and any other `.cmd`/`.bat` through
+ * `resolveDevSpawnInvocation`.
  */
 export function resolveDetachedDevInvocation(command, args, options = {}) {
   const platform = options.platform ?? process.platform;

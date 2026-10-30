@@ -22,7 +22,7 @@ const BYTES_PER_KB = 1024;
 export function registerDesktopSentryDiagnostics(): void {
   registerSentryDiagnosticContext("electron_processes", electronProcessesContext);
   registerSentryDiagnosticAttachment("brain-log", (event) => (isRemoteMachineEvent(event) ? null : readBrainLogTail()));
-  registerBrainServiceSentryDiagnostics({ skipFilesFor: isRemoteMachineEvent });
+  registerBrainServiceSentryDiagnostics({ skipFor: isRemoteMachineEvent });
   startMemoryWatch();
 }
 

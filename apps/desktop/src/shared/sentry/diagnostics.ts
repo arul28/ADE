@@ -93,7 +93,7 @@ export function diagnosticEventText(event: DiagnosticEvent): string {
   return [event.message ?? "", ...(event.exception?.values ?? []).map((value) => value.value ?? "")].join("\n");
 }
 
-type ContextProvider = () => Record<string, unknown> | null | undefined;
+type ContextProvider = (event: DiagnosticEvent) => Record<string, unknown> | null | undefined;
 type AttachmentProvider = (event: DiagnosticEvent) => DiagnosticAttachment | null | undefined;
 
 const contextProviders = new Map<string, ContextProvider>();
@@ -235,7 +235,7 @@ export function applySentryDiagnostics(
   if (!enabled) return;
   for (const [name, provider] of contextProviders) {
     try {
-      const value = provider();
+      const value = provider(event);
       if (value) event.contexts = { ...(event.contexts ?? {}), [name]: value };
     } catch {
       // A broken provider must not cost the report.

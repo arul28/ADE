@@ -85,9 +85,11 @@ export function renderSystemdUnit(command: AdeServiceCommand, options: { runtime
   // launchd parity: the brain's stdout and stderr also land in files, so an
   // error report can attach them without starting `journalctl`. systemd
   // older than 240 does not know `append:`, ignores the two lines with a
-  // warning and keeps sending the output to the journal.
+  // warning and keeps sending the output to the journal. systemd does not
+  // create the folder (the install does) and expands `%` in the path.
+  const logPath = (name: string) => path.join(options.runtimeLogDir ?? "", name).replace(/%/g, "%%");
   const outputLines = options.runtimeLogDir
-    ? `\nStandardOutput=append:${path.join(options.runtimeLogDir, "systemd.out.log")}\nStandardError=append:${path.join(options.runtimeLogDir, "systemd.err.log")}`
+    ? `\nStandardOutput=append:${logPath("systemd.out.log")}\nStandardError=append:${logPath("systemd.err.log")}`
     : "";
   return `[Unit]
 Description=ADE runtime service
@@ -188,7 +190,8 @@ export async function installSystemdService(
   const pollMs = Math.max(10, deps.handoverPollMs ?? 100);
   const pidElapsedMs = deps.pidElapsedMs ?? readPidElapsedMs;
 
-  const unit = renderSystemdUnit(command, { runtimeLogDir: path.join(adeHome, "runtime") });
+  const runtimeLogDir = path.join(adeHome, "runtime");
+  const unit = renderSystemdUnit(command, { runtimeLogDir });
   const existingUnit = fs.existsSync(targetPath) ? fs.readFileSync(targetPath, "utf8") : null;
   const unitUnchanged = existingUnit === unit;
   const forceRestart = env.ADE_FORCE_RUNTIME_SERVICE_RESTART === "1";
@@ -261,6 +264,8 @@ export async function installSystemdService(
   }
 
   fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  // systemd fails the start (status 209/STDOUT) when the log folder is missing.
+  fs.mkdirSync(runtimeLogDir, { recursive: true });
   fs.writeFileSync(targetPath, unit, "utf8");
   const reload = run("systemctl", ["--user", "daemon-reload"], { encoding: "utf8" });
   if (reload.status !== 0) {

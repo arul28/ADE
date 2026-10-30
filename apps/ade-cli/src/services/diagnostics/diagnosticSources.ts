@@ -663,17 +663,25 @@ function collectServiceOutputLogs(args: {
       readLogTail("Background service (brain output)", resolveWindowsBrainOutputLogPath({ env: args.env })),
     ];
   }
+  // The brain caps these files by moving the newest 1 MB to `.1` and emptying
+  // them (`copytruncateLogIfOversized`); a crash just before that is only there.
+  const trimmedStderr = (filePath: string): DiagnosticLogTail[] =>
+    (fs.existsSync(`${filePath}.1`) ? [readLogTail("Background service (stderr, before the last trim)", `${filePath}.1`)] : []);
   if (args.platform === "darwin") {
+    const stderrPath = path.join(args.runtimeDir, "launchd.err.log");
     return [
-      readLogTail("Background service (stderr)", path.join(args.runtimeDir, "launchd.err.log")),
+      ...trimmedStderr(stderrPath),
+      readLogTail("Background service (stderr)", stderrPath),
       readLogTail("Background service (stdout)", path.join(args.runtimeDir, "launchd.out.log")),
     ];
   }
   // A unit installed by this version writes both streams to files
   // (`renderSystemdUnit`); an older unit, or systemd before 240, leaves them in
   // the journal. Both are read so either kind of machine has its output here.
+  const stderrPath = path.join(args.runtimeDir, "systemd.err.log");
   const files = [
-    readLogTail("Background service (stderr)", path.join(args.runtimeDir, "systemd.err.log")),
+    ...trimmedStderr(stderrPath),
+    readLogTail("Background service (stderr)", stderrPath),
     readLogTail("Background service (stdout)", path.join(args.runtimeDir, "systemd.out.log")),
   ];
   const journal = journalPlan(args.env, args.homeDir);

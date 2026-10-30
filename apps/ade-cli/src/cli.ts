@@ -57,7 +57,7 @@ import path from "node:path";
 import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
 import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
-import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
+import { computeRuntimeBuildHash, computeRuntimeBuildStamp } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {
   CURSOR_CLOUD_HELP,
@@ -27003,21 +27003,6 @@ function reportBrainCredentialStoreHealth(secretsDir: string, logger: Logger): v
   }
 }
 
-/**
- * This brain's build, for the restart-loop report: the version, and the
- * bundle's size and time so two builds of one version still differ. A stat,
- * not a hash of the 30 MB bundle.
- */
-function brainBuildIdentity(): string {
-  const modulePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
-  try {
-    const stat = fs.statSync(modulePath);
-    return `${VERSION}+${stat.size}-${Math.round(stat.mtimeMs)}`;
-  } catch {
-    return VERSION;
-  }
-}
-
 async function runServe(
   rest: string[],
   options: GlobalOptions,
@@ -27076,11 +27061,12 @@ async function runServe(
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
   if (process.platform === "darwin" || process.platform === "linux") {
-    boundServiceOutputLogs(path.dirname(lastFailurePathForMachine()));
-  }
-  // A guest inside an embedder's process is not this machine's brain.
-  if (!embedded) {
-    startBrainRestartLoopWatch({ runtimeDir: path.dirname(lastFailurePathForMachine()), build: brainBuildIdentity() });
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    boundServiceOutputLogs(runtimeDir);
+    // A service brain can run for months, and launchd and systemd keep
+    // appending its output the whole time. Not in an embedder's process,
+    // which outlives this runServe.
+    if (!embedded) setInterval(() => boundServiceOutputLogs(runtimeDir), 60 * 60_000).unref();
   }
   // Resolved before the backoff: the crash-loop record counts only failures
   // on this brain's own endpoint.
@@ -27097,6 +27083,18 @@ async function runServe(
     && isMachineEndpointName(serveSocketPath, machineRuntimeNames)
     ? machineRuntimeNames.filter((name) => !isMachineEndpointName(name, [serveSocketPath]))
     : [];
+  // Only the service's brain watches. A guest inside an embedder's process is
+  // not this machine's brain, a runtime on another endpoint is someone's
+  // manual run, and a brain the desktop app started is killed outright each
+  // time the app quits (`taskkill /F` on Windows), which would read as a
+  // crash; the app records its own brain's exits.
+  if (!embedded && readRuntimeParentPid() == null && isMachineEndpointName(serveSocketPath, machineRuntimeNames)) {
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    startBrainRestartLoopWatch({
+      runtimeDir: path.dirname(lastFailurePathForMachine()),
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+    });
+  }
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now(), {
     socketPath: serveSocketPath,
@@ -28057,13 +28055,15 @@ async function runServe(
   const states: HeadlessRpcServerState[] = [];
   let done = false;
   let resolveDone: (() => void) | null = null;
+  /** Set before `finish()` when the brain stops because something failed. */
+  let stoppingOnFailure = false;
 
   const finish = () => {
     if (done) return;
     done = true;
     // An orderly stop (an update, the restart button, a shutdown request) is
     // not a crash for the restart-loop report.
-    markBrainStoppedCleanly();
+    if (!stoppingOnFailure) markBrainStoppedCleanly();
     resolveDone?.();
   };
 
@@ -28786,6 +28786,7 @@ async function runServe(
           errorText: message,
         });
         syncHostStartupFailure = error;
+        stoppingOnFailure = true;
       }
       finish();
     }
@@ -29425,6 +29426,9 @@ async function runServe(
           : /socket is already in use|mobile sync/i.test(details)
             ? "socket_owned_by_other"
             : "unknown";
+    // A live brain already holds the endpoint (an update's handover, a second
+    // start): this one leaving is not a crash for the restart-loop report.
+    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
