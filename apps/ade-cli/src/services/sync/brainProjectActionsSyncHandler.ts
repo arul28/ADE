@@ -157,6 +157,8 @@ type BrainProjectActionsSyncHandlerArgs = {
   secretsDir: string;
   localDeviceIdPath: string;
   localSiteIdPath: string;
+  /** The brain's ADE version, sent as `brain.appVersion` in the hello reply. */
+  appVersion?: string;
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
   authTimeoutMs?: number;
@@ -644,6 +646,7 @@ export function createBrainProjectActionsSyncHandler(
     deviceType: "desktop",
     siteId: localSiteId,
     dbVersion: 0,
+    ...(args.appVersion?.trim() ? { appVersion: args.appVersion.trim() } : {}),
   });
 
   const sendActionResult = async <TPayload>(
