@@ -391,6 +391,7 @@ import {
   PTY_AI_TITLE_DEBOUNCE_MS,
   PTY_AI_TITLE_TIMEOUT_MS,
   EARLY_CLI_AI_TITLE_DELAY_MS,
+  remoteRunOnceShellLaunch,
   selectPiStorageSessionCandidate,
 } from "./ptyService";
 import { resolveProviderInstanceForLaunch } from "../../../../../ade-cli/src/services/providerInstances/providerInstanceStore";
@@ -10081,5 +10082,35 @@ describe("idle terminal check: what leaves the machine", () => {
     expect(request!.tail.length).toBeLessThanOrEqual(4_000);
     expect(Math.max(...request!.tail.split("\n").map((line) => line.length))).toBeLessThanOrEqual(201);
     expect(request!.lastLine).toBe("Continue? [y/N]");
+  });
+});
+
+describe("a command another machine runs here once (remoteRunOnceShellLaunch)", () => {
+  // The words a chat on another machine sends, and what its shell must not
+  // expand: history, variables, command substitution, zsh `=cmd`, quotes.
+  const words = ["a b", "it's", "!x", "$HOME", "=x", "`id`", "50%", "\"q\"", "’curly’"];
+  const echo = "process.stdout.write(JSON.stringify([process.env.ADE_RUN_PROBE, ...process.argv.slice(1)]))";
+
+  // Real shells, so the child process module and the file system are the real ones here.
+  const shells = async (): Promise<Array<string | null>> => {
+    if (process.platform === "win32") return [null];
+    const realFs = await vi.importActual<typeof import("node:fs")>("node:fs");
+    return ["/bin/sh", "/bin/bash", "/bin/zsh"].filter((file) => realFs.existsSync(file));
+  };
+
+  it("keeps every word and the environment, and ends with the command's exit code, in each shell", async () => {
+    const { spawnSync } = await vi.importActual<typeof import("node:child_process")>("node:child_process");
+    const run = (argv: string[], shell: string | null) => {
+      const launch = remoteRunOnceShellLaunch({ argv }, shell);
+      return spawnSync(launch.command, launch.args, { env: { ...process.env, ...launch.env }, encoding: "utf8", windowsHide: true });
+    };
+    const found = await shells();
+    expect(found.length, "a shell to run the command").toBeGreaterThan(0);
+    for (const shell of found) {
+      const echoed = run(["ADE_RUN_PROBE=it's $HOME", process.execPath, "-e", echo, ...words], shell);
+      expect(echoed.status, `${shell ?? "powershell"}: ${echoed.stderr}`).toBe(0);
+      expect(JSON.parse(echoed.stdout), shell ?? "powershell").toEqual(["it's $HOME", ...words]);
+      expect(run([process.execPath, "-e", "process.exit(3)"], shell).status, shell ?? "powershell").toBe(3);
+    }
   });
 });

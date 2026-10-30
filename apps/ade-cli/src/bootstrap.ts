@@ -188,6 +188,7 @@ import {
   captureClaudeHooksIgnoredAnalytics,
   captureClaudePluginsIgnoredAnalytics,
   captureCrossMachineMoveAnalytics,
+  captureRemoteWorkAnalytics,
   captureSessionMetadataRegeneratedAnalytics,
 } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import {
@@ -2662,6 +2663,13 @@ export async function createAdeRuntime(args: {
           analytics: productAnalyticsService,
           projectId,
           event: { handoffId, outcome },
+        }),
+        // This brain forwards the chat's calls to the other machine, so it
+        // records that the chat used one.
+        onRemoteWorkStarted: (event) => captureRemoteWorkAnalytics({
+          analytics: productAnalyticsService,
+          projectId,
+          event,
         }),
         onCompactionOutcome: (event) => captureChatCompactionAnalytics({
           analytics: productAnalyticsService,

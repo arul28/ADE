@@ -3170,8 +3170,13 @@ export function createMultiProjectRpcRequestHandler(
       if (scope.kind === "personal") return { found: true, scope: { kind: "personal" } };
       const record = projectRegistry.list().find((entry) => entry.projectId === scope.projectId);
       // Archived only when the project is already running here: never a boot.
-      const booted = await scopeRegistry.getIfBooted(scope.projectId)?.catch(() => null);
-      const summary = await booted?.runtime?.agentChatService?.getSessionSummary?.(sessionId).catch(() => null);
+      // A failed read leaves `archived` out, so the other machine keeps its copy.
+      const archivedReadFailed = (error: unknown) => {
+        machineProjectLogger.warn("chats.locate_archived_read_failed", { sessionId, error: error instanceof Error ? error.message : String(error) });
+        return null;
+      };
+      const booted = await scopeRegistry.getIfBooted(scope.projectId)?.catch(archivedReadFailed);
+      const summary = await booted?.runtime?.agentChatService?.getSessionSummary?.(sessionId).catch(archivedReadFailed);
       return {
         found: true,
         ...(summary?.archivedAt ? { archived: true } : {}),

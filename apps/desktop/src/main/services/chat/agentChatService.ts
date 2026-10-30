@@ -11822,6 +11822,11 @@ export function createAgentChatService(args: {
     handoffId: string;
     outcome: CrossMachineMoveOutcome;
   }) => void;
+  /**
+   * Content-free hook fired when this chat starts work on another machine (a
+   * command or a simulator there). Never the machine, the command, or the path.
+   */
+  onRemoteWorkStarted?: (event: { sessionId: string; machineKey: string }) => void;
   /** Content-free hook fired after an explicit session-metadata generation request. */
   onSessionMetadataRegenerated?: (event: {
     sessionId: string;
@@ -11939,6 +11944,7 @@ export function createAgentChatService(args: {
     onSideChatOutcome,
     onCompactionOutcome,
     onCrossMachineMoveOutcome,
+    onRemoteWorkStarted,
     onSessionMetadataRegenerated,
     onAutoResumeOutcome,
     onPendingInputDismissed,
@@ -76191,6 +76197,7 @@ export function createAgentChatService(args: {
     const list = [...uses.filter((use) => !sameUse(use)), next].slice(-6);
     remoteWorkBySession.set(sessionId, list);
     emitTransientChatEnvelope(sessionId, { type: "session_meta_updated", remoteWork: list });
+    onRemoteWorkStarted?.({ sessionId, machineKey: args.machineKey });
   };
 
   return {
