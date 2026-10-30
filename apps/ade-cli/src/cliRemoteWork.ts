@@ -81,6 +81,12 @@ export function withRemoteAppleArgs(params: JsonObject, cwd: string, workCopy: M
   };
 }
 
+function patchTooLargeError(): CliUsageError {
+  return new CliUsageError(
+    `The uncommitted changes are over ${REMOTE_WORK_MAX_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
+  );
+}
+
 function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Buffer {
   const result = spawnSync("git", args, {
     cwd,
@@ -89,9 +95,7 @@ function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Buffer {
     windowsHide: true,
   });
   if ((result.error as NodeJS.ErrnoException | undefined)?.code === "ENOBUFS") {
-    throw new CliUsageError(
-      `The uncommitted changes are over ${REMOTE_WORK_MAX_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
-    );
+    throw patchTooLargeError();
   }
   if (result.error || result.status !== 0) {
     const detail = (result.stderr?.toString("utf8") || result.error?.message || "").trim().split("\n").slice(-2).join(" ");
@@ -151,9 +155,7 @@ function readLocalWorkSource(cwd: string): JsonObject {
     fs.rmSync(tempIndex, { force: true });
   }
   if (patch.length > REMOTE_WORK_MAX_PATCH_BYTES) {
-    throw new CliUsageError(
-      `The uncommitted changes are over ${REMOTE_WORK_MAX_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
-    );
+    throw patchTooLargeError();
   }
   return { head, fetchRef, branch, ...(patch.length ? { patchBase64: patch.toString("base64") } : {}) };
 }

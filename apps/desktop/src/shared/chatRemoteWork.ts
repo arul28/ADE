@@ -1,5 +1,10 @@
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "./types/chat";
 
+/** One key per remote-work entry: a chat keeps one per machine AND project there. */
+export function remoteWorkUseKey(use: Pick<AgentChatRemoteWorkUse, "machineKey" | "projectId">): string {
+  return `${use.machineKey}:${use.projectId ?? ""}`;
+}
+
 /**
  * The machines a chat is running commands on right now
  * (`ade shell start --machine`): those used since its current turn began.

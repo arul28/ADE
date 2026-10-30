@@ -1239,7 +1239,8 @@ export function remoteRunOnceShellLaunch(
     while (argv.length > 1 && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[0]!)) {
       const word = argv.shift()!;
       const equals = word.indexOf("=");
-      assignments.push(`$env:${word.slice(0, equals)} = '${word.slice(equals + 1).replace(/'/g, "''")}'`);
+      // PowerShell also ends a single-quoted string at the curly quotes: double them too.
+      assignments.push(`$env:${word.slice(0, equals)} = '${word.slice(equals + 1).replace(/['\u2018\u2019\u201A\u201B]/g, "$&$&")}'`);
     }
     body = [...assignments, commandArrayToWindowsShellLine(argv, { kind: "powershell", shellPath })].join("\n");
   } else {
@@ -1257,8 +1258,8 @@ export function remoteRunOnceShellLaunch(
 
 function quotePosixShellArg(value: string): string {
   if (!value.length) return "''";
-  // A leading `=` or `~` is expanded by zsh and bash even unquoted-looking.
-  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value) && !/^[=~]/.test(value)) return value;
+  // A leading `=` is zsh's `=cmd` expansion: quote it.
+  if (/^[a-zA-Z0-9_./:@%+=,-]+$/.test(value) && !value.startsWith("=")) return value;
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 

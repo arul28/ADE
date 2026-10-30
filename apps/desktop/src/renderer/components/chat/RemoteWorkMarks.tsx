@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Stop } from "@phosphor-icons/react";
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "../../../shared/types/chat";
 import type { ChatTerminalSession } from "../../../shared/types/sessions";
-import { activeRemoteWork } from "../../../shared/chatRemoteWork";
+import { activeRemoteWork, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { showToast } from "../app/toast/toastStore";
 import { AnchoredMenu } from "../ui/AnchoredMenu";
@@ -43,7 +43,7 @@ export function RemoteWorkHeaderButton({ session }: { session: AgentChatSessionS
       </button>
       <AnchoredMenu open={open} anchorRef={anchorRef} onClose={() => setOpen(false)} placement="bottom-end" remeasureKey={uses.length}>
         <div className={cn(MENU_SURFACE_CLASS, MENU_MIN_WIDTH_CLASS, MENU_SCROLL_CLASS, "max-w-[340px]")} role="menu">
-          {uses.map((use) => <RemoteWorkMachine key={use.machineKey} use={use} active={open} />)}
+          {uses.map((use) => <RemoteWorkMachine key={remoteWorkUseKey(use)} use={use} active={open} />)}
         </div>
       </AnchoredMenu>
     </>

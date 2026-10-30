@@ -23,7 +23,7 @@ import { SideChatToolPanel } from "../chat/SideChatToolPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatMacDesktopPanel } from "../chat/ChatMacDesktopPanel";
 import { AppleDevicePane } from "../apple/AppleDevicePane";
-import { remoteSimulatorUses } from "../../../shared/chatRemoteWork";
+import { remoteSimulatorUses, remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
@@ -355,7 +355,7 @@ function WorkIosTool(props: WorkToolPanelProps) {
   const resolvePin = useRemoteWorkPinResolver(remoteUses.length > 0);
   const laneOption = laneId && toolContext.supportsIosSimulator ? "lane" : null;
   const options = [
-    ...remoteUses.map((use) => ({ key: use.machineKey, label: use.machineName, use })),
+    ...remoteUses.map((use) => ({ key: remoteWorkUseKey(use), label: use.machineName, use })),
     ...(laneOption ? [{ key: "lane", label: "This lane", use: null }] : []),
   ];
   const [chosenKey, setChosenKey] = useState<string | null>(null);
@@ -439,7 +439,7 @@ function RemoteWorkSimulator(props: WorkToolPanelProps & {
       <div className="p-3">
         <Banner
           layout="inline"
-          model={{ id: `remote-simulator-${use.machineKey}`, tone: "error", title: `Couldn't read the simulator on ${use.machineName}`, error: state.error }}
+          model={{ id: `remote-simulator-${remoteWorkUseKey(use)}`, tone: "error", title: `Couldn't read the simulator on ${use.machineName}`, error: state.error }}
         />
       </div>
     );

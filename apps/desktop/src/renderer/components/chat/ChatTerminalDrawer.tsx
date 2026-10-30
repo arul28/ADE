@@ -5,6 +5,7 @@ import type { AppControlSession, ChatTerminalSession, OpenProjectBinding, PtyExi
 import { clearTerminalRuntimeScrollback, TerminalView } from "../terminals/TerminalView";
 import type { AgentChatRemoteWorkUse } from "../../../shared/types/chat";
 import { listRemoteWorkShells, useRemoteWorkPinResolver } from "../../lib/remoteWorkPins";
+import { remoteWorkUseKey } from "../../../shared/chatRemoteWork";
 import { MachinePlatformLogo } from "../remoteTargets/MachineIdentity";
 import {
   WORK_TOOL_CHROME_ROW,
@@ -105,7 +106,7 @@ type TabEntry = {
   label: string;
   exited: boolean;
   /** A shell on another machine: its pin (the drawer's own pin otherwise) and machine. */
-  remote?: { pin: OpenProjectBinding; machineKey: string; machineName: string; platform: string | null };
+  remote?: { pin: OpenProjectBinding; useKey: string; machineName: string; platform: string | null };
 };
 
 type DrawerUiState = {
@@ -554,23 +555,23 @@ export const ChatTerminalDrawer = memo(function ChatTerminalDrawer({
       } catch (error) {
         // A failed read keeps what the strip already shows for that machine.
         console.warn(`[remote-work] could not list the shells on ${use.machineName}`, error);
-        return { machineKey: use.machineKey, tabs: null };
+        return { useKey: remoteWorkUseKey(use), tabs: null };
       }
-      return { machineKey: use.machineKey, tabs: rows.filter((row) => row.ptyId).map((row): TabEntry => ({
-        id: `remote-term-${use.machineKey}-${row.terminalId}`,
+      return { useKey: remoteWorkUseKey(use), tabs: rows.filter((row) => row.ptyId).map((row): TabEntry => ({
+        id: `remote-term-${remoteWorkUseKey(use)}-${row.terminalId}`,
         ptyId: row.ptyId!,
         sessionId: row.terminalId,
         label: row.title || "Command",
         exited: row.status !== "running",
-        remote: { pin: remotePin, machineKey: use.machineKey, machineName: use.machineName, platform: use.machinePlatform ?? null },
+        remote: { pin: remotePin, useKey: remoteWorkUseKey(use), machineName: use.machineName, platform: use.machinePlatform ?? null },
       })) };
     })).then((lists) => {
       if (cancelled) return;
       setTabs((prev) => {
         const local = prev.filter((tab) => !tab.remote);
         // Running commands first (per machine), so the strip opens on one that is working.
-        const remoteTabs = lists.flatMap(({ machineKey, tabs: loaded }) =>
-          loaded ?? prev.filter((tab) => tab.remote?.machineKey === machineKey));
+        const remoteTabs = lists.flatMap(({ useKey, tabs: loaded }) =>
+          loaded ?? prev.filter((tab) => tab.remote?.useKey === useKey));
         return [...local, ...remoteTabs];
       });
     });
