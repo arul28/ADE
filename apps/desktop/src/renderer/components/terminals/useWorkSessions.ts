@@ -1107,7 +1107,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workLaneSortMode = projectViewState.workLaneSortMode ?? "created";
   const workLaneOrder = projectViewState.workLaneOrder ?? EMPTY_STRING_ARRAY;
   const workSessionFilters = projectViewState.workSessionFilters ?? EMPTY_WORK_SESSION_FILTERS;
-  const workFoldBusyLanes = projectViewState.workFoldBusyLanes === true;
+  const workFoldBusyLanes = projectViewState.workFoldBusyLanes;
   const workFocusGrid = projectViewState.workFocusGrid === true;
   const workSeenAtBySessionId = projectViewState.workSeenAtBySessionId ?? EMPTY_WORK_SEEN_AT;
   // This index is intentionally active-binding-only: local lane selection,

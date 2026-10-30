@@ -1158,8 +1158,8 @@ Renderer surfaces:
   `needs_you` precedence is
   load-bearing: filtering or snoozing must never fold a row that is waiting on
   the user into the quiet header.
-  The toolbar's **Focus** pill (`workFoldBusyLanes`; it also switches the
-  grouping to by-lane) adds a
+  The toolbar's **Focus** pill (`workFoldBusyLanes`, on by default; it also
+  switches the grouping to by-lane) adds a
   third, non-quiet shelf: a lane that has live work and nothing waiting on the
   user folds onto a collapsed **Working** shelf, the
   first shelf inside the quiet zone (only the user opens or closes it; the open

@@ -135,7 +135,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
   /// One line of context after a shelf label, e.g. when the next snoozed row
   /// comes back. Nil when there is nothing worth saying.
   var shelfDetail: String? = nil
-  /// What the header counts when it is not rows: the Working shelf counts lanes.
+  /// What the header counts when it is not its own rows: the Working shelf counts its lanes' chats.
   var countOverride: Int? = nil
 
   enum Icon: Equatable {
@@ -839,7 +839,7 @@ func workSessionGroups(
         sessions: [],
         isQuiet: true,
         isShelf: true,
-        countOverride: folded.count
+        countOverride: folded.reduce(0) { $0 + $1.sessions.count }
       ))
       groups.append(contentsOf: folded)
     }
@@ -1270,8 +1270,12 @@ struct WorkProjectViewState: Codable, Equatable {
   var collapsedSectionIds: String = ""
   /// Machine filter ids (`workSerializeMachineFilter`). Empty means all machines.
   var machineFilter: String = ""
-  /// By-lane "Fold busy lanes". Off by default.
-  var foldBusyLanes: Bool = false
+  /// By-lane "Fold busy lanes" (Focus). On by default, like the desktop sidebar.
+  var foldBusyLanes: Bool = true
+  /// Whether this record has been through the Focus-on upgrade. Records saved
+  /// before it stored Focus off by default, so they turn it on once; turning
+  /// Focus off after that sticks.
+  var focusDefaultApplied: Bool = true
 
   static let empty = WorkProjectViewState()
 }
@@ -1281,6 +1285,8 @@ extension WorkProjectViewState {
   /// loads instead of resetting the whole view state.
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
+    let focusDefaultApplied = try container.decodeIfPresent(Bool.self, forKey: .focusDefaultApplied) ?? false
+    let storedFocus = try container.decodeIfPresent(Bool.self, forKey: .foldBusyLanes)
     self.init(
       searchText: try container.decodeIfPresent(String.self, forKey: .searchText) ?? "",
       laneFilter: try container.decodeIfPresent(String.self, forKey: .laneFilter) ?? "all",
@@ -1288,7 +1294,8 @@ extension WorkProjectViewState {
       organization: try container.decodeIfPresent(String.self, forKey: .organization) ?? WorkSessionOrganization.byLane.rawValue,
       collapsedSectionIds: try container.decodeIfPresent(String.self, forKey: .collapsedSectionIds) ?? "",
       machineFilter: try container.decodeIfPresent(String.self, forKey: .machineFilter) ?? "",
-      foldBusyLanes: try container.decodeIfPresent(Bool.self, forKey: .foldBusyLanes) ?? false
+      foldBusyLanes: focusDefaultApplied ? storedFocus ?? true : true,
+      focusDefaultApplied: true
     )
   }
 }

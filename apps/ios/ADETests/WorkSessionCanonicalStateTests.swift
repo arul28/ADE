@@ -1861,7 +1861,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
-  func testWorkViewStateRoundTripsPerScopeAndDefaultsWhenAbsent() {
+  func testWorkViewStateRoundTripsPerScopeAndDefaultsWhenAbsent() throws {
     let scopeA = WorkViewStateStore.scopeKey(projectId: "proj-a", hostIdentity: "host-1")
     let scopeB = WorkViewStateStore.scopeKey(projectId: "proj-b", hostIdentity: "host-1")
     var stateA = WorkProjectViewState.empty
@@ -1880,6 +1880,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     // A nil scope must never clobber a real project's record.
     WorkViewStateStore.save(stateA, scope: nil)
     XCTAssertEqual(WorkViewStateStore.load(scope: scopeA), stateA)
+
+    // Focus is on by default. A record saved before that stored it off, so it
+    // turns on once; turned off after the upgrade, it stays off.
+    XCTAssertTrue(WorkProjectViewState.empty.foldBusyLanes)
+    let legacy = try JSONDecoder().decode(WorkProjectViewState.self, from: Data(#"{"foldBusyLanes":false}"#.utf8))
+    XCTAssertTrue(legacy.foldBusyLanes)
+    var turnedOff = legacy
+    turnedOff.foldBusyLanes = false
+    WorkViewStateStore.save(turnedOff, scope: scopeA)
+    XCTAssertFalse(WorkViewStateStore.load(scope: scopeA).foldBusyLanes)
   }
 
   func testEndingDeeplinkFramingRestoresUnrelatedSavedViewState() {

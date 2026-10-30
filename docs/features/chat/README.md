@@ -53,7 +53,7 @@ switching projects so they cannot populate the new project's panes.
 | `apps/desktop/src/main/services/chat/claudePlanMode.ts` | Plan-mode transitions for Claude sessions, extracted from `agentChatService.ts` so the invariant is unit-testable. Entering plan mode sets `claudePermissionMode = "plan"` and stashes the suspended access mode in `claudePrePlanAccessMode` (persisted and rehydrated with the session); leaving restores it. `isSessionInPlanMode` is the single predicate the `ExitPlanMode` gate uses. Moving the access mode is what makes plan mode real: while it stayed on the pre-plan value, a `bypassPermissions` session read as bypass throughout, so the composer chip never left Bypass and the gate auto-approved the plan with no card. See [Agent Routing](agent-routing.md#interaction-mode). |
 | `apps/desktop/src/main/services/chat/turnEndQuestionCheck.ts`, `turnEndAsk.ts` | The turn-end question check. A chat whose turn ends while it still owns live background work reads as running, so a blocking question in that reply would sit under Working; `createTurnEndQuestionCheck` keeps the turn's last assistant message verbatim (raw deltas, not the trimmed `recentConversationEntries`), classifies its ending (`classifyTurnEndAsk`: ask / not_ask / unsure), raises the hand with source `turn_end_question` for a clear blocking ask, and sends an unsure ending first to Jev (`ai.jevDecide`, feature `turn_end`, background priority, any provider): `asksUser` ≥ 0.8 raises, ≤ 0.2 does not, anything between or a `null` answer falls through to the provider's cheap model exactly as before (`{asksUser}` JSON, 8s, fresh OS temp dir, fails quiet; Claude, Codex and Cursor only). The same single Jev request also asks `waitingOnOwnWork`; at ≥ 0.8, when the turn ended with live background work or a live chat it launched and no hand went up, the chat's summary carries `awaitingOwnWorkAt` (in brain memory only, cleared by the next turn start or user message, refetched through a transient `session_meta_updated`), which the Work fold reads as Waiting. Turns with only live child chats get the Jev question too, but never a hand-raise or a cheap-model call. Only a present blocked state or a stated prerequisite counts as a blocking cue; a progress note that mentions what might block later does not. Conditional opt-in offers do not block progress and are not raised. A timestamped next-turn start clears only an older `turn_end_question` marker; explicit asks and provider approvals survive. A user message or turn start cancels a pending tiebreak; repeated start events are idempotent. Subagents, open approvals and an already-raised hand are skipped. |
 | `apps/desktop/src/main/services/jev/jevService.ts`, `jevTally.ts`, `jevZenCredential.ts`; `shared/jevSettings.ts` | The Jev decision helper (see [Jev decisions](#jev-decisions)): the route chain (free, Zen credit, ADE bonus) with a breaker per route, the per-day tally (`jevTally.ts`), the OpenCode Zen sign-in reader for the Zen credit route (`jevZenCredential.ts`), and which Smart decisions switch gates each feature (`jevSettings.ts`). |
-| `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev-backed chat checks: the awaiting-own-work marker set at turn end, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, never on the ADE bonus; a switched-off setting hides this machine's verdicts within a minute). |
+| `apps/desktop/src/main/services/chat/awaitingOwnWorkTracker.ts`, `statusLineStaleCheck.ts`, `settleNudgeSweep.ts` | Jev-backed chat checks: the awaiting-own-work marker set at turn end, the stale status-line regen, and the settle-nudge sweep (every 30 minutes, at most 10 calls, skipped while no Jev route can answer (`status().answerable`); a switched-off setting hides this machine's verdicts within a minute). |
 | `apps/desktop/src/main/services/pty/cliStatusInspector.ts` | The idle-terminal check's request (last 40 lines, each capped at 200 characters, 4 KB in all, run through `redactSecrets`) and verdict; `ptyService.ts` decides when to ask and raises the `cli_prompt` hand. |
 | `apps/desktop/src/main/services/chat/nextPromptSuggestion.ts` | ADE's next-prompt suggestion for providers without a native one (`ai.chat.promptSuggestionsEnabled`). After a completed turn with no open card, no subagent parent and no running background work, one helper call (fresh OS temp dir, 15s, fails quiet) returns `{suggestion}`, sanitized to one line of at most 120 characters; it is emitted as the live-only `prompt_suggestion` event only if no user message or turn start came first. `sanitizePromptSuggestion` also collapses native Claude suggestions to one line. Codex chats read their own switch (`ai.chat.codexPromptSuggestionsEnabled`) and, when the helper throws or has no model, fall back to `sampleThread` (`codexThreadSample.ts`) only if no user message or turn start intervened; a helper that answers, even with no suggestion, ends the work. See [Next prompt suggestions](#next-prompt-suggestions). |
 | `apps/desktop/src/main/services/chat/codexThreadSample.ts` | Codex `thread/sample` (experimental, 0.164+): one model answer on a hidden, ephemeral fork of an idle chat's own thread, so the model already holds the conversation and the source thread is untouched. The prompt is cut to Codex's 4,000-byte cap (whole request, clipped context, never half a surrogate pair), a sample runs one at a time per chat, and one 429 pauses that account's sampling for its Retry-After (default 60 s, capped at 10 min) because samples spend the same per-turn limit as real turns. Outcomes are `answered` / `stale` (the thread moved on, drop it) / `unsupported` (older server, method not found) / `failed`; every outcome is logged as `agent_chat.codex_thread_sample`. Used only as the fallback after the cheap helper fails (see `nextPromptSuggestion.ts`, `sessionMetadataService.ts`), never as the first try. |
@@ -4997,12 +4997,10 @@ its label, and one probability per criterion.
      60 s; ADE never refreshes the token).
   3. `bonus`: the account directory's `POST /jev/systemone` with the signed-in
      ADE account's bearer; the Worker forwards to TypeSafe's Jev API with
-     ADE's key, capped per account per UTC day (300 by default). The account
-     token is fetched within the call's remaining time. Settle checks never
-     use it (a chat idle for hours can wait for the free reset), and
-     background features stop using it once the Worker's
-     `x-ade-jev-remaining` says 20 or fewer calls are left today, so the
-     last ones go to interactive questions, mostly the model hint. See the
+     ADE's key, capped per account per UTC day (500 by default) and for the
+     whole fleet (100,000, which also bounds the key's spend). Every feature
+     may use it; once it is spent too, callers use their built-in rules. The
+     account token is fetched within the call's remaining time. See the
      account directory README, "Jev bonus".
 - **Resilience.** Timeouts default to 1500 ms (`interactive`) and 4000 ms
   (`background`). Each route has its own breaker: 429 backs off until
@@ -5014,6 +5012,21 @@ its label, and one probability per criterion.
   10-minute LRU cache (128 entries) keyed by a hash of state and questions.
   Breakers, cap and cache are per brain process; counts are per project
   runtime, and the day tally counts answers per route (`answeredByRoute`).
+- **Why it fell back.** A call with no answer that never reached the bonus
+  records why (`JEV_KEY_SKIP_REASONS`: `key_spent`, `key_failing`,
+  `key_rejected`, `signed_out`, `no_account_token`, `no_account_server`,
+  `out_of_time`) in
+  the day tally (`keySkippedByReason`), next to unsent calls per feature
+  (`unsentByFeature`). Problems that are ADE's to fix are logged once per UTC
+  day per brain at `error`, which makes each a Sentry issue:
+  `jev.key_no_account_server`, `jev.key_no_token` (signed in, no token),
+  `jev.key_rejected`, `jev.key_call_failed`, `jev.decide_failed`. A token
+  read that outlasts the call's time is `warn` (`jev.key_token_slow`);
+  expected ones are `info` (`jev.key_spent`, `jev.key_signed_out`); odd
+  answers from OpenCode are `warn` (`jev.route_failed`).
+  `status().answerable` says whether any route could take a call now: the
+  free route is not backing off, the Zen credit is on and signed in, or the
+  bonus is not backing off and the machine is not signed out.
 - **Reach.** `ai.jevDecide` and `ai.jevStatus` are ADE actions (read, reachable
   remotely); the renderer calls `window.ade.ai.jevDecide(request, pin)` and
   `window.ade.ai.jevStatus(pin)`, routed to the pinned machine, and both answer

@@ -3516,15 +3516,22 @@ export const SessionListPane = React.memo(function SessionListPane({
   const settledShelfForeignRows = foreignLaneShelving.filter((entry) => (
     entry.shelf === "settled" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
   ));
-  // A lane filtered down to nothing renders nothing, so it must not inflate the
-  // shelf's count either. Foreign rows need no such guard: `visibleForeignRows`
-  // has already dropped any row the filters emptied out.
-  const shelfLaneCount = (laneList: LaneSummary[]) => laneList.filter(
-    (lane) => (sessionsGroupedByLane?.get(lane.id)?.length ?? 0)
-      + (handoffJobsByLaneId.get(lane.id)?.length ?? 0) > 0,
-  ).length;
-  const snoozedShelfCount = shelfLaneCount(snoozedShelfLanes) + snoozedShelfForeignRows.length;
-  const settledShelfCount = shelfLaneCount(settledShelfLanes) + settledShelfForeignRows.length;
+  // A shelf counts threads, not lanes: the visible top-level rows (nested
+  // subagents and attached shells ride on their parent's card) plus pending
+  // handoffs. Filtered-out rows are not visible, so they do not count.
+  const shelfThreadCount = (laneList: LaneSummary[], foreignEntries: ForeignLaneEntry[]) => {
+    let count = 0;
+    for (const lane of laneList) {
+      count += countUnexcluded(sessionsGroupedByLane?.get(lane.id) ?? [], workNesting.excludedTopLevelIds)
+        + (handoffJobsByLaneId.get(lane.id)?.length ?? 0);
+    }
+    for (const entry of foreignEntries) {
+      count += countUnexcluded(entry.row.sessions, entry.nesting.excludedTopLevelIds);
+    }
+    return count;
+  };
+  const snoozedShelfCount = shelfThreadCount(snoozedShelfLanes, snoozedShelfForeignRows);
+  const settledShelfCount = shelfThreadCount(settledShelfLanes, settledShelfForeignRows);
   // The Working shelf: lanes with nothing waiting on the user while "Fold busy
   // lanes" is on. Not part of the quiet zone — this work is live — so it sits
   // above the rule, and its lanes keep their full cards.
@@ -3534,7 +3541,7 @@ export const SessionListPane = React.memo(function SessionListPane({
   const workingShelfForeignRows = foreignLaneShelving.filter((entry) => (
     entry.shelf === "working" && !sharedBranchInboxKeepIds.has(entry.compositeLaneId)
   ));
-  const workingShelfCount = shelfLaneCount(workingShelfLanes) + workingShelfForeignRows.length;
+  const workingShelfCount = shelfThreadCount(workingShelfLanes, workingShelfForeignRows);
   // Only the user opens or closes the Working shelf. The open lane folds into
   // it like any other busy lane: the chat stays open in the main pane, and its
   // card shows again when the user unfolds the shelf.
