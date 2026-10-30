@@ -137,8 +137,6 @@ function sessionConfig(config: CopilotSdkSessionConfig): CopilotSdk.SessionConfi
       : { enabled: true, ...(config.backgroundCompactionThreshold ? { backgroundCompactionThreshold: config.backgroundCompactionThreshold } : {}) },
     availableTools: config.utility ? [] : undefined,
     skipCustomInstructions: config.utility,
-    // A person drives an interactive chat, as in the Copilot CLI.
-    interactiveUser: !config.utility,
     onPermissionRequest: config.utility
       ? () => ({ kind: "reject" as const })
       // The safety judge's recommendation (`assistedApproval`), managed policy

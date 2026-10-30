@@ -59724,6 +59724,13 @@ export function createAgentChatService(args: {
               buildAdeSessionLineageGuidance(managed.session, spawnSelfReportOpts(managed.session)),
             ].filter(Boolean).join("\n\n"),
       };
+      // MCP servers report their status while the session opens, before the
+      // runtime below exists, and those events are not in its history: hold
+      // them and show them once the runtime is in place.
+      const openingEvents: unknown[] = [];
+      acquired.pooled.bridge.onEvent = (_chatId, event) => {
+        if (openingEvents.length < 50 && (event as { type?: unknown } | null)?.type === "session.mcp_server_status_changed") openingEvents.push(event);
+      };
       const openFresh = () => acquired.pooled.openSession({ chatId: managed.session.id, ...sessionOptions }, false);
       const opened = persistedSessionId
         ? await acquired.pooled.openSession({ chatId: managed.session.id, sessionId: persistedSessionId, ...sessionOptions }, true)
@@ -59848,7 +59855,7 @@ export function createAgentChatService(args: {
             providerCallId: eventData.providerCallId,
             serviceRequestId: eventData.serviceRequestId,
             model: current.eventMapperState.servedModel ?? current.modelId,
-            message: typeof eventData.message === "string" ? eventData.message.slice(0, 500) : undefined,
+            message: typeof eventData.message === "string" ? boundedLogText(eventData.message) : undefined,
           });
         }
         if (eventRecord.type === "session.idle") {
@@ -60132,6 +60139,7 @@ export function createAgentChatService(args: {
       };
       managed.runtime = runtime;
       persistChatState(managed);
+      for (const event of openingEvents.splice(0)) acquired.pooled.bridge.onEvent?.(managed.session.id, event);
       return runtime;
     } catch (error) {
       releaseCopilotSdkConnection(acquired.poolKey, acquired.generation);
@@ -60230,7 +60238,7 @@ export function createAgentChatService(args: {
     let nativeCommand: { name: string; input: string } | null = null;
     if (typedCommand && !controlReply) {
       runtime.slashCommands ??= await runtime.sdk.listCommands(managed.session.id).catch((error: unknown) => {
-        logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: error instanceof Error ? error.message : String(error) });
+        logger.warn("agent_chat.copilot_commands_list_failed", { sessionId: managed.session.id, error: boundedLogText(error instanceof Error ? error.message : String(error)) });
         return null;
       });
       const resolved = resolveCopilotSlashCommand(typedCommand.name, runtime.slashCommands);
@@ -62797,7 +62805,8 @@ export function createAgentChatService(args: {
           }
           const outcome = copilotCommandOutcome(resolved!.name, await runtime.sdk.invokeCommand(sessionId, resolved!.name, steerCommand.input || undefined));
           if (outcome.kind === "output") {
-            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: copilotCommandOutputMarkdown(outcome), turnId });
+            // The notice names the command, since no user row records it.
+            emitChatEvent(managed, { type: "system_notice", noticeKind: "info", message: `${trimmed}\n\n${copilotCommandOutputMarkdown(outcome)}`, turnId });
             options?.onAcceptedDispatch?.();
             return { steerId, queued: false };
           }

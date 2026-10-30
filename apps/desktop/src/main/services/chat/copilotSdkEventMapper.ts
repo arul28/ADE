@@ -1,5 +1,5 @@
 import type { AgentChatContextUsage, AgentChatEvent } from "../../../shared/types";
-import { asRecord as record, finiteNumberOrNull as number } from "../shared/utils";
+import { asRecord as record, finiteNumberOrNull as number, redactSecrets } from "../shared/utils";
 import { copilotUpdateRequiredMessage } from "./copilotSdkPool";
 
 function text(value: unknown): string | null {
@@ -120,14 +120,17 @@ export function copilotErrorDiagnostics(data: Record<string, unknown>): string |
 function fileEditDiff(detailed: string | null, filePath: string, editCount: number): string {
   if (!detailed || !/^@@ |^diff --git |^--- /m.test(detailed)) return "";
   if (editCount === 1) return detailed.replace(/^\n+/, "");
-  const sections = detailed.split(/^(?=diff --git )/m);
   const normalized = filePath.replace(/\\/g, "/");
-  return sections.find((section) => {
+  // Whole path segments, and the longest header that fits: `/repo/src/a.ts`
+  // takes `src/a.ts`'s section, not `a.ts`'s.
+  let best: { section: string; length: number } | null = null;
+  for (const section of detailed.split(/^(?=diff --git )/m)) {
     const header = section.split("\n", 1)[0] ?? "";
     const target = header.match(/ b\/(.+)$/)?.[1];
-    // Whole path segments only: `b/a.ts` must not take `b/src/a.ts`'s section.
-    return Boolean(target && (normalized === target || normalized.endsWith(`/${target}`)));
-  }) ?? "";
+    if (!target || (normalized !== target && !normalized.endsWith(`/${target}`))) continue;
+    if (!best || target.length > best.length) best = { section, length: target.length };
+  }
+  return best?.section ?? "";
 }
 
 /**
@@ -296,7 +299,8 @@ export function mapCopilotSdkEvent(event: unknown, args: { turnId: string; state
       const name = text(data.serverName);
       if (!name || text(data.status) !== "failed" || state.failedMcpServers.has(name)) return [];
       state.failedMcpServers.add(name);
-      const reason = text(data.error)?.split("\n", 1)[0]?.slice(0, 240);
+      // An MCP error can carry the server's URL with a token in it.
+      const reason = redactSecrets(text(data.error) ?? "").split("\n", 1)[0]?.slice(0, 240);
       return [{ type: "system_notice", noticeKind: "warning", severity: "warning", message: `Copilot could not start the MCP server ${name}${reason ? `: ${reason}` : "."}`, turnId }];
     }
     case "session.info": {
