@@ -56,6 +56,11 @@ describe("systemd service rendering", () => {
     expect(unit).toContain("Environment=\"NODE_PATH=/tmp/100%%/node modules\"");
     expect(unit).toContain("Environment=\"ADE_HOME=/home/example/ade path\\\\with\\\"quotes\"");
     expect(unit).toContain("WantedBy=default.target");
+    expect(unit).not.toContain("StandardOutput=");
+
+    const withLogs = renderSystemdUnit({ command: "/opt/ade/node", args: ["serve"] }, { runtimeLogDir: "/home/example/100%/runtime" });
+    expect(withLogs).toContain(`StandardOutput=append:${path.join("/home/example/100%%/runtime", "systemd.out.log")}`);
+    expect(withLogs).toContain(`StandardError=append:${path.join("/home/example/100%%/runtime", "systemd.err.log")}`);
   });
 
   it("quotes systemd environment assignments for whitespace, backslashes, quotes, and percent signs", () => {
@@ -109,6 +114,9 @@ describe("systemd service install", () => {
     env: { NODE_PATH: "/opt/ade/node_modules" },
   };
   const unitName = `${ADE_RUNTIME_SERVICE_NAME}.service`;
+  /** The unit an install writes for `homeDir`: the default ADE home's runtime folder holds its output. */
+  const installedUnit = (homeDir: string) =>
+    renderSystemdUnit(serviceCommand, { runtimeLogDir: path.join(homeDir, ".ade", "runtime") });
 
   function installDeps(homeDir: string, spawnSync: ServiceManagerSpawnSync, overrides: Record<string, unknown> = {}) {
     return {
@@ -146,7 +154,9 @@ describe("systemd service install", () => {
       path: targetPath,
     });
     expect(result.starting).toBeUndefined();
-    expect(fs.readFileSync(targetPath, "utf8")).toBe(renderSystemdUnit(serviceCommand));
+    expect(fs.readFileSync(targetPath, "utf8")).toBe(installedUnit(homeDir));
+    // systemd cannot start the unit when its log folder is missing.
+    expect(fs.statSync(path.join(homeDir, ".ade", "runtime")).isDirectory()).toBe(true);
     expect(systemdCallArgs(calls)).toEqual([
       ["--user", "daemon-reload"],
       ["--user", "enable", "--now", unitName],
@@ -193,7 +203,7 @@ describe("systemd service install", () => {
     const homeDir = makeTempHome("ade-systemd-young-");
     const targetPath = systemdServicePath(homeDir);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, renderSystemdUnit(serviceCommand), "utf8");
+    fs.writeFileSync(targetPath, installedUnit(homeDir), "utf8");
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = systemdSpawn({ calls, states: [{ activeState: "active", mainPid: 909 }] });
 
@@ -213,7 +223,7 @@ describe("systemd service install", () => {
     const homeDir = makeTempHome("ade-systemd-crashloop-");
     const targetPath = systemdServicePath(homeDir);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, renderSystemdUnit(serviceCommand), "utf8");
+    fs.writeFileSync(targetPath, installedUnit(homeDir), "utf8");
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = systemdSpawn({
       calls,
@@ -235,7 +245,7 @@ describe("systemd service install", () => {
     const homeDir = makeTempHome("ade-systemd-noop-");
     const targetPath = systemdServicePath(homeDir);
     fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, renderSystemdUnit(serviceCommand), "utf8");
+    fs.writeFileSync(targetPath, installedUnit(homeDir), "utf8");
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = systemdSpawn({ calls, states: [{ activeState: "active", mainPid: 909 }] });
 
