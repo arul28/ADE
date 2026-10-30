@@ -20,7 +20,8 @@ import {
   type RevealState,
 } from "./textReveal";
 
-const HORIZON = DEFAULT_TEXT_REVEAL_HORIZON_MS;
+/** A pacing horizon for the state machine; the default turns pacing off. */
+const HORIZON = 150;
 const FRAME = 1000 / 60;
 
 /** Drive `n` 60 Hz frames, returning the state after the last one. */
@@ -183,17 +184,18 @@ describe("reveal state machine", () => {
 });
 
 describe("horizon configuration", () => {
-  it("defaults to 150ms and honors a localStorage override", () => {
+  it("paints on arrival by default and honors a localStorage override", () => {
     expect(readTextRevealHorizonMs()).toBe(DEFAULT_TEXT_REVEAL_HORIZON_MS);
-    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "0");
+    expect(isTextRevealEnabled()).toBe(false);
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "150");
     // Still memoized from the first read — the override needs a fresh session.
     expect(readTextRevealHorizonMs()).toBe(DEFAULT_TEXT_REVEAL_HORIZON_MS);
     resetTextRevealHorizonCacheForTests();
-    expect(readTextRevealHorizonMs()).toBe(0);
-    expect(isTextRevealEnabled()).toBe(false);
+    expect(readTextRevealHorizonMs()).toBe(150);
+    expect(isTextRevealEnabled()).toBe(true);
     localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
     resetTextRevealHorizonCacheForTests();
-    expect(isTextRevealEnabled()).toBe(true);
+    expect(isTextRevealEnabled()).toBe(false);
   });
 
   it("ignores a malformed override rather than disabling itself", () => {

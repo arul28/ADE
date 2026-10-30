@@ -34,7 +34,13 @@ function channelFor(periodMs: number): TickerChannel {
   return channel;
 }
 
-function subscribeToChannel(periodMs: number, listener: () => void): () => void {
+/**
+ * Calls `listener` from the shared timer for `periodMs`; returns the
+ * unsubscribe. For a counter that writes its text straight to the DOM: on the
+ * shared timer it changes in the same frame as every other ticking label, not
+ * in a frame of its own.
+ */
+export function subscribeToTicker(periodMs: number, listener: () => void): () => void {
   const channel = channelFor(periodMs);
   channel.listeners.add(listener);
   // A timer exists exactly while the channel has listeners, so a period nobody
@@ -72,7 +78,7 @@ export function useTicker(periodMs: number, enabled = true): number {
     // Re-enabling: the reading froze while disabled, so refresh it before
     // subscribing rather than waiting for the first tick.
     setReading(Date.now());
-    return subscribeToChannel(periodMs, () => setReading(Date.now()));
+    return subscribeToTicker(periodMs, () => setReading(Date.now()));
   }, [enabled, periodMs]);
   return reading;
 }

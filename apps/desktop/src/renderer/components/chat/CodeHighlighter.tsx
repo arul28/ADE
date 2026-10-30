@@ -5,7 +5,8 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { codeThemeFingerprint, shikiThemeData, shikiThemeName, usesStockCodeColors, type ShikiThemeData } from "../../theme/codeTheme";
 import { useActiveResolvedTheme } from "../../theme/useActiveTheme";
 import type { Element as HastElement, Root as HastRoot } from "hast";
-import type { GrammarState as ShikiGrammarState } from "shiki";
+import type { BundledLanguage, GrammarState as ShikiGrammarState } from "shiki";
+import { captureError } from "../../../shared/sentry/capture";
 import { LRUCache } from "./lruCache";
 
 /* ── LRU cache for highlighted HTML ── */
@@ -14,7 +15,7 @@ const highlightCache = new LRUCache<string, string>(300);
 
 /* ── Shiki highlighter (lazy singleton) ── */
 
-const SUPPORTED_LANGUAGES = [
+const SUPPORTED_LANGUAGES: readonly BundledLanguage[] = [
   "typescript", "javascript", "jsx", "tsx", "python", "rust", "go",
   "java", "bash", "shell", "json", "yaml", "html", "css", "sql",
   "markdown", "diff", "c", "cpp", "ruby", "php", "swift", "kotlin",
@@ -27,6 +28,7 @@ type ShikiHighlighter = {
   codeToHast(code: string, options: { lang: string; theme: string; grammarState?: ShikiGrammarState }): HastRoot;
   getLastGrammarState(element: HastRoot): ShikiGrammarState | undefined;
   loadTheme(theme: ShikiThemeData): Promise<void>;
+  loadLanguage(...langs: BundledLanguage[]): Promise<void>;
   /** Shiki's serializer, carried with the highlighter that produced the trees. */
   hastToHtml(node: HastRoot | HastElement): string;
 };
@@ -45,12 +47,38 @@ const loadedThemeNames = new Set<string>();
 
 let highlighterPromise: Promise<ShikiHighlighter> | null = null;
 
+/**
+ * The highlighter starts with no grammar, and each language's grammar loads
+ * the first time a block asks for it. Compiling all of `SUPPORTED_LANGUAGES`
+ * up front was a 60-70 ms task at the first code block of a reply, inside the
+ * stream.
+ */
+const languageLoads = new Map<string, Promise<void>>();
+
+function isSupportedLanguage(language: string): language is BundledLanguage {
+  return (SUPPORTED_LANGUAGES as readonly string[]).includes(language);
+}
+
+function ensureLanguage(highlighter: ShikiHighlighter, lang: BundledLanguage): Promise<void> {
+  let load = languageLoads.get(lang);
+  if (!load) {
+    load = highlighter.loadLanguage(lang).catch((error: unknown) => {
+      // The next block tries again; the block shows as plain code meanwhile.
+      languageLoads.delete(lang);
+      captureError(error, { fingerprint: ["code-highlighter", "grammar-load"], tags: { lang }, level: "warning", handled: true });
+      throw error;
+    });
+    languageLoads.set(lang, load);
+  }
+  return load;
+}
+
 function getHighlighter(): Promise<ShikiHighlighter> {
   if (!highlighterPromise) {
     highlighterPromise = import("shiki").then(async (shiki) => {
       const highlighter = await shiki.createHighlighter({
         themes: [THEME],
-        langs: SUPPORTED_LANGUAGES,
+        langs: [],
         engine: shiki.createJavaScriptRegexEngine(),
       });
       return Object.assign(highlighter, { hastToHtml: shiki.hastToHtml });
@@ -173,7 +201,15 @@ async function highlightCode(code: string, language: string, codeTheme: CodeThem
     highlightCache.set(cacheKey, "");
     return "";
   }
-  const lang = SUPPORTED_LANGUAGES.includes(language) ? language : "text";
+  const lang = isSupportedLanguage(language) ? language : "text";
+  if (lang !== "text") {
+    try {
+      await ensureLanguage(highlighter, lang);
+    } catch {
+      highlightCache.set(cacheKey, "");
+      return "";
+    }
+  }
 
   let themeName = THEME;
   if (codeTheme.data) {

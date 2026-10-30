@@ -142,6 +142,29 @@ function workspaceFilePathOf(code: string): string | null {
  * whole-message re-parse per paint is what made pacing unaffordable.
  */
 const OPEN_CODE_FENCE = /^(`{3,}|~{3,})([^\n]*)\n/;
+/** A Markdown link reference or footnote definition line: `[label]: destination`. */
+const REFERENCE_DEFINITION = /^ {0,3}\[[^\]\n]+\]:[ \t]*\S/;
+/** A fence line; a backtick fence's info string may not hold a backtick. */
+const FENCE_LINE = /^ {0,3}(?:(`{3,})[^`]*$|(~{3,}))/;
+
+/** Whether `markdown` defines a reference outside its code fences. */
+function hasReferenceDefinition(markdown: string): boolean {
+  if (!markdown.includes("]:")) return false;
+  let fence: string | null = null;
+  for (const line of markdown.split("\n")) {
+    const match = FENCE_LINE.exec(line);
+    const marker = match?.[1] ?? match?.[2];
+    if (fence) {
+      // A fence closes on a run of its own character at least as long.
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length) fence = null;
+    } else if (marker) {
+      fence = marker;
+    } else if (REFERENCE_DEFINITION.test(line)) {
+      return true;
+    }
+  }
+  return false;
+}
 /** Fences drawn by their own components, never through the plain code path. */
 const SPECIAL_FENCE_LANGUAGES = new Set(["math", "mermaid", SCENE_FENCE_LANGUAGE, PROOF_COMPARE_FENCE_LANGUAGE]);
 
@@ -194,8 +217,23 @@ const MarkdownBody = React.memo(function MarkdownBody({
   );
 });
 
+/** One settled piece of a streaming reply: rewritten and parsed when it settles, then memoized. */
+const SettledMarkdownSegment = React.memo(function SettledMarkdownSegment({
+  markdown,
+  components,
+  remarkPlugins,
+}: {
+  markdown: string;
+  components: MarkdownComponents;
+  remarkPlugins: React.ComponentProps<typeof ReactMarkdown>["remarkPlugins"];
+}) {
+  const mathMarkdown = useMemo(() => normalizeMathDelimiters(markdown), [markdown]);
+  return <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />;
+});
+
 export const MarkdownBlock = React.memo(function MarkdownBlock({
   markdown,
+  settledSegments,
   tailMarkdown,
   onOpenWorkspacePath,
   sceneScopeKey,
@@ -203,6 +241,13 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
   tone,
 }: {
   markdown: string;
+  /**
+   * `markdown` cut into pieces that each parse on their own (a paced row's
+   * settled blocks, `useSplitRevealed`). When given, each piece renders as its
+   * own memoized body, so a newly settled block parses alone instead of the
+   * whole reply again.
+   */
+  settledSegments?: readonly string[];
   /**
    * Growing tail of a paced reveal, rendered as a second body in the same
    * prose flow. Absent on every settled row — which then renders exactly one
@@ -303,8 +348,16 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     [remarkPlugins],
   );
 
+  // A reference definition (`[docs]: https://…`) serves the whole document, but
+  // each piece parses alone, so a link and its definition in different pieces
+  // would stay unlinked until the reply finished. A reply that defines one
+  // parses its settled text as one body, as it did before the pieces.
+  const pieces = useMemo(
+    () => (settledSegments && !hasReferenceDefinition(markdown) ? settledSegments : undefined),
+    [markdown, settledSegments],
+  );
   // Memoized per body, so the settled half is rewritten once, not per tick.
-  const mathMarkdown = useMemo(() => normalizeMathDelimiters(markdown), [markdown]);
+  const mathMarkdown = useMemo(() => (pieces ? "" : normalizeMathDelimiters(markdown)), [markdown, pieces]);
   const mathTail = useMemo(() => (tailMarkdown ? normalizeMathDelimiters(tailMarkdown) : tailMarkdown), [tailMarkdown]);
   // A tail that is one code fence still open draws the code block the parser
   // would, without parsing it on every reveal frame (a 300-line fence costs
@@ -546,7 +599,14 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         "prose-blockquote:border-s-2 prose-blockquote:border-s-(color:--chat-ink)/20 prose-blockquote:ps-4 prose-hr:my-5 prose-hr:border-(color:--chat-ink)/[0.08]",
       )}
     >
-      <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />
+      {pieces
+        // Keyed by position: pieces are only ever appended. They skip the parse
+        // cache like the tail: each mounts once, and a long reply's pieces
+        // would push other chats' trees out of it.
+        ? pieces.map((segment, index) => (
+          <SettledMarkdownSegment key={index} markdown={segment} components={components} remarkPlugins={tailRemarkPlugins} />
+        ))
+        : <MarkdownBody markdown={mathMarkdown} components={components} remarkPlugins={remarkPlugins} />}
       {openFenceTail
         ? <HighlightedCode code={openFenceTail.code} language={openFenceTail.language} />
         : mathTail ? <MarkdownBody markdown={mathTail} components={components} remarkPlugins={tailRemarkPlugins} /> : null}

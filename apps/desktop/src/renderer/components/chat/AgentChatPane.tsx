@@ -5267,6 +5267,7 @@ export function AgentChatPane({
    */
   const olderHistoryPaneUnmountedRef = useRef(false);
   const eventFlushTimerRef = useRef<number | null>(null);
+  const eventFlushFrameRef = useRef<number | null>(null);
   const refreshSessionsTimerRef = useRef<number | null>(null);
   const selectedSessionIdRef = useRef<string | null>(selectedSessionId);
   /**
@@ -10453,13 +10454,27 @@ export function AgentChatPane({
     void loadHistory(sessionId, { force: true, pin });
   }, [loadHistory]);
 
+  const cancelQueuedEventFlush = useCallback(() => {
+    if (eventFlushTimerRef.current != null) window.clearTimeout(eventFlushTimerRef.current);
+    if (eventFlushFrameRef.current != null) window.cancelAnimationFrame(eventFlushFrameRef.current);
+    eventFlushTimerRef.current = null;
+    eventFlushFrameRef.current = null;
+  }, []);
+
+  // One flush for a burst of events, at the start of the next frame: the
+  // live-events subscribers render inside that frame, so streamed text shows
+  // in the first frame after it arrives. From a 16 ms timer it waited for the
+  // timer and then for the frame after it. The timer stays as the fallback for
+  // a window that draws no frames (hidden), whichever comes first.
   const scheduleQueuedEventFlush = useCallback(() => {
     if (eventFlushTimerRef.current != null) return;
-    eventFlushTimerRef.current = window.setTimeout(() => {
-      eventFlushTimerRef.current = null;
+    const flush = () => {
+      cancelQueuedEventFlush();
       flushQueuedEvents();
-    }, 16);
-  }, [flushQueuedEvents]);
+    };
+    eventFlushTimerRef.current = window.setTimeout(flush, 16);
+    eventFlushFrameRef.current = window.requestAnimationFrame(flush);
+  }, [cancelQueuedEventFlush, flushQueuedEvents]);
 
   const scheduleSessionsRefresh = useCallback(() => {
     if (refreshSessionsTimerRef.current != null) return;
@@ -10731,10 +10746,7 @@ export function AgentChatPane({
         || envelope.event.type === "status"
         || (layoutVariant === "grid-tile" && isTileVisible)
       ) {
-        if (eventFlushTimerRef.current != null) {
-          window.clearTimeout(eventFlushTimerRef.current);
-          eventFlushTimerRef.current = null;
-        }
+        cancelQueuedEventFlush();
         flushQueuedEvents();
       } else {
         scheduleQueuedEventFlush();
@@ -10825,7 +10837,7 @@ export function AgentChatPane({
       }
     }, chatRuntimePin);
     return unsubscribe;
-  }, [isPersonalPane, applyCrossMachineHandoffRecord, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
+  }, [isPersonalPane, applyCrossMachineHandoffRecord, cancelQueuedEventFlush, chatRuntimePin, clearPromptSuggestionForSession, isRemoteChat, isTileVisible, layoutVariant, loadHistory, lockSessionId, flushQueuedEvents, patchSessionSummary, projectRoot, scheduleQueuedEventFlush, scheduleSessionsRefresh, touchSession, setSelectedSessionId]);
 
   useEffect(() => {
     if (!isTileActive) return undefined;
@@ -10879,6 +10891,9 @@ export function AgentChatPane({
   useEffect(() => () => {
     if (eventFlushTimerRef.current != null) {
       window.clearTimeout(eventFlushTimerRef.current);
+    }
+    if (eventFlushFrameRef.current != null) {
+      window.cancelAnimationFrame(eventFlushFrameRef.current);
     }
     if (quietEventsCommitTimerRef.current != null) {
       window.clearTimeout(quietEventsCommitTimerRef.current);

@@ -3814,9 +3814,9 @@ describe("AgentChatMessageList transcript rendering", () => {
       const estimatedOnly = 65 * (51 + CHAT_TIMELINE_ROW_GAP_PX) - CHAT_TIMELINE_ROW_GAP_PX;
       await waitFor(() => {
         const virtualSizer = Array.from(rendered.container.querySelectorAll("div"))
-          .find((el) => el.style.position === "relative" && el.style.height);
+          .find((el) => el.style.position === "relative" && el.style.minHeight);
         // Rows in the window measured at 220px on mount, not on a later RO callback.
-        expect(Number.parseFloat(virtualSizer?.style.height ?? "0")).toBeGreaterThan(estimatedOnly + 5 * (220 - 51));
+        expect(Number.parseFloat(virtualSizer?.style.minHeight ?? "0")).toBeGreaterThan(estimatedOnly + 5 * (220 - 51));
       });
     } finally {
       if (originalOffsetHeight) {
@@ -3868,8 +3868,8 @@ describe("AgentChatMessageList transcript rendering", () => {
     );
     const virtualSizerHeight = (container: HTMLElement): number => {
       const virtualSizer = Array.from(container.querySelectorAll("div"))
-        .find((el) => el.style.position === "relative" && el.style.height);
-      return Number.parseFloat(virtualSizer?.style.height ?? "0");
+        .find((el) => el.style.position === "relative" && el.style.minHeight);
+      return Number.parseFloat(virtualSizer?.style.minHeight ?? "0");
     };
 
     try {
@@ -6230,6 +6230,16 @@ describe("streaming-delta identity stabilization", () => {
  * itself is covered without rAF in textReveal.test.ts.
  */
 describe("AgentChatMessageList — paced assistant text", () => {
+  // Pacing is off by default; these tests turn it on the way a user would.
+  beforeEach(() => {
+    localStorage.setItem(TEXT_REVEAL_HORIZON_STORAGE_KEY, "150");
+    resetTextRevealHorizonCacheForTests();
+  });
+  afterEach(() => {
+    localStorage.removeItem(TEXT_REVEAL_HORIZON_STORAGE_KEY);
+    resetTextRevealHorizonCacheForTests();
+  });
+
   const streamingText = (text: string): AgentChatEventEnvelope[] => ([
     {
       sessionId: "session-1",
@@ -7432,8 +7442,8 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
         if (!this.classList.contains("ade-chat-timeline-pane")) return 0;
         const pane = this as HTMLElement;
         const sizer = Array.from(pane.querySelectorAll<HTMLElement>("div"))
-          .find((el) => el.style.position === "relative" && el.style.height);
-        if (sizer) return sentinelHeight(pane) + Number.parseFloat(sizer.style.height);
+          .find((el) => el.style.position === "relative" && el.style.minHeight);
+        if (sizer) return sentinelHeight(pane) + Number.parseFloat(sizer.style.minHeight);
         const rows = Array.from(pane.querySelectorAll("[data-chat-row-key]"));
         const total = rows.reduce((sum, row) => sum + heightOf(keyOf(row)!) + GAP, 0);
         return sentinelHeight(pane) + Math.max(0, total - GAP);
@@ -7475,8 +7485,8 @@ describe("AgentChatMessageList — stable row keys, list anchoring, and scroll r
   };
   const sizerHeight = () => {
     const sizer = Array.from(timelinePane().querySelectorAll<HTMLElement>("div"))
-      .find((el) => el.style.position === "relative" && el.style.height);
-    return sizer ? Number.parseFloat(sizer.style.height) : null;
+      .find((el) => el.style.position === "relative" && el.style.minHeight);
+    return sizer ? Number.parseFloat(sizer.style.minHeight) : null;
   };
   const listElement = (
     events: AgentChatEventEnvelope[],

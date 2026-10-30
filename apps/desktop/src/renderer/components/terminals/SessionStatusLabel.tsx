@@ -157,19 +157,23 @@ export function SessionStatusLabel({
     );
   }
 
+  const breathes = presentation.glyph === "working" && presentation.showsElapsed;
   return (
     <span
       data-session-status={presentation.label}
       data-session-tone={presentation.tone}
       data-session-status-source={presentation.activitySource}
+      // The breathe changes only opacity, so the compositor runs it. On the
+      // stepped loop clock each of its 15 steps a second was a main-thread
+      // frame that re-layered the whole page (about 50 ms a second with a
+      // chat open).
+      data-loop-clock={breathes ? "off" : undefined}
       className={cn(
         "inline-flex items-center gap-1 font-medium",
         compact ? "text-[10px]" : "text-[11px]",
         SESSION_TONE_TEXT_CLASS[presentation.tone],
         // Breathing is reserved for the one state that is actively changing.
-        presentation.glyph === "working"
-          && presentation.showsElapsed
-          && "motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]",
+        breathes && "motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]",
       )}
       title={activityReportTitle ?? exactWakeTitle}
     >

@@ -1508,11 +1508,13 @@ runtime daemon hosts the chat sessions, so it — not Electron main — is the
 process that emits these events, and both may append to the same log at
 once. See [ARCHITECTURE.md](../../ARCHITECTURE.md).
 
-The lumpiness this batching produces is what the renderer's paced text
-reveal smooths out; see
-[composer-and-ui.md](composer-and-ui.md#paced-text-reveal). The store still
-receives each flush whole and immediately — only the painted slice is
-paced.
+The renderer paints each flush when it arrives. Its paced text reveal can
+type the lumps out instead, but it is off by default; see
+[composer-and-ui.md](composer-and-ui.md#paced-text-reveal). The store
+receives each flush whole and immediately either way. In the renderer,
+`AgentChatPane` applies a burst of chat events at the start of the next
+animation frame (a 16 ms timer is the fallback for a window that draws no
+frames), so streamed text shows in the first frame after it arrives.
 
 ## Virtual scrolling and message-list layout
 

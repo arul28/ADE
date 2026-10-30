@@ -1362,8 +1362,21 @@ function normalizeInlineText(value: string): string {
   return value.replace(/\s+/g, " ").trim();
 }
 
+/**
+ * How much of a long text a summary reads first. A summary keeps only its
+ * first `maxChars` characters, so a prefix that already strips to more than
+ * that gives the same summary; a prefix that strips to less (a long run of
+ * Markdown syntax or blank lines) falls back to the whole text. A streaming
+ * reply is summarized on every update, and summarizing all of it grew with
+ * the reply (a 50 KB reply: about 25 ms of its stream).
+ */
+const SUMMARY_SOURCE_CHARS = 4_096;
+
 export function summarizeInlineText(value: string, maxChars = 120): string {
-  const text = normalizeInlineText(stripInlineMarkdown(value));
+  let text = value.length > SUMMARY_SOURCE_CHARS
+    ? normalizeInlineText(stripInlineMarkdown(value.slice(0, SUMMARY_SOURCE_CHARS)))
+    : null;
+  if (text === null || text.length <= maxChars) text = normalizeInlineText(stripInlineMarkdown(value));
   if (!text.length) return "";
   return text.length > maxChars ? `${text.slice(0, maxChars)}...` : text;
 }

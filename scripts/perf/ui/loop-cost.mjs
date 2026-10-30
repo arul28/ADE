@@ -28,11 +28,31 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const dot = (delay) => `<span class="ade-thinking-pulse inline-block h-[5px] w-[5px] rounded-full bg-emerald-300/70" style="animation-delay:${delay}s"></span>`;
 const dots = `<span class="inline-flex items-center gap-1.5">${dot(0)}${dot(0.18)}${dot(0.36)}</span>`;
 const dutyPulse = '<span class="inline-flex motion-safe:animate-pulse"><span class="h-2 w-2 rounded-full bg-violet-400"></span></span>';
-const breathe = '<span class="motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]">Working</span>';
+// SessionStatusLabel: the breathe runs on the compositor, off the step clock.
+const breathe = '<span data-loop-clock="off" class="motion-safe:animate-[ade-session-working-breathe_2600ms_step-end_infinite]">Working</span>';
 const svgSpinner = '<svg class="animate-spin" width="14" height="14" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" stroke="currentColor" stroke-width="2" fill="none" stroke-dasharray="20 20"/></svg>';
 // The chat's working indicator (components/ui/ThinkingIndicator.tsx): glyph
-// spin and morph, twinkle and label sheen, all stepped at 30/s.
-const thinking = (id) => `<span class="ade-thinking-indicator inline-flex items-center gap-[0.5em] text-violet-300/80"><span class="relative inline-block h-[1.3em] w-[1.3em]"><span class="ade-thinking-glyph absolute inset-0"><svg viewBox="0 0 24 24" class="h-full w-full" fill="none"><defs><linearGradient id="lc-thinking-${id}" gradientUnits="userSpaceOnUse" x1="5" x2="20" y1="4" y2="20"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0.4"/></linearGradient></defs><path class="ade-thinking-glyph-shape" d="M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z" fill="url(#lc-thinking-${id})"/></svg></span><span class="ade-thinking-twinkle absolute inset-0"><svg viewBox="0 0 24 24" class="h-full w-full" fill="none"><path d="M 19 2.5 C 19.18 4.32 19.68 4.82 21.5 5 C 19.68 5.18 19.18 5.68 19 7.5 C 18.82 5.68 18.32 5.18 16.5 5 C 18.32 4.82 18.82 4.32 19 2.5 Z" fill="currentColor"/></svg></span></span><span class="ade-thinking-label font-medium">Working</span></span>`;
+// turn, a strip of the 120 morph shapes stepped along, twinkle and label sheen,
+// all stepped at 30/s on the compositor and off the step clock
+// (`data-loop-clock="off"`, so "css" and "clock" measure the same thing). The
+// shapes follow the component's GLYPH_KEYFRAMES; the cost does not depend on
+// them, since the strip is drawn once.
+const GLYPH = [
+  [0, 36, "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"],
+  [0.3, 24, "M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z"],
+  [0.5, 24, "M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z"],
+  [0.7, 36, "M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z"],
+  [1, 0, "M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"],
+];
+const glyphStrip = (id) => Array.from({ length: 120 }, (_, frame) => {
+  const at = frame / 120;
+  const k = GLYPH.findIndex(([start], i) => at >= start && at < GLYPH[i + 1][0]);
+  const eased = Math.min(1, Math.floor(((at - GLYPH[k][0]) / (GLYPH[k + 1][0] - GLYPH[k][0])) * GLYPH[k][1] + 1e-9) / (GLYPH[k][1] - 1));
+  const [a, b] = [GLYPH[k][2].split(" "), GLYPH[k + 1][2].split(" ")];
+  const d = a.map((t, i) => (Number.isNaN(Number(t)) ? t : String(Math.round((Number(t) + (Number(b[i]) - Number(t)) * eased) * 1000) / 1000))).join(" ");
+  return `<path transform="translate(${24 * frame} 0)" d="${d}" fill="url(#lc-thinking-${id})"/>`;
+}).join("");
+const thinking = (id) => `<span class="ade-thinking-indicator inline-flex items-center gap-[0.5em] text-violet-300/80" data-loop-clock="off"><span class="relative inline-block h-[1.3em] w-[1.3em]"><span class="ade-thinking-glyph absolute inset-0"><span class="absolute inset-0 overflow-hidden"><span class="ade-thinking-glyph-strip absolute inset-y-0 left-0"><svg viewBox="0 0 2880 24" class="h-full w-full" fill="none"><defs><linearGradient id="lc-thinking-${id}" gradientUnits="userSpaceOnUse" x1="5" x2="20" y1="4" y2="20"><stop offset="0" stop-color="currentColor"/><stop offset="1" stop-color="currentColor" stop-opacity="0.4"/></linearGradient></defs>${glyphStrip(id)}</svg></span></span></span><span class="ade-thinking-twinkle absolute inset-0"><svg viewBox="0 0 24 24" class="h-full w-full" fill="none"><path d="M 19 2.5 C 19.18 4.32 19.68 4.82 21.5 5 C 19.68 5.18 19.18 5.68 19 7.5 C 18.82 5.68 18.32 5.18 16.5 5 C 18.32 4.82 18.82 4.32 19 2.5 Z" fill="currentColor"/></svg></span></span><span class="ade-thinking-label relative min-w-0 truncate font-medium">Working<span class="ade-thinking-sheen-window" data-label="Working" aria-hidden="true"></span></span></span>`;
 const CASES = {
   "header-pulse": '<span style="display:inline-block;width:6px;height:6px;border-radius:3px;background:#3c3;animation:activity-hdr-pulse 3s step-end infinite"></span>',
   // What a chat shows while its agent works: the thinking dots, a pulsing dot,

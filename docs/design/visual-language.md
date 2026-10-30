@@ -249,7 +249,16 @@ Visual polish must not cost CPU or GPU while ADE is idle.
   pulse there cost about a fifth of a core of GPU. A stepped loop that changes
   at most 31 times a second is then driven by the renderer's step clock
   (`lib/steppedLoopClock.ts`) and costs a frame only when it changes; a smooth
-  loop never qualifies.
+  loop never qualifies. On a heavy page a clock seek costs a full main-thread
+  frame, so a loop that already runs on the compositor opts out with
+  `data-loop-clock="off"` (the chat's thinking indicator, the Work list's
+  Working label).
+- A loop with no compositor form (a path morph) is drawn by a worker into a
+  canvas, as the thinking glyph is (`ui/thinkingGlyphPainter.ts`).
+- Nothing listens for `animationiteration`: while any node does, Chrome wakes
+  the main thread at the end of every pass of every loop.
+  `lib/animationPhaseAlignment.ts` turns the listener type away for the whole
+  page (React adds one at each root); use `animationend` instead.
 - `backdrop-filter` only on a few large planes (cards over a picture), never on
   list rows or anything that scrolls.
 - Live data reloads on events with a debounce (for example `prs.onEvent`

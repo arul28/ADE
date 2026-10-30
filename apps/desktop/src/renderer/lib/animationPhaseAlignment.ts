@@ -39,9 +39,40 @@ function alignInfiniteLoops(event: AnimationEvent): void {
   }
 }
 
-/** Installs the document listener once. Safe to call more than once. */
+/**
+ * Turns away every `animationiteration` listener, so a running loop never
+ * wakes the main thread.
+ *
+ * A composited loop needs no main-thread frame, but while any node of the
+ * document listens for `animationiteration`, Chrome must wake the main thread
+ * at the end of each pass of each loop to send that event. React listens for
+ * it at every root and portal container, whether or not a component asks for
+ * it, so the working sheen and breathe (three loops) cost about 45 main-thread
+ * frames and React dispatches in a 32 s turn, a third of its idle main-thread
+ * time. Nothing in ADE uses the event: a React `onAnimationIteration` prop or
+ * a native listener for it does not fire. Use `animationend`, or count the
+ * passes from the animation's `currentTime`.
+ */
+function turnAwayAnimationIterationListeners(): void {
+  const addEventListener = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function (
+    this: EventTarget,
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+    options?: boolean | AddEventListenerOptions,
+  ): void {
+    if (type === "animationiteration") return;
+    addEventListener.call(this, type, listener, options);
+  };
+}
+
+/**
+ * Installs the document listener once. Safe to call more than once. Call it
+ * before React creates a root: the roots' listeners are added then.
+ */
 export function installAnimationPhaseAlignment(): void {
   if (installed || typeof document === "undefined" || typeof CSSAnimation === "undefined") return;
   installed = true;
+  turnAwayAnimationIterationListeners();
   document.addEventListener("animationstart", alignInfiniteLoops, true);
 }
