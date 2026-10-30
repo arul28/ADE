@@ -5,6 +5,9 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
+      // The config's top level is what deploys (`production`); tests must not
+      // report to Sentry, and `development` turns the client off.
+      miniflare: { bindings: { SENTRY_ENVIRONMENT: "development" } },
     }),
   ],
   test: {

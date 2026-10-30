@@ -26,16 +26,29 @@ const MAX_TRACKED_SESSIONS = 32;
  * one that ends its session. It runs while the person is still anonymous; the
  * `$identify` that follows a completed sign-in merges that id into the account.
  *
- * `oneAttempt` makes every session this tracker sees part of one attempt:
+ * {@link createSharedAttemptSignInAnalytics} makes every session part of one attempt:
  * `ade login` starts a browser sign-in and a device sign-in side by side, and
  * whichever the person finishes signs the machine in. The attempt then ends
  * on the first success, or when its last open session fails or is cancelled.
  */
-export function createAccountSignInAnalytics(options: {
+type AccountSignInAnalyticsOptions = {
   capture: (input: ProductAnalyticsCapture) => unknown;
   surface: ProductAnalyticsCapture["surface"];
-  oneAttempt?: boolean;
-}) {
+  /** Told when a capture throws; sign-in carries on regardless. */
+  onCaptureError?: (error: unknown) => void;
+};
+
+/** One attempt per sign-in session: the desktop's browser and device flows. */
+export function createAccountSignInAnalytics(options: AccountSignInAnalyticsOptions) {
+  return createTracker(options, false);
+}
+
+/** Every session is one attempt: `ade login` runs a browser and a device sign-in side by side. */
+export function createSharedAttemptSignInAnalytics(options: AccountSignInAnalyticsOptions) {
+  return createTracker(options, true);
+}
+
+function createTracker(options: AccountSignInAnalyticsOptions, oneAttempt: boolean) {
   const sessions = new Map<string, Attempt>();
   let current: Attempt | null = null;
 
@@ -54,8 +67,9 @@ export function createAccountSignInAnalytics(options: {
         },
         projectId: null,
       });
-    } catch {
+    } catch (error) {
       // Analytics never breaks a sign-in.
+      options.onCaptureError?.(error);
     }
   };
 
@@ -84,7 +98,7 @@ export function createAccountSignInAnalytics(options: {
   };
 
   const openAttempt = (source: AccountSignInSource): Attempt => {
-    if (options.oneAttempt && current && !current.ended) return current;
+    if (oneAttempt && current && !current.ended) return current;
     const attempt: Attempt = { source, open: new Set(), ended: false, cancelled: false, errorKind: null };
     current = attempt;
     record("started", source);

@@ -9,7 +9,7 @@ import type { ToolErrorKind } from "../../../shared/types";
 import { JEV_FEATURES, JEV_KEY_SKIP_REASONS } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
-import { scrubString } from "../../../shared/sentry/scrub";
+import { scrubFreeText } from "../../../shared/sentry/scrub";
 import {
   PRODUCT_SURVEY_EVENTS,
   SURVEY_RESPONSE_MAX_LENGTH,
@@ -753,19 +753,15 @@ export function isSurveyAnalyticsEvent(event: ProductAnalyticsEventName): boolea
 }
 
 /**
- * The person's own words, which they chose to send. Secrets (tokens, keys,
- * `password=` pairs, credentials in URLs) are removed by the Sentry scrubber,
- * the home folder is shortened to `~` so a pasted path does not name the
- * account, and the text is cut at {@link SURVEY_RESPONSE_MAX_LENGTH}.
+ * The person's own words, which they chose to send. Secrets, email addresses
+ * and absolute paths are removed ({@link scrubFreeText}), and the text is cut
+ * at {@link SURVEY_RESPONSE_MAX_LENGTH}.
  */
 export function scrubSurveyText(value: unknown, maxLength = SURVEY_RESPONSE_MAX_LENGTH): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim().slice(0, maxLength);
   if (!trimmed) return null;
-  const scrubbed = scrubString(trimmed, { maxLength })
-    .replace(/(?:\/Users|\/home)\/[^/\s"'`]+/g, "~")
-    .replace(/[A-Za-z]:\\(?:Users|Documents and Settings)\\[^\\\s"'`]+/gi, "~");
-  return scrubbed.slice(0, maxLength);
+  return scrubFreeText(trimmed, { maxLength }).slice(0, maxLength);
 }
 
 /**

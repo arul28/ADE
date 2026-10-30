@@ -85,6 +85,24 @@ export function scrubString(input: string, options?: { maxLength?: number }): st
   return output;
 }
 
+const EMAIL = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
+// An absolute or home-relative path with at least one folder. The lookbehind
+// keeps URL paths (`https://host/a/b`) and relative paths (`src/a.ts`) whole.
+const POSIX_ABSOLUTE_PATH = /(?<![\w.:/\\~-])~?\/(?:[^\s/"'`<>]+\/)+[^\s/"'`<>]*/g;
+const WINDOWS_ABSOLUTE_PATH = /(?:\b[A-Za-z]:|\\\\[^\s\\"'`]+)\\[^\s"'`<>]*/g;
+
+/**
+ * Text a person typed and chose to send (a survey answer, a note on a report).
+ * On top of {@link scrubString}'s secrets, it removes email addresses and
+ * absolute paths, which name the person or their machine.
+ */
+export function scrubFreeText(input: string, options?: { maxLength?: number }): string {
+  return scrubString(input, options)
+    .replace(EMAIL, "[email]")
+    .replace(WINDOWS_ABSOLUTE_PATH, "[path]")
+    .replace(POSIX_ABSOLUTE_PATH, "[path]");
+}
+
 export function scrubValue(value: unknown, depth = 0, key?: string): unknown {
   if (key !== undefined) {
     if (SECRET_KEY.test(key) && (typeof value === "string" || (typeof value === "object" && value !== null))) return REDACTED;

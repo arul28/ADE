@@ -396,7 +396,7 @@ export function defaultSurveyStateFile(productAnalyticsStateFile: string): strin
 export function createSurveyService(args: {
   stateFilePath: string;
   analytics: Pick<ProductAnalyticsService, "getStatus" | "captureInternal" | "getInstalledAtMs">;
-  logger: Pick<Logger, "debug">;
+  logger: Pick<Logger, "debug" | "warn">;
   now?: () => number;
   fetchImpl?: typeof fetch;
   endpoint?: () => { token: string; host: string } | null;
@@ -448,7 +448,8 @@ export function createSurveyService(args: {
       write(state);
       return state;
     } catch (error) {
-      args.logger.debug("product_surveys.state_failed", {
+      // Without saved history the cooldown and "never twice" cannot hold, so no survey is offered.
+      args.logger.warn("product_surveys.state_failed", {
         errorKind: error instanceof Error ? error.name : "unknown",
       });
       return null;
@@ -507,8 +508,11 @@ export function createSurveyService(args: {
         });
         if (response.ok) return await response.json();
         if (response.status !== 404) return null;
-      } catch {
+      } catch (error) {
         // Offline or blocked: try again tomorrow with whatever was cached.
+        args.logger.warn("product_surveys.fetch_failed", {
+          errorKind: error instanceof Error ? error.name : "unknown",
+        });
       } finally {
         clearTimeout(timeout);
       }
@@ -552,6 +556,8 @@ export function createSurveyService(args: {
       nowMs: now(),
     });
     if (!survey || offeredThisLaunch) return null;
+    // A survey whose showing could not be saved would come back next launch.
+    if (!update(() => undefined)) return null;
     offeredThisLaunch = true;
     offered = survey;
     return survey;
@@ -571,12 +577,12 @@ export function createSurveyService(args: {
       // Counted as seen whether or not the event goes out: the person saw it.
       const nowMs = now();
       let firstShow = true;
-      update((state) => {
+      const saved = update((state) => {
         firstShow = state.shown[survey.id] == null;
         if (firstShow) state.shown[survey.id] = nowMs;
         state.lastShownAtMs = nowMs;
       });
-      if (!firstShow) return { accepted: false };
+      if (!saved || !firstShow) return { accepted: false };
       return {
         accepted: args.analytics.captureInternal({
           event: "survey shown",
@@ -603,18 +609,18 @@ export function createSurveyService(args: {
     if (input.kind !== "sent") return { accepted: false };
     const responses = validateSurveyAnswers(survey, input.answers);
     if (!responses) return { accepted: false };
-    sentThisLaunch.add(survey.id);
     const submissionId = randomUUID();
-    return {
-      accepted: args.analytics.captureInternal({
-        event: "survey sent",
-        surface: "desktop",
-        survey: { ...base, submissionId, completed: true, responses },
-        clientEventId: submissionId,
-        dedupeKey: `survey-sent:${survey.id}`,
-        minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
-      }).accepted,
-    };
+    const { accepted } = args.analytics.captureInternal({
+      event: "survey sent",
+      surface: "desktop",
+      survey: { ...base, submissionId, completed: true, responses },
+      clientEventId: submissionId,
+      dedupeKey: `survey-sent:${survey.id}`,
+      minimumIntervalMs: SURVEY_GLOBAL_COOLDOWN_MS,
+    });
+    // A refused answer leaves the survey open so the person can send it again.
+    if (accepted) sentThisLaunch.add(survey.id);
+    return { accepted };
   };
 
   return { noteLaunch, noteActive, getEligibleSurvey, record };

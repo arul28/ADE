@@ -50,6 +50,7 @@ export default function SurveyCard({
   const otherTexts = useRef<Record<string, string>>({});
   const shownRef = useRef(false);
   const doneRef = useRef(false);
+  const sendingRef = useRef(false);
   const question = survey.questions[step];
   const last = step === survey.questions.length - 1;
 
@@ -98,8 +99,8 @@ export default function SurveyCard({
     finish();
   }, [bridge, filled, finish, step, survey.id]);
 
-  const send = useCallback((override: Record<string, ProductSurveyAnswer> = {}) => {
-    if (doneRef.current) return;
+  const send = useCallback(async (override: Record<string, ProductSurveyAnswer> = {}) => {
+    if (doneRef.current || sendingRef.current) return;
     const answers: Record<string, ProductSurveyAnswer> = {};
     for (const q of survey.questions) {
       const other = otherLabel(q);
@@ -120,13 +121,20 @@ export default function SurveyCard({
       }
     }
     Object.assign(answers, override);
-    void bridge?.record({ kind: "sent", surveyId: survey.id, answers }).catch(() => undefined);
+    sendingRef.current = true;
+    const result = await bridge?.record({ kind: "sent", surveyId: survey.id, answers }).catch(() => null);
+    sendingRef.current = false;
+    // Thank the person only for an answer that left; otherwise keep the card so they can try again.
+    if (!result?.accepted) {
+      showToast({ tone: "warning", title: "Your answer wasn't sent", message: "Check your answers and try again." });
+      return;
+    }
     showToast({ tone: "success", title: "Thanks for telling us", message: "Your answer goes straight to the people building ADE." });
     finish();
   }, [bridge, choices, finish, survey]);
 
   const advance = useCallback(() => {
-    if (last) send();
+    if (last) void send();
     else setStep((current) => current + 1);
   }, [last, send]);
 
@@ -237,7 +245,7 @@ export default function SurveyCard({
           disabled: !question.link,
           onClick: () => {
             if (question.link) openExternalUrl(question.link);
-            if (last) send({ [question.id]: "link clicked" });
+            if (last) void send({ [question.id]: "link clicked" });
             else {
               setChoices((current) => ({ ...current, [question.id]: "link clicked" }));
               setStep((current) => current + 1);

@@ -2,6 +2,7 @@ import { ipcMain } from "electron";
 import { IPC } from "../../../shared/ipc";
 import type {
   ProductSurvey,
+  ProductSurveyAnswer,
   ProductSurveyEventInput,
   ProductSurveyEventResult,
 } from "../../../shared/types/productSurveys";
@@ -28,10 +29,22 @@ export function registerSurveyIpc(args: {
     IPC.analyticsSurveyEvent,
     async (event, input: unknown): Promise<ProductSurveyEventResult> => {
       if (!isTrustedAdeRendererSenderOrWarn(event, args.logger, IPC.analyticsSurveyEvent)) return { accepted: false };
-      if (!input || typeof input !== "object") return { accepted: false };
-      const value = input as Record<string, unknown>;
-      if (value.kind !== "shown" && value.kind !== "dismissed" && value.kind !== "sent") return { accepted: false };
-      return args.surveyService.record(value as ProductSurveyEventInput);
+      const parsed = parseSurveyEventInput(input);
+      return parsed ? args.surveyService.record(parsed) : { accepted: false };
     },
   );
+}
+
+/** The renderer's payload, narrowed to its shape; answers are checked against the survey later. */
+function parseSurveyEventInput(input: unknown): ProductSurveyEventInput | null {
+  if (!input || typeof input !== "object") return null;
+  const value = input as Record<string, unknown>;
+  if (typeof value.surveyId !== "string") return null;
+  const surveyId = value.surveyId;
+  if (value.kind === "shown") return { kind: "shown", surveyId };
+  if (value.kind === "dismissed") return { kind: "dismissed", surveyId, partiallyCompleted: value.partiallyCompleted === true };
+  if (value.kind === "sent" && value.answers && typeof value.answers === "object" && !Array.isArray(value.answers)) {
+    return { kind: "sent", surveyId, answers: value.answers as Record<string, ProductSurveyAnswer> };
+  }
+  return null;
 }

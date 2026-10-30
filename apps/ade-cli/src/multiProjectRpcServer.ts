@@ -103,7 +103,7 @@ import {
   type AccountAuthService,
 } from "./services/account/accountAuthService";
 import {
-  createAccountSignInAnalytics,
+  createSharedAttemptSignInAnalytics,
   type AccountSignInAnalytics,
 } from "../../desktop/src/main/services/analytics/accountSignInAnalytics";
 import type { ProductAnalyticsCapture } from "../../desktop/src/shared/types/productAnalytics";
@@ -598,6 +598,14 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function safeParams(value: unknown): Record<string, unknown> {
   return isRecord(value) ? value : {};
 }
+
+/** Which sign-in an account action belongs to, for the sign-in funnel. */
+const SIGN_IN_SOURCE_BY_ACTION: Readonly<Record<string, "browser" | "device_code">> = {
+  startLogin: "browser",
+  pollLogin: "browser",
+  startDeviceLogin: "device_code",
+  pollDeviceLogin: "device_code",
+};
 
 const machineProjectLogger: Logger = {
   debug: () => {},
@@ -1369,10 +1377,12 @@ export function createMultiProjectRpcRequestHandler(
   const accountSignInAnalyticsForCaller = (): AccountSignInAnalytics | null => {
     const analytics = options.productAnalyticsService;
     if (!analytics?.capture || isDesktopClientName(callerClientName())) return null;
-    accountSignInAnalytics ??= createAccountSignInAnalytics({
+    accountSignInAnalytics ??= createSharedAttemptSignInAnalytics({
       capture: (input) => analytics.capture?.(input),
       surface: "cli",
-      oneAttempt: true,
+      onCaptureError: (error) => machineProjectLogger.warn("account.sign_in_analytics_failed", {
+        errorKind: error instanceof Error ? error.name : "unknown",
+      }),
     });
     return accountSignInAnalytics;
   };
@@ -2558,9 +2568,7 @@ export function createMultiProjectRpcRequestHandler(
       }
       const accountActionArgs = isRecord(params.args) ? params.args : {};
       const signIn = accountSignInAnalyticsForCaller();
-      const signInSource = action === "startLogin" || action === "pollLogin"
-        ? "browser"
-        : action === "startDeviceLogin" || action === "pollDeviceLogin" ? "device_code" : null;
+      const signInSource = SIGN_IN_SOURCE_BY_ACTION[action] ?? null;
       let response: Awaited<ReturnType<typeof callAccountAction>>;
       try {
         response = await callAccountAction({

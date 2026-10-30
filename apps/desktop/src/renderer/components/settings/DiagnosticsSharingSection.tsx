@@ -68,12 +68,12 @@ function ManualDiagnosticsSend() {
     }
   };
 
-  const reportPath = result?.ok ? result.reportPath : result?.reportPath ?? "";
+  const reportPath = result?.reportPath ?? "";
 
   return (
     <ModernRow
       title="Send a report now"
-      hint={'Something feels wrong but nothing has broken? Sends the same report the "Report issue" button makes: app and system versions, recent ADE logs, disk space and the failure code. Paths, names, emails and credentials are removed first. Never your code, chats or terminal output.'}
+      hint="Sends the same report as “Report issue”: versions, recent ADE logs and the failure code. Paths, names, emails and keys are removed; never your code or chats."
       control={(
         <button
           type="button"

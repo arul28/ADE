@@ -124,13 +124,15 @@ export function sendSentryLog(level: "info" | "warn" | "error", message: string,
 /**
  * Send User Feedback: words a person chose to send. Feedback skips
  * `beforeSend`, so the caller scrubs `message` and names the user. Returns the
- * feedback id, or null where Sentry is not running.
+ * feedback id, or null where Sentry is not running or the SDK threw (reported
+ * to `onError`).
  */
 export function captureUserFeedback(args: {
   message: string;
   source: string;
   userId?: string | null;
   tags?: Record<string, string>;
+  onError?: (error: unknown) => void;
 }): string | null {
   const api = sentry;
   if (!api?.captureFeedback) return null;
@@ -146,7 +148,8 @@ export function captureUserFeedback(args: {
         tags: args.tags,
       }) ?? null;
     });
-  } catch {
+  } catch (error) {
+    args.onError?.(error);
     return null;
   }
   return feedbackId;

@@ -5200,6 +5200,9 @@ export function registerIpc({
       // computer's own guard refused the send, so the daily limit holds.
       if (typeof options?.userMessage === "string" && !(!result.ok && result.reason === "local_limit")) {
         sendSentryUserFeedback({
+          onError: (error) => getCtx().logger.warn("diagnostics.user_feedback_failed", {
+            errorKind: error instanceof Error ? error.name : "unknown",
+          }),
           message: options.userMessage,
           tags: {
             "report.surface": context?.surface ?? "settings_manual",
@@ -12411,6 +12414,9 @@ export function registerIpc({
   const accountSignInAnalytics = createAccountSignInAnalytics({
     capture: (input) => productAnalyticsService?.capture(input),
     surface: "desktop",
+    onCaptureError: (error) => getCtx().logger.warn("account.sign_in_analytics_failed", {
+      errorKind: error instanceof Error ? error.name : "unknown",
+    }),
   });
 
   ipcMain.handle(IPC.accountStartLogin, async (): Promise<AdeAccountLoginStart> => {

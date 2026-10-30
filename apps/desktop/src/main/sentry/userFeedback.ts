@@ -6,12 +6,12 @@
  * this computer, whichever machine the screen was showing. It goes only where
  * main's Sentry client runs, so `DO_NOT_TRACK`, `ADE_SENTRY_DISABLED`, an
  * earlier opt-out and dev builds all keep it home (`initMain.ts`). Feedback
- * skips `beforeSend`, so the text is scrubbed here and the user set here, to
- * the same pseudonymous id every other event carries.
+ * skips `beforeSend`, so the text is scrubbed here (secrets, emails, paths)
+ * and the user set here, to the same pseudonymous id every other event carries.
  */
 import { captureUserFeedback, isSentryActive } from "../../shared/sentry/capture";
 import { resolveSentryUserId } from "../../shared/sentry/eventFilter";
-import { scrubString } from "../../shared/sentry/scrub";
+import { scrubFreeText } from "../../shared/sentry/scrub";
 
 /** Longest note sent. */
 export const USER_FEEDBACK_MAX_CHARS = 2_000;
@@ -21,11 +21,13 @@ let lastSentMessage: string | null = null;
 /** Returns the feedback id, or null when nothing was sent. */
 export function sendSentryUserFeedback(args: {
   message: unknown;
-  /** Low-cardinality labels: the report's surface, code and reference. */
+  /** The report's surface and code, and its R2 reference so the note matches its upload. */
   tags?: Record<string, string | null | undefined>;
+  /** Told when the SDK throws; the report itself is unaffected. */
+  onError?: (error: unknown) => void;
 }): string | null {
   if (!isSentryActive() || typeof args.message !== "string") return null;
-  const message = scrubString(args.message.trim().slice(0, USER_FEEDBACK_MAX_CHARS), {
+  const message = scrubFreeText(args.message.trim().slice(0, USER_FEEDBACK_MAX_CHARS), {
     maxLength: USER_FEEDBACK_MAX_CHARS,
   });
   // "Try again" after a failed upload sends the report again, not the note.
@@ -39,6 +41,7 @@ export function sendSentryUserFeedback(args: {
     source: "send_a_report",
     userId: resolveSentryUserId(),
     tags,
+    onError: args.onError,
   });
   if (feedbackId) lastSentMessage = message;
   return feedbackId;
