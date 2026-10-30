@@ -91,6 +91,11 @@ async function killDetachedSupervisor(pidPath: string): Promise<void> {
   }
 }
 
+/** The startup entry's command: the launcher's PowerShell inside a windowless console host. */
+function headlessConsoleCommand(command: AdeServiceCommand): string {
+  return `"${resolveTrustedWindowsTool("conhost")}" --headless ${renderWindowsCommand(command)}`;
+}
+
 function makeTempHome(prefix: string): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
   tempDirs.push(dir);
@@ -650,7 +655,7 @@ describe("Windows background service helpers", () => {
       pidRecord: readyPidRecord,
       socketPath: expect.stringMatching(/^\\\\\.\\pipe\\ade-runtime-alpha-/),
     }));
-    const scheduledCommand = renderWindowsCommand({
+    const scheduledCommand = headlessConsoleCommand({
       command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
@@ -1035,7 +1040,7 @@ describe("Windows background service helpers", () => {
       makeTempHome("ade-windows-service-foreign-legacy-"),
       "brain-service.ps1",
     );
-    const scheduledCommand = renderWindowsCommand({
+    const scheduledCommand = headlessConsoleCommand({
       command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
@@ -1221,7 +1226,7 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ADE per-user startup entry was installed, but the background service failed to start: ERROR: access is denied");
-    const scheduledCommand = renderWindowsCommand({
+    const scheduledCommand = headlessConsoleCommand({
       command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",

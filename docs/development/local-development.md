@@ -311,6 +311,13 @@ node scripts/dev-detached.mjs "$wt\perf\dev.log" npm run dev:desktop -- `
   --remote-debugging-port=9413
 ```
 
+**The printed pid is a console host.** On Windows `dev-detached.mjs` and the
+dev brain run their command under `scripts/dev-console-host.mjs`, which gives
+it a console no one can see; a plain detached process has no console, and every
+`cmd.exe`, `git` and probe under it flashed a Windows Terminal window. Stop the
+whole tree with `taskkill /T /F /PID <pid>`. A command that cannot start says so
+in the log instead of on stderr.
+
 **Launch it from PowerShell, not Git Bash.** MSYS rewrites anything that looks
 like a POSIX path, so `\\.\pipe\ade-runtime-dev-x` reaches Node as
 `C:\pipe\ade-runtime-dev-x` and the runtime exits with "exited before opening

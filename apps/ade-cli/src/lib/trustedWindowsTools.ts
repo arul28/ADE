@@ -7,6 +7,7 @@ import { pathKey } from "../../../desktop/src/main/services/shared/pathCompare";
 
 export type TrustedWindowsTool =
   | "cmd"
+  | "conhost"
   | "powercfg"
   | "powershell"
   | "reg"
@@ -19,6 +20,10 @@ export type TrustedWindowsTool =
 
 const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
   cmd: "cmd.exe",
+  // The console host. `conhost.exe --headless <command line>` gives a console
+  // program a console with no window, which is how a background PowerShell is
+  // started without Windows Terminal flashing a window up first.
+  conhost: "conhost.exe",
   powercfg: "powercfg.exe",
   powershell: path.win32.join("WindowsPowerShell", "v1.0", "powershell.exe"),
   reg: "reg.exe",
