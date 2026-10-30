@@ -487,7 +487,7 @@ merged are in the PR, not here. A row wins only when its worst run wins.
 |---|---|---|---|---|---|
 | E1 | Project database first open, one per fresh process | `db-first-open.bench.mts --project`, 5 runs x 7 processes | 36.2 ms (36.2; slowest single open 37.6) | 50-66 ms | win |
 | F1 | PR discovery reads, one pass (the six reads, no GitHub) | `db-reads.bench.mts --project`, 10 passes, first dropped | 1.73 ms (1.74) | 4.32 ms | win |
-| F5 | Startup recovery read (`reconcileStaleRunningSessions`) | same, 1 + 20 | 0.09 ms (0.09) on 7 sessions | 0.8 ms; 4.0 ms on a 5.5k-item thread | win on this fixture; the 5.5k size is not run yet |
+| F5 | Startup recovery read (`reconcileStaleRunningSessions`) | same, 1 + 20 | 0.09 ms (0.09) on 7 sessions; 0.18 ms (0.19) once each pass really recovers its 2 stale rows (round 2) | 0.8 ms; 4.0 ms on a 5.5k-item thread | win on this fixture; the 5.5k size is not run yet |
 | F3 | One `git rev-parse HEAD` through `runGit`, 200 per run | `spawn.bench.mts --project` | 28.3 ms (29.2) | 2.7-3.0 ms (macOS/Linux) | loss: a bare `git --version` is 26.9 ms here, so this is the Windows process start |
 | F4 | Git processes / full `git status` runs for 1 refresh + 4 overlapping (`get_lane_status`) | `git-status-burst.bench.mts --project` | 20 (35) processes, 3 (13) status runs | at most 2 status runs | loss |
 | F2 | Longest database step on the event loop while a phone reconnects and the lane list is read 5 times | `brain-db-steps.bench.mts --project` | 1.69 ms (31.9) | 12.7 ms | loss on the worst run |
@@ -613,6 +613,68 @@ What changed:
 - **Hosted web client** (`bench:webclient`): not re-run.
 - **Brain cold start** (`brain-start.bench.mts`): it hard-coded `/tmp` and a
   Unix socket; fixed in this branch, not yet measured.
+
+## Real load, round 2 (2026-10-29)
+
+Same PC, copy and method as round 1. Each before/after pair alternated builds
+(`main`'s CLI bundle kept as `perfdist-main`, the change's as its own bundle,
+both through `--cli`).
+
+### Chat actions through the brain (#1980)
+
+`chat-status.bench.mts`: `getChatStatus` (what `ade chat status` and an agent's
+chat tools ask) for the 5 newest chats, 10 calls each per run, on a measurement
+brain that settled 45 s first. 2 rounds x 3 runs per build.
+
+| Build | Median per call (worst run) |
+|---|---:|
+| `main` | 74.1 ms (74.6) |
+| + primary lane from its row, CTO identity written only when it changed | 12.6 ms (14.1) |
+| + CTO tools built when first read (from the Mac lane) | 2.3 ms (3.0) |
+
+Before, every call listed every lane with git (about 60 ms here), rewrote
+`identity.yaml` and upserted `cto_identity_state` (a synced write on every
+read), and built all 126 tool schemas (about 11 ms of CPU).
+
+### An idle brain (#1981)
+
+`brain-idle.bench.mts`: a measurement brain on the copy, nothing connected, 10
+idle minutes after a 60 s settle. Per 10 minutes, one run per column per round
+(2 rounds).
+
+| | `main` | idle fixes | + PR refresh fix (Mac lane) | Outside target |
+|---|---:|---:|---:|---:|
+| Process starts | 59, 59 | 24, 27 | 5, 26 | — |
+| of which PowerShell (power read) | 10, 10 | 0, 0 | 0, 0 | — |
+| of which `git remote get-url` | 22, 21 | 2, 3 | 0, 3 | — |
+| of which `tailscale status` | 6, 6 | 2, 2 | 1, 2 | — |
+| Synced database versions added | 69, 71 | 71, 69 | 21, 41 | — |
+| SQL statements (all on the event loop) | 748, 751 | 749, 754 | 669, 742 | about 1 background poll query per 10 min |
+| Writer pragmas | 11, 11 | 11, 11 | 11, 11 | about 3 a minute |
+| Brain CPU | 4.28, 4.73 s | 3.97, 4.20 s | 4.33, 3.97 s | — |
+
+About 10 starts per window in every column are `gh auth token`: the
+measurement brain's stand-in home has no GitHub CLI config, so its token
+lookup always reaches `gh` (round 4 measured 0 on the installed app). One
+PowerShell power read costs 240-370 ms wall and about 300 ms CPU here. The
+~500 reads per window are mostly the PR poll's (121 PR rows, 30 each of stacks,
+stack entries, chat-session links and dismissals) and a Linear link check (53).
+
+Two things make these idle numbers higher than a connected install's. The
+measurement brain cannot reach ADE's cloud (the port guard blocks it), so its
+GitHub relay is never healthy and the PR poller refreshes the open PRs every
+tick; with a healthy relay it refreshes them only on a 15-minute sweep. And
+its GitHub calls fail (no token in the stand-in home), so the poller backs
+off by a varying amount: the first run of the third column backed off and
+shows 5 starts and 21 versions, the second did not (26 and 41). Both show the
+PR-refresh fix cutting synced writes (69-71 → 21-41).
+
+### Corrected rows
+
+- **F5 startup recovery read**: 0.18 ms (worst run 0.19) on the copy with its
+  stale rows restored before every pass (round 1's 0.09 ms measured the no-op
+  passes after the first). Outside target 0.8 ms; merged 4.0 ms on a 5.5k-item
+  thread. Still a win.
 
 ## How to measure on Windows
 
