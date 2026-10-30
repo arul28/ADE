@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { execFileOffThread } from "./offThreadSpawn";
+import { execFileOffThread, spawnOffThread } from "./offThreadSpawn";
 
 /**
  * The off-thread spawner batches a child's output in its worker. What a
@@ -51,5 +51,41 @@ describe("execFileOffThread", () => {
     } finally {
       delete process.env.ADE_OFFTHREAD_LIVE;
     }
+  });
+});
+
+describe("spawnOffThread stdin", () => {
+  // Echoes each stdin line, then reports how many it saw when stdin closes.
+  const echo = [
+    "let n = 0;",
+    "process.stdin.setEncoding('utf8');",
+    "process.stdin.on('data', (d) => { for (const l of d.split('\\n').filter(Boolean)) { n += 1; process.stdout.write('got:' + l + ';'); } });",
+    "process.stdin.on('end', () => process.stdout.write('eof:' + n));",
+  ].join("\n");
+  const run = (keepStdinOpen: boolean, drive: (child: ReturnType<typeof spawnOffThread>, output: () => string) => void) =>
+    new Promise<string>((resolve, reject) => {
+      const child = spawnOffThread(process.execPath, ["-e", echo], { keepStdinOpen });
+      let out = "";
+      child.stdout.on("data", (chunk: Buffer) => { out += chunk.toString(); });
+      drive(child, () => out);
+      child.on("error", reject);
+      child.on("close", () => resolve(out));
+    });
+
+  it("keeps stdin open across replies until end() when asked, and closes it at start by default", async () => {
+    // A request/reply child (the Codex app-server): the second write waits for
+    // the first reply, and EOF before it would drop the request.
+    const conversed = await run(true, (child, output) => {
+      child.stdin.write("one\n");
+      child.stdout.on("data", () => {
+        if (output() === "got:one;") child.stdin.write("two\n");
+        else if (output() === "got:one;got:two;") child.stdin.end();
+      });
+    });
+    expect(conversed).toBe("got:one;got:two;eof:2");
+
+    // By default, text written before the start lands, then stdin closes.
+    expect(await run(false, (child) => child.stdin.end("early\n"))).toBe("got:early;eof:1");
+    expect(await run(false, () => {})).toBe("eof:0");
   });
 });

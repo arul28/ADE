@@ -227,6 +227,7 @@ Its log recorded 1,643 `brain.event_loop_near_miss` warnings, 20-50 a day on bus
 | CLI discovery lists each directory once (10 s), no `where.exe` | `services/ai/cliExecutableResolver.ts`, `authDetector.ts` | 14 lookups: 450 ms / 29,536 stats -> 37 ms cold, 5 ms warm / 6 stats |
 | Origin URL from the repo git cache | `ade-cli/src/headlessLinearServices.ts` | 43 spawns per 5 min -> one per 5 min |
 | `gh auth token` and `tailscale status` off the event loop | same files, `execFileOffThread` | 83-121 ms blocks -> none |
+| Project open: the Droid fork probe, the sync port check and the Codex quota probe start off the event loop (the spawner can keep stdin open for request/reply children); the iOS helper path resolves on first use; the relay check waits a tick | `externalSessionsService.ts`, `syncListenerPortInspect.ts`, `usageTrackingService.ts`, `offThreadSpawn.ts`, `iosSimulatorService.ts`, `pushPublisherService.ts` | Cold project open on a copy of a real project, worst event-loop block (`brain-db-steps` F2b): see the PR for the A/B against main |
 | Every spinner turns in 30 steps a second | `renderer/index.css` (`--animate-spin`) and the custom spin keyframes | One 16px spinner, renderer + GPU: ~58% of a core -> idle noise; per 2 s main-thread task 436 -> 145 ms, layerize 214 -> 25 ms |
 
 Whole-brain check, dev brain near idle, same 5-minute window: busy 5,267 -> 2,791 ms, blocks >= 50 ms 17 -> 8, worst 784 -> 346 ms.
