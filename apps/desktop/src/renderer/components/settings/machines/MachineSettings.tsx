@@ -138,7 +138,7 @@ export function MachineSettings({
       {/* What the machine can run, and the copies of other machines' work it
           holds, once its brain reports them (lane 8fbb5263). */}
       <MachineCapabilitiesArea capabilities={null} />
-      <MachineWorkCopies pin={scope.pin} reach={reach} />
+      <MachineWorkCopies pin={scope.pin} reach={reach} isThisMachine={isThis} />
     </div>
   );
 }

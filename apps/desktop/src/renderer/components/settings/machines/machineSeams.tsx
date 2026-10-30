@@ -58,7 +58,16 @@ export function MachinePreferenceRow({ preference }: { preference: MachinePrefer
  * unused, the chat deleted or archived, low disk), so this is for clearing
  * space now.
  */
-export function MachineWorkCopies({ pin, reach }: { pin: OpenProjectBinding | null; reach: boolean }): ReactNode {
+export function MachineWorkCopies({
+  pin,
+  reach,
+  isThisMachine,
+}: {
+  pin: OpenProjectBinding | null;
+  reach: boolean;
+  /** The page is This computer: only then may a copy in another project get a local pin. */
+  isThisMachine: boolean;
+}): ReactNode {
   const [copies, setCopies] = useState<MachineWorkCopy[] | null>(null);
   const [deleting, setDeleting] = useState<string | null>(null);
   const pinRef = useRef(pin);
@@ -87,9 +96,11 @@ export function MachineWorkCopies({ pin, reach }: { pin: OpenProjectBinding | nu
       tone: "error",
     });
     if (!ok) return;
+    const target = pinForCopy(pinRef.current, copy, isThisMachine);
+    if (target === "unreachable") return;
     setDeleting(copy.owner);
     try {
-      await window.ade.remoteWork.delete({ owner: copy.owner, projectId: copy.projectId }, pinForCopy(pinRef.current, copy));
+      await window.ade.remoteWork.delete({ owner: copy.owner, projectId: copy.projectId }, target);
       setEpoch((value) => value + 1);
     } catch (error) {
       showToast({ tone: "error", title: "Couldn't delete the work copy", message: error instanceof Error ? error.message : String(error) });
@@ -102,7 +113,9 @@ export function MachineWorkCopies({ pin, reach }: { pin: OpenProjectBinding | nu
     <section className="ade-mx-group">
       <h2 className="kit-eyebrow ade-mx-group-title">Work from other machines</h2>
       <div className="ade-mx-group-rows">
-        {copies.map((copy) => (
+        {copies.map((copy) => {
+          const unreachable = pinForCopy(pin, copy, isThisMachine) === "unreachable";
+          return (
           <div key={copy.owner} className="ade-mx-srow">
             <span className="ade-mx-srow-icon" aria-hidden><GitBranch size={14} /></span>
             <span className="ade-mx-srow-text">
@@ -122,42 +135,51 @@ export function MachineWorkCopies({ pin, reach }: { pin: OpenProjectBinding | nu
               <button
                 type="button"
                 className="ade-mx-srow-link disabled:cursor-not-allowed disabled:opacity-40"
-                disabled={deleting !== null || copy.running === true}
-                title={copy.running ? "A command still runs in this copy. Stop it first." : undefined}
+                disabled={deleting !== null || copy.running === true || unreachable}
+                title={copy.running
+                  ? "A command still runs in this copy. Stop it first."
+                  : unreachable
+                    ? "This copy is in another project there. Delete it from that project's tab."
+                    : undefined}
                 onClick={() => { void remove(copy); }}
               >
                 {deleting === copy.owner ? "Deleting…" : "Delete"}
               </button>
             </span>
           </div>
-        ))}
+          );
+        })}
       </div>
     </section>
   );
 }
 
 /**
- * The pin for the project that holds `copy` on the same machine: delete runs
- * in that project. The page's pin names one project there; another project's
- * copy needs its own.
+ * The pin for the project that holds `copy` on the page's machine: delete
+ * runs in that project. "unreachable" when no pin can be built without
+ * guessing: a local pin is only ever built for This computer, so a delete can
+ * never fall through to this computer while the page names another machine.
  */
-function pinForCopy(pagePin: OpenProjectBinding | null, copy: MachineWorkCopy): OpenProjectBinding | null {
-  if (!copy.projectId) return pagePin;
+function pinForCopy(
+  pagePin: OpenProjectBinding | null,
+  copy: MachineWorkCopy,
+  isThisMachine: boolean,
+): OpenProjectBinding | null | "unreachable" {
+  const displayName = copy.projectRoot.split(/[\\/]/).pop() || copy.projectRoot;
   if (pagePin?.kind === "remote") {
-    if (pagePin.projectId === copy.projectId) return pagePin;
+    if (!copy.projectId || pagePin.projectId === copy.projectId) return pagePin;
     return {
       ...pagePin,
       key: remoteProjectBindingKey(pagePin.targetId, copy.projectId),
       projectId: copy.projectId,
       rootPath: copy.projectRoot,
-      displayName: copy.projectRoot.split(/[\\/]/).pop() || copy.projectRoot,
+      displayName,
     };
   }
+  if (!isThisMachine) {
+    // Another machine reached without a remote pin: only its own project's copy, unpinned.
+    return pagePin == null && copy.projectId == null ? null : "unreachable";
+  }
   if (pagePin?.kind === "local" && pagePin.rootPath === copy.projectRoot) return pagePin;
-  return {
-    kind: "local",
-    key: copy.projectRoot,
-    rootPath: copy.projectRoot,
-    displayName: copy.projectRoot.split(/[\\/]/).pop() || copy.projectRoot,
-  };
+  return { kind: "local", key: copy.projectRoot, rootPath: copy.projectRoot, displayName };
 }
