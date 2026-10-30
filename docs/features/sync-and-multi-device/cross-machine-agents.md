@@ -131,6 +131,40 @@ on the first command; nothing is installed in advance, and ignored files
   machine, from `<ADE_HOME>/remote-work/projects.json`) and deletes with
   `remote_work.delete` (desktop only).
 
+## Choosing a machine for new work
+
+All your machines act as one pool, but nothing moves by itself: "Least loaded"
+picks a machine only when a person (or an agent offering a choice the person
+approves) starts new work. Running work stays where it is.
+
+- **Each machine reads itself.** `machine_stats.get` (domain `machine_stats`,
+  read, open to agents; `main/services/machineStats/machineStatsService.ts`)
+  answers from that machine's own brain through its pin: whole-host CPU over a
+  200 ms sample (`os.cpus()` deltas, the same on Windows), memory available
+  (`vm_stat` on a Mac, where `os.freemem()` counts only free pages), disk,
+  build tools running (`ps` / `tasklist`), battery and keep-awake, and in the
+  background at most every 3 minutes: the CLIs signed in there (yes or no from
+  their config files, never a token), Xcode and simulators, the OS name and
+  the work copies it keeps. One reader per brain, answers cached 5 s; nothing
+  runs unless someone asks. Preload: `window.ade.machineStats.get(pin)`; CLI:
+  `ade actions run machine_stats.get [--machine <name>]`.
+- **Each machine has a preference.** Prefer, Normal, Less often or Manual only,
+  set on its page in Settings › Machines. It lives in the account settings
+  store (scope `all`, key `machine.placement.<machineKey>`, one key per machine
+  so two devices never overwrite each other), with this computer's
+  localStorage first so a signed-out machine or an SSH target (no account key)
+  keeps its own. No setting reads as Normal.
+- **"Least loaded"** (`autoLaneMachine` in `renderer/components/lanes/laneMachines.ts`)
+  scores each machine's headroom from its stats (idle CPU, free memory, a
+  little for more cores, less per running build, much less on battery or for
+  a laptop ADE does not keep awake), scales it by the preference (×1.5, ×1,
+  ×0.5) and picks the best; low disk still loses first, and close scores fall
+  back to running lanes and then the machine the tab is on. A machine with no
+  stats counts as moderately busy. **Manual only is never picked
+  automatically**, with or without stats. The new-lane machine menu, the
+  batch launch and the new-chat machine picker offer it; they read stats only
+  while open, and only when two or more machines can host the repo.
+
 ## Moving a chat to another machine
 
 `ade chat handoff <session> --machine <name>` moves a chat FROM this machine TO

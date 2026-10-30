@@ -392,6 +392,9 @@ import {
 } from "../lanes/CreateLaneDialogHost";
 import { peekNewLaneDefaultsCached, useNewLaneDefaults } from "../../lib/newLaneDefaultsCache";
 import { describeAutoCreateStart } from "../lanes/laneStartOptions";
+import { autoLaneMachine } from "../lanes/laneMachines";
+import { autoPickSummary } from "../lanes/machineLoadText";
+import { useMachinePlacement } from "../lanes/useMachinePlacement";
 import { chatLaunchLaneStart } from "../../../shared/chatLaunch";
 import { DEFAULT_LANE_START } from "../../../shared/laneStart";
 import {
@@ -7875,7 +7878,10 @@ export function AgentChatPane({
     if (devinCloudAuthConfigured !== null) return;
     refetchDevinCloudAuth();
   }, [devinCloudAuthConfigured, refetchDevinCloudAuth]);
+  // "Least loaded" reads machine stats only once the machine menu has opened.
+  const [draftMachinePickerOpened, setDraftMachinePickerOpened] = useState(false);
   const handleDraftMachinePickerOpen = useCallback(() => {
+    setDraftMachinePickerOpened(true);
     refetchCursorCloudRepos();
     if (laneGitRemoteStatus === "error") refetchLaneGitRemote();
     refetchDevinCloudAuth();
@@ -16396,6 +16402,11 @@ export function AgentChatPane({
     parallelChatMode,
     selectedDraftMachineId,
   ]);
+  const placedDraftMachines = useMachinePlacement(laneMachineOptions, draftMachinePickerOpened && showDraftLaunchControls);
+  const draftAutoMachine = useMemo(() => {
+    const machine = autoLaneMachine(placedDraftMachines);
+    return machine ? { machineId: machine.id, summary: autoPickSummary(machine) } : null;
+  }, [placedDraftMachines]);
   const draftShelfMachineValue = cursorCloudMode
     ? CURSOR_CLOUD_MACHINE_ID
     : devinCloudMode
@@ -19441,6 +19452,7 @@ export function AgentChatPane({
                                 onChange={handleDraftShelfMachineChange}
                                 disabled={shellLaunchBusy}
                                 onOpen={handleDraftMachinePickerOpen}
+                                autoPick={draftAutoMachine}
                               />
                               <LaneCombobox
                                 lanes={draftShelfLanes}

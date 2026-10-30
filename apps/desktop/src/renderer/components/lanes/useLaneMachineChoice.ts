@@ -10,6 +10,7 @@ import {
   type LaneMachineOption,
   type LaneMachineProjectRef,
 } from "./laneMachines";
+import { useMachinePlacement } from "./useMachinePlacement";
 
 export type LaneMachineTarget = {
   /** Null for the tab's machine (unpinned path); else that machine's binding. */
@@ -85,7 +86,7 @@ export function useLaneMachineChoice(open: boolean) {
     return record?.gitOriginUrl ?? null;
   }, [boundTargetId, projectBinding, remoteSnapshot]);
 
-  const machines = useMemo(
+  const baseMachines = useMemo(
     () =>
       deriveLaneMachineOptions({
         connections: remoteSnapshot?.connections ?? [],
@@ -97,6 +98,8 @@ export function useLaneMachineChoice(open: boolean) {
       }),
     [boundProject, boundTargetId, openProjectTabRoots, remoteSnapshot, repoOriginUrl],
   );
+  // Stats and preferences for "Least loaded", read while the dialog is open.
+  const machines = useMachinePlacement(baseMachines, open);
 
   /**
    * Where a create on each machine is sent. The tab's machine takes the
@@ -113,7 +116,7 @@ export function useLaneMachineChoice(open: boolean) {
 
   const machineTargets = useMemo(() => {
     const targets = new Map<string, { pin: OpenProjectBinding | null; lanes: LaneSummary[] | null }>();
-    for (const machine of machines) {
+    for (const machine of baseMachines) {
       if (machine.isBound) {
         targets.set(machine.id, { pin: null, lanes: null });
         continue;
@@ -154,7 +157,7 @@ export function useLaneMachineChoice(open: boolean) {
       }
     }
     return targets;
-  }, [machines, unionView]);
+  }, [baseMachines, unionView]);
 
   const eligibleMachineIds = useMemo(
     () => machines

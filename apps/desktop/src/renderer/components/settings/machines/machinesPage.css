@@ -472,3 +472,91 @@ button.ade-mx-hero-chip {
   align-items: center;
   gap: 8px;
 }
+
+/* Machine stats (machineSeams.tsx): a strip of figures at the top of "Right now". */
+.ade-mx-group-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.ade-mx-group-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.ade-mx-group-action:hover {
+  color: var(--color-fg);
+}
+.ade-mx-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+.ade-mx-stat {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px 16px;
+}
+.ade-mx-stat + .ade-mx-stat {
+  border-left: 1px solid var(--kit-rule);
+}
+.ade-mx-stat-value {
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--color-fg);
+}
+.ade-mx-stat-gap {
+  height: 4px;
+}
+.ade-mx-stat-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-mx-stats + .ade-mx-srow {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-mx-chips {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.ade-mx-srow-value:has(> .ade-mx-chips) {
+  white-space: normal;
+  overflow: visible;
+}
+
+/* The load summary on a machine's row in the list. */
+.ade-mx-row-load {
+  display: grid;
+  gap: 4px;
+  width: 150px;
+  font-size: 11px;
+  color: var(--kit-text-3);
+}
+.ade-mx-row-load-line {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  white-space: nowrap;
+}
+.ade-mx-row-name-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ade-mx-row-name > .kit-tag {
+  flex: none;
+}

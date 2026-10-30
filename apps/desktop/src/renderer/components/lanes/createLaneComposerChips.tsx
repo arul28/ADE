@@ -10,9 +10,11 @@ import {
   autoLaneMachine,
   canCreateLaneOnMachine,
   isLowLaneMachineDisk,
+  laneMachineFreeBytes,
   THIS_MACHINE_ID,
   type LaneMachineOption,
 } from "./laneMachines";
+import { autoPickSummary, machineLoadSummary, placementTag } from "./machineLoadText";
 
 /**
  * The popovers of the new-lane composer: the shared popover shell and row, and
@@ -118,12 +120,14 @@ function PopItem({
 function machineDetail(machine: LaneMachineOption): { text: string; short: string; path: string | null; warn: boolean } {
   const path = machine.project?.rootPath ?? machine.hostname ?? null;
   if (!canCreateLaneOnMachine(machine)) return { text: "This repo isn't here yet", short: "No repo", path, warn: false };
-  const free = machine.freeBytes !== null ? `${formatBytes(machine.freeBytes)} free` : null;
+  const freeBytes = laneMachineFreeBytes(machine);
+  const free = freeBytes !== null ? `${formatBytes(freeBytes)} disk free` : null;
+  const load = machineLoadSummary(machine.stats);
   return {
-    text: [free, path].filter(Boolean).join(" · ") || "Connected",
+    text: [placementTag(machine), load, free].filter(Boolean).join(" · ") || path || "Connected",
     short: free ?? "Connected",
     path,
-    warn: isLowLaneMachineDisk(machine.freeBytes),
+    warn: isLowLaneMachineDisk(freeBytes),
   };
 }
 
@@ -182,7 +186,7 @@ export function LaneMachineChip({
             <PopItem
               icon={<span className="cl-tile" data-tone="machine"><Scales size={13} weight="duotone" /></span>}
               title="Least loaded"
-              sub={`Picks ${autoMachine.name} right now`}
+              sub={autoPickSummary(autoMachine)}
               hint={`Balance across ${eligibleCount} connected machines`}
               onSelect={() => {
                 onSelectMachine(autoMachine.id);

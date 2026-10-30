@@ -6,9 +6,11 @@ import {
   autoLaneMachine,
   canCreateLaneOnMachine,
   isLowLaneMachineDisk,
+  laneMachineFreeBytes,
   THIS_MACHINE_ID,
   type LaneMachineOption,
 } from "./laneMachines";
+import { autoPickSummary, machineLoadSummary, placementTag } from "./machineLoadText";
 
 /**
  * "Create on" — the machine a new lane (and therefore every chat inside it)
@@ -70,7 +72,7 @@ export function LaneMachineSelector({
           <span className="min-w-0 flex-1">
             <span className="block text-xs font-semibold text-fg">Auto — least loaded</span>
             <span className="block truncate text-[10px] leading-snug text-muted-fg/60">
-              {`Least loaded · ${autoMachine.name}`}
+              {autoPickSummary(autoMachine)}
             </span>
           </span>
         </button>
@@ -118,7 +120,8 @@ function LaneMachineCard({
 }) {
   const available = canCreateLaneOnMachine(machine);
   const Icon = machine.id === THIS_MACHINE_ID ? Desktop : DesktopTower;
-  const lowDisk = isLowLaneMachineDisk(machine.freeBytes);
+  const freeBytes = laneMachineFreeBytes(machine);
+  const lowDisk = isLowLaneMachineDisk(freeBytes);
   return (
     <button
       type="button"
@@ -138,14 +141,14 @@ function LaneMachineCard({
         </span>
         <div className="min-w-0 flex-1">
           <div className="truncate text-xs font-semibold text-fg">{machine.name}</div>
-          {machine.freeBytes !== null ? (
+          {freeBytes !== null ? (
             <div
               className={cn(
                 "mt-0.5 text-[10px]",
                 lowDisk ? "text-amber-300" : "text-muted-fg/70",
               )}
             >
-              {formatBytes(machine.freeBytes)} free
+              {formatBytes(freeBytes)} free
             </div>
           ) : null}
         </div>
@@ -159,6 +162,8 @@ function LaneMachineCard({
 
 function machineDetailLine(machine: LaneMachineOption, available: boolean): string {
   if (!available) return "This repo isn't here yet";
+  const load = [placementTag(machine), machineLoadSummary(machine.stats)].filter(Boolean).join(" · ");
+  if (load) return load;
   if (machine.project) return machine.project.rootPath;
   if (machine.hostname) return machine.hostname;
   return "Connected";
