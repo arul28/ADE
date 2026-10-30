@@ -5543,14 +5543,17 @@ export function createPrService({
       invalidateGithubSnapshotCache();
     }
     // Nothing the upsert writes would change except the sync time: keep that in
-    // memory (see `syncedAtOverlay`) until the stored one is old.
-    const rowUnchanged = !materiallyChanged && onlySyncTimeWouldChange(row, updated);
-    const storedSyncedAtMs = parseIsoMs(
-      db.get<{ last_synced_at: string | null }>(
-        "select last_synced_at from pull_requests where id = ? and project_id = ?",
-        [row.id, projectId],
-      )?.last_synced_at ?? null,
+    // memory (see `syncedAtOverlay`) until the stored one is old. Decided
+    // against the row as stored NOW, not the one read before the GitHub
+    // requests: a backfill or an overlapping refresh may have written it since.
+    const stored = db.get<PullRequestRow>(
+      `select ${PR_COLUMNS} from pull_requests where id = ? and project_id = ? limit 1`,
+      [row.id, projectId],
     );
+    const storedSyncedAtMs = parseIsoMs(stored?.last_synced_at ?? null);
+    const rowUnchanged = Boolean(stored)
+      && !hasMaterialSummaryChange(stored!, updated)
+      && onlySyncTimeWouldChange(stored!, updated);
     if (rowUnchanged && storedSyncedAtMs > 0 && Date.now() - storedSyncedAtMs < PR_SYNCED_AT_PERSIST_MS) {
       syncedAtOverlay.set(row.id, updated.lastSyncedAt ?? nowIso());
     } else {
@@ -5562,7 +5565,9 @@ export function createPrService({
     // can reliably reference the latest commit on the PR head branch.
     // A failed checks fetch kept the previous rollup on purpose. Writing the
     // new SHA anyway would pair that old red with the new commit.
-    if (headSha && !checkRunsFetchFailed && headSha !== (row.head_sha ?? null)) {
+    // Compared with the stored SHA, so this refresh's rollup and SHA stay paired
+    // even when an overlapping refresh wrote another head meanwhile.
+    if (headSha && !checkRunsFetchFailed && headSha !== (stored?.head_sha ?? null)) {
       try {
         db.run("update pull_requests set head_sha = ? where id = ? and project_id = ?", [headSha, row.id, projectId]);
       } catch (err) {
