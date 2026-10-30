@@ -76,7 +76,6 @@ export function reportCopilotProblem(kind: CopilotProblemKind, args: {
   else captureProblem(`Copilot ${kind.replace(/_/g, " ")}`, context);
 }
 
-
 /** What the next Copilot issue in this process says came before it. */
 export function copilotBreadcrumb(message: string, data?: Record<string, unknown>): void {
   addSentryBreadcrumb("copilot", message, data);
