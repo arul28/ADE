@@ -31,21 +31,30 @@ let txnStart = null;
 let txnSql = null;
 let txnStmts = 0;
 let txnMs = 0;
+// A span opened by BEGIN ends at COMMIT, END or ROLLBACK; one opened by SAVEPOINT ends when its
+// outermost savepoint is released (or at COMMIT/ROLLBACK). ROLLBACK TO keeps the transaction open.
+let txnSavepointDepth = 0;
 const note = (kind, sql, ms) => {
   const text = String(sql || "").replace(/\s+/g, " ").trim();
-  const head = text.slice(0, 12).toLowerCase();
+  const head = text.slice(0, 16).toLowerCase();
   const now = performance.now();
-  if (/^(begin|savepoint)/.test(head) && txnStart === null) {
+  const opensSavepoint = /^savepoint\b/.test(head);
+  let closes = false;
+  if (/^(begin|savepoint)\b/.test(head) && txnStart === null) {
     txnStart = now - ms;
     txnStmts = 0;
     txnMs = 0;
     txnSql = null;
+    txnSavepointDepth = opensSavepoint ? 1 : 0;
   } else if (txnStart !== null) {
     txnStmts += 1;
     txnMs += ms;
-    if (!txnSql && !/^(commit|release|rollback|end)/.test(head)) txnSql = text.slice(0, 160);
+    if (!txnSql && !/^(commit|release|rollback|end)\b/.test(head)) txnSql = text.slice(0, 160);
+    if (opensSavepoint && txnSavepointDepth > 0) txnSavepointDepth += 1;
+    if (/^release\b/.test(head) && txnSavepointDepth > 0) closes = --txnSavepointDepth === 0;
+    if (/^(commit|end)\b/.test(head) || (/^rollback\b/.test(head) && !/^rollback( transaction)? to\b/.test(head))) closes = true;
   }
-  if (txnStart !== null && /^(commit|end|rollback)/.test(head)) {
+  if (txnStart !== null && closes) {
     buf.push(JSON.stringify({ at: Date.now(), thread: threadId, kind: "txn", ms: +(now - txnStart).toFixed(2), stmtMs: +txnMs.toFixed(2), n: txnStmts, sql: txnSql }));
     txnStart = null;
   }

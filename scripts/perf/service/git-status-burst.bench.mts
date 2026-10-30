@@ -16,7 +16,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { connectBrain, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
+import { connectBrain, releaseCopySyncHost, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
 
 const argv = process.argv.slice(2);
 const flag = (name: string) => {
@@ -69,6 +69,7 @@ const median = (xs: number[]) => {
   return s.length % 2 ? s[mid]! : (s[mid - 1]! + s[mid]!) / 2;
 };
 
+await releaseCopySyncHost(projectRoot);
 const record = startMeasureBrain({ ...brain, cli, preloads: [spawnTrace], env: { ADE_SPAWN_TRACE_DIR: traceDir } });
 
 const rows: Array<{ run: number; gitProcesses: number; statusRuns: number; trailingGit: number; wallMs: number; byVerb: Record<string, number> }> = [];

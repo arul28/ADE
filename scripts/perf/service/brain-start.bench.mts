@@ -43,7 +43,11 @@ const fakeHome = path.join(root, "home");
 const runCwd = path.join(root, "cwd");
 const cacheDir = path.join(adeHome, "cache", "node-compile");
 const realAdeHome = path.join(fs.realpathSync(os.homedir()), ".ade");
-if (!root.startsWith(tempRoot + path.sep) || adeHome.startsWith(realAdeHome)) throw new Error("Refusing to run outside a throwaway home in the temp folder.");
+const inside = (child: string, parent: string) => {
+  const relative = path.relative(fs.realpathSync(parent), fs.realpathSync(child));
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+};
+if (!inside(root, tempRoot) || (fs.existsSync(realAdeHome) && inside(root, realAdeHome))) throw new Error("Refusing to run outside a throwaway home in the temp folder.");
 const socketFor = (n: number) => (isWindows ? `\\\\.\\pipe\\ade-bench-brain-${process.pid}-${n}` :`/tmp/ade-bench-brain-${n}.sock`);
 for (const dir of [adeHome, fakeHome, runCwd]) fs.mkdirSync(dir, { recursive: true });
 

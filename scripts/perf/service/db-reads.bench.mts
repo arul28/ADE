@@ -91,6 +91,14 @@ const prDiscoveryPass = () => {
 const sessionService = createSessionService({ db, logger } as any);
 const processRegistry = createProcessRegistryService({ db, logger, role: "ade-serve-daemon", projectRoot: dir } as any);
 const f5Counts = db.get<{ n: number; running: number }>("select count(*) n, sum(status = 'running') running from terminal_sessions");
+// Each pass must find the same stale rows the brain finds at start: the first pass marks them
+// detached, so their original state is put back (outside the timing) before every pass.
+const staleCandidates = db.all<Record<string, unknown>>("select id, status, ended_at, exit_code from terminal_sessions where status = 'running'");
+const restoreStaleCandidates = () => {
+  for (const row of staleCandidates) {
+    db.run("update terminal_sessions set status = ?, ended_at = ?, exit_code = ? where id = ?", [row.status, row.ended_at, row.exit_code, row.id] as never);
+  }
+};
 let reconciled = 0;
 const startupRecovery = () => {
   reconciled += sessionService.reconcileStaleRunningSessions({
@@ -102,7 +110,7 @@ const startupRecovery = () => {
   });
 };
 
-const queries: Array<[string, () => unknown, number?]> = [
+const queries: Array<[string, () => unknown, number?, (() => void)?]> = [
   ["usage stats, all time", () => collectAdeDatabaseUsageStats(db, { since: null, until: new Date().toISOString() })],
   ["PR snapshots, every PR", () => db.all(
     `select s.* from pull_request_snapshots s join pull_requests p on p.id = s.pr_id and p.project_id = ? order by p.updated_at desc`,
@@ -118,7 +126,7 @@ const queries: Array<[string, () => unknown, number?]> = [
   )],
   ["Sync export, first 5,000 changes", () => db.sync?.exportChangesSince(0, { maxRows: 5_000, throughDbVersion: dbVersion })],
   ["F1 PR discovery reads, one pass", prDiscoveryPass, 10],
-  ["F5 startup recovery read", startupRecovery, 21],
+  ["F5 startup recovery read", startupRecovery, 21, restoreStaleCandidates],
 ];
 
 const med = (xs: number[]) => {
@@ -128,13 +136,14 @@ const med = (xs: number[]) => {
 };
 const r2 = (x: number) => Math.round(x * 100) / 100;
 console.log(JSON.stringify({ db: source, bytes: fs.statSync(copy).size, openMs: Math.round(openMs), pragmas: process.env.ADE_BENCH_PRAGMAS ?? "", rss: Math.round(process.memoryUsage().rss / 1e6), f1Counts, f5Counts }));
-for (const [name, run, queryRounds = rounds] of queries) {
+for (const [name, run, queryRounds = rounds, beforeEach] of queries) {
   const runValues: number[] = [];
   let firstMs = 0;
   let maxMs = 0;
   for (let r = 0; r < runs; r++) {
     const ms: number[] = [];
     for (let i = 0; i < queryRounds; i++) {
+      beforeEach?.();
       const t = performance.now();
       run();
       ms.push(performance.now() - t);

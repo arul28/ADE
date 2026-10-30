@@ -26,6 +26,7 @@ const flag = (name: string) => { const i = argv.indexOf(name); return i >= 0 ? a
 const positional = argv[0] && !argv[0].startsWith("--") ? argv[0] : undefined;
 const repo = path.resolve(flag("--project") ?? positional ?? path.join(import.meta.dirname, "../../.."));
 const runs = Number(flag("--runs") ?? 5);
+if (!Number.isInteger(runs) || runs < 1) throw new Error("--runs must be a positive integer");
 const clis = ["claude", "codex", "copilot", "agent", "cursor-agent", "gemini", "opencode", "droid", "npx", "npm", "node", "git", "gh", "bun"];
 const med = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
 const r1 = (x: number) => Math.round(x * 10) / 10;
@@ -96,8 +97,11 @@ if (process.platform === "win32") {
         const ms: number[] = [];
         for (let i = 0; i < 200; i++) {
           const t = performance.now();
-          spawnSync(exe, ["config", "--get", "core.bare"], { cwd: repo, encoding: "utf8", windowsHide: true, env });
+          const result = spawnSync(exe, ["config", "--get", "core.bare"], { cwd: repo, encoding: "utf8", windowsHide: true, env });
           ms.push(performance.now() - t);
+          // Every repository's own config sets core.bare, so a miss (exit 1) or a failed start means
+          // this row is not timing the command it claims to.
+          if (result.error || result.status !== 0) throw new Error(`git config --get core.bare failed through ${exe}: ${result.error?.message ?? `exit ${result.status}`}`);
         }
         sides[side]!.push(...ms);
         roundP50[side]!.push(pct(ms, 0.5));

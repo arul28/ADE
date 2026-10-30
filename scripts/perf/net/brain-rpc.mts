@@ -57,6 +57,14 @@ export async function connectBrain(socketPath: string, clientName: string): Prom
     socket.once("connect", resolve);
     socket.once("error", reject);
   });
+  // A brain that dies or drops the connection mid-bench fails every waiting request, so the bench
+  // reaches its cleanup instead of hanging with the brain left running.
+  const failAll = (error: Error) => {
+    for (const waiter of pending.values()) waiter.reject(error);
+    pending.clear();
+  };
+  socket.on("error", (error) => failAll(error));
+  socket.on("close", () => failAll(new Error("the brain closed the connection")));
   const request = (method: string, params?: unknown): Promise<any> => {
     const id = nextId++;
     return new Promise((resolve, reject) => {
