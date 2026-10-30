@@ -874,7 +874,7 @@ type CollapseTranscriptContext = {
    * `allocateTranscriptEventRowKey`). Carried so an incremental append numbers
    * a repeated base exactly as a full replay does.
    */
-  eventRowKeyOrdinals: Map<string, number>;
+  eventRowKeyOrdinals: RowKeyOrdinals;
   /**
    * Row keys of `done` rows that ended someone else's window (a subagent's
    * turn inside the parent's; see `isForeignTurnEnd`). The parent's snapshot
@@ -917,6 +917,65 @@ type CollapseCheckpoint = {
   context: CollapseTranscriptContext;
 };
 
+/**
+ * The row-key ordinal counts of a collapse context. A long chat holds one entry
+ * per distinct event base (thousands), and every checkpoint needs its own copy,
+ * so a plain Map copy made each checkpoint cost as much as a few hundred events.
+ * A fork instead freezes what was written so far as a shared, never-mutated
+ * layer and gives each side a fresh map on top. Adjacent layers merge when the
+ * newer is at least half the older's size, so there are O(log n) layers and a
+ * merge large enough to matter happens only after the chat has roughly doubled.
+ */
+class RowKeyOrdinals {
+  private own = new Map<string, number>();
+
+  constructor(
+    private layers: readonly ReadonlyMap<string, number>[] = [],
+    /**
+     * The session the first counted event belonged to. Nearly every event of a
+     * chat shares it, so its bases are counted under the bare base and other
+     * sessions' under a prefix no base can start with (a base starts with an
+     * event type). That keeps the hashed key short; the row key is unchanged.
+     */
+    private homeSessionId: string | null = null,
+  ) {}
+
+  /** The ordinal for this session + base, counting it. */
+  next(sessionId: string, base: string): number {
+    if (this.homeSessionId === null) this.homeSessionId = sessionId;
+    const key = sessionId === this.homeSessionId ? base : `\u0000${sessionId}\u0000${base}`;
+    const ordinal = this.get(key) ?? 0;
+    this.own.set(key, ordinal + 1);
+    return ordinal;
+  }
+
+  private get(key: string): number | undefined {
+    const own = this.own.get(key);
+    if (own !== undefined) return own;
+    for (let index = this.layers.length - 1; index >= 0; index -= 1) {
+      const value = this.layers[index]!.get(key);
+      if (value !== undefined) return value;
+    }
+    return undefined;
+  }
+
+  /** An independent copy; this one keeps answering exactly as before. */
+  fork(): RowKeyOrdinals {
+    if (this.own.size) {
+      const layers = [...this.layers, this.own];
+      while (layers.length >= 2 && layers[layers.length - 2]!.size <= 2 * layers[layers.length - 1]!.size) {
+        const newer = layers.pop()!;
+        const merged = new Map(layers.pop()!);
+        for (const [key, value] of newer) merged.set(key, value);
+        layers.push(merged);
+      }
+      this.layers = layers;
+      this.own = new Map();
+    }
+    return new RowKeyOrdinals(this.layers, this.homeSessionId);
+  }
+}
+
 /** A checkpoint is taken each time this many events have passed the newest one. */
 const COLLAPSE_CHECKPOINT_INTERVAL = 128;
 
@@ -938,7 +997,7 @@ export function createCollapseTranscriptContext(
     systemNoticeSignatures: new Set(),
     resolvedInputItemIds: new Set(),
     turnEndSnapshots: new Map(),
-    eventRowKeyOrdinals: new Map(),
+    eventRowKeyOrdinals: new RowKeyOrdinals(),
     foreignTurnEndKeys: new Set(),
     taskListRowIndex: null,
     workLogRowIndexByCollapseKey: new Map(),
@@ -980,7 +1039,7 @@ function cloneCollapseTranscriptContext(context: CollapseTranscriptContext): Col
     systemNoticeSignatures: new Set(context.systemNoticeSignatures),
     resolvedInputItemIds: new Set(context.resolvedInputItemIds),
     turnEndSnapshots: new Map(context.turnEndSnapshots),
-    eventRowKeyOrdinals: new Map(context.eventRowKeyOrdinals),
+    eventRowKeyOrdinals: context.eventRowKeyOrdinals.fork(),
     foreignTurnEndKeys: new Set(context.foreignTurnEndKeys),
     taskListRowIndex: context.taskListRowIndex,
     workLogRowIndexByCollapseKey: new Map(context.workLogRowIndexByCollapseKey),
@@ -1083,13 +1142,25 @@ function recordTurnEndSnapshot(
 function systemNoticeSignature(
   event: Extract<AgentChatEvent, { type: "system_notice" }>,
 ): string {
-  return JSON.stringify([
-    event.turnId ?? null,
-    event.noticeKind ?? null,
-    event.message.trim(),
-    event.detail ?? null,
-  ]);
+  const turnId = event.turnId ?? null;
+  const kind = event.noticeKind ?? null;
+  const message = event.message.trim();
+  const detail = event.detail ?? null;
+  // The common notice has text fields only: join them with a separator none of
+  // them holds ("s" form). Anything else is JSON ("j" form). The two forms
+  // never collide, and each is exact within itself.
+  if (
+    (detail === null || typeof detail === "string")
+    && !message.includes(NOTICE_SIGNATURE_SEPARATOR)
+    && !(detail ?? "").includes(NOTICE_SIGNATURE_SEPARATOR)
+    && !(turnId ?? "").includes(NOTICE_SIGNATURE_SEPARATOR)
+  ) {
+    return `s${turnId === null ? "" : `+${turnId}`}${NOTICE_SIGNATURE_SEPARATOR}${kind ?? ""}${NOTICE_SIGNATURE_SEPARATOR}${detail === null ? "" : `+${detail}`}${NOTICE_SIGNATURE_SEPARATOR}${message}`;
+  }
+  return `j${JSON.stringify([turnId, kind, message, detail])}`;
 }
+
+const NOTICE_SIGNATURE_SEPARATOR = "\u0001";
 
 /**
  * Where a turn-details contribution lands: the row already holding this turn
@@ -1462,9 +1533,36 @@ function deriveLocalhostUrls(entry: ChatWorkLogEntry, outputUrls: ReadonlyArray<
   }
   appendLocalhostUrls(urls, seen, entry.detail);
   appendLocalhostUrls(urls, seen, entry.label);
-  for (const value of collectTextValues(entry.args)) appendLocalhostUrls(urls, seen, value);
-  for (const value of collectTextValues(entry.result)) appendLocalhostUrls(urls, seen, value);
+  for (const url of payloadLocalhostUrls(entry.args)) appendLocalhostUrl(urls, seen, url);
+  for (const url of payloadLocalhostUrls(entry.result)) appendLocalhostUrl(urls, seen, url);
   return urls;
+}
+
+/**
+ * Tool args and results are event payloads, never edited after they arrive,
+ * and an entry is re-derived on every event that merges into it (its call, each
+ * output chunk, its result). Their URLs are read once per payload object.
+ */
+const localhostUrlsByPayload = new WeakMap<object, readonly ChatLocalhostUrl[]>();
+
+function payloadLocalhostUrls(payload: unknown): readonly ChatLocalhostUrl[] {
+  if (payload == null) return [];
+  if (typeof payload !== "object") {
+    return typeof payload === "string" ? extractLocalhostUrlsFromText(payload) : [];
+  }
+  const cached = localhostUrlsByPayload.get(payload);
+  if (cached) return cached;
+  const urls: ChatLocalhostUrl[] = [];
+  const seen = new Set<string>();
+  for (const value of collectTextValues(payload)) appendLocalhostUrls(urls, seen, value);
+  localhostUrlsByPayload.set(payload, urls);
+  return urls;
+}
+
+function appendLocalhostUrl(target: ChatLocalhostUrl[], seen: Set<string>, url: ChatLocalhostUrl): void {
+  if (seen.has(url.href)) return;
+  seen.add(url.href);
+  target.push(url);
 }
 
 /**
@@ -1517,8 +1615,14 @@ function outputUrlsOf(scan: OutputUrlScan): ReadonlyArray<ChatLocalhostUrl> {
 function withLocalhostUrls(entry: ChatWorkLogEntry, outputScan?: OutputUrlScan): ChatWorkLogEntry {
   const scan = outputScan ?? scanAppendedOutputUrls(EMPTY_OUTPUT_URL_SCAN, entry.output ?? "");
   const localUrls = deriveLocalhostUrls(entry, outputUrlsOf(scan));
-  const { localUrls: _previousLocalUrls, ...rest } = entry;
-  const next: ChatWorkLogEntry = localUrls.length > 0 ? { ...rest, localUrls } : rest;
+  let next: ChatWorkLogEntry;
+  if (!("localUrls" in entry)) {
+    // Every caller passes a fresh entry, so one without URLs is returned as is.
+    next = localUrls.length > 0 ? { ...entry, localUrls } : entry;
+  } else {
+    const { localUrls: _previousLocalUrls, ...rest } = entry;
+    next = localUrls.length > 0 ? { ...rest, localUrls } : rest;
+  }
   if (scan !== EMPTY_OUTPUT_URL_SCAN) outputUrlScanByEntry.set(next, scan);
   return next;
 }
@@ -1708,19 +1812,19 @@ function transcriptEventIdentityBase(envelope: AgentChatEventEnvelope): string {
  * Allocated once per event, eagerly, whether or not the event opens a row, so
  * `buildTranscriptEventRowKeys` can replay it without a collapse pass.
  */
-export function allocateTranscriptEventRowKey(
+function allocateTranscriptEventRowKey(
   envelope: AgentChatEventEnvelope,
-  ordinals: Map<string, number>,
+  ordinals: RowKeyOrdinals,
 ): string {
-  const base = `${envelope.sessionId}:${transcriptEventIdentityBase(envelope)}`;
-  const ordinal = ordinals.get(base) ?? 0;
-  ordinals.set(base, ordinal + 1);
+  const identity = transcriptEventIdentityBase(envelope);
+  const ordinal = ordinals.next(envelope.sessionId, identity);
+  const base = `${envelope.sessionId}:${identity}`;
   return ordinal === 0 ? base : `${base}#${ordinal}`;
 }
 
 /** Every event's candidate row key, exactly as a collapse pass over `events` assigns them. */
 export function buildTranscriptEventRowKeys(events: readonly AgentChatEventEnvelope[]): string[] {
-  const ordinals = new Map<string, number>();
+  const ordinals = new RowKeyOrdinals();
   return events.map((envelope) => allocateTranscriptEventRowKey(envelope, ordinals));
 }
 
@@ -2224,7 +2328,9 @@ function foldImageViewIntoAction(rows: ChatTranscriptRenderEnvelope[], event: Co
 // (load-bearing for sticky-bottom).
 
 function subagentText(value: unknown): string | null {
-  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
 function meaningfulProgressSummary(summary: string | null): string | null {
@@ -2795,7 +2901,11 @@ function handleSubagentLifecycleEvent(
   // unreachable today — the runtime emits no lifecycle events for background
   // tasks — so both sides are deliberately left as they are rather than flipped
   // blind to a predicate the tests do not pin.
-  if (!backgroundShell) {
+  // A complete, empty index proves no job line exists, so there is nothing to
+  // look up (four thousand subagent events in a long chat each built and
+  // hashed three keys here for nothing).
+  const mayHoldJobLine = !context.rowIndexesComplete || context.backgroundJobRowIndexByKey.size > 0;
+  if (!backgroundShell && mayHoldJobLine) {
     for (const identity of [state.renderKeyBase, agentKey, taskId]) {
       if (identity) removeBackgroundJobLine(rows, context, backgroundChipKey(identity));
     }

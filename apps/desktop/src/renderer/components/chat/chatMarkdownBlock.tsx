@@ -1,4 +1,4 @@
-import React, { useCallback, useContext, useMemo } from "react";
+import React, { useCallback, useContext, useMemo, useRef } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
@@ -167,6 +167,12 @@ export function streamingOpenCodeFence(tail: string): { code: string; language: 
   return { code: `${body.replace(/\n$/, "")}\n`, language: language || "text" };
 }
 
+/** An inline workspace image, on the chat's own machine and lane. */
+function ScopedChatInlineMedia({ src, alt, onOpen }: { src: string; alt: string; onOpen: (path: string) => void }) {
+  const scope = useChatRuntimeScope();
+  return <ChatInlineMedia src={src} alt={alt} pin={scope.pin} laneId={scope.laneId} onOpen={onOpen} />;
+}
+
 const MarkdownBody = React.memo(function MarkdownBody({
   markdown,
   components,
@@ -269,8 +275,14 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
     onOpenWorkspacePath?.(path);
   }, [onOpenWorkspacePath]);
   // A `localhost` link in this reply means the chat's machine.
-  const runtimeScope = useChatRuntimeScope();
-  const runtimePin = runtimeScope.pin;
+  const runtimePin = useChatRuntimeScope().pin;
+  // The map below must not depend on the chat's scope. Its entries are
+  // component types, so a new map remounts every element of the body; a chat
+  // switch settles the lane one render after the rows mount, and that remounted
+  // every reply it had just drawn. A link reads the pin when clicked, an inline
+  // image reads the scope itself (`ScopedChatInlineMedia`).
+  const runtimePinRef = useRef(runtimePin);
+  runtimePinRef.current = runtimePin;
   // Right-click on a link: copy it, or send it to a browser of your choosing.
   const { onContextMenu: onLinkContextMenu, menu: linkContextMenu } = useChatLinkContextMenu(runtimePin);
   // Lanes, chats, models and the rest that this reply names. The lookup only
@@ -315,11 +327,9 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
       const localPath = resolveWorkspacePathFromHref(href);
       if (localPath && !/^(?:https?:|data:)/i.test(href)) {
         return (
-          <ChatInlineMedia
+          <ScopedChatInlineMedia
             src={href}
             alt={alt ?? ""}
-            pin={runtimePin}
-            laneId={runtimeScope.laneId}
             onOpen={() => openWorkspacePath(localPath)}
           />
         );
@@ -504,7 +514,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
           rel="noreferrer"
           onClick={(event) => {
             event.preventDefault();
-            openUrlInAdeBrowser(href, { runtimePin });
+            openUrlInAdeBrowser(href, { runtimePin: runtimePinRef.current });
           }}
           onContextMenu={(event) => onLinkContextMenu(event, href)}
           className={
@@ -517,7 +527,7 @@ export const MarkdownBlock = React.memo(function MarkdownBlock({
         </a>
       );
     },
-  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, runtimePin, runtimeScope.laneId, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
+  }), [sceneScopeKey, sceneAnswer, neu, openWorkspacePath, sceneLive, sceneStreaming, streamingMermaidBody, bubble, thought, onLinkContextMenu]);
 
   return (
     <div

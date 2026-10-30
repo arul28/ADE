@@ -1,13 +1,14 @@
-import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ComponentProps } from "react";
 import { useAgentChatApi, useChatPaneScope } from "./agentChatApi";
 import { useChatRuntimeScope } from "./ChatRuntimeScope";
+import type { ComposerDraftStore } from "./chatLiveEvents";
 import { ISSUE_CONTEXT_DND_MIME, readIssueContextDrag } from "../../lib/issueDrag";
 import { openIssueRef } from "../../lib/issueNavigation";
 import { isImeComposing } from "../../lib/imeComposition";
 import { jiraIssueRef, linearIssueRef } from "../../../shared/issueRefs";
 import { LEGACY_MAX_CHAT_ATTACHMENT_BYTES } from "../../../shared/chatAttachmentLimits";
 import { stripElectronErrorWrapper } from "../../../shared/codedError";
-import { memoWithLatestHandlers } from "../../lib/stableIdentity";
+import { memoWithLatestHandlers, useLatestCallback, useStateSkippingSameValue } from "../../lib/stableIdentity";
 import { POPOVER_SURFACE_CLASS } from "../ui/paneMenuTokens";
 import { toneText } from "../lanes/laneDesignTokens";
 import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, CircleNotch, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsSixVertical, DotsThree, GithubLogo, Globe, Image, Lightning, LockKey, MagnifyingGlass, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Trash, X } from "@phosphor-icons/react";
@@ -3052,10 +3053,12 @@ function AgentChatComposerImpl({
   const attachmentTrayRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const richEditorRef = useRef<HTMLDivElement | null>(null);
-  const [machineChipPopover, setMachineChipPopover] = useState<{ machineKey: string; anchor: HTMLElement } | null>(null);
+  // Closes on every draft change; a plain `useState` rendered the composer a
+  // second time per keystroke for that same-value write.
+  const [machineChipPopover, setMachineChipPopover] = useStateSkippingSameValue<{ machineKey: string; anchor: HTMLElement } | null>(null);
   useEffect(() => {
     setMachineChipPopover(null);
-  }, [draft]);
+  }, [draft, setMachineChipPopover]);
   const richSelectionRef = useRef<Range | null>(null);
   const richInitializedRef = useRef(false);
   // Which DOM node the editor was last seeded into. The editor has two homes —
@@ -4228,9 +4231,13 @@ function AgentChatComposerImpl({
     }
     syncRichDraft();
   }, [onDraftChange, serializeRichEditor, syncRichDraft, useRichComposer]);
+  // `setUltrathinkKeyword` changes with every draft (it serializes the editor);
+  // the effort picker gets a stable handle that calls the latest one, so it
+  // re-renders only when the switch itself moves.
+  const setUltrathinkKeywordLatest = useLatestCallback(setUltrathinkKeyword);
   const ultrathinkControl = useMemo(
-    () => (ultrathinkReadable ? { active: ultrathinkActive, onChange: setUltrathinkKeyword } : null),
-    [setUltrathinkKeyword, ultrathinkActive, ultrathinkReadable],
+    () => (ultrathinkReadable ? { active: ultrathinkActive, onChange: setUltrathinkKeywordLatest } : null),
+    [setUltrathinkKeywordLatest, ultrathinkActive, ultrathinkReadable],
   );
   // The rich editor's text changes outside React (typing, chips, a quote
   // promoting the textarea), so repaint the colours on its own mutations.
@@ -7120,7 +7127,7 @@ function AgentChatComposerImpl({
    */
   const threadCommentSendCount = threadCommentsSessionId ? countCommentsForNextSend(threadComments) : 0;
   /** Send, merged with the pending-comments pill when the chat has comments. */
-  const withThreadComments = (sendControl: React.ReactNode) => (
+  const withThreadComments = useCallback((sendControl: React.ReactNode) => (
     parallelChatMode ? sendControl : (
       <ComposerThreadCommentsButton
         sessionId={threadCommentsSessionId}
@@ -7131,7 +7138,7 @@ function AgentChatComposerImpl({
         {sendControl}
       </ComposerThreadCommentsButton>
     )
-  );
+  ), [onJumpToThreadComment, parallelChatMode, threadComments, threadCommentsPin, threadCommentsSessionId]);
   const hasComposerContextContent =
     draft.trim().length > 0
     || threadCommentSendCount > 0
@@ -7577,9 +7584,38 @@ function AgentChatComposerImpl({
     ? pendingInput.providerMetadata.url
     : null;
 
-  return (
+  // The composer renders on every keystroke (the draft is a prop). Everything
+  // below reads no draft text, or only a fact about it, so each block keeps its
+  // element while its inputs hold and React skips the subtree: closed issue
+  // pickers, the toolbar and its pickers and tooltips, the voice bar, the
+  // command menu, the preview dialog. Handlers that change with the draft reach
+  // these through stable handles that call the latest version.
+  const draftHasText = draft.trim().length > 0;
+  const sendButtonTitleText = sendButtonTitle();
+  const openUploadPickerLatest = useLatestCallback(openUploadPicker);
+  const submitComposerDraftLatest = useLatestCallback(submitComposerDraft);
+  const submitActiveTurnDraftLatest = useLatestCallback(submitActiveTurnDraft);
+  const handleCommandMenuSelectLatest = useLatestCallback(handleCommandMenuSelect);
+  const handleProjectSecretSaved = useLatestCallback((name: string) => {
+    const note = projectSecretComposerNote(name);
+    onDraftChange(draft.trim().length ? `${draft.replace(/\s+$/, "")}\n\n${note}` : note);
+    showToast({
+      tone: "success",
+      title: `${name} saved to this project`,
+      message: "The value stays hidden. A note naming it is in your draft.",
+    });
+  });
+  const commandMenuSlashCommands = useMemo(() => effectiveSlashCommands.map((c) => ({
+    name: c.command.replace(/^\//, ""),
+    description: c.description,
+    argumentHint: c.argumentHint,
+    source: c.source,
+    kind: c.kind,
+    origin: c.origin,
+    server: c.server,
+  })), [effectiveSlashCommands]);
+  const issuePickerModals = useMemo(() => (
     <>
-      {issueContextMenu}
       <LinearIssueSelectModal
         open={linearIssuePickerOpen}
         ariaLabel="Attach Linear issue"
@@ -7642,6 +7678,613 @@ function AgentChatComposerImpl({
           }}
         />
       ) : null}
+    </>
+  ), [busy, chatRuntimePin, contextAttachments, githubIssuePickerOpen, jiraIssuePickerOpen, linearIssuePickerOpen, onAddContextAttachment, onOpenLinearSettings, onRemoveContextAttachment, parallelLaunchBusy, pinnedLinearIssue, selectedGitHubContextIssue, selectedJiraContextIssue, selectedLinearContextIssue]);
+  const codexVoiceBar = useMemo(() => <CodexVoiceBar voice={codexVoice} />, [codexVoice]);
+  const parallelLaunchPanel = useMemo(() => (parallelChatMode ? (
+
+      <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
+        <div className="flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/88">Parallel launch</div>
+            <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
+              Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
+            </p>
+          </div>
+          <SmartTooltip content={{ label: "Single model", description: "Turn off parallel launch and return this draft to one chat session." }}>
+            <button
+              type="button"
+              disabled={parallelLaunchBusy}
+              className="shrink-0 rounded-lg border border-fg/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-40"
+              onClick={() => {
+                onParallelChatModeChange?.(false);
+                onParallelConfiguringIndexChange?.(null);
+              }}
+            >
+              Single model
+            </button>
+          </SmartTooltip>
+        </div>
+        <div className="mt-3 flex flex-col gap-2">
+          {parallelModelSlots.map((slotRow, idx) => {
+            const desc = getModelById(slotRow.modelId);
+            const configuring = parallelConfiguringIndex === idx;
+            return (
+              <div
+                key={`parallel-slot-${idx}`}
+                className={cn(
+                  "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
+                  configuring
+                    ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
+                    : "border-fg/[0.07] bg-fg/[0.02]",
+                )}
+              >
+                <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-fg/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
+                  {idx + 1}
+                </span>
+                <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-medium text-fg/82">
+                  {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
+                </span>
+                <SmartTooltip content={{ label: configuring ? "Stop configuring" : "Configure model", description: "Edit the model, reasoning, permissions, and launch mode for this parallel lane." }}>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
+                      configuring
+                        ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
+                        : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/75",
+                    )}
+                    disabled={parallelLaunchBusy}
+                    onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
+                  >
+                    {configuring ? "Editing" : "Configure"}
+                  </button>
+                </SmartTooltip>
+                {parallelModelSlots.length > 2 ? (
+                  <span className="ml-auto inline-flex">
+                    <SmartTooltip content={{ label: "Remove model", description: "Remove this model from the parallel launch set." }}>
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-red-400/75 transition-colors hover:bg-red-500/10"
+                        disabled={parallelLaunchBusy}
+                        onClick={() => onParallelRemoveModel?.(idx)}
+                      >
+                        <Trash size={12} />
+                        Remove
+                      </button>
+                    </SmartTooltip>
+                  </span>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+        <SmartTooltip content={{ label: "Add model", description: "Add another model, with its own lane, to this parallel launch." }}>
+          <button
+            type="button"
+            className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-fg/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-fg/[0.2] hover:bg-fg/[0.04] hover:text-fg/75 disabled:opacity-40"
+            disabled={parallelLaunchBusy}
+            onClick={() => onParallelAddModel?.()}
+          >
+            <Plus size={14} weight="bold" />
+            Add model
+          </button>
+        </SmartTooltip>
+        {parallelLaunchBusy && parallelLaunchStatus ? (
+          <div className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
+            <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
+            <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{parallelLaunchStatus}</span>
+          </div>
+        ) : null}
+      </div>
+
+  ) : null), [onParallelAddModel, onParallelChatModeChange, onParallelConfiguringIndexChange, onParallelRemoveModel, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelLaunchStatus, parallelModelSlots]);
+  const modelControls = useMemo(() => (
+    <div
+      data-onboarding-anchor="composer-controls"
+      data-onboarding-anchor-fit="content"
+      className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {(() => {
+        const showNativeControls =
+          !parallelChatMode
+          || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]);
+        if (!showNativeControls || !nativeControlPanel) return null;
+        const wrapForUniformHeight = !parallelChatMode;
+        if (!wrapForUniformHeight) return nativeControlPanel;
+        return (
+          <div
+            className={cn(
+              "min-w-0 flex min-h-6 items-stretch shrink-0",
+              "[&_button]:h-6 [&_button]:max-h-6 [&_button]:min-h-6 [&_button]:shrink-0 [&_button]:py-0",
+              "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
+              "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
+            )}
+          >
+            {nativeControlPanel}
+          </div>
+        );
+      })()}
+      {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
+        <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-surface-recessed p-0.5">
+          {parallelSlotExecutionModeOptions.map((option) => {
+            const active = parallelSlotExecutionMode === option.value;
+            return (
+              <SmartTooltip
+                key={option.value}
+                content={{
+                  label: option.label,
+                  description: option.helper,
+                  effect: active ? "Currently selected for this parallel lane." : undefined,
+                }}
+              >
+                <button
+                  type="button"
+                  className={cn(
+                    "rounded-[8px] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider transition-colors",
+                    active ? "bg-fg/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
+                    parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
+                  )}
+                  disabled={parallelLaunchBusy}
+                  onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
+                  aria-pressed={active}
+                >
+                  {option.label}
+                </button>
+              </SmartTooltip>
+            );
+          })}
+        </div>
+      ) : null}
+      {!hideModelControls && parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
+        <>
+          <ModelPicker
+            value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+            onChange={(next, options) =>
+              onParallelSlotModelChange?.(parallelConfiguringIndex, next, options)}
+            {...(availableModelIds ? { availableModelIds } : {})}
+            constrainToAvailableModelIds={constrainModelSelection}
+            {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+            {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+            runtimePin={modelRuntimePin}
+            catalogScopeKey={modelCatalogScopeKey}
+            allowCliOnlyModels={allowCliOnlyModels}
+            // A parallel slot carries a model, not a preset, so a Custom
+            // pick here would be silently dropped at launch.
+            listsHarnessPresets={false}
+            disabled={parallelLaunchBusy}
+            compact
+            triggerClassName={COMPOSER_MODEL_TRIGGER}
+            fastMode={fastModeActive}
+            fastModeSupported={fastModeSupported}
+            fastModeUnavailableReason={fastModeUnavailableReason}
+            fastModeAllowed={fastModeAllowed}
+            {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
+            {...(onParallelSlotFastModeChange
+              ? {
+                  fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
+                  onFastModeChange: (next: boolean, tier?: FastTier) =>
+                    onParallelSlotFastModeChange(parallelConfiguringIndex, next, tier),
+                }
+              : {})}
+          />
+          <ReasoningEffortPicker
+            modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
+            reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
+            onChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
+            disabled={parallelLaunchBusy}
+            compact
+            triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+            catalogScopeKey={modelCatalogScopeKey}
+            catalogRevision={runtimeCatalogTick}
+          />
+        </>
+      ) : null}
+      {!hideModelControls && !parallelChatMode && fixedModelLabel ? (
+        <SmartTooltip content={{ label: "Model", description: "A cloud session keeps the model it started with. Start a new session to use another." }}>
+          <span className={cn("inline-flex h-6 items-center truncate rounded-md px-2 text-[11px] font-medium text-fg/75", COMPOSER_MODEL_TRIGGER)}>
+            {fixedModelLabel}
+          </span>
+        </SmartTooltip>
+      ) : null}
+      {!hideModelControls && !parallelChatMode && !fixedModelLabel ? (
+        <>
+          <PaneTooltip
+            label="Model is locked while a turn runs"
+            side="top"
+            disabled={!(modelSelectionLocked && turnActive)}
+            className="min-w-0 shrink [&_button:disabled]:pointer-events-none"
+          >
+          <ModelPicker
+            value={modelId}
+            emptyLabel={modelEmptyLabel}
+            onChange={onModelChange}
+            {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
+            activePresetId={activeHarnessPresetId}
+            openRequestKey={modelPickerOpenRequestKey}
+            onOpenRequestHandled={onModelPickerOpenRequestHandled}
+            {...(availableModelIds ? { availableModelIds } : {})}
+            constrainToAvailableModelIds={constrainModelSelection}
+            {...(providerAuthStatus ? { providerAuthStatus } : {})}
+            {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
+            {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
+            runtimePin={modelRuntimePin}
+            catalogScopeKey={modelCatalogScopeKey}
+            allowCliOnlyModels={allowCliOnlyModels}
+            listsHarnessPresets={listsHarnessPresets}
+            {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
+            disabled={modelSelectionLocked}
+            compact
+            triggerClassName={COMPOSER_MODEL_TRIGGER}
+            fastMode={fastModeActive}
+            fastTier={fastTier}
+            effectiveFastTier={effectiveFastTier}
+            fastModeSupported={fastModeSupported}
+            fastModeUnavailableReason={fastModeUnavailableReason}
+            fastModeAllowed={fastModeAllowed}
+            {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
+            {...(cursorCloudSessionActive ? {
+              serviceTierMode: true,
+              serviceTier: cursorCloudServiceTier,
+              onServiceTierChange: onCursorCloudServiceTierChange,
+            } : onFastModeChange ? { onFastModeChange } : {})}
+            copilotContextTier={copilotContextTier}
+            {...(onCopilotContextTierChange ? { onCopilotContextTierChange } : {})}
+          />
+          </PaneTooltip>
+          <ReasoningEffortPicker
+            modelId={modelId}
+            reasoningEffort={reasoningEffort}
+            squeezed={modelHint.chip != null}
+            onChange={handleReasoningEffortPickerChange}
+            disabled={effortSelectionLocked ?? modelSelectionLocked}
+            compact
+            triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
+            catalogScopeKey={modelCatalogScopeKey}
+            catalogRevision={runtimeCatalogTick}
+            ultrathink={ultrathinkControl}
+            daybreak={daybreakControl}
+            copilotAutoTier={copilotAutoTier}
+            copilotAutoTierPending={copilotAutoTierPending}
+            {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}
+          />
+          <ComposerModelHintChip chip={modelHint.chip} />
+        </>
+      ) : null}
+      {/* The harness a Custom pick runs in, next to the model it applies
+          to. Only a Custom pick gets one: every other model names its own
+          provider already, in the trigger beside this. */}
+      {activeHarnessPreset ? <ComposerHarnessChip harness={activeHarnessPreset.harness} /> : null}
+      {/* Right of the thinking-level selector when controls are present:
+          model, then how hard it thinks, then where it runs. It stays
+          outside that conditional because host surfaces hide model
+          controls without hiding a running chat. */}
+      {composerMachineName ? (
+        <ComposerMachineChip
+          machineName={composerMachineName}
+          cloud={cursorRuntime === "cloud"}
+          action={cursorRuntime === "cloud" ? null : machineChipAction}
+        />
+      ) : null}
+    </div>
+  ), [activeHarnessPreset, activeHarnessPresetId, allowCliOnlyModels, availableModelIds, composerMachineName, constrainModelSelection, copilotAutoTier, copilotAutoTierPending, copilotContextTier, cursorCloudServiceTier, cursorCloudSessionActive, cursorRuntime, daybreakControl, effectiveFastTier, effortSelectionLocked, fastModeActive, fastModeAllowed, fastModeSupported, fastModeUnavailableReason, fastTier, fixedModelLabel, handleReasoningEffortPickerChange, hideModelControls, listsHarnessPresets, machineChipAction, modelCatalogScopeKey, modelEmptyLabel, modelHint.chip, modelId, modelPickerOpenRequestKey, modelRuntimePin, modelSelectionLocked, nativeControlPanel, onCopilotAutoTierChange, onCopilotContextTierChange, onCursorCloudServiceTierChange, onFastModeChange, onFastModeLocked, onModelChange, onModelPickerOpenRequestHandled, onOpenAiSettings, onOpenHarnessSettings, onParallelSlotExecutionModeChange, onParallelSlotFastModeChange, onParallelSlotModelChange, onParallelSlotReasoningChange, onRuntimeCatalogRefreshed, parallelChatMode, parallelConfiguringIndex, parallelLaunchBusy, parallelModelSlots, parallelSlotExecutionMode, parallelSlotExecutionModeOptions, providerAuthStatus, reasoningEffort, runtimeCatalogTick, turnActive, ultrathinkControl]);
+  const contextUsageDial = useMemo(() => (!parallelChatMode && usageViewModel ? (
+
+      <ContextUsageDial
+        usage={usageViewModel}
+        active={turnActive}
+        compactionPulse={compactionPulse}
+        modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey)?.displayName ?? undefined}
+        compactControl={compactControl}
+        onCompact={onCompactContext}
+      />
+
+  ) : null), [compactControl, compactionPulse, modelCatalogScopeKey, modelId, onCompactContext, parallelChatMode, turnActive, usageViewModel]);
+  const attachmentAndToolControls = useMemo(() => (
+    <>
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: "Upload file",
+          description: parallelChatMode
+            ? attachBlockedReason ?? "Upload files from disk and send them to every parallel lane."
+            : attachBlockedReason ?? "Upload a file from disk and attach it to this message.",
+        }}
+      >
+        <button
+          type="button"
+          className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
+          disabled={!canAttach}
+          onClick={openUploadPickerLatest}
+          aria-label="Upload file from disk"
+        >
+          <Paperclip className="h-3 w-3" size={14} weight="bold" />
+        </button>
+      </SmartTooltip>
+      {/* Secondary toggles, folded behind one glyph. Each entry is still
+          gated by exactly the condition that used to gate its button, so
+          a control that would not have rendered does not become a row. */}
+      <ComposerOverflowMenu
+        triggerRef={issueContextButtonRef}
+        items={[
+          {
+            id: "issue-context",
+            label: "Issue context",
+            icon: <Bug size={14} weight={contextAttachmentCount ? "fill" : "regular"} />,
+            // Reads as "on" while issues are attached, so the collapsed
+            // trigger's dot reports them without needing its own badge.
+            active: contextAttachmentCount > 0,
+            disabled: !canAttachIssueContext,
+            badge: contextAttachmentCount || undefined,
+            onSelect: () => {
+              if (!canAttachIssueContext) return;
+              setAttachmentPickerOpen(false);
+              setIssueContextMenuOpen((open) => !open);
+            },
+          },
+          {
+            // The person adds a project secret themselves. The value goes
+            // to the project's encrypted secrets; only the name lands in
+            // the draft, so the agent learns it exists and nothing more.
+            id: "add-secret",
+            label: "Add secret…",
+            icon: <LockKey size={14} weight="regular" />,
+            disabled: composerInputLocked,
+            onSelect: () => setAddSecretOpen(true),
+          },
+          ...(cursorCloudPanelAvailable && onToggleCursorCloudPanel
+            ? [{
+                id: "cursor-cloud-panel",
+                label: "Cursor Cloud agents…",
+                icon: <CloudArrowUp size={14} weight="regular" />,
+                onSelect: onToggleCursorCloudPanel,
+              }]
+            : []),
+          ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
+            ? [{
+                id: "devin-cloud-panel",
+                label: "Devin Cloud sessions…",
+                icon: <DevinLogo size={14} />,
+                onSelect: onToggleDevinCloudPanel,
+              }]
+            : []),
+          ...(devinCloudHandoffAvailable && onHandoffToDevinCloud
+            ? [{
+                id: "devin-cloud-handoff",
+                label: "Hand off to Devin Cloud",
+                icon: <CloudArrowUp size={14} weight="regular" />,
+                onSelect: onHandoffToDevinCloud,
+              }]
+            : []),
+          ...(showParallelChatToggle && !parallelChatMode
+            ? [{
+                id: "parallel",
+                label: "Parallel models",
+                icon: <SquareSplitHorizontal size={14} weight="regular" />,
+                disabled: turnActive || busy,
+                onSelect: () => onParallelChatModeChange?.(true),
+              }]
+            : []),
+          ...(showIosSimulatorToggle && onToggleIosSimulator
+            ? [{
+                id: "ios-simulator",
+                label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
+                icon: <DeviceMobile size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />,
+                active: iosSimulatorOpen,
+                onSelect: onToggleIosSimulator,
+              }]
+            : []),
+          ...(showAppControlToggle && onToggleAppControl
+            ? [{
+                id: "app-control",
+                label: appControlOpen ? "Close App Control" : "Open App Control",
+                icon: <Desktop size={14} weight={appControlOpen ? "fill" : "regular"} />,
+                active: appControlOpen,
+                onSelect: onToggleAppControl,
+              }]
+            : []),
+        ]}
+      />
+
+      <AddProjectSecretDialog
+        open={addSecretOpen}
+        onOpenChange={setAddSecretOpen}
+        onSaved={handleProjectSecretSaved}
+      />
+
+      {/* Codex voice: talk with this chat. */}
+      {codexVoiceOffered ? <CodexVoiceButton voice={codexVoice} /> : null}
+
+      {/* Voice dictation — paired just left of the send control. */}
+      {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
+        voiceModelInstalled === false ? (
+          <SmartTooltip
+            forceEnabled
+            content={{
+              label: "Voice model not installed",
+              description: "Tap to download the on-device voice model in Settings → Chat.",
+            }}
+          >
+            <button
+              type="button"
+              onClick={() => {
+                // HashRouter deep-link to the voice-input card under General.
+                window.location.hash = `#${settingsRouteFor("agents.dictation")}`;
+              }}
+              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)]"
+              aria-label="Set up voice input"
+            >
+              <MicrophoneSlash size={14} weight="regular" />
+            </button>
+          </SmartTooltip>
+        ) : voiceModelInstalled ? (
+          <VoiceDictationButton
+            onOptimisticStart={() => {
+              // This composer is the one being dictated into: claim the
+              // target and shimmer immediately, before getUserMedia.
+              registerAsDictationTarget();
+              triggerVoiceShimmer();
+            }}
+            onError={(message) => setVoiceError(message)}
+          />
+        ) : null
+      ) : null}
+    </>
+  ), [addSecretOpen, appControlOpen, attachBlockedReason, busy, canAttach, canAttachIssueContext, codexVoice, codexVoiceOffered, composerInputLocked, contextAttachmentCount, cursorCloudPanelAvailable, devinCloudHandoffAvailable, devinCloudPanelAvailable, handleProjectSecretSaved, iosSimulatorOpen, onHandoffToDevinCloud, onParallelChatModeChange, onToggleAppControl, onToggleCursorCloudPanel, onToggleDevinCloudPanel, onToggleIosSimulator, openUploadPickerLatest, parallelChatMode, registerAsDictationTarget, showAppControlToggle, showIosSimulatorToggle, showParallelChatToggle, triggerVoiceShimmer, turnActive, voiceInputEnabled, voiceModelInstalled]);
+  const sendControls = useMemo(() => (turnActive ? (
+
+        <>
+          {draftHasText && onClearDraft ? (
+            <SmartTooltip forceEnabled content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
+              <button
+                type="button"
+                className="inline-flex h-6 items-center justify-center rounded-md border border-fg/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-fg/[0.04] hover:text-fg/72"
+                onClick={onClearDraft}
+              >
+                Clear
+              </button>
+            </SmartTooltip>
+          ) : null}
+          {!composerInputLocked ? withThreadComments(
+            activeTurnSendMenuEnabled ? (
+              // Claude Code parity: the caret selects delivery behavior;
+              // the primary button and Enter execute that selection.
+              <ActiveTurnSendButton
+                enabled={activeSteerEnabled}
+                mode={effectiveActiveTurnSendMode}
+                capability={activeTurnSendCapability}
+                allowInline={Boolean(draftInlineSteerHandler)}
+                allowInterrupt={Boolean(onSendSteerInterrupt)}
+                inlineBlockedReason={onSendSteerNow ? draftInlineBlockedReason : null}
+                onModeChange={setActiveTurnSendMode}
+                onSend={submitActiveTurnDraftLatest}
+              />
+            ) : (
+              // Providers without inline-steer dispatch keep the single
+              // queue affordance; it still explains itself on hover.
+              <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
+                <button
+                  data-send-part=""
+                  data-send-control=""
+                  type="button"
+                  disabled={!activeSteerEnabled}
+                  className={cn(
+                    "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all",
+                    activeSteerEnabled
+                      ? "bg-white/90 text-zinc-900 hover:bg-white"
+                      : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
+                  )}
+                  onClick={submitComposerDraftLatest}
+                  aria-label="Send steer message"
+                >
+                  <ArrowUp size={14} weight="bold" />
+                </button>
+              </SmartTooltip>
+            ),
+          ) : null}
+          <ActiveTurnStopButton
+            mode={effectiveStopMode}
+            allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
+            backgroundJobCount={backgroundJobCount}
+            childChatCount={childChatCount}
+            provider={sessionProvider}
+            onModeChange={updateActiveTurnStopMode}
+            onStop={() => onInterrupt(effectiveStopMode)}
+          />
+        </>
+      ) : (
+        (() => {
+          // The Send button wears its cloud variant whenever cloud mode is live for this
+          // send — a fresh chat with cloud mode on. It stays the cloud variant even when the
+          // draft's model is not cloud-capable: the button goes disabled and its tooltip says
+          // why, because a local Send affordance here would mean sending to the wrong runtime.
+          // Once turns exist the launch path is closed and the standard local Send returns.
+          const cloudMode = cloudModeActiveForSend;
+          const label = parallelChatMode
+            ? "Send to lanes"
+            : cloudMode
+              ? `Send to ${cloudTargetLabel}`
+              : "Send";
+          const description = parallelChatMode
+            ? "Create a lane for each model from this lane's branch and send this prompt with its attachments to each one."
+            : cloudMode
+              ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
+              : "Send this prompt to the selected model.";
+          const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
+          const sendIcon = cloudMode
+            ? <CloudArrowUp size={14} weight="bold" />
+            : <ArrowUp size={14} weight="bold" />;
+
+          // Without a background option this is a plain circular Send.
+          if (!backgroundAvailable) {
+            return withThreadComments(
+              <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitleText }}>
+                <button
+                  data-send-part=""
+                  data-send-control=""
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
+                    sendEnabled
+                      ? "bg-white/90 text-zinc-900 hover:bg-white"
+                      : "bg-fg/[0.06] text-muted-fg/20",
+                  )}
+                  disabled={!sendEnabled}
+                  onClick={submitComposerDraftLatest}
+                  aria-label={label}
+                >
+                  {sendIcon}
+                </button>
+              </SmartTooltip>,
+            );
+          }
+
+          return withThreadComments(
+            <ComposerIdleSendButton
+              label={label}
+              description={description}
+              effect={sendButtonTitleText}
+              icon={sendIcon}
+              sendEnabled={sendEnabled}
+              backgroundLabel={backgroundLaunchActionLabel}
+              backgroundEnabled={backgroundSendEnabled}
+              backgroundBusy={backgroundLaunchBusy}
+              onSend={submitComposerDraftLatest}
+              onSendInBackground={onSubmitInBackground!}
+              onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
+            />,
+          );
+        })()
+
+  )), [activeSteerEnabled, activeTurnSendCapability, activeTurnSendMenuEnabled, backgroundJobCount, backgroundLaunchActionLabel, backgroundLaunchBusy, backgroundSendEnabled, childChatCount, cloudModeActiveForSend, cloudTargetLabel, composerInputLocked, draftHasText, draftInlineBlockedReason, draftInlineSteerHandler, effectiveActiveTurnSendMode, effectiveStopMode, onClearDraft, onInterrupt, onSendSteerInterrupt, onSendSteerNow, onSubmitInBackground, openComposerSchedule, parallelChatMode, scheduledSendContext, sendButtonTitleText, sendEnabled, sessionProvider, submitActiveTurnDraftLatest, submitComposerDraftLatest, turnActive, updateActiveTurnStopMode, withThreadComments]);
+  const commandMenu = useMemo(() => (
+    <ChatCommandMenu
+      ref={commandMenuRef}
+      trigger={commandMenuTrigger}
+      slashCommands={commandMenuSlashCommands}
+      onFileSearch={onSearchAttachments}
+      onMentionSearch={onSearchMentions}
+      onPrSearch={onSearchPullRequests}
+      modelOptions={modelMentionOptions}
+      recentModelIds={modelRecents}
+      anchor={commandMenuAnchor}
+      onSelect={handleCommandMenuSelectLatest}
+      onClose={closeCommandMenu}
+      onNoMatches={dismissCommandMenu}
+    />
+  ), [closeCommandMenu, commandMenuAnchor, commandMenuSlashCommands, commandMenuTrigger, dismissCommandMenu, handleCommandMenuSelectLatest, modelMentionOptions, modelRecents, onSearchAttachments, onSearchMentions, onSearchPullRequests]);
+  const attachmentPreviewDialog = useMemo(() => (
+    <ChatAttachmentPreviewDialog
+      target={attachmentChipPreview}
+      pin={composerMachineBinding}
+      onClose={() => setAttachmentChipPreview(null)}
+    />
+  ), [attachmentChipPreview, composerMachineBinding]);
+
+  return (
+    <>
+      {issueContextMenu}
+      {issuePickerModals}
       {showLaunchClipboardNotice && layoutVariant !== "grid-tile" ? (
         <div className="mx-auto mb-1.5 w-full max-w-[var(--chat-column,52rem)] px-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45">
           Prompt copies to clipboard on send.{" "}
@@ -7683,7 +8326,7 @@ function AgentChatComposerImpl({
       mode={surfaceMode}
       glowColor={composerGlowColor}
       effortFrame={composerEffortFrame}
-      voiceBar={<CodexVoiceBar voice={codexVoice} />}
+      voiceBar={codexVoiceBar}
       className={cn(
         layoutVariant === "grid-tile"
           ? "border-0 bg-transparent shadow-none"
@@ -8159,291 +8802,10 @@ function AgentChatComposerImpl({
         ) : undefined
       ) : (
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
-          {parallelChatMode ? (
-            <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-semibold text-fg/88">Parallel launch</div>
-                  <p className="mt-1 font-sans text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-muted-fg/55">
-                    Configure each model, then send once. Attachments go to every lane (max {PARALLEL_CHAT_MAX_ATTACHMENTS}).
-                  </p>
-                </div>
-                <SmartTooltip content={{ label: "Single model", description: "Turn off parallel launch and return this draft to one chat session." }}>
-                  <button
-                    type="button"
-                    disabled={parallelLaunchBusy}
-                    className="shrink-0 rounded-lg border border-fg/[0.1] px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium text-muted-fg/70 transition-colors hover:bg-fg/[0.06] hover:text-fg/80 disabled:opacity-40"
-                    onClick={() => {
-                      onParallelChatModeChange?.(false);
-                      onParallelConfiguringIndexChange?.(null);
-                    }}
-                  >
-                    Single model
-                  </button>
-                </SmartTooltip>
-              </div>
-              <div className="mt-3 flex flex-col gap-2">
-                {parallelModelSlots.map((slotRow, idx) => {
-                  const desc = getModelById(slotRow.modelId);
-                  const configuring = parallelConfiguringIndex === idx;
-                  return (
-                    <div
-                      key={`parallel-slot-${idx}`}
-                      className={cn(
-                        "flex flex-wrap items-center gap-2 rounded-lg border px-2.5 py-2 transition-colors",
-                        configuring
-                          ? "border-[color:color-mix(in_srgb,var(--chat-accent)_35%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] shadow-[0_0_0_1px_color-mix(in_srgb,var(--chat-accent)_12%,transparent)]"
-                          : "border-fg/[0.07] bg-fg/[0.02]",
-                      )}
-                    >
-                      <span className="flex h-6 min-w-[1.5rem] items-center justify-center rounded-md bg-fg/[0.06] font-mono text-[length:calc(var(--chat-font-size)*10/14)] font-bold text-muted-fg/50">
-                        {idx + 1}
-                      </span>
-                      <span className="min-w-0 max-w-[min(200px,46%)] truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-medium text-fg/82">
-                        {(desc?.displayName ?? slotRow.modelId) || "Pick a model"}
-                      </span>
-                      <SmartTooltip content={{ label: configuring ? "Stop configuring" : "Configure model", description: "Edit the model, reasoning, permissions, and launch mode for this parallel lane." }}>
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] font-medium transition-colors",
-                            configuring
-                              ? "bg-[color:color-mix(in_srgb,var(--chat-accent)_18%,transparent)] text-fg/90"
-                              : "text-muted-fg/55 hover:bg-fg/[0.06] hover:text-fg/75",
-                          )}
-                          disabled={parallelLaunchBusy}
-                          onClick={() => onParallelConfiguringIndexChange?.(configuring ? null : idx)}
-                        >
-                          {configuring ? "Editing" : "Configure"}
-                        </button>
-                      </SmartTooltip>
-                      {parallelModelSlots.length > 2 ? (
-                        <span className="ml-auto inline-flex">
-                          <SmartTooltip content={{ label: "Remove model", description: "Remove this model from the parallel launch set." }}>
-                            <button
-                              type="button"
-                              className="inline-flex items-center gap-1 rounded-md px-2 py-1 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-red-400/75 transition-colors hover:bg-red-500/10"
-                              disabled={parallelLaunchBusy}
-                              onClick={() => onParallelRemoveModel?.(idx)}
-                            >
-                              <Trash size={12} />
-                              Remove
-                            </button>
-                          </SmartTooltip>
-                        </span>
-                      ) : null}
-                    </div>
-                  );
-                })}
-              </div>
-              <SmartTooltip content={{ label: "Add model", description: "Add another model, with its own lane, to this parallel launch." }}>
-                <button
-                  type="button"
-                  className="mt-2 inline-flex items-center gap-1.5 rounded-lg border border-dashed border-fg/[0.12] px-2.5 py-1.5 font-sans text-[length:calc(var(--chat-font-size)*11/14)] font-medium text-muted-fg/65 transition-colors hover:border-fg/[0.2] hover:bg-fg/[0.04] hover:text-fg/75 disabled:opacity-40"
-                  disabled={parallelLaunchBusy}
-                  onClick={() => onParallelAddModel?.()}
-                >
-                  <Plus size={14} weight="bold" />
-                  Add model
-                </button>
-              </SmartTooltip>
-              {parallelLaunchBusy && parallelLaunchStatus ? (
-                <div className="mt-3 flex items-center gap-2 rounded-lg border border-fg/[0.06] bg-black/20 px-2.5 py-2">
-                  <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-[var(--chat-accent)]" />
-                  <span className="font-sans text-[length:calc(var(--chat-font-size)*11/14)] text-fg/70">{parallelLaunchStatus}</span>
-                </div>
-              ) : null}
-            </div>
-          ) : null}
+          {parallelLaunchPanel}
           <div className="flex min-w-0 items-center gap-1">
           {/* Left: permission + model controls */}
-          <div
-            data-onboarding-anchor="composer-controls"
-            data-onboarding-anchor-fit="content"
-            className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto overflow-y-hidden [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-            {(() => {
-              const showNativeControls =
-                !parallelChatMode
-                || (parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex]);
-              if (!showNativeControls || !nativeControlPanel) return null;
-              const wrapForUniformHeight = !parallelChatMode;
-              if (!wrapForUniformHeight) return nativeControlPanel;
-              return (
-                <div
-                  className={cn(
-                    "min-w-0 flex min-h-6 items-stretch shrink-0",
-                    "[&_button]:h-6 [&_button]:max-h-6 [&_button]:min-h-6 [&_button]:shrink-0 [&_button]:py-0",
-                    "[&_label]:flex [&_label]:h-6 [&_label]:max-h-6 [&_label]:min-h-6 [&_label]:items-center [&_label]:py-0",
-                    "[&_select]:h-6 [&_select]:max-h-6 [&_select]:min-h-6",
-                  )}
-                >
-                  {nativeControlPanel}
-                </div>
-              );
-            })()}
-            {parallelChatMode && parallelConfiguringIndex != null && parallelSlotExecutionModeOptions.length > 0 ? (
-              <div className="flex flex-wrap items-center gap-px rounded-md border border-fg/[0.06] bg-surface-recessed p-0.5">
-                {parallelSlotExecutionModeOptions.map((option) => {
-                  const active = parallelSlotExecutionMode === option.value;
-                  return (
-                    <SmartTooltip
-                      key={option.value}
-                      content={{
-                        label: option.label,
-                        description: option.helper,
-                        effect: active ? "Currently selected for this parallel lane." : undefined,
-                      }}
-                    >
-                      <button
-                        type="button"
-                        className={cn(
-                          "rounded-[8px] px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider transition-colors",
-                          active ? "bg-fg/[0.08] text-fg/80" : "text-muted-fg/35 hover:text-muted-fg/60",
-                          parallelLaunchBusy ? "cursor-not-allowed opacity-50" : "",
-                        )}
-                        disabled={parallelLaunchBusy}
-                        onClick={() => onParallelSlotExecutionModeChange?.(option.value)}
-                        aria-pressed={active}
-                      >
-                        {option.label}
-                      </button>
-                    </SmartTooltip>
-                  );
-                })}
-              </div>
-            ) : null}
-            {!hideModelControls && parallelChatMode && parallelConfiguringIndex != null && parallelModelSlots[parallelConfiguringIndex] ? (
-              <>
-                <ModelPicker
-                  value={parallelModelSlots[parallelConfiguringIndex]!.modelId}
-                  onChange={(next, options) =>
-                    onParallelSlotModelChange?.(parallelConfiguringIndex, next, options)}
-                  {...(availableModelIds ? { availableModelIds } : {})}
-                  constrainToAvailableModelIds={constrainModelSelection}
-                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
-                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
-                  {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
-                  runtimePin={modelRuntimePin}
-                  catalogScopeKey={modelCatalogScopeKey}
-                  allowCliOnlyModels={allowCliOnlyModels}
-                  // A parallel slot carries a model, not a preset, so a Custom
-                  // pick here would be silently dropped at launch.
-                  listsHarnessPresets={false}
-                  disabled={parallelLaunchBusy}
-                  compact
-                  triggerClassName={COMPOSER_MODEL_TRIGGER}
-                  fastMode={fastModeActive}
-                  fastModeSupported={fastModeSupported}
-                  fastModeUnavailableReason={fastModeUnavailableReason}
-                  fastModeAllowed={fastModeAllowed}
-                  {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
-                  {...(onParallelSlotFastModeChange
-                    ? {
-                        fastTier: parallelModelSlots[parallelConfiguringIndex]?.fastTier ?? null,
-                        onFastModeChange: (next: boolean, tier?: FastTier) =>
-                          onParallelSlotFastModeChange(parallelConfiguringIndex, next, tier),
-                      }
-                    : {})}
-                />
-                <ReasoningEffortPicker
-                  modelId={parallelModelSlots[parallelConfiguringIndex]!.modelId}
-                  reasoningEffort={parallelModelSlots[parallelConfiguringIndex]!.reasoningEffort}
-                  onChange={(effort) => onParallelSlotReasoningChange?.(parallelConfiguringIndex, effort)}
-                  disabled={parallelLaunchBusy}
-                  compact
-                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
-                  catalogScopeKey={modelCatalogScopeKey}
-                  catalogRevision={runtimeCatalogTick}
-                />
-              </>
-            ) : null}
-            {!hideModelControls && !parallelChatMode && fixedModelLabel ? (
-              <SmartTooltip content={{ label: "Model", description: "A cloud session keeps the model it started with. Start a new session to use another." }}>
-                <span className={cn("inline-flex h-6 items-center truncate rounded-md px-2 text-[11px] font-medium text-fg/75", COMPOSER_MODEL_TRIGGER)}>
-                  {fixedModelLabel}
-                </span>
-              </SmartTooltip>
-            ) : null}
-            {!hideModelControls && !parallelChatMode && !fixedModelLabel ? (
-              <>
-                <PaneTooltip
-                  label="Model is locked while a turn runs"
-                  side="top"
-                  disabled={!(modelSelectionLocked && turnActive)}
-                  className="min-w-0 shrink [&_button:disabled]:pointer-events-none"
-                >
-                <ModelPicker
-                  value={modelId}
-                  emptyLabel={modelEmptyLabel}
-                  onChange={onModelChange}
-                  {...(activeHarnessPreset ? { activePreset: activeHarnessPreset } : {})}
-                  activePresetId={activeHarnessPresetId}
-                  openRequestKey={modelPickerOpenRequestKey}
-                  onOpenRequestHandled={onModelPickerOpenRequestHandled}
-                  {...(availableModelIds ? { availableModelIds } : {})}
-                  constrainToAvailableModelIds={constrainModelSelection}
-                  {...(providerAuthStatus ? { providerAuthStatus } : {})}
-                  {...(onOpenAiSettings ? { onOpenSignIn: onOpenAiSettings } : {})}
-                  {...(onRuntimeCatalogRefreshed ? { onRuntimeCatalogRefreshed } : {})}
-                  runtimePin={modelRuntimePin}
-                  catalogScopeKey={modelCatalogScopeKey}
-                  allowCliOnlyModels={allowCliOnlyModels}
-                  listsHarnessPresets={listsHarnessPresets}
-                  {...(onOpenHarnessSettings ? { onOpenHarnessSettings } : {})}
-                  disabled={modelSelectionLocked}
-                  compact
-                  triggerClassName={COMPOSER_MODEL_TRIGGER}
-                  fastMode={fastModeActive}
-                  fastTier={fastTier}
-                  effectiveFastTier={effectiveFastTier}
-                  fastModeSupported={fastModeSupported}
-                  fastModeUnavailableReason={fastModeUnavailableReason}
-                  fastModeAllowed={fastModeAllowed}
-                  {...(!fastModeAllowed && onFastModeLocked ? { onFastModeLocked } : {})}
-                  {...(cursorCloudSessionActive ? {
-                    serviceTierMode: true,
-                    serviceTier: cursorCloudServiceTier,
-                    onServiceTierChange: onCursorCloudServiceTierChange,
-                  } : onFastModeChange ? { onFastModeChange } : {})}
-                  copilotContextTier={copilotContextTier}
-                  {...(onCopilotContextTierChange ? { onCopilotContextTierChange } : {})}
-                />
-                </PaneTooltip>
-                <ReasoningEffortPicker
-                  modelId={modelId}
-                  reasoningEffort={reasoningEffort}
-                  squeezed={modelHint.chip != null}
-                  onChange={handleReasoningEffortPickerChange}
-                  disabled={effortSelectionLocked ?? modelSelectionLocked}
-                  compact
-                  triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
-                  catalogScopeKey={modelCatalogScopeKey}
-                  catalogRevision={runtimeCatalogTick}
-                  ultrathink={ultrathinkControl}
-                  daybreak={daybreakControl}
-                  copilotAutoTier={copilotAutoTier}
-                  copilotAutoTierPending={copilotAutoTierPending}
-                  {...(onCopilotAutoTierChange ? { onCopilotAutoTierChange } : {})}
-                />
-                <ComposerModelHintChip chip={modelHint.chip} />
-              </>
-            ) : null}
-            {/* The harness a Custom pick runs in, next to the model it applies
-                to. Only a Custom pick gets one: every other model names its own
-                provider already, in the trigger beside this. */}
-            {activeHarnessPreset ? <ComposerHarnessChip harness={activeHarnessPreset.harness} /> : null}
-            {/* Right of the thinking-level selector when controls are present:
-                model, then how hard it thinks, then where it runs. It stays
-                outside that conditional because host surfaces hide model
-                controls without hiding a running chat. */}
-            {composerMachineName ? (
-              <ComposerMachineChip
-                machineName={composerMachineName}
-                cloud={cursorRuntime === "cloud"}
-                action={cursorRuntime === "cloud" ? null : machineChipAction}
-              />
-            ) : null}
-          </div>
+          {modelControls}
 
           {draftsAvailable ? <ComposerDrafts
             ref={draftsRef}
@@ -8491,299 +8853,12 @@ function AgentChatComposerImpl({
             );
           })() : null}
 
-          {!parallelChatMode && usageViewModel ? (
-            <ContextUsageDial
-              usage={usageViewModel}
-              active={turnActive}
-              compactionPulse={compactionPulse}
-              modelLabel={resolveModelDescriptorWithRuntimeCatalog(modelId, modelCatalogScopeKey)?.displayName ?? undefined}
-              compactControl={compactControl}
-              onCompact={onCompactContext}
-            />
-          ) : null}
+          {contextUsageDial}
 
           {/* Right: attachment, commands, proof, context, send */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5">
-            <SmartTooltip
-              forceEnabled
-              content={{
-                label: "Upload file",
-                description: parallelChatMode
-                  ? attachBlockedReason ?? "Upload files from disk and send them to every parallel lane."
-                  : attachBlockedReason ?? "Upload a file from disk and attach it to this message.",
-              }}
-            >
-              <button
-                type="button"
-                className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-muted-fg/35 transition-colors hover:bg-violet-500/[0.06] hover:text-violet-300/60"
-                disabled={!canAttach}
-                onClick={openUploadPicker}
-                aria-label="Upload file from disk"
-              >
-                <Paperclip className="h-3 w-3" size={14} weight="bold" />
-              </button>
-            </SmartTooltip>
-            {/* Secondary toggles, folded behind one glyph. Each entry is still
-                gated by exactly the condition that used to gate its button, so
-                a control that would not have rendered does not become a row. */}
-            <ComposerOverflowMenu
-              triggerRef={issueContextButtonRef}
-              items={[
-                {
-                  id: "issue-context",
-                  label: "Issue context",
-                  icon: <Bug size={14} weight={contextAttachmentCount ? "fill" : "regular"} />,
-                  // Reads as "on" while issues are attached, so the collapsed
-                  // trigger's dot reports them without needing its own badge.
-                  active: contextAttachmentCount > 0,
-                  disabled: !canAttachIssueContext,
-                  badge: contextAttachmentCount || undefined,
-                  onSelect: () => {
-                    if (!canAttachIssueContext) return;
-                    setAttachmentPickerOpen(false);
-                    setIssueContextMenuOpen((open) => !open);
-                  },
-                },
-                {
-                  // The person adds a project secret themselves. The value goes
-                  // to the project's encrypted secrets; only the name lands in
-                  // the draft, so the agent learns it exists and nothing more.
-                  id: "add-secret",
-                  label: "Add secret…",
-                  icon: <LockKey size={14} weight="regular" />,
-                  disabled: composerInputLocked,
-                  onSelect: () => setAddSecretOpen(true),
-                },
-                ...(cursorCloudPanelAvailable && onToggleCursorCloudPanel
-                  ? [{
-                      id: "cursor-cloud-panel",
-                      label: "Cursor Cloud agents…",
-                      icon: <CloudArrowUp size={14} weight="regular" />,
-                      onSelect: onToggleCursorCloudPanel,
-                    }]
-                  : []),
-                ...(devinCloudPanelAvailable && onToggleDevinCloudPanel
-                  ? [{
-                      id: "devin-cloud-panel",
-                      label: "Devin Cloud sessions…",
-                      icon: <DevinLogo size={14} />,
-                      onSelect: onToggleDevinCloudPanel,
-                    }]
-                  : []),
-                ...(devinCloudHandoffAvailable && onHandoffToDevinCloud
-                  ? [{
-                      id: "devin-cloud-handoff",
-                      label: "Hand off to Devin Cloud",
-                      icon: <CloudArrowUp size={14} weight="regular" />,
-                      onSelect: onHandoffToDevinCloud,
-                    }]
-                  : []),
-                ...(showParallelChatToggle && !parallelChatMode
-                  ? [{
-                      id: "parallel",
-                      label: "Parallel models",
-                      icon: <SquareSplitHorizontal size={14} weight="regular" />,
-                      disabled: turnActive || busy,
-                      onSelect: () => onParallelChatModeChange?.(true),
-                    }]
-                  : []),
-                ...(showIosSimulatorToggle && onToggleIosSimulator
-                  ? [{
-                      id: "ios-simulator",
-                      label: iosSimulatorOpen ? "Close iOS simulator" : "Open iOS simulator",
-                      icon: <DeviceMobile size={14} weight={iosSimulatorOpen ? "fill" : "regular"} />,
-                      active: iosSimulatorOpen,
-                      onSelect: onToggleIosSimulator,
-                    }]
-                  : []),
-                ...(showAppControlToggle && onToggleAppControl
-                  ? [{
-                      id: "app-control",
-                      label: appControlOpen ? "Close App Control" : "Open App Control",
-                      icon: <Desktop size={14} weight={appControlOpen ? "fill" : "regular"} />,
-                      active: appControlOpen,
-                      onSelect: onToggleAppControl,
-                    }]
-                  : []),
-              ]}
-            />
-
-            <AddProjectSecretDialog
-              open={addSecretOpen}
-              onOpenChange={setAddSecretOpen}
-              onSaved={(name) => {
-                const note = projectSecretComposerNote(name);
-                onDraftChange(draft.trim().length ? `${draft.replace(/\s+$/, "")}\n\n${note}` : note);
-                showToast({
-                  tone: "success",
-                  title: `${name} saved to this project`,
-                  message: "The value stays hidden. A note naming it is in your draft.",
-                });
-              }}
-            />
-
-            {/* Codex voice: talk with this chat. */}
-            {codexVoiceOffered ? <CodexVoiceButton voice={codexVoice} /> : null}
-
-            {/* Voice dictation — paired just left of the send control. */}
-            {voiceInputEnabled && !composerInputLocked && !parallelChatMode ? (
-              voiceModelInstalled === false ? (
-                <SmartTooltip
-                  forceEnabled
-                  content={{
-                    label: "Voice model not installed",
-                    description: "Tap to download the on-device voice model in Settings → Chat.",
-                  }}
-                >
-                  <button
-                    type="button"
-                    onClick={() => {
-                      // HashRouter deep-link to the voice-input card under General.
-                      window.location.hash = `#${settingsRouteFor("agents.dictation")}`;
-                    }}
-                    className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-fg/30 transition-all hover:bg-[color:color-mix(in_srgb,var(--chat-accent)_10%,transparent)] hover:text-[var(--chat-accent)]"
-                    aria-label="Set up voice input"
-                  >
-                    <MicrophoneSlash size={14} weight="regular" />
-                  </button>
-                </SmartTooltip>
-              ) : voiceModelInstalled ? (
-                <VoiceDictationButton
-                  onOptimisticStart={() => {
-                    // This composer is the one being dictated into: claim the
-                    // target and shimmer immediately, before getUserMedia.
-                    registerAsDictationTarget();
-                    triggerVoiceShimmer();
-                  }}
-                  onError={(message) => setVoiceError(message)}
-                />
-              ) : null
-            ) : null}
-
-            {turnActive ? (
-              <>
-                {draft.trim().length > 0 && onClearDraft ? (
-                  <SmartTooltip forceEnabled content={{ label: "Clear draft", description: "Clear the unsent text without interrupting the active turn." }}>
-                    <button
-                      type="button"
-                      className="inline-flex h-6 items-center justify-center rounded-md border border-fg/[0.06] px-1.5 font-sans text-[length:calc(var(--chat-font-size)*10/14)] text-muted-fg/45 transition-all hover:bg-fg/[0.04] hover:text-fg/72"
-                      onClick={onClearDraft}
-                    >
-                      Clear
-                    </button>
-                  </SmartTooltip>
-                ) : null}
-                {!composerInputLocked ? withThreadComments(
-                  activeTurnSendMenuEnabled ? (
-                    // Claude Code parity: the caret selects delivery behavior;
-                    // the primary button and Enter execute that selection.
-                    <ActiveTurnSendButton
-                      enabled={activeSteerEnabled}
-                      mode={effectiveActiveTurnSendMode}
-                      capability={activeTurnSendCapability}
-                      allowInline={Boolean(draftInlineSteerHandler)}
-                      allowInterrupt={Boolean(onSendSteerInterrupt)}
-                      inlineBlockedReason={onSendSteerNow ? draftInlineBlockedReason : null}
-                      onModeChange={setActiveTurnSendMode}
-                      onSend={submitActiveTurnDraft}
-                    />
-                  ) : (
-                    // Providers without inline-steer dispatch keep the single
-                    // queue affordance; it still explains itself on hover.
-                    <SmartTooltip forceEnabled content={{ label: "Send steer message", description: "Queue this message and send it to the running chat after the current turn finishes." }}>
-                      <button
-                        data-send-part=""
-                        data-send-control=""
-                        type="button"
-                        disabled={!activeSteerEnabled}
-                        className={cn(
-                          "inline-flex h-7 w-7 items-center justify-center rounded-full transition-all",
-                          activeSteerEnabled
-                            ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "cursor-not-allowed bg-fg/[0.06] text-muted-fg/20",
-                        )}
-                        onClick={submitComposerDraft}
-                        aria-label="Send steer message"
-                      >
-                        <ArrowUp size={14} weight="bold" />
-                      </button>
-                    </SmartTooltip>
-                  ),
-                ) : null}
-                <ActiveTurnStopButton
-                  mode={effectiveStopMode}
-                  allowQueueChoice={providerSupportsStopModeChoice(sessionProvider)}
-                  backgroundJobCount={backgroundJobCount}
-                  childChatCount={childChatCount}
-                  provider={sessionProvider}
-                  onModeChange={updateActiveTurnStopMode}
-                  onStop={() => onInterrupt(effectiveStopMode)}
-                />
-              </>
-            ) : (
-              (() => {
-                // The Send button wears its cloud variant whenever cloud mode is live for this
-                // send — a fresh chat with cloud mode on. It stays the cloud variant even when the
-                // draft's model is not cloud-capable: the button goes disabled and its tooltip says
-                // why, because a local Send affordance here would mean sending to the wrong runtime.
-                // Once turns exist the launch path is closed and the standard local Send returns.
-                const cloudMode = cloudModeActiveForSend;
-                const label = parallelChatMode
-                  ? "Send to lanes"
-                  : cloudMode
-                    ? `Send to ${cloudTargetLabel}`
-                    : "Send";
-                const description = parallelChatMode
-                  ? "Create a lane for each model from this lane's branch and send this prompt with its attachments to each one."
-                  : cloudMode
-                    ? `Launch a ${cloudTargetLabel} session with this prompt and the panel's settings.`
-                    : "Send this prompt to the selected model.";
-                const backgroundAvailable = Boolean(onSubmitInBackground) && !parallelChatMode && !cloudMode;
-                const sendIcon = cloudMode
-                  ? <CloudArrowUp size={14} weight="bold" />
-                  : <ArrowUp size={14} weight="bold" />;
-
-                // Without a background option this is a plain circular Send.
-                if (!backgroundAvailable) {
-                  return withThreadComments(
-                    <SmartTooltip forceEnabled content={{ label, description, effect: sendButtonTitle() }}>
-                      <button
-                        data-send-part=""
-                        data-send-control=""
-                        type="button"
-                        className={cn(
-                          "inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full transition-all",
-                          sendEnabled
-                            ? "bg-white/90 text-zinc-900 hover:bg-white"
-                            : "bg-fg/[0.06] text-muted-fg/20",
-                        )}
-                        disabled={!sendEnabled}
-                        onClick={submitComposerDraft}
-                        aria-label={label}
-                      >
-                        {sendIcon}
-                      </button>
-                    </SmartTooltip>,
-                  );
-                }
-
-                return withThreadComments(
-                  <ComposerIdleSendButton
-                    label={label}
-                    description={description}
-                    effect={sendButtonTitle()}
-                    icon={sendIcon}
-                    sendEnabled={sendEnabled}
-                    backgroundLabel={backgroundLaunchActionLabel}
-                    backgroundEnabled={backgroundSendEnabled}
-                    backgroundBusy={backgroundLaunchBusy}
-                    onSend={submitComposerDraft}
-                    onSendInBackground={onSubmitInBackground!}
-                    onSchedule={scheduledSendContext ? openComposerSchedule : undefined}
-                  />,
-                );
-              })()
-            )}
+            {attachmentAndToolControls}
+            {sendControls}
           </div>
           </div>
         </div>
@@ -8849,28 +8924,7 @@ function AgentChatComposerImpl({
                 />
               ) : null;
             })() : null}
-            <ChatCommandMenu
-              ref={commandMenuRef}
-              trigger={commandMenuTrigger}
-              slashCommands={effectiveSlashCommands.map((c) => ({
-                name: c.command.replace(/^\//, ""),
-                description: c.description,
-                argumentHint: c.argumentHint,
-                source: c.source,
-                kind: c.kind,
-                origin: c.origin,
-                server: c.server,
-              }))}
-              onFileSearch={onSearchAttachments}
-              onMentionSearch={onSearchMentions}
-              onPrSearch={onSearchPullRequests}
-              modelOptions={modelMentionOptions}
-              recentModelIds={modelRecents}
-              anchor={commandMenuAnchor}
-              onSelect={handleCommandMenuSelect}
-              onClose={closeCommandMenu}
-              onNoMatches={dismissCommandMenu}
-            />
+            {commandMenu}
             {useRichComposer ? (
               <div className="relative">
                 {!draft.trim().length && !iosElementContextItems.length && !appControlContextItems.length && !builtInBrowserContextItems.length ? (
@@ -9169,11 +9223,7 @@ function AgentChatComposerImpl({
                 name={basenameCrossPlatform(peekAttachment.path) || peekAttachment.path}
               />
             ) : null}
-            <ChatAttachmentPreviewDialog
-              target={attachmentChipPreview}
-              pin={composerMachineBinding}
-              onClose={() => setAttachmentChipPreview(null)}
-            />
+            {attachmentPreviewDialog}
           </div>
         </div>
         );
@@ -9313,8 +9363,25 @@ function AgentChatComposerImpl({
  * data props a stable identity while their contents hold (see `useStableIdentity`
  * at the call site), so the composer renders only when something it shows moves.
  */
-export const AgentChatComposer = memoWithLatestHandlers(AgentChatComposerImpl, {
+const AGENT_CHAT_COMPOSER_MEMO_OPTIONS = {
   // The at-mention file search refetches when this handler changes (the search
   // source moved), so its identity has to stay visible to the component.
   keepIdentityFor: ["onSearchAttachments"],
-});
+};
+
+export const AgentChatComposer = memoWithLatestHandlers(AgentChatComposerImpl, AGENT_CHAT_COMPOSER_MEMO_OPTIONS);
+
+/**
+ * The composer reading its text from the pane's draft store. The subscription
+ * sits inside the memo, so a keystroke renders this and the composer, and the
+ * wrapper that refreshes the handlers renders only with the pane.
+ */
+export const LiveDraftComposer = memoWithLatestHandlers(function LiveDraftComposer({
+  draftStore,
+  ...rest
+}: Omit<ComponentProps<typeof AgentChatComposerImpl>, "draft"> & {
+  draftStore: Pick<ComposerDraftStore, "get" | "subscribe">;
+}) {
+  const draft = useSyncExternalStore(draftStore.subscribe, draftStore.get);
+  return <AgentChatComposerImpl {...rest} draft={draft} />;
+}, AGENT_CHAT_COMPOSER_MEMO_OPTIONS);

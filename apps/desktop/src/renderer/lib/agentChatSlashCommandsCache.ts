@@ -61,10 +61,24 @@ export async function getAgentChatSlashCommandsCached(
   });
 
   slashCommandCache.set(key, {
+    // The last list stays readable (`peekAgentChatSlashCommandsCache`) while
+    // the new one is read.
+    value: cached?.value,
     promise,
     expiresAt: now + ttlMs,
   });
   return promise;
+}
+
+/**
+ * The last list read for this scope, even an expired one, or undefined. A
+ * chat switch shows it at once while the new read is in flight.
+ */
+export function peekAgentChatSlashCommandsCache(
+  args: AgentChatSlashCommandsArgs,
+  pin?: OpenProjectBinding | null,
+): AgentChatSlashCommand[] | undefined {
+  return slashCommandCache.get(cacheKey(args, pin))?.value;
 }
 
 export function invalidateAgentChatSlashCommandsCache(args?: AgentChatSlashCommandsArgs): void {

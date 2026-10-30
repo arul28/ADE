@@ -1126,8 +1126,11 @@ function userMessageAttachmentsAccepted(event: Extract<AgentChatEvent, { type: "
 
 function UserMessageSendConfirmations({
   event,
+  entrance = true,
 }: {
   event: Extract<AgentChatEvent, { type: "user_message" }>;
+  /** False for a row the view opened with (`RowEntranceGate`). */
+  entrance?: boolean;
 }) {
   if (event.deliveryState === "queued") return null;
 
@@ -1144,7 +1147,7 @@ function UserMessageSendConfirmations({
         <motion.div
           className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
           data-testid="user-message-simulator-analyzed"
-          initial={{ opacity: 0, y: 2 }}
+          initial={entrance ? { opacity: 0, y: 2 } : false}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15, ease: "easeOut" }}
         >
@@ -1156,7 +1159,7 @@ function UserMessageSendConfirmations({
         <motion.div
           className="flex items-center gap-1.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] italic text-emerald-400/80"
           data-testid="user-message-issue-context-analyzed"
-          initial={{ opacity: 0, y: 2 }}
+          initial={entrance ? { opacity: 0, y: 2 } : false}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.15, ease: "easeOut" }}
         >
@@ -2228,7 +2231,14 @@ function MinimalThought({
 
 const TOOL_RESULT_TRUNCATE_LIMIT = 500;
 
-function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "tool_result" }> }) {
+function ToolResultCard({
+  event,
+  entrance = true,
+}: {
+  event: Extract<AgentChatEvent, { type: "tool_result" }>;
+  /** False for a row the view opened with (`RowEntranceGate`). */
+  entrance?: boolean;
+}) {
   const navigate = useNavigate();
   const [expanded, setExpanded] = useState(false);
   const meta = getToolMeta(event.tool);
@@ -2253,7 +2263,7 @@ function ToolResultCard({ event }: { event: Extract<AgentChatEvent, { type: "too
   return (
     <motion.div
       className="w-fit max-w-full"
-      initial={{ opacity: 0 }}
+      initial={entrance ? { opacity: 0 } : false}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
@@ -2612,6 +2622,42 @@ function FileChangeEventCard({
 // replay read as a flicker once the bubble settled.
 const animatedUserMessageKeys = new Set<string>();
 
+/**
+ * Whether a row plays its entrance (the fade or send-up its motion wrapper
+ * starts from). The rows a view opens with (a chat switch, a first open, the
+ * first history read of a cold chat) appear as they are: playing it there faded
+ * the whole screen in on every switch. Rows that arrive while the view is on
+ * screen, and rows scrolled into view later, keep it. Each row reads it once,
+ * when it mounts (`useRowEntrance`), so the gate's object never changes and
+ * never re-renders a row.
+ */
+type RowEntranceGate = {
+  viewKey: string | null;
+  /** The row keys the view opened with; null until it has rows. */
+  openingRowKeys: readonly string[] | null;
+  openingRowKeySet: Set<string> | null;
+  /** True until the opening rows have painted and the scroll restore settled. */
+  opening: boolean;
+};
+
+const RowEntranceGateContext = React.createContext<RowEntranceGate | null>(null);
+
+/** How long after its rows first commit a view still counts as opening. */
+const ROW_ENTRANCE_OPENING_MS = 200;
+
+function rowEntranceSuppressed(gate: RowEntranceGate | null, rowKey: string): boolean {
+  if (!gate?.opening || !gate.openingRowKeys) return false;
+  gate.openingRowKeySet ??= new Set(gate.openingRowKeys);
+  return gate.openingRowKeySet.has(rowKey);
+}
+
+/** True when this row mounted after its view opened; fixed for the row's life. */
+function useRowEntrance(rowKey: string): boolean {
+  const gate = React.useContext(RowEntranceGateContext);
+  const [playEntrance] = useState(() => !rowEntranceSuppressed(gate, rowKey));
+  return playEntrance;
+}
+
 /** Stable-ish identity for an interrupt receipt row (no id on the event). */
 /** Muted per-row timestamp, revealed on row hover only (lives inside an existing
  * group-hover toolbar so it adds zero layout shift). */
@@ -2863,6 +2909,8 @@ function renderEvent(
     liveThinking?: boolean;
     /** The row is in a side chat's transcript (`SideChatTranscriptContext`). */
     sideChatTranscript?: boolean;
+    /** False for a row the view opened with: it appears without its entrance (`RowEntranceGate`). */
+    playEntrance?: boolean;
   }
 ) {
   const event = envelope.event;
@@ -3086,8 +3134,8 @@ function renderEvent(
 
   /* ── User message ── */
   if (event.type === "user_message" && userBody) {
-    const playSendEntrance = !animatedUserMessageKeys.has(envelope.key);
-    if (playSendEntrance) animatedUserMessageKeys.add(envelope.key);
+    const playSendEntrance = options?.playEntrance !== false && !animatedUserMessageKeys.has(envelope.key);
+    animatedUserMessageKeys.add(envelope.key);
     const hasPastedTextPromptAttachment = userMessageHasPastedPrompt(event);
     const copyText = event.displayText?.trim() || (
       event.metadata?.hideFullPrompt === true
@@ -3233,7 +3281,7 @@ function renderEvent(
             </div>
           ) : null}
           <div data-ade-find-skip="" className="contents">
-            <UserMessageSendConfirmations event={event} />
+            <UserMessageSendConfirmations event={event} entrance={options?.playEntrance !== false} />
           </div>
           {remoteMcpLabel ? (
             <div
@@ -3264,7 +3312,7 @@ function renderEvent(
         // `overflow-x-clip`, not `overflow-hidden`: an interim row's hover
         // actions float below the row, and `hidden` would clip them.
         className="flex min-w-0 max-w-full w-full justify-start overflow-x-clip"
-        initial={{ opacity: 0 }}
+        initial={options?.playEntrance === false ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.14, ease: "easeOut" }}
       >
@@ -3347,7 +3395,7 @@ function renderEvent(
     const isFailed = event.status === "failed";
     return (
       <motion.div
-        initial={{ opacity: 0 }}
+        initial={options?.playEntrance === false ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
         className={cn(
@@ -4094,7 +4142,7 @@ function renderEvent(
     return (
       <motion.div
         className={cn(livePreview ? "w-full" : "w-fit", "max-w-[var(--chat-content-width,52rem)]")}
-        initial={{ opacity: 0 }}
+        initial={options?.playEntrance === false ? false : { opacity: 0 }}
         animate={{ opacity: 1 }}
         transition={{ duration: 0.12, ease: "easeOut" }}
       >
@@ -4176,7 +4224,7 @@ function renderEvent(
 
   /* ── Tool result ── */
   if (event.type === "tool_result") {
-    return <ToolResultCard event={event} />;
+    return <ToolResultCard event={event} entrance={options?.playEntrance !== false} />;
   }
 
   /* ── Approval request ── */
@@ -5315,6 +5363,7 @@ const EventRow = React.memo(function EventRow({
 }: EventRowProps) {
   const chatInfoHostAvailable = React.useContext(ChatInfoHostContext);
   const sideChatTranscript = React.useContext(SideChatTranscriptContext);
+  const playEntrance = useRowEntrance(envelope.key);
   const doneTurnId = envelope.event.type === "done" ? envelope.event.turnId : null;
   return (
     <div
@@ -5423,6 +5472,7 @@ const EventRow = React.memo(function EventRow({
             pacedTextReveal,
             liveThinking,
             sideChatTranscript,
+            playEntrance,
           })}
       {envelope.event.type === "done" && !(compactOnlyTurn && envelope.event.status === "completed") ? (
         <DoneTurnDivider
@@ -5644,6 +5694,16 @@ function movedByAPixel(current: number, next: number): boolean {
 /** Minimum number of rows before virtualization kicks in. */
 const VIRTUALIZATION_THRESHOLD = 60;
 /**
+ * Height of the last chat scroll pane that measured above zero. A list that
+ * mounts (every chat switch) sizes its first virtualized window from it until
+ * its own pane is measured in that commit's layout effects. From 0 the first
+ * commit drew only the overscan, and the rows that fill the pane mounted in a
+ * second commit with a second style and layout pass. It only decides which
+ * rows mount: the scroll restore and everything else still wait for the
+ * measured `containerHeight`.
+ */
+let lastMeasuredChatPaneHeightPx = 0;
+/**
  * Distance (px) from the bottom of the scroll container within which we
  * consider the user "stuck to bottom" and keep auto-following new content.
  * Sized so a single wheel nudge during streaming reliably breaks free of
@@ -5706,6 +5766,27 @@ type ScrollRestoreTarget = Pick<ChatScrollMemory, "anchorRowKey" | "anchorOffset
 /** A detached reader with somewhere to go back to. */
 function needsScrollRestore(memory: ChatScrollMemory | null): boolean {
   return Boolean(memory && !memory.wasPinnedToBottom && (memory.anchorRowKey || memory.distanceFromBottomPx != null));
+}
+
+/**
+ * Where a scroll restore will land under the height model, before anything is
+ * mounted: the saved row's model top plus its offset, else the saved distance
+ * from the bottom. The same two answers `applyScrollRestore` gives for a row
+ * that is not mounted. Null when there is nothing to restore.
+ */
+function estimateScrollRestoreTop(
+  memory: ChatScrollMemory | null,
+  rowKeys: readonly string[],
+  offsets: readonly number[],
+  rowHeight: (index: number) => number,
+  containerHeight: number,
+): number | null {
+  if (!memory || !needsScrollRestore(memory) || offsets.length === 0) return null;
+  const anchorIndex = memory.anchorRowKey ? rowKeys.indexOf(memory.anchorRowKey) : -1;
+  if (anchorIndex >= 0) return Math.max(0, computeScrollTopForRow(anchorIndex, offsets) + memory.anchorOffsetPx);
+  if (memory.distanceFromBottomPx == null) return null;
+  const last = offsets.length - 1;
+  return Math.max(0, offsets[last]! + rowHeight(last) - containerHeight - memory.distanceFromBottomPx);
 }
 
 /** Frames a scroll restore keeps correcting before it gives up waiting for layout to settle. */
@@ -5922,6 +6003,7 @@ function AgentChatMessageListMain({
   chatSources = null,
   showStreamingIndicator = false,
   textPacingEnabled = true,
+  transcriptPending = false,
     className,
   onApproval,
   onCodexRecovery,
@@ -5995,6 +6077,12 @@ function AgentChatMessageListMain({
    * false and keep the cheap paint-on-arrival render.
    */
   textPacingEnabled?: boolean;
+  /**
+   * The chat's first history read is still in flight (no events yet). The
+   * rows that read brings count as rows the view opened with, so they appear
+   * without their entrance (`RowEntranceGate`).
+   */
+  transcriptPending?: boolean;
   className?: string;
   onApproval?: (itemId: string, decision: AgentChatApprovalDecision, responseText?: string | null, answers?: Record<string, string | string[]>) => void;
   onCodexRecovery?: (args: AgentChatRecoverCodexTurnArgs) => Promise<AgentChatRecoverCodexTurnResult>;
@@ -6943,6 +7031,46 @@ function AgentChatMessageListMain({
     }, [groupedRows]),
     sameKeyList,
   );
+  // The rows this view opened with (see `RowEntranceGate`). Written during
+  // render on purpose: a row reads it while it mounts, in this same render.
+  const [rowEntranceGate] = useState<RowEntranceGate>(() => ({
+    viewKey: resolvedScrollMemoryKey ?? null,
+    openingRowKeys: null,
+    openingRowKeySet: null,
+    opening: true,
+  }));
+  if (rowEntranceGate.viewKey !== (resolvedScrollMemoryKey ?? null)) {
+    rowEntranceGate.viewKey = resolvedScrollMemoryKey ?? null;
+    rowEntranceGate.openingRowKeys = null;
+    rowEntranceGate.openingRowKeySet = null;
+    rowEntranceGate.opening = true;
+  }
+  // While the first read is in flight nothing is fixed yet: a message sent
+  // meanwhile is new and keeps its entrance; the read's rows open the view.
+  if (rowEntranceGate.opening && rowEntranceGate.openingRowKeys === null && !transcriptPending) {
+    if (groupedRowKeys.length > 0) rowEntranceGate.openingRowKeys = groupedRowKeys;
+    // A chat that is really empty opens with nothing: every row after is new.
+    else rowEntranceGate.opening = false;
+  }
+  const rowEntranceOpeningRows = rowEntranceGate.opening ? rowEntranceGate.openingRowKeys : null;
+  // The view stops opening once its rows have been on screen a moment and any
+  // scroll restore has settled; rows mounted after that (scrolled into view)
+  // keep their entrance as before.
+  useEffect(() => {
+    if (!rowEntranceOpeningRows) return undefined;
+    const gate = rowEntranceGate;
+    const startedAt = performance.now();
+    let raf = requestAnimationFrame(function endOpeningWhenSettled() {
+      if (gate.openingRowKeys !== rowEntranceOpeningRows) return;
+      const elapsed = performance.now() - startedAt;
+      if ((elapsed >= ROW_ENTRANCE_OPENING_MS && !scrollRestoreActiveRef.current) || elapsed >= 3_000) {
+        gate.opening = false;
+        return;
+      }
+      raf = requestAnimationFrame(endOpeningWhenSettled);
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [rowEntranceGate, rowEntranceOpeningRows]);
   const backgroundJobGroupKeyByMemberKey = backgroundJobGroupKeyByMemberKeyRef.current;
   const answerKeyByDuplicateKey = answerKeyByDuplicateKeyRef.current;
   const drawnRowKeyIndex = useMemo(() => buildDrawnRowKeyIndex(groupedRows, [
@@ -7411,6 +7539,7 @@ function AgentChatMessageListMain({
     if (lastScrollClientHeightRef.current <= 0) {
       lastScrollClientHeightRef.current = nextHeight;
     }
+    if (nextHeight > 0) lastMeasuredChatPaneHeightPx = nextHeight;
     setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
   }, []);
 
@@ -7615,6 +7744,7 @@ function AgentChatMessageListMain({
         scrollToBottomSoon(2);
       }
       lastScrollClientHeightRef.current = nextHeight;
+      if (nextHeight > 0) lastMeasuredChatPaneHeightPx = nextHeight;
       setContainerHeight((current) => (movedByAPixel(current, nextHeight) ? nextHeight : current));
     });
     ro.observe(el);
@@ -7952,10 +8082,6 @@ function AgentChatMessageListMain({
   // measurementTick forces recomputation when row heights are measured so
   // totalHeight stays accurate — without this, scroll-to-top can break because
   // the spacer heights are computed from stale estimates.
-  // A row-list change under a scrolled-up reader sizes this commit's window
-  // from where the anchor row is about to be, not from the pre-change
-  // scrollTop, so the row the list anchor reads back is mounted.
-  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? liveScrollTopRef.current;
   // Row start offsets under the height model, rebuilt only when rows or their
   // heights change — never per scroll frame. Shared by the virtual window, the
   // scroll-commit probe and the minimap. A measurement lands in the ref at once
@@ -7975,6 +8101,19 @@ function AgentChatMessageListMain({
       heightsVersion: measuredHeightsVersionRef.current,
       offsets: computeRowStartOffsets(groupedRows.length, rowHeight, timelineRowGapPx),
     }).offsets;
+  const windowContainerHeight = containerHeight > 0 ? containerHeight : lastMeasuredChatPaneHeightPx;
+  // A reader coming back to a chat they left scrolled up: until the restore
+  // has run, size the window around the row it restores to (by the height
+  // model the restore itself uses for a row that is not mounted), not around
+  // the top. From the top, the first commits mounted, styled and measured a
+  // window of rows the restore then dropped.
+  const restoreSeedScrollTop = shouldVirtualize && !stickToBottom && !scrollRestoreSettledRef.current
+    ? estimateScrollRestoreTop(restoredScrollMemoryRef.current, groupedRowKeys, rowStartOffsets, rowHeight, windowContainerHeight)
+    : null;
+  // A row-list change under a scrolled-up reader sizes this commit's window
+  // from where the anchor row is about to be, not from the pre-change
+  // scrollTop, so the row the list anchor reads back is mounted.
+  const windowScrollTop = pendingListAnchorRef.current?.windowScrollTop ?? restoreSeedScrollTop ?? liveScrollTopRef.current;
   const { startIndex, endIndex, totalHeight, offsetTop } = useMemo(() => {
     if (!shouldVirtualize) {
       return { startIndex: 0, endIndex: groupedRows.length, totalHeight: 0, offsetTop: 0 };
@@ -7986,7 +8125,7 @@ function AgentChatMessageListMain({
     if (stickToBottom) {
       return calculateVirtualWindowAnchoredToEnd({
         rowCount: groupedRows.length,
-        containerHeight,
+        containerHeight: windowContainerHeight,
         rowHeight,
         rowGap: timelineRowGapPx,
       });
@@ -7995,11 +8134,11 @@ function AgentChatMessageListMain({
     return calculateVirtualWindowFromOffsets({
       offsets: rowStartOffsets,
       scrollTop: windowScrollTop,
-      containerHeight,
+      containerHeight: windowContainerHeight,
       rowHeight,
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, containerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
+  }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
 
   useLayoutEffect(() => {
     if (stickToBottomRef.current) scrollToBottomSoon(2);
@@ -8678,6 +8817,10 @@ function AgentChatMessageListMain({
     const interimText = interimTextRowKeys.has(envelope.key);
     const turnEndText = turnEndTextRowKeys.has(envelope.key);
     const showForkHistoryDivider = envelope.key === forkHistoryDividerRowKey;
+    // Only a thought row draws the assistant's name. Handing it to every row
+    // re-rendered the whole transcript when it changed, and a switch to a chat
+    // on another model changes it one render after the rows mount.
+    const rowAssistantLabel = envelope.event.type === "reasoning" ? assistantLabel : undefined;
 
     if (virtualized) {
       return (
@@ -8713,7 +8856,7 @@ function AgentChatMessageListMain({
           onDismissUnprocessedMessage={onDismissUnprocessedMessage}
           surfaceMode={surfaceMode}
           surfaceProfile={surfaceProfile}
-          assistantLabel={assistantLabel}
+          assistantLabel={rowAssistantLabel}
           sessionProvider={sessionProvider}
           resolveSpawnedChatProvider={resolveSpawnedChatProvider}
           turnActive={rowTurnActive}
@@ -8790,7 +8933,7 @@ function AgentChatMessageListMain({
         onDismissUnprocessedMessage={onDismissUnprocessedMessage}
         surfaceMode={surfaceMode}
         surfaceProfile={surfaceProfile}
-        assistantLabel={assistantLabel}
+        assistantLabel={rowAssistantLabel}
         sessionProvider={sessionProvider}
         resolveSpawnedChatProvider={resolveSpawnedChatProvider}
         turnActive={rowTurnActive}
@@ -8853,7 +8996,8 @@ function AgentChatMessageListMain({
   const streamingIndicator = showStreamingIndicator && !sessionEnded && !(activeTurnId && compactOnlyTurnIds.has(activeTurnId)) ? (
     <motion.div
       className="w-fit max-w-[var(--chat-content-width,52rem)] pt-3 pb-2"
-      initial={{ opacity: 0 }}
+      // Read when it mounts: shown with the chat it opened with, it does not fade in.
+      initial={rowEntranceGate.opening ? false : { opacity: 0 }}
       animate={{ opacity: 1 }}
       transition={{ duration: 0.12, ease: "easeOut" }}
     >
@@ -8900,6 +9044,7 @@ function AgentChatMessageListMain({
     <ChatWorkspacePathProvider value={workspacePaths}>
     <ProofCitationProvider artifacts={proofArtifacts} allowLocalArtifactProtocol={allowLocalProofArtifactProtocol}>
     <SceneAnswerContext.Provider value={sceneAnswers}>
+    <RowEntranceGateContext.Provider value={rowEntranceGate}>
     <div
       ref={listRootRef}
       data-chat-message-list-root=""
@@ -9023,6 +9168,7 @@ function AgentChatMessageListMain({
         <AssistantOutputSelectionToolbar rootRef={listRootRef} onAddToChat={onInsertDraft} onCreateIssue={createIssueFromSelection} />
       )}
     </div>
+    </RowEntranceGateContext.Provider>
     </SceneAnswerContext.Provider>
     </ProofCitationProvider>
     </ChatWorkspacePathProvider>

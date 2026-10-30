@@ -175,12 +175,12 @@ import { PermissionModePicker, type PermissionModeIconKind, type PermissionModeT
 import { LaneIcon } from "../ui/vcsIcons";
 import { cn } from "../ui/cn";
 import {
-  AgentChatComposer,
   CURSOR_CLOUD_MODEL_BLOCKED_MESSAGE,
   CURSOR_CLOUD_MODELS_NOT_LOADED_MESSAGE,
   type ComposerCloudLaunch,
   type ComposerDraftEditIntent,
   type ComposerMachineChipAction,
+  LiveDraftComposer,
   type ParallelComposerControlSlot,
 } from "./AgentChatComposer";
 import {
@@ -255,6 +255,8 @@ import {
 } from "./chatHistoryWindow";
 /** No nesting to resolve in the pane's own shell filter: one hop, the chat. */
 const NO_NESTING: ReadonlyMap<string, string> = new Map();
+/** A pane locked to one chat has no spawned children in its session list. */
+const NO_SPAWNED_CHAT_SESSIONS: readonly AgentChatSessionSummary[] = [];
 
 export {
   advanceOlderHistoryCursor,
@@ -449,7 +451,7 @@ import {
   invalidateAgentChatSessionListCache,
   listAgentChatSessionsCached,
 } from "../../lib/agentChatSessionListCache";
-import { getAgentChatSlashCommandsCached } from "../../lib/agentChatSlashCommandsCache";
+import { getAgentChatSlashCommandsCached, peekAgentChatSlashCommandsCache } from "../../lib/agentChatSlashCommandsCache";
 import {
   AI_STATUS_CACHE_INVALIDATED_EVENT,
   AI_STATUS_CACHE_UPDATED_EVENT,
@@ -1213,13 +1215,27 @@ type LiveTranscript = {
 
 const subscribeNowhere = () => () => {};
 
-/** The composer, reading its text from the pane's draft store, so typing re-renders only it. */
-function LiveDraftComposer({
+/**
+ * Publishes this chat's draft presence for the sidebar's row indicator. It
+ * reads the draft store itself, so the pane does not render when the text
+ * turns empty or non-empty; the store no-ops when the boolean is unchanged,
+ * so a long session list never re-renders for typing.
+ */
+function ComposerDraftPresencePublisher({
   draftStore,
-  ...rest
-}: Omit<ComponentProps<typeof AgentChatComposer>, "draft"> & { draftStore: ComposerDraftStore }) {
-  const draft = useSyncExternalStore(draftStore.subscribe, draftStore.get);
-  return <AgentChatComposer {...rest} draft={draft} />;
+  sessionId,
+  hasContentBesidesText,
+}: {
+  draftStore: Pick<ComposerDraftStore, "get" | "subscribe">;
+  sessionId: string | null;
+  hasContentBesidesText: boolean;
+}) {
+  const draftHasText = useSyncExternalStore(draftStore.subscribe, () => draftStore.get().trim().length > 0);
+  const present = draftHasText || hasContentBesidesText;
+  useEffect(() => {
+    setComposerDraftPresence(sessionId, present);
+  }, [sessionId, present]);
+  return null;
 }
 
 /**
@@ -4695,12 +4711,6 @@ export function AgentChatPane({
   const setSdkSlashCommands = useCallback((next: import("../../../shared/types").AgentChatSlashCommand[]) => {
     setSdkSlashCommandsState((prev) => reuseStructurallyEqualArray(next, prev));
   }, []);
-  // Names only, so the transcript's entity lookup can chip `/quality` without
-  // re-parsing every message when a description changes.
-  const threadEntitySkillNames = useMemo(
-    () => sdkSlashCommands.map((command) => command.name.replace(/^\//, "")),
-    [sdkSlashCommands],
-  );
   const [sendOnEnter, setSendOnEnter] = useState(true);
   // The composer's text lives in a store the composer reads itself: a keystroke
   // re-renders the composer, not this pane and its ~100 children. The pane
@@ -5687,19 +5697,13 @@ export function AgentChatPane({
     // draft), so backspacing to empty brings it back.
   }, [companionStateKey, draftLaunchJobsScopeKey, selectedSessionId, updateSubmittedDraftTextEdit]);
 
-  // Publish this session's draft presence for the sidebar's row indicator.
-  // Runs on every keystroke; the store no-ops when the boolean is unchanged,
-  // so a long session list never re-renders for typing.
-  const draftHasText = useSyncExternalStore(draftStore.subscribe, () => draftStore.get().trim().length > 0);
-  const hasComposerDraftContent = draftHasText
-    || attachments.length > 0
+  // Draft content other than the text; `ComposerDraftPresencePublisher` adds
+  // the text and publishes presence for the sidebar's row indicator.
+  const hasComposerDraftContentBesidesText = attachments.length > 0
     || contextAttachments.length > 0
     || iosElementContextItems.length > 0
     || appControlContextItems.length > 0
     || builtInBrowserContextItems.length > 0;
-  useEffect(() => {
-    setComposerDraftPresence(selectedSessionId, hasComposerDraftContent);
-  }, [selectedSessionId, hasComposerDraftContent]);
   const updateComposerMentionLabel = useCallback((token: string, title: string) => {
     const label = title.trim();
     if (!label) return;
@@ -7190,6 +7194,15 @@ export function AgentChatPane({
     if (!selectedSession && draftLaunchTarget) return draftLaunchTarget.harness;
     return resolveChatRuntimeProvider(resolveScopedModelDescriptor(modelId, modelCatalogScopeKey));
   }, [selectedSession, modelSelectionDiffersFromSession, modelId, modelCatalogScopeKey, draftLaunchTarget]);
+  // The provider the transcript reads. `selectedSession` trails a prop-driven
+  // switch by one render, so for that render the list was handed the outgoing
+  // chat's provider, and every row it had just mounted rendered again once the
+  // selection caught up. While the two disagree, use what is known about the
+  // rendered chat: its summary, or the provider the host knows for the locked
+  // chat (as the chat accent does). Otherwise it is the expression it was.
+  const transcriptSessionProvider = (chatSelectionTransitioning
+    ? renderedSession?.provider ?? (lockSessionId ? lockSessionProvider : null)
+    : null) ?? selectedSession?.provider ?? sessionProvider;
   /** `/usage` opens Claude's usage sheet: a Claude chat outside personal chats. */
   const claudeUsageAvailable = Boolean(selectedSessionId) && sessionProvider === "claude" && !personalScope;
   const showClaudeLoginPrompt = useMemo(() => shouldShowClaudeChatLoginPrompt({
@@ -7673,12 +7686,19 @@ export function AgentChatPane({
   // keyed on a signature of the child→provider mapping instead: a refresh that
   // changes only array identity keeps the same resolver, while a child that
   // appears (or changes provider) produces a new one so its card updates.
-  const spawnedChatProviderSignature = sessions
+  //
+  // A pane locked to one chat (Work) holds only that chat's summary, and while
+  // a switch settles, the summary of the chat being left. Neither is a spawned
+  // child of the chat on screen, so there is nothing to resolve; reading them
+  // anyway gave the resolver a new identity on every switch and re-rendered
+  // every row the switch had just mounted.
+  const spawnedChatProviderSessions = lockedSingleSessionMode ? NO_SPAWNED_CHAT_SESSIONS : sessions;
+  const spawnedChatProviderSignature = spawnedChatProviderSessions
     .map((session) => `${session.sessionId}\u0000${session.provider ?? ""}`)
     .join("\u0001");
   const resolveSpawnedChatProvider = useMemo(() => {
     const providerById = new Map<string, string>();
-    for (const session of sessions) {
+    for (const session of spawnedChatProviderSessions) {
       if (session.provider) providerById.set(session.sessionId, session.provider);
     }
     return (id: string): string | null => providerById.get(id) ?? null;
@@ -10215,6 +10235,25 @@ export function AgentChatPane({
       .catch(() => { if (!cancelled) setSdkSlashCommands([]); });
     return () => { cancelled = true; };
   }, [isPersonalPane, isTileActive, laneId, modelId, projectRoot, selectedSessionId, selectedSessionModelId, sessionProvider]);
+
+  // The skill names the transcript chips (`/quality`), names only so a changed
+  // description re-parses nothing. After a switch the read above takes 50-300
+  // ms, and until then the list in state is the previous chat's: its late
+  // arrival changed the names and re-rendered every reply's markdown in a task
+  // of its own. The list the chat on screen last read (even an expired one)
+  // stands in, under the same scope and pin as the read, so an unchanged
+  // arrival changes nothing. Keyed on the transcript's chat, which leads the
+  // selection by one render in a prop-driven switch. With nothing cached, the
+  // state's list is used as before.
+  const cachedSlashCommandsForChat = isTileActive && !isPersonalPane && renderedSessionId
+    && !isDeferredComposerModelSelection(modelId, selectedSessionModelId, deferredComposerSessionIdRef.current, renderedSessionId)
+    ? peekAgentChatSlashCommandsCache({ sessionId: renderedSessionId, projectRoot }, chatRuntimePin)
+    : undefined;
+  const skillNameSource = cachedSlashCommandsForChat ?? sdkSlashCommands;
+  const threadEntitySkillNames = useStableIdentity(
+    useMemo(() => skillNameSource.map((command) => command.name.replace(/^\//, "")), [skillNameSource]),
+    sameKeyList,
+  );
 
   const sessionDeltaTurnActiveRef = useRef(false);
   const sessionDeltaSessionIdRef = useRef<string | null>(null);
@@ -16618,7 +16657,7 @@ export function AgentChatPane({
   const listStopSubagent = useLatestCallback(
     !subagentView
     && selectedSessionId
-    && providerSupportsPerTaskStop(selectedSession?.provider ?? sessionProvider)
+    && providerSupportsPerTaskStop(transcriptSessionProvider)
       ? (taskId: string) => {
           void agentChatApiRef.current.stopTask({
             sessionId: selectedSessionId,
@@ -16629,6 +16668,12 @@ export function AgentChatPane({
         }
       : undefined,
   );
+  // Keyed on the selected chat (and the retry on `turnActive`), so a chat
+  // switch made them new one render after the switch mounted the rows, and
+  // every row rendered a second time in the same task.
+  const listRetryProviderFailure = useLatestCallback(handleListRetryProviderFailure);
+  const listCancelQueuedMessage = useLatestCallback(cancelQueuedMessageFromReceipt);
+  const listRestoreCancelledQueue = useLatestCallback(restoreCancelledQueue);
 
   /**
    * The shells attached to this chat, for the actions pane's Shells section.
@@ -18916,6 +18961,11 @@ export function AgentChatPane({
     <ChatRuntimeScopeProvider pin={chatRuntimePin} binding={chatEffectiveBinding} laneId={chatScopeLaneId} sessionId={renderedSessionId}>
     <ChatWorkspacePathProvider value={chatWorkspacePaths}>
     <>
+      <ComposerDraftPresencePublisher
+        draftStore={draftStore}
+        sessionId={selectedSessionId}
+        hasContentBesidesText={hasComposerDraftContentBesidesText}
+      />
       <div className="flex h-full min-h-0 w-full min-w-0 flex-col">
       <ChatSurfaceShell
         containerRef={shellRef}
@@ -19023,7 +19073,11 @@ export function AgentChatPane({
               </div>
             </div>
           ) : (
-            <AnimatePresence mode="sync">
+            // `presenceAffectsLayout` off: by default the presence context is a
+            // new object on every pane render, which re-renders every `motion`
+            // element and nested `AnimatePresence` in the transcript (~120 per
+            // chat switch). Nothing inside uses `layout`, so nothing reads it.
+            <AnimatePresence mode="sync" presenceAffectsLayout={false}>
               {selectedSessionId ? (
                 <motion.div
                   key="chat-view"
@@ -19181,8 +19235,11 @@ export function AgentChatPane({
                         // they keep the cheap paint-on-arrival render so only
                         // the user's own prose pays for the paced reveal.
                         textPacingEnabled={!subagentView}
+                        transcriptPending={subagentView
+                          ? subagentTranscript === null && !subagentTranscriptUnsupported
+                          : selectedChatCold}
                         sessionEnded={selectedSession?.status === "ended"}
-                        sessionProvider={selectedSession?.provider ?? sessionProvider}
+                        sessionProvider={transcriptSessionProvider}
                         resolveSpawnedChatProvider={resolveSpawnedChatProvider}
                         runtimePin={chatRuntimePin}
                         className="min-h-0 border-0"
@@ -19220,15 +19277,15 @@ export function AgentChatPane({
                         onRevealChatTerminal={listRevealChatTerminal}
                         turnDiffSummaries={selectedTurnDiffSummaries}
                         onRewindFiles={personalScope ? undefined : listRewindFiles}
-                        onCancelQueuedMessage={!subagentView && selectedSessionId ? cancelQueuedMessageFromReceipt : undefined}
-                        onRestoreCancelledQueue={!subagentView && selectedSessionId ? restoreCancelledQueue : undefined}
+                        onCancelQueuedMessage={!subagentView && selectedSessionId ? listCancelQueuedMessage : undefined}
+                        onRestoreCancelledQueue={!subagentView && selectedSessionId ? listRestoreCancelledQueue : undefined}
                         onApproval={handleListApproval}
                         onCodexRecovery={personalScope ? undefined : handleListCodexRecovery}
                         onRecoverContinuity={personalScope ? undefined : recoverContinuity}
                         onRunUnprocessedMessage={handleRunUnprocessedMessage}
                         onEditUnprocessedMessage={listEditUnprocessedMessage}
                         onDismissUnprocessedMessage={handleDismissUnprocessedMessage}
-                        onRetryProviderFailure={handleListRetryProviderFailure}
+                        onRetryProviderFailure={listRetryProviderFailure}
                         onRetryCompaction={retryCompaction}
                         latestCompactionKey={latestCompactionKey}
                         onChooseProviderFailureModel={handleListChooseProviderFailureModel}
