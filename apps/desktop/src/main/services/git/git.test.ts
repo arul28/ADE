@@ -309,6 +309,20 @@ describe("gitBranchRefsIdentity", () => {
     expect(missed).toEqual([]);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
+
+  // Git before 2.45 cannot make a reftable repository.
+  const reftableProbe = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-reftable-probe-"));
+  const gitHasReftable = spawnSync("git", ["init", "-q", "--ref-format=reftable", reftableProbe]).status === 0;
+  fs.rmSync(reftableProbe, { recursive: true, force: true });
+
+  it.skipIf(!gitHasReftable)("gives no key for a reftable repository, whose refs it cannot see", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-git-reftable-"));
+    git(repoRoot, ["init", "-q", "--ref-format=reftable"]);
+    git(repoRoot, ["-c", "user.email=ade@test.local", "-c", "user.name=ADE", "commit", "--allow-empty", "-m", "one"]);
+    expect(fs.existsSync(path.join(repoRoot, ".git", "reftable"))).toBe(true);
+    expect(await gitBranchRefsIdentity(repoRoot)).toBeNull();
+    fs.rmSync(repoRoot, { recursive: true, force: true });
+  });
 });
 
 describe("repo cache invalidation through runGit", () => {

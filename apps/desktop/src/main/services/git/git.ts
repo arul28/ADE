@@ -860,7 +860,7 @@ export async function resolveWorktreeIndexPath(worktreePath: string): Promise<st
  * renaming a lock file into place, which moves its folder's mtime),
  * `packed-refs`, this worktree's `HEAD`, and the repository and worktree config. Null when
  * the layout is not the plain one git writes (or the environment redirects
- * git), so the caller asks git as before.
+ * git, or refs are in reftable/), so the caller asks git as before.
  */
 export async function gitBranchRefsIdentity(worktreePath: string): Promise<string | null> {
   if (process.env.GIT_DIR || process.env.GIT_COMMON_DIR) return null;
@@ -875,6 +875,9 @@ export async function gitBranchRefsIdentity(worktreePath: string): Promise<strin
     }
     const commonDir = await gitCommonDirFor(worktreePath);
     if (!gitDir || !commonDir) return null;
+    // A reftable repository (git 2.45+) keeps refs in reftable/ files this key
+    // does not read; no key, so the caller asks git every time.
+    if (fs.existsSync(path.join(commonDir, "reftable"))) return null;
     const parts: string[] = [];
     const stamp = async (file: string, required: boolean): Promise<boolean> => {
       try {
