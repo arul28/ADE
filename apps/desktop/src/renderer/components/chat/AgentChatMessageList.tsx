@@ -207,6 +207,7 @@ import { WorkflowScriptRow } from "./WorkflowScriptRow";
 import type { WorkflowScriptRenderEvent } from "./chatTranscriptRows";
 import { SUBAGENT_RUN_HEADER_MIN } from "./SubagentActivityCards";
 import { workflowRunShape } from "./SubagentWorkflowRunView";
+import { PrWatchWakeLine } from "./PrWatchWakeLine";
 import { AdeCard } from "./AdeCard";
 import { LaneSetupTranscriptCard } from "./launch/LaneSetupCard";
 import { navigateToSpawnedChat } from "./spawnNavigation";
@@ -3057,11 +3058,14 @@ function renderEvent(
   /* ── PR Watch / Ship wake, terminal watch wake ──
      ADE woke the agent because its pull request changed (or a watched
      terminal printed something). The user did not
-     write this message, so it is never a user bubble: the card says what
-     changed and that the agent was told, and the exact text sits folded
-     underneath for anyone who wants to see what the agent read. */
+     write this message, so it is never a user bubble. A PR wake is one divider
+     line (`PrWatchWakeLine`); a terminal wake is a card. Either way the exact
+     text the agent read sits folded underneath. */
   if (event.type === "user_message" && userBody?.kind === "wake-card") {
     const prWatchWake = userBody.wake;
+    if (prWatchWake.card.variant === "pr_watch_wake") {
+      return <PrWatchWakeLine card={prWatchWake.card} wakeText={event.text} watchId={prWatchWake.watchId} />;
+    }
     const card: Extract<AgentChatEvent, { type: "ade_card" }> = { ...prWatchWake.card, type: "ade_card" };
     return (
       <div className="my-2 flex flex-col gap-1" data-pr-watch-wake={prWatchWake.watchId}>
