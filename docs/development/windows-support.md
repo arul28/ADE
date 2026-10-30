@@ -53,8 +53,8 @@ Three things that are **not** downgrades, recorded here because they are commonl
 assumed to be:
 
 - Git costs one process start per command, as on macOS. Git for Windows puts only
-  its launcher (`Gitcmdgit.exe`) on PATH, which starts the real git as a second
-  process; ADE runs the real `<Git><build>ingit.exe` directly (`runGit`). A
+  its launcher (`<Git>\cmd\git.exe`) on PATH, which starts the real git as a second
+  process; ADE runs the real `<Git>\<build>\bin\git.exe` directly (`runGit`). A
   brain started from Git Bash (`MSYSTEM` set) keeps the launcher, so measure git
   costs from PowerShell or the installed app, not from Git Bash.
 
