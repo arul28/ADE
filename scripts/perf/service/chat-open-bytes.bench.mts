@@ -1,4 +1,4 @@
-// cd apps/ade-cli && npx tsx ../../scripts/perf/service/chat-open-bytes.bench.mts --project <copy root> [--limit 2000]
+// cd apps/ade-cli && npx tsx ../../scripts/perf/service/chat-open-bytes.bench.mts --project <copy root> [--limit <n>]
 // Bytes a client receives when it opens each chat: one `chat.getChatEventHistory` per chat with the
 // desktop's opening window (maxEvents 1,000, maxBytes 256 KB, from chatHistoryWindow.ts), through an
 // isolated measurement brain on a make-real-load-copy copy (never a live project). Outside target:
@@ -12,6 +12,7 @@ import os from "node:os";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { gzipSync } from "node:zlib";
+import { isChatToolType } from "../../../apps/desktop/src/shared/sessionSpawnNesting";
 import { connectBrain, prepareCopyForBrain, startMeasureBrain, stopMeasureBrain, type BrainClient } from "../net/brain-rpc.mts";
 
 const args = process.argv.slice(2);
@@ -21,9 +22,12 @@ const flag = (name: string) => {
 };
 const projectRoot = flag("--project");
 if (!projectRoot || !fs.existsSync(path.join(projectRoot, ".ade", "ade.db"))) {
-  throw new Error("usage: chat-open-bytes.bench.mts --project <make-real-load-copy root> [--limit 2000]");
+  throw new Error("usage: chat-open-bytes.bench.mts --project <make-real-load-copy root> [--limit <n>]");
 }
-const limit = Number(flag("--limit") ?? 2_000);
+/** Every listed chat unless --limit caps it; the output reports both counts. */
+const limitFlag = flag("--limit");
+const limit = limitFlag === undefined ? Number.POSITIVE_INFINITY : Number(limitFlag);
+if (!(limit > 0)) throw new Error("--limit must be a positive number");
 /** Mirrors INITIAL_SELECTED_CHAT_HISTORY_EVENTS and CHAT_HISTORY_PAGE_MAX_BYTES (chatHistoryWindow.ts). */
 const OPEN_WINDOW = { maxEvents: 1_000, maxBytes: 256 * 1024 };
 
@@ -34,22 +38,25 @@ const kb = (bytes: number) => +(bytes / 1024).toFixed(1);
 
 // A copy must not hold running chats or a followed sync record when a brain opens it.
 await prepareCopyForBrain(projectRoot);
-const record = startMeasureBrain(brain);
 let client: BrainClient | null = null;
+let listedChats = 0;
 const json: number[] = [];
 const gz: number[] = [];
 let failed = 0;
 let firstError: string | null = null;
 try {
+  // Inside the try: a brain that fails to start may still be running, and finally stops it.
+  const record = startMeasureBrain(brain);
   client = await connectBrain(record.socket, "chat-open-bytes-bench");
   await client.addProject(projectRoot);
   await sleep(10_000);
   const listed = await client.action("run_ade_action", { domain: "session", action: "list", args: { limit: null } });
   if (listed?.ok === false) throw new Error(`session.list failed: ${JSON.stringify(listed.error)}`);
-  const sessionIds = ((listed?.result ?? []) as Array<{ id?: string; toolType?: string | null }>)
-    .filter((row) => String(row.toolType ?? "").endsWith("-chat") && row.id)
-    .map((row) => row.id!)
-    .slice(0, limit);
+  const chatIds = ((listed?.result ?? []) as Array<{ id?: string; toolType?: string | null }>)
+    .filter((row) => isChatToolType(row.toolType) && row.id)
+    .map((row) => row.id!);
+  listedChats = chatIds.length;
+  const sessionIds = chatIds.slice(0, limit);
   for (const sessionId of sessionIds) {
     try {
       const result = await client.action("run_ade_action", { domain: "chat", action: "getChatEventHistory", args: { sessionId, ...OPEN_WINDOW } });
@@ -73,6 +80,7 @@ const sg = [...gz].sort((a, b) => a - b);
 console.log(JSON.stringify({
   bench: "chat-open-bytes",
   platform: process.platform,
+  listedChats,
   chats: json.length,
   failed,
   firstError,

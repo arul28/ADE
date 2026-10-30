@@ -33,8 +33,13 @@ const flag = (name: string) => {
 const project = flag("--project");
 if (!project) throw new Error("usage: chat-timeline.bench.mts --project <copy root> [--chat <id>] [--runs 5]");
 const runs = Number(flag("--runs") ?? 5);
+if (!Number.isInteger(runs) || runs < 1) throw new Error("--runs must be a positive integer");
+const SCENARIOS = ["stream-1000", "rebuild", "tool-done"] as const;
 const only = flag("--scenario");
-const wants = (scenario: string) => !only || only === scenario;
+if (args.includes("--scenario") && !SCENARIOS.includes(only as (typeof SCENARIOS)[number])) {
+  throw new Error(`--scenario must be one of ${SCENARIOS.join(", ")}`);
+}
+const wants = (scenario: (typeof SCENARIOS)[number]) => !only || only === scenario;
 const WARMUPS = 2;
 
 const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]!;
@@ -81,6 +86,7 @@ for (const { file, events: envelopes } of wants("stream-1000") ? sized.filter((e
 }
 
 // rebuild + tool-done on one long chat
+if (wants("rebuild") || wants("tool-done")) {
 const chosenId = chatFlag;
 const target = chosenId
   ? sized.find((entry) => path.basename(entry.file).startsWith(chosenId))
@@ -89,9 +95,12 @@ if (!target) throw new Error(`no transcript ${chosenId} in ${project}`);
 const all = mergeAgentChatLiveEvents([], target.events);
 const displayedAll = chatDisplayEvents(all);
 if (wants("rebuild")) {
+// A fresh list per run: the display filter caches by list identity, and a real
+// rebuild (a new merged list) pays it.
 const rebuild = measure(() => {
+  const list = all.slice();
   const started = performance.now();
-  collapseChatTranscriptEventsWithContext(chatDisplayEvents(all));
+  collapseChatTranscriptEventsWithContext(chatDisplayEvents(list));
   return performance.now() - started;
 });
 const rowCount = collapseChatTranscriptEventsWithContext(displayedAll).rows.length;
@@ -146,9 +155,15 @@ if (wants("tool-done")) console.log(JSON.stringify({
   scenario: "tool-done",
   chat: id(target.file),
   events: all.length,
+  rawEvents: raw.length,
+  // Each step applies a result to the raw history before it, so this is the size measured.
+  historyEvents: toolResults.length
+    ? { min: toolResults[0]!.index, max: toolResults[toolResults.length - 1]!.index }
+    : null,
   toolResults: perResult.length,
   medianMs: perResult.length ? round(median(perResult), 3) : null,
   // Median over the results of each result's median run; worst single run over all.
   worstMs: perResultWorst.length ? round(Math.max(...perResultWorst), 3) : null,
   targetMs: 0.28,
 }));
+}

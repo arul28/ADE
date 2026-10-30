@@ -38,9 +38,10 @@ const median = (xs: number[]) => [...xs].sort((a, b) => a - b)[Math.floor(xs.len
 
 // A copy must not hold running chats or a followed sync record when a brain opens it.
 await prepareCopyForBrain(projectRoot);
-const record = startMeasureBrain(brain);
 let client: BrainClient | null = null;
 try {
+  // Inside the try: a brain that fails to start may still be running, and finally stops it.
+  const record = startMeasureBrain(brain);
   client = await connectBrain(record.socket, "work-list-bench");
   await client.addProject(projectRoot);
   await sleep(15_000);

@@ -1,5 +1,6 @@
 // cd apps/ade-cli && npx tsx ../../scripts/perf/service/chat-text-coalesce.bench.mts --project <copy root> [--chars 6200]
-// Bytes a streamed reply costs on the wire, with and without the brain's 100 ms text
+// Serialized envelope bytes a streamed reply costs (the `chat/event` payload, without the
+// JSON-RPC wrapper and socket framing), with and without the brain's 100 ms text
 // buffer, at 10, 25 and 50 ms delta cadences. Outside target: a synthetic
 // stream of the same reply; serialized bytes fall 79.8% at 10 ms and 49.9% at 25 ms,
 // and a 6,200-byte reply ends at 21,121 decoded bytes on the socket.
@@ -8,8 +9,9 @@
 // reply so far, ADE's carry only the new text, so ADE's uncoalesced baseline is already
 // much smaller. Compare the absolute bytes (`coalescedBytes`) first.
 //
-// The envelope shape (ids, timestamps, sequence) is copied from the newest real `text`
-// event in the copy's transcripts, so the per-event overhead is ADE's own. The buffer
+// Each envelope is built as the brain emits it (sessionId, timestamp, sequence, event), with the
+// ids and the sequence base of the newest real `text` event in the transcripts, so the per-event
+// overhead is ADE's own; transcript-only metadata (provenance, replay fields) is left out. The buffer
 // is replayed as agentChatService runs it: the first delta starts a 100 ms timer, every
 // delta of the same stream joins the pending text, the timer flushes it.
 import { readdirSync, statSync } from "node:fs";
@@ -53,10 +55,11 @@ const deltaSize = Math.ceil(chars / DELTAS);
 const deltas: string[] = [];
 for (let offset = 0; offset < reply.length; offset += deltaSize) deltas.push(reply.slice(offset, offset + deltaSize));
 
+const sequenceBase = typeof sample.sequence === "number" ? sample.sequence : 0;
 const envelopeBytes = (text: string, sequence: number, atMs: number) => Buffer.byteLength(JSON.stringify({
-  ...sample,
-  sequence,
+  sessionId: sample!.sessionId,
   timestamp: new Date(Date.parse(sample!.timestamp) + atMs).toISOString(),
+  sequence: sequenceBase + sequence,
   event: { ...base, text },
 }));
 
