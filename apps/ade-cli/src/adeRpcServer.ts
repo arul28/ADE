@@ -21,6 +21,14 @@ import {
   createRemoteCallerCaptures,
   type RemoteCallerCaptures,
 } from "./services/proof/remoteCallerCaptures";
+import {
+  createRemoteWorkCopyService,
+  remoteWorkRunOnceLaunch,
+  RemoteWorkError,
+  type RemoteWorkCopyService,
+  type RemoteWorkSyncMode,
+} from "../../desktop/src/main/services/remoteWork/remoteWorkCopyService";
+import { externalChatContext } from "../../desktop/src/main/services/chat/externalChats";
 import path from "node:path";
 import { EXTERNAL_SESSION_PROVIDERS } from "../../desktop/src/shared/types/externalSessions";
 import {
@@ -2888,6 +2896,110 @@ export async function resolveIngestProvenance(
       capturedSha256: captured.map((entry) => entry.sha256),
     },
     release,
+  };
+}
+
+const remoteWorkCopyServices = new WeakMap<AdeRuntime, RemoteWorkCopyService>();
+
+/** This project's work copies for chats on other machines (`ade shell start --machine`). */
+function remoteWorkCopiesFor(runtime: AdeRuntime): RemoteWorkCopyService {
+  let service = remoteWorkCopyServices.get(runtime);
+  if (!service) {
+    service = createRemoteWorkCopyService({
+      projectRoot: runtime.projectRoot,
+      logger: runtime.logger,
+      isInUse: (copy) => runtime.ptyService.list({ chatSessionId: copy.owner, status: "running", limit: 1 }).length > 0,
+    });
+    remoteWorkCopyServices.set(runtime, service);
+    // Copies nobody used for a week go when the project's runtime first needs them.
+    const sweeping = service;
+    void sweeping.sweep().catch((error) => {
+      runtime.logger.warn("remote_work.sweep_failed", { error: error instanceof Error ? error.message : String(error) });
+    });
+  }
+  return service;
+}
+
+const REMOTE_WORK_SYNC_MODES: ReadonlySet<string> = new Set(["sync", "none", "discard"]);
+
+/**
+ * A shell for a chat on another machine: ready that chat's work copy here
+ * (see remoteWorkCopyService.ts), then start the shell in it, owned by the
+ * caller's foreign session id so only that chat can read, write or stop it.
+ */
+async function prepareRemoteWorkShell(
+  runtime: AdeRuntime,
+  session: SessionState,
+  ptyArgs: Record<string, unknown>,
+): Promise<{ args: Record<string, unknown>; workCopy: { path: string; created: boolean; synced: boolean } }> {
+  const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+  if (!owner || !parseForeignCallerSessionId(owner)) {
+    throw new JsonRpcError(
+      JsonRpcErrorCode.invalidParams,
+      "A work copy is for commands sent from another machine (`ade shell start --machine <name>`).",
+    );
+  }
+  const primary = runtime.laneService.getPrimaryLane();
+  if (!primary) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidRequest, "This project has no primary lane here to run the command in.");
+  }
+  const remoteWork = ptyArgs.remoteWork as Record<string, unknown>;
+  const rawMode = asOptionalTrimmedString(remoteWork.sync) ?? "sync";
+  const mode = (REMOTE_WORK_SYNC_MODES.has(rawMode) ? rawMode : "sync") as RemoteWorkSyncMode;
+  let prepared: Awaited<ReturnType<RemoteWorkCopyService["prepare"]>>;
+  try {
+    prepared = await remoteWorkCopiesFor(runtime).prepare(owner, {
+      head: asOptionalTrimmedString(remoteWork.head) ?? "",
+      fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
+      patch: typeof remoteWork.patch === "string" ? remoteWork.patch : null,
+      branch: asOptionalTrimmedString(remoteWork.branch),
+      machineName: externalChatContext(owner)?.machineName ?? null,
+    }, mode);
+  } catch (error) {
+    if (error instanceof RemoteWorkError) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
+    }
+    throw error;
+  }
+  const {
+    remoteWork: _remoteWork,
+    laneId: _laneId,
+    cwd: _cwd,
+    allowExternalCwd: _allowExternalCwd,
+    chatSessionId: _chatSessionId,
+    sessionId: _sessionId,
+    allowNewSessionId: _allowNewSessionId,
+    runtimeCliLaunch: _runtimeCliLaunch,
+    ...rest
+  } = ptyArgs;
+  const command = typeof rest.startupCommand === "string" ? rest.startupCommand.trim() : "";
+  let runOnce: Record<string, unknown> = {};
+  if (remoteWork.exitWhenDone === true && command) {
+    let shell: { id: string | null; path: string | null } = { id: null, path: process.env.SHELL ?? null };
+    try {
+      const settings = await runtime.ptyService.getShellSettings();
+      const chosen = settings.shells.find((option) => option.id === settings.defaultShellId)
+        ?? settings.shells.find((option) => option.path === settings.automaticShell || option.id === settings.automaticShell)
+        ?? null;
+      shell = chosen ? { id: chosen.id, path: chosen.path } : { id: settings.automaticShell, path: settings.automaticShell };
+    } catch {
+      // The platform default below.
+    }
+    // The command runs directly, not typed into an interactive shell.
+    runOnce = { ...remoteWorkRunOnceLaunch(command, shell), startupCommand: undefined };
+  }
+  return {
+    args: {
+      ...rest,
+      ...runOnce,
+      laneId: primary.laneId,
+      cwd: prepared.path,
+      allowExternalCwd: true,
+      chatSessionId: owner,
+      toolType: "shell",
+      tracked: true,
+    },
+    workCopy: prepared,
   };
 }
 
@@ -6181,6 +6293,10 @@ async function runTool(args: {
       if (action === "list") {
         result = listAuthorizedPtySessions(runtime, session, `run_ade_action:pty.${action}`, scopedObjectArgs);
         scopedResultHandled = true;
+      } else if (action === "create" && isRecord(scopedObjectArgs.remoteWork)) {
+        const prepared = await prepareRemoteWorkShell(runtime, session, scopedObjectArgs);
+        scopedObjectArgs = prepared.args;
+        transformScopedResult = (value) => (isRecord(value) ? { ...value, workCopy: prepared.workCopy } : value);
       } else {
         authorizePtyAdeActionInvocation(runtime, session, action, scopedObjectArgs);
       }

@@ -128,6 +128,8 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
     }
     process.env.ADE_HOME = path.join(root, "home");
     process.env.ADE_DEFAULT_ROLE = "cto";
+    // The supervised PTY host is a separate built script; in-process node-pty runs real shells here.
+    process.env.ADE_DISABLE_SUPERVISED_PTY_HOST = "1";
 
     const { createAdeRuntime } = await import("../../bootstrap");
     const { ProjectRegistry } = await import("../projects/projectRegistry");
@@ -394,4 +396,95 @@ describe.skipIf(!LIVE)("cross-machine agents, live, two brains in one process", 
     expect(new Set(turnIds).size).toBe(turnIds.length);
     expect(turnIds.length).toBeGreaterThanOrEqual(2);
   }, 900_000);
+
+  it("an agent on A runs commands in its work copy on B with --machine --wait", async () => {
+    const A = sides.A;
+    const B = sides.B;
+    const { execSync, spawn } = await import("node:child_process");
+    const net = await import("node:net");
+    const { startJsonRpcServer } = await import("../../jsonrpc");
+    const sh = (cwd: string, command: string) => execSync(command, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+
+    // One origin for both checkouts: a local bare repository behind the
+    // GitHub URL the scope matches on.
+    const bare = path.join(root, "origin.git");
+    sh(root, `git init -q --bare ${JSON.stringify(bare)}`);
+    for (const side of [A, B]) {
+      sh(side.projectRoot, `git config url.${JSON.stringify(bare)}.insteadOf https://github.com/example/xm-live.git`);
+      sh(side.projectRoot, "git config user.email t@t && git config user.name t");
+    }
+    sh(A.projectRoot, "git push -q origin main");
+    sh(A.projectRoot, "git checkout -qb feat && echo pushed > pushed.txt && git add -A && git commit -qm pushed && git push -q -u origin feat");
+    fs.writeFileSync(path.join(A.projectRoot, "note.txt"), "uncommitted on A\n");
+
+    const parent = await A.runtime.agentChatService.createSession({
+      laneId: A.laneId,
+      provider: "claude",
+      model: MODEL,
+      modelId: MODEL,
+      permissionMode: "full-auto",
+    });
+    const socketPath = path.join(os.tmpdir(), `ade-xm-${process.pid}.sock`);
+    fs.rmSync(socketPath, { force: true });
+    const server = net.createServer((socket) => {
+      startJsonRpcServer(A.handlerFor(null), {
+        onData: (cb) => socket.on("data", cb),
+        write: (data) => { socket.write(data); },
+        close: () => { socket.end(); },
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(socketPath, resolve));
+    const cliEnv: NodeJS.ProcessEnv = { ...env, ADE_CHAT_SESSION_ID: parent.id, ADE_HOME: process.env.ADE_HOME };
+    for (const key of Object.keys(cliEnv)) {
+      if (/^ADE_(PROJECT_ROOT|WORKSPACE_ROOT|LANE_ID|RPC_|RUNTIME_SOCKET_PATH|PARENT_|DEFAULT_ROLE)/.test(key)) delete cliEnv[key];
+    }
+    // Async: brain A answers from this same process.
+    const cli = (args: string[]) => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
+      const child = spawn(
+        process.execPath,
+        [path.join(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs"), path.join(process.cwd(), "src", "cli.ts"), "--socket", socketPath, ...args],
+        { cwd: A.projectRoot, env: cliEnv },
+      );
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (chunk) => { stdout += chunk; });
+      child.stderr.on("data", (chunk) => { stderr += chunk; });
+      const timer = setTimeout(() => child.kill(), 120_000);
+      child.on("close", (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+    try {
+      const first = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "cat", "note.txt", "pushed.txt"]);
+      console.log("[xm-shell] first", first.status, first.stdout, first.stderr.slice(-800));
+      expect(first.stdout).toContain("uncommitted on A");
+      expect(first.stdout).toContain("pushed");
+      expect(first.status).toBe(0);
+
+      const copies = JSON.parse(fs.readFileSync(path.join(B.projectRoot, ".ade", "remote-work", "copies.json"), "utf8")).copies;
+      expect(copies).toHaveLength(1);
+      expect(copies[0].owner.endsWith(parent.id)).toBe(true);
+      const shells = B.runtime.ptyService.list({ chatSessionId: copies[0].owner });
+      expect(shells.length).toBe(1);
+
+      const failing = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "sh", "-c", "exit 3"]);
+      console.log("[xm-shell] failing", failing.status, failing.stdout.slice(-300), failing.stderr.slice(-300));
+      expect(failing.status).toBe(3);
+
+      // Work made there and not pushed blocks the next sync.
+      fs.writeFileSync(path.join(copies[0].path, "made-there.txt"), "x\n");
+      const blocked = await cli(["shell", "start", "--machine", "Machine B", "--wait", "--text", "--", "true"]);
+      console.log("[xm-shell] blocked", blocked.status, blocked.stderr.slice(-400));
+      expect(blocked.status).not.toBe(0);
+      expect(blocked.stderr + blocked.stdout).toContain("made-there.txt");
+
+      const unpushed = path.join(A.projectRoot, "unpushed.txt");
+      fs.writeFileSync(unpushed, "y\n");
+      sh(A.projectRoot, "git add unpushed.txt && git commit -qm unpushed");
+      const notOnOrigin = await cli(["shell", "start", "--machine", "Machine B", "--discard", "--wait", "--text", "--", "true"]);
+      console.log("[xm-shell] not on origin", notOnOrigin.status, notOnOrigin.stderr.slice(-400));
+      expect(notOnOrigin.stderr + notOnOrigin.stdout).toContain("Push it first");
+    } finally {
+      server.close();
+      fs.rmSync(socketPath, { force: true });
+    }
+  }, 600_000);
 });

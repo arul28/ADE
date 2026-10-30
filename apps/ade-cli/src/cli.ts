@@ -906,6 +906,11 @@ export type CliPlan =
       machineList?: "chats" | "inbox" | "lanes" | "projects" | "usageLimits";
       /** `--machine a,b` starts this plan once per machine (`chat create`). */
       machineFanOut?: boolean;
+      /**
+       * `shell start --wait`: after the shell starts, follow its output until
+       * it ends, and exit with its exit code (see `followShellToExit`).
+       */
+      followShell?: boolean;
       /** `chat create`: what to compare after the chat exists (see `chatCreateNotices`). */
       chatCreateCheck?: {
         laneId: string | null;
@@ -9465,7 +9470,18 @@ function buildShellPlan(args: string[]): CliPlan {
     const startupCommand = startupCommandArgs
       ? startupCommandArgs.map(shellEscapeToken).join(" ")
       : readValue(args, ["--command", "-c"]);
+    // Only with --machine (cliMachineTargeting.ts): how to ready the work copy
+    // there, and whether to wait for the command to end.
+    const noSync = readFlag(args, ["--no-sync"]);
+    const discard = readFlag(args, ["--discard"]);
+    if (noSync && discard) throw new CliUsageError("Use --no-sync or --discard, not both.");
+    const wait = readFlag(args, ["--wait"]);
+    if (wait && !startupCommand) throw new CliUsageError("--wait needs a command: ade shell start --machine <name> --wait -- <command>.");
+    const workCopy: JsonObject = {
+      ...(noSync ? { sync: "none" } : discard ? { sync: "discard" } : {}),
+    };
     const input = collectGenericObjectArgs(args, {
+      ...(Object.keys(workCopy).length ? { workCopy } : {}),
       ...(laneId ? { laneId } : {}),
       ...(chatSessionId ? { chatSessionId } : {}),
       cwd: readValue(args, ["--cwd"]),
@@ -9481,6 +9497,21 @@ function buildShellPlan(args: string[]): CliPlan {
       label: "shell start",
       formatter: "pty-create",
       steps: [actionStep("result", "pty", "create", input)],
+      ...(wait
+        ? {
+            followShell: true,
+            formatter: undefined,
+            formatText: (result: unknown) => {
+              const record = isRecord(result) ? result : {};
+              const code = typeof record.exitCode === "number" ? record.exitCode : null;
+              return `\n[shell ended${code === null ? "" : ` with exit code ${code}`} · terminal ${asString(record.terminalId) ?? "?"}]`;
+            },
+            exitCodeFromResult: (result: unknown) => {
+              const code = isRecord(result) ? result.exitCode : null;
+              return typeof code === "number" ? Math.min(Math.max(code, 0), 255) : 1;
+            },
+          }
+        : {}),
     };
   }
   if (sub === "write")
@@ -36829,6 +36860,61 @@ function chatCreateNotices(plan: CliPlan & { kind: "execute" }, values: JsonObje
   return notices;
 }
 
+/** How often `shell start --wait` reads the shell; the output itself streams as it comes. */
+const FOLLOW_SHELL_POLL_MS = 1_000;
+/** The most output `shell start --wait --json` keeps (the end of it). */
+const FOLLOW_SHELL_MAX_OUTPUT_CHARS = 1024 * 1024;
+
+/**
+ * Follow a shell `shell start` just started until it ends: print its output as
+ * it arrives (text mode), then answer with its exit code. Works the same for a
+ * shell on another machine, because every call goes over `connection`.
+ */
+async function followShellToExit(
+  connection: CliConnection,
+  started: unknown,
+  options: GlobalOptions,
+): Promise<JsonObject> {
+  const createdValue = unwrapActionEnvelope(started);
+  const created = isRecord(createdValue) ? createdValue : {};
+  const terminalId = asString(created.sessionId);
+  if (!terminalId) throw new CliExecutionError("The shell started, but ADE did not say which terminal it is.", { result: created });
+  const call = async (domain: string, action: string, args: JsonObject): Promise<unknown> =>
+    unwrapActionEnvelope(unwrapToolResult(await connection.request("ade/actions/call", { name: "run_ade_action", arguments: { domain, action, args } })));
+  let since: number | undefined;
+  let output = "";
+  const readMore = async (): Promise<void> => {
+    const read = await call("terminal", "read", { terminalId, ...(since !== undefined ? { since } : {}) });
+    if (!isRecord(read)) return;
+    const data = typeof read.data === "string" ? read.data : "";
+    if (data) {
+      if (options.text) process.stdout.write(data);
+      output = `${output}${data}`.slice(-FOLLOW_SHELL_MAX_OUTPUT_CHARS);
+    }
+    if (typeof read.nextSince === "number") since = read.nextSince;
+  };
+  for (;;) {
+    await readMore();
+    const listed = await call("terminal", "list", { limit: 200 });
+    const row = Array.isArray(listed)
+      ? listed.find((entry) => isRecord(entry) && entry.terminalId === terminalId)
+      : null;
+    if (!isRecord(row) || row.status !== "running") {
+      // One last read: output written just before the end.
+      await readMore();
+      const exitCode = isRecord(row) && typeof row.exitCode === "number" ? row.exitCode : null;
+      return {
+        ...created,
+        terminalId,
+        status: isRecord(row) ? row.status ?? null : "missing",
+        exitCode,
+        ...(options.text ? {} : { output }),
+      };
+    }
+    await new Promise((resolve) => setTimeout(resolve, FOLLOW_SHELL_POLL_MS));
+  }
+}
+
 async function executePlan(
   plan: CliPlan & { kind: "execute" },
   options: GlobalOptions,
@@ -36966,6 +37052,9 @@ async function executePlan(
           error: error instanceof Error ? error.message : String(error),
         };
       }
+    }
+    if (plan.followShell) {
+      values.result = await followShellToExit(connection, values.result, options);
     }
     const ownerWarning = chatOwnerSocketWarning(values, connection);
     if (ownerWarning) process.stderr.write(`${ownerWarning}\n`);

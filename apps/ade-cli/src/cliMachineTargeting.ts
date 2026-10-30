@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -8,6 +10,7 @@ import { samePathOnPlatform } from "../../desktop/src/shared/pathContainment";
 import {
   CLI_COMMAND_ALIASES,
   CliExecutionError,
+  CliToolError,
   CliUsageError,
   VALUE_CARRIER_FLAGS,
   asString,
@@ -50,6 +53,8 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "new",
   "lanes",
   "lane",
+  "shell",
+  "terminal",
   "projects",
   "apple",
   "mac-desktop",
@@ -106,7 +111,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, projects, usage, apple, mac-desktop, app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, mac-desktop, app-control.",
       );
     }
     return parsed;
@@ -167,6 +172,13 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   if (machine && allMachines) throw new CliUsageError("Use --machine <name> or --all-machines, not both.");
   if (machineClone && !machine) throw new CliUsageError("--clone sets the repository up on another machine; add --machine <name>.");
   if (machineProject && !machine && !allMachines) throw new CliUsageError("--machine-project needs --machine <name>.");
+  if (!machine && primary === "shell") {
+    const flags = flagNamesOutsideFreeText(parsed.command);
+    const workCopyFlag = ["--no-sync", "--discard", "--wait"].find((flag) => flags.has(flag));
+    if (workCopyFlag) {
+      throw new CliUsageError(`${workCopyFlag} is for a command on another machine: add --machine <name>. Here, run the command in your own shell.`);
+    }
+  }
   if (!machine && !allMachines) return parsed;
   return {
     command: kept,
@@ -410,6 +422,16 @@ export async function createMachineRemoteConnection(
       if (method === "ade/actions/call" && params && isAppControlCaptureProof(params)) {
         return await fileRemoteAppControlProofHere(params);
       }
+      if (method === "ade/actions/call" && params && isShellOrTerminalAction(params)) {
+        const shellParams = withRemoteShellArgs(params, process.cwd());
+        try {
+          return await callRemote(method, shellParams);
+        } catch (error) {
+          // The other machine said no (busy copy, unpushed work there, low
+          // disk): its sentence is the whole answer, not a connection problem.
+          throw new CliToolError(error instanceof Error ? error.message : String(error), { machine });
+        }
+      }
       if (method === "ade/actions/call" && params?.name === "list_computer_use_artifacts") {
         // A proof command's verify step checks the drawer it filed into: this one.
         return await callLocalProject(method, params);
@@ -417,6 +439,103 @@ export async function createMachineRemoteConnection(
       return await callRemote(method, params);
     },
     close: () => socketClient.close(),
+  };
+}
+
+function isShellOrTerminalAction(params: JsonObject): boolean {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : null;
+  return params.name === "run_ade_action" && (toolArgs?.domain === "pty" || toolArgs?.domain === "terminal");
+}
+
+/**
+ * A shell or terminal call bound for another machine. A chat id from here
+ * means nothing there (the other machine knows this chat by the identity the
+ * bridge carries), so it is dropped. A new shell with no `--lane` runs in
+ * this chat's work copy there: the commit and the uncommitted changes of the
+ * checkout this command runs in go along (remoteWorkCopyService.ts).
+ */
+function withRemoteShellArgs(params: JsonObject, workspaceRoot: string): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  const { chatSessionId: _chatSessionId, workCopy, ...args } = isRecord(toolArgs.args) ? toolArgs.args : {};
+  let nextArgs: JsonObject = args;
+  if (toolArgs.domain === "pty" && toolArgs.action === "create" && !asString(args.laneId)) {
+    nextArgs = {
+      ...args,
+      remoteWork: {
+        ...readLocalWorkSource(workspaceRoot),
+        ...(isRecord(workCopy) ? workCopy : {}),
+        // A command there ends its shell, so the next command can sync.
+        ...(asString(args.startupCommand) ? { exitWhenDone: true } : {}),
+      },
+    };
+  } else if (isRecord(workCopy) && Object.keys(workCopy).length && toolArgs.action === "create") {
+    throw new CliUsageError("--no-sync, --discard and --wait are for this chat's work copy; leave out --lane to use it.");
+  }
+  return { ...params, arguments: { ...toolArgs, args: nextArgs } };
+}
+
+/** The most uncommitted change a command sends along; bigger changes go through git. */
+const MAX_WORK_PATCH_BYTES = 16 * 1024 * 1024;
+
+function gitHere(cwd: string, args: string[], env?: NodeJS.ProcessEnv): string {
+  const result = spawnSync("git", args, {
+    cwd,
+    encoding: "utf8",
+    maxBuffer: MAX_WORK_PATCH_BYTES * 2,
+    env: { ...process.env, GIT_OPTIONAL_LOCKS: "0", ...(env ?? {}) },
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) {
+    const detail = (result.stderr || result.error?.message || "").trim().split("\n").slice(-2).join(" ");
+    throw new CliUsageError(`git ${args[0]} failed in ${cwd}${detail ? `: ${detail}` : ""}`);
+  }
+  return result.stdout;
+}
+
+/**
+ * What the other machine needs to reproduce this checkout: the commit (which
+ * must be on origin), the remote branch that holds it, and every uncommitted
+ * change as one binary patch, untracked files included. The checkout's own
+ * index is never touched: the patch is staged in a copy of it.
+ */
+function readLocalWorkSource(cwd: string): JsonObject {
+  const top = gitHere(cwd, ["rev-parse", "--show-toplevel"]).trim();
+  const head = gitHere(top, ["rev-parse", "HEAD"]).trim();
+  const branch = gitHere(top, ["rev-parse", "--abbrev-ref", "HEAD"]).trim();
+  const remoteRefs = gitHere(top, ["branch", "-r", "--contains", "HEAD", "--format=%(refname:short)"])
+    .split("\n").map((line) => line.trim()).filter((line) => line.startsWith("origin/") && line !== "origin/HEAD");
+  if (!remoteRefs.length) {
+    throw new CliUsageError(
+      `Commit ${head.slice(0, 12)} is not on origin yet, so the other machine cannot check it out. `
+      + "Push it first (git push); uncommitted changes travel by themselves.",
+    );
+  }
+  const preferred = remoteRefs.find((ref) => ref === `origin/${branch}`) ?? remoteRefs[0]!;
+  const indexPath = gitHere(top, ["rev-parse", "--path-format=absolute", "--git-path", "index"]).trim();
+  const tempIndex = path.join(os.tmpdir(), `ade-work-patch-${randomUUID()}`);
+  let patch: string;
+  try {
+    try {
+      fs.copyFileSync(indexPath, tempIndex);
+    } catch {
+      // No index yet; git builds one.
+    }
+    const env = { GIT_INDEX_FILE: tempIndex };
+    gitHere(top, ["add", "-A"], env);
+    patch = gitHere(top, ["diff", "--cached", "--binary", "HEAD"], env);
+  } finally {
+    fs.rmSync(tempIndex, { force: true });
+  }
+  if (Buffer.byteLength(patch) > MAX_WORK_PATCH_BYTES) {
+    throw new CliUsageError(
+      `The uncommitted changes are over ${MAX_WORK_PATCH_BYTES / (1024 * 1024)} MiB. Commit and push them, then run the command again.`,
+    );
+  }
+  return {
+    head,
+    fetchRef: preferred.slice("origin/".length),
+    branch: branch === "HEAD" ? null : branch,
+    ...(patch.trim() ? { patch } : {}),
   };
 }
 
