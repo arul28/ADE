@@ -23,7 +23,8 @@ export default defineConfig({
       "src/main/services/onboarding/onboardingDiscoveryWorkerEntry.ts",
     "main/packagedRuntimeSmoke": "src/main/packagedRuntimeSmoke.ts",
     "preload/preload": "src/preload/preload.ts",
-    "preload/browserMedia": "src/preload/browserMedia.ts"
+    "preload/browserMedia": "src/preload/browserMedia.ts",
+    "preload/startupRecovery": "src/preload/startupRecoveryPreload.ts"
   },
   format: ["cjs"],
   platform: "node",
