@@ -1202,6 +1202,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   // Work copies here for chats on other machines (`ade shell start --machine`).
   // Listed in Settings › Machines; a chat deletes its own with `ade shell clean`.
   remote_work: ["list", "delete"],
+  // This machine's load and capabilities (Settings › Machines, "Least loaded").
+  machine_stats: ["get"],
   // Read-only for everyone except the desktop that owns the pane:
   // `setActiveTool` is how a desktop renderer publishes which tool it has open
   // so phones and the hosted web client can mirror it. `show` is an agent
