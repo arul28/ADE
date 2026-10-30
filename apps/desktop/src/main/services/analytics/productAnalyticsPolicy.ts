@@ -6,7 +6,7 @@ import {
   RENDERER_GONE_UNKNOWN_REASON,
 } from "../../rendererCrashRecovery";
 import type { ToolErrorKind } from "../../../shared/types";
-import { JEV_FEATURES } from "../../../shared/types/jev";
+import { JEV_FEATURES, JEV_KEY_SKIP_REASONS } from "../../../shared/types/jev";
 import { ADE_ACTION_DOMAIN_NAMES } from "../adeActions/domains";
 import { APPLE_DEVICE_ANALYTICS_OUTCOMES } from "../../../shared/types/iosSimulator";
 import type {
@@ -23,6 +23,8 @@ const JEV_DAILY_PROPERTIES = [
   "jev_http_error_count", "jev_bad_response_count", "jev_breaker_open_count", "jev_unsent_input_token_estimate",
   "jev_latency_avg_ms", "jev_slow_count",
   ...JEV_FEATURES.map((feature) => `jev_sent_${feature}`),
+  ...JEV_FEATURES.map((feature) => `jev_unsent_${feature}`),
+  ...JEV_KEY_SKIP_REASONS.map((reason) => `jev_key_skip_${reason}`),
 ];
 
 export const DEFAULT_DAILY_BUDGET = 200;

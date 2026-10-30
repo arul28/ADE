@@ -10,9 +10,16 @@
  * One call tries the routes in order (`callRoutes`): OpenCode's free Jev, no
  * key needed; Jev on the user's own OpenCode Zen balance, only when they opt
  * in and are signed in (`jevAvailability`); then the ADE bonus, ADE's key
- * behind the account directory, capped per account per day. Each route has
- * its own breaker, so a spent free allowance moves calls to the next route
- * until it resets.
+ * behind the account directory, capped per account per day. Every feature may
+ * reach the bonus; only when it is spent too do callers use their built-in
+ * rules. Each route has its own breaker, so a spent free allowance moves calls
+ * to the next route until it resets.
+ *
+ * A call that gets no answer records why the bonus was not tried
+ * (`JevKeySkipReason`) in the day tally, and every failure that is ADE's to
+ * fix (no account token, the bonus refusing a token or failing) is logged as
+ * an error once a day, which makes it a Sentry issue. Falling back is silent
+ * for the user by design, so it must not be silent for ADE.
  *
  * The breakers, the call cap and the result cache are this machine's, shared by
  * every project runtime the brain hosts; counts and the summary log are per
@@ -30,6 +37,7 @@ import {
   type JevDecideRequest,
   type JevFallbackReason,
   type JevFeature,
+  type JevKeySkipReason,
   type JevOutcome,
   type JevQuestion,
   type JevQuestions,
@@ -58,15 +66,6 @@ const ZEN_CREDIT_MODEL = "jev-1.13";
 const BONUS_PATH = "/jev/systemone";
 /** Falling through to the next route needs at least this much of the call's time left. */
 const MIN_ROUTE_BUDGET_MS = 300;
-/**
- * The ADE bonus's last calls of the day are kept for interactive questions
- * (the model hint, mostly): background features stop using it here. Small,
- * because the status features (turn end, CLI waiting, status line) are what
- * the bonus is mostly for.
- */
-const BONUS_INTERACTIVE_RESERVE = 20;
-/** Never on the bonus: a chat idle for hours can wait for the free allowance to reset. */
-const FREE_ONLY_FEATURES: ReadonlySet<JevFeature> = new Set(["settle_nudge"]);
 
 const INTERACTIVE_TIMEOUT_MS = 1_500;
 const BACKGROUND_TIMEOUT_MS = 4_000;
@@ -108,12 +107,12 @@ type Breaker = {
   preferredUrl: number;
 };
 
-/** The bonus calls the account directory says are left today (`x-ade-jev-remaining`), by UTC day. */
-let bonusRemaining: { day: string; remaining: number } | null = null;
-
 function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
+
+/** Problems already reported today, by key: each is logged once a UTC day per brain. */
+const reportedToday = new Map<string, string>();
 
 /** One breaker per route: the free allowance running out says nothing about the bonus. */
 const breakers: Record<JevRoute, Breaker> = {
@@ -137,6 +136,8 @@ type CallResult =
     reason: JevFallbackReason;
     breakerOpened?: { reason: BreakerReason; until: number };
     usage?: JevUsage | null;
+    /** The HTTP status, when one came back. */
+    status?: number;
   };
 
 function breakerOpen(breaker: Breaker, nowMs: number): boolean {
@@ -329,16 +330,16 @@ async function callJev(args: {
   if (status === 401 || status === 402 || status === 403) {
     // The token may have been revoked or rotated; read the store again next time.
     if (route.id === "zen_credit") forgetJevCredential();
-    return { ok: false, reason: "auth_rejected", breakerOpened: openBreaker(breaker, "auth_rejected", AUTH_BACKOFF_MS, nowMs) };
+    return { ok: false, reason: "auth_rejected", status, breakerOpened: openBreaker(breaker, "auth_rejected", AUTH_BACKOFF_MS, nowMs) };
   }
   if (status === 400 || status === 413 || status === 422) {
     // Refused as input: not this route being down, so no breaker. The next
     // route still gets the call; a route that refuses a retired model looks
     // the same as one refusing this request.
-    return { ok: false, reason: "invalid_request" };
+    return { ok: false, reason: "invalid_request", status };
   }
   if (status < 200 || status >= 300) {
-    return { ok: false, reason: "http_error", breakerOpened: recordTransientFailure(breaker, nowMs) };
+    return { ok: false, reason: "http_error", status, breakerOpened: recordTransientFailure(breaker, nowMs) };
   }
   let body: unknown = null;
   try {
@@ -350,10 +351,7 @@ async function callJev(args: {
   const usage = parseUsage(body);
   // A 200 means the service is up, even when this answer is unusable.
   recordSuccess(breaker);
-  const remainingHeader = route.id === "bonus" ? headers?.get("x-ade-jev-remaining")?.trim() : null;
-  const remaining = remainingHeader ? finiteNumberOrNull(Number(remainingHeader)) : null;
-  if (remaining != null) bonusRemaining = { day: utcDay(nowMs), remaining };
-  if (!answers) return { ok: false, reason: "bad_response", usage };
+  if (!answers) return { ok: false, reason: "bad_response", usage, status };
   return { ok: true, answers, latencyMs: nowMs - startedAt, usage };
 }
 
@@ -390,6 +388,12 @@ export type JevServiceDeps = {
   bonus?: {
     baseUrl: () => string | null;
     accountToken: () => Promise<string | null>;
+    /**
+     * Whether this machine has an ADE account session at all. A signed-out
+     * machine without a token is expected; a signed-in one without a token is
+     * a bug, and only that one is reported as an error.
+     */
+    signedIn?: () => boolean;
   } | null;
 };
 
@@ -442,9 +446,36 @@ export function createJevService(deps: JevServiceDeps): JevService {
 
   const availabilityReason = (): JevAvailabilityReason => (deps.isEnabled() ? "ok" : "disabled");
 
-  type RouteResolver = (request: JevDecideRequest, nowMs: number, budgetMs: number) => Route | null | Promise<Route | null>;
+  /**
+   * Logs one problem at most once a UTC day per brain. `error` lines become
+   * Sentry issues (grouped by event name), `warn` lines Sentry logs.
+   */
+  const reportOncePerDay = (
+    level: "info" | "warn" | "error",
+    event: string,
+    key: string,
+    meta: Record<string, unknown>,
+  ): void => {
+    const day = utcDay(Date.now());
+    const reportKey = `${event}:${key}`;
+    if (reportedToday.get(reportKey) === day) return;
+    reportedToday.set(reportKey, day);
+    logger[level](event, meta);
+  };
 
-  /** How each route is set up for one call; null when it is not. */
+  /** The bonus was not tried because of its own breaker: why it is open. */
+  const keySkipForBreaker = (reason: BreakerReason | null): JevKeySkipReason => (
+    reason === "rate_limited" ? "key_spent" : reason === "auth_rejected" ? "key_rejected" : "key_failing"
+  );
+
+  /** A route not set up for this call: null, or for the bonus, why not. */
+  type RouteResolver = (
+    request: JevDecideRequest,
+    nowMs: number,
+    budgetMs: number,
+  ) => Route | JevKeySkipReason | null | Promise<Route | JevKeySkipReason | null>;
+
+  /** How each route is set up for one call; null (or a skip reason) when it is not. */
   const routeResolvers: Record<JevRoute, RouteResolver> = {
     free: () => ({ id: "free", urls: OPENCODE_JEV_URLS, token: null, model: FREE_MODEL }),
 
@@ -454,34 +485,88 @@ export function createJevService(deps: JevServiceDeps): JevService {
       return credential.ok ? { id: "zen_credit", urls: OPENCODE_JEV_URLS, token: credential.token, model: ZEN_CREDIT_MODEL } : null;
     },
 
-    bonus: async (request, nowMs, budgetMs) => {
-      if (FREE_ONLY_FEATURES.has(request.feature)) return null;
-      const left = bonusRemaining?.day === utcDay(nowMs) ? bonusRemaining.remaining : null;
-      if (request.priority === "background" && left != null && left <= BONUS_INTERACTIVE_RESERVE) return null;
+    bonus: async (request, _nowMs, budgetMs) => {
       const base = deps.bonus?.baseUrl()?.trim().replace(/\/+$/, "");
-      if (!base) return null;
+      if (!base) {
+        reportOncePerDay("error", "jev.key_unreachable", "no_account_server", { reason: "no_account_server", feature: request.feature });
+        return "no_account_server";
+      }
       // A token refresh may go to the network: it gets the call's remaining time, no more.
+      const startedAt = Date.now();
       let timer: ReturnType<typeof setTimeout> | null = null;
+      let tokenError: string | null = null;
       const token = await Promise.race([
-        deps.bonus!.accountToken().catch(() => null),
+        deps.bonus!.accountToken().catch((error: unknown) => {
+          tokenError = error instanceof Error ? error.message : String(error);
+          return null;
+        }),
         new Promise<null>((resolve) => {
           timer = setTimeout(() => resolve(null), budgetMs);
         }),
       ]).finally(() => {
         if (timer) clearTimeout(timer);
       });
+      if (!token) {
+        const signedIn = deps.bonus!.signedIn?.() ?? true;
+        const waitedMs = Date.now() - startedAt;
+        reportOncePerDay(signedIn ? "error" : "info", "jev.key_unreachable", signedIn ? "no_account_token" : "signed_out", {
+          reason: "no_account_token",
+          feature: request.feature,
+          signedIn,
+          timedOut: waitedMs >= budgetMs,
+          waitedMs,
+          budgetMs,
+          ...(tokenError ? { error: tokenError } : {}),
+        });
+        return "no_account_token";
+      }
       // The account directory picks the model; this one is only a label.
-      return token ? { id: "bonus", urls: [`${base}${BONUS_PATH}`], token, model: "jev-latest" } : null;
+      return { id: "bonus", urls: [`${base}${BONUS_PATH}`], token, model: "jev-latest" };
     },
   };
 
-  /** A route ready to take a call now, or null: its breaker is open, or it is not set up. */
+  /**
+   * A route ready to take a call now, or null: its breaker is open, or it is
+   * not set up. For the bonus, the reason it is not ready instead of null.
+   */
   const resolveRoute = async (
     id: JevRoute,
     request: JevDecideRequest,
     nowMs: number,
     budgetMs: number,
-  ): Promise<Route | null> => (breakerOpen(breakers[id], nowMs) ? null : routeResolvers[id](request, nowMs, budgetMs));
+  ): Promise<Route | JevKeySkipReason | null> => {
+    const breaker = breakers[id];
+    if (breakerOpen(breaker, nowMs)) return id === "bonus" ? keySkipForBreaker(breaker.reason) : null;
+    return routeResolvers[id](request, nowMs, budgetMs);
+  };
+
+  /** A failed call on a route, reported once a day when it is ADE's to fix. */
+  const reportRouteFailure = (feature: JevFeature, id: JevRoute, result: Extract<CallResult, { ok: false }>): void => {
+    if (id === "bonus") {
+      if (result.reason === "rate_limited") {
+        // The account's or ADE's daily cap, or the key's spend cap: expected, and it resets at midnight UTC.
+        reportOncePerDay("info", "jev.key_spent", "spent", { feature, status: result.status ?? 429 });
+      } else if (result.reason === "auth_rejected") {
+        reportOncePerDay("error", "jev.key_rejected", String(result.status ?? 0), { feature, status: result.status ?? null });
+      } else if (result.reason === "http_error" || result.reason === "bad_response" || result.reason === "invalid_request") {
+        reportOncePerDay("error", "jev.key_call_failed", `${result.reason}:${result.status ?? 0}`, {
+          feature,
+          outcome: result.reason,
+          status: result.status ?? null,
+        });
+      }
+      return;
+    }
+    // OpenCode running out is normal; anything else from it is worth a Sentry log, not an issue.
+    if (result.reason !== "rate_limited" && result.reason !== "timeout" && result.reason !== "network") {
+      reportOncePerDay("warn", "jev.route_failed", `${id}:${result.reason}:${result.status ?? 0}`, {
+        feature,
+        route: id,
+        outcome: result.reason,
+        status: result.status ?? null,
+      });
+    }
+  };
 
   /**
    * One call down the routes, in order, inside one time budget: a route that
@@ -493,15 +578,22 @@ export function createJevService(deps: JevServiceDeps): JevService {
     feature: JevFeature,
     request: JevDecideRequest,
     timeoutMs: number,
-  ): Promise<CallResult & { route?: JevRoute; sent: boolean }> => {
+  ): Promise<CallResult & { route?: JevRoute; sent: boolean; keySkip: JevKeySkipReason | null }> => {
     const deadline = Date.now() + timeoutMs;
     let last: CallResult = { ok: false, reason: "breaker_open" };
     let sent = false;
+    let keyTried = false;
+    let keySkip: JevKeySkipReason | null = null;
     for (const id of JEV_ROUTES) {
       if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
       const route = await resolveRoute(id, request, Date.now(), deadline - Date.now() - MIN_ROUTE_BUDGET_MS);
       if (deadline - Date.now() < MIN_ROUTE_BUDGET_MS) break;
+      if (typeof route === "string") {
+        keySkip = route;
+        continue;
+      }
       if (!route) continue;
+      if (id === "bonus") keyTried = true;
       sent = true;
       const result = await callJev({
         route,
@@ -510,7 +602,8 @@ export function createJevService(deps: JevServiceDeps): JevService {
         timeoutMs: deadline - Date.now(),
         userAgent,
       });
-      if (result.ok) return { ...result, route: id, sent };
+      if (result.ok) return { ...result, route: id, sent, keySkip: null };
+      reportRouteFailure(feature, id, result);
       if (result.breakerOpened) {
         logger.warn("jev.breaker_opened", {
           feature,
@@ -523,7 +616,8 @@ export function createJevService(deps: JevServiceDeps): JevService {
       last = result;
       if (result.reason === "timeout") break;
     }
-    return { ...last, sent };
+    // Neither tried nor turned away: the time ran out on earlier routes.
+    return { ...last, sent, keySkip: keyTried ? null : keySkip ?? "out_of_time" };
   };
 
   const decideOnce = async (request: JevDecideRequest): Promise<Record<string, JevAnswer> | null> => {
@@ -569,6 +663,7 @@ export function createJevService(deps: JevServiceDeps): JevService {
         route: result.route,
         breakerOpened: !result.ok && Boolean(result.breakerOpened),
         estimatedInputTokens: result.sent ? undefined : estimateInputTokens(request),
+        keySkip: result.ok ? null : result.keySkip,
       });
       return result.ok ? result.answers : null;
     }
@@ -583,8 +678,9 @@ export function createJevService(deps: JevServiceDeps): JevService {
       try {
         return (await decideOnce(request)) as JevAnswers<Q> | null;
       } catch (error) {
-        // Nothing above should throw; if it does, the caller still gets its fallback.
-        logger.warn("jev.decide_failed", { error: error instanceof Error ? error.message : String(error) });
+        // Nothing above should throw; if it does, the caller still gets its
+        // fallback, and the error (with its stack) is a Sentry issue.
+        logger.error("jev.decide_failed", { feature: request?.feature ?? null, error });
         return null;
       }
     },
@@ -593,9 +689,15 @@ export function createJevService(deps: JevServiceDeps): JevService {
       const nowMs = Date.now();
       const reason = availabilityReason();
       const zen = jevAvailability(nowMs);
+      const answerable = reason === "ok" && (
+        !breakerOpen(breakers.free, nowMs)
+        || (Boolean(deps.useZenCredit?.()) && zen.ok && !breakerOpen(breakers.zen_credit, nowMs))
+        || (Boolean(deps.bonus?.baseUrl()?.trim()) && !breakerOpen(breakers.bonus, nowMs))
+      );
       return {
         available: reason === "ok",
         reason,
+        answerable,
         routes: JEV_ROUTES.map((route) => {
           const breaker = breakers[route];
           const open = breakerOpen(breaker, nowMs);

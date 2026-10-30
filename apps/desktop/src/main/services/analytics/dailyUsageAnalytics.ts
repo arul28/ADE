@@ -1,5 +1,5 @@
 import type { AdeUsageClientSurface, AdeUsageStats } from "../../../shared/types";
-import { JEV_FEATURES, type JevDayTally } from "../../../shared/types/jev";
+import { JEV_FEATURES, JEV_KEY_SKIP_REASONS, type JevDayTally } from "../../../shared/types/jev";
 import { localDayKey, localDayOffset } from "../usage/localDay";
 import type { ProductAnalyticsService } from "./productAnalyticsService";
 
@@ -199,7 +199,13 @@ export function captureDailyJevAnalytics(args: {
   if (!tally || tally.wanted <= 0) return false;
   const outcome = (key: keyof JevDayTally["outcomes"]): number => tally.outcomes[key] ?? 0;
   const perFeature: Record<string, number> = {};
-  for (const feature of JEV_FEATURES) perFeature[`jev_sent_${feature}`] = tally.sentByFeature[feature] ?? 0;
+  for (const feature of JEV_FEATURES) {
+    perFeature[`jev_sent_${feature}`] = tally.sentByFeature[feature] ?? 0;
+    perFeature[`jev_unsent_${feature}`] = tally.unsentByFeature?.[feature] ?? 0;
+  }
+  for (const reason of JEV_KEY_SKIP_REASONS) {
+    perFeature[`jev_key_skip_${reason}`] = tally.keySkippedByReason?.[reason] ?? 0;
+  }
   const result = args.analytics.captureInternal({
     event: "ade_daily_usage_summary",
     surface: "api",

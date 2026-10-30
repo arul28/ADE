@@ -77,7 +77,8 @@ export type JevDecideRequest<Q extends JevQuestions = JevQuestions> = {
  * Where a call is answered, tried in this order: OpenCode's free Jev (no key,
  * a daily allowance per network), Jev on the user's own OpenCode Zen balance
  * (only when they opt in), and the ADE bonus (ADE's key through the account
- * directory, capped per account per day).
+ * directory, capped per account per day). Every feature may reach the bonus;
+ * when it is spent too, callers use their built-in rules.
  */
 export type JevRoute = "free" | "zen_credit" | "bonus";
 export const JEV_ROUTES: readonly JevRoute[] = ["free", "zen_credit", "bonus"];
@@ -105,11 +106,38 @@ export type JevOutcome = (typeof JEV_OUTCOMES)[number];
 /** Why a call answered `null`. */
 export type JevFallbackReason = Exclude<JevOutcome, "ok" | "cached">;
 
+/**
+ * Why a call that got no answer never reached the ADE bonus, the last route.
+ * Recorded per call, so the daily summary says why Jev fell back instead of
+ * one "breaker_open" count for everything.
+ * - `key_spent`: the account's or ADE's daily cap, or the key's spend cap.
+ * - `key_failing`: the bonus route is backing off after errors.
+ * - `key_rejected`: the account directory refused this account's token.
+ * - `no_account_token`: no ADE account token could be had in time.
+ * - `no_account_server`: no account directory address.
+ * - `out_of_time`: the call's time ran out on earlier routes.
+ */
+export const JEV_KEY_SKIP_REASONS = [
+  "key_spent",
+  "key_failing",
+  "key_rejected",
+  "no_account_token",
+  "no_account_server",
+  "out_of_time",
+] as const;
+export type JevKeySkipReason = (typeof JEV_KEY_SKIP_REASONS)[number];
+
 export type JevAvailabilityReason = "ok" | "disabled";
 
 export type JevStatus = {
   available: boolean;
   reason: JevAvailabilityReason;
+  /**
+   * Whether some route could take a call right now: the free route is not
+   * backing off, or the user's Zen credit or the ADE bonus is set up and not
+   * backing off. Background sweeps skip a run while this is false.
+   */
+  answerable: boolean;
   /** Each route's breaker, in the order calls try them. */
   routes: Array<{
     route: JevRoute;
@@ -145,6 +173,10 @@ export type JevDayTally = {
   outcomes: Partial<Record<JevOutcome, number>>;
   /** Requests sent, per feature. */
   sentByFeature: Partial<Record<JevFeature, number>>;
+  /** Wanted calls never sent (no route could take them, or too many in flight), per feature. */
+  unsentByFeature: Partial<Record<JevFeature, number>>;
+  /** Calls with no answer that never reached the ADE bonus, per reason. */
+  keySkippedByReason: Partial<Record<JevKeySkipReason, number>>;
   /** Answered requests, per route. */
   answeredByRoute: Partial<Record<JevRoute, number>>;
   /** Tokens Jev reported for sent requests. */

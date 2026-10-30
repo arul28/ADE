@@ -1549,6 +1549,7 @@ export async function createAdeRuntime(args: {
       bonus: {
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
         accountToken: () => getAccountAccessToken(),
+        signedIn: () => accountAuthService.getStatus().signedIn,
       },
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       tallyStore: jevTallyFileStore(

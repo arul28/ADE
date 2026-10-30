@@ -8,10 +8,12 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   JEV_FEATURES,
+  JEV_KEY_SKIP_REASONS,
   JEV_OUTCOMES,
   JEV_ROUTES,
   type JevDayTally,
   type JevFeature,
+  type JevKeySkipReason,
   type JevOutcome,
   type JevRoute,
 } from "../../../shared/types/jev";
@@ -46,6 +48,8 @@ export type JevTallyDetails = {
   /** The route that answered. */
   route?: JevRoute;
   breakerOpened?: boolean;
+  /** No answer, and the ADE bonus was never tried: why. */
+  keySkip?: JevKeySkipReason | null;
 };
 
 export type JevTally = {
@@ -89,6 +93,8 @@ function emptyTally(day: string): JevDayTally {
     failed: 0,
     outcomes: {},
     sentByFeature: {},
+    unsentByFeature: {},
+    keySkippedByReason: {},
     answeredByRoute: {},
     inputTokens: 0,
     outputTokens: 0,
@@ -136,6 +142,8 @@ function readTallies(store: JevTallyStore | null | undefined): JevDayTally[] {
       failed: count(record.failed),
       outcomes: countMap(record.outcomes, JEV_OUTCOMES),
       sentByFeature: countMap(record.sentByFeature, JEV_FEATURES),
+      unsentByFeature: countMap(record.unsentByFeature, JEV_FEATURES),
+      keySkippedByReason: countMap(record.keySkippedByReason, JEV_KEY_SKIP_REASONS),
       answeredByRoute: countMap(record.answeredByRoute, JEV_ROUTES),
       inputTokens: count(record.inputTokens),
       outputTokens: count(record.outputTokens),
@@ -198,8 +206,12 @@ export function createJevTally(store: JevTallyStore | null | undefined, logger: 
         current.inputTokens += details.usage.inputTokens;
         current.outputTokens += details.usage.outputTokens;
       }
-      if (UNSENT_OUTCOMES.has(outcome) && details.estimatedInputTokens) {
-        current.unsentInputTokensEstimate += details.estimatedInputTokens;
+      if (UNSENT_OUTCOMES.has(outcome) && !details.sent) {
+        current.unsentByFeature[feature] = (current.unsentByFeature[feature] ?? 0) + 1;
+        if (details.estimatedInputTokens) current.unsentInputTokensEstimate += details.estimatedInputTokens;
+      }
+      if (details.keySkip && outcome !== "ok" && outcome !== "cached") {
+        current.keySkippedByReason[details.keySkip] = (current.keySkippedByReason[details.keySkip] ?? 0) + 1;
       }
       if (details.breakerOpened) current.breakerOpens += 1;
       if (details.latencyMs != null) {
