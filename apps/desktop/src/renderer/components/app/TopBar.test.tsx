@@ -1883,6 +1883,10 @@ describe("TopBar", () => {
       })),
     } as any;
     globalThis.window.ade.lanes.create = createLane as any;
+    // The issue list is virtualized, and jsdom lays nothing out: once the list measures its scroll
+    // element (0 px tall here) it renders no rows, so whether the issue showed depended on timing.
+    // Give it the viewport a real window has.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({ x: 0, y: 0, top: 0, left: 0, right: 900, bottom: 720, width: 900, height: 720, toJSON() {} } as DOMRect);
 
     // The launch modal is app-wide (mounted once in AppShell), so mount it beside the bar.
     render(<><TopBar /><IssueLaunchHost /></>);

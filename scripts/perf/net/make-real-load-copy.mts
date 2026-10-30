@@ -12,6 +12,8 @@
 // to the copy (through ADE's own kvDb, so cr-sqlite's triggers run), so a measurement brain that
 // opens the copy runs git and shells only inside it. Not copied: secrets, ade.yaml / local.yaml
 // (automations and processes), caches other than chat sessions.
+// Chats the source was running are copied as ended, and chat records lose their provider resume ids,
+// so a brain that opens the copy never resumes a live chat or writes into its provider session.
 //
 // Prints the copy's scale as JSON. Never commit, upload or show a copy: numbers only, delete when done.
 import { execFileSync } from "node:child_process";
@@ -19,7 +21,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { isPathInside } from "../../../apps/desktop/src/main/services/shared/pathCompare";
 import { openKvDb } from "../../../apps/desktop/src/main/services/state/kvDb";
+import { retireCopiedChats } from "./brain-rpc.mts";
 
 const argv = process.argv.slice(2);
 const read = (name: string): string | null => {
@@ -31,7 +35,7 @@ const out = read("--out");
 if (!source || !out) throw new Error("--source <project root> and --out <empty dir> are required");
 const sourceRoot = fs.realpathSync(source);
 const copyRoot = path.resolve(out);
-if (copyRoot.startsWith(`${sourceRoot}${path.sep}`) || copyRoot === sourceRoot) throw new Error("--out must be outside the source project");
+if (isPathInside(copyRoot, sourceRoot)) throw new Error("--out must be outside the source project");
 if (fs.existsSync(copyRoot) && fs.readdirSync(copyRoot).length > 0) throw new Error(`${copyRoot} is not empty`);
 const withWorktrees = !argv.includes("--no-worktrees");
 // --clone: the source is a copy this script made (a "golden" copy no brain opens). The whole tree is
@@ -41,19 +45,42 @@ const cloneMode = argv.includes("--clone");
 const markerName = "real-load-copy.json";
 if (cloneMode && !fs.existsSync(path.join(sourceRoot, ".ade", markerName))) throw new Error("--clone needs a source made by make-real-load-copy (no .ade/real-load-copy.json)");
 
+const isWindows = process.platform === "win32";
+// A clone of a tree: APFS clonefile on macOS, a plain copy on Windows (NTFS has no clones).
+const cloneTree = (from: string, to: string) => {
+  if (isWindows) fs.cpSync(from, to, { recursive: true, preserveTimestamps: true });
+  else execFileSync("cp", ["-cR", from, to], { stdio: "inherit" });
+};
+// The copy root itself, or a path under it (whole segments; case-insensitive on Windows).
+const insideCopy = (candidate: string) => isPathInside(candidate, copyRoot);
+// Windows stores a path as C:\x, C:/x and, inside JSON text, C:\\x. Each form of the source root is
+// rewritten to the same form of the copy root (in any letter case; see rootPatterns).
+const rootForms = (root: string): string[] =>
+  isWindows ? [root, root.replaceAll("\\", "/"), JSON.stringify(root).slice(1, -1)] : [root];
+
+// Git for Windows cannot open os.devNull (\\.\nul) as a config file; an empty file reads the same.
+const noGitConfig = isWindows ? path.join(os.tmpdir(), "ade-real-load-copy-empty.gitconfig") : os.devNull;
+if (isWindows) fs.writeFileSync(noGitConfig, "");
 const quietGit = (args: string[], cwd: string) =>
-  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: os.devNull, GIT_CONFIG_SYSTEM: os.devNull, GIT_TERMINAL_PROMPT: "0" } });
+  execFileSync("git", args, { cwd, stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: { ...process.env, GIT_CONFIG_GLOBAL: noGitConfig, GIT_CONFIG_SYSTEM: noGitConfig, GIT_TERMINAL_PROMPT: "0" } });
 
 const sourceAde = path.join(sourceRoot, ".ade");
 const copyAde = path.join(copyRoot, ".ade");
 fs.mkdirSync(path.dirname(copyRoot), { recursive: true });
 if (cloneMode) {
   fs.rmSync(copyRoot, { recursive: true, force: true });
-  execFileSync("cp", ["-cRp", sourceRoot, copyRoot], { stdio: "inherit" });
-  // The golden copy is read-only on disk (chmod -R a-w); clonefile keeps that mode, so open it up.
-  // `cp -p` also copies file flags, so the golden copy's `uchg` must come off before the mode can.
-  execFileSync("chflags", ["-R", "nouchg", copyRoot], { stdio: "inherit" });
-  execFileSync("chmod", ["-R", "u+w", copyRoot], { stdio: "inherit" });
+  if (isWindows) {
+    // No clonefile or file flags on NTFS. A golden copy made read-only with `attrib +R` passes the
+    // attribute on, so clear it.
+    fs.cpSync(sourceRoot, copyRoot, { recursive: true, preserveTimestamps: true, verbatimSymlinks: true });
+    execFileSync("attrib", ["-R", path.join(copyRoot, "*"), "/S", "/D"], { stdio: "ignore" });
+  } else {
+    execFileSync("cp", ["-cRp", sourceRoot, copyRoot], { stdio: "inherit" });
+    // The golden copy is read-only on disk (chmod -R a-w); clonefile keeps that mode, so open it up.
+    // `cp -p` also copies file flags, so the golden copy's `uchg` must come off before the mode can.
+    execFileSync("chflags", ["-R", "nouchg", copyRoot], { stdio: "inherit" });
+    execFileSync("chmod", ["-R", "u+w", copyRoot], { stdio: "inherit" });
+  }
 } else {
 // 1. Repository: a local clone (hard links on one volume, the source is only read).
 // Hard links only work on one volume (e.g. a project on the system disk, copies on another volume).
@@ -68,12 +95,14 @@ fs.mkdirSync(copyAde, { recursive: true });
 // (safe only because nothing can write a file without write permission).
 let sourceWritable = true;
 try { fs.accessSync(path.join(sourceAde, "ade.db"), fs.constants.W_OK); } catch { sourceWritable = false; }
-execFileSync("sqlite3", [`file:${path.join(sourceAde, "ade.db")}?${sourceWritable ? "mode=ro" : "immutable=1"}`, `.backup '${path.join(copyAde, "ade.db").replaceAll("'", "''")}'`], { stdio: "inherit" });
+// SQLite URIs take forward slashes, with a slash before a drive letter (file:/C:/...).
+const sourceDbUri = isWindows ? `/${path.join(sourceAde, "ade.db").replaceAll("\\", "/")}` : path.join(sourceAde, "ade.db");
+execFileSync("sqlite3", [`file:${sourceDbUri}?${sourceWritable ? "mode=ro" : "immutable=1"}`, `.backup '${path.join(copyAde, "ade.db").replaceAll("'", "''")}'`], { stdio: "inherit" });
 for (const relative of ["transcripts/chat", "cache/chat-sessions", "project-icons"]) {
   const from = path.join(sourceAde, relative);
   if (!fs.existsSync(from)) continue;
   fs.mkdirSync(path.dirname(path.join(copyAde, relative)), { recursive: true });
-  execFileSync("cp", ["-cR", from, path.join(copyAde, relative)], { stdio: "inherit" });
+  cloneTree(from, path.join(copyAde, relative));
 }
 }
 
@@ -81,6 +110,14 @@ for (const relative of ["transcripts/chat", "cache/chat-sessions", "project-icon
 const silentLogger = { debug() {}, info() {}, warn() {}, error() {} };
 const db = await openKvDb(path.join(copyAde, "ade.db"), silentLogger as never);
 let rewrittenCells = 0;
+const copyForms = rootForms(copyRoot);
+const rootPairs = rootForms(sourceRoot).map((form, index) => [form, copyForms[index]] as const);
+// A form matches only as whole path segments (`C:\proj` is not in `C:\proj-copy`), and on Windows in any
+// letter case (`c:\users\...` is the same folder). The copy's own form is what gets written.
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const rootPatterns = rootPairs.map(([from, to]) => [new RegExp(`${escapeRegExp(from)}(?![\\w.-])`, isWindows ? "gi" : "g"), to] as const);
+const namesSource = (body: string) => rootPatterns.some(([pattern]) => body.search(pattern) >= 0);
+const rewriteText = (body: string) => rootPatterns.reduce((text, [pattern, to]) => text.replace(pattern, () => to), body);
 const tables = db.all<{ name: string }>(
   "select name from sqlite_schema where type = 'table' and name not like 'sqlite_%' and name not like 'crsql_%' and name not like '%__crsql_%' and sql not like '%VIRTUAL TABLE%'",
 );
@@ -90,8 +127,22 @@ for (const { name } of tables) {
     if (column.type && !/text|char|clob|json/i.test(column.type)) continue;
     const quoted = `"${column.name.replaceAll('"', '""')}"`;
     const table = `"${name.replaceAll('"', '""')}"`;
+    // SQL finds the values that may name the source (lower() on Windows, where case does not matter);
+    // rewriteText changes only whole-segment matches. Every table here has a rowid (only cr-sqlite's
+    // clock tables do not, and they are skipped above).
+    const needles = rootPairs.map(([from]) => (isWindows ? from.toLowerCase() : from));
+    const value = isWindows ? `lower(${quoted})` : quoted;
     try {
-      rewrittenCells += db.runChanged(`update ${table} set ${quoted} = replace(${quoted}, ?, ?) where typeof(${quoted}) = 'text' and instr(${quoted}, ?) > 0`, [sourceRoot, copyRoot, sourceRoot]);
+      const candidates = db.all<{ rid: number; text: string }>(
+        `select rowid as rid, ${quoted} as text from ${table} where typeof(${quoted}) = 'text' and (${needles.map(() => `instr(${value}, ?) > 0`).join(" or ")})`,
+        needles,
+      );
+      for (const { rid, text } of candidates) {
+        const rewritten = rewriteText(text);
+        if (rewritten === text) continue; // only a longer sibling name, such as <source>-old
+        db.run(`update ${table} set ${quoted} = ? where rowid = ?`, [rewritten, rid]);
+        rewrittenCells += 1;
+      }
     } catch {
       // Shadow tables of full-text indexes and similar refuse writes; they hold no live paths.
     }
@@ -108,14 +159,25 @@ if (fs.existsSync(sessionsDir)) {
     const full = path.join(sessionsDir, file);
     if (!fs.statSync(full).isFile()) continue;
     const body = fs.readFileSync(full, "utf8");
-    if (!body.includes(sourceRoot)) continue;
+    if (!namesSource(body)) continue;
     fs.rmSync(full); // the clone shares blocks with the original until written; write a new file
-    fs.writeFileSync(full, body.split(sourceRoot).join(copyRoot));
+    fs.writeFileSync(full, rewriteText(body));
     rewrittenRecords += 1;
   }
 }
+// Any brain that opens the copy would resume the source's running chats (see brain-rpc.mts).
+const { endedChats } = retireCopiedChats(db, copyAde);
 
 // 4. Lanes: one worktree per active lane, on its branch when the clone has it.
+// A lane can live outside the project (another tool's worktree folder). Point it into the copy, so a
+// measurement brain never runs git in the original's files.
+if (!cloneMode) {
+  for (const lane of db.all<{ id: string; worktree_path: string | null }>("select id, worktree_path from lanes where archived_at is null and worktree_path is not null")) {
+    if (insideCopy(lane.worktree_path!)) continue;
+    db.run("update lanes set worktree_path = ? where id = ?", [path.join(copyRoot, ".ade", "external-worktrees", lane.id), lane.id]);
+    rewrittenCells += 1;
+  }
+}
 const lanes = db.all<{ id: string; branch_ref: string | null; worktree_path: string | null; archived_at: string | null; lane_type: string | null }>(
   "select id, branch_ref, worktree_path, archived_at, lane_type from lanes",
 );
@@ -129,9 +191,17 @@ if (cloneMode) {
   const relink = (file: string) => {
     if (!fs.existsSync(file) || !fs.statSync(file).isFile()) return false;
     const body = fs.readFileSync(file, "utf8");
-    if (!body.includes(sourceRoot)) return false;
-    if (!path.resolve(file).startsWith(`${copyRoot}${path.sep}`)) throw new Error(`refusing to write outside the copy: ${file}`);
-    fs.writeFileSync(file, body.split(sourceRoot).join(copyRoot));
+    if (!namesSource(body)) return false;
+    if (!insideCopy(file)) throw new Error(`refusing to write outside the copy: ${file}`);
+    // Git for Windows marks a worktree's .git file hidden, and Windows refuses to replace a hidden
+    // file (EPERM); rewrite it in place.
+    const fd = fs.openSync(file, "r+");
+    try {
+      fs.ftruncateSync(fd, 0);
+      fs.writeSync(fd, rewriteText(body), 0);
+    } finally {
+      fs.closeSync(fd);
+    }
     return true;
   };
   for (const name of fs.existsSync(adminDir) ? fs.readdirSync(adminDir) : []) {
@@ -145,7 +215,7 @@ if (cloneMode) {
   const remoteBranches = new Set(quietGit(["for-each-ref", "--format=%(refname:strip=3)", "refs/remotes/origin"], copyRoot).split("\n").filter(Boolean));
   for (const lane of lanes) {
     if (lane.archived_at || !lane.worktree_path || path.resolve(lane.worktree_path) === copyRoot) continue;
-    if (!lane.worktree_path.startsWith(copyRoot) || fs.existsSync(lane.worktree_path)) continue;
+    if (!insideCopy(lane.worktree_path) || fs.existsSync(lane.worktree_path)) continue;
     const branch = lane.branch_ref?.replace(/^refs\/heads\//, "") || `perf-copy/${lane.id}`;
     const start = remoteBranches.has(branch) ? `origin/${branch}` : "HEAD";
     if (start === "HEAD") worktreesFromHead += 1;
@@ -211,5 +281,6 @@ console.log(JSON.stringify({
   worktreesFromHead,
   rewrittenCells,
   rewrittenRecords,
+  endedChats,
 }));
 process.exit(0);

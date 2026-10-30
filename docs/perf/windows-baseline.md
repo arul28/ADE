@@ -462,6 +462,262 @@ Notes:
 - Every *new* ceiling here is a proposal and does not count until the owner
   approves it.
 
+## Real load, round 1 (2026-10-29)
+
+The rows below are the first Windows pass on real data since the P0-P4
+speed work. They replace the service rows above where they say so; the
+dev-app rows above are not re-measured yet (see **Not measured in round 1**).
+
+| | |
+|---|---|
+| Machine | as in **Machine and conditions** (Ryzen 9 7950X3D, 63 GB, Windows 11 Pro 10.0.26200) |
+| Build | `ade/speed-and-windows-competitive-review-windows` at `535985e76`: `main` `76a509deb` plus the bench scripts, no product change |
+| Node | 22.13.1 (fnm); search fan-out on 24.13.1, because the 22.13 SQLite build has no FTS5 |
+| Data | a copy of this PC's ADE project made with `make-real-load-copy.mts`: 13.3 MB `ade.db`, 3.76 M database versions, 5 active lanes with worktrees, 583 chat records, 136 transcripts, the biggest chat 20.7 MB uncompressed (the two largest have 27k events). The live project and the installed ADE were never opened |
+| Load | the installed ADE idle beside it; no other benches. Windows reports no load average |
+| Method | each bench 5 times (or 5 runs inside one bench); the median, with the worst run in brackets |
+
+An **outside target** is a number another coding app published for the same
+measurement, measured the way it was measured; the source and whether it is
+merged are in the PR, not here. A row wins only when its worst run wins.
+
+### Against outside targets
+
+| # | Row | How | Windows now: median (worst) | Outside target | Result |
+|---|---|---|---|---|---|
+| E1 | Project database first open, one per fresh process | `db-first-open.bench.mts --project`, 5 runs x 7 processes | 36.2 ms (36.2; slowest single open 37.6) | 50-66 ms | win |
+| F1 | PR discovery reads, one pass (the six reads, no GitHub) | `db-reads.bench.mts --project`, 10 passes, first dropped | 1.73 ms (1.74) | 4.32 ms | win |
+| F5 | Startup recovery read (`reconcileStaleRunningSessions`) | same, 1 + 20 | 0.09 ms (0.09) on 7 sessions; 0.18 ms (0.19) once each pass really recovers its 2 stale rows (round 2) | 0.8 ms; 4.0 ms on a 5.5k-item thread | win on this fixture; the 5.5k size is not run yet |
+| F3 | One `git rev-parse HEAD` through `runGit`, 200 per run | `spawn.bench.mts --project` | 28.3 ms (29.2) | 2.7-3.0 ms (macOS/Linux) | loss: a bare `git --version` is 26.9 ms here, so this is the Windows process start |
+| F4 | Git processes / full `git status` runs for 1 refresh + 4 overlapping (`get_lane_status`) | `git-status-burst.bench.mts --project` | 20 (35) processes, 3 (13) status runs | at most 2 status runs | loss |
+| F2 | Longest database step on the event loop while a phone reconnects and the lane list is read 5 times | `brain-db-steps.bench.mts --project` | 1.69 ms (31.9) | 12.7 ms | loss on the worst run |
+| F2b | Worst wait of a request sent every 10 ms beside that load (idle: 0.3 ms) | same | 59.9 ms (245.8) in this run; the cold-connect run measured 956-1,134 ms on the same build in the interleaved A/B below (each brain writes to the copy, so only interleaved pairs compare) | 260 ms | loss on the worst run (see **Fixes in this round**) |
+| D4 | 200 streamed updates at 1,000 items, slowest of five chats | `chat-timeline.bench.mts` (Mac branch), esbuild bundle run in Electron 44's V8 (`ELECTRON_RUN_AS_NODE`), 3 rounds | 3.1 ms (4.6) | 15.48 ms | win |
+| S7 | One full rebuild of a long chat's rows (11,649 events) | same | 12.5 ms (13.8); 10.6 ms (11.4) with the Mac branch's row-builder change | 8.6 ms, measured on other hardware | loss |
+| S8 | One tool completing in that chat | same | 0.028 ms (0.054) | 0.28 ms | win |
+| PH-cold | Phone, 3G (400 kbps, 400 ms RTT): cold start → biggest chat (20.7 MB) | `phone-sync.bench.mts all --profiles 3g,lte,lan --runs 5 --phone new`, measurement brain on the copy | 4,815 ms (4,818); run 1 was 1,611 ms | 3.6 s | loss |
+| PH-cold bytes | Bytes down before that chat | same | 173.7 KB (173.9); run 1 15.6 KB | 89 KB | loss |
+| PH-reconnect | Phone, 3G: reconnect → chat / bytes before it | same | 983 ms (985) / 5.9 KB (5.9) | 1.3 s / 17 KB | win |
+| | LTE cold / reconnect → chat; LAN cold / reconnect | same | 404 (408) / 167 (167) ms; 85 (94) / 39 (48) ms | — | — |
+
+What the losses are:
+
+- **Phone cold start on 3G.** Run 1 found the shared reseed snapshot still
+  building and got one ordinary first batch with the project row (16 KB before
+  the chat). From run 2 the snapshot was ready (the copy compacts to about 170
+  KB, under the 4 MB cap), and a cold phone receives it as its first batch,
+  so its first screen waits for all of it: 4.4 s to the project row at 400
+  kbps. A project whose compacted state is over the cap (the Mac copy, 77 MB)
+  never takes this path. Not Windows-specific.
+
+- **F2 worst run.** All 11 steps over 16 ms in five runs came in run 1, the
+  phone's first (cold) connect: the reseed snapshot for a phone far behind is
+  read with `exportChangesSince` on the brain's own connection, a window per
+  step, up to 8 per poll (`syncHostService.ts`, `buildMobileReplicaReseedStep`).
+  The ordinary catch-up batches already read off the event loop. Same cause on
+  the Mac (47 ms worst).
+- **F4.** Each `get_lane_status` also starts `git worktree list` and
+  `rev-parse` for itself; the status reads coalesce (one running, one shared
+  follow-up), but the first refresh finishes before the four arrive, so a
+  burst is 3 status runs. The worst run (13 status runs) overlapped a
+  background refresh of every lane, which does not join the burst.
+- **F3** is process creation on Windows. Each git start removed is worth about
+  27 ms here against about 3 ms on macOS.
+
+### Brain and services (replaces the Oct 13 rows where it says so)
+
+| Row | How | Oct 13 | Now: median (worst) | Ceiling |
+|---|---|---|---|---|
+| Files quick-open index build (the copy's root) | `file-index.bench.mts <copy>` | 195 ms (this worktree) | 293 ms (333) | 500 ms |
+| Quick-open lookup, slowest query | same | 1.3-8.2 ms | 9.0 ms (12.6) | 50 ms |
+| Project registry: one read per project (10 projects) | `registry-read.bench.mts` | 0.1 ms (6 projects) | 0.6 ms (0.6) | 5 ms |
+| Machine roster, cold / warm (one project, the copy) | `roster.bench.mts`, scratch home | 51-59 / 2.0-3.0 ms (4 projects) | 36.6 ms (43.1) / 1.3 ms (1.4) | 150 / 10 ms |
+| Reading a 10 MB request, framed / JSONL | `rpc-read.bench.mts` | 6.9 / 6.8 ms | 8.9 ms (9.1) / 7.2 ms (7.5) | 30 ms |
+| Transcript full pass as a chat opens, mean of the five largest | `chat-transcript.bench.mts` (`ADE_PROJECT_ROOT=<copy>`) | 32 ms (other chats, 3k-16k events) | 83.7 ms (92.9); 149 ms (180) for a 27k-event chat | 36 ms (open item; not comparable: larger chats) |
+| Transcript rows / live merge per streamed event | same | 0.059 / 0.064 ms | 0.095 ms (0.096) / 0.087 ms (0.091) | 0.3 / 0.15 ms |
+| Streamed events over 4 ms, of 2,500; worst step | same | 2-4; 24.8 ms | 5 (6); 13.5 ms (16.4) | 15 |
+| Tree watcher: ready / longest loop block / CPU until ready / idle CPU 5 s | `tree-watcher.bench.mts <copy>` | 92 / 11 / 313-407 / 0-93 ms | 91 (99) / 3 (3) / 281 (375) / 0 (78) ms | 250 / 20 / 500 / 150 ms |
+| `sessions.list`: unscoped / lane / chat | `session-list.bench.mts` | 200 / 79 / 39 ms | 66.6 (75.9) / 28.7 (30.8) / 14.5 (17.8) ms | 250 / 120 / 25 ms (proposed) |
+| Conflict sweep, nothing changed: git processes / wall | `conflict-sweep.bench.mts 8` | not run (the bench needed `/bin/sh`) | 9 (9) / 107 ms (198) | *new* 15 / 200 ms |
+| Conflict sweep after one lane commits | same | not run | 42 (42) / 1,174 ms (1,362) | *new* 60 / 1,500 ms |
+| Credential read while another process holds the lock | `credential-lock.bench.mts` | not run | 1 ms (1) | 50 ms |
+| Chat search across 37 projects: cold / longest block | `search-fanout.bench.mts` (Node 24) | not run | 444 ms (446) / 17.4 ms (19.6) | *new* 550 / 25 ms |
+| Slash command discovery, uncached: longest block / wall | `slash-discovery.bench.mts` (`CWD=<copy>`) | not run | 1.8 ms (2.0) / 13.3 ms (13.7) | *new* 5 / 20 ms |
+| Chat history backfill: per page (mean of five chats) / last page | `chat-backfill.bench.mts` | not run | 49.5 ms (50.5) / 97.6 ms (104.3) | *new*, not set |
+| Branch diff, one file click (lane 4,298 files ahead of main) | `branch-file-diff.bench.mts <lane> main 20 patch` | not run | 1,118 ms (1,127), 3 git processes per click | *new*, open item |
+
+### Process spawns (re-measured)
+
+`spawn.bench.mts --project <copy>`, `PATH` with 107 entries.
+
+| Row | Oct 13 | Now: median (max) | Ceiling |
+|---|---|---|---|
+| `git --version`, median of 10 | 23.0-23.9 ms | 26.9 ms (126.9) | 30 ms |
+| `git status --porcelain` in the copy, median of 10 | 42-43 ms (worktree) | 42.6 ms (106.3) | 55 ms |
+| `node -e 0`, median of 5 | 42-44 ms | 42.8 ms (146.1) | 55 ms |
+| `npx --version` through `cmd.exe`, median of 5 | 242-274 ms | 242.8 ms (336.7) | 340 ms |
+| Resolving 14 CLIs, cold / warm | 12.4-12.6 / 4.6-4.8 ms | 12.3 / 4.2 ms | 16 / 6 ms |
+| `git config --get` through Git for Windows' launcher (`cmdgit.exe`, the only git a normal install puts on PATH), 5 alternated rounds of 200 | not measured | p50 37.4 ms, p90 136.2 ms; 2 processes per run | *new* |
+| The same through the real `mingw64\bin\git.exe` | not measured | p50 26.9 ms, p90 29.2 ms; 1 process | *new* |
+
+### Fixes in this round (A/B on this PC)
+
+Before is `main` (`76a509deb`, its CLI bundle kept as `perfdist-main`), after
+is this branch's bundle, both on the copy, runs alternated. Median, with the
+worst run in brackets.
+
+| Row | How | Before | After | Outside target |
+|---|---|---|---|---|
+| F2: longest event-loop database step, the cold-connect run | `brain-db-steps.bench.mts --runs 2 --cli <build>`, 5 pairs | 30.7 ms (31.7); 11-12 steps over 16 ms | 3.5 ms (5.7); none over 16 ms | 12.7 ms |
+| F2b: worst wait beside it, same runs | same | 984 ms (1,134; one more run overlapped a download, 5,424) | 246 ms (340) | 260 ms: wins at the median, loses on the worst run |
+| PH-cold: 3G cold start → biggest chat | `phone-sync.bench.mts all --profiles 3g --runs 5`, 2 rounds per side | 4,897 ms (4,910); the first run after each brain start 1,604-1,610 | 1,597 ms (1,607) | 3.6 s |
+| PH-cold: bytes before that chat | same | 177.5 KB (178.2) | 15.6 KB (15.7) | 89 KB |
+| 3G cold start: replica fully caught up | same | 4.9 s | 7.9 s (the reseed now follows the first screen) | — |
+| 3G reconnect → chat | same | 985 ms (987) | 985 ms (990) | 1.3 s |
+| F4: git processes per burst (1 refresh + 4 overlapping) | `git-status-burst.bench.mts --cli <build>`, 3 rounds of 5 | 20 (38) | 13 (31) | — |
+| F4: `git status` runs per burst | same | 3 (13) | 2 (12) | at most 2 |
+| F4: burst wall time | same | 601 ms (843) | 507 ms (1,069) | — |
+| `git config --get`, p50 / p90 (S192) | `spawn.bench.mts`, 5 alternated rounds of 200 | 37.4 / 136.2 ms through the launcher, 2 processes | 26.9 / 29.2 ms through the real git.exe, 1 process | 31.4 / 46.4 ms |
+
+What changed:
+
+- **F2** (#1976). The cold phone's reseed snapshot reads its windows off the event
+  loop (`exportChangesSinceOffThread`, one step at a time, the peer and the
+  cache re-checked after each read). A ~240 ms block that is not SQL is left
+  in the cold-connect window; not profiled yet.
+- **PH-cold** (#1976). A phone with no batch yet gets its ordinary first batch (the
+  project row) before a ready reseed, the order it already got while the
+  reseed was building. No wire change. The replica finishes catching up 3 s
+  later on 3G; the first screen comes 3.3 s sooner.
+- **F4** (#1978). A change read that has not started git yet is shared by later asks
+  (`runGit`'s `onStart`), and the primary's branch is read again only when its
+  HEAD file changes. The worst runs in both columns are the same scheduled
+  background refresh of every lane (10 `git status`, `ls-remote`) landing in
+  the burst window in one run of five; it is the next thing to look at.
+- **S192** (#1977). A normal Git for Windows install puts only its launcher
+  (`<Git>\cmd\git.exe`) on PATH, and the installed ADE on this PC resolved it,
+  so every git run started two processes. `runGit` now runs the real
+  `<Git>\<build>\bin\git.exe` when `MSYSTEM` is unset (a desktop-started
+  brain). A `#!/bin/sh` pre-commit hook ran through it with the installed
+  app's PATH.
+
+### Not measured in round 1
+
+- **Every dev-app row** (tab and chat switches, typing, idle frames, process
+  memory, cold start): waiting on the owner's choice of an ADE home for a dev
+  app on the copy (a scratch home needs a sign-in; the shared home would add
+  the copy to the owner's project list).
+- **E2 launch, E3 startup JS, E4 thread-switch renders, D1-D7**: dev-app or
+  renderer benches, built on the Mac side; E3 counts bytes on disk, the same
+  on every OS.
+- **Hosted web client** (`bench:webclient`): not re-run.
+- **Brain cold start** (`brain-start.bench.mts`): it hard-coded `/tmp` and a
+  Unix socket; fixed in this branch, not yet measured.
+
+## Real load, round 2 (2026-10-29)
+
+Same PC, copy and method as round 1. Each before/after pair alternated builds
+(`main`'s CLI bundle kept as `perfdist-main`, the change's as its own bundle,
+both through `--cli`).
+
+### Chat actions through the brain (#1980)
+
+`chat-status.bench.mts`: `getChatStatus` (what `ade chat status` and an agent's
+chat tools ask) for the 5 newest chats, 10 calls each per run, on a measurement
+brain that settled 45 s first. 2 rounds x 3 runs per build.
+
+| Build | Median per call (worst run) |
+|---|---:|
+| `main` | 74.1 ms (74.6) |
+| + primary lane from its row, CTO identity written only when it changed | 12.6 ms (14.1) |
+| + CTO tools built when first read (from the Mac lane) | 2.3 ms (3.0) |
+
+Before, every call listed every lane with git (about 60 ms here), rewrote
+`identity.yaml` and upserted `cto_identity_state` (a synced write on every
+read), and built all 126 tool schemas (about 11 ms of CPU).
+
+### An idle brain (#1981)
+
+`brain-idle.bench.mts`: a measurement brain on the copy, nothing connected, 10
+idle minutes after a 60 s settle. Per 10 minutes, one run per column per round
+(2 rounds).
+
+| | `main` | idle fixes | + PR refresh fix (Mac lane) | Outside target |
+|---|---:|---:|---:|---:|
+| Process starts | 59, 59 | 24, 27 | 5, 26 | — |
+| of which PowerShell (power read) | 10, 10 | 0, 0 | 0, 0 | — |
+| of which `git remote get-url` | 22, 21 | 2, 3 | 0, 3 | — |
+| of which `tailscale status` | 6, 6 | 2, 2 | 1, 2 | — |
+| Synced database versions added | 69, 71 | 71, 69 | 21, 41 | — |
+| SQL statements (all on the event loop) | 748, 751 | 749, 754 | 669, 742 | about 1 background poll query per 10 min |
+| Writer pragmas | 11, 11 | 11, 11 | 11, 11 | about 3 a minute |
+| Brain CPU | 4.28, 4.73 s | 3.97, 4.20 s | 4.33, 3.97 s | — |
+
+About 10 starts per window in every column are `gh auth token`: the
+measurement brain's stand-in home has no GitHub CLI config, so its token
+lookup always reaches `gh` (round 4 measured 0 on the installed app). One
+PowerShell power read costs 240-370 ms wall and about 300 ms CPU here. The
+~500 reads per window are mostly the PR poll's (121 PR rows, 30 each of stacks,
+stack entries, chat-session links and dismissals) and a Linear link check (53).
+
+Two things make these idle numbers higher than a connected install's. The
+measurement brain cannot reach ADE's cloud (the port guard blocks it), so its
+GitHub relay is never healthy and the PR poller refreshes the open PRs every
+tick; with a healthy relay it refreshes them only on a 15-minute sweep. And
+its GitHub calls fail (no token in the stand-in home), so the poller backs
+off by a varying amount: the first run of the third column backed off and
+shows 5 starts and 21 versions, the second did not (26 and 41). Both show the
+PR-refresh fix cutting synced writes (69-71 → 21-41).
+
+### Dev app on the copies (shared home, own pipe)
+
+The owner chose the shared `~/.ade` for the dev app: its own pipe
+(`\\.\pipe\ade-runtime-perfwin-r2`), sync off, the isolation report checked
+first, and two copies of the project open as tabs (`c2`, `c3`, never the live
+project; removed from the project list afterwards through the dev brain). No
+other machine was connected from this dev app. `main` plus this branch's
+scripts (no renderer change). `interaction.mjs <mode> 4`, 5 runs after a
+warm-up; median of the run medians, worst run in brackets.
+
+| Row | Now | Oct 13 (one tab, live project) | Ceiling |
+|---|---|---|---|
+| Tab switch: first changed frame, warm | 26.5 ms (27.7) | 35 / 44 ms | 60 ms |
+| Tab switch: page settled, warm (median) | 61.3 ms (68.3) | 79 / 87 ms | — |
+| Tab switch: slowest single settle in a run | 177-403 ms (History 214-387, Automations 175, CTO 156) | 357 / 381 ms (Automations, CTO) | 420 ms (open item) |
+| Project tab switch: first changed frame, warm | 47.6 ms (48.5) | not measured | — |
+| Project tab switch: page settled, warm | 103.7 ms (107.7) | not measured | 300 ms |
+| Renderer JS heap after GC | 127 MB | 125 MB | 220 MB |
+
+`process-cpu.mjs 15`, 5 samples, Work idle after a renderer reload and one
+visit to every tab (two project tabs open, so the renderer row is not
+comparable with Oct 13's one tab):
+
+| Process | CPU (median) | Working set, median (private) | Oct 13 | Ceiling |
+|---|---:|---:|---:|---:|
+| Electron main | 0.2% | 225 MB (195) | 216-218 MB | 240 MB |
+| GPU | 0% | 176 MB (223) | 165-192 MB | 215 MB |
+| Renderer | 0.2% | 613 MB (538) | 500-550 MB | 610 MB (over, with a second tab) |
+| Brain | 1.4% | 287 MB (305) | 287-341 MB | 380 MB |
+
+Not measured here:
+
+- **Press to content** (`press-to-paint.mjs`): its real mouse input over CDP
+  no longer switches anything in this build (a test click on a sidebar tab hit
+  the tab and did nothing), so every switch reads "missed". `interaction.mjs`
+  (click handler to frame) works.
+- **Chat switch**: the copy's project has 7 chat sessions and the Work list
+  shows one row, so there is nothing to switch between. The Mac side measures
+  chat switches on the owner's real data with three machines connected.
+- The first dev app closed by itself after about 20 minutes with nothing in
+  its log; the second ran the whole set.
+
+### Corrected rows
+
+- **F5 startup recovery read**: 0.18 ms (worst run 0.19) on the copy with its
+  stale rows restored before every pass (round 1's 0.09 ms measured the no-op
+  passes after the first). Outside target 0.8 ms; merged 4.0 ms on a 5.5k-item
+  thread. Still a win.
+
 ## How to measure on Windows
 
 Everything below ran in Git Bash or PowerShell 7 on this PC.
@@ -556,3 +812,32 @@ node scripts/perf/ui/process-cpu.mjs 15 '\\.\pipe\ade-runtime-perfwin'
 - `scripts/perf/service/spawn.bench.mts` (new): the spawn rows.
 
 Raw outputs of this pass: `%TEMP%\ade-perf-windows\before\`.
+
+### Windows changes to the scripts (round 1, real load)
+
+- `scripts/perf/net/make-real-load-copy.mts`: runs on Windows. Plain copies
+  instead of APFS clones, the SQLite URI form `file:/C:/...`, an empty git
+  config file instead of `os.devNull`, paths rewritten in all three stored
+  forms (`C:\x`, `C:/x` and JSON-escaped), a lane whose worktree sits outside
+  the project moved into the copy, and worktree `.git` files (hidden on
+  Windows) rewritten in place.
+- `scripts/perf/net/guard-sync-port.cjs`: matches `C:\...\powershell.exe`,
+  blocks `wmic process`, and stands in `cmd.exe /d /c exit 0` for
+  `/usr/bin/true`.
+- `scripts/perf/ui/spawn-trace.cjs`: writes to the OS temp folder and keeps 16
+  arguments (ADE puts ten `-c` arguments before every git verb).
+- `scripts/perf/net/measure-brain.mjs`: `ADE_PERF_EXTRA_REQUIRE` preloads.
+- `conflict-sweep` and `branch-file-diff` count git processes through
+  `git-count.mts`: a wrapper script elsewhere, `spawn-trace.cjs` on Windows,
+  where a wrapper cannot be spawned without a shell.
+- `brain-start.bench.mts`: the OS temp folder and a named pipe on Windows.
+- Not Windows-only, fixed on the way: `chat-transcript` and `chat-backfill`
+  read `.ade/transcripts/*.chat.jsonl`, but chats now live in
+  `.ade/transcripts/chat/*.jsonl[.gz]` (`transcript-files.mts`), so both
+  measured nothing; the `chat-backfill` pager stalled on an event larger than
+  a page; the `conflict-sweep` lane stub lacked `getCompareBase`.
+- New benches: `db-first-open`, `git-status-burst`, `brain-db-steps` (with
+  `scripts/perf/net/sql-trace.cjs` and `brain-rpc.mts`), and the F1, F3, F5 and
+  launcher rows in `db-reads` and `spawn`.
+
+Raw outputs of round 1: `%TEMP%\ade-perf-windows\r1\out\`.
