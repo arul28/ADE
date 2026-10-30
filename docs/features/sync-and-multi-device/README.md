@@ -267,7 +267,7 @@ for one directory.
 Every `sync.*` RPC method used to resolve a project-scoped sync service and fail
 with "Sync service is not available. Register a project first." A machine that
 had never opened a project therefore could not set its pairing PIN — so it could
-not be paired at all, despite hosting sync perfectly well. `ade sync pin
+not be paired at all, despite hosting sync perfectly well. `ade brain pin
 generate` and the desktop's `ade.sync.setPin` both hit that wall.
 
 `multiProjectRpcServer.ts` now routes those methods through `withSyncService`:

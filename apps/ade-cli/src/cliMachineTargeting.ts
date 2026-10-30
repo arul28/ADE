@@ -58,6 +58,10 @@ const MACHINE_TARGETABLE_PRIMARIES: ReadonlySet<string> = new Set([
   "projects",
   "apple",
   "mac-desktop",
+  // `screen` and its Windows spellings run the same plan as `mac-desktop`.
+  "screen",
+  "windows-desktop",
+  "windows-desk",
   "app-control",
   "usage",
 ]);
@@ -69,7 +73,7 @@ const OWN_MACHINE_FLAG_PRIMARIES: ReadonlySet<string> = new Set(["drafts", "mach
 /** Where `--project` means "the project on that machine" (apple uses it for an Xcode project). */
 const MACHINE_PROJECT_ALIAS_PRIMARIES: ReadonlySet<string> = new Set(["chat", "lanes", "lane"]);
 /** Flags whose value is free text that may itself look like a flag. */
-export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--handoff-note", "--title", "--reason"]);
+export const FREE_TEXT_VALUE_FLAGS: ReadonlySet<string> = new Set(["--text", "--prompt", "--message", "--note", "--title", "--reason"]);
 
 /**
  * The flag names in `args`, skipping each value-carrying flag's value: in
@@ -111,7 +115,7 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
       }
       throw new CliUsageError(
         `ade ${typed} runs on this machine only; --machine and --all-machines don't apply to it. `
-        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, mac-desktop, app-control.",
+        + "Commands that run on another machine: chat, lanes, shell, terminal, projects, usage, apple, screen (mac-desktop, windows-desktop), app-control.",
       );
     }
     return parsed;
@@ -122,8 +126,8 @@ export function extractMachineTargeting(parsed: ParsedCli): ParsedCli {
   // so --machine with them is a mistake, not a target.
   if (primary === "chat" && parsed.command[1]?.toLowerCase() === "handoff") {
     const flags = flagNamesOutsideFreeText(parsed.command);
-    if ((flags.has("--machine") || flags.has("--to-machine")) && ["--cancel", "--retry", "--options", "--where"].some((flag) => flags.has(flag))) {
-      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options/--where.");
+    if (flags.has("--machine") && ["--cancel", "--retry", "--options"].some((flag) => flags.has(flag))) {
+      throw new CliUsageError("--machine names the destination of a move; drop it for --cancel/--retry/--options.");
     }
     return parsed;
   }

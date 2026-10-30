@@ -15,7 +15,7 @@ import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
  *
  * These were previously built privately inside
  * `createBrainProjectActionsSyncHandler`, which made them unreachable from the
- * RPC surface: `ade sync pin generate` and the desktop's `ade.sync.setPin` both
+ * RPC surface: `ade brain pin generate` and the desktop's `ade.sync.setPin` both
  * resolved a project-scoped sync service and failed with "Sync service is not
  * available" on a machine that had never opened a project.
  *
@@ -86,7 +86,7 @@ export type ProjectlessSyncControlsArgs = {
 /**
  * The `sync.*` controls a brain answers with no project scope.
  *
- * Lets `ade sync pin generate` and the desktop's pairing UI set a PIN on a
+ * Lets `ade brain pin generate` and the desktop's pairing UI set a PIN on a
  * machine that has never opened a project. Both used to resolve a
  * project-scoped sync service and fail, which left a fresh install with no way
  * to pair at all.

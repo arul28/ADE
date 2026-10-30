@@ -249,7 +249,7 @@ repair that needed a running brain would be unavailable exactly when it matters.
 `ade doctor` reports the same credential-store state from disk for the same
 reason.
 
-Older `ade runtime ...` and `ade sync pin ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
+Older `ade runtime ...` command aliases remain available for scripts, but docs and examples use the brain vocabulary.
 
 ## Project registry
 
@@ -355,7 +355,7 @@ transport for today.
 
 The pairing and PIN methods above answer on a machine with no registered
 project. A brain that has never opened one still hosts phone sync, so
-`ade sync status`, `ade sync pin generate|set|clear`, `ade sync devices`,
+`ade sync status`, `ade brain pin generate|set|clear`, `ade sync devices`,
 `ade sync refresh`, and `ade sync security …` all work there and report the
 machine's own state; `sync.listDevices` returns an empty list and the runtime
 name is null, because both are per-project settings.
@@ -496,7 +496,7 @@ ade brain restart
 ade brain update --text                   # update this machine's brain and restart it (same action as the desktop "Update & restart")
 ade runtime watchdog-check --text         # what the watchdog agent runs on a timer: stop a brain that stopped responding
 ade sync status --text                    # works with no registered project: this machine's own pairing and route state
-ade sync pin generate --text              # pair a phone with a machine that has never opened a project
+ade brain pin generate --text             # pair a phone with a machine that has never opened a project
 ade connect                               # account + login service + account-directory row, idempotent
 ade connect --status --text               # report the three steps without changing anything
 ade connect --headless                    # sign in from another device: QR code, link, and code
@@ -657,7 +657,7 @@ ade chat resume-now session-id --text                        # alias `resume`: s
 ade chat switch-account session-id --account work --text     # move a Claude/Codex chat to another account; same thread; refused while a turn runs
                                                              # exit 1 when the host refuses (no live usage limit, or a resume already in flight); --json carries { ok, reason, message }
 ade actions run chat.updateSession --input-json '{"sessionId":"session-id","autoContinueAtUsageLimit":true}'   # the desktop pill's "Turn on" / "Try again": re-arm auto-resume after it was paused or opted out (false turns it off)
-ade chat message session-id --kind auto --text-file - <<'EOF'  # long or multi-line text from a file or stdin; also --text-file on send, steer and side, and --prompt-file/--kickoff-file on create. On Windows `ade.cmd` cuts an argument at its first line break, so never pass multi-line text as an argument
+ade chat message session-id --kind auto --text-file - <<'EOF'  # long or multi-line text from a file or stdin; also --text-file on send, steer and side, and --prompt-file on create. On Windows `ade.cmd` cuts an argument at its first line break, so never pass multi-line text as an argument
 status/context
 EOF
 ade chat message session-id --kind auto --text "status/context"
@@ -680,7 +680,7 @@ ade session snooze session-id --until-asked                 # open-ended, matchi
 ade session wake session-id --reason manual                 # timer|needs_you|error|turn_complete|manual
 ade session clear-woke session-id                           # drop the "woke early" marker after visiting the row
 ade session actions --text                                  # raw session service actions
-ade chat schedules session-id --pause              # pause this agent session's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)
+ade chat scheduled-work pause session-id          # pause this agent session's durable wakeups/cron/loops (status to inspect, resume to re-arm)
 ade chat scheduled-work list [session-id] --all     # list durable jobs; --all includes recent terminal history
                                                    # a row ADE armed itself carries source:"auto_resume_limit"; user- and agent-created rows carry no source
 ade chat scheduled-work create --in 12m --prompt "Check CI and report" --reason "CI check" --session session-id              # safest one-shot form; omit --session inside the bound agent

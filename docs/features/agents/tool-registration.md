@@ -412,11 +412,12 @@ Each block states its own cadence, and none of them repeats without a reason:
   who rely on shell aliases for their CLI install paths see the tool
   as "not installed". Either point `TOOL_SPECS[i].command` at the
   real binary path or have the user add the install dir to PATH.
-- **`ade agent spawn` vs. universal `spawnChat`.** The CLI command
+- **`spawn_agent` vs. universal `spawnChat`.** The `spawn_agent` RPC tool
   spawns a tracked terminal with Codex/Claude CLI via PTY. The CTO
   operator tool `spawnChat` creates an in-app chat session. Different
   use cases, easy to confuse -- watch which one is in scope for the
-  caller role.
+  caller role. (The old `ade agent spawn` CLI verb is gone; agents start
+  work with `ade new chat`.)
 
 ## Related docs
 

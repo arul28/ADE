@@ -58,7 +58,7 @@ case "$1 $2" in
   "secrets request") echo "Asked the user for the secret. The chat shows a secure input card." ;;
   "linear search"|"linear issues"|"linear list") echo "ENG-12  Login times out after 30s  (Todo)" ;;
   "linear issue"|"linear show") echo "ENG-12  Login times out after 30s"; echo "State: Todo" ;;
-  "linear update"|"linear state"|"linear move"|"linear set-state") echo "ENG-12 moved to In Progress." ;;
+  "linear update"|"linear state"|"linear set-state") echo "ENG-12 moved to In Progress." ;;
   "search "*|"search") echo "chat  \"cr-sqlite site id pinning\"  lane: db-site-id  (2026-10-24)" ;;
   "chat create"|"new chat") echo "Created chat eval-child-1 (codex) in lane eval-lane." ;;
   "chat note") echo "Noted." ;;

@@ -347,7 +347,7 @@ actually finished is a subjective judgment, and a chat that settles itself
 disappears from the user's active list on your say-so. A row leaves the active
 list only when the user settles it in ADE, or when its PR merges and the
 deterministic `autoSettleLaneSessionsOnPrMerge` policy files the lane's
-sessions. Running a removed command fails with that explanation.
+sessions.
 
 What to do instead when you finish: say so in your final message, and use
 `ade chat note "<one-line status>"` to leave a durable status line on the Work
@@ -604,9 +604,9 @@ Persistent ADE chats and tracked provider CLI sessions can schedule their own
 durable wakeups. Use the typed `ade chat scheduled-work create|list|cancel`
 commands or the generic `chat.createScheduledWork`, `chat.listScheduledWork`,
 and `chat.cancelScheduledWork` actions. Pause or resume that session with
-`ade chat schedules <session> --pause|--resume` or
-`chat.setScheduledWorkPaused`. Omit the pause/resume flag, or call
-`chat.getScheduledWorkState`, to inspect pause state, the next wake, and active
+`ade chat scheduled-work pause|resume <session>` or
+`chat.setScheduledWorkPaused`. `ade chat scheduled-work status <session>` (or
+`chat.getScheduledWorkState`) shows pause state, the next wake, and active
 jobs for either a chat or tracked provider CLI session.
 
 Omitting the target in an ADE-bound agent defaults create/list to
@@ -634,7 +634,7 @@ ade chat scheduled-work create --at "2026-07-23T01:05:00-04:00" --prompt "Check 
 ade chat scheduled-work create --cron "9,29,49 * * * *" --prompt "Check CI and report" --text
 ade chat scheduled-work list --all --text
 ade chat scheduled-work cancel <session> <id> --text   # session first; inside your own chat, 'cancel <id>' is enough
-ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
+ade chat scheduled-work pause "$ADE_CHAT_SESSION_ID" --text
 ```
 
 Compatibility commands still exist, but do not teach them as the first choice:
@@ -644,8 +644,7 @@ ade chat create --lane <lane> --provider codex --model <m> --type subagent --pro
 ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             # tracked provider CLI terminal
 ```
 
-`ade agent spawn` is the older CLI-session launcher and rejects
-`--reasoning-effort`; avoid it for new flows. Common reasoning tiers include
+Common reasoning tiers include
 `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, and `ultracode`; confirm
 model-specific support with `ade actions run chat.modelCatalog --json`.
 

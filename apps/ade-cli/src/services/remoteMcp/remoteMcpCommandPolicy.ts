@@ -46,17 +46,17 @@ const BLOCKED_COMMANDS: ReadonlyMap<string, string> = new Map([
  * access runs these; read-only runs the subset in READ_ONLY_COMMANDS.
  */
 const FULL_ACCESS_COMMANDS: ReadonlySet<string> = new Set([
-  "action", "actions", "ade-browser", "agent", "agents", "app", "app-control", "apple", "apps", "archive",
-  "archived", "artifact", "artifacts", "ask", "auth", "auto-update", "automation", "automations", "browser",
-  "built-in-browser", "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "coord",
-  "coordinator", "create", "cursor", "desk", "diff", "diffs", "disk", "doctor", "drafts", "electron", "file",
-  "files", "gh", "git", "github", "harness", "harnesses", "health", "help", "history", "init", "ios", "ios-sim",
-  "issue", "jira", "lane", "lanes", "linear", "link", "mac-desk", "mac-desktop", "machine", "machines", "models", "new",
-  "notify", "open", "operation", "operations", "pr", "project", "projects", "proof", "provider",
-  "providers", "proxy", "prs", "pty", "quota", "quotas", "report-issue", "router", "scene", "scenes", "screen",
-  "search", "secret", "secrets", "session", "sessions", "setting", "settings", "shell", "simulator", "skill",
-  "skills", "status", "storage", "sync", "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui",
-  "update", "updates", "usage", "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
+  "action", "actions", "ade-browser", "app", "app-control", "apple", "apps", "archive", "archived", "artifact",
+  "artifacts", "auth", "auto-update", "automation", "automations", "browser", "built-in-browser",
+  "builtin-browser", "chat", "chats", "computer", "computer-use", "config", "cursor", "desk", "diff", "diffs",
+  "disk", "doctor", "drafts", "electron", "file", "files", "gh", "git", "github", "harness", "harnesses",
+  "health", "help", "history", "init", "ios", "ios-sim", "issue", "jira", "lane", "lanes", "linear", "link",
+  "mac-desk", "mac-desktop", "machine", "machines", "models", "new", "notify", "open", "operation",
+  "operations", "pr", "project", "projects", "proof", "provider", "providers", "proxy", "prs", "pty", "quota",
+  "quotas", "report-issue", "router", "scene", "scenes", "screen", "search", "secret", "secrets", "session",
+  "sessions", "setting", "settings", "shell", "simulator", "skill", "skills", "status", "storage", "sync",
+  "term", "terminal", "test", "tests", "tools", "tools-pane", "triage", "ui", "update", "updates", "usage",
+  "version", "windows-desk", "windows-desktop", "work", "work-tools", "worktools",
 ]);
 
 /**
@@ -86,7 +86,7 @@ const READ_ONLY_COMMANDS: ReadonlyMap<string, ReadonlySet<string> | true> = new 
   ["prs stacks", new Set(["list"])],
   ["chat", new Set([
     "list", "inbox", "pending", "read", "show", "status", "launches", "launch-status", "waits", "subagents", "models",
-    "linear-issues", "actions", "wait", "watch",
+    "linear-issues", "actions", "wait",
   ])],
   ["terminal", new Set(["list", "read", "active"])],
   ["history", new Set(["list", "show", "commits"])],
@@ -374,7 +374,7 @@ function checkReadOnly(args: string[], words: readonly string[]): RemoteCommandV
     return refuse();
   }
   if (command === "search" && args.some((word) => SEARCH_WRITE_FLAGS.has(word))) return refuse();
-  const isChatWait = command === "chat" && (args[1] === "wait" || args[1] === "watch");
+  const isChatWait = command === "chat" && args[1] === "wait";
   if (isChatWait && args.some((word) => CHAT_WAIT_WRITE_FLAGS.test(word))) return refuse();
   const allowed = READ_ONLY_COMMANDS.get(command);
   if (allowed === true) return { ok: true, args };

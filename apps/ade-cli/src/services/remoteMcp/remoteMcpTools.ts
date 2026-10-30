@@ -728,7 +728,7 @@ export const TYPED_TOOLS: readonly TypedTool[] = [
       const prompt = text(input, "prompt");
       if (!prompt) return { error: "Pass `prompt`." };
       const argv = ["chat", "launch", freeText("--prompt", prompt)];
-      for (const [key, flag] of [["provider", "--provider"], ["model", "--model"], ["base", "--base"]] as const) {
+      for (const [key, flag] of [["provider", "--provider"], ["model", "--model"], ["base", "--from"]] as const) {
         const value = optionalWord(input, key);
         if ("error" in value) return value;
         if (value.value) argv.push(freeText(flag, value.value));

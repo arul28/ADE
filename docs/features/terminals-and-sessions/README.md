@@ -2598,8 +2598,8 @@ not affect canonical session state; iOS stores them for sync compatibility.
      `--session <id>`, and falls back to `$ADE_CHAT_SESSION_ID`, so a bound
      agent can file itself. Duration grammar and the 30-day cap come from
      `sessionSnoozeDuration.ts`, shared with the `ade session` commands. `ade session settle | unsettle | keep-active` and
-     `ade chat settle | unsettle` are **retired**: they exit 2 with a message
-     naming the two remaining paths (the user, and the PR-merge policy).
+     `ade chat settle | unsettle` are **removed**: settling has two paths left
+     (the user, and the PR-merge policy).
    - Action registry (`session` domain) — agent-reachable: `snoozeSession`,
      `snoozeSessions`, `wakeSession`, `wakeSessions`, `clearWokeMarker`.
      CTO-only (i.e. reachable from the desktop renderer's remote-runtime client, which authenticates at cto role, but refused for a
