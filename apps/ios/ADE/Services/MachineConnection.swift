@@ -61,6 +61,9 @@ final class MachineConnection {
   private(set) var commandDescriptors: [SyncRemoteCommandDescriptor] = []
   /// Host display name from the last hello.
   private(set) var hostName: String?
+  /// The machine's ADE version from the last hello (`brain.appVersion`). Nil
+  /// for an older host. It names the machine's update track (the Beta chip).
+  private(set) var hostAppVersion: String?
 
   /// Called after any change the fleet publishes (phase, roster, name).
   var onChange: (() -> Void)?
@@ -301,6 +304,9 @@ final class MachineConnection {
        let name = nonEmptyTrimmed(brain["deviceName"] as? String) {
       hostName = name
     }
+    // Every hello replaces it: a machine that moved to an older ADE (no
+    // version in the hello) must not keep the last one.
+    hostAppVersion = nonEmptyTrimmed((payload["brain"] as? [String: Any])?["appVersion"] as? String)
     chunkAssembler = SyncEnvelopeChunkAssembler()
     socket = result.task
     liveRouteKind = syncConnectionRouteKind(result.address)
