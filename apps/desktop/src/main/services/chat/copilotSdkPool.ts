@@ -5,7 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { captureWorkerFailure } from "../../sentry/workerFailures";
-import { reportCopilotProblem, reportCopilotSignal } from "./copilotSentry";
+import { reportCopilotProblem } from "./copilotSentry";
 import { markExpected } from "../../../shared/expectedError";
 import { resolveCopilotSdkRuntime } from "../ai/acpExecutables";
 import { pinnedToolNotReadyError } from "../ai/pinnedProviderTools";
@@ -195,10 +195,7 @@ async function create(init: CopilotSdkWorkerInit, logger?: Logger): Promise<Copi
     const waiter = COPILOT_SDK_WAITERS[message.type];
     const callback = bridge[WAITER_HANDLERS[message.type]];
     const respond = (answer: unknown) => {
-      pooled.request(waiter.respondType, { waiterId: message.waiterId, [waiter.payloadKey]: answer }).catch((error) => {
-        logger?.warn("agent_chat.copilot_sdk_callback_failed", { error: error instanceof Error ? error.message : String(error) });
-        reportCopilotSignal("callback_failed", { type: message.type });
-      });
+      pooled.request(waiter.respondType, { waiterId: message.waiterId, [waiter.payloadKey]: answer }).catch((error) => logger?.warn("agent_chat.copilot_sdk_callback_failed", { error: error instanceof Error ? error.message : String(error) }));
     };
     void Promise.resolve(callback ? callback(message.chatId, message.waiterId, message.request) : waiter.fallback)
       .then(respond, (error) => {

@@ -7,13 +7,12 @@
  * setting the runtime refused). Each is tagged `provider: copilot` with its
  * kind and model, and grouped per kind and cause, so one bug is one issue.
  *
- * Signals (a lost conversation, a model list that would not load) go on the
- * tight signal budget as Logs: they say how often something happens, and
- * nobody can fix them in ADE.
+ * The rest (a lost conversation, a model list that would not load) stay
+ * Sentry Logs through their warn lines: they say how often something happens,
+ * and nobody can fix them in ADE.
  */
 import { addSentryBreadcrumb, captureError, captureProblem } from "../../../shared/sentry/capture";
 import { isExpectedOutcome } from "../../../shared/sentry/expectedFailure";
-import { forwardSignalToSentry } from "../../../shared/sentry/logBridge";
 
 export type CopilotProblemKind =
   /** A `session.error` Copilot sent that is not sign-in, rate limit, quota or an outage. */
@@ -31,19 +30,12 @@ export type CopilotProblemKind =
   /** A permission, question or plan handler threw; Copilot got the refusing fallback. */
   | "handler_failed";
 
-export type CopilotSignalKind =
-  | "session_missing"
-  | "model_catalog_failed"
-  | "auto_switch_prompt_failed"
-  | "mcp_auth_lookup_failed"
-  | "callback_failed";
-
 /**
  * A message's cause with the parts that change per request (ids, numbers,
  * quoted values) taken out, so one failure is one issue however often it
  * happens.
  */
-export function copilotFailureCause(message: string): string {
+function copilotFailureCause(message: string): string {
   return message
     .split("\n")[0]!
     .replace(/"[^"]*"|'[^']*'|`[^`]*`/g, "<value>")
@@ -84,9 +76,6 @@ export function reportCopilotProblem(kind: CopilotProblemKind, args: {
   else captureProblem(`Copilot ${kind.replace(/_/g, " ")}`, context);
 }
 
-export function reportCopilotSignal(kind: CopilotSignalKind, meta?: Record<string, unknown>): void {
-  forwardSignalToSentry(`agent_chat.copilot_${kind}`, { provider: "copilot", ...meta }, kind);
-}
 
 /** What the next Copilot issue in this process says came before it. */
 export function copilotBreadcrumb(message: string, data?: Record<string, unknown>): void {

@@ -1446,7 +1446,7 @@ import {
   resolveCopilotSlashCommand,
 } from "./copilotSlashCommands";
 import type { CopilotRewindListing, CopilotRewindPreview, CopilotRewindResult } from "./copilotSdkProtocol";
-import { copilotBreadcrumb, reportCopilotProblem, reportCopilotSignal } from "./copilotSentry";
+import { copilotBreadcrumb, reportCopilotProblem } from "./copilotSentry";
 import { classifyCopilotError, createCopilotSdkEventMapperState, mapCopilotSdkEvent, copilotSdkDoneUsage, type CopilotSdkEventMapperState } from "./copilotSdkEventMapper";
 import { copilotSessionApproval, copilotSessionApprovalLabel } from "./copilotSdkPermissions";
 import { copilotSdkModelDescriptors, readCopilotModelCatalogCache, refreshCopilotModelCatalog } from "./copilotModelsDiscovery";
@@ -59743,7 +59743,6 @@ export function createAgentChatService(args: {
             // from a later step of opening must not replace a live conversation.
             if (!/session\.resume failed.*session not found/i.test(error instanceof Error ? error.message : String(error))) throw error;
             logger.warn("agent_chat.copilot_session_missing", { sessionId: managed.session.id, copilotSessionId: persistedSessionId });
-            reportCopilotSignal("session_missing", { model: managed.session.modelId ?? managed.session.model });
             emitChatEvent(managed, {
               type: "system_notice",
               noticeKind: "warning",
@@ -60063,7 +60062,6 @@ export function createAgentChatService(args: {
             sessionId: target.session.id,
             error: error instanceof Error ? error.message : String(error),
           });
-          reportCopilotSignal("auto_switch_prompt_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
         }
         // The rate-limit error was held back for this prompt. Declining makes
         // it the turn's error, so the usage-limit resume can be armed.
@@ -60124,7 +60122,6 @@ export function createAgentChatService(args: {
               server: serverName,
               error: error instanceof Error ? error.message : String(error),
             });
-            reportCopilotSignal("mcp_auth_lookup_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
             return { registryConfigured: false };
           });
           if (token.accessToken) return { kind: "token", accessToken: token.accessToken, expiresIn: token.expiresIn ?? 3600 };
@@ -69677,7 +69674,6 @@ export function createAgentChatService(args: {
         }));
       } catch (error) {
         logger.warn("agent_chat.copilot_model_catalog_failed", { error: error instanceof Error ? error.message : String(error) });
-        reportCopilotSignal("model_catalog_failed", { error: boundedLogText(error instanceof Error ? error.message : String(error)) });
         return [];
       }
     }

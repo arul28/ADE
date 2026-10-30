@@ -2182,7 +2182,9 @@ Cards are news for the user; they never start a turn. **Watch** and **Ship**
 are how a chat asks to be woken when its PR changes. Source:
 `shared/prWatch.ts` (pure evaluator, wake text, wake card),
 `main/services/prs/prChatWatchStore.ts` (rows), `main/services/prs/prWatchService.ts`
-(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control).
+(reactor), `renderer/components/chat/PrWatchPill.tsx` (header control),
+`renderer/components/chat/PrWatchWakeLine.tsx` (the wake's line in the
+transcript; iOS `WorkPrWatchWakeLine`).
 
 - **Turning it on.** Beside the header PR pill, while the PR is open, sits
   one icon button with a caret: a slashed eye (off), an eye (Watch, sky) or a

@@ -559,7 +559,7 @@ taken out of the message), so one bug is one issue:
 A worker's own uncaught exceptions are issues too (`process: worker:copilot`).
 A lost conversation, a model list that would not load, a failed MCP sign-in
 lookup or auto-switch prompt, and an answer that could not reach the worker are
-signals: Logs on a small budget, never issues. Each sent turn leaves a
+`agent_chat.copilot_*` warn lines: Sentry Logs, never issues. Each sent turn leaves a
 `copilot` breadcrumb (model, agent mode, permission level, attachment count,
 command), so an issue shows what was asked just before it.
 
