@@ -23,6 +23,7 @@ import {
 } from "./services/proof/remoteCallerCaptures";
 import {
   remoteWorkCopiesForProject,
+  remoteWorkLaneIdFor,
   remoteWorkRunOnceLaunch,
   RemoteWorkError,
   type RemoteWorkCopyService,
@@ -2916,6 +2917,38 @@ function remoteWorkCopiesFor(runtime: AdeRuntime): RemoteWorkCopyService {
   });
   sweepRemoteWorkCopies(runtime, service);
   return service;
+}
+
+/**
+ * `ade apple … --machine <this machine>` with no `--lane`: ready the caller's
+ * work copy (synced for a build, as it is otherwise) and name it as the lane.
+ */
+async function prepareRemoteWorkApple(
+  runtime: AdeRuntime,
+  session: SessionState,
+  appleArgs: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const owner = asOptionalTrimmedString(session.identity.chatSessionId);
+  const { remoteWork, laneId: _laneId, projectRoot: _projectRoot, ...rest } = appleArgs;
+  if (!owner || !parseForeignCallerSessionId(owner) || !isRecord(remoteWork)) {
+    throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "A work copy is for commands sent from another machine.");
+  }
+  const rawMode = asOptionalTrimmedString(remoteWork.sync) ?? "sync";
+  try {
+    await remoteWorkCopiesFor(runtime).prepare(owner, {
+      head: asOptionalTrimmedString(remoteWork.head) ?? "",
+      fetchRef: asOptionalTrimmedString(remoteWork.fetchRef),
+      patch: typeof remoteWork.patch === "string" ? remoteWork.patch : null,
+      branch: asOptionalTrimmedString(remoteWork.branch),
+      machineName: externalChatContext(owner)?.machineName ?? null,
+    }, (REMOTE_WORK_SYNC_MODES.has(rawMode) ? rawMode : "sync") as RemoteWorkSyncMode);
+  } catch (error) {
+    if (error instanceof RemoteWorkError) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, error.message, { code: error.code });
+    }
+    throw error;
+  }
+  return { ...rest, laneId: remoteWorkLaneIdFor(owner) };
 }
 
 const REMOTE_WORK_SWEEP_EVERY_MS = 60 * 60_000;
@@ -6494,7 +6527,10 @@ async function runTool(args: {
       );
     } else if (domain === "ios_simulator" && (!isUserClient || isUnboundAdeCliCaller(session))) {
       // Agent callers use only their own lane's device; see the function.
-      const appleArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      let appleArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
+      // A chat on another machine with no lane here: its work copy stands in
+      // for the lane (build root and device owner).
+      if (isRecord(appleArgs.remoteWork)) appleArgs = await prepareRemoteWorkApple(runtime, session, appleArgs);
       scopedObjectArgs = isUserClient
         ? await scopeUnboundAppleAdeActionArgs(runtime, session, action, appleArgs, toolArgs.callerRoot)
         : scopeAppleAdeActionArgs(runtime, session, action, appleArgs);

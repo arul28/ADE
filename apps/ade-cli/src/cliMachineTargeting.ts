@@ -439,6 +439,9 @@ export async function createMachineRemoteConnection(
           throw new CliToolError(error instanceof Error ? error.message : String(error), { machine });
         }
       }
+      if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
+        return await callRemote(method, withRemoteAppleArgs(params, process.cwd()));
+      }
       if (method === "ade/actions/call" && params?.name === "list_computer_use_artifacts") {
         // A proof command's verify step checks the drawer it filed into: this one.
         return await callLocalProject(method, params);
@@ -452,6 +455,35 @@ export async function createMachineRemoteConnection(
 function isShellOrTerminalAction(params: JsonObject): boolean {
   const toolArgs = isRecord(params.arguments) ? params.arguments : null;
   return params.name === "run_ade_action" && (toolArgs?.domain === "pty" || toolArgs?.domain === "terminal");
+}
+
+/** Apple actions that build the app from the lane's code: they sync the work copy first. */
+const APPLE_BUILD_ACTIONS: ReadonlySet<string> = new Set(["launch", "installApp", "runTests"]);
+
+/**
+ * `ade apple … --machine` with no `--lane`: the simulator there works for
+ * this chat's work copy. A build syncs it to this checkout; any other verb
+ * uses it as it is (and makes it at this commit when it does not exist yet).
+ */
+function withRemoteAppleArgs(params: JsonObject, workspaceRoot: string): JsonObject {
+  const toolArgs = isRecord(params.arguments) ? params.arguments : {};
+  if (toolArgs.domain !== "ios_simulator" || !isRecord(toolArgs.args) || asString(toolArgs.args.laneId)) return params;
+  const action = asString(toolArgs.action) ?? "";
+  if (action === "getStatus" || action === "runtimeList" || action === "listDevices") return params;
+  const { chatSessionId: _chatSessionId, ...args } = toolArgs.args;
+  return {
+    ...params,
+    arguments: {
+      ...toolArgs,
+      args: {
+        ...args,
+        remoteWork: {
+          ...readLocalWorkSource(workspaceRoot),
+          ...(APPLE_BUILD_ACTIONS.has(action) ? {} : { sync: "none" }),
+        },
+      },
+    },
+  };
 }
 
 /**

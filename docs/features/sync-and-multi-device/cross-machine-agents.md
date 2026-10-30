@@ -104,6 +104,15 @@ on the first command; nothing is installed in advance, and ignored files
   `chats.locate`, which now says `archived` when the project is running there,
   and never acts on silence); a low disk deletes other idle copies, oldest
   first, before a new copy is refused.
+- **The simulator.** `ade apple … --machine <name>` with no `--lane` uses the
+  work copy as its lane there: the lane id is `remote-work-<hash>`
+  (`remoteWorkLaneIdFor`), its build root is the copy, and the device registry
+  treats it as live while the copy exists. Its first device is a free
+  simulator that machine already has (an ADE device kept free first, then the
+  user's own, shut-down ones first), attached so ADE never deletes it; only
+  when none is free does ADE make one. `launch`, `installApp` and `runTests`
+  sync the copy first; other verbs use it as it is. When the copy goes, the
+  cleanup pass gives the device back.
 - **Where it shows.** The chat's own brain records each such shell as it
   forwards the call (`noteRemoteWork`); the chat header and session card show
   that machine's logo while the current turn uses it, with the commands and

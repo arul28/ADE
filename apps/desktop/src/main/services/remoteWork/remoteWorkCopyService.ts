@@ -47,7 +47,7 @@ export type RemoteWorkSource = {
 export type RemoteWorkSyncMode =
   /** Reset the copy to the chat's commit and changes (default). */
   | "sync"
-  /** Run in the copy as it is. */
+  /** Run in the copy as it is (a missing copy is still made first). */
   | "none"
   /** Reset even if the copy holds work nobody synced in. */
   | "discard";
@@ -90,6 +90,37 @@ export const REMOTE_WORK_MAX_PATCH_BYTES = 16 * 1024 * 1024;
 
 const SHA = /^[0-9a-f]{40}$/i;
 const REGISTRY_FILE = "copies.json";
+
+/**
+ * A work copy stands in for a lane where a service keys its state by lane,
+ * as the Apple device registry does: `remote-work-<12 hex>`, the same hash as
+ * the copy's folder. No real lane id has this prefix (they are UUIDs).
+ */
+export const REMOTE_WORK_LANE_PREFIX = "remote-work-";
+
+function ownerHash(owner: string): string {
+  return createHash("sha256").update(owner).digest("hex").slice(0, 12);
+}
+
+export function remoteWorkLaneIdFor(owner: string): string {
+  return `${REMOTE_WORK_LANE_PREFIX}${ownerHash(owner)}`;
+}
+
+export function isRemoteWorkLaneId(laneId: string | null | undefined): boolean {
+  return typeof laneId === "string" && laneId.startsWith(REMOTE_WORK_LANE_PREFIX);
+}
+
+/** The work copy a `remote-work-…` lane id names in this project, or null when it is gone. */
+export function findRemoteWorkCopyForLane(projectRoot: string, laneId: string): RemoteWorkCopy | null {
+  if (!isRemoteWorkLaneId(laneId)) return null;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(path.join(projectRoot, ".ade", "remote-work", REGISTRY_FILE), "utf8")) as Partial<Registry>;
+    const copies = Array.isArray(parsed.copies) ? parsed.copies.filter(isCopy) : [];
+    return copies.find((copy) => remoteWorkLaneIdFor(copy.owner) === laneId && fs.existsSync(copy.path)) ?? null;
+  } catch {
+    return null;
+  }
+}
 const GIT_TIMEOUT_MS = 120_000;
 const FETCH_TIMEOUT_MS = 300_000;
 
@@ -334,8 +365,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   };
 
   /** The folder a copy for `owner` lives in, whether or not it exists. */
-  const pathFor = (owner: string): string =>
-    path.join(root, createHash("sha256").update(owner).digest("hex").slice(0, 12));
+  const pathFor = (owner: string): string => path.join(root, ownerHash(owner));
   const get = (owner: string): RemoteWorkCopy | null =>
     readRegistry().copies.find((copy) => copy.owner === owner) ?? null;
 
@@ -402,9 +432,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
         const existing = get(owner);
         const timestamp = new Date(now()).toISOString();
         if (!existing || !fs.existsSync(copyPath)) {
-          if (mode === "none") {
-            throw new RemoteWorkError("no_copy", "There is no work copy on this machine yet. Run a command without --no-sync first.");
-          }
+          // No copy yet: every mode starts by making one at the chat's commit.
           await makeRoomForCopy(owner);
           await ensureCommit(source);
           if (fs.existsSync(copyPath)) await removeCopyFiles(copyPath);

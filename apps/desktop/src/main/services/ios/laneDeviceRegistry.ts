@@ -1,3 +1,4 @@
+import { findRemoteWorkCopyForLane, isRemoteWorkLaneId } from "../remoteWork/remoteWorkCopyService";
 import type {
   AppleDeviceCleanupResult,
   AppleDeviceDiskUsage,
@@ -467,6 +468,11 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   };
 
   const isLaneLive = (laneId: string): boolean => {
+    // A chat on another machine's work copy: live while the copy exists.
+    if (isRemoteWorkLaneId(laneId)) {
+      const projectRoot = deps.projectRoot?.trim();
+      return projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId) !== null : true;
+    }
     if (!deps.store) return true;
     try {
       const row = deps.store.get<{ status: string | null }>("select status from lanes where id = ?", [laneId]);
@@ -547,6 +553,11 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
    * back to the id, which is what an un-named lane has anyway.
    */
   const laneNameFor = (laneId: string): string | null => {
+    if (isRemoteWorkLaneId(laneId)) {
+      const projectRoot = deps.projectRoot?.trim();
+      const copy = projectRoot ? findRemoteWorkCopyForLane(projectRoot, laneId) : null;
+      return copy?.machineName ? `${copy.machineName} chat` : "chat on another machine";
+    }
     const injected = deps.resolveLaneName?.(laneId);
     if (injected) return injected;
     try {
@@ -938,6 +949,40 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
   /** A lane row holds this udid right now. Read fresh: the pass awaits between devices. */
   const heldNow = (udid: string): boolean => readAllHeld().some((device) => device.udid === udid);
 
+  /**
+   * A free simulator for a work-copy lane: no lane holds it, and it is either
+   * ADE's own kept device or the user's own. Kept ADE devices first (no user
+   * data), shut-down ones before booted ones (a booted one may be in use),
+   * this project's usual model first. Attached, so ADE never deletes it: the
+   * lane's end gives it back and uninstalls only what ADE put on it.
+   */
+  const borrowFreeDevice = async (laneId: string): Promise<AppleLaneDevice | null> => {
+    const installed = (await deps.listInstalledSimulators()).filter((sim) => sim.isAvailable);
+    const ownership = new Map(ownershipFor(installed).map((info) => [info.udid, info]));
+    const preferredType = lastDeviceType();
+    const rank = (sim: AppleInstalledSimulator): number => {
+      const info = ownership.get(sim.udid);
+      return (info?.ownership === "ade-kept" ? 0 : 4)
+        + (sim.state.toLowerCase() === "shutdown" ? 0 : 2)
+        + (preferredType && sim.deviceTypeIdentifier === preferredType ? 0 : 1);
+    };
+    const candidates = installed
+      .filter((sim) => {
+        const info = ownership.get(sim.udid);
+        if (!info || heldNow(sim.udid)) return false;
+        return info.ownership === "ade-kept" || (info.ownership === "unknown" && !info.looksLikeAde);
+      })
+      .sort((a, b) => rank(a) - rank(b));
+    for (const sim of candidates) {
+      try {
+        return await attach({ laneId, simulator: sim.udid, agentCaller: true });
+      } catch {
+        // Taken meanwhile, or another project's: try the next one.
+      }
+    }
+    return null;
+  };
+
   const reconcile = async (): Promise<AppleDeviceCleanupResult> => {
     const result: AppleDeviceCleanupResult = { deleted: [], poweredOff: [], forgottenRows: [], released: [], errors: [] };
     const errorText = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -1273,6 +1318,12 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       const laneId = requireLaneId(args.laneId);
       const existing = readOne(laneId);
       if (existing) return existing;
+      // A chat on another machine borrows a free simulator here before ADE
+      // makes a new one: nothing to install, and less disk on this machine.
+      if (isRemoteWorkLaneId(laneId)) {
+        const borrowed = await borrowFreeDevice(laneId).catch(() => null);
+        if (borrowed) return borrowed;
+      }
       return create({ laneId });
     },
     reconcile,
