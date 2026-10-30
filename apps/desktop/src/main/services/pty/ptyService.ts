@@ -1220,7 +1220,7 @@ export function remoteRunOnceShellLaunch(
   platform: NodeJS.Platform = process.platform,
 ): { command: string; args: string[]; env?: Record<string, string> } {
   const preferred = preferredShellPath ? shellSpecForInstalledShell(preferredShellPath, "clean") : null;
-  const posixLine = "argv" in command ? command.argv.map(quotePosixShellArg).join(" ") : command.line;
+  const posixLine = "argv" in command ? posixArgvLine(command.argv) : command.line;
   if (platform !== "win32") {
     const spec = preferred ?? resolveShellCandidates("clean")[0] ?? { file: "/bin/sh", args: [] };
     return { command: spec.file, args: [...spec.args, "-c", posixLine], ...(spec.env ? { env: spec.env } : {}) };
@@ -1254,6 +1254,22 @@ export function remoteRunOnceShellLaunch(
     command: shellPath,
     args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")],
   };
+}
+
+/**
+ * An argv as one POSIX line. Leading `NAME=value` words stay assignments, as
+ * on Windows: only the value is quoted, else the shell runs the word as a command.
+ */
+function posixArgvLine(argv: string[]): string {
+  let leading = true;
+  return argv.map((word, index) => {
+    const assignment = leading && index < argv.length - 1 ? /^([A-Za-z_][A-Za-z0-9_]*)=([\s\S]*)$/.exec(word) : null;
+    if (!assignment) {
+      leading = false;
+      return quotePosixShellArg(word);
+    }
+    return `${assignment[1]}=${quotePosixShellArg(assignment[2]!)}`;
+  }).join(" ");
 }
 
 function quotePosixShellArg(value: string): string {

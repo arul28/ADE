@@ -29,6 +29,8 @@ import {
 } from "../../../shared/types/iosSimulator";
 import { type AppleLaneDevice } from "../../../shared/types";
 import { createLaneDeviceLifecycle, type LifecycleLaneRuntime } from "./laneDeviceLifecycle";
+import { readAppleDeviceMarker, writeAppleDeviceMarker } from "./appleDeviceMarker";
+import { remoteWorkLaneIdFor } from "../remoteWork/remoteWorkCopyService";
 
 const noopLogger = {
   info: () => {},
@@ -623,6 +625,56 @@ describe("laneDeviceRegistry device lifecycle", () => {
 
     expect(second).toEqual(first);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("lends a chat on another machine one of the person's own free simulators, never an ADE or held one, and makes one only when none is free", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-apple-borrow-"));
+    const dataRoot = path.join(root, "devices");
+    const projectRoot = path.join(root, "project");
+    const KEPT = "00000000-0000-4000-8000-0000000000a1";
+    const listed = [
+      simulator({ udid: KEPT, name: "Kept iPhone" }),
+      simulator({ udid: "ade-named", name: "ADE · old lane" }),
+      simulator({ udid: "held", name: "iPhone in a lane" }),
+      simulator({ udid: "users-booted", name: "My iPhone", state: "Booted" }),
+      simulator({ udid: "users-free", name: "My iPad" }),
+    ];
+    // A device the person kept: it must stay theirs, so it is never lent out.
+    // CoreSimulator makes the device's folder; the marker goes in it.
+    fs.mkdirSync(path.join(dataRoot, KEPT), { recursive: true });
+    writeAppleDeviceMarker(dataRoot, KEPT, {
+      version: 1, projectRoot, laneId: "lane-gone", name: "Kept iPhone", createdAt: "2026-10-01T00:00:00.000Z", keptAt: "2026-10-02T00:00:00.000Z",
+    });
+    const store = memoryStore({
+      "lane-1": { lane_id: "lane-1", udid: "held", name: "iPhone in a lane", origin: "attached", family: "iphone", runtime: "iOS 26.3", created_at: "2026-10-01T00:00:00.000Z" },
+    });
+    const run = vi.fn(async (_command: string, args: string[]) => (
+      args[1] === "create" ? { stdout: "made-udid\n", stderr: "" } : { stdout: "", stderr: "" }
+    ));
+    const registry = createLaneDeviceRegistry({
+      run: run as never,
+      powerOffDevice: bareSimulatorPowerOff(run as never),
+      listInstalledSimulators: async () => listed,
+      listInstalledRuntimes: async () => RUNTIMES,
+      projectRoot,
+      deviceDataRoot: dataRoot,
+      store,
+      logger: noopLogger,
+    });
+
+    try {
+      // A shut-down one first: a booted one may be in use.
+      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-1") })).toMatchObject({ udid: "users-free", origin: "attached" });
+      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-2") })).toMatchObject({ udid: "users-booted", origin: "attached" });
+      expect(run).not.toHaveBeenCalled();
+      // Nothing of the person's is free now: ADE makes one.
+      expect(await registry.ensure({ laneId: remoteWorkLaneIdFor("remote:mac:chat-3") })).toMatchObject({ udid: "made-udid", origin: "created" });
+      expect(run.mock.calls.filter((call) => call[1][1] === "create")).toHaveLength(1);
+      expect(store.rows["lane-1"]).toMatchObject({ udid: "held" });
+      expect(readAppleDeviceMarker(dataRoot, KEPT)?.keptAt).toBe("2026-10-02T00:00:00.000Z");
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

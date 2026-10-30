@@ -750,7 +750,7 @@ ade shell clean --machine "Windows PC"            # delete the work copy when do
   then pull here. A sync refuses while the copy holds unpushed work; `--no-sync`
   runs in the copy as it is, `--discard` throws that work away.
 - The copy goes by itself after a week unused, or when this chat is deleted or
-  archived. A whole task with its own lane there is `ade chat create --machine`.
+  archived; unpushed work there stays, except when the chat is deleted. A whole task with its own lane there is `ade chat create --machine`.
 
 ### Moving this chat to another machine
 

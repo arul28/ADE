@@ -661,6 +661,11 @@ carry that machine and project identity back to the owning runtime.
 
 Runtime support files outside `services/sync/`:
 
+- `apps/desktop/src/main/services/remoteWork/remoteWorkCopyService.ts` — the
+  work copy a chat on another machine runs commands in here: a hidden git
+  worktree per chat, its guarded sync, and its cleanups (see
+  [cross-machine agents](cross-machine-agents.md)). `apps/ade-cli/src/cliRemoteWork.ts`
+  builds what a `--machine` call sends for it.
 - `apps/desktop/src/main/services/state/crsqliteExtension.ts` and
   `apps/ade-cli/scripts/package-native-deps.mjs` — loadable cr-sqlite for every
   published runtime (`darwin-*`, `linux-*`, `win32-x64`). The packager copies the

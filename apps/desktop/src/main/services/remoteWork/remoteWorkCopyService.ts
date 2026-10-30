@@ -224,7 +224,7 @@ function machineIndexPath(adeHome: string): string {
   return path.join(adeHome, "remote-work", "projects.json");
 }
 
-function readMachineIndex(adeHome: string): MachineIndex {
+function readMachineIndex(adeHome: string, logger?: RemoteWorkLogger): MachineIndex {
   try {
     const parsed = JSON.parse(fs.readFileSync(machineIndexPath(adeHome), "utf8")) as Partial<MachineIndex>;
     const projects = Array.isArray(parsed.projects)
@@ -232,14 +232,18 @@ function readMachineIndex(adeHome: string): MachineIndex {
         Boolean(entry) && typeof entry.projectRoot === "string")
       : [];
     return { version: 1, projects };
-  } catch {
-    // Missing (no copies yet) or damaged: the index is rebuilt by the next copy written.
+  } catch (error) {
+    // Missing: no copies yet. Damaged: the next copy written rebuilds it, and
+    // until then the other projects' copies are not listed or swept.
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      logger?.warn("remote_work.index_unreadable", { error: error instanceof Error ? error.message : String(error) });
+    }
     return { version: 1, projects: [] };
   }
 }
 
-function writeMachineIndexEntry(adeHome: string, projectRoot: string, present: boolean): void {
-  const index = readMachineIndex(adeHome);
+function writeMachineIndexEntry(adeHome: string, projectRoot: string, present: boolean, logger?: RemoteWorkLogger): void {
+  const index = readMachineIndex(adeHome, logger);
   const listed = index.projects.some((entry) => pathsEqual(entry.projectRoot, projectRoot));
   if (listed === present) return;
   const next = present
@@ -254,7 +258,7 @@ export function listMachineRemoteWorkCopies(
   logger?: RemoteWorkLogger,
 ): Array<RemoteWorkCopy & { projectRoot: string }> {
   const rows: Array<RemoteWorkCopy & { projectRoot: string }> = [];
-  for (const entry of readMachineIndex(adeHome).projects) {
+  for (const entry of readMachineIndex(adeHome, logger).projects) {
     try {
       for (const copy of readRegistryAt(entry.projectRoot).copies) rows.push({ ...copy, projectRoot: entry.projectRoot });
     } catch (error) {
@@ -276,7 +280,7 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
   const writeRegistry = (registry: Registry): void => {
     writeTextAtomic(registryPathFor(projectRoot), `${JSON.stringify(registry, null, 2)}\n`);
     try {
-      writeMachineIndexEntry(adeHome, projectRoot, registry.copies.length > 0);
+      writeMachineIndexEntry(adeHome, projectRoot, registry.copies.length > 0, logger);
     } catch (error) {
       logger?.warn("remote_work.index_write_failed", { error: error instanceof Error ? error.message : String(error) });
     }
@@ -642,7 +646,8 @@ export function createRemoteWorkCopyService(options: RemoteWorkCopyServiceOption
             return null;
           })
           : null;
-        if (answer?.gone && await releaseIfIdle(copy.owner)) {
+        // An archived chat can come back: its unpushed work stays until a person deletes it.
+        if (answer?.gone && await releaseIfIdle(copy.owner, answer.archived ? { keepUnsynced: true } : {})) {
           released += 1;
           logger?.info("remote_work.owner_gone", { owner: copy.owner, archived: answer.archived });
         }
@@ -692,7 +697,7 @@ export async function sweepMachineRemoteWork(sweepOptions: {
   ownerGone?: (owner: string) => Promise<{ gone: boolean; archived: boolean } | null>;
 } = {}): Promise<number> {
   let released = 0;
-  for (const entry of readMachineIndex(sweepOptions.adeHome ?? defaultAdeHome()).projects) {
+  for (const entry of readMachineIndex(sweepOptions.adeHome ?? defaultAdeHome(), sweepOptions.logger).projects) {
     try {
       released += await createRemoteWorkCopyService({ projectRoot: entry.projectRoot, adeHome: sweepOptions.adeHome, logger: sweepOptions.logger })
         .sweep({ ownerGone: sweepOptions.ownerGone });

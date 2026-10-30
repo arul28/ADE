@@ -1320,7 +1320,10 @@ export function createLaneDeviceRegistry(deps: LaneDeviceRegistryDeps): LaneDevi
       // A chat on another machine borrows a free simulator here before ADE
       // makes a new one: nothing to install, and less disk on this machine.
       if (isRemoteWorkLaneId(laneId)) {
-        const borrowed = await borrowFreeDevice(laneId).catch(() => null);
+        const borrowed = await borrowFreeDevice(laneId).catch((error: unknown) => {
+          deps.logger.warn?.("apple.remote_work_borrow_failed", { laneId, error: error instanceof Error ? error.message : String(error) });
+          return null;
+        });
         if (borrowed) return borrowed;
       }
       return create({ laneId });

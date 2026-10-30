@@ -464,7 +464,9 @@ export async function createMachineRemoteConnection(
         return await fileRemoteAppControlProofHere(params);
       }
       if (method === "ade/actions/call" && params && isShellOrTerminalAction(params)) {
-        const shellParams = withRemoteShellArgs(params, process.cwd(), options.machineWorkCopy ?? null);
+        // The checkout the command runs from: the lane worktree, or the project
+        // --project-root names (whose remote picked the project there).
+        const shellParams = withRemoteShellArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null);
         try {
           return await callRemote(method, shellParams);
         } catch (error) {
@@ -474,7 +476,7 @@ export async function createMachineRemoteConnection(
         }
       }
       if (method === "ade/actions/call" && params?.name === "run_ade_action" && isRecord(params.arguments) && params.arguments.domain === "ios_simulator") {
-        return await callRemote(method, withRemoteAppleArgs(params, process.cwd(), options.machineWorkCopy ?? null));
+        return await callRemote(method, withRemoteAppleArgs(params, roots.workspaceRoot, options.machineWorkCopy ?? null));
       }
       if (method === "ade/actions/call" && (params?.name === "list_computer_use_artifacts" || params?.name === "review_computer_use_artifact")) {
         // A proof command's verify step checks the drawer it filed into, and a
