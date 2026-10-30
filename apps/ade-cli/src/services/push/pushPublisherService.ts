@@ -2468,7 +2468,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     async start(): Promise<void> {
       if (disposed || warmed) return;
       warmed = true;
-      void relayApnsConfigured().catch(() => {});
+      // On the next turn: the relay health request builds a TLS context
+      // synchronously (about 30 ms on Windows), and start() runs inside a
+      // project's open, which already holds the event loop.
+      setImmediate(() => {
+        if (!disposed) void relayApnsConfigured().catch(() => {});
+      });
       reconcilePending = true;
       scheduleFlush(true);
     },
