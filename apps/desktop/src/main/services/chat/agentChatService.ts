@@ -1733,6 +1733,7 @@ import type { ProcessRegistryService } from "../runtime/processRegistryService";
 import { createAgentShellOutputObserver } from "../devServers/agentShellOutput";
 import {
   createStaleRunSweep,
+  STALE_RUN_EVENT_TYPES,
   type StaleRunSweepChatRow,
 } from "./chatStaleRunSweep";
 import {
@@ -16090,6 +16091,22 @@ export function createAgentChatService(args: {
     } catch {
       return [];
     }
+  };
+
+  // The stale-run sweep reads only these events (see STALE_RUN_EVENT_TYPES), so
+  // its timer pass scans the transcript off the event loop and parses just the
+  // lines that name one of them, instead of the whole file at once.
+  const staleRunEventNeedles = STALE_RUN_EVENT_TYPES.map((type) => Buffer.from(`"${type}"`));
+  const readStaleRunEnvelopesForSessionIdAsync = async (sessionId: string): Promise<AgentChatEventEnvelope[]> => {
+    const envelopes: AgentChatEventEnvelope[] = [];
+    await scanTranscriptEnvelopesForSessionIdAsync(
+      sessionId,
+      (envelope) => envelopes.push(envelope),
+      undefined,
+      parseAgentChatTranscript,
+      (line) => staleRunEventNeedles.some((needle) => line.includes(needle)),
+    );
+    return envelopes;
   };
 
   const readSubagentSnapshotsFromTranscript = async (
@@ -70669,6 +70686,7 @@ export function createAgentChatService(args: {
    */
   const staleRunSweep = createStaleRunSweep<ManagedChatSession>({
     readFullTranscriptEnvelopesForSessionId,
+    readStaleRunEnvelopesForSessionIdAsync,
     listChatSessionIds: (limit) => sessionService
       // Scoped to chat tool types so the scan cap is spent on chats: unscoped,
       // a fleet of terminal sessions ordered by start time fills all 200 rows

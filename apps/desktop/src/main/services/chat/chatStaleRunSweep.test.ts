@@ -53,6 +53,8 @@ function harness(overrides: {
   onEnsureManagedSession?: (sessionId: string) => void;
   onSweptStaleRows?: (managed: FakeManaged, swept: { leftRunningIds: readonly string[] }) => void;
   now?: () => number;
+  /** The timer pass's off-loop reader of stale-relevant events. */
+  readStaleRunEnvelopes?: (sessionId: string) => Promise<AgentChatEventEnvelope[]>;
 } = {}) {
   const transcripts = overrides.transcripts ?? {};
   const transcriptReads: string[] = [];
@@ -81,6 +83,7 @@ function harness(overrides: {
       transcriptReads.push(sessionId);
       return transcripts[sessionId] ?? [];
     },
+    ...(overrides.readStaleRunEnvelopes ? { readStaleRunEnvelopesForSessionIdAsync: overrides.readStaleRunEnvelopes } : {}),
     listChatSessionIds: () => Object.keys(transcripts),
     getChatSessionRow: (sessionId) => overrides.chatRows?.[sessionId] ?? null,
     ...(overrides.deferChildTerminal ? { deferChildTerminal: overrides.deferChildTerminal } : {}),
@@ -444,6 +447,43 @@ describe("reconcileStaleRuns", () => {
       sweep.start();
       vi.advanceTimersByTime(10 * 1000);
       expect(results(emitted)).toHaveLength(1);
+      sweep.dispose();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("reads through the off-loop reader on its timer, never the whole transcript, and backs off a failed read", async () => {
+    vi.useFakeTimers();
+    try {
+      // A chat whose transcript mixes the stale-relevant events with ordinary
+      // ones, read the way the brain's reader returns it: only the relevant ones.
+      const healed = "chat-filtered";
+      const failing = "chat-unreadable";
+      const relevant = orphanTranscript(healed);
+      const staleReads: string[] = [];
+      const { sweep, emitted, transcriptReads, warnings } = harness({
+        transcripts: { [healed]: [envelope(healed, 0, { type: "text", text: "hi" } as AgentChatEvent), ...relevant], [failing]: orphanTranscript(failing) },
+        readStaleRunEnvelopes: async (sessionId) => {
+          staleReads.push(sessionId);
+          if (sessionId === failing) throw new Error("EBUSY");
+          return relevant;
+        },
+      });
+
+      sweep.start();
+      await vi.advanceTimersByTimeAsync(10 * 1000);
+
+      expect(transcriptReads).toEqual([]);
+      expect(staleReads.sort()).toEqual([failing, healed].sort());
+      expect(results(emitted).map((event) => event.status)).toEqual(["stopped"]);
+      expect(scheduled(emitted)).toHaveLength(1);
+      expect(warnings.map((warning) => warning.meta?.sessionId)).toContain(failing);
+
+      // The healed chat is retired; the failed one waits out its revisit clock.
+      staleReads.length = 0;
+      await vi.advanceTimersByTimeAsync(60 * 1000);
+      expect(staleReads).toEqual([]);
       sweep.dispose();
     } finally {
       vi.useRealTimers();
