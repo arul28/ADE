@@ -38,6 +38,7 @@ export async function connectBrain(socketPath: string, clientName: string): Prom
   let buffer = "";
   let nextId = 1;
   let projectId: string | null = null;
+  let connectionError: Error | null = null;
   socket.setEncoding("utf8");
   socket.on("data", (chunk: string) => {
     buffer += chunk;
@@ -60,6 +61,7 @@ export async function connectBrain(socketPath: string, clientName: string): Prom
   // A brain that dies or drops the connection mid-bench fails every waiting request, so the bench
   // reaches its cleanup instead of hanging with the brain left running.
   const failAll = (error: Error) => {
+    connectionError ??= error;
     for (const waiter of pending.values()) waiter.reject(error);
     pending.clear();
   };
@@ -67,6 +69,10 @@ export async function connectBrain(socketPath: string, clientName: string): Prom
   socket.on("close", () => failAll(new Error("the brain closed the connection")));
   const request = (method: string, params?: unknown): Promise<any> => {
     const id = nextId++;
+    // A request made after the connection failed would wait forever on a socket that never answers.
+    if (connectionError || socket.destroyed) {
+      return Promise.reject(connectionError ?? new Error("the brain closed the connection"));
+    }
     return new Promise((resolve, reject) => {
       pending.set(id, { resolve, reject });
       socket.write(`${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`);

@@ -37,17 +37,21 @@ if (!fs.existsSync(cliPath)) throw new Error(`Missing ${cliPath}; run npm --pref
 
 const isWindows = process.platform === "win32";
 const tempRoot = isWindows ? os.tmpdir() : "/tmp";
+const realAdeHome = path.join(fs.realpathSync(os.homedir()), ".ade");
+const inside = (child: string, parent: string) => {
+  const relative = path.relative(fs.realpathSync(parent), fs.realpathSync(child));
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+};
+// Checked before anything is created, so a refused run leaves nothing behind.
+if (fs.existsSync(realAdeHome) && (fs.realpathSync(tempRoot) === fs.realpathSync(realAdeHome) || inside(tempRoot, realAdeHome))) {
+  throw new Error("Refusing to run: the temp folder is inside the real ADE home.");
+}
 const root = fs.mkdtempSync(path.join(tempRoot, "ade-bench-brain-root-"));
 const adeHome = path.join(root, "ade-home");
 const fakeHome = path.join(root, "home");
 const runCwd = path.join(root, "cwd");
 const cacheDir = path.join(adeHome, "cache", "node-compile");
-const realAdeHome = path.join(fs.realpathSync(os.homedir()), ".ade");
-const inside = (child: string, parent: string) => {
-  const relative = path.relative(fs.realpathSync(parent), fs.realpathSync(child));
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
-};
-if (!inside(root, tempRoot) || (fs.existsSync(realAdeHome) && inside(root, realAdeHome))) throw new Error("Refusing to run outside a throwaway home in the temp folder.");
+if (!inside(root, tempRoot)) throw new Error("Refusing to run outside a throwaway home in the temp folder.");
 const socketFor = (n: number) => (isWindows ? `\\\\.\\pipe\\ade-bench-brain-${process.pid}-${n}` :`/tmp/ade-bench-brain-${n}.sock`);
 for (const dir of [adeHome, fakeHome, runCwd]) fs.mkdirSync(dir, { recursive: true });
 
