@@ -6,8 +6,10 @@ import Foundation
 ///     ade-media analyze <input.mp4|.mov|.m4v> [<thumbnailLongSide> <pixelDelta> <minIntervalSeconds>]
 ///                                               → one DemoAnalysis JSON on stdout
 ///     ade-media render <request.json>           → one DemoRenderResult JSON on stdout
+///     ade-media contact-sheet <request.json>    → one DemoContactSheetResult JSON on stdout
+///                                                 (the request is a DemoContactSheetRequest)
 ///
-/// Both exit 0 on success. `render` reports `progress 0.42` lines on stderr, at
+/// All exit 0 on success. `render` reports `progress 0.42` lines on stderr, at
 /// most about ten a second. On failure the exit code is 1 and the last stderr
 /// line is `error: <message>`, which the desktop client shows as the error.
 @main
@@ -33,8 +35,14 @@ enum ADEMediaCommand {
                 let reporter = ProgressReporter()
                 let result = try await Renderer(request: request, progress: reporter.report).run()
                 try printJSON(result)
+            case ("contact-sheet", 2):
+                let request = try readJSON(DemoContactSheetRequest.self, path: arguments[1], name: "contact sheet request")
+                guard !request.output.isEmpty, !request.input.isEmpty else {
+                    throw MediaError("The contact sheet request needs an input and an output path.")
+                }
+                try printJSON(try await ContactSheet.make(request))
             default:
-                throw MediaError("Usage: ade-media analyze <input> [<thumbnailLongSide> <pixelDelta> <minIntervalSeconds>] | ade-media render <request.json>")
+                throw MediaError("Usage: ade-media analyze <input> [<thumbnailLongSide> <pixelDelta> <minIntervalSeconds>] | ade-media render <request.json> | ade-media contact-sheet <request.json>")
             }
             exit(0)
         } catch {
@@ -47,29 +55,32 @@ enum ADEMediaCommand {
     }
 
     static func readRequest(path: String) throws -> DemoRenderRequest {
+        let request = try readJSON(DemoRenderRequest.self, path: path, name: "render request")
+        guard request.plan.version == 1 else {
+            throw MediaError("The plan is version \(request.plan.version); this ade-media reads version 1.")
+        }
+        guard !request.output.isEmpty, !request.input.isEmpty else {
+            throw MediaError("The render request needs an input and an output path.")
+        }
+        return request
+    }
+
+    /// Decodes a request file; `name` ("render request") goes into the errors.
+    static func readJSON<T: Decodable>(_ type: T.Type, path: String, name: String) throws -> T {
         let data: Data
         do {
             data = try Data(contentsOf: URL(fileURLWithPath: path))
         } catch {
-            throw MediaError("Could not read the render request \(path): \(error.localizedDescription)")
+            throw MediaError("Could not read the \(name) \(path): \(error.localizedDescription)")
         }
         do {
-            let request = try JSONDecoder().decode(DemoRenderRequest.self, from: data)
-            guard request.plan.version == 1 else {
-                throw MediaError("The plan is version \(request.plan.version); this ade-media reads version 1.")
-            }
-            guard !request.output.isEmpty, !request.input.isEmpty else {
-                throw MediaError("The render request needs an input and an output path.")
-            }
-            return request
-        } catch let error as MediaError {
-            throw error
+            return try JSONDecoder().decode(type, from: data)
         } catch let DecodingError.keyNotFound(key, context) {
-            throw MediaError("The render request is missing \(fieldPath(context.codingPath + [key])).")
+            throw MediaError("The \(name) is missing \(fieldPath(context.codingPath + [key])).")
         } catch let DecodingError.typeMismatch(_, context), let DecodingError.valueNotFound(_, context) {
-            throw MediaError("The render request has a wrong value at \(fieldPath(context.codingPath)).")
+            throw MediaError("The \(name) has a wrong value at \(fieldPath(context.codingPath)).")
         } catch {
-            throw MediaError("The render request is not valid JSON: \(error.localizedDescription)")
+            throw MediaError("The \(name) is not valid JSON: \(error.localizedDescription)")
         }
     }
 

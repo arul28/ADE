@@ -738,16 +738,18 @@ to TypeSafe's API (`https://api.typesafe.ai/v1/systemone`) with model
 TypeSafe's response unchanged, plus `x-ade-jev-remaining`, the caller's calls
 left today.
 
-Each account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (300 unset), and the
+Each account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (500 unset), and the
 whole fleet `JEV_BONUS_DAILY_GLOBAL_LIMIT` (100,000 unset), in `jev_bonus_days`
 (migration `0015`): one upsert per call whose `where count < ?` is the cap, so
 concurrent calls cannot both take the last slot. Over either cap the answer is
 429 `jev_bonus_exhausted` with `retry-after` set to the next UTC midnight, and
 the brain stops asking the bonus until then. A call TypeSafe did not answer
-gives its slot back; TypeSafe's own 429 passes through, a refused key answers
-503. Rows older than a week are swept by the cron. At Jev's price ($0.042 per
-million input tokens, output free) a full day at the cap is about 1.5 cents
-per account.
+gives its slot back; TypeSafe's own 429 passes through, a 402 (ADE's spend
+cap on the key) becomes the same 429 until the next UTC midnight, and a
+refused key answers 503. Rows older than a week are swept by the cron. At
+Jev's price ($0.042 per million input tokens, output free; about 1,000 input
+tokens a call) a full day at the cap is about 2 cents per account, and the
+fleet cap holds the key to about $4 a day.
 
 The key is the secret `JEV_API_KEY`, a TypeSafe API key. Without it the route
 answers 503 `jev_unavailable` and the brain uses its built-in rules; nothing
@@ -762,7 +764,9 @@ npm run deploy && npm run deploy:production
 
 Logs: one `jev_bonus_request` line per call with status, reason, TypeSafe's
 status, token counts and duration. The question and the answer are never
-logged or stored.
+logged or stored. Failures that are ADE's to fix (no key, a refused key, the
+spend cap, the fleet cap, TypeSafe failing or throttling) are also Sentry
+issues, one per reason.
 
 ## Local checks
 

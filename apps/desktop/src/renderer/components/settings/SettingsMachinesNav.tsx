@@ -1,9 +1,7 @@
-import React, { useMemo, useState } from "react";
-import { Desktop, HardDrives } from "@phosphor-icons/react";
+import { useMemo } from "react";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type { ProjectMachine } from "../../state/projectMachines";
 import { useStableBinding } from "../../state/laneMachineRouting";
-import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { Banner } from "../ui/notice";
 import { settingsMachineScope, type SettingsMachineScope, type SettingsMachineTarget } from "./SettingsMachineScope";
 
@@ -121,93 +119,5 @@ export function MachineUnavailableNotice({
       testId="settings-machine-unavailable"
       model={{ id: `settings-machine-unavailable:${machine.machineId}`, tone: "neutral", title: message, detail }}
     />
-  );
-}
-
-/**
- * One machine in the Machines group. The selected one opens to its pages
- * (`children`); the rest stay a single row. Offline machines are dimmed, not
- * hidden.
- */
-export function SettingsMachineNavRow({
-  machine,
-  selected,
-  active,
-  onOpen,
-  children,
-}: {
-  machine: ProjectMachine;
-  /** This machine's pages are the ones listed. */
-  selected: boolean;
-  /** One of this machine's pages is on screen. */
-  active: boolean;
-  onOpen: () => void;
-  children?: React.ReactNode;
-}) {
-  const [hovered, setHovered] = useState(false);
-  const Icon = machine.isThisMachine ? Desktop : HardDrives;
-  return (
-    <div data-testid={`settings-machine-${machine.machineId}`}>
-      <button
-        type="button"
-        onClick={onOpen}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
-        title={machine.online ? undefined : `${machine.machineName} is offline`}
-        style={{
-          display: "flex",
-          width: "100%",
-          alignItems: "center",
-          gap: 9,
-          padding: "6px 10px",
-          border: "none",
-          background: hovered && !active ? "var(--shell-sidebar-item-hover-bg)" : "transparent",
-          color: active || hovered ? "var(--shell-sidebar-item-hover-fg)" : "var(--shell-sidebar-item-fg)",
-          opacity: machine.online ? 1 : 0.5,
-          fontFamily: SANS_FONT,
-          fontSize: 12.5,
-          fontWeight: active ? 600 : 500,
-          letterSpacing: "-0.01em",
-          cursor: "pointer",
-          borderRadius: 7,
-          textAlign: "left",
-          transition: "background 120ms ease, color 120ms ease",
-        }}
-      >
-        <Icon size={14} weight="regular" style={{ flexShrink: 0 }} />
-        <span style={{ minWidth: 0, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {machine.machineName}
-        </span>
-        {machine.online ? null : (
-          <span style={{ fontSize: 10.5, fontWeight: 500, opacity: 0.8 }}>offline</span>
-        )}
-      </button>
-      {selected ? children : null}
-    </div>
-  );
-}
-
-/** The machine a Machines page is about, above its title. */
-export function SettingsMachineEyebrow({ page }: { page: SettingsMachinePage }) {
-  return (
-    <div
-      data-testid="settings-machine-eyebrow"
-      style={{
-        display: "flex",
-        alignItems: "center",
-        gap: 6,
-        flexShrink: 0,
-        whiteSpace: "nowrap",
-        fontFamily: SANS_FONT,
-        fontSize: 13,
-        color: COLORS.textMuted,
-        opacity: page.online ? 1 : 0.6,
-      }}
-    >
-      {page.isThisMachine ? <Desktop size={12} weight="regular" /> : <HardDrives size={12} weight="regular" />}
-      <span>{page.machineName}</span>
-      {page.version && !page.isThisMachine ? <span>· ADE {page.version}</span> : null}
-      {page.online ? null : <span>· offline</span>}
-    </div>
   );
 }

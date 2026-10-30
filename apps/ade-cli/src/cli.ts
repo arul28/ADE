@@ -57,7 +57,7 @@ import path from "node:path";
 import { CURSOR_HOOK_RUNNER_COMMAND, runCursorHookScript } from "../../desktop/src/main/services/chat/cursorSdkHooks";
 import { SDK_WORKER_COMMANDS, type SdkWorkerName } from "../../desktop/src/main/services/chat/sdkWorkerProcess";
 import { PROXY_HEALTH_PROBE_COMMAND, probeProxyHealthOnce } from "./services/proxy/cliProxyApiSupervisor";
-import { computeRuntimeBuildHash } from "./services/runtime/runtimeBuildIdentity";
+import { computeRuntimeBuildHash, computeRuntimeBuildStamp } from "./services/runtime/runtimeBuildIdentity";
 import YAML from "yaml";
 import {
   CURSOR_CLOUD_HELP,
@@ -104,6 +104,7 @@ import {
   MAX_STATUS_NOTE_CHARACTERS,
   STATUS_NOTE_GUIDELINE_WORDS,
 } from "../../desktop/src/shared/sessionStatusNote";
+import { DEMO_STEP_MAX_CHARS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
 import { SCENE_PREVIEW_WIDTH } from "../../desktop/src/shared/scenePreview";
 import { quoteShellArg } from "../../desktop/src/shared/shell";
 import { machineVersionsDrift } from "../../desktop/src/shared/machineVersions";
@@ -120,6 +121,8 @@ import {
 } from "../../desktop/src/shared/sentry/diagnostics";
 import { projectRegistryDiagnosticAttachment } from "./services/projects/projectRegistryJournal";
 import { initBrainSentry } from "./sentry/initBrain";
+import { resolveSelectedUpdateTrack } from "./services/runtime/updateTrackStore";
+import { updateTrackOfVersion } from "../../desktop/src/shared/updateTrack";
 import { configureOutboundProxyFromEnv, trustSystemCertificates } from "../../desktop/src/main/services/shared/outboundNetwork";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { laneIsOnBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
@@ -579,7 +582,8 @@ import {
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../desktop/src/shared/types/recovery";
 import { createDiskPressureMonitor } from "../../desktop/src/main/services/storage/diskPressure";
 import { isUrgentDiskPressure } from "../../desktop/src/shared/types/storage";
-import { boundLaunchdLogs } from "./services/runtime/runtimeLogMaintenance";
+import { boundServiceOutputLogs } from "./services/runtime/runtimeLogMaintenance";
+import { markBrainStoppedCleanly, startBrainRestartLoopWatch } from "./sentry/brainRestartLoop";
 import {
   currentBrainLoopWatchdogCommand,
   readBrainLoopWatchdogLastWedge,
@@ -740,6 +744,7 @@ export type FormatterId =
   | "proof-list"
   | "scene-preview"
   | "proof-filed"
+  | "proof-review"
   | "proof-published"
   | "ios-sim-status"
   | "ios-sim-devices"
@@ -2985,8 +2990,11 @@ export const HELP_BY_COMMAND: Record<string, string> = {
     $ ade proof capture --real-screen --caption "Done"  Capture the whole real screen
     $ ade proof attach "$TMPDIR/proof.png" --caption "Done" Attach an existing image/video
     $ ade proof publish --pr 12 <id> <id>           Post chosen proof to a PR as one comment (gh 2.99+)
+    $ ade proof publish --pr 12 --replace <id>      Same, and delete your earlier ADE proof comments on it
     $ ade proof publish --pr 12 --in-body           Upload the proof the PR text cites, in place (gh 2.99+)
-    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane
+    $ ade proof step "Open the settings page"       Caption the next part of every recording running on this lane (${DEMO_STEP_MAX_CHARS} chars max)
+    $ ade proof step "Pick a model" --focus 0.6,0.1,0.4,0.8  Same, and hold the camera on that region (x,y,w,h fractions)
+    $ ade proof review artifact-id --text           A frame sheet of a video (or a picture's path) to check before publishing
     $ ade proof rm artifact-id                      Delete stored proof and its record
     $ ade proof broken --text                       List proof whose stored file is unavailable
     $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
@@ -13882,6 +13890,19 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
       ],
     };
   }
+  if (sub === "review") {
+    // `ade proof review <id>`: a contact sheet (video) or the file (picture)
+    // to look at, plus what ADE can tell from the record, before publishing.
+    const artifactId = readValue(args, ["--id", "--artifact-id"]) ?? args.find((value) => !value.startsWith("-"));
+    if (!artifactId) throw new CliUsageError("ade proof review needs a proof id: ade proof review <id>. Copy it from a cite: line or the `id` field of `ade proof list --json`.");
+    return {
+      kind: "execute",
+      label: "proof review",
+      formatter: "proof-review",
+      steps: [actionCallStep("result", "review_computer_use_artifact", { artifactId })],
+    };
+  }
+
   if (sub === "step") {
     // `ade proof step "<text>"`: a step caption for the lane's running
     // recordings. The demo shows it from now until the next step, and ADE's
@@ -13893,8 +13914,14 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     // its value became the end of the caption.
     const laneId = readValue(args, ["--lane", "--lane-id"]);
     const flagText = readValue(args, ["--text", "--caption"]);
+    const focusRaw = readValue(args, ["--focus"]);
     const text = flagText ?? args.filter((value) => !value.startsWith("-")).join(" ").trim();
     if (!text) throw new CliUsageError('ade proof step needs the step\'s text: ade proof step "Open the settings page"');
+    if (text.length > DEMO_STEP_MAX_CHARS) {
+      throw new CliUsageError(`The step caption is ${text.length} characters; keep it to ${DEMO_STEP_MAX_CHARS}: one short phrase about what happens next.`);
+    }
+    const focus = focusRaw == null ? null : parseDemoStepFocus(focusRaw);
+    if (focus && "error" in focus) throw new CliUsageError(focus.error);
     return {
       kind: "execute",
       label: "proof step",
@@ -13903,6 +13930,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
           ...owner,
           ...proofCallerRootArgs(),
           ...(laneId ? { laneId } : {}),
+          ...(focus ? { focus: focus.rect } : {}),
           text,
         }),
       ],
@@ -13919,6 +13947,8 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     const inBody = readFlag(args, ["--in-body", "--in-text"]);
     const heading = readValue(args, ["--heading", "--title"]);
     const note = readValue(args, ["--note", "--body"]);
+    // `--replace`: the new comment replaces this account's earlier ADE proof comments.
+    const replace = readFlag(args, ["--replace"]);
     // `firstPositional` and `readValue` removed "publish" and the flags with
     // their values, so every argument left is an artifact id.
     const ids = args
@@ -13929,6 +13959,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
     if (!pr) throw new CliUsageError("proof publish needs --pr <number or URL>.");
     if (inBody) {
       if (ids.length) throw new CliUsageError("proof publish --in-body takes no ids: it uploads the proof the PR text cites.");
+      if (replace) throw new CliUsageError("proof publish --in-body already replaces the text's proof; --replace is for comments.");
       return {
         kind: "execute",
         label: "proof publish",
@@ -13936,7 +13967,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
         steps: proofIntoPrBodySteps({ pr: () => pr, explicitProjectRoot }),
       };
     }
-    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or `ade proof list --text`.");
+    if (!ids.length) throw new CliUsageError("proof publish needs one or more artifact ids. Copy them from the cite: lines or the `id` fields of `ade proof list --json`.");
     return {
       kind: "execute",
       label: "proof publish",
@@ -13961,7 +13992,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
             const missing = ids.filter((id) => !byId.has(id));
             if (missing.length) {
               throw new CliToolError(
-                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or \`ade proof list --text\`.`,
+                `proof publish failed — not in this chat's or lane's proof: ${missing.join(", ")}. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
                 { missing },
               );
             }
@@ -13976,6 +14007,7 @@ function buildProofPlan(args: string[], explicitProjectRoot: string | null = nul
                 projectRoot,
                 heading,
                 note,
+                replace,
                 cwd: explicitProjectRoot ?? roots.workspaceRoot,
                 artifacts: ids.map((id) => publishableArtifact(byId.get(id)!)),
               });
@@ -26917,8 +26949,13 @@ async function runServe(
     roleCeilingNote,
   ].filter((note): note is string => note !== null);
   for (const note of brainIdentityNotes) process.stderr.write(`ADE: ${note}\n`);
-  if (process.platform === "darwin") {
-    boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  if (process.platform === "darwin" || process.platform === "linux") {
+    const runtimeDir = path.dirname(lastFailurePathForMachine());
+    boundServiceOutputLogs(runtimeDir);
+    // A service brain can run for months, and launchd and systemd keep
+    // appending its output the whole time. Not in an embedder's process,
+    // which outlives this runServe.
+    if (!embedded) setInterval(() => boundServiceOutputLogs(runtimeDir), 60 * 60_000).unref();
   }
   // Resolved before the backoff: the crash-loop record counts only failures
   // on this brain's own endpoint.
@@ -26935,6 +26972,18 @@ async function runServe(
     && isMachineEndpointName(serveSocketPath, machineRuntimeNames)
     ? machineRuntimeNames.filter((name) => !isMachineEndpointName(name, [serveSocketPath]))
     : [];
+  // Only the service's brain watches. A guest inside an embedder's process is
+  // not this machine's brain, a runtime on another endpoint is someone's
+  // manual run, and a brain the desktop app started is killed outright each
+  // time the app quits (`taskkill /F` on Windows), which would read as a
+  // crash; the app records its own brain's exits.
+  if (!embedded && readRuntimeParentPid() == null && isMachineEndpointName(serveSocketPath, machineRuntimeNames)) {
+    const bundlePath = typeof __filename === "string" ? __filename : process.argv[1] ?? "";
+    startBrainRestartLoopWatch({
+      runtimeDir: path.dirname(lastFailurePathForMachine()),
+      build: computeRuntimeBuildStamp(bundlePath, VERSION),
+    });
+  }
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now(), {
     socketPath: serveSocketPath,
@@ -26979,6 +27028,7 @@ async function runServe(
     { buildProjectlessSyncSnapshot },
     { resolveBrainMachineSyncStores, createProjectlessSyncControls },
     { createMachineUpdateControls },
+    { resolveContinueAfterRestart },
   ] = await Promise.all([
     import("./services/projects/machineLayout"),
     import("./services/projects/projectRegistry"),
@@ -26993,6 +27043,7 @@ async function runServe(
     import("./services/sync/projectlessSyncSnapshot"),
     import("./services/sync/brainMachineSyncStores"),
     import("./services/runtime/machineUpdateAndRestart"),
+    import("./services/runtime/continueAfterRestartStore"),
   ]);
 
   const layout = resolveMachineAdeLayout();
@@ -27895,10 +27946,15 @@ async function runServe(
   const states: HeadlessRpcServerState[] = [];
   let done = false;
   let resolveDone: (() => void) | null = null;
+  /** Set before `finish()` when the brain stops because something failed. */
+  let stoppingOnFailure = false;
 
   const finish = () => {
     if (done) return;
     done = true;
+    // An orderly stop (an update, the restart button, a shutdown request) is
+    // not a crash for the restart-loop report.
+    if (!stoppingOnFailure) markBrainStoppedCleanly();
     resolveDone?.();
   };
 
@@ -28086,6 +28142,7 @@ async function runServe(
       ...(embedded
         ? {}
         : {
+          readContinueAfterRestart: () => resolveContinueAfterRestart(),
           machineUpdateControls: createMachineUpdateControls({
             version: VERSION,
             logger: headlessProjectLogger,
@@ -28626,6 +28683,7 @@ async function runServe(
           errorText: message,
         });
         syncHostStartupFailure = error;
+        stoppingOnFailure = true;
       }
       finish();
     }
@@ -28954,6 +29012,16 @@ async function runServe(
     socketPath,
     tcpUrl: tcpUrl ?? null,
   });
+  // Once per brain start, to Sentry Logs: the beta gate counts the machines
+  // whose brain ran a build (`shared/sentry/logBridge.ts`).
+  headlessProjectLogger.info("brain.started", {
+    version: VERSION,
+    runningTrack: updateTrackOfVersion(VERSION),
+    selectedTrack: resolveSelectedUpdateTrack(VERSION),
+    role: options.role,
+    platform: process.platform,
+    arch: process.arch,
+  });
   // Compile caches of earlier builds go once the brain is listening. Only the brain's
   // default root is pruned: an explicit NODE_COMPILE_CACHE is the caller's directory.
   scheduleStaleCompileCachePrune(activeCompileCacheDir(), {
@@ -29265,6 +29333,9 @@ async function runServe(
           : /socket is already in use|mobile sync/i.test(details)
             ? "socket_owned_by_other"
             : "unknown";
+    // A live brain already holds the endpoint (an update's handover, a second
+    // start): this one leaving is not a crash for the restart-loop report.
+    if (code === "socket_owned_by_other") markBrainStoppedCleanly();
     if (!serveStarted) {
       recordLastFailure({ kind: "machine" }, {
         code,
@@ -32554,6 +32625,29 @@ function proofListScopeLabel(value: unknown, artifactCount: number): string {
   return `Proof for ${target}: ${artifactCount} artifact${artifactCount === 1 ? "" : "s"}`;
 }
 
+/** `ade proof review --text`: the file, its size and length, the contact sheet, then one finding per line. */
+function formatProofReview(value: unknown): string {
+  const record = (unwrapActionEnvelope(value) ?? {}) as Record<string, unknown>;
+  const findings = Array.isArray(record.findings) ? record.findings.map(String) : [];
+  const size = record.width && record.height ? `${record.width}×${record.height}` : "size unknown";
+  const lines: string[] = [];
+  if (record.media === "video") {
+    const seconds = typeof record.durationSeconds === "number" ? `${record.durationSeconds} s` : "length unknown";
+    lines.push(`video ${size} · ${seconds}`);
+    if (typeof record.sheetPath === "string") {
+      const times = Array.isArray(record.frameTimes) ? record.frameTimes.map((t) => `${t}s`).join(" ") : "";
+      lines.push(`sheet ${record.sheetPath}`, `      frames at ${times}, ${record.columns} per row`);
+    } else {
+      lines.push(`sheet none: ${String(record.sheetError ?? "unknown error")}. Watch the video itself: ${String(record.path ?? "")}`);
+    }
+  } else {
+    lines.push(`image ${size}`, `file  ${String(record.path ?? "")}`);
+  }
+  lines.push(...findings.map((finding) => `fix   ${finding}`));
+  lines.push("look  Open the image. Only the subject on screen (no banners, toasts, dev overlays, other windows)? Subject fills the frame (no big empty areas) and reads at phone size? Captions short? No secrets? If not: fix the stage, record again, `ade proof rm` this one.");
+  return lines.join("\n");
+}
+
 /** `ade scene preview --text`: the picture's path, timings, then one problem per line. */
 function formatScenePreview(value: unknown): string {
   const record = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
@@ -32619,6 +32713,7 @@ function formatProofPublished(value: unknown): string {
   return [
     `${record.inBody === true ? "Put" : "Posted"} ${posted.length} proof item${posted.length === 1 ? "" : "s"} ${record.inBody === true ? "in the text of" : "to"} ${asString(record.prUrl) ?? "the PR"}`,
     ...(asString(record.commentUrl) ? [`comment: ${asString(record.commentUrl)}`] : []),
+    ...(typeof record.replaced === "number" ? [`replaced: ${record.replaced} earlier ADE proof comment(s) deleted`] : []),
     ...posted.map((entry) => `  posted  ${asString(entry.id)}  ${asString(entry.caption)}`),
     ...skipped.map((entry) => `  skipped ${asString(entry.id)}  ${asString(entry.reason)}`),
     ...warnings.map((warning) => `warning: ${warning}`),
@@ -32652,6 +32747,8 @@ function formatProofFiled(value: unknown): string {
       const citation = asString(artifact.citation);
       return citation ? [`cite: ${citation}`] : [];
     }),
+    // Above the confirmation, which stays the last line.
+    ...proofReviewNudgeLines(value),
     "",
     confirmation,
   ].join("\n");
@@ -35075,6 +35172,8 @@ function formatTextOutput(
       return formatProofFiled(value);
     case "proof-published":
       return formatProofPublished(value);
+    case "proof-review":
+      return formatProofReview(value);
     case "ios-sim-status":
       return formatIosSimStatus(value);
     case "ios-sim-devices":
@@ -37170,9 +37269,41 @@ function formatOutput(
       ? (({ deviceNotice: _one, deviceNotices: _many, ...rest }) => rest)(withoutTarget)
       : withoutTarget;
     const noticeText = notices.map((line) => `\nnote: ${line}`).join("");
-    return `${targetLine}${formatTextOutput(shown, formatter)}${noticeText}\n`;
+    const body = formatTextOutput(shown, formatter);
+    return `${targetLine}${body}${noticeText}${proofReviewNudge(shown, formatter)}\n`;
   }
   return `${JSON.stringify(value, null, options.pretty ? 2 : 0)}\n`;
+}
+
+/**
+ * Under a command that just filed proof, one line that sends the agent to
+ * check it before a person sees it. The ids come from the result's own proof
+ * fields, never from its text, so content a command passes through (a file
+ * read) is left as it is. Listings and reviews of existing proof get none.
+ */
+function proofReviewNudge(value: unknown, formatter?: FormatterId): string {
+  // `proof-filed` prints it itself, above its closing confirmation line.
+  if (formatter === "proof-review" || formatter === "proof-list" || formatter === "proof-published" || formatter === "proof-filed") return "";
+  return proofReviewNudgeLines(value, formatter).map((line) => `\n${line}`).join("");
+}
+
+function proofReviewNudgeLines(value: unknown, formatter?: FormatterId): string[] {
+  const record = unwrapActionEnvelope(value);
+  if (!isRecord(record)) return [];
+  const ids = new Set<string>();
+  const add = (id: unknown) => {
+    const text = asString(id);
+    if (text) ids.add(text);
+  };
+  add(record.proofArtifactId);
+  if (Array.isArray(record.proofArtifactIds)) record.proofArtifactIds.forEach(add);
+  // `screen proof` prints its cite lines from the broker's records, which carry no `citation`.
+  const filedByScreen = formatter === "mac-desktop-proof";
+  for (const artifact of firstArray(record as JsonObject, ["artifacts"])) {
+    if (isRecord(artifact) && (filedByScreen || asString(artifact.citation))) add(artifact.id);
+  }
+  if (!ids.size) return [];
+  return [`next: for proof a person will see, run ${[...ids].map((id) => `\`ade proof review ${id} --text\``).join(", ")} and fix what it shows (skill: ade-proof-artifacts)`];
 }
 
 /** The first line of a browser command's text output: which browser it ran in, when that needs saying. */

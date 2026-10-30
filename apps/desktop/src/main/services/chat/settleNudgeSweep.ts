@@ -222,7 +222,10 @@ export function createSettleNudgeSweep(deps: SettleNudgeSweepDeps) {
         await hideStoredVerdicts();
         return;
       }
-      if (!deps.jevService.status().available) return;
+      // Nothing can answer (free allowance and ADE's key both spent): skip the
+      // run rather than ask every idle chat again and count each as a fallback.
+      const jev = deps.jevService.status();
+      if (!jev.available || !jev.answerable) return;
       const nowMs = Date.now();
       const candidates = deps.sessionService.list({ limit: null })
         .filter((session) => rowCanBeJudged(session, nowMs))

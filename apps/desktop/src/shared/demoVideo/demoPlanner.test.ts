@@ -41,4 +41,25 @@ describe("demo planner recording modes", () => {
 
     expect(plan.camera).toEqual([{ t: 0, zoom: 1, cx: 0.5, cy: 0.5 }]);
   });
+
+  it("badges named keys and shortcuts but never a typed character, so a password typed key by key stays off the video", () => {
+    const keys = ["s", "3", "Shift+Q", "Enter", "Meta+k", "Tab", "Tab"];
+    const track: DemoTrack = {
+      version: 1,
+      surface: "browser",
+      durationSeconds: 12,
+      events: keys.map((label, index) => ({ t: 2 + index * 1.5, kind: "key" as const, label, by: "agent" as const })),
+      agentSpans: [],
+      loadSpans: [],
+    };
+
+    const texts = planDemo({ track, analysis }).badges.map((badge) => badge.text);
+
+    expect(texts.length).toBeGreaterThanOrEqual(3);
+    // A bare character, with or without Shift, is what was typed.
+    for (const typed of ["S", "3", "Q", "Shift + Q"]) expect(texts.some((text) => text === typed || text.startsWith(`${typed} `))).toBe(false);
+    expect(texts.some((text) => text.includes("Enter"))).toBe(true);
+    expect(texts.some((text) => text.includes("K") && text.includes("+"))).toBe(true);
+    expect(texts.some((text) => text.includes("Tab"))).toBe(true);
+  });
 });

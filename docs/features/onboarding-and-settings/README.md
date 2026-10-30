@@ -89,10 +89,27 @@ Main process:
   effects do not re-run (and cancel an in-flight provider sign-in) on every
   cross-machine sync tick — the scope's `pin` is the machine identity a section
   keys its runtime effects on, not a value to rebuild per render.
-- `apps/desktop/src/renderer/components/settings/overview/SettingsOverview.tsx`
-  and `overview/useNeedsAttention.ts` — Overview's area cards and aggregated
-  attention list. A failed source read adds a "couldn't check" row with Check
-  again; a capability missing on an older build is simply absent.
+- `apps/desktop/src/renderer/components/settings/general/GeneralPage.tsx`,
+  `general/NeedsAttentionStrip.tsx`, `general/MachineUpdateRows.tsx` and
+  `overview/useNeedsAttention.ts` — General, where Settings opens: one
+  Needs attention row that opens in place (a failed source read adds a
+  "couldn't check" row with Check again; a capability missing on an older
+  build is simply absent), the You and This machine cards, and the ADE card
+  (version, the one restart action, update track, automatic installs, and an
+  update row for every machine, each offered the newest build on its own
+  track).
+- `apps/desktop/src/renderer/components/settings/machines/MachinesPage.tsx`,
+  `machines/MachineSettings.tsx`, `machines/machineFacts.ts` and
+  `machines/machineSeams.tsx` — System → Machines: every machine on one page,
+  and a page per machine (`?machine=<id>`) that lists what Settings knows or
+  can change about it, each row acting through that machine's pin or saying
+  where it is changed. `machineSeams.tsx` holds typed, empty slots for the
+  personal-mesh work (capabilities, work preference, work copies) that render
+  nothing until a real source feeds them.
+- `apps/desktop/src/renderer/components/settings/ContinueAfterRestartSection.tsx`
+  — Settings › Chat › Restarts: **Continue chats after restarts**, one value
+  per machine (`~/.ade/continue-after-restart.json`, read by that machine's
+  brain), with a machine picker when more than one is reachable.
 - `apps/desktop/src/renderer/components/settings/lanes/LanesSettingsPage.tsx`
   and `lanes/LaneList.tsx` — Project → Lanes (Your lanes, Rules) and Project →
   Storage & cleanup (Space, Archive, Rules), one view at a time; the web client
@@ -856,7 +873,7 @@ Renderer — settings:
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#auto-updates`, `#pr-chat-transcripts`.
 - `apps/desktop/src/renderer/components/settings/AutoUpdatesSection.tsx`
-  — the Updates block inside Settings → ADE service. Automatic installation is off by
+  — the automatic-install rows on General's ADE card. Automatic installation is off by
   default, leaving installation under the top-right control. Enabling it
   reveals the default-on **Wait until active work finishes** safety option,
   which delays the restart countdown until no agent turn or work session is
@@ -1096,8 +1113,6 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
   — toggles `prTranscriptGists.enabled` in project local config under Project
   → Agents.
-- `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
-  — About (version, runtime); rendered in General.
 - `apps/desktop/src/renderer/components/settings/ResetAdeSection.tsx`
   — **Reset ADE** as its own section, last on General (local machine only;
   anchor `reset-ade`, legacy `#about.reset` still resolves). It mounts
@@ -1144,13 +1159,6 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/ProjectSection.tsx`
   — project `.ade` structure snapshot, shared/local/secret config paths,
   health warnings, structure repair, and integrity-check controls.
-- `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
-  — installed ADE version, packaged/dev badge, latest GitHub release
-  lookup, release notes link, manual update check button, and ADE runtime
-  install / health status when available. It consumes the shared
-  `useAutoUpdateSnapshot` hook so "Installed" reads truthfully: the running
-  build normally, but the staged version when a download is `ready` or
-  `parked`, with "Latest" showing `latestKnownVersion`.
 - `apps/desktop/src/renderer/components/settings/AdeCliSection.tsx`
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
@@ -2268,7 +2276,7 @@ the General settings tab via `AdeCliSection`:
    command" card calls `window.ade.adeCli.installForUser()`, which
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
-   on macOS, equivalents on other platforms). Settings → ADE service shows the
+   on macOS, equivalents on other platforms). Settings → System → Advanced shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
@@ -2380,33 +2388,42 @@ Settings is organised by **scope**. The sidebar group is the answer to "where
 does this save, and who does it affect", said once at the top of a group instead
 of repeated as a badge on every row:
 
-Settings opens on **Overview**: one **Needs attention** list (every problem
-from the project, this computer, other machines, providers, MCP servers,
-integrations and Apple, each with its Fix button where there is one, and "Ask
-an agent" for the whole list) and an **At a glance** card per area. A failed
-read appears as a "couldn't check" row with Check again instead of claiming
-nothing needs attention. It gathers problems in the renderer
+Settings opens on **General**: one **Needs attention** row (every problem from
+the project, this computer, other machines, providers, MCP servers,
+integrations and Apple; it opens in place to the list, each item with its Fix
+button where there is one, and "Ask an agent" for the whole list), then a
+**You** and a **This machine** card, then **ADE**: the running version and
+track, the one restart action when a build is downloaded ("Restart and
+update", or "Restart and switch to Stable" for a track switch, the same name
+the top bar, the floating prompt and the restart dialog use), the update
+track, automatic installs, and one update row per machine. A failed read
+appears as a "couldn't check" row with Check again instead of claiming nothing
+needs attention. The problems are gathered in the renderer
 (`settings/overview/useNeedsAttention.ts`); the project part is
-`projectHealth.getReport`
-([`project-health.md`](./project-health.md)). Nothing else is called Health.
+`projectHealth.getReport` ([`project-health.md`](./project-health.md)).
 
 | Group | Saves to | Pages |
 |---|---|---|
-| **Overview** | — | Needs attention, At a glance |
-| **You** | Your ADE account, everywhere | Account, Chat, Notifications, MCP servers, Usage |
+| **General** | — | Needs attention, You and this machine, ADE version and updates on every machine |
+| **You** | Your ADE account, everywhere | Account, Usage |
+| **App** | How ADE behaves for you | Chat, Providers (one list, with a machine picker in its title), MCP servers, ADE MCP, Notifications, Appearance, Behaviour and Apple devices (these three on this computer) |
 | **Project** | The open project (routed to the machine that owns it) | Lanes (Your lanes, Rules), Agents (PR chat transcripts), Storage & cleanup (Space, Archive, Rules), Location (move, project checks), Secrets (this project on every computer), Integrations |
-| **Computer** | The selected machine | ADE service (service status, updates, `ade` command, Send a report, Reset), Providers, Apple devices (This computer), Appearance (This computer), Behaviour |
+| **System** | This computer, or the machine picked | Machines (every machine, and a page per machine), Advanced (the background service, the `ade` command, Send a report, Reset) |
 
-General and the old Diagnostics/Health page are gone; every entry kept its
-id and anchor, and old tab links (`general`, `storage`, `disk`, `diagnostics`,
-`health`, `archive`, `project-location`, …) land on the page that holds them.
+Overview, the ADE service page and the per-machine copies of each page are
+gone; every entry kept its id and anchor, and old tab links (`overview`,
+`service`, `computer`, `diagnostics`, `general`, `storage`, `health`,
+`archive`, …) and hashes (`#continue-after-restart`, `#about.reset`) land on
+the page that holds them now.
 
-The Machines group contains one set of pages per project machine. Calls from a
-machine page use that machine's binding; sections that only work on the current
-desktop or the tab's bound runtime are shown only for the machine they can
-reach. Offline machines remain in the navigation and identify why their pages
-are unavailable. The Project group is named after the repository and disappears
-when Settings is opened outside a project.
+Another machine is reached from Machines (its own page) or from the Providers
+picker, never from a copy of every page per machine. A machine's page reads
+and writes through that machine's pin (keep awake, terminal shell, Continue
+chats after restarts, its saved update track through
+`ai.getMachineUpdateTrack`); a row that only that machine's own ADE can change
+shows its value and "Change on that machine". Offline machines stay listed and
+show what Settings last knew. The Project group is named after the repository
+and disappears when Settings is opened outside a project.
 
 `SettingsMachinesNav.tsx` derives the machine pages from the shared project
 machine snapshot. `SettingsMachineScope` carries either the current-machine
@@ -2475,9 +2492,11 @@ The pages themselves:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `ProjectSection.tsx`, `AdeCliSection.tsx`, `AutoUpdatesSection.tsx`, `KeepAwakeSection.tsx`, `DiagnosticsSharingSection.tsx`, `AboutSection.tsx`, `ResetAdeSection.tsx` | The top ADE card shows running/installed/downloaded versions, the runtime service, and update controls; below it are project health, the `ade` command line (`#ade-cli`), **Sleep** (`#keep-awake`, hidden on hosted web — a browser holds no power lock), and **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web). There is no analytics or diagnostics consent switch. **Reset ADE** (`#reset-ade`, local machine only) is its own section, last on the page; the old `#about.reset` hash still lands on it. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
-| Appearance (Machines → This computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
-| Apple devices (Machines → This computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
+| General | `general/GeneralPage.tsx`, `general/NeedsAttentionStrip.tsx`, `general/MachineUpdateRows.tsx`, `UpdateTrackControls.tsx`, `AutoUpdatesSection.tsx` | Where Settings opens: Needs attention, the You and This machine cards, and the ADE card (running version and track, the one restart action, update track, automatic installs, and one update row per machine, each offered the newest build on its own track). Legacy `?tab=overview`, `?tab=health`, `?tab=about`, `?tab=updates`, `?tab=onboarding`, `?tab=help`, `?tab=tours` and `?tab=home` land here. |
+| Machines (System) | `machines/MachinesPage.tsx`, `machines/MachineSettings.tsx` | Every machine on one page (tile, status, OS, version and track, free disk on this computer), and a page per machine with its updates, providers link, Continue chats after restarts, terminal shell, keep awake, service, `ade` command, system and projects. Legacy `?tab=computer`, `?tab=computers` and `?tab=this-computer` land here. |
+| Advanced (System) | `health/HealthService.tsx`, `BackgroundServiceSection.tsx`, `AdeCliSection.tsx`, `DiagnosticsSharingSection.tsx`, `ResetAdeSection.tsx` | This computer's service status, the background service and quit question, the `ade` command line (`#ade-cli`), **Send a report to ADE** (`#diagnostics-sharing`, hidden on hosted web; there is no analytics or diagnostics consent switch) and **Reset ADE** (`#reset-ade`, local machine only, last on the page; the old `#about.reset` hash still lands on it). Legacy `?tab=service`, `?tab=ade-service`, `?tab=diagnostics` and `?tab=context` land here. |
+| Appearance (App, this computer) | `AppearanceSection.tsx`, `AppearanceTerminal.tsx`, `ThemeGallery.tsx`, `ThemeCustomizer.tsx`, `ThemeImportExport.tsx` | Per computer, never synced. Theme families (dark + light each) with search, the Auto / Light / Dark mode choice, import and export, the interface and code faces, reduce motion, the Focus grid's chats per page, terminal text, and the **Background** (`#background`) scene picker — plain, gradient, one picture, or a shuffled library, with the shuffle cadence and App colours from the picture. It has one page, under This computer: a remote machine has no copy of it to show. Everything chat-shaped is on the Chat page. |
+| Apple devices (App, this computer) | `AppleDevicesSection.tsx` | This computer's own simulator and preview choices — the 3D device body, recording overlays (tap rings, typed-text badges), the remote streaming bitrate cap, and the recordings storage warning — drawn in the Appearance language. Per computer, because every Mac has its own simulators, and it sits beside Appearance under This computer rather than on the Account group. It still files through the account store so the brain on this computer can read the remote streaming cap and the recording overlays: each computer's copy lives under the account-wide scope with the device in the key (`device.<syncDeviceId>.<key>`, `accountDeviceSettingKey`). |
 | Chat | `ChatSection.tsx`, `DictationSection.tsx`, `LaunchPromptSection.tsx` (renders `ChatAppearancePreview`), `SmartDecisionsSection.tsx` | Chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, drafts button, launch-prompt clipboard, live preview), and voice input — which is chat dictation, so it lives here. Smart decisions (OpenCode Jev) and the composer's model hint sit beside Next prompt: they act on chats and the composer, and save to the project's `.ade/local.yaml` like it. With no OpenCode Zen sign-in the Smart decisions row offers **Sign in to OpenCode** instead of its switch. The label maps stay exported from `AppearanceSection.tsx` and are imported, not copied, so the two pages cannot drift on what "Comfortable" means. |
 | Providers | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Provider connections, model routing, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Muse Code, Cursor, Droid, Pi — Pi's card also carries in-app provider sign-in) and **OpenCode — Universal Model Access**. Background helpers on this tab are scheduled-work pause/recovery only; naming uses the session's ADE provider. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. On the hosted web client every provider page is hidden (sign-in, keys and permissions run on the machine), so the tab instead renders the web-only **AI accounts** card (`agents.accounts`, `#ai-accounts`) with the connected machine's Claude and Codex `ProviderAccountsPanel`s. |
 | Lanes | `NewLaneSettingsSection.tsx` | **Your lanes** manages lanes; **New lanes** contains Where new lanes start and Lane templates. |
@@ -2485,7 +2504,7 @@ The pages themselves:
 | Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx` | GitHub and Linear — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here; `?integration=github|linear` too, while `?integration=cli` follows the `ade-cli` anchor to General. |
 | Notifications | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx`, `ActivitySettingsControls.tsx`, `AiFeaturesSection.tsx` | Everything ADE tells you about running work. Delivery for `AttentionPreferences`: per-event policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, and the agent completion sound — the per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this page. Then the surfaces Activity paints: the ADE notch (enabled, reveal mode — `always` or `hover`, which render the identical strip and differ only in whether it is there before you point at it — expanded panel), celebrations, Activity sounds, hide-previews, and the per-machine notification mute. The retired `activity.notch-auto-reveal` and `activity.notch-ticker` entries are gone rather than hidden: the notch always flashes for work that needs you, and the strip is state-group counts with no ticker to cycle. All of it reads and writes through one `useActivitySettings()` model, so a change on one control can no longer be overwritten by a save from another copy; `ActivitySettingsControls` is mounted here **and** by the gear inside the Activity popover and pane, so the entry points cannot drift. Legacy `?tab=attention`, `?tab=activity`, and the `#attention-notch`, `#celebrations`, `#attention-sounds`, and `#hide-previews` hashes land here. |
 | Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
-| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk-usage and lane-storage dashboard, cleanup history, the archive, rules for archiving idle lanes, session lifecycle, and project files. Rule fields show the value actually in force with an explicit "Inherited" marker. Legacy `?tab=storage`, `?tab=disk`, `?tab=space`, `?tab=archive` and `?tab=session-lifecycle` land here; `?tab=diagnostics` opens Computer → ADE service. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Storage & cleanup (Project) | `lanes/LanesSettingsPage.tsx` (`StorageSettingsPage`), `health/*`, `storage/*`, `ArchiveSection.tsx`, `SessionLifecycleSection.tsx`, `ProjectSection.tsx` | Disk-usage and lane-storage dashboard, cleanup history, the archive, rules for archiving idle lanes, session lifecycle, and project files. Rule fields show the value actually in force with an explicit "Inherited" marker. Legacy `?tab=storage`, `?tab=disk`, `?tab=space`, `?tab=archive` and `?tab=session-lifecycle` land here; `?tab=diagnostics` opens System → Advanced. See [Storage and recovery](../storage-and-recovery/README.md). |
 | Usage | `AdeUsageSection.tsx`, `BudgetCapEditor.tsx` (the spend cap lives where spend lives), `UsageDailyChart.tsx`, `UsageLimitGauges.tsx`, `UsageSparks.tsx`, `UsageWeekCompare.tsx`, `UsagePooledLimits.tsx`, `UsageCostSplit.tsx`, `UsageLimitsBand.tsx`, `UsageAccountRow.tsx`, `usageLimitModel.ts`, `UsagePaceBar.tsx`, `UsageSegmented.tsx`, `ActivityModule.tsx`, `usageDesign.ts`, `usageProviderNames.ts`, `usageWindowFormat.ts`, `providerColors.ts` | One scrolling page: headline totals with trends, this machine's Rate limits as radial gauges, the layered daily chart, Week over week, per-provider split, breakdown, Activity, contributing machines, and (account scope) pooled Live limits. Scope is a three-way `account` / `machine` / `project` control. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows render in two shapes: the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageLimitsBand.tsx` → `UsageAccountRow.tsx`, which also hosts the collapsible `BudgetCapEditor` for automation guardrails) keeps one meter row per account, while Settings > Usage's This machine / This project scope draws the same snapshot as radial `UsageLimitGauges`. The rest of that page is the retrospective cross-client dashboard.

@@ -17,7 +17,7 @@
 import { spawn } from "node:child_process";
 import fs from "node:fs";
 
-import { resolveDetachedDevInvocation } from "./dev-shared.mjs";
+import { resolveDetachedDevInvocation, spawnWithHiddenConsole } from "./dev-shared.mjs";
 
 const [logPath, command, ...args] = process.argv.slice(2);
 if (!logPath || !command) {
@@ -29,14 +29,20 @@ if (!logPath || !command) {
 // report", and a stale report from the previous run would satisfy that wait
 // before this launch had done anything.
 const fd = fs.openSync(logPath, "w");
-const invocation = resolveDetachedDevInvocation(command, args);
-const child = spawn(invocation.command, invocation.args, {
-  detached: true,
-  stdio: ["ignore", fd, fd],
-  env: process.env,
-  windowsHide: invocation.windowsHide,
-  windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-});
+const child = process.platform === "win32"
+  // Detached alone leaves the command with no console, so npm's cmd.exe and
+  // everything after it opened visible terminal windows. The printed pid is the
+  // console host that roots the tree (`taskkill /T /F /PID <pid>` stops it);
+  // a command that cannot start says so in the log.
+  ? spawnWithHiddenConsole(command, args, { logPath })
+  : (() => {
+    const invocation = resolveDetachedDevInvocation(command, args);
+    return spawn(invocation.command, invocation.args, {
+      detached: true,
+      stdio: ["ignore", fd, fd],
+      env: process.env,
+    });
+  })();
 fs.closeSync(fd);
 // The pid is printed only once the child exists. A command that cannot start
 // (ENOENT) reports the failure and exits non-zero instead of printing "undefined".

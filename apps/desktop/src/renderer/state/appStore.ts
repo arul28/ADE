@@ -318,11 +318,12 @@ export type WorkProjectViewState = {
   /** Funnel-panel chip selections. OR within an axis, AND across axes. */
   workSessionFilters: WorkSessionFilters;
   /**
-   * By-lane "Fold busy lanes": lanes whose live work is all running or waiting
-   * on a PR collapse into a Working shelf until something needs the user.
-   * Optional and off by default, so an older blob keeps today's list.
+   * By-lane "Fold busy lanes" (Focus): lanes whose live work is all running or
+   * waiting on a PR collapse into a Working shelf until something needs the
+   * user. On by default; v7 turned it on once for every blob saved before
+   * then, and only an explicit `false` turns it off.
    */
-  workFoldBusyLanes?: boolean;
+  workFoldBusyLanes: boolean;
   /**
    * Focus grid: while Focus (`workFoldBusyLanes`) is on, the work area shows
    * every chat that needs the user as a live tile instead of one open
@@ -430,7 +431,9 @@ export function createDefaultWorkProjectViewState(): WorkProjectViewState {
     workLaneSortMode: "created",
     workLaneOrder: [],
     workSessionFilters: EMPTY_WORK_SESSION_FILTERS,
-    workFoldBusyLanes: false,
+    // Focus is the default sidebar: busy lanes fold into the Working shelf
+    // until something needs the user.
+    workFoldBusyLanes: true,
     workFocusGrid: false,
     workSeenAtBySessionId: {},
     lanesFilter: "",
@@ -552,9 +555,10 @@ function normalizeWorkProjectViewState(value: unknown): WorkProjectViewState {
     workLaneSortMode: normalizeWorkLaneSortMode(candidate.workLaneSortMode),
     workLaneOrder: normalizeUniqueStringArray(candidate.workLaneOrder),
     workSessionFilters: normalizeWorkSessionFilters(candidate.workSessionFilters),
-    // Additive, no version bump: an older blob has neither key and lands on the
-    // unfolded list with nothing seen, which is the behaviour it already had.
-    workFoldBusyLanes: candidate.workFoldBusyLanes === true,
+    // Only an explicit `false` turns Focus off; a blob without the key gets the
+    // default (on). Blobs that stored `false` before v7 are flipped once in
+    // `readPersistedWorkViewState`.
+    workFoldBusyLanes: candidate.workFoldBusyLanes !== false,
     workFocusGrid: candidate.workFocusGrid === true,
     workSeenAtBySessionId: normalizeWorkSeenAt(candidate.workSeenAtBySessionId),
     lanesFilter: typeof candidate.lanesFilter === "string" ? candidate.lanesFilter : "",
@@ -639,10 +643,38 @@ function normalizeLaneSessionOrder(value: unknown): Record<string, string[]> {
  *    `normalizeWorkSidebarOpenTools` turns a v5 blob's single `workSidebarTool`
  *    into a one-tab strip, so upgrading lands on the pane the user left rather
  *    than on an empty picker.
+ * 7: Focus (`workFoldBusyLanes`) becomes the default. Turned on once for every
+ *    older blob, which had stored an explicit `false`.
  */
-const WORK_VIEW_STATE_VERSION = 6;
+const WORK_VIEW_STATE_VERSION = 7;
 /** The version whose one-time Settled collapse must not re-run on later bumps. */
 const WORK_VIEW_SETTLED_COLLAPSE_VERSION = 2;
+/** The version whose one-time Focus turn-on must not re-run on later bumps. */
+const WORK_VIEW_FOCUS_DEFAULT_VERSION = 7;
+
+/**
+ * Runs the one-time migrations a blob saved at `persistedVersion` still owes.
+ * Each is gated on its own version, not the current one: re-running it on a
+ * later bump would undo a choice the user made after it ran.
+ */
+function migrateWorkProjectViewState(
+  viewState: WorkProjectViewState,
+  persistedVersion: number,
+): WorkProjectViewState {
+  let next = viewState;
+  if (
+    persistedVersion < WORK_VIEW_SETTLED_COLLAPSE_VERSION
+    && !next.workCollapsedSectionIds.includes("status:settled")
+  ) {
+    next = { ...next, workCollapsedSectionIds: [...next.workCollapsedSectionIds, "status:settled"] };
+  }
+  // Every older blob stored an explicit `false`, so the new default alone would
+  // never reach anyone who already had ADE. Turned off after this, it stays off.
+  if (persistedVersion < WORK_VIEW_FOCUS_DEFAULT_VERSION && !next.workFoldBusyLanes) {
+    next = { ...next, workFoldBusyLanes: true };
+  }
+  return next;
+}
 
 function readPersistedWorkViewState(): {
   workViewByProject: Record<string, WorkProjectViewState>;
@@ -662,22 +694,15 @@ function readPersistedWorkViewState(): {
       typeof parsed.version === "number" && Number.isFinite(parsed.version)
         ? parsed.version
         : 1;
-    // Gated on its own version, not the current one: re-running it on every
-    // later bump would silently re-collapse Settled for anyone who opened it.
-    const migrateSettledCollapse = persistedVersion < WORK_VIEW_SETTLED_COLLAPSE_VERSION;
     const workViewByProject: Record<string, WorkProjectViewState> = {};
     const laneWorkViewByScope: Record<string, WorkProjectViewState> = {};
     for (const [projectRoot, viewState] of Object.entries(parsed.workViewByProject ?? {})) {
       const key = normalizeProjectKey(projectRoot);
       if (!key) continue;
-      const normalized = normalizeWorkProjectViewState(viewState);
-      workViewByProject[key] = migrateSettledCollapse
-        && !normalized.workCollapsedSectionIds.includes("status:settled")
-        ? {
-            ...normalized,
-            workCollapsedSectionIds: [...normalized.workCollapsedSectionIds, "status:settled"],
-          }
-        : normalized;
+      workViewByProject[key] = migrateWorkProjectViewState(
+        normalizeWorkProjectViewState(viewState),
+        persistedVersion,
+      );
     }
     for (const [scopeKey, viewState] of Object.entries(parsed.laneWorkViewByScope ?? {})) {
       const dividerIndex = scopeKey.indexOf("::");
@@ -685,14 +710,10 @@ function readPersistedWorkViewState(): {
       const projectRoot = normalizeProjectKey(scopeKey.slice(0, dividerIndex));
       const laneId = scopeKey.slice(dividerIndex + 2).trim();
       if (!projectRoot || !laneId) continue;
-      const normalized = normalizeWorkProjectViewState(viewState);
-      laneWorkViewByScope[`${projectRoot}::${laneId}`] = migrateSettledCollapse
-        && !normalized.workCollapsedSectionIds.includes("status:settled")
-        ? {
-            ...normalized,
-            workCollapsedSectionIds: [...normalized.workCollapsedSectionIds, "status:settled"],
-          }
-        : normalized;
+      laneWorkViewByScope[`${projectRoot}::${laneId}`] = migrateWorkProjectViewState(
+        normalizeWorkProjectViewState(viewState),
+        persistedVersion,
+      );
     }
     return { workViewByProject, laneWorkViewByScope };
   } catch {

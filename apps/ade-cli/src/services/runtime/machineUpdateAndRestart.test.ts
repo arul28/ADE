@@ -77,17 +77,26 @@ describe("runMachineUpdateAndRestart", () => {
     expect(result.message).toContain("1.2.55");
   });
 
-  it("does not restart a machine already on the requested version", async () => {
+  it.each([
+    // [label, requested pin, the target the check is asked for, reply prefix]
+    ["the version it already runs", "1.2.55", "1.2.55", ""],
+    // An older desktop offered its own Beta build to a Stable machine. "Update"
+    // never crosses tracks, so it checks this machine's own track instead, and
+    // with nothing newer there it stays put rather than restarting for nothing.
+    ["a pin from the other track", "1.2.56-beta.2", null, "Stays on Stable. "],
+  ])("does not restart a machine asked for %s when nothing newer is on its track", async (_label, pin, checked, prefix) => {
+    const checkForUpdate = vi.fn(async () => upToDate);
     const applyUpdate = vi.fn();
     const requestRestart = vi.fn(() => ({ ok: true, detail: "Restarting the background service." }));
 
     const result = await runMachineUpdateAndRestart(
-      { checkForUpdate: async () => upToDate, applyUpdate, requestRestart },
-      "1.2.55",
+      { currentVersion: "1.2.55", selectedTrack: () => "stable", checkForUpdate, applyUpdate, requestRestart },
+      pin,
     );
 
     expect(result.ok).toBe(true);
     expect(result.updateApplied).toBe(false);
+    expect(checkForUpdate).toHaveBeenCalledWith(checked);
     expect(applyUpdate).not.toHaveBeenCalled();
     // A request for the version this machine already runs installs nothing and
     // stops nothing — even though a check with no update pending still would.
@@ -97,7 +106,7 @@ describe("runMachineUpdateAndRestart", () => {
       ["apply", "skipped"],
       ["restart", "skipped"],
     ]);
-    expect(result.message).toBe("Already on 1.2.55 — nothing to update, nothing restarted.");
+    expect(result.message).toBe(`${prefix}Already on 1.2.55 — nothing to update, nothing restarted.`);
   });
 
   it("names the failed step when the update cannot be installed", async () => {

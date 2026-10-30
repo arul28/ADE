@@ -75,17 +75,17 @@ describe("settings manifest", () => {
     "appearance.apple-typed-badges": "apple",
     "appearance.apple-remote-bitrate": "apple",
     "appearance.apple-recordings-warn": "apple",
-    // General was split into Computer → ADE service and Behaviour, and
-    // Project → Location; Health into Project → Lanes, Location and ADE
-    // service. Their ids and anchors are what deeplinks and telemetry hold.
-    "general.background-service": "service",
-    "general.quit-confirmation": "service",
-    "general.about": "service",
-    "general.auto-updates": "service",
-    "general.update-other-machines": "service",
-    "general.ade-cli": "service",
-    "general.diagnostics-sharing": "service",
-    "general.reset": "service",
+    // Overview became General; its cards keep the `overview.` ids.
+    "overview.attention": "general",
+    "overview.glance": "general",
+    // The old General was split into System → Advanced and Behaviour, and
+    // Project → Location; Health into Project → Lanes, Location and Advanced.
+    // Their ids and anchors are what deeplinks and telemetry hold.
+    "general.background-service": "advanced",
+    "general.quit-confirmation": "advanced",
+    "general.ade-cli": "advanced",
+    "general.diagnostics-sharing": "advanced",
+    "general.reset": "advanced",
     "general.keep-awake": "behaviour",
     "general.capture-gesture": "behaviour",
     "general.link-open-mode": "behaviour",
@@ -94,7 +94,7 @@ describe("settings manifest", () => {
     "general.browser-auto-grant": "behaviour",
     "general.project-location": "location",
     "storage.project-health": "location",
-    "storage.diagnostics": "service",
+    "storage.diagnostics": "advanced",
     "archive.items": "storage",
     "lanes-git.pr-chat-transcripts": "project-agents",
   };
@@ -175,14 +175,26 @@ describe("settings manifest", () => {
     for (const [hash, expectedTab] of [
       ["attention-sounds", "notifications"],
       ["hide-previews", "notifications"],
-      ["about.reset", "service"],
+      ["about.reset", "advanced"],
+      // Continue chats after restarts moved from Notifications to Chat and
+      // kept its anchor, so links made before still land on it.
+      ["continue-after-restart", "chat"],
     ] as const) {
       const entry = resolveSettingsHash(hash);
       expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
       expect(entry!.tab).toBe(expectedTab);
     }
-    expect(resolveSettingsTab("attention")).toBe("notifications");
-    expect(resolveSettingsTab("activity")).toBe("notifications");
+    // Tabs that were renamed or folded into another page still land there.
+    for (const [tab, expectedTab] of [
+      ["attention", "notifications"],
+      ["activity", "notifications"],
+      ["overview", "general"],
+      ["service", "advanced"],
+      ["diagnostics", "advanced"],
+      ["computer", "machines"],
+    ] as const) {
+      expect(resolveSettingsTab(tab), `tab "${tab}"`).toBe(expectedTab);
+    }
   });
 
   it("resolves a live anchor directly, without needing an alias", () => {

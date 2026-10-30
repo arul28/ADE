@@ -1964,7 +1964,7 @@ export function createAutomationService({
     let tailscaleFunnelConfigured = false;
     let lastError: string | null = null;
     try {
-      const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["status", "--json"], { timeout: 4_000 });
+      const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["status", "--json"], { timeout: 4_000, windowsHide: true });
       const payload = JSON.parse(stdout) as unknown;
       tailscaleAvailable = true;
       tailscaleHostname = extractTailscaleHostname(payload);
@@ -1980,7 +1980,7 @@ export function createAutomationService({
     const provider = inferWebhookGatewayProvider(publicUrl, tailscaleAvailable);
     if (publicUrl && provider === "tailscale" && tailscaleAvailable) {
       try {
-        const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["funnel", "status", "--json"], { timeout: 4_000 });
+        const { stdout } = await execFileAsync(resolveTailscaleCliPath(), ["funnel", "status", "--json"], { timeout: 4_000, windowsHide: true });
         tailscaleFunnelConfigured = hasTailscaleFunnelConfig(JSON.parse(stdout) as unknown);
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

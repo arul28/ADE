@@ -5502,6 +5502,20 @@ const adeBridge = {
       callPinnedOrBoundRuntimeActionOr<JevStatus | null>(pin, "ai", "jevStatus", {}, async () => null)
         .then((status) => status ?? null)
         .catch(() => null),
+    // One value per machine. Unpinned is This computer (plain IPC, the file in
+    // this computer's ~/.ade); a pin reads and writes that machine's own brain.
+    getContinueAfterRestart: (pin?: OpenProjectBinding | null): Promise<{ enabled: boolean }> =>
+      pin
+        ? callPinnedRuntimeAction<{ enabled: boolean }>(pin, "ai", "getContinueAfterRestart")
+        : ipcRenderer.invoke(IPC.aiGetContinueAfterRestart),
+    getMachineUpdateTrack: (pin?: OpenProjectBinding | null): Promise<{ track: "stable" | "beta" | null }> =>
+      pin
+        ? callPinnedRuntimeAction<{ track: "stable" | "beta" | null }>(pin, "ai", "getMachineUpdateTrack")
+        : ipcRenderer.invoke(IPC.aiGetMachineUpdateTrack),
+    setContinueAfterRestart: (enabled: boolean, pin?: OpenProjectBinding | null): Promise<{ enabled: boolean }> =>
+      pin
+        ? callPinnedRuntimeAction<{ enabled: boolean }>(pin, "ai", "setContinueAfterRestart", { args: { enabled } })
+        : ipcRenderer.invoke(IPC.aiSetContinueAfterRestart, { enabled }),
     getStatus: async (args?: {
       force?: boolean;
       refreshOpenCodeInventory?: boolean;

@@ -9,8 +9,10 @@ import {
   ChartLineUp,
   ChatCircle,
   DeviceMobile,
-  Gauge,
+  Desktop,
+  GearSix,
   GitBranch,
+  Wrench,
   HardDrives,
   Key,
   MagnifyingGlass,
@@ -21,17 +23,14 @@ import {
   Robot,
   ShareNetwork,
   SlidersHorizontal,
-  SquaresFour,
   UserCircle,
 } from "@phosphor-icons/react";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
 import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
-import {
-  SettingsMachineEyebrow,
-  SettingsMachineNavRow,
-  useSettingsMachinePage,
-} from "../settings/SettingsMachinesNav";
+import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
+import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
+import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePicker";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
@@ -84,7 +83,9 @@ import { isIntegrationId } from "../settings/integrations/integrationBrand";
  */
 
 const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
-  overview: SquaresFour,
+  general: GearSix,
+  machines: Desktop,
+  advanced: Wrench,
   account: UserCircle,
   chat: ChatCircle,
   notifications: Bell,
@@ -96,7 +97,6 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   location: MapPin,
   secrets: Key,
   integrations: PlugsConnected,
-  service: Gauge,
   agents: Brain,
   apple: DeviceMobile,
   appearance: Palette,
@@ -106,7 +106,9 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
 
 /** Tabs whose content sits in the centred `SettingsColumn`. */
 const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
-  "overview",
+  "general",
+  "machines",
+  "advanced",
   "appearance",
   "chat",
   "apple",
@@ -114,7 +116,6 @@ const CENTERED_COLUMN_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>(
   "mcp",
   "stats",
   "secrets",
-  "service",
   "behaviour",
   "ade-mcp",
   "agents",
@@ -224,7 +225,7 @@ export function SettingsPage({
   // keeps the single bound-machine view it always had.
   const machineParam = searchParams.get("machine");
   const machinesEnabled = !isWebClientMode();
-  const { machines } = useProjectMachines(active && machinesEnabled);
+  const { machines, thisMachineDeviceName } = useProjectMachines(active && machinesEnabled);
   // With no `?machine=`, a link to a setting about the tab's own machine
   // (GitHub, Linear, link opening) lands on that machine; anything else lands
   // on This computer. For a tab open on this computer the two agree.
@@ -306,10 +307,12 @@ export function SettingsPage({
       : null;
 
   const [section, setSection] = useState<SettingsTabId>(resolvedTab ?? defaultTab);
-  // The machine the open page is about. A page that describes this computer's
-  // own screen (Appearance) is always This computer, whatever `?machine=` says.
+  // The machine the open page is about. Providers and Machines follow
+  // `?machine=`; This computer's own pages (General, Appearance, Behaviour,
+  // Apple devices, Advanced) are always This computer, whatever it says.
+  const thisMachine = machines.find((machine) => machine.machineId === THIS_MACHINE_ID) ?? null;
   const pageMachine: ProjectMachine | null = isThisComputerOnlyTab(section)
-    ? (machines.find((machine) => machine.machineId === THIS_MACHINE_ID) ?? selectedMachine)
+    ? (thisMachine ?? selectedMachine)
     : selectedMachine;
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
@@ -368,7 +371,10 @@ export function SettingsPage({
     );
   }, [active, location.hash, location.pathname, navigate, searchParams, tabParam]);
 
-  const navigateToTab = useCallback((next: SettingsTabId, hash?: string, machineId?: string) => {
+  // `machineId`: a machine for Providers or Machines; null clears it (the
+  // sidebar opens Providers on This computer and Machines on its list);
+  // undefined keeps whatever the URL has.
+  const navigateToTab = useCallback((next: SettingsTabId, hash?: string, machineId?: string | null) => {
     setSection(next);
     const nextParams = new URLSearchParams(searchParams);
     nextParams.set("tab", next);
@@ -378,9 +384,11 @@ export function SettingsPage({
     // have no machine, and a stale one in the URL would mislead the next link.
     // Appearance describes this computer's own screen, so it never carries one.
     const targetMachine = isMachineSelectableSettingsTab(next)
-      ? (machineId ?? nextParams.get("machine"))
+      ? (machineId === undefined ? nextParams.get("machine") : machineId)
       : null;
-    if (targetMachine && targetMachine !== THIS_MACHINE_ID) nextParams.set("machine", targetMachine);
+    // On Machines, This computer's own page needs its id; elsewhere it is the
+    // default and stays out of the URL.
+    if (targetMachine && (next === "machines" || targetMachine !== THIS_MACHINE_ID)) nextParams.set("machine", targetMachine);
     else nextParams.delete("machine");
     navigate(
       { pathname: location.pathname, search: `?${nextParams.toString()}`, hash: hash ? `#${hash}` : "" },
@@ -482,27 +490,26 @@ export function SettingsPage({
   const repoGroupLabel = projectDisplayName ?? "This repository";
   const hasProjectSidebar = useHasProjectSidebar();
 
-  const renderTabButton = (tab: SettingsTab, machine?: ProjectMachine) => {
+  const renderTabButton = (tab: SettingsTab) => {
     const Icon = TAB_ICONS[tab.id];
-    const isActive = section === tab.id && (!machine || pageMachine?.machineId === machine.machineId);
-    const hoverKey = machine ? `${machine.machineId}:${tab.id}` : tab.id;
-    const isHovered = hoveredId === hoverKey;
-    // Tour anchors stay on This computer's copy of each page.
-    const tourId = !machine || machine.isThisMachine ? `settings.${TOUR_IDS[tab.id] ?? tab.id}` : undefined;
+    const isActive = section === tab.id;
+    const isHovered = hoveredId === tab.id;
     return (
       <button
-        key={hoverKey}
+        key={tab.id}
         type="button"
-        data-tour={tourId}
-        onClick={() => navigateToTab(tab.id, undefined, machine?.machineId)}
-        onMouseEnter={() => setHoveredId(hoverKey)}
+        data-tour={`settings.${TOUR_IDS[tab.id] ?? tab.id}`}
+        aria-current={isActive ? "page" : undefined}
+        // A machine-picked page opens on This computer from the sidebar.
+        onClick={() => navigateToTab(tab.id, undefined, isMachineSettingsTab(tab.id) ? null : undefined)}
+        onMouseEnter={() => setHoveredId(tab.id)}
         onMouseLeave={() => setHoveredId(null)}
         style={{
           display: "flex",
           width: "100%",
           alignItems: "center",
           gap: 9,
-          padding: machine ? "5px 10px 5px 30px" : "6px 10px",
+          padding: "6px 10px",
           border: "none",
           background: isActive
             ? "var(--shell-sidebar-item-active-bg)"
@@ -535,16 +542,17 @@ export function SettingsPage({
   );
 
   // The machine a page acts on, as the section components see it: the picked
-  // machine for a Computer page, and the machine that owns the open project
-  // (the tab's binding) for a Project page. You pages have none.
+  // machine for Providers and a machine's own page, This computer for its own
+  // pages, and the machine that owns the open project (the tab's binding) for
+  // a Project page. The rest (Account, Chat…) have none.
   const projectMachine = machines.find((machine) => machine.isActiveBinding) ?? null;
-  const scopeMachine = isMachineSettingsTab(section)
+  const scopeMachine = isMachineSettingsTab(section) || isThisComputerOnlyTab(section)
     ? pageMachine
     : isProjectSettingsTab(section) ? projectMachine : null;
   const pageScope = useSettingsMachinePage(scopeMachine);
-  // Only Computer pages name their machine above the title; Project pages
-  // follow the tab, which the remote banner names when it is another machine.
-  const machinePageScope = pageScope && isMachineSettingsTab(section) ? pageScope : null;
+  // These pages name their machine themselves (the Providers picker, a
+  // machine's page, This computer's pages), so the remote banner stands down.
+  const namesOwnMachine = isMachineSettingsTab(section) || isThisComputerOnlyTab(section);
 
   const activeTab = tabs.find((tab) => tab.id === section)
     ?? tabs.find((tab) => tab.id === defaultTab)
@@ -552,14 +560,31 @@ export function SettingsPage({
   // A provider detail (or Harnesses) is a sub-view of the Providers tab. The
   // shell header owns the back affordance so it sits on the title row rather
   // than floating below it.
-  const subViewOpen = Boolean(searchParams.get("provider")?.trim()) || searchParams.get("harnesses") === "1";
+  // One machine's page on Machines is a sub-view too: Back returns to the list.
+  const machineDetailOpen = section === "machines" && Boolean(machineParam);
+  const subViewOpen = Boolean(searchParams.get("provider")?.trim())
+    || searchParams.get("harnesses") === "1"
+    || machineDetailOpen;
   const closeSubView = () => {
     const next = new URLSearchParams(searchParams);
     next.delete("provider");
     next.delete("harnesses");
+    if (section === "machines") next.delete("machine");
     const search = next.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
+  const providersPicker = section === "agents" && machinesEnabled && !standalone
+    && reachableMachines(machines).length > 1;
+  // General and Machines list the machines this page already reads.
+  const machinesValue = useMemo<SettingsMachinesValue>(() => ({
+    machines,
+    thisMachineName: thisMachineDeviceName,
+    openMachine: (machineId, tab = "machines") => navigateToTab(tab, undefined, machineId),
+    openTab: (tab, anchor) => {
+      const resolved = resolveSettingsTab(tab);
+      if (resolved) navigateToTab(resolved, anchor);
+    },
+  }), [machines, thisMachineDeviceName, navigateToTab]);
   const totalMatches = (matchesThisTab?.length ?? 0) + matchesOtherTabs.length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
   const searchAnchors = useMemo(
@@ -569,26 +594,6 @@ export function SettingsPage({
 
   // Inside a project the section list lives in the project sidebar. Outside
   // one (the hosted web client, tests) the page keeps its own column.
-  const renderMachineRow = (machine: ProjectMachine, machineTabs: SettingsTab[]) => {
-    const onMachinePage = isMachineSettingsTab(section);
-    const selected = pageMachine?.machineId === machine.machineId;
-    // A row opens the page you are on when that machine has it, else its first.
-    const landingTab = onMachinePage && machineTabs.some((tab) => tab.id === section)
-      ? section
-      : (machineTabs[0]?.id ?? DEFAULT_SETTINGS_TAB);
-    return (
-      <SettingsMachineNavRow
-        key={machine.machineId}
-        machine={machine}
-        selected={selected}
-        active={selected && onMachinePage}
-        onOpen={() => navigateToTab(landingTab, undefined, machine.machineId)}
-      >
-        {machineTabs.map((tab) => renderTabButton(tab, machine))}
-      </SettingsMachineNavRow>
-    );
-  };
-
   const sectionList = (
     <>
       {SETTINGS_GROUPS.map((group) => {
@@ -596,7 +601,7 @@ export function SettingsPage({
         // A group with nothing reachable in it is not rendered (the hosted web
         // client drops whole pages whose writes have nowhere to land).
         if (!groupTabs.length) return null;
-        // Overview is one row on its own, above the groups.
+        // General is one row on its own, above the groups.
         if (group.id === "overview") {
           return (
             <div key={group.id} style={{ marginBottom: 14 }}>
@@ -604,36 +609,12 @@ export function SettingsPage({
             </div>
           );
         }
-        const label = group.label ?? THIS_MACHINE_NAME;
+        const label = group.id === "project"
+          ? (hasOpenProject ? `Project: ${repoGroupLabel}` : "Project")
+          : group.label ?? THIS_MACHINE_NAME;
         const hint = group.id === "project" && hasOpenProject
           ? `${repoGroupLabel}. ${groupScopeHint(group.id)}`
           : groupScopeHint(group.id);
-        if (group.id === "machines" && machinesEnabled && machines.length > 0) {
-          return (
-            <div key={group.id} style={{ marginBottom: 14 }}>
-              <div
-                style={{
-                  ...LABEL_STYLE,
-                  fontFamily: SANS_FONT,
-                  paddingLeft: 10,
-                  marginBottom: 6,
-                  color: "var(--shell-sidebar-item-fg)",
-                  opacity: 0.75,
-                }}
-                title={groupScopeHint(group.id)}
-              >
-                {group.label}
-              </div>
-              {machines.map((machine) => renderMachineRow(
-                machine,
-                // Appearance has one page, under This computer.
-                machine.machineId === THIS_MACHINE_ID
-                  ? groupTabs
-                  : groupTabs.filter((tab) => !isThisComputerOnlyTab(tab.id)),
-              ))}
-            </div>
-          );
-        }
         return (
           <div key={group.id} style={{ marginBottom: 14 }}>
             <div
@@ -647,6 +628,9 @@ export function SettingsPage({
                 // this reorganisation exists to say.
                 color: "var(--shell-sidebar-item-fg)",
                 opacity: 0.75,
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                whiteSpace: "nowrap",
               }}
               title={hint}
             >
@@ -699,7 +683,7 @@ export function SettingsPage({
         {/* Computer pages name their own machine below; the remote banner is
             for You and Project pages, which follow the tab's binding. Account-
             only pages follow no binding, so they get none. */}
-        {isWebClientMode() || machinePageScope || isAccountOnlyTab(section) ? null : <RemoteSettingsBanner />}
+        {isWebClientMode() || namesOwnMachine || isAccountOnlyTab(section) ? null : <RemoteSettingsBanner />}
         {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
         {/* Pages built on the centred settings column get a page wrapper of the
@@ -742,12 +726,6 @@ export function SettingsPage({
                   <ArrowLeft size={18} weight="bold" />
                 </button>
               ) : null}
-              {machinePageScope ? (
-                <>
-                  <SettingsMachineEyebrow page={machinePageScope} />
-                  <span aria-hidden style={{ margin: "0 6px", color: COLORS.textDim, fontFamily: SANS_FONT, fontSize: 13 }}>/</span>
-                </>
-              ) : null}
               <h1
                 style={{
                   margin: 0,
@@ -760,8 +738,21 @@ export function SettingsPage({
                   whiteSpace: "nowrap",
                 }}
               >
-                {activeTab.label}
+                {providersPicker ? "Providers on" : activeTab.label}
               </h1>
+              {/* Providers names its machine in its title: one picker for the
+                  machine the providers run on, never a copy per machine. */}
+              {providersPicker ? (
+                <span style={{ marginLeft: 8 }}>
+                  <MachinePicker
+                    variant="title"
+                    machines={machines}
+                    selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
+                    thisMachineName={thisMachineDeviceName}
+                    onPick={(machineId) => navigateToTab("agents", undefined, machineId)}
+                  />
+                </span>
+              ) : null}
             </div>
 
             <label className="ade-settings-search">
@@ -822,6 +813,7 @@ export function SettingsPage({
           </div>
         ) : null}
 
+        <SettingsMachinesContext.Provider value={machinesValue}>
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           {pageScope ? (
             // Keyed by machine so nothing one machine loaded can linger into,
@@ -837,6 +829,7 @@ export function SettingsPage({
             </SettingsSearchAnchorsContext.Provider>
           )}
         </div>
+        </SettingsMachinesContext.Provider>
         </div>
       </div>
     </div>

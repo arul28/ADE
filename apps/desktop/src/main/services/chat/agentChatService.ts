@@ -11693,6 +11693,12 @@ export function createAgentChatService(args: {
   /** The installed machine brain's pid when it is live on this project. */
   machineBrainPid?: () => number | null;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
+  /**
+   * "Continue chats after restarts" for this machine (`~/.ade/continue-after-
+   * restart.json`, one value per machine). Absent (tests, embedded runtimes):
+   * the project's old `ai.chat.continueAfterRestart`, on unless set to false.
+   */
+  readContinueAfterRestart?: () => boolean;
   db?: (
     Pick<AdeDb, "getJson" | "setJson">
     & Partial<Pick<AdeDb, "get" | "all" | "run" | "sync" | "runChanged">>
@@ -13279,6 +13285,8 @@ export function createAgentChatService(args: {
   };
 
   const managedSessions = new Map<string, ManagedChatSession>();
+  /** When this service (this brain) started: rows created since belong to this process. */
+  const serviceStartedAtMs = Date.now();
   const copilotMcpAuthNotices = new Set<string>();
 
   type McpMentionRuntimeStatus = {
@@ -21942,8 +21950,16 @@ export function createAgentChatService(args: {
    * has one is not armed twice and the user typing into it cancels it.
    * Settled and archived chats stay asleep.
    */
-  const continueAfterRestartEnabled = (): boolean =>
-    projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false;
+  const continueAfterRestartEnabled = (): boolean => {
+    if (args.readContinueAfterRestart) {
+      try {
+        return args.readContinueAfterRestart();
+      } catch {
+        // An unreadable machine value falls back to the project's old one.
+      }
+    }
+    return projectConfigService.get().effective.ai?.chat?.continueAfterRestart !== false;
+  };
   /**
    * How long after a restart cut a turn short ADE still continues it. A chat
    * first opened later than this (it crashed long ago, maybe under an older
@@ -21990,6 +22006,48 @@ export function createAgentChatService(args: {
   };
   const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
     restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
+  /**
+   * A continue row an accepted update armed and that has not fired yet
+   * (`armUpdateResume` starts the streak at 0). Recovery of the same chat then
+   * reads the restart as the accepted one, so its notice and the row agree.
+   */
+  const hasPendingAcceptedUpdateResume = (sessionId: string): boolean =>
+    (scheduledWorkScheduler?.list(sessionId) ?? []).some((schedule) =>
+      isPendingUpdateResumeScheduledWork(schedule) && schedule.restartResumeStreak === 0);
+  /**
+   * The one rule for whether ADE continues a chat by itself after a restart,
+   * for every kind of restart: an update the user accepted (`armUpdateResume`,
+   * and the update dialog's line through `listInterruptedChats`) and a crash,
+   * force quit or reboot (`recoverDetachedChatAfterRestart`). Continue chats
+   * after restarts is on, the chat is not archived (a settled chat resumes:
+   * settling stops nothing), it is not
+   * waiting on the user's answer, it was cut off recently, and it has not
+   * resumed itself `MAX_CONSECUTIVE_RESTART_RESUMES` times in a row. An
+   * accepted update starts that count again: the user chose this restart, so
+   * it is not one more in a loop of crashes.
+   */
+  const continueAfterRestartHold = (
+    sessionId: string,
+    options: {
+      acceptedUpdate: boolean;
+      managed?: ManagedChatSession | null;
+      /** Read by the caller before a reopen clears the row's end time. */
+      recent?: boolean;
+      awaitingUser?: boolean;
+    },
+  ): RestartResumeHold | null => {
+    const row = sessionService.get(sessionId);
+    const managed = options.managed ?? managedSessions.get(sessionId) ?? null;
+    const acceptedUpdate = options.acceptedUpdate || hasPendingAcceptedUpdateResume(sessionId);
+    return restartResumeHold({
+      continueEnabled: continueAfterRestartEnabled(),
+      recent: options.recent ?? withinRestartResumeAge(row?.endedAt),
+      awaitingUser: options.awaitingUser
+        ?? (managed?.awaitingInputAtLoad === true || readPersistedState(sessionId)?.awaitingInput === true),
+      capped: !acceptedUpdate && managed != null && restartResumeCapReached(managed),
+      archived: Boolean(row?.archivedAt),
+    });
+  };
   const armRestartResume = (
     managed: ManagedChatSession,
     resume: { prompt: string; reason: string } = { prompt: RESTART_RESUME_PROMPT, reason: RESTART_RESUME_REASON },
@@ -22097,14 +22155,10 @@ export function createAgentChatService(args: {
     // Read before `reopen` clears the row's end time.
     const recent = withinRestartResumeAge(sessionService.get(managed.session.id)?.endedAt)
       && withinRestartResumeAge(restedSince);
-    // One rule for the resume, the lost-work wake and the notice.
-    const holdFor = (row: ReturnType<typeof sessionService.get>): RestartResumeHold | null => restartResumeHold({
-      continueEnabled: continueAfterRestartEnabled(),
-      recent,
-      awaitingUser,
-      capped: restartResumeCapReached(managed),
-      archived: Boolean(row?.archivedAt),
-    });
+    // One rule for the resume, the lost-work wake, the notice, and the
+    // continue an accepted update arms (`continueAfterRestartHold`).
+    const holdFor = (_row: ReturnType<typeof sessionService.get>): RestartResumeHold | null =>
+      continueAfterRestartHold(managed.session.id, { acceptedUpdate: false, managed, recent, awaitingUser });
     // Rows the transcript still shows running, plus rows the stale-run sweep
     // closed for this restart: what the dead process took with it. Minus what
     // an earlier recovery already reported (those rows keep their restart
@@ -67335,8 +67389,17 @@ export function createAgentChatService(args: {
     return chats;
   };
 
+  /**
+   * The chats mid-turn right now, each with what the next restart does to it
+   * (`continueHold`: null continues, else why it stops), by the same rule
+   * `armUpdateResume` applies once the update lands. The update dialog shows it.
+   */
   const listInterruptedChats = async (): Promise<AgentChatListInterruptedChatsResult> => ({
-    chats: liveTurnChatRefs(),
+    chats: liveTurnChatRefs().map((chat) => ({
+      ...chat,
+      continueHold: continueAfterRestartHold(chat.sessionId, { acceptedUpdate: true, recent: true }),
+    })),
+    continueAfterRestart: continueAfterRestartEnabled(),
   });
 
   /**
@@ -67371,6 +67434,28 @@ export function createAgentChatService(args: {
     for (const chat of candidates) {
       const row = sessionService.get(chat.sessionId);
       if (!row || !isSchedulableAgentSession(row)) continue;
+      // The same rule a crash or reboot follows (`continueAfterRestartHold`):
+      // the setting is on, the chat is not settled, archived or waiting on the
+      // user's answer. The cap starts again: the user accepted this restart.
+      const hold = continueAfterRestartHold(chat.sessionId, { acceptedUpdate: true });
+      if (hold !== null) {
+        logger.info("agent_chat.update_resume_held", { sessionId: chat.sessionId, hold });
+        continue;
+      }
+      // No second resume: this brain's own restart recovery may already have
+      // armed (or fired) this chat's continue row since it started. A row it
+      // armed that has not fired is replaced below (same id), so the agent is
+      // told once; one that already fired means the chat already continued.
+      if (requested != null) {
+        const sinceStart = (scheduledWorkScheduler.list(chat.sessionId) ?? []).find((schedule) =>
+          schedule.id === updateResumeScheduleId(chat.sessionId)
+          && schedule.createdAt >= serviceStartedAtMs
+          && schedule.status !== "scheduled");
+        if (sinceStart) {
+          logger.info("agent_chat.update_resume_already_continued", { sessionId: chat.sessionId, status: sinceStart.status });
+          continue;
+        }
+      }
       try {
         const schedule = await scheduledWorkScheduler.upsert({
           id: updateResumeScheduleId(chat.sessionId),

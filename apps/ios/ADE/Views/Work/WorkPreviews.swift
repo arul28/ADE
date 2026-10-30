@@ -1269,6 +1269,8 @@ enum WorkProofPreviewData {
 
   ![The dashboard after sign-in](ade-proof://proof-1)
 
+  ![Signing in, start to finish](ade-proof://proof-4)
+
   ```proof-compare
   before: proof-3 Profile page before the change
   after: proof-2 Inbox with every filter cleared
@@ -1567,16 +1569,17 @@ struct ADEPreviewScreenHost: View {
         onLoadArtifact: { _, _ in }
       )
     case .proofAnswer:
-      ScrollView {
+      // Hosted the way the transcript hosts a row, so anything a
+      // `UIHostingConfiguration` cell cannot draw shows up here too.
+      WorkPreviewTranscriptList(rows: [AnyView(
         WorkMarkdownRenderer(markdown: WorkProofPreviewData.answerMarkdown)
-          .padding(16)
-      }
+          .environment(\.workProofCitations, WorkProofCitationContext(
+            artifactsById: Dictionary(uniqueKeysWithValues: WorkProofPreviewData.turnArtifacts.map { ($0.id, $0) }),
+            content: content,
+            load: { _, _ in }
+          ))
+      )])
       .background(ADEColor.pageBackground.ignoresSafeArea())
-      .environment(\.workProofCitations, WorkProofCitationContext(
-        artifactsById: Dictionary(uniqueKeysWithValues: WorkProofPreviewData.turnArtifacts.map { ($0.id, $0) }),
-        content: content,
-        load: { _, _ in }
-      ))
     case .proofViewer:
       WorkProofViewer(
         artifacts: WorkProofPreviewData.artifacts.reversed(),
@@ -2700,3 +2703,41 @@ private enum WorkSideChatPreviewData {
   }
 }
 #endif
+
+/// Rows hosted the way `WorkChatTranscriptCollectionView` hosts them: a
+/// collection view whose cells carry a `UIHostingConfiguration`.
+struct WorkPreviewTranscriptList: UIViewRepresentable {
+  let rows: [AnyView]
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeUIView(context: Context) -> UICollectionView {
+    var list = UICollectionLayoutListConfiguration(appearance: .plain)
+    list.showsSeparators = false
+    list.backgroundColor = .clear
+    let view = UICollectionView(frame: .zero, collectionViewLayout: UICollectionViewCompositionalLayout.list(using: list))
+    view.backgroundColor = .clear
+    view.register(UICollectionViewCell.self, forCellWithReuseIdentifier: "row")
+    view.dataSource = context.coordinator
+    return view
+  }
+
+  func updateUIView(_ view: UICollectionView, context: Context) {
+    context.coordinator.rows = rows
+    view.reloadData()
+  }
+
+  final class Coordinator: NSObject, UICollectionViewDataSource {
+    var rows: [AnyView] = []
+
+    func collectionView(_ view: UICollectionView, numberOfItemsInSection section: Int) -> Int { rows.count }
+
+    func collectionView(_ view: UICollectionView, cellForItemAt indexPath: IndexPath) -> UICollectionViewCell {
+      let cell = view.dequeueReusableCell(withReuseIdentifier: "row", for: indexPath)
+      let row = rows[indexPath.item]
+      cell.backgroundConfiguration = .clear()
+      cell.contentConfiguration = UIHostingConfiguration { row }.margins(.horizontal, 16)
+      return cell
+    }
+  }
+}

@@ -100,7 +100,7 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrWatchService } from "../../desktop/src/main/services/prs/prWatchService";
 import { createTerminalWatchService, type TerminalWatchService } from "../../desktop/src/main/services/pty/terminalWatchService";
-import { createPrShellLinkWatcher } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
+import { createPrShellLinkWatcher, shellPrBodyRepairVia } from "../../desktop/src/main/services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
@@ -271,6 +271,7 @@ import { sha256Hex } from "../../desktop/src/main/services/shared/utils";
 import { BRAIN_HEARTBEAT_STALE_MS, readBrainHeartbeat, servesMachineRuntimeEndpoint } from "./services/runtime/brainHeartbeat";
 import { readExistingOsBoundKeyMaterialAsync } from "./services/credentials/osBoundKeyMaterial";
 import { createBrainLogger } from "./services/runtime/brainLogger";
+import { resolveContinueAfterRestart } from "./services/runtime/continueAfterRestartStore";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
 import { createAccountRuntimeLifecycle } from "./services/account/accountRuntimeLifecycle";
@@ -1535,6 +1536,7 @@ export async function createAdeRuntime(args: {
       bonus: {
         baseUrl: () => getSharedAccountDirectoryBaseUrl({ projectRoots: () => [projectRoot] }),
         accountToken: () => getAccountAccessToken(),
+        signedIn: () => accountAuthService.getStatus().signedIn,
       },
       appVersion: process.env.ADE_CLI_VERSION?.trim() || BUNDLED_ADE_VERSION || null,
       tallyStore: jevTallyFileStore(
@@ -2455,6 +2457,8 @@ export async function createAdeRuntime(args: {
     if (resolvedArgs.chatRuntime === "agent") {
       agentChatService = createAgentChatService({
         machineAdeHome: resolveMachineAdeLayout().adeDir,
+        // One value per machine: this brain decides its own resumes.
+        readContinueAfterRestart: () => resolveContinueAfterRestart(),
         embeddedProviderLoginsIsolated: shouldIsolateEmbeddedProviderLogins(runtimeProfileLabel, process.env),
         jevDecide: jevService.decide,
         // The MCP registry's secret values: the generic vault kind, account-wide.
@@ -3201,6 +3205,7 @@ export async function createAdeRuntime(args: {
         logger,
         subscribeToEvents: (callback) => chatForShellLinks.subscribeToEvents(callback),
         linkShellPrAction: (args) => headlessLinearServices.prService.linkShellPrAction(args),
+        repairShellPrBody: shellPrBodyRepairVia({ prService: headlessLinearServices.prService, proof: computerUseArtifactBrokerService }),
       });
       // Registered before the start: a throw from start() still unsubscribes.
       teardown.push(() => prShellLinkWatcher.dispose());

@@ -202,6 +202,7 @@ import {
   type GitHubPrIssueReference,
 } from "../../../shared/githubMagicWords";
 import { ensureAdeDeeplinkFooter } from "../../../shared/adeDeeplinkFooter";
+import { createShellPrBodyRepair, type ShellPrBodyRepairArgs, type ShellPrBodyRepairResult } from "./prShellBodyRepair";
 import { ensureAdePrTranscriptGistLinks, hasAdePrTranscriptGistLinks, type AdePrTranscriptGistLink } from "../../../shared/adePrTranscriptGists";
 import { normalizeEscapedMarkdownNewlines } from "../../../shared/prMarkdownText";
 import {
@@ -1059,6 +1060,8 @@ export type ShellPrLinkArgs = {
   prNumber: number;
 };
 
+export type { ShellPrBodyRepairArgs, ShellPrBodyRepairResult } from "./prShellBodyRepair";
+
 /**
  * Whether GitHub rejected the GraphQL `stack` field itself, as opposed to
  * refusing the request. Only this failure is fixable by re-asking without the
@@ -1853,30 +1856,51 @@ export function createPrService({
   /** One shell-created PR is checked once at a time, however many events name it. */
   const shellPrLinksInFlight = new Map<string, Promise<ShellPrLinkResult>>();
 
+  /** The lane chat a shell command ran in and this project's repository, or why there is none. */
+  const resolveShellChatLane = async (rawSessionId: string): Promise<
+    | { sessionId: string; lane: LaneSummary; repo: GitHubRepoRef; sameRepo: (owner: unknown, name: unknown) => boolean }
+    | { skip: string }
+  > => {
+    const sessionId = resolveCanonicalChatSessionId(rawSessionId);
+    if (!sessionId) return { skip: "session_missing" };
+    const session = db.get<{ lane_id: string | null; tool_type: string | null }>(
+      "select lane_id, tool_type from terminal_sessions where id = ? limit 1",
+      [sessionId],
+    );
+    if (!session?.lane_id || !isChatToolType(session.tool_type)) return { skip: "not_a_lane_chat" };
+    const lane = (await laneService.list({ includeArchived: false, includeStatus: false }))
+      .find((entry) => entry.id === session.lane_id);
+    if (!lane) return { skip: "lane_missing" };
+    let repo: GitHubRepoRef;
+    try {
+      repo = await githubService.getRepoOrThrow();
+    } catch {
+      return { skip: "no_github_repo" };
+    }
+    const sameRepo = (owner: unknown, name: unknown) =>
+      String(owner ?? "").toLowerCase() === repo.owner.toLowerCase()
+      && String(name ?? "").toLowerCase() === repo.name.toLowerCase();
+    return { sessionId, lane, repo, sameRepo };
+  };
+
+  /** Why a PR is not the lane's own branch PR in this repository, or null when it is. */
+  const shellPullMismatch = (pull: any, lane: LaneSummary, sameRepo: (owner: unknown, name: unknown) => boolean): string | null => {
+    const headRef = normalizeBranchName(asString(pull?.head?.ref));
+    if (!sameRepo(pull?.base?.repo?.owner?.login, pull?.base?.repo?.name)) return "other_repo";
+    if (!sameRepo(pull?.head?.repo?.owner?.login, pull?.head?.repo?.name)) return "fork_head";
+    if (!headRef || headRef !== normalizeBranchName(branchNameFromRef(lane.branchRef))) return "head_not_lane_branch";
+    if (headRef === normalizeBranchName(asString(pull?.base?.ref))) return "head_is_base";
+    return null;
+  };
+
   const linkShellPrActionOnce = async (args: ShellPrLinkArgs): Promise<ShellPrLinkResult> => {
     const skip = (reason: string): ShellPrLinkResult => {
       logger.info("prs.shell_link_skipped", { sessionId: args.sessionId, kind: args.kind, prNumber: args.prNumber, reason });
       return { status: "skipped", reason };
     };
-    const sessionId = resolveCanonicalChatSessionId(args.sessionId);
-    if (!sessionId) return skip("session_missing");
-    const session = db.get<{ lane_id: string | null; tool_type: string | null }>(
-      "select lane_id, tool_type from terminal_sessions where id = ? limit 1",
-      [sessionId],
-    );
-    if (!session?.lane_id || !isChatToolType(session.tool_type)) return skip("not_a_lane_chat");
-    const lane = (await laneService.list({ includeArchived: false, includeStatus: false }))
-      .find((entry) => entry.id === session.lane_id);
-    if (!lane) return skip("lane_missing");
-    let repo: GitHubRepoRef;
-    try {
-      repo = await githubService.getRepoOrThrow();
-    } catch {
-      return skip("no_github_repo");
-    }
-    const sameRepo = (owner: unknown, name: unknown) =>
-      String(owner ?? "").toLowerCase() === repo.owner.toLowerCase()
-      && String(name ?? "").toLowerCase() === repo.name.toLowerCase();
+    const chat = await resolveShellChatLane(args.sessionId);
+    if ("skip" in chat) return skip(chat.skip);
+    const { sessionId, lane, repo, sameRepo } = chat;
     // A bare number from `gh pr merge 42` means this project's repository.
     if (args.repoOwner && args.repoName && !sameRepo(args.repoOwner, args.repoName)) return skip("other_repo");
 
@@ -1888,12 +1912,9 @@ export function createPrService({
       logger.warn("prs.shell_link_github_read_failed", { prNumber: args.prNumber, error: getErrorMessage(error) });
       return { status: "skipped", reason: "github_unreadable" };
     }
+    const mismatch = shellPullMismatch(pull, lane, sameRepo);
+    if (mismatch) return skip(mismatch);
     const headRef = normalizeBranchName(asString(pull?.head?.ref));
-    const laneBranch = normalizeBranchName(branchNameFromRef(lane.branchRef));
-    if (!sameRepo(pull?.base?.repo?.owner?.login, pull?.base?.repo?.name)) return skip("other_repo");
-    if (!sameRepo(pull?.head?.repo?.owner?.login, pull?.head?.repo?.name)) return skip("fork_head");
-    if (!headRef || headRef !== laneBranch) return skip("head_not_lane_branch");
-    if (headRef === normalizeBranchName(asString(pull?.base?.ref))) return skip("head_is_base");
 
     let row = getLiveRowForRepoPr(repo.owner, repo.name, args.prNumber);
     let linkedLane = false;
@@ -1950,6 +1971,25 @@ export function createPrService({
     });
     return { status: "linked", prId: row.id };
   };
+
+  const shellBodyRepair = createShellPrBodyRepair({
+    logger,
+    projectRoot,
+    resolveChatLane: resolveShellChatLane,
+    pullMismatch: shellPullMismatch,
+    lanePrNumber: (lane) => getRowForLaneBranch(lane.id, normalizeBranchName(branchNameFromRef(lane.branchRef)))?.github_pr_number ?? null,
+    fetchPull: (repo, prNumber) => fetchPr(repo, prNumber, { fresh: true }),
+    stampBody: (text, lane, repo, prNumber) => ensureAdeDeeplinkFooter(applyIssuePrLinkage(text, lane, primaryLinearLinkClosesOnMerge(lane)), {
+      repoOwner: repo.owner,
+      repoName: repo.name,
+      branch: normalizeBranchName(branchNameFromRef(lane.branchRef)),
+      prNumber,
+    }),
+    patchBody: async (repo, prNumber, body) => {
+      await githubService.apiRequest({ method: "PATCH", path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`, body: { body } });
+    },
+    runGh: (ghArgs, opts) => runGh(ghArgs, opts),
+  });
 
   /**
    * Repo + PR number for any PR mutation, from either a real DB row (mapped PR)
@@ -7369,6 +7409,15 @@ export function createPrService({
     return withStack;
   };
 
+  /** Whether the lane's primary Linear issue closes when its PR merges. */
+  const primaryLinearLinkClosesOnMerge = (lane: LaneSummary): boolean => {
+    if (!lane.linearIssue) return false;
+    const primaryLink = (lane.linearIssueLinks ?? []).find(
+      (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
+    );
+    return primaryLink?.closeOnMerge === true;
+  };
+
   const linkToLane = async (args: LinkPrToLaneArgs): Promise<PrSummary> => {
     const lane = (await laneService.list({ includeArchived: true })).find((entry) => entry.id === args.laneId);
     if (!lane) throw new Error(`Lane not found: ${args.laneId}`);
@@ -7407,13 +7456,7 @@ export function createPrService({
       normalizePrCreationStrategy(existingRow?.creation_strategy) ?? "pr_target";
 
     const currentBody = typeof pr?.body === "string" ? pr.body : "";
-    const primaryLink = lane.linearIssue
-      ? (lane.linearIssueLinks ?? []).find(
-          (entry) => entry.role === "primary" && entry.issue.id === lane.linearIssue?.id,
-        )
-      : null;
-    const closePrimaryOnMerge = primaryLink?.closeOnMerge === true;
-    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, closePrimaryOnMerge), {
+    const patchedBody = ensureAdeDeeplinkFooter(applyIssuePrLinkage(currentBody, lane, primaryLinearLinkClosesOnMerge(lane)), {
       repoOwner: repo.owner,
       repoName: repo.name,
       branch: headBranch,
@@ -10400,6 +10443,11 @@ export function createPrService({
       const work = linkShellPrActionOnce(args).finally(() => shellPrLinksInFlight.delete(key));
       shellPrLinksInFlight.set(key, work);
       return await work;
+    },
+
+    /** Repairs the text of a PR a chat wrote with `gh` (`prShellBodyRepair.ts`). */
+    repairShellPrBody(args: ShellPrBodyRepairArgs): Promise<ShellPrBodyRepairResult> {
+      return shellBodyRepair.repair(args);
     },
 
     /**

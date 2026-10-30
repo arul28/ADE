@@ -33,6 +33,7 @@ import { FastModeSection } from "./FastModeSection";
 import { ClaudeModsSection } from "./ClaudeModsSection";
 import { PromptSuggestionsSection } from "./PromptSuggestionsSection";
 import { SmartDecisionsSection } from "./SmartDecisionsSection";
+import { ContinueAfterRestartSection } from "./ContinueAfterRestartSection";
 import { ProjectSettingsNotice } from "./ProjectSettingsNotice";
 import { isStandaloneSettings } from "./settingsManifest";
 import { ModernRow, ModernRows, ModernSection, SettingsColumn, SettingsToggle } from "./primitives";
@@ -194,6 +195,9 @@ export function ChatSection() {
                 <ClaudeModsSection />
               </>
             )}
+
+            {/* One value per machine, not per project, so it shows with or without one open. */}
+            <ContinueAfterRestartSection />
 
             {/* Voice input is chat dictation, so it lives with chat. */}
             <DictationSection />

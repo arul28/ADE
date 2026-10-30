@@ -45,6 +45,8 @@ export type SentryApi = {
   /** Absent in the renderer SDK, whose events leave through main. */
   flush?(timeoutMs?: number): PromiseLike<boolean>;
   logger: {
+    /** Optional: release-health lines only (`logBridge.ts`). */
+    info?(message: string, attributes?: LogAttributes): unknown;
     warn(message: string, attributes?: LogAttributes): unknown;
     error(message: string, attributes?: LogAttributes): unknown;
   };
@@ -102,9 +104,9 @@ export function addSentryBreadcrumb(
 }
 
 /** A line for Sentry Logs (searchable, never an issue). */
-export function sendSentryLog(level: "warn" | "error", message: string, attributes: LogAttributes): void {
+export function sendSentryLog(level: "info" | "warn" | "error", message: string, attributes: LogAttributes): void {
   try {
-    sentry?.logger[level](message, attributes);
+    sentry?.logger[level]?.(message, attributes);
   } catch {
     // Logging must never throw into the caller.
   }

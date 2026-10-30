@@ -20,7 +20,7 @@ import type {
   RemoteRuntimeUpdateStepStatus,
 } from "../../../../desktop/src/shared/types/remoteRuntime";
 import { compareUpdateVersions } from "../../../../desktop/src/shared/updateVersions";
-import { updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
+import { updateTrackLabel, updateTrackOfVersion, type UpdateTrack } from "../../../../desktop/src/shared/updateTrack";
 import { resolveSelectedUpdateTrack } from "./updateTrackStore";
 import type {
   DesktopAppUpdateInstallResult,
@@ -150,6 +150,15 @@ export function machineVersionCovers(version: string | null | undefined, targetV
   return compareUpdateVersions(current, targetVersion) >= 0;
 }
 
+/**
+ * The one line for a build from the other track: "Update" never moves a
+ * machine across tracks (that is the guarded switch, made on the machine).
+ */
+export function crossTrackRefusal(selectedTrack: UpdateTrack, requestedVersion: string): string {
+  return `This machine is on ${updateTrackLabel(selectedTrack)}, so it won't take ${requestedVersion} `
+    + `(${updateTrackLabel(updateTrackOfVersion(requestedVersion))}).`;
+}
+
 /** The host half of "Update & restart", wired to this machine's installed runtime. */
 export function createMachineUpdateControls(
   args: MachineUpdateControlsArgs,
@@ -184,6 +193,16 @@ export function createMachineUpdateControls(
       // the version it is already running, nor back to an older one.
       const alreadyCurrent = normalizedTarget ? current(normalizedTarget) : null;
       if (alreadyCurrent) return alreadyCurrent;
+      // `brain update --version` installs a pinned build as given, with no
+      // database check, so a pin from the other track that would install stops
+      // here. The caller (`runMachineUpdateAndRestart`) already turns one into
+      // "newest on this machine's track"; this is the second guard.
+      if (normalizedTarget) {
+        const selectedTrack = resolveSelectedUpdateTrack(args.version);
+        if (updateTrackOfVersion(normalizedTarget) !== selectedTrack) {
+          throw new Error(crossTrackRefusal(selectedTrack, normalizedTarget));
+        }
+      }
       const { runBrainUpdateCommand } = await import("../../commands/brainUpdate");
       // `check` is the dry run: it resolves the release assets without touching
       // the installation, so a target that does not exist fails here rather
@@ -291,6 +310,14 @@ function step(
 async function runStandaloneUpdateAndRestart(
   deps: MachineUpdateAndRestartDeps,
   targetVersion: string | null = null,
+  options: {
+    /**
+     * An update was asked for even though no version is pinned (a pin from
+     * the other track became "newest on this track"). With nothing newer it
+     * answers "already current" instead of restarting for nothing.
+     */
+    updateRequested?: boolean;
+  } = {},
 ): Promise<MachineUpdateAndRestartResult> {
   const steps: RemoteRuntimeUpdateStep[] = [];
 
@@ -314,13 +341,14 @@ async function runStandaloneUpdateAndRestart(
   steps.push(step("check", "ok", check.detail));
 
   let updateApplied = false;
-  if (!check.available && targetVersion) {
+  const askedFor = targetVersion ?? (options.updateRequested ? check.targetVersion ?? check.currentVersion : null);
+  if (!check.available && askedFor) {
     // An update was asked for and this machine already has it. A plain
     // restart (no version named) is the "fix a stuck machine" button; an
     // update request that would only restart is not.
     return alreadyCurrentResult(
-      check.currentVersion ?? targetVersion,
-      check.targetVersion ?? targetVersion,
+      check.currentVersion ?? askedFor,
+      check.targetVersion ?? askedFor,
       "standalone",
       check.detail,
     );
@@ -504,10 +532,26 @@ export async function runMachineUpdateAndRestart(
   // restart" never moves a machine across tracks: that is the guarded switch,
   // made on the machine itself, which checks its databases first. Such a
   // request updates this machine on its own track instead (T3 does the same).
+  //
+  // An older desktop sent such pins (it offered its own newest build to every
+  // machine). It still asked for an UPDATE, so with nothing newer on this
+  // track the answer is "already current", never a restart that stops every
+  // agent here for nothing; and the reply says the machine stayed on its track.
   const selectedTrack = deps.selectedTrack?.() ?? updateTrackOfVersion(ownVersion);
   const crossesTrack = requestedTargetVersion != null
     && updateTrackOfVersion(requestedTargetVersion) !== selectedTrack;
   const targetVersion = crossesTrack ? null : requestedTargetVersion;
+  const result = await routeMachineUpdateAndRestart(deps, ownVersion, targetVersion, crossesTrack);
+  if (!crossesTrack || !result.ok) return result;
+  return { ...result, message: `Stays on ${updateTrackLabel(selectedTrack)}. ${result.message}` };
+}
+
+async function routeMachineUpdateAndRestart(
+  deps: MachineUpdateAndRestartDeps,
+  ownVersion: string | null,
+  targetVersion: string | null,
+  crossesTrack: boolean,
+): Promise<MachineUpdateAndRestartResult> {
   if (deps.requestDesktopAppUpdate) {
     let routing: DesktopAppUpdateRouting;
     try {
@@ -525,10 +569,13 @@ export async function runMachineUpdateAndRestart(
         // The app is there. Restart only when this brain lags behind it; a
         // brain that already covers the target has nothing to pick up, and
         // restarting it would stop every agent on this machine.
-        if (targetVersion && ownVersion && machineVersionCovers(ownVersion, targetVersion)) {
+        // A cross-track request named no version here; the app's own version
+        // is then what "current" means.
+        const covered = targetVersion ?? (crossesTrack ? answer.currentVersion?.trim() || null : null);
+        if (covered && ownVersion && machineVersionCovers(ownVersion, covered)) {
           return alreadyCurrentResult(
             ownVersion,
-            targetVersion,
+            covered,
             "desktop_app",
             answer.message || `The ADE app is already on ${answer.currentVersion ?? ownVersion}.`,
           );
@@ -554,5 +601,5 @@ export async function runMachineUpdateAndRestart(
       if (answer.outcome !== "unsupported") return desktopAppResult(answer, targetVersion);
     }
   }
-  return await runStandaloneUpdateAndRestart(deps, targetVersion);
+  return await runStandaloneUpdateAndRestart(deps, targetVersion, { updateRequested: crossesTrack });
 }

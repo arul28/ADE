@@ -17,7 +17,6 @@ export function AiFeaturesSection() {
   const [saving, setSaving] = useState(false);
   const [configLoadFailed, setConfigLoadFailed] = useState(false);
   const [scheduledWorkPaused, setScheduledWorkPaused] = useState(false);
-  const [continueAfterRestart, setContinueAfterRestart] = useState(true);
   const [scheduledWork, setScheduledWork] = useState<AgentChatScheduledWorkItem[]>([]);
   const [scheduledWorkError, setScheduledWorkError] = useState<string | null>(null);
 
@@ -48,7 +47,6 @@ export function AiFeaturesSection() {
       const effectiveAiRaw = snapshotResult.snapshot.effective?.ai;
       const effectiveAi = effectiveAiRaw && typeof effectiveAiRaw === "object" ? (effectiveAiRaw as AiConfig) : null;
       setScheduledWorkPaused(effectiveAi?.chat?.scheduledWorkPaused === true);
-      setContinueAfterRestart(effectiveAi?.chat?.continueAfterRestart !== false);
     } finally {
       setLoading(false);
     }
@@ -60,7 +58,7 @@ export function AiFeaturesSection() {
 
   /** Save one chat toggle optimistically; a failed save puts it back and says so. */
   const saveChatToggle = useCallback(async (
-    key: "scheduledWorkPaused" | "continueAfterRestart",
+    key: "scheduledWorkPaused",
     value: boolean,
     setLocal: (value: boolean) => void,
   ) => {
@@ -82,8 +80,6 @@ export function AiFeaturesSection() {
   }, [saving]);
   const handleScheduledWorkPaused = (paused: boolean) =>
     saveChatToggle("scheduledWorkPaused", paused, setScheduledWorkPaused);
-  const handleContinueAfterRestart = (enabled: boolean) =>
-    saveChatToggle("continueAfterRestart", enabled, setContinueAfterRestart);
 
   const handleCancelScheduledWork = useCallback(async (item: AgentChatScheduledWorkItem) => {
     setScheduledWorkError(null);
@@ -109,7 +105,7 @@ export function AiFeaturesSection() {
       : null;
 
   return (
-    <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule, and what happens to chats after a restart.">
+    <ModernSection group="Scheduled work" title="Scheduled work" hint="Jobs agents schedule.">
       <ModernRows>
         <ModernRow
           anchor="scheduled-work"
@@ -124,19 +120,7 @@ export function AiFeaturesSection() {
             />
           }
         />
-        <ModernRow
-          anchor="continue-after-restart"
-          title="Continue chats after restarts"
-          hint={loading ? "Loading…" : configLoadFailed ? "Unavailable until the configuration loads." : "When ADE restarts mid-response — a crash, a force quit, a reboot — the chat picks up where it stopped, and the agent is told which background jobs were stopped. Settled chats stay asleep."}
-          control={
-            <SettingsToggle
-              label="Continue chats after restarts"
-              checked={continueAfterRestart}
-              disabled={unavailable != null || saving}
-              onChange={(enabled) => void handleContinueAfterRestart(enabled)}
-            />
-          }
-        />
+        {/* "Continue chats after restarts" moved to Settings › Chat: one value per machine. */}
         {unavailable ? null : scheduledWorkError ? (
           <ModernRow
             title="Scheduled work is unavailable"

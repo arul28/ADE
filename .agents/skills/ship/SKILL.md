@@ -219,6 +219,17 @@ entry cannot reach `ready-stacked` while any of them is required at its position
 and still uncaptured — record it as `blocked` with the scenario id, or defer it
 to a named higher layer in `deferredProofScenarios`.
 
+**Demo proof gate.** Before the merge, ask: would this change make a good
+demo? A new feature or a visible improvement someone would want to see in
+action does. A small bug fix, a refactor or an internal change does not. If
+it does, the PR must carry at least one clean showcase image or video of it,
+posted with `ade proof publish`: before/after for a visible fix, a demo video
+or images for a new feature, as many as the change has things worth showing.
+The bar is "could be posted to Twitter as is". If it is missing or is scratch
+quality (banners, junk, a tiny subject, cut-off captions), record it properly,
+delete the stale proof, and publish only the final set. Do not merge until it
+is there.
+
 ---
 
 ## ADE deltas to the playbook

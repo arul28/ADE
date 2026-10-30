@@ -1,4 +1,5 @@
-import { authenticate, type CallerTokenEnv } from "./callerToken";
+import * as Sentry from "@sentry/cloudflare";
+import { authenticate, type CallerTokenEnv, type CallerTokenFailureReason } from "./callerToken";
 import { logJevBonusRequest } from "./logging";
 import { utcDayKey } from "./sinkUtils";
 
@@ -10,20 +11,23 @@ import { utcDayKey } from "./sinkUtils";
  * forwards it to TypeSafe's Jev API with ADE's key, which lives only here as
  * the `JEV_API_KEY` secret, and answers with TypeSafe's response unchanged.
  *
- * Each signed-in account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (300
+ * Each signed-in account gets `JEV_BONUS_DAILY_LIMIT` calls a UTC day (500
  * unset), and the fleet `JEV_BONUS_DAILY_GLOBAL_LIMIT` (100,000 unset), so a
  * leaked bearer or a runaway loop has a ceiling in dollars. A call TypeSafe
  * did not answer gives its slot back. Nothing about the question or answer
  * is stored or logged: counts, status and timing only.
  *
  * A Worker without the key answers 503 `jev_unavailable`; the brain then
- * falls back to its built-in rules, as it does for any failure here.
+ * falls back to its built-in rules, as it does for any failure here. Every
+ * failure that is ADE's to fix (no key, a refused key, the spend cap, TypeSafe
+ * down) is also a Sentry issue (`reportBonusProblem`): the brain falls back
+ * quietly, so without one a dead key would look like nobody using Jev.
  */
 
 export const JEV_BONUS_PATH = "/jev/systemone";
 const UPSTREAM_URL = "https://api.typesafe.ai/v1/systemone";
 const DEFAULT_MODEL = "jev-latest";
-const DEFAULT_DAILY_LIMIT = 300;
+const DEFAULT_DAILY_LIMIT = 500;
 const DEFAULT_GLOBAL_DAILY_LIMIT = 100_000;
 /** Jev's own cap is 64k tokens a request; this is well above any ADE question. */
 const MAX_BODY_BYTES = 128 * 1024;
@@ -104,12 +108,67 @@ async function countFor(env: JevBonusEnv, day: string, userId: string): Promise<
   }
 }
 
+/** Every reason a call ends without TypeSafe's answer, as logged on `jev_bonus_request`. */
+type JevBonusReason =
+  | CallerTokenFailureReason
+  | "method_not_allowed"
+  | "not_configured"
+  | "too_large"
+  | "bad_request"
+  | "account_cap"
+  | "global_cap"
+  | "budget_unavailable"
+  | "upstream_unreachable"
+  | "upstream_body_failed"
+  | "upstream_spend_cap"
+  | "upstream_rate_limited"
+  | "upstream_rejected"
+  | "upstream_key_refused"
+  | "upstream_failed";
+
+/**
+ * Failures that are ADE's, not the caller's, become one Sentry issue per
+ * reason (`sentryScrub.admitEvent` caps each to a few an hour). Counts and
+ * statuses only, like the log line. The caller's own problems (a bad token, a
+ * bad request, its account's cap) are not ADE's to fix and stay log lines.
+ */
+const REPORTED_REASONS: Partial<Record<JevBonusReason, "warning" | "error">> = {
+  not_configured: "error",
+  upstream_key_refused: "error",
+  upstream_spend_cap: "warning",
+  upstream_rate_limited: "warning",
+  upstream_failed: "error",
+  upstream_unreachable: "warning",
+  upstream_body_failed: "warning",
+  budget_unavailable: "error",
+  global_cap: "warning",
+};
+
+function reportBonusProblem(reason: JevBonusReason | undefined, status: number, upstreamStatus: number | undefined): void {
+  if (!reason) return;
+  const level = REPORTED_REASONS[reason];
+  if (!level) return;
+  Sentry.captureMessage(`jev_bonus: ${reason}`, {
+    level,
+    fingerprint: ["jev_bonus", reason],
+    tags: { "jev.reason": reason, "jev.status": String(status), ...(upstreamStatus != null ? { "jev.upstream_status": String(upstreamStatus) } : {}) },
+  });
+}
+
+/** Out of calls until the next UTC midnight, when every count starts again. */
+function exhaustedUntilMidnight(nowMs: number): Response {
+  return json({ error: JEV_BONUS_ERRORS.exhausted }, 429, { "retry-after": String(secondsToReset(nowMs)) });
+}
+
 /**
  * What the caller gets when TypeSafe did not answer 2xx. TypeSafe's own limit
- * passes through as a 429 the brain backs off from; a refused key is ADE's
- * problem, not the caller's: 503.
+ * passes through as a 429 the brain backs off from. A 402 is ADE's spend cap
+ * on the key: the same 429 as our own caps, until the next UTC midnight, so
+ * every brain stops asking for the day instead of retrying a spent key. A
+ * refused key is ADE's problem, not the caller's: 503.
  */
-function mapUpstreamFailure(status: number, headers: Headers): { response: Response; reason: string } {
+function mapUpstreamFailure(status: number, headers: Headers, nowMs: number): { response: Response; reason: JevBonusReason } {
+  if (status === 402) return { response: exhaustedUntilMidnight(nowMs), reason: "upstream_spend_cap" };
   if (status === 429) {
     const retryAfter = headers.get("retry-after");
     return {
@@ -143,7 +202,7 @@ export async function handleJevBonusRequest(
   const startedAt = performance.now();
   let upstreamStatus: number | undefined;
   let usage: { inputTokens?: number; outputTokens?: number } = {};
-  const finish = (response: Response, reason?: string): Response => {
+  const finish = (response: Response, reason?: JevBonusReason): Response => {
     logJevBonusRequest({
       status: response.status,
       reason,
@@ -152,6 +211,7 @@ export async function handleJevBonusRequest(
       outputTokens: usage.outputTokens,
       durationMs: performance.now() - startedAt,
     });
+    reportBonusProblem(reason, response.status, upstreamStatus);
     return response;
   };
 
@@ -182,10 +242,7 @@ export async function handleJevBonusRequest(
   const day = utcDayKey(nowMs);
   const userId = authentication.userId;
   const dailyLimit = limit(env.JEV_BONUS_DAILY_LIMIT, DEFAULT_DAILY_LIMIT);
-  const exhausted = (reason: string) => finish(
-    json({ error: JEV_BONUS_ERRORS.exhausted }, 429, { "retry-after": String(secondsToReset(nowMs)) }),
-    reason,
-  );
+  const exhausted = (reason: JevBonusReason) => finish(exhaustedUntilMidnight(nowMs), reason);
   let accountClaimed = false;
   try {
     if (!(await claim(env, day, userId, dailyLimit))) return exhausted("account_cap");
@@ -231,7 +288,7 @@ export async function handleJevBonusRequest(
   }
   if (!upstream.ok) {
     await giveBack();
-    const failure = mapUpstreamFailure(upstream.status, upstream.headers);
+    const failure = mapUpstreamFailure(upstream.status, upstream.headers, nowMs);
     return finish(failure.response, failure.reason);
   }
   try {

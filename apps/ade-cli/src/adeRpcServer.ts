@@ -7,7 +7,10 @@ import {
   type PermissionLevel,
 } from "../../desktop/src/shared/permissionLadder";
 import { resolveCurrentCliEntry } from "./lib/cliDelegation";
-import { RECORDING_MAX_MS } from "../../desktop/src/shared/demoVideo/demoContract";
+import { DEMO_STEP_MAX_CHARS, RECORDING_MAX_MS, parseDemoStepFocus } from "../../desktop/src/shared/demoVideo/demoContract";
+import { createDemoEngineSet } from "../../desktop/src/main/services/demoVideo/demoEngines";
+import { reviewProofFile } from "../../desktop/src/main/services/demoVideo/proofReview";
+import { resolveStoredProofFile } from "../../desktop/src/main/services/prs/prBodyProofStaging";
 import { QUESTION_DECLINED_MODEL_MESSAGE, answersForModel } from "../../desktop/src/shared/pendingInputAnswers";
 import { THREAD_COMMENT_ACTION_NAMES } from "../../desktop/src/shared/threadComments";
 import { ownerOnlyProjectConfigChange } from "../../desktop/src/shared/settingsAgentAccess";
@@ -823,6 +826,18 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
+    name: "review_computer_use_artifact",
+    description: "Check a proof before a person sees it (`ade proof review`). For a video, writes a contact sheet of frames across it (a PNG under the project's .ade/cache/proof-review) to look at; for a picture, returns its path. Both come with findings ADE can tell from the file and its record (too short, no captions, a plain recording, a thin strip).",
+    inputSchema: {
+      type: "object",
+      additionalProperties: false,
+      required: ["artifactId"],
+      properties: {
+        artifactId: { type: "string", minLength: 1 },
+      }
+    }
+  },
+  {
     name: "note_demo_step",
     description: "Add a step caption to the caller's running recordings (`ade proof step`). The demo shows it at the bottom of the video from this moment, and ADE's player lists it as a chapter.",
     inputSchema: {
@@ -830,7 +845,14 @@ const TOOL_SPECS: ToolSpec[] = [
       additionalProperties: false,
       required: ["text"],
       properties: {
-        text: { type: "string", minLength: 1, maxLength: 200 },
+        // Loose on purpose: the handler refuses a caption over DEMO_STEP_MAX_CHARS
+        // with its length and the limit, which a schema error would not say.
+        text: { type: "string", minLength: 1, maxLength: 2000 },
+        focus: {
+          description: "The region the camera holds on for this step: [x, y, width, height] as fractions of the recorded frame.",
+          type: "array",
+          items: { type: "number" },
+        },
         callerRoot: { type: "string" },
         ownerKind: { type: "string" },
         ownerId: { type: "string" },
@@ -1662,6 +1684,7 @@ const READ_ONLY_TOOLS = new Set([
   "get_environment_info",
   "list_computer_use_artifacts",
   "list_broken_computer_use_artifacts",
+  "review_computer_use_artifact",
   "get_computer_use_backend_status",
 ]);
 
@@ -7875,9 +7898,50 @@ async function runTool(args: {
     return { ...rest, screenshotPath, ok: result.problems.every((problem) => problem.kind === "lint") && Boolean(screenshotPath) };
   }
 
+  if (name === "review_computer_use_artifact") {
+    const artifactId = asOptionalTrimmedString(toolArgs.artifactId);
+    if (!artifactId) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the proof's id.");
+    // The same owner rule as listing: a caller reviews only proof it can see.
+    const projectWide = isProjectWideProofMaintenanceAuthorized(session);
+    const owners = resolveAuthorizedProofOwners(runtime, session);
+    if (!projectWide && !owners.length) {
+      throw new JsonRpcError(JsonRpcErrorCode.methodNotFound, "Proof review requires an authenticated owner scope.");
+    }
+    const broker = runtime.computerUseArtifactBrokerService;
+    const artifact = projectWide
+      ? broker.listArtifacts({ artifactId, ...PROOF_LISTING_ARTIFACT_FILTER, limit: 1 })[0]
+      : broker.findProofForOwners({ ids: [artifactId], owners })[0];
+    if (!artifact) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `No proof ${artifactId} in this chat's or lane's proof. Copy the id from a cite: line or the \`id\` field of \`ade proof list --json\`.`,
+      );
+    }
+    const filePath = resolveStoredProofFile(runtime.projectRoot, artifact.uri);
+    if (!filePath) {
+      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, `Proof ${artifactId} has no file on this machine to review (\`ade proof broken\` lists missing files).`);
+    }
+    return await reviewProofFile({
+      artifact: { id: artifact.id, kind: artifact.kind, metadata: artifact.metadata ?? null },
+      logger: runtime.logger,
+      filePath,
+      projectRoot: runtime.projectRoot,
+      engines: createDemoEngineSet({ logger: runtime.logger }).engines(),
+    });
+  }
+
   if (name === "note_demo_step") {
     const text = asOptionalTrimmedString(toolArgs.text);
     if (!text) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "Provide the step's text.");
+    if (text.length > DEMO_STEP_MAX_CHARS) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        `The step caption is ${text.length} characters; keep it to ${DEMO_STEP_MAX_CHARS}: one short phrase about what happens next.`,
+      );
+    }
+    const parsedFocus = toolArgs.focus == null ? null : parseDemoStepFocus(toolArgs.focus);
+    if (parsedFocus && "error" in parsedFocus) throw new JsonRpcError(JsonRpcErrorCode.invalidParams, parsedFocus.error);
+    const focus = parsedFocus?.rect ?? null;
     validateComputerUseOwnerClaims(runtime, session, toolArgs);
     const target = await resolveProofDisplayTarget(runtime, session, toolArgs);
     if (!target.laneId && !target.chatSessionId) {
@@ -7886,7 +7950,7 @@ async function runTool(args: {
         "ADE could not tell which lane or chat this step belongs to. Run it from the lane's worktree or from its chat.",
       );
     }
-    let noted = demoTrackRegistry.noteStep({ laneId: target.laneId, chatSessionId: target.chatSessionId }, text);
+    let noted = demoTrackRegistry.noteStep({ laneId: target.laneId, chatSessionId: target.chatSessionId }, text, undefined, focus);
     // Browser recordings live in the desktop app's own registry. Best effort:
     // a machine with no desktop app attached has no browser recording to caption.
     const browser = getAdeActionDomainServices(runtime).built_in_browser as
@@ -7897,7 +7961,7 @@ async function runTool(args: {
     const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
     if (typeof browser?.noteDemoStep === "function" && callerChatSessionId) {
       try {
-        const scoped = scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text });
+        const scoped = scopeBuiltInBrowserAdeActionArgs(runtime, session, "noteDemoStep", { text, ...(focus ? { focus } : {}) });
         const reply = await Promise.race([
           Promise.resolve(browser.noteDemoStep(scoped)),
           new Promise<null>((resolve) => setTimeout(() => resolve(null), 3_000).unref?.()),
@@ -7908,7 +7972,7 @@ async function runTool(args: {
         runtime.logger.warn("demo_video.browser_step_failed", { error: error instanceof Error ? error.message : String(error) });
       }
     }
-    return { noted, laneId: target.laneId, chatSessionId: target.chatSessionId, text };
+    return { noted, laneId: target.laneId, chatSessionId: target.chatSessionId, text, ...(focus ? { focus } : {}) };
   }
 
   if (name === "link_computer_use_artifacts_to_pr") {

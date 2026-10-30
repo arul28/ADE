@@ -4,10 +4,12 @@
 #   bash scripts/release-tools/betas.sh [count]      # default 5
 #
 # Read-only. One block per beta, newest first: tag, age, commit, whether a
-# stable release already ships that commit, and the PRs its notes list. The
-# last line names the recommended beta: the newest one at least 3 hours old
-# that no stable ships yet. Promote it with release.yml, tag_name=vX.Y.Z (the
-# beta's X.Y.Z) and target_sha=<its commit>; see the release skill.
+# stable release already ships that commit, the PRs its notes list, and the
+# Sentry gate's answer (beta-gate.mjs: it ran, Sentry was receiving errors,
+# and it brought no new ones). The last line names the recommended beta: the
+# newest one that no stable ships yet and that passes the gate. Promote it by
+# pushing the tag vX.Y.Z (the beta's X.Y.Z) at its commit; see the release
+# skill.
 set -uo pipefail
 REPO="${GH_REPO:-arul28/ADE}"
 COUNT="${1:-5}"
@@ -26,6 +28,8 @@ releases="$(gh api "repos/$REPO/releases?per_page=100" --paginate \
 
 now="$(date -u +%s)"
 recommended=""
+gate_unavailable=""
+here="$(cd "$(dirname "$0")" && pwd)"
 while IFS="$(printf '\t')" read -r tag published; do
   [ -n "$tag" ] || continue
   # BSD date (macOS) and GNU date (Linux) parse ISO timestamps differently.
@@ -41,13 +45,26 @@ while IFS="$(printf '\t')" read -r tag published; do
     | grep -oE '\(#[0-9]+\)[[:space:]]*$' | grep -oE '#[0-9]+' | tr '\n' ' ')"
   printf '%s  age=%dh%02dm  commit=%s%s\n  PRs: %s\n' \
     "$tag" $((age / 60)) $((age % 60)) "${sha:-unknown}" "$promoted" "${prs:-none}"
-  if [ -z "$recommended" ] && [ "$age" -ge 180 ] && [ -z "$promoted" ] && [ -n "$sha" ]; then
-    recommended="$tag $sha"
+  # The gate runs only for betas that could still be promoted, newest first,
+  # until one passes.
+  if [ -z "$recommended" ] && [ -z "$promoted" ] && [ -n "$sha" ]; then
+    gate="$(node "$here/beta-gate.mjs" "$tag" 2>&1)"
+    gate_status=$?
+    printf '%s\n' "$gate" | sed 's/^/  gate: /'
+    if [ "$gate_status" -eq 0 ]; then
+      recommended="$tag $sha"
+    elif [ "$gate_status" -eq 2 ]; then
+      gate_unavailable="yes"
+    fi
   fi
 done <<< "$releases"
 
 if [ -n "$recommended" ]; then
   echo "recommended: $recommended"
 else
-  echo "recommended: none (no unshipped beta is 3 h old yet)"
+  if [ -n "$gate_unavailable" ]; then
+    echo "recommended: none (the Sentry gate could not run; never promote without it)"
+  else
+    echo "recommended: none (no unshipped beta passes the Sentry gate yet)"
+  fi
 fi

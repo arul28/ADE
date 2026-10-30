@@ -46,8 +46,11 @@ export function copytruncateLogIfOversized(
   }
 }
 
-export function boundLaunchdLogs(runtimeDir: string): void {
-  for (const name of ["launchd.err.log", "launchd.out.log"]) {
+/** The files launchd (macOS) and the systemd unit (Linux) write the brain's stdout and stderr to. */
+export const SERVICE_OUTPUT_LOG_FILES = ["launchd.err.log", "launchd.out.log", "systemd.err.log", "systemd.out.log"] as const;
+
+export function boundServiceOutputLogs(runtimeDir: string): void {
+  for (const name of SERVICE_OUTPUT_LOG_FILES) {
     copytruncateLogIfOversized(path.join(runtimeDir, name));
   }
 }

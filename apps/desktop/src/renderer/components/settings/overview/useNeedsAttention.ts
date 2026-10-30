@@ -11,8 +11,8 @@ import { MCP_SERVERS_SETTING_KEY, normalizeMcpRegistry } from "../../../../share
 import { humanizeProvider } from "../../usage/usageProviderNames";
 import {
   connectedMachinesFromSnapshot,
-  newestKnownAdeVersion,
-  outdatedMachines,
+  knownAdeVersions,
+  machinesBehindOnTheirTrack,
 } from "../../remoteTargets/remoteMachineModel";
 import { missingMcpSecrets } from "../mcp/useMcpRegistry";
 import { settingsRouteFor } from "../settingsManifest";
@@ -20,7 +20,7 @@ import { isAdeAvailable } from "../../../lib/adeAvailability";
 import { isDegradedSyncSnapshot } from "../../../lib/localSyncStatusReader";
 
 /**
- * Settings → Overview's "Needs attention": every problem ADE can see, from
+ * Settings → General's "Needs attention": every problem ADE can see, from
  * the open project and from this computer, in one list.
  *
  * Read once when the page opens and again on "Check again"; never polled.
@@ -95,8 +95,8 @@ function readFailureItem(failed: string[], recheck: () => Promise<void>): Attent
     severity: "warning",
     title: failed.length === 1 ? `ADE couldn't check ${names}` : `ADE couldn't check ${failed.length} things`,
     detail: `Couldn't read ${names}, so this list may be missing something.`,
-    where: "Overview",
-    route: settingsRouteFor("overview"),
+    where: "General",
+    route: settingsRouteFor("overview.attention"),
     fix: { label: "Check again", run: recheck },
   }];
 }
@@ -282,8 +282,9 @@ function machineItems(
       route: settingsRouteFor("account.computers"),
     });
   }
-  const newest = newestKnownAdeVersion({ currentVersion: update?.currentVersion, latestKnownVersion: update?.latestKnownVersion });
-  const behind = outdatedMachines(connectedMachinesFromSnapshot(snapshot), newest);
+  // Behind on its own track only: a Stable machine is not "older" than this
+  // computer's Beta.
+  const behind = machinesBehindOnTheirTrack(connectedMachinesFromSnapshot(snapshot), knownAdeVersions(update));
   if (behind.length > 0) {
     items.push({
       id: "machines-behind",

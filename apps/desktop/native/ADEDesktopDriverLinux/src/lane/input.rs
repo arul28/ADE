@@ -68,7 +68,8 @@ impl Lane {
                     x.press_named("a", &["control".to_string()])?;
                     x.press_named("backspace", &[])?;
                 }
-                x.type_text(&text)?;
+                let pace_ms = payload.get("typePaceMs").and_then(|v| v.as_u64()).unwrap_or(0);
+                x.type_text(&text, pace_ms)?;
             }
             "setValue" => {
                 let Some((i, e)) = self.target(payload, true)? else {

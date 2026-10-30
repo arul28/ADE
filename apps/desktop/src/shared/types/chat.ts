@@ -25,7 +25,7 @@ import type { ChatErrorPresentation } from "../chatErrorPresentation";
 import type { ChatThreadComment } from "../threadComments";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ClaudePluginUiSnapshot } from "../claudePluginUi";
-import type { ModelId } from "./core";
+import type { ModelId, UpdateChatContinueHold } from "./core";
 import type { CtoCapabilityMode } from "./cto";
 import type { FileDiff } from "./git";
 import type { LaneGitHubIssue, LaneLinearIssue, SessionLinearIssueLink } from "./lanes";
@@ -5872,10 +5872,14 @@ export type AgentChatCreateScheduledWorkResult = {
 export type AgentChatInterruptedChatRef = {
   sessionId: string;
   title: string;
+  /** See `UpdateInterruptedChat.continueHold`; set by `listInterruptedChats`. */
+  continueHold?: UpdateChatContinueHold | null;
 };
 
 export type AgentChatListInterruptedChatsResult = {
   chats: AgentChatInterruptedChatRef[];
+  /** This machine's "Continue chats after restarts". */
+  continueAfterRestart?: boolean;
 };
 
 export type AgentChatArmUpdateResumeResult = {

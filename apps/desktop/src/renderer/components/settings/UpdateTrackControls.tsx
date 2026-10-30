@@ -46,8 +46,8 @@ function trackStatusModel(args: {
   }
   if (track.switching) {
     const label = updateTrackLabel(track.switching);
-    // A downloaded switch is an app-wide state: the app banner owns its
-    // "Restart and switch" (AutoUpdateBanner), so it is not repeated here.
+    // A downloaded switch has one button, "Restart and switch to …", on the
+    // version card above (and the app's prompt elsewhere): not repeated here.
     if (snapshot.status === "ready") return null;
     if (snapshot.status === "checking" || snapshot.status === "downloading") {
       return {

@@ -547,7 +547,10 @@ vanish: the snapshot records `parked: { reason, at }` where `reason` is a typed
 retry" when launch reconciliation proves that a requested install returned on
 the old version. Both provide a **Restart now** action wired to
 `updateQuitAndInstall()`. A normally downloaded `ready` update appears as a
-floating app-shell prompt with its version and a **Restart and install** action,
+floating app-shell prompt with its version and a **Restart and update** action
+(**Restart and switch to Stable** or **to Beta** when the downloaded build is on
+the other track; `updateRestartAction.ts` names it once for the prompt, the
+top-right control, Settings and the dialog),
 alongside the flashing top-right `AutoUpdateControl`. Both actions use the same
 impact confirmation and install handler. Dismissing the floating prompt hides
 it for that version in the current app session; the top-right control remains
@@ -612,10 +615,31 @@ alone is not identity once the OS starts recycling them.
 ### Resuming the chats an update interrupts
 
 Installing an update quits the app and restarts the brain, which stops every
-chat with a live turn. The install confirmation names those chats and offers one
-checkbox (default on) to resume them. When the user accepts with the box
-checked, the list is persisted with the pending install; it is not turned into
-work yet.
+chat with a live turn. The restart dialog draws one row per machine (tile,
+name, track chip when Beta is in the picture, current → target build, what is
+running there, and whether its chats continue). There is no resume checkbox:
+whether a chat continues is the machine's **Continue chats after restarts**
+(Settings › Chat, one value per machine in `~/.ade/continue-after-restart.json`,
+migrated once from the old per-project `ai.chat.continueAfterRestart`: off when
+any project had turned it off). Each chat row comes from
+`listInterruptedChats` with its `continueHold`, worked out by the same rule a
+crash or reboot uses (`continueAfterRestartHold` in `agentChatService.ts`):
+the setting is on, the chat is not archived (a settled chat resumes), it is not
+waiting on the user's answer. An accepted update starts the resume cap again,
+and a chat whose crash recovery already continued it is not resumed a second
+time. When the user accepts, the list is persisted with the pending install; it
+is not turned into work yet.
+
+Another machine is offered the newest build **on its own track**. Each update
+check also reads the newest Stable and Beta `release-manifest.json`
+(`latestByTrack.ts`, one small read per track, never on its own timer; a failed
+or 404 read keeps the last known build, and a manifest naming a build of the
+other track is ignored), and `knownAdeVersions` / `machineUpdateTargetVersion`
+pick the newest known build on that machine's track. A machine whose track has
+no known build here is not called behind. The brain refuses to cross tracks
+too: a pinned build from the other track becomes "newest on this machine's
+track", answers "already current" when nothing is newer instead of restarting,
+and `createMachineUpdateControls` refuses to install such a pin.
 
 The launch that actually lands the install is the only one that arms the resume.
 `reconcilePersistedUpdateState` moves the list onto `recentlyInstalledUpdate`,
@@ -714,7 +738,7 @@ and the health probe uses whatever endpoint `resolveMachineAdeLayout` reports
 ## Automatic installation policy
 
 Packaged builds keep checking for and downloading updates, but restarting to
-install them is manual by default. Settings → ADE service exposes the machine-local
+install them is manual by default. Settings → General (the ADE card) exposes the machine-local
 `AutoUpdatePreferences` contract:
 
 - `automaticInstall: false` by default. A `ready` update waits for the user to

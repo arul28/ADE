@@ -476,13 +476,15 @@ impl XConn {
         self.press_keysym(keysym, &mods)
     }
 
-    pub fn type_text(&mut self, text: &str) -> DResult<()> {
+    /// `pace_ms`: the pause after each character a running recording asked
+    /// for, so its video shows typing; 0 keeps the short default.
+    pub fn type_text(&mut self, text: &str, pace_ms: u64) -> DResult<()> {
         for ch in text.chars() {
             let keysym = keys::keysym_for_char(ch);
             self.press_keysym(keysym, &[])?;
             // A short pause per character: an editor that batches input
             // (a canvas, a terminal) keeps up, and a long text stays bounded.
-            std::thread::sleep(Duration::from_millis(2));
+            std::thread::sleep(Duration::from_millis(pace_ms.clamp(2, 200)));
         }
         Ok(())
     }

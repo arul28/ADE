@@ -9,7 +9,7 @@ import { Banner } from "../ui/notice";
 /**
  * The two update-install preferences, as rows of one panel.
  *
- * `AboutSection` embeds this under its own "Updates" group, so the controls
+ * General's ADE card embeds this under its update track, so the controls
  * carry the rows and the caller carries the group heading — the same split
  * `AppearanceSection` uses.
  */
@@ -56,7 +56,7 @@ export function AutoUpdatesControls() {
       <ModernRow
         anchor="auto-updates"
         title="Install ADE updates automatically"
-        hint="ADE restarts after a countdown you can cancel, and quitting ADE installs it when no agent is running. Off: install from the top-right control."
+        hint="After a countdown you can cancel — or when you quit with no agent running."
         control={
           <SettingsToggle
             label="Install ADE updates automatically"

@@ -164,6 +164,13 @@ h6 {
   color: color-mix(in srgb, var(--color-warning) 82%, var(--shell-header-fg));
 }
 
+/* Stable beside Beta (UpdateTrackChip): the same chip, without the warning hue. */
+.ade-shell-channel-badge[data-static="true"][data-track="stable"] {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  border-color: color-mix(in srgb, var(--color-fg) 14%, transparent);
+  color: color-mix(in srgb, var(--color-fg) 62%, transparent);
+}
+
 .ade-shell-channel-badge:focus-visible {
   outline: 1px solid color-mix(in srgb, var(--color-warning) 70%, transparent);
   outline-offset: 1px;

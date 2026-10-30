@@ -28,6 +28,7 @@ import {
   startNodeSentryDiagnostics,
 } from "../../../desktop/src/main/sentry/machineContext";
 import { hasPriorTelemetryOptOut } from "../../../desktop/src/main/sentry/priorOptOut";
+import { registerBrainServiceSentryDiagnostics } from "./brainServiceDiagnostics";
 
 declare const __ADE_VERSION__: string | undefined;
 
@@ -77,5 +78,6 @@ export function initBrainSentry(args: { mode: "serve" | "service" }): boolean {
   });
   Sentry.setContext("machine", { ...sentryMachineContext(), nodeVersion: process.version });
   startNodeSentryDiagnostics();
+  registerBrainServiceSentryDiagnostics();
   return true;
 }

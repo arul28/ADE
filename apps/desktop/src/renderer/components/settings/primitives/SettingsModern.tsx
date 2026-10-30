@@ -73,6 +73,7 @@ export function ModernRow({
   title,
   hint,
   icon,
+  leading,
   tone = "accent",
   control,
   children,
@@ -82,14 +83,16 @@ export function ModernRow({
   hint?: ReactNode;
   /** A small tinted glyph before the title; omit on a section's only row when the section already carries one. */
   icon?: ReactNode;
+  /** A tile that is already its own picture (a machine's avatar), drawn as is in place of `icon`. */
+  leading?: ReactNode;
   tone?: SettingsTone | string;
   control?: ReactNode;
   children?: ReactNode;
 }) {
   return (
     <div className="ade-ap-rowcard" id={anchor} data-settings-anchor={anchor} style={children ? { flexWrap: "wrap" } : undefined}>
-      <div style={{ minWidth: 0, flex: "1 1 240px", display: "flex", alignItems: "flex-start", gap: 10 }}>
-        {icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null}
+      <div style={{ minWidth: 0, flex: "1 1 240px", display: "flex", alignItems: leading ? "center" : "flex-start", gap: 10 }}>
+        {leading ?? (icon ? <SettingsRowIcon icon={icon} tone={tone} /> : null)}
         <div style={{ minWidth: 0 }}>
           <div className="ade-ap-rowtitle">{title}</div>
           {hint ? <div className="ade-ap-rowhint">{hint}</div> : null}

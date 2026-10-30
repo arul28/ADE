@@ -230,7 +230,7 @@ import { createPrService } from "./services/prs/prService";
 import { createPrPollingService } from "./services/prs/prPollingService";
 import { createPrWatchService } from "./services/prs/prWatchService";
 import { createTerminalWatchService } from "./services/pty/terminalWatchService";
-import { createPrShellLinkWatcher } from "./services/prs/prShellLinkWatcher";
+import { createPrShellLinkWatcher, shellPrBodyRepairVia } from "./services/prs/prShellLinkWatcher";
 import { chatLivenessReader, createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSettlementService";
 import {
   emitPrCardsForChange,
@@ -488,6 +488,10 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService, shouldShowInstalledNotice } from "./services/updates/autoUpdateService";
+import { createLatestByTrackReader } from "./services/updates/latestByTrack";
+import { fetchAdeLatestRelease } from "./services/github/adeReleaseFeed";
+import { fetchReleaseManifestJson } from "../../../ade-cli/src/lib/releaseAssets";
+import { resolveContinueAfterRestart } from "../../../ade-cli/src/services/runtime/continueAfterRestartStore";
 import {
   INSTALL_UPDATE_ARG,
   nativeUpdateMenuItem,
@@ -3416,6 +3420,13 @@ app.whenReady().then(async () => {
           writeSelectedTrack: (track: UpdateTrack) => {
             writeSavedUpdateTrack(track);
           },
+          // The newest build of both tracks, so a machine on the other track
+          // is offered the newest build on its own (Settings › Update other machines).
+          latestByTrack: createLatestByTrackReader({
+            fetchJson: fetchReleaseManifestJson,
+            fetchStableFallback: async () => (await fetchAdeLatestRelease())?.version ?? null,
+            logger: updateLogger,
+          }),
         }
       : {}),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
@@ -3451,6 +3462,17 @@ app.whenReady().then(async () => {
       }
       app.exit(0);
     },
+  });
+  // Once per launch, to Sentry Logs: how many machines run a build is what
+  // the beta gate reads before a beta becomes stable.
+  updateLogger.info("app.started", {
+    version: app.getVersion(),
+    runningTrack: updateTrackOfVersion(app.getVersion()),
+    selectedTrack: hasUpdateFeed ? readSavedUpdateTrack()?.track ?? null : null,
+    packageChannel: normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL) ?? "stable",
+    platform: process.platform,
+    arch: process.arch,
+    afterUpdate: process.argv.includes("--updated"),
   });
   // Installing a waiting update as ADE quits, and the hidden launch that lands
   // it (`installOnQuit.ts`). The probe and pool are read only once a quit asks.
@@ -4874,6 +4896,8 @@ app.whenReady().then(async () => {
 
     const agentChatService = createAgentChatService({
       museQuota,
+      // One value per machine (in-process runtimes in dev share this machine's).
+      readContinueAfterRestart: () => resolveContinueAfterRestart(),
       // A lane a batch move imported here gets the same setup a new lane
       // does: the default lane template, else the project's lane env config.
       runCrossMachineLaneSetup: async (laneId) => {
@@ -5086,6 +5110,9 @@ app.whenReady().then(async () => {
       logger,
       subscribeToEvents: (callback) => agentChatService.subscribeToEvents(callback),
       linkShellPrAction: (args) => prService.linkShellPrAction(args),
+      // The broker is built further down; the closure reads it once a chat
+      // command arrives, long after startup.
+      repairShellPrBody: (args) => shellPrBodyRepairVia({ prService, proof: computerUseArtifactBrokerService })(args),
     });
     prShellLinkWatcher.start();
     prWatchServiceRef = createPrWatchService({
@@ -8782,7 +8809,13 @@ app.whenReady().then(async () => {
               action: "listInterruptedChats",
             })).result);
         for (const chat of refs) {
-          chats.push({ sessionId: chat.sessionId, title: chat.title, projectName, projectRoot });
+          chats.push({
+            sessionId: chat.sessionId,
+            title: chat.title,
+            projectName,
+            projectRoot,
+            ...(chat.continueHold !== undefined ? { continueHold: chat.continueHold } : {}),
+          });
         }
       } catch (error) {
         // Best-effort for the dialogs; a decision that stops agents needs every project.
@@ -8943,6 +8976,7 @@ app.whenReady().then(async () => {
     readMachineActivity: shouldUseInProcessProjectRuntime() ? null : () => localRuntimePool.activitySummary(),
     listOpenProjectChats,
     listConnectedPhones: collectConnectedPhones,
+    readContinueAfterRestart: () => resolveContinueAfterRestart(),
   });
 
   const confirmNoRunningLaneDeleteForQuit = async (ownerWindow?: BrowserWindow | null): Promise<boolean> => {

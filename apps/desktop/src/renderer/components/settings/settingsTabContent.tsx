@@ -4,7 +4,6 @@ import {
   CaretLeft,
   Gauge,
   GithubLogo,
-  Info,
   ShieldCheck,
   Terminal,
   UsersThree,
@@ -16,7 +15,6 @@ import { AppleDevicesSection } from "./AppleDevicesSection";
 import { ModernPage, SettingsColumn, SettingsSectionRail, type SettingsTone } from "./primitives";
 import { ChatSection } from "./ChatSection";
 import { BudgetCapSettings } from "./BudgetCapEditor";
-import { AboutSection } from "./AboutSection";
 import { AdeCliSection } from "./AdeCliSection";
 import { AdeUsageSection } from "./AdeUsageSection";
 import { GitHubIntegrationSection } from "./GitHubIntegrationSection";
@@ -44,7 +42,8 @@ import { SettingsSection } from "./primitives/SettingsRows";
 import { providerDescriptor } from "./providers/descriptors";
 import { SecretsSection } from "./SecretsSection";
 import { ServiceStatusSection } from "./health/HealthService";
-import { SettingsOverview } from "./overview/SettingsOverview";
+import { GeneralPage } from "./general/GeneralPage";
+import { MachinesPage } from "./machines/MachinesPage";
 import { LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
@@ -79,7 +78,7 @@ import { decodeSettingsHash } from "./settingsHash";
  * one of their sections is left (the rest unavailable on this machine).
  */
 const SECTION_LIST_TABS: ReadonlySet<SettingsTabId> = new Set<SettingsTabId>([
-  "service",
+  "advanced",
   "behaviour",
 ]);
 
@@ -303,12 +302,6 @@ const TAB_GROUPS = {
     icon: <Gauge size={15} weight="duotone" />,
     tone: "blue",
   },
-  version: {
-    title: "Version and updates",
-    description: "What is installed here, and how it updates.",
-    icon: <Info size={15} weight="duotone" />,
-    tone: "accent",
-  },
   cli: {
     title: "Command line",
     description: "The ade command in your terminal.",
@@ -374,15 +367,20 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       ),
     },
   ],
-  // Settings opens here. Computer-wide facts are plain IPC to this computer;
-  // the project's come through the tab's binding (unpinned), which is the
-  // machine that owns the project.
-  overview: [
-    { entryIds: ["overview.attention", "overview.glance"], render: () => <SettingsColumn wide><SettingsOverview /></SettingsColumn> },
+  // Settings opens here: what needs attention, you, this machine, and ADE
+  // with every machine's update. Computer-wide facts are plain IPC to this
+  // computer; the project's come through the tab's binding (unpinned), which
+  // is the machine that owns the project.
+  general: [
+    {
+      entryIds: ["overview.attention", "overview.glance", "general.about", "general.update-track", "general.auto-updates", "general.update-other-machines"],
+      render: () => <SettingsColumn wide><GeneralPage /></SettingsColumn>,
+    },
   ],
-  // Computer → ADE service. Everything here is plain IPC to the main process
-  // ADE runs in, so another machine's page names it instead of showing it.
-  service: [
+  // System → Advanced: This computer's service, the ade command, reports and
+  // reset. Everything here is plain IPC to the main process ADE runs in, so it
+  // is only ever about This computer.
+  advanced: [
     {
       entryIds: ["storage.diagnostics"],
       render: () => <ServiceStatusSection />,
@@ -397,18 +395,6 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       title: "Background service",
       group: "service",
     },
-    {
-      entryIds: ["general.about", "general.auto-updates", "general.update-other-machines"],
-      // About has no section file of its own, so the page supplies its anchor.
-      render: () => (
-        <div id="about" data-settings-anchor="about">
-          <AboutSection />
-        </div>
-      ),
-      machine: "local",
-      title: "Version and updates",
-      group: "version",
-    },
     { entryIds: ["general.ade-cli"], render: () => <AdeCliSection />, machine: "local", title: "ADE command line", group: "cli" },
     {
       entryIds: ["general.diagnostics-sharing"],
@@ -418,7 +404,7 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "privacy",
     },
     // Last on purpose: the hard reset is its own section at the very bottom,
-    // never a routine control beside About.
+    // never a routine control.
     {
       entryIds: ["general.reset"],
       render: () => <ResetAdeSection />,
@@ -427,8 +413,13 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
       group: "danger",
     },
   ],
-  // Computer → Behaviour: what this computer does on its own.
+  // App → Behaviour: what this computer does on its own. A machine's own page
+  // (Machines) shows the sections that reach that machine.
   behaviour: [
+    // Behaviour is always This computer. `local`, not `routed`: This computer
+    // can have no pin (a tab bound to another machine, no checkout here), and
+    // with none the section's unpinned calls are plain IPC to this computer.
+    // Another machine's keep awake is a row on its Machines page.
     { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
@@ -539,11 +530,14 @@ export function TabContent({
   standalone = false,
 }: {
   tab: SettingsTabId;
-  /** The machine a Computer page (or the open project) is on. Null for You pages. */
+  /** The machine the page (or the open project) is on. Null for pages with none. */
   machine: SettingsMachinePage | null;
   /** Standalone Settings (no project) also drops sections with nothing to show. */
   standalone?: boolean;
 }) {
+  // A machine's own page lists every machine, offline ones included, and says
+  // so itself.
+  if (tab === "machines") return <SettingsColumn wide><MachinesPage machine={machine} /></SettingsColumn>;
   if (machine && !machine.online) {
     return <MachineUnavailableNotice machine={machine} />;
   }
@@ -577,10 +571,9 @@ export function TabContent({
   ).filter((section) => !standalone || sectionHasAvailableEntries(
     section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds,
   ));
-  const hiddenTitles = machine
-    ? sections.filter((section) => !shown.includes(section)).map((section) => section.title ?? "")
-      .filter(Boolean)
-    : [];
+  // Sections that cannot reach this machine are simply not there: another
+  // machine's own settings are on its Machines page, never a note saying
+  // "open ADE over there".
   const items = shown.map((section) => {
     const entryIds = section.entryIds === "tab" ? settingsEntryIdsForTab(tab) : section.entryIds;
     return {
@@ -593,17 +586,9 @@ export function TabContent({
       ),
     };
   });
-  const notice = machine && hiddenTitles.length > 0 ? (
-    <MachineUnavailableNotice machine={machine} unavailableTitles={hiddenTitles} />
-  ) : null;
   // A tab whose one section is the whole page lays itself out.
   if (items.length === 1 && TAB_SECTIONS[tab]!.length === 1 && !SECTION_LIST_TABS.has(tab)) {
-    return (
-      <>
-        {items[0]!.node}
-        {notice}
-      </>
-    );
+    return <>{items[0]!.node}</>;
   }
   // Otherwise the sections are gathered into their named blocks, in the order
   // each block first appears, and the blocks run top to bottom. A sticky rail
@@ -665,7 +650,6 @@ export function TabContent({
           {list}
         </div>
       ) : list}
-      {notice}
     </SettingsColumn>
   );
 }

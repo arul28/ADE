@@ -221,8 +221,8 @@ public actor SimHelperRuntime {
                 try await session(for: udid).key(phase: phase, usage: usage)
                 emit(.ok(id: id, payload: [:]))
 
-            case let .type(_, udid, text):
-                let unsupported = try await session(for: udid).type(text: text)
+            case let .type(_, udid, text, paceMs):
+                let unsupported = try await session(for: udid).type(text: text, paceMs: paceMs)
                 emit(.ok(id: id, payload: [
                     "typed": text.count - unsupported.count,
                     "unsupported": unsupported.map(String.init),

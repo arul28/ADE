@@ -388,6 +388,12 @@ export type MultiProjectRpcHandlerOptions = {
    */
   machineUpdateControls?: MachineUpdateAndRestartDeps;
   /**
+   * This machine's "Continue chats after restarts" (`continueAfterRestartStore`),
+   * reported in `runtime.updateImpact` so another machine's update dialog can
+   * say what happens to the chats here. Absent (embedded, tests): not reported.
+   */
+  readContinueAfterRestart?: () => boolean;
+  /**
    * Backs `machine.reportPowerTransition`: the desktop's OS-level pre-suspend
    * beat, forwarded into the brain.
    *
@@ -478,6 +484,7 @@ export async function readMachineRuntimeActivitySummary(args: BootedRuntimeSourc
  */
 export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
   personalChatScope: Partial<Pick<PersonalChatScope, "updateImpact">>;
+  readContinueAfterRestart?: () => boolean;
 }): Promise<RuntimeUpdateImpact> {
   const parts: RuntimeUpdateImpact[] = [
     ...await mapBootedProjectRuntimes(args, (runtime, record) => summarizeRuntimeUpdateImpact(runtime, record)),
@@ -485,10 +492,17 @@ export async function readMachineUpdateImpact(args: BootedRuntimeSources & {
       ? await args.personalChatScope.updateImpact()
       : { chats: [], cliSessions: 0, terminals: 0 },
   ];
+  let continueAfterRestart: boolean | undefined;
+  try {
+    continueAfterRestart = args.readContinueAfterRestart?.();
+  } catch {
+    continueAfterRestart = undefined;
+  }
   return {
     chats: parts.flatMap((part) => part.chats),
     cliSessions: parts.reduce((total, part) => total + part.cliSessions, 0),
     terminals: parts.reduce((total, part) => total + part.terminals, 0),
+    ...(typeof continueAfterRestart === "boolean" ? { continueAfterRestart } : {}),
   };
 }
 
@@ -3135,6 +3149,7 @@ export function createMultiProjectRpcRequestHandler(
         projectRegistry,
         scopeRegistry,
         personalChatScope,
+        ...(options.readContinueAfterRestart ? { readContinueAfterRestart: options.readContinueAfterRestart } : {}),
       });
     }
 

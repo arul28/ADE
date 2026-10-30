@@ -22,3 +22,166 @@
     animation: none;
   }
 }
+
+/* What an update does on each machine (MachineUpdateImpact): one grouped
+   panel, a row per machine — tile, name and track, from → to, what runs. */
+.ade-upd-list {
+  display: grid;
+  margin-top: 4px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-upd-row {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  padding: 12px 14px;
+}
+.ade-upd-row + .ade-upd-row {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-upd-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.ade-upd-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 20px;
+}
+.ade-upd-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-upd-control {
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.ade-upd-version {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 5px;
+  font-size: 11.5px;
+  color: var(--kit-text-3);
+}
+.ade-upd-version-to {
+  color: var(--color-fg);
+}
+.ade-upd-outcome {
+  color: var(--kit-text-2);
+}
+.ade-upd-detail {
+  display: grid;
+  gap: 5px;
+  margin-top: 6px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+}
+.ade-upd-headline[data-busy="true"] {
+  color: var(--color-fg);
+}
+.ade-upd-chats {
+  display: grid;
+  gap: 3px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.ade-upd-chats li {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ade-upd-chats li > svg {
+  flex-shrink: 0;
+  color: var(--color-accent);
+}
+.ade-upd-chat-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+}
+.ade-upd-chat-meta,
+.ade-upd-chat-more {
+  flex-shrink: 0;
+  color: var(--kit-text-3);
+}
+.ade-upd-chat-more {
+  padding-left: 18px;
+}
+.ade-upd-continue {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--kit-ok);
+}
+.ade-upd-continue[data-on="false"] {
+  color: var(--kit-text-2);
+}
+.ade-upd-continue[data-on="false"] > svg {
+  color: var(--kit-warn);
+}
+/* "Change": a quiet text link at the end of the continue line. */
+.ade-upd-link {
+  margin-left: 2px;
+  padding: 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--kit-text-3);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.ade-upd-link:hover,
+.ade-upd-link:focus-visible {
+  color: var(--color-fg);
+}
+.ade-upd-phones {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--kit-text-3);
+}
+.ade-upd-continue > svg,
+.ade-upd-phones > svg {
+  flex-shrink: 0;
+}
+.ade-upd-note {
+  color: var(--kit-text-3);
+}
+/* A checkbox inside a row: "Update" on the name line, "Continue" under the chats. */
+.ade-upd-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--kit-text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.ade-upd-check input[type="checkbox"] {
+  width: 14px;
+  height: 14px;
+  margin: 0;
+  flex-shrink: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+.ade-upd-check[data-tone="ok"] {
+  color: var(--kit-ok);
+}

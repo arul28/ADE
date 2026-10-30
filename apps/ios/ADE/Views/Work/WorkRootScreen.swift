@@ -454,7 +454,7 @@ struct WorkRootListScreen: View, Equatable {
   @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   /// By-lane "Fold busy lanes", scoped per project+host like the grouping.
-  @State var foldBusyLanes = false
+  @State var foldBusyLanes = true
   @State var collapsedSectionIdsStorage = ""
   @State var machineFilterStorage = ""
   /// The project+host scope the five view-state properties above currently hold.

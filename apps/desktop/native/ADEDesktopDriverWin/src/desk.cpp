@@ -563,7 +563,7 @@ bool sendKeys(const std::string& key, const std::vector<std::string>& modifiers)
   return sendAll(in);
 }
 
-bool sendText(const std::wstring& text) {
+bool sendText(const std::wstring& text, DWORD paceMs) {
   // One character per SendInput, with a pause. A VK_PACKET key carries its
   // character in input state that a WinUI editor reads late, so a batch of
   // them repeated the last one ("hello from ADE" arrived in Windows 11
@@ -588,7 +588,7 @@ bool sendText(const std::wstring& text) {
     up.ki.dwFlags |= KEYEVENTF_KEYUP;
     std::vector<INPUT> in = {down, up};
     if (!sendAll(in)) return false;
-    Sleep(12);
+    Sleep((std::max)(static_cast<DWORD>(12), (std::min)(paceMs, static_cast<DWORD>(200))));
   }
   return true;
 }

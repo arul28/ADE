@@ -556,9 +556,9 @@ not a detail.
    `record-stop` when you are done.
 
    When it stops, the recording becomes a demo: still time is cut, waits play
-   faster, tap rings are drawn, and the file ends under 10 MB. The camera
-   does not zoom on a phone; pass `record-start --zoom` only when the user
-   asks for zoom. Mark each step with `ade proof step "<what happens
+   faster, tap rings are drawn, and the file ends under 10 MB. The camera does not zoom on a phone; pass
+   `record-start --zoom` only when the user asks for zoom, or hold on one
+   region with `ade proof step --focus`. Mark each step with `ade proof step "<what happens
    next>"`: a caption in the video and a chapter in ADE's player.
    `record-stop` reports `durationMs` (the demo), `wallDurationMs` (real time)
    and `idleCutMs`. Pass `--plain` only when the user asks for the recording

@@ -15,7 +15,8 @@ Every hand-typed step in past releases is where the mistakes came from.
 | Script | Does |
 |---|---|
 | `bash scripts/release-tools/scope.sh` | What each tier needs to ship, and `main`'s `ci-pass` |
-| `bash scripts/release-tools/betas.sh` | The newest betas: age, commit, PRs, and the recommended one to promote |
+| `bash scripts/release-tools/betas.sh` | The newest betas: age, commit, PRs, the Sentry gate's answer, and the recommended one to promote |
+| `node scripts/release-tools/beta-gate.mjs <beta tag>` | The Sentry gate for one beta: it ran, Sentry was receiving errors, and it brought no new ones. Exit 0 pass, 1 fail, 2 could not check |
 | `bash scripts/release-tools/verify-desktop-draft.sh <version>` | Checks the desktop draft; prints `DRAFT OK` or each problem |
 | `bash scripts/release-tools/ios-testflight.sh <mv> <build> <sha>` | Archive → export → inspect → validate → upload → dSYMs to Sentry → wait → groups → tag. Resumable; retries every App Store Connect call. The dSYM upload needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); a `WARNING: Sentry dSYM upload FAILED` line means iOS reports for that build stay unsymbolicated, so rerun |
 
@@ -30,9 +31,12 @@ only when a step goes off the happy path.
   tier to start another; run long waits in the background and keep going.
 - **Desktop bumps the patch only** (`v1.2.108 → v1.2.109`). **iOS keeps its
   marketing version**; the build number is App Store Connect's next one.
-- **Stable promotes a beta.** `beta.yml` builds `vX.Y.Z-beta.N` from `main`
-  every few hours; a stable release rebuilds the commit of a beta the owner
-  picked, as `vX.Y.Z`. Never tag `main`'s head directly.
+- **Stable promotes a beta that passed the Sentry gate.** `beta.yml` builds
+  `vX.Y.Z-beta.N` from `main` every few hours; a stable release rebuilds the
+  commit of a beta, as `vX.Y.Z`. The beta must pass `beta-gate.mjs`: machines
+  ran it, Sentry received errors the whole time it was out, and it brought no
+  new errors. Its age does not count. Never tag `main`'s head directly, and
+  never promote a beta the gate failed or could not check.
 - **Desktop builds only in GitHub Actions.** Never build, sign or upload desktop
   assets from this machine.
 - **Never publish a draft that `verify-desktop-draft.sh` rejects.** npm versions
@@ -67,14 +71,21 @@ bash scripts/release-tools/scope.sh
 bash scripts/release-tools/betas.sh
 ```
 
-Show the owner each beta's version, age, commit and PRs. For new Sentry
-issues, search `firstRelease:ade@<beta version>` in `ade-desktop` and
-`ade-brain` (sentry-cli skill) when a token is at hand; skip it otherwise.
-Recommend the `recommended:` line (the newest beta at least 3 h old that no
-stable ships yet) and **ask which to promote**. The stable version is that
-beta's `X.Y.Z` (`v1.2.127-beta.4` → `v1.2.127`), which is also scope.sh's
-`next`. Pin its commit: `BETA_SHA=<commit>`. No beta, or only one under 3 h
-old, means wait or ask; never release `main`'s head instead.
+It runs the Sentry gate (`beta-gate.mjs`) on each beta that could still be
+promoted, newest first, and recommends the first one that passes. The gate
+needs an `ade-app` Sentry token (`SENTRY_AUTH_TOKEN` env or ADE secret); it
+never passes without one.
+
+Show the owner each beta's version, age, commit, PRs and gate result.
+Promote the `recommended:` line; ask first only when the owner is present and
+asked to choose (a scheduled run promotes it without asking). The stable
+version is that beta's `X.Y.Z` (`v1.2.127-beta.4` → `v1.2.127`), which is
+also scope.sh's `next`. Pin its commit: `BETA_SHA=<commit>`.
+
+`recommended: none` means no desktop release this run: report each beta's
+gate failure (no machine ran it, Sentry dropped errors, or new errors with
+their issue ids) and carry on with the other tiers. Never release `main`'s
+head instead, and never promote past a failed gate.
 
 If `beta.yml` is failing, the open **Beta build failed** issue names the run.
 
@@ -132,11 +143,17 @@ git commit -m "docs(release): v<V> release notes" && git push origin main
 ### 3. Start the release (desktop only)
 
 The beta's commit already has a green `ci-pass` (betas are built only from
-one). Dispatch the release on it; the workflow creates the `v<V>` tag there.
+one). Push the `v<V>` tag at that commit yourself; the push starts
+`release.yml` on it.
 
 ```bash
-gh workflow run release.yml --repo arul28/ADE -f tag_name=v<V> -f target_sha=$BETA_SHA
+git tag v<V> $BETA_SHA && git push origin v<V>
 ```
+
+Do not dispatch `release.yml` instead: the tag rule ("Protect release tags")
+lets only an admin create a stable `v*` tag, so the workflow's own token is
+refused (HTTP 422) at the publish step, and dispatching as well as pushing
+starts two runs.
 
 Right after (or right away on an iOS-only release), start iOS in the
 background. It does not need the desktop draft. TestFlight builds will move
@@ -211,7 +228,9 @@ One short block:
 | `main`'s `ci-pass` red before notes | Read the failed job. Flaky → rerun it. Secret-scan false positive → allowlist it in `.gitleaks.toml` in a PR. Real → stop. |
 | Release `verify` job fails | Get `ci-pass` green on the same SHA, then `gh run rerun <id> --failed`. |
 | A failed release left its tag behind | `release-publish.yml` creates the tag before the draft. To build again at a different commit, delete the private draft and the tag first: `gh release delete v<V> --repo arul28/ADE --yes` (drafts only; never a public release), then `git push origin :refs/tags/v<V>`. |
-| No beta to promote | `beta.yml` failing: read the **Beta build failed** issue. Beta too new: wait, or `gh workflow run beta.yml -f force=true` only if the owner asks. |
+| No beta to promote | `beta.yml` failing: read the **Beta build failed** issue. Every beta fails the gate: report why and skip desktop this run. No machine ran it: it waits for a Beta machine. `gh workflow run beta.yml -f force=true` only if the owner asks. |
+| `beta-gate.mjs` exits 2 | It could not check (no token, Sentry unreachable). Fix that; never read it as a pass. |
+| Publish step: `Reference update failed (HTTP 422)` | The run tried to create the stable tag itself. Push `v<V>` at the run's commit (step 3), then `gh run rerun <id> --failed`. |
 | Mac job: Apple network error | `gh run rerun <id> --failed`, once. |
 | Notarization stuck > 15 min | `gh run cancel <id>`, then `gh run rerun <id> --failed`. |
 | `verify-desktop-draft.sh` fails | Keep the draft private. reference.md → "Draft release verification". |

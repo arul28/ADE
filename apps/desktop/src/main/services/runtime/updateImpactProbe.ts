@@ -30,6 +30,11 @@ export type UpdateImpactProbeDeps = {
    */
   listOpenProjectChats: (strict: boolean) => Promise<UpdateInterruptedChat[]>;
   listConnectedPhones: () => Promise<UpdateInstallImpactPhone[]>;
+  /**
+   * This machine's "Continue chats after restarts", for an answer that did
+   * not carry it (in-process runtimes, an older brain).
+   */
+  readContinueAfterRestart?: () => boolean;
 };
 
 export type UpdateImpactProbe = {
@@ -138,7 +143,19 @@ export function createUpdateImpactProbe(deps: UpdateImpactProbeDeps): UpdateImpa
           ms: Date.now() - startedAt,
         });
       }
-      return { ...impact, connectedPhones };
+      let continueAfterRestart = impact.continueAfterRestart;
+      if (continueAfterRestart === undefined && deps.readContinueAfterRestart) {
+        try {
+          continueAfterRestart = deps.readContinueAfterRestart();
+        } catch {
+          continueAfterRestart = undefined;
+        }
+      }
+      return {
+        ...impact,
+        ...(continueAfterRestart !== undefined ? { continueAfterRestart } : {}),
+        connectedPhones,
+      };
     },
   };
 }

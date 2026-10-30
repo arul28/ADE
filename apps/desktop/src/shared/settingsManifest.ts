@@ -24,12 +24,19 @@ import { SCOPE_COPY, type SettingScope, type SettingWebScope } from "./types/set
 export type { SettingScope, SettingWebScope } from "./types/settingsScope";
 
 export const SETTINGS_TAB_IDS = [
-  "overview",
+  // Settings opens here: you, this machine, ADE and its updates on every
+  // machine, and anything that needs attention. Replaces Overview.
+  "general",
   "account",
-  "chat",
-  "notifications",
-  "mcp",
   "stats",
+  "chat",
+  "agents",
+  "mcp",
+  "ade-mcp",
+  "notifications",
+  "appearance",
+  "behaviour",
+  "apple",
   // Project → Lanes keeps the id `lanes-git` so every link ever shipped to it
   // still lands.
   "lanes-git",
@@ -40,31 +47,30 @@ export const SETTINGS_TAB_IDS = [
   "location",
   "secrets",
   "integrations",
-  "service",
-  "agents",
-  "apple",
-  "appearance",
-  "behaviour",
-  "ade-mcp",
+  // Every machine on one page; a machine opens the sections that work for it.
+  "machines",
+  // The background service, the ade command, reports and reset.
+  "advanced",
 ] as const;
 
 export type SettingsTabId = (typeof SETTINGS_TAB_IDS)[number];
 
 /**
- * The sidebar: Overview on its own, then three groups, one per place a setting
- * can live:
+ * The sidebar, top to bottom:
  *
- *  - **You** applies everywhere you sign in.
- *  - **Project** is the open project. Its pages always act on the machine that
- *    owns the project (the tab's binding), so they have no machine picker, and
- *    they are not shown when no project is open.
- *  - **Computer** is one entry per machine (This computer, then each connected
- *    one). Its pages read and write through that machine's pin.
+ *  - **General** on its own: Settings opens here.
+ *  - **You**: the account and its usage.
+ *  - **App**: how ADE behaves for you — chat, providers, MCP, notifications,
+ *    and this computer's appearance and habits.
+ *  - **Project**: the open project. Its pages always act on the machine that
+ *    owns the project (the tab's binding), and are not shown with no project.
+ *  - **System**: every machine on one page, and the advanced pages.
  *
- * The group IS the scope — that is the whole reorganisation in one sentence.
- * The ids (`account`, `machines`) predate the labels and stay as they are.
+ * Another machine is reached from Machines or the Providers picker, never by
+ * a copy of every page per machine. The ids `overview` and `machines` predate
+ * these labels and stay as they are.
  */
-export type SettingsGroupId = "overview" | "account" | "project" | "machines";
+export type SettingsGroupId = "overview" | "account" | "app" | "project" | "machines";
 
 export type SettingsTab = {
   id: SettingsTabId;
@@ -101,17 +107,20 @@ export type SettingsGroup = {
  * Render order: broadest reach to narrowest.
  */
 export const SETTINGS_GROUPS: readonly SettingsGroup[] = [
-  // Overview is one row above the groups, with no heading of its own.
-  { id: "overview", label: "Overview", scope: "account" },
+  // General is one row above the groups, with no heading of its own.
+  { id: "overview", label: "General", scope: "machine" },
   { id: "account", label: "You", scope: "account" },
+  { id: "app", label: "App", scope: "account" },
   { id: "project", label: "Project", scope: "account-repo" },
-  // The Computer group lists machines, not pages; its pages hang under the
-  // selected machine. Machine names come from `shared/machineIdentity`.
-  { id: "machines", label: "Computer", scope: "machine" },
+  { id: "machines", label: "System", scope: "machine" },
 ] as const;
 
-/** The pages that exist once per machine (the Computer group). */
-export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["service", "agents", "apple", "appearance", "behaviour"];
+/**
+ * Pages about one machine that another machine can be picked for, with
+ * `?machine=<id>`: Providers (its picker) and Machines (a machine's own page).
+ * Absent means This computer.
+ */
+export const MACHINE_SETTINGS_TAB_IDS: readonly SettingsTabId[] = ["agents", "machines"];
 
 export function isMachineSettingsTab(tab: SettingsTabId): boolean {
   return MACHINE_SETTINGS_TAB_IDS.includes(tab);
@@ -128,13 +137,11 @@ export function isProjectSettingsTab(tab: SettingsTabId): boolean {
 }
 
 /**
- * Machines pages that describe the screen in front of you, not the machine's
- * runtime. Appearance is painted by the window you are looking at and kept in
- * its own storage, so it has one page, under This computer. Apple devices is
- * edited from the computer whose simulators it drives. A remote machine has no
- * copy of either to show or edit from here.
+ * Pages about This computer and only it: its screen (Appearance), its habits
+ * (Behaviour), its simulators (Apple devices), its service (Advanced) and its
+ * overview (General). Another machine's own settings are on its Machines page.
  */
-export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["appearance", "apple"];
+export const THIS_COMPUTER_ONLY_TAB_IDS: readonly SettingsTabId[] = ["general", "appearance", "behaviour", "apple", "advanced"];
 
 export function isThisComputerOnlyTab(tab: SettingsTabId): boolean {
   return THIS_COMPUTER_ONLY_TAB_IDS.includes(tab);
@@ -150,29 +157,42 @@ export function isAccountOnlyTab(tab: SettingsTabId): boolean {
   return ACCOUNT_ONLY_TAB_IDS.includes(tab);
 }
 
-/** A Computer page that follows the picked machine (every one but This computer's own). */
+/** A page that follows the picked machine (`?machine=`): Providers and Machines. */
 export function isMachineSelectableSettingsTab(tab: SettingsTabId): boolean {
-  return isMachineSettingsTab(tab) && !isThisComputerOnlyTab(tab);
+  return isMachineSettingsTab(tab);
 }
 
 export const SETTINGS_TABS: readonly SettingsTab[] = [
-  // ── Overview: where Settings opens ─────────────────────────────────────
-  // No description: the page is what needs attention, then a glance at each area.
-  { id: "overview", label: "Overview", group: "overview" },
+  // ── General: where Settings opens ──────────────────────────────────────
+  // No description: the page is you, this machine and ADE, at a glance.
+  { id: "general", label: "General", group: "overview" },
 
-  // ── You: applies everywhere ─────────────────────────────────────────────
+  // ── You ─────────────────────────────────────────────────────────────────
   // No description: the page opens on your name and email.
   { id: "account", label: "Account", group: "account" },
-  { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "account" },
-  { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "account" },
+  { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
+
+  // ── App ─────────────────────────────────────────────────────────────────
+  { id: "chat", label: "Chat", description: "How the chat transcript reads, and what the composer does.", group: "app" },
+  // No description. The page is a list of named providers with their status,
+  // under one picker for the machine they run on.
+  { id: "agents", label: "Providers", group: "app" },
   // The list follows the account. The page also shows what this computer and
   // this project do with it, because that is where a server is switched off.
-  { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "account" },
-  { id: "stats", label: "Usage", description: "Spend and pacing across your providers and machines.", group: "account" },
+  { id: "mcp", label: "MCP servers", description: "Tools you add once. Every ADE agent gets them, on every computer.", group: "app" },
   // One MCP server for the account: one URL reaches every computer you
   // include. The id stays `ade-mcp`, so links from when it was a Computer page
   // still land here.
-  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor use ADE on your computers.", group: "account" },
+  { id: "ade-mcp", label: "ADE MCP", description: "Let AI apps like claude.ai, ChatGPT and Cursor use ADE on your computers.", group: "app" },
+  { id: "notifications", label: "Notifications", description: "What ADE tells you about running work, and where.", group: "app" },
+  // Appearance is per computer: each screen has its own theme, fonts and
+  // terminal, and none of it follows the account.
+  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "app" },
+  { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser on this computer.", group: "app" },
+  // Apple devices is per computer: each Mac has its own simulators and its own
+  // network. Values are filed under this device's account scope so the brain
+  // on this computer can read the remote streaming cap (see accountSettingsSync).
+  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "app" },
 
   // ── Project: the open project, on the machine that owns it ──────────────
   { id: "lanes-git", label: "Lanes", description: "How new lanes start, and every lane in this project.", group: "project" },
@@ -182,19 +202,10 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "secrets", label: "Secrets", description: "This project, on every computer.", group: "project" },
   { id: "integrations", label: "Integrations", description: "GitHub, Linear and Jira for this project.", group: "project" },
 
-  // ── Computer: one set of these pages per machine ───────────────────────
-  { id: "service", label: "ADE service", description: "The background service, version and updates, and the ade command.", group: "machines" },
-  // No description. The page is a list of named providers with their status —
-  // a sentence restating that above it is the caption the owner called out.
-  { id: "agents", label: "Providers", group: "machines" },
-  // Apple devices is per computer: each Mac has its own simulators and its own
-  // network. Values are filed under this device's account scope so the brain
-  // on this computer can read the remote streaming cap (see accountSettingsSync).
-  { id: "apple", label: "Apple devices", description: "Simulator display, recording overlays, and remote streaming on this computer.", group: "machines" },
-  // Appearance is per computer: each screen has its own theme, fonts and
-  // terminal, and none of it follows the account.
-  { id: "appearance", label: "Appearance", description: "How ADE looks on this computer: theme, fonts and terminal.", group: "machines" },
-  { id: "behaviour", label: "Behaviour", description: "Sleep, screen capture, links, and the ADE browser.", group: "machines" },
+  // ── System ──────────────────────────────────────────────────────────────
+  // No description: the page is the machines themselves.
+  { id: "machines", label: "Machines", group: "machines" },
+  { id: "advanced", label: "Advanced", description: "The background service, the ade command, reports and reset.", group: "machines" },
 ] as const;
 
 /**
@@ -221,7 +232,7 @@ export function groupScopeHint(group: SettingsGroupId): string {
  * sidebar silently moved the default landing page — the kind of change that is
  * invisible in review and obvious to a user who opens Settings every day.
  */
-export const DEFAULT_SETTINGS_TAB: SettingsTabId = "overview";
+export const DEFAULT_SETTINGS_TAB: SettingsTabId = "general";
 
 /**
  * Where `/account` lands inside a project. The standalone account page is
@@ -315,14 +326,15 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Found on this computer",
   },
 
-  // ── Overview ─────────────────────────────────────────────────────────────
-  // Settings opens here. Both cards read this computer over plain IPC and the
+  // ── General ──────────────────────────────────────────────────────────────
+  // Settings opens here. Its cards read this computer over plain IPC and the
   // open project through the tab's binding, which a browser has neither of.
+  // The ids keep `overview.` and `general.`: deeplinks and telemetry hold them.
   {
     id: "overview.attention",
     label: "Needs attention",
     keywords: ["problems", "issues", "fix", "health", "doctor", "broken", "warnings", "errors", "check"],
-    tab: "overview",
+    tab: "general",
     anchor: "needs-attention",
     scope: "machine",
     web: "hidden",
@@ -330,21 +342,21 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "overview.glance",
-    label: "At a glance",
+    label: "You and this machine",
     keywords: ["summary", "status", "version", "disk", "free space", "lanes", "usage", "sign in", "dashboard"],
-    tab: "overview",
+    tab: "general",
     anchor: "at-a-glance",
     scope: "machine",
     web: "hidden",
     group: "Overview",
   },
 
-  // ── Computer → ADE service ───────────────────────────────────────────────
+  // ── General › ADE, and System → Advanced ─────────────────────────────────
   {
     id: "general.background-service",
     label: "Background service",
     keywords: ["background", "service", "brain", "stop", "quit", "agents", "login item", "daemon", "runtime"],
-    tab: "service",
+    tab: "advanced",
     anchor: "background-service",
     scope: "machine",
     // Stopping the service is a desktop action on this computer.
@@ -355,7 +367,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.quit-confirmation",
     label: "Ask before quitting",
     keywords: ["quit", "close", "exit", "confirm", "background", "agents", "don't ask again"],
-    tab: "service",
+    tab: "advanced",
     anchor: "quit-confirmation",
     scope: "machine",
     // The question is asked by the desktop app when it quits.
@@ -366,7 +378,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "storage.diagnostics",
     label: "Service status",
     keywords: ["diagnostics", "debug", "health", "troubleshoot", "slow", "failed", "memory", "repair", "restart", "brain", "service"],
-    tab: "service",
+    tab: "advanced",
     anchor: "diagnostics",
     scope: "machine",
     web: "hidden",
@@ -374,19 +386,30 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.about",
-    label: "About ADE",
-    keywords: ["version", "build", "license", "logs", "support"],
-    tab: "service",
+    label: "ADE version",
+    keywords: ["version", "build", "license", "logs", "support", "about", "about ade", "update", "restart"],
+    tab: "general",
     anchor: "about",
     scope: "machine",
     web: "hidden",
     group: "Version and updates",
   },
   {
+    id: "general.update-track",
+    label: "Update track",
+    keywords: ["stable", "beta", "track", "channel", "prerelease", "switch", "builds"],
+    tab: "general",
+    anchor: "update-track",
+    scope: "machine",
+    // Switching installs a build on this computer.
+    web: "hidden",
+    group: "Version and updates",
+  },
+  {
     id: "general.auto-updates",
     label: "Automatic updates",
-    keywords: ["update", "upgrade", "release", "channel", "version"],
-    tab: "service",
+    keywords: ["update", "upgrade", "release", "channel", "version", "track", "stable", "beta", "update track"],
+    tab: "general",
     anchor: "auto-updates",
     scope: "machine",
     web: "hidden",
@@ -394,9 +417,9 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
   },
   {
     id: "general.update-other-machines",
-    label: "Update other machines",
+    label: "Updates on every machine",
     keywords: ["update", "upgrade", "version", "machines", "computers", "remote", "update all", "restart"],
-    tab: "service",
+    tab: "general",
     anchor: "update-other-machines",
     scope: "machine",
     // A browser cannot ask a machine to update itself.
@@ -407,7 +430,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.ade-cli",
     label: "ADE command line",
     keywords: ["cli", "terminal", "install", "path", "shell"],
-    tab: "service",
+    tab: "advanced",
     anchor: "ade-cli",
     scope: "machine",
     web: "hidden",
@@ -420,7 +443,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     // coin flip for whoever is looking for the report button.
     label: "Send a report to ADE",
     keywords: ["diagnostics", "crash", "report", "report issue", "error", "send", "support"],
-    tab: "service",
+    tab: "advanced",
     anchor: "diagnostics-sharing",
     scope: "machine",
     // The report is built on this machine by the desktop app; a browser cannot build one.
@@ -431,14 +454,27 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     id: "general.reset",
     label: "Reset ADE",
     keywords: ["reset", "uninstall", "remove", "wipe", "start over", "fresh install", "broken"],
-    tab: "service",
+    tab: "advanced",
     anchor: "reset-ade",
     scope: "machine",
     web: "hidden",
     group: "Reset",
   },
 
-  // ── Computer → Behaviour ─────────────────────────────────────────────────
+  // ── System → Machines ────────────────────────────────────────────────────
+  {
+    id: "machines.list",
+    label: "Machines",
+    keywords: ["computers", "machines", "remote", "status", "version", "track", "disk", "service", "online", "offline", "mac studio", "windows"],
+    tab: "machines",
+    anchor: "machines-list",
+    scope: "machine",
+    // A browser has no list of machines of its own to show.
+    web: "hidden",
+    group: "Machines",
+  },
+
+  // ── App → Behaviour ──────────────────────────────────────────────────────
   {
     id: "general.keep-awake",
     label: "Keep this computer awake",
@@ -1111,6 +1147,20 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Voice",
   },
   {
+    id: "chat.continue-after-restart",
+    label: "Continue chats after restarts",
+    keywords: ["resume", "restart", "update", "crash", "reboot", "pick up", "continue", "auto resume"],
+    tab: "chat",
+    // The same anchor it had under Notifications › Scheduled work, so links
+    // made then still land: a `#hash` names the card and wins over `?tab=`.
+    anchor: "continue-after-restart",
+    // `~/.ade/continue-after-restart.json`: one value per machine, read by
+    // that machine's brain when it decides a resume.
+    scope: "machine",
+    web: "hidden",
+    group: "Restarts",
+  },
+  {
     id: "chat.voice-conversations",
     label: "Voice conversations",
     keywords: ["voice", "talk", "speak", "realtime", "codex voice", "personality", "call", "conversation"],
@@ -1542,28 +1592,29 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   "ade-usage": "stats",
   usage: "stats",
   secret: "secrets",
-  // General was split up: ADE itself went to Computer → ADE service, the
-  // computer's habits to Computer → Behaviour, and the project's folder to
-  // Project → Location. A bare `?tab=general` opens ADE service, where most of
-  // it went; a `#hash` on the same link still lands on its own card.
-  general: "service",
+  // Overview became General (Settings opens there), and Computer → ADE
+  // service split in two: its version and updates are on General, the
+  // service, the ade command, reports and reset on System → Advanced. A
+  // `#hash` on an old link still lands on its own card.
+  overview: "general",
+  service: "advanced",
   // Health (once tab id `storage`, now Storage & cleanup's id) was split up
   // too: its space, cleanups and sessions are on Project → Storage & cleanup,
   // its lanes on Project → Lanes, its project checks on Project → Location,
-  // its service on Computer → ADE service, and its summary is the Overview.
+  // its service on System → Advanced, and its summary is General.
   disk: "storage",
   space: "storage",
   cleanup: "storage",
   cleanups: "storage",
-  health: "overview",
-  diagnostics: "service",
+  health: "general",
+  diagnostics: "advanced",
   archive: "storage",
   archived: "storage",
   // Swept into General before; now each has a real home.
   workspace: "location",
   project: "location",
   "project-location": "location",
-  context: "service",
+  context: "advanced",
   integrations: "integrations",
   sync: "account",
   devices: "account",
@@ -1572,10 +1623,18 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   linear: "integrations",
   "computer-use": "behaviour",
   behavior: "behaviour",
-  onboarding: "overview",
-  help: "overview",
-  tours: "overview",
-  home: "overview",
+  onboarding: "general",
+  help: "general",
+  tours: "general",
+  home: "general",
+  // The per-machine pages under Computer are gone: each machine is on
+  // System → Machines, and its own settings open from there.
+  computer: "machines",
+  computers: "machines",
+  "this-computer": "machines",
+  "ade-service": "advanced",
+  about: "general",
+  updates: "general",
   lanes: "lanes-git",
   "session-lifecycle": "storage",
   // The Attention center became the Activity pane, and Activity's settings
@@ -1625,6 +1684,8 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   // Reset ADE lived inside the About card (#1410) before it got its own section.
   "about.reset": "general.reset",
   "auto-updates": "general.auto-updates",
+  // Overview's two cards became General.
+  overview: "overview.attention",
   // Moved out of Notifications when Activity got its own tab.
   "attention-sounds": "activity.sounds",
   "hide-previews": "activity.hide-details",
@@ -1684,14 +1745,17 @@ export function settingsTabForRoute(route: string): SettingsTabId {
 }
 
 /**
- * Whether a route is a machine-scoped settings page: one of the
- * Computer pages (ADE service, Providers and the rest). Those describe one
- * computer, so a project must never remember one as its place to return to.
+ * Whether a route is a machine-scoped settings page: Providers or Machines
+ * (a picked machine), or one of This computer's own pages (Advanced,
+ * Appearance, Behaviour, Apple devices). Those describe one computer, so a
+ * project must never remember one as its place to return to. General is
+ * where Settings opens, as Overview was, so it is remembered like Overview.
  */
 export function isMachineScopedSettingsRoute(route: string): boolean {
   const pathname = route.split(/[?#]/, 1)[0] ?? "";
   if (pathname !== "/settings" && !pathname.startsWith("/settings/")) return false;
-  return isMachineSettingsTab(settingsTabForRoute(route));
+  const tab = settingsTabForRoute(route);
+  return isMachineSettingsTab(tab) || (isThisComputerOnlyTab(tab) && tab !== "general");
 }
 
 /** The route a palette entry or deeplink should navigate to. */
@@ -1771,7 +1835,7 @@ export function settingsEntryLabelPath(entry: SettingEntry, machineName?: string
   const group = tabGroup(entry.tab);
   const parts = [groupLabel(group)];
   const machine = machineName?.trim();
-  if (group === "machines" && machine) parts.push(machine);
+  if (isMachineSelectableSettingsTab(entry.tab) && machine) parts.push(machine);
   const tabLabel = settingsTabLabel(entry.tab);
   if (group !== "overview" || tabLabel !== parts[0]) parts.push(tabLabel);
   if (entry.label.trim().toLowerCase() !== tabLabel.toLowerCase()) parts.push(entry.label);

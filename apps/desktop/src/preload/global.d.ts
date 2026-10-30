@@ -1651,6 +1651,17 @@ declare global {
         jevDecide: <Q extends JevQuestions>(request: JevDecideRequest<Q>, pin?: OpenProjectBinding | null) => Promise<JevAnswers<Q> | null>;
         /** The helper's availability, breaker and counts; `null` when that machine cannot say. */
         jevStatus: (pin?: OpenProjectBinding | null) => Promise<JevStatus | null>;
+        /**
+         * "Continue chats after restarts", one value per machine. Unpinned:
+         * This computer; with a pin, that machine's brain.
+         */
+        getContinueAfterRestart: (pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
+        setContinueAfterRestart: (enabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
+        /**
+         * The update track a machine saved (`~/.ade/update-track.json`), or
+         * null when it follows its build. Unpinned: This computer.
+         */
+        getMachineUpdateTrack: (pin?: OpenProjectBinding | null) => Promise<{ track: "stable" | "beta" | null }>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;

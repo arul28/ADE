@@ -211,13 +211,18 @@ the label or far-right chevron toggles it, while the label remains the only
 keyboard/assistive-technology stop. A collapsed header folds its count into the
 label (`Lane name (3)`, `Settled (12)`); an expanded header drops the count
 because its rows are visible. Fully quiet lanes and the global Snoozed/Settled
-shelves are closed-by-default three-state disclosures: no marker means never
+shelves are closed-by-default three-state disclosures. The Working, Snoozed
+and Settled shelf headers count chats, not lanes: the visible top-level rows of
+the lanes on the shelf (nested subagents and attached shells ride on their
+parent's card) plus pending handoffs. No marker means never
 touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
 removing the marker closes them again. Notification deep links add the open
 marker so a Settled destination cannot remain hidden.
 
 In by-lane list mode the toolbar's **Focus** pill
-(persisted as `workFoldBusyLanes`) moves every lane that has live work and
+(persisted as `workFoldBusyLanes`, on by default; work-view state v7 turned it
+on once for every older saved view, and turning it off afterwards sticks) moves
+every lane that has live work and
 nothing waiting on the user onto a collapsed **Working** shelf, the first shelf
 inside the quiet zone (above Snoozed and Settled, still drawn in the working
 colour with the working glyph). Only the user opens or closes it: the open
