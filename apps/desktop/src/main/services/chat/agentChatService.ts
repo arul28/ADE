@@ -15944,17 +15944,22 @@ export function createAgentChatService(args: {
     signal?: AbortSignal,
     parseLine: (raw: string) => AgentChatEventEnvelope[] = parseAgentChatTranscript,
     lineMayMatch?: (line: Buffer) => boolean,
-  ): Promise<void> => {
+  ): Promise<{ complete: boolean }> => {
     const transcriptPath = await resolveTranscriptPathForSessionId(sessionId, signal);
-    if (!transcriptPath) return;
+    if (!transcriptPath) return { complete: true };
     const logicalSize = await readHistoryFileSize(transcriptPath);
     const scanStart = Math.max(0, logicalSize - MAX_TRANSPARENT_HISTORY_BYTES);
+    // False when the scan saw less than the whole file: an older part past the
+    // window, or a line too long to parse. A caller that needs every event of a
+    // kind (the stale-run sweep) reads the full file instead.
+    let complete = scanStart === 0;
     let readOffset = Math.max(0, scanStart - 1);
     let carry: Buffer = Buffer.alloc(0);
     let skipOversizedLine = false;
     let alignFirstLine = readOffset > 0;
 
     const processLine = (line: Buffer): void => {
+      if (line.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) complete = false;
       if (line.length === 0 || line.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) return;
       if (lineMayMatch && !lineMayMatch(line)) return;
       const raw = line.toString("utf8");
@@ -15979,6 +15984,8 @@ export function createAgentChatService(args: {
       if (alignFirstLine || skipOversizedLine) {
         const firstNewline = buffer.indexOf(0x0a);
         if (firstNewline < 0) {
+          // Still inside a line whose start was cut by the window (already not
+          // complete) or one already over the limit.
           skipOversizedLine = true;
           alignFirstLine = false;
           continue;
@@ -15999,9 +16006,11 @@ export function createAgentChatService(args: {
       if (carry.length > TRANSCRIPT_SCAN_MAX_LINE_BYTES) {
         carry = Buffer.alloc(0);
         skipOversizedLine = true;
+        complete = false;
       }
     }
     if (!skipOversizedLine && carry.length > 0) processLine(carry);
+    return { complete };
   };
 
   const readRecentTranscriptEnvelopesForSessionIdAsync = async (
@@ -16099,14 +16108,16 @@ export function createAgentChatService(args: {
   const staleRunEventNeedles = STALE_RUN_EVENT_TYPES.map((type) => Buffer.from(`"${type}"`));
   const readStaleRunEnvelopesForSessionIdAsync = async (sessionId: string): Promise<AgentChatEventEnvelope[]> => {
     const envelopes: AgentChatEventEnvelope[] = [];
-    await scanTranscriptEnvelopesForSessionIdAsync(
+    const { complete } = await scanTranscriptEnvelopesForSessionIdAsync(
       sessionId,
       (envelope) => envelopes.push(envelope),
       undefined,
       parseAgentChatTranscript,
       (line) => staleRunEventNeedles.some((needle) => line.includes(needle)),
     );
-    return envelopes;
+    // A skipped line could be the result that ends a subagent; without it the
+    // sweep would stop a finished agent. Read the whole file in that rare case.
+    return complete ? envelopes : readFullTranscriptEnvelopesForSessionId(sessionId);
   };
 
   const readSubagentSnapshotsFromTranscript = async (
