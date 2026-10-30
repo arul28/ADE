@@ -2762,7 +2762,11 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
 
   /* ───────────────────────── vendored Swift helper ───────────────────────── */
 
-  const helperBinaryPath = resolveSimHelperExecutablePath();
+  // Resolved on first use: finding the helper stats a long list of candidate paths
+  // (about 8 ms, on Windows and Linux for a helper that can never be there), and
+  // this service is built every time a project opens.
+  let resolvedHelperBinaryPath: string | null = null;
+  const helperBinaryPath = (): string => (resolvedHelperBinaryPath ??= resolveSimHelperExecutablePath());
   let helperClient: SimHelperClient | null = null;
   const helperEventListeners = new Set<(event: { type: string } & Record<string, unknown>) => void>();
 
@@ -2778,7 +2782,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   const helper = (): SimHelperClient => {
     if (!helperClient) {
       helperClient = simHelperFactory({
-        binaryPath: helperBinaryPath,
+        binaryPath: helperBinaryPath(),
         logger: args.logger,
       });
       helperClient.onEvent((event) => {
@@ -2811,7 +2815,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
       };
     },
     get binaryPath() {
-      return helperBinaryPath;
+      return helperBinaryPath();
     },
   };
 
@@ -3365,7 +3369,7 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
    * need `xcrun`.
    */
   const currentCapabilities = (): IosSimulatorCapabilities => {
-    const canControl = process.platform === "darwin" && fs.existsSync(helperBinaryPath);
+    const canControl = process.platform === "darwin" && fs.existsSync(helperBinaryPath());
     return {
       canTap: canControl,
       canType: canControl,
@@ -3957,15 +3961,15 @@ export function createIosSimulatorService(args: CreateIosSimulatorServiceArgs) {
   /** What `status.tools` and `status.helper` say about the vendored helper. */
   const helperToolInfo = (): AppleHelperToolInfo => {
     if (process.platform !== "darwin") {
-      return { present: false, path: helperBinaryPath, version: null };
+      return { present: false, path: helperBinaryPath(), version: null };
     }
     // `helperClient` is read rather than created: `getStatus` runs every ~500ms
     // while the column is open, and a status poll must not be what starts a
     // subprocess.
     const client = helperClient;
     return {
-      present: client ? client.exists() : fs.existsSync(helperBinaryPath),
-      path: helperBinaryPath,
+      present: client ? client.exists() : fs.existsSync(helperBinaryPath()),
+      path: helperBinaryPath(),
       version: client?.protocolVersion() ?? null,
     };
   };

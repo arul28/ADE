@@ -82,6 +82,9 @@ let previousAdeHome: string | undefined;
 
 beforeEach(() => {
   execFileMock.mockReset();
+  // The mocked execFile is the boundary; on Windows the droid probe would start
+  // on the off-thread spawner instead and skip it.
+  vi.stubEnv("ADE_DISABLE_OFF_THREAD_SPAWN", "1");
   computerUseMocks.resolveCodexComputerUseMcpConfig.mockReset();
   computerUseMocks.resolveCodexComputerUseMcpConfig.mockResolvedValue(null);
   root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-external-service-"));
@@ -95,6 +98,7 @@ afterEach(() => {
   if (previousAdeHome === undefined) delete process.env.ADE_HOME;
   else process.env.ADE_HOME = previousAdeHome;
   fs.rmSync(root, { recursive: true, force: true });
+  vi.unstubAllEnvs();
 });
 
 describe("externalSessionsService", () => {

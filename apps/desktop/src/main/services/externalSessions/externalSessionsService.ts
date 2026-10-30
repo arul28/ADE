@@ -24,6 +24,7 @@ import type {
   TerminalSessionSummary,
   TerminalToolType,
 } from "../../../shared/types";
+import { execFileOffThread, offThreadSpawnEnabled } from "../shared/offThreadSpawn";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
 import { liveClaudeSessionIds } from "./claudeLiveSessions";
 import { claudeConfigDir } from "./discoverClaude";
@@ -536,14 +537,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         ["--help"],
         { ...env, ...providerSelfUpdateEnv("droid") },
       );
-      execFile(invocation.command, invocation.args, {
-        timeout: 1500,
-        encoding: "utf8",
-        env,
-        cwd: os.tmpdir(),
-        windowsHide: true,
-        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
-      }, (error, stdout, stderr) => {
+      const onProbe = (error: unknown, stdout: string | null | undefined, stderr: string | null | undefined) => {
         const help = `${stdout ?? ""}\n${stderr ?? ""}`;
         // A probe that printed nothing did not answer the question — the binary
         // failed to launch, or was killed by the timeout. Caching `false` for
@@ -562,7 +556,24 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         }
         droidForkProbe = /(^|\s)--fork\b/u.test(help);
         resolve(droidForkProbe);
-      });
+      };
+      // The probe runs while a project opens. On Windows a process start runs
+      // on the calling thread, and Droid's start held the brain ~700 ms there,
+      // so it starts on the off-thread spawner (a native droid.exe needs no
+      // verbatim cmd.exe arguments; a shim keeps the direct start).
+      if (offThreadSpawnEnabled() && !invocation.windowsVerbatimArguments) {
+        void execFileOffThread(invocation.command, invocation.args, { cwd: os.tmpdir(), env, timeoutMs: 1500 })
+          .then((result) => onProbe(result.error, result.stdout, result.stderr));
+        return;
+      }
+      execFile(invocation.command, invocation.args, {
+        timeout: 1500,
+        encoding: "utf8",
+        env,
+        cwd: os.tmpdir(),
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      }, onProbe);
     });
     return droidForkProbePromise;
   };
