@@ -21952,6 +21952,13 @@ export function createAgentChatService(args: {
     }
     return null;
   };
+  /** When the newest turn ended (its `done`), or null if none has. */
+  const latestTurnEndAt = (events: readonly AgentChatEventEnvelope[]): string | null => {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      if (events[index]!.event.type === "done") return events[index]!.timestamp;
+    }
+    return null;
+  };
   const restartResumeCapReached = (managed: ManagedChatSession): boolean =>
     restartResumeStreakFor(managed) > MAX_CONSECUTIVE_RESTART_RESUMES;
   const armRestartResume = (
@@ -22049,11 +22056,13 @@ export function createAgentChatService(args: {
     // A chat at rest has no end time when a late project open or the stale-run
     // sweep reaches it first, so it must also have gone quiet recently: one
     // that sat for days would otherwise read as just cut off and wake by
-    // itself. Its idle time says when; without one, its last transcript event.
-    // A cut-off turn is judged by its end time alone.
+    // itself. Its idle time says when. A graceful shutdown clears that (an
+    // ended chat has none), so then its last turn's end does; not its last
+    // event, which can be the shutdown's own notice. A cut-off turn is judged
+    // by its end time alone.
     const restedSince = unsettled
       ? null
-      : managed.idleSinceBeforeRestartRecovery ?? transcriptEvents.at(-1)?.timestamp ?? null;
+      : managed.idleSinceBeforeRestartRecovery ?? latestTurnEndAt(transcriptEvents);
     // Read before `reopen` clears the row's end time.
     const recent = withinRestartResumeAge(sessionService.get(managed.session.id)?.endedAt)
       && withinRestartResumeAge(restedSince);
