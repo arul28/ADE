@@ -182,13 +182,13 @@ describe("restart resume streak and hold", () => {
     expect(nextRestartResumeStreak(previous, idleSinceAt, lastUserMessageAt)).toBe(expected);
   });
 
-  const base = { continueEnabled: true, recent: true, awaitingUser: false, capped: false, settledOrArchived: false };
+  const base = { continueEnabled: true, recent: true, awaitingUser: false, capped: false, archived: false };
   it.each([
     ["resumes", base, null],
     ["waits for an open question", { ...base, awaitingUser: true }, "awaiting_user"],
     ["waits at the cap", { ...base, capped: true }, "capped"],
     ["leaves old work alone", { ...base, recent: false }, "stale"],
-    ["leaves a settled chat alone", { ...base, settledOrArchived: true, awaitingUser: true }, "settled"],
+    ["leaves an archived chat alone", { ...base, archived: true, awaitingUser: true }, "archived"],
     ["respects the setting before the cap", { ...base, continueEnabled: false, capped: true }, "disabled"],
     ["names an open question before the setting", { ...base, continueEnabled: false, awaitingUser: true }, "awaiting_user"],
   ] as const)("hold: %s", (_label, args, hold) => {

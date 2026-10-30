@@ -3,7 +3,6 @@ import {
   AGENT_CHAT_STOP_MODES,
   CLAUDE_PER_TASK_STOP_CONTROLS_REACHABLE,
   DEFAULT_AGENT_CHAT_STOP_MODE,
-  SETTLE_TEARDOWN_STOP_MODE,
   chatStopModeCopy,
   formatBackgroundJobCount,
   isAgentChatStopMode,
@@ -50,12 +49,6 @@ describe("chat stop matrix", () => {
     expect(DEFAULT_AGENT_CHAT_STOP_MODE).toBe("stop_and_clear");
     expect(stopModeClearsQueue("stop_and_clear")).toBe(true);
     expect(stopModeStopsBackground("stop_and_clear")).toBe(false);
-  });
-
-  it("keeps the user's queue on settle while still stopping background work", () => {
-    expect(SETTLE_TEARDOWN_STOP_MODE).toBe("stop_and_background");
-    expect(stopModeClearsQueue(SETTLE_TEARDOWN_STOP_MODE)).toBe(false);
-    expect(stopModeStopsBackground(SETTLE_TEARDOWN_STOP_MODE)).toBe(true);
   });
 
   it("parses unknown stored modes back to the default instead of inventing a fifth axis", () => {

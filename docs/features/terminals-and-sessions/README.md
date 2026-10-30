@@ -240,6 +240,12 @@ and in tests.
   changeset apply layer re-asserts the merged value through the chokepoint, so
   an in-flight settle sees the world move and abandons — see
   [settle-teardown-design.md](settle-teardown-design.md) §3a and §6d.
+- `apps/desktop/src/main/services/sessions/settleTurnCheck.ts` and
+  `settleWiring.ts` — the check a settle runs inside its window (refuses a
+  running or accepted turn, or a turn read that does not answer in 10s), and
+  the wiring both hosts share: `createSettleWiring` builds it from the chat
+  service, `createLateBoundSettle` hands `createSessionService` forwarders
+  until the chat service exists.
 - `apps/desktop/src/main/services/sessions/settleTerminalSession.ts` —
   single settlement transaction shared by direct IPC and the ADE action
   registry. **Settle is a classification and stops nothing.** A settled chat
