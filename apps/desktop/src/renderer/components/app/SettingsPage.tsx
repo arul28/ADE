@@ -30,6 +30,7 @@ import { SettingsMachineScopeProvider } from "../settings/SettingsMachineScope";
 import { SettingsSearchAnchorsContext } from "../settings/settingsSearchContext";
 import { useSettingsMachinePage } from "../settings/SettingsMachinesNav";
 import { SettingsMachinesContext, type SettingsMachinesValue } from "../settings/machines/settingsMachinesContext";
+import { MachinePicker, reachableMachines } from "../settings/ProvidersMachinePicker";
 import { useProjectMachines, type ProjectMachine } from "../../state/projectMachines";
 import { Banner } from "../ui/notice";
 import { SettingsSidebarHeader } from "../settings/SettingsSidebarHeader";
@@ -572,6 +573,8 @@ export function SettingsPage({
     const search = next.toString();
     navigate({ pathname: location.pathname, search: search ? `?${search}` : "", hash: "" }, { replace: true });
   };
+  const providersPicker = section === "agents" && machinesEnabled && !standalone
+    && reachableMachines(machines).length > 1;
   // General and Machines list the machines this page already reads.
   const machinesValue = useMemo<SettingsMachinesValue>(() => ({
     machines,
@@ -735,8 +738,21 @@ export function SettingsPage({
                   whiteSpace: "nowrap",
                 }}
               >
-                {activeTab.label}
+                {providersPicker ? "Providers on" : activeTab.label}
               </h1>
+              {/* Providers names its machine in its title: one picker for the
+                  machine the providers run on, never a copy per machine. */}
+              {providersPicker ? (
+                <span style={{ marginLeft: 8 }}>
+                  <MachinePicker
+                    variant="title"
+                    machines={machines}
+                    selectedId={pageMachine?.machineId ?? THIS_MACHINE_ID}
+                    thisMachineName={thisMachineDeviceName}
+                    onPick={(machineId) => navigateToTab("agents", undefined, machineId)}
+                  />
+                </span>
+              ) : null}
             </div>
 
             <label className="ade-settings-search">

@@ -883,6 +883,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     // to the machine the page shows).
     "getContinueAfterRestart",
     "setContinueAfterRestart",
+    "getMachineUpdateTrack",
     "getOpenCodeRuntimeDiagnostics",
     "isOpenCodeInstalled",
     "museBinaryStatus",

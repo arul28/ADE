@@ -156,3 +156,147 @@
 @media (prefers-reduced-motion: reduce) {
   .ade-pv-open, .ade-pv-action { transition: none; }
 }
+
+/* ── The provider list (ProviderGrid): one ordered list of small tiles ──── */
+.ade-pvl {
+  display: grid;
+  gap: 12px;
+  scroll-margin-top: 16px;
+}
+.ade-pvl-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-height: 28px;
+}
+.ade-pvl-summary {
+  font-size: 12.5px;
+  color: var(--kit-text-2);
+}
+.ade-pvl-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 8px;
+}
+.ade-pvl-tile {
+  position: relative;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.ade-pvl-tile[hidden] { display: none; }
+.ade-pvl-tile:hover {
+  background: var(--kit-hover);
+  border-color: color-mix(in srgb, var(--pvl-accent) 30%, var(--kit-panel-edge));
+}
+.ade-pvl-tile[data-state="not-installed"],
+.ade-pvl-tile[data-state="disabled"] {
+  opacity: 0.78;
+}
+.ade-pvl-open {
+  flex: 1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-height: 62px;
+  padding: 10px 12px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  border-radius: 12px;
+}
+.ade-pvl-open:focus-visible { outline: 2px solid var(--color-accent); outline-offset: -2px; }
+/* The maker's logo on a tile of its colour, as the provider page wears it. */
+.ade-pvl-logo {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--pvl-accent) 16%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--pvl-accent) 26%, transparent);
+}
+.ade-pvl-id {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ade-pvl-name-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ade-pvl-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-pvl-fact {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-pvl-tile[data-state="sign-in"] .ade-pvl-fact,
+.ade-pvl-tile[data-state="attention"] .ade-pvl-fact {
+  color: var(--kit-text-2);
+}
+.ade-pvl-chip { flex: none; }
+.ade-pvl-action {
+  flex: none;
+  height: 28px;
+  margin-right: 12px;
+  padding: 0 11px;
+  border: 1px solid color-mix(in srgb, var(--pvl-accent) 40%, var(--kit-panel-edge));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--pvl-accent) 12%, transparent);
+  color: var(--color-fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.ade-pvl-action:hover { background: color-mix(in srgb, var(--pvl-accent) 20%, transparent); }
+/* "Not set up": a quiet divider across the list, its logos while folded. */
+.ade-pvl-divider {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+  padding: 6px 2px;
+  border: 0;
+  border-top: 1px solid var(--kit-rule);
+  background: transparent;
+  color: var(--kit-text-3);
+  font: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+.ade-pvl-divider:hover { color: var(--color-fg); }
+.ade-pvl-divider-label { font-weight: 600; }
+.ade-pvl-divider-logos {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  opacity: 0.8;
+}
+.ade-pvl-divider-caret { margin-left: auto; }

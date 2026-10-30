@@ -271,31 +271,28 @@
   color: var(--kit-text-3);
 }
 
-/* Providers on: <machine> ▾ */
-.ade-mpick {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin: 0 0 20px;
-}
-.ade-mpick-label {
-  font-size: 12.5px;
-  color: var(--kit-text-3);
-}
+/* A machine picker: a tile, a name and a caret. In a page title it takes the
+   title's size and sits on the title's line ("Providers on [machine ▾]"). */
 .ade-mpick-trigger {
   display: inline-flex;
   align-items: center;
   gap: 8px;
-  height: 34px;
-  padding: 0 10px 0 6px;
+  height: 30px;
+  padding: 0 9px 0 5px;
   border: 1px solid var(--kit-panel-edge);
-  border-radius: 10px;
+  border-radius: 9px;
   background: var(--kit-panel-bg);
   color: var(--color-fg);
   font: inherit;
   font-size: 12.5px;
   font-weight: 600;
   cursor: pointer;
+}
+.ade-mpick-trigger[data-variant="title"] {
+  height: 34px;
+  padding: 0 10px 0 5px;
+  font-size: 18px;
+  letter-spacing: -0.02em;
 }
 .ade-mpick-trigger:hover {
   background: var(--kit-hover);
@@ -304,7 +301,7 @@
   color: var(--kit-text-3);
 }
 .ade-mpick-name {
-  max-width: 260px;
+  max-width: 280px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -368,4 +365,110 @@ button.ade-mx-hero-chip {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+/* A machine's settings: groups of same-size rows, one rhythm. */
+.ade-mx-groups {
+  display: grid;
+  gap: 22px;
+}
+.ade-mx-group {
+  display: grid;
+  gap: 8px;
+}
+.ade-mx-group-title {
+  margin: 0;
+  padding-left: 2px;
+}
+.ade-mx-group-rows {
+  display: grid;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 12px;
+  background: var(--kit-panel-bg);
+  overflow: hidden;
+}
+.ade-mx-srow {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  column-gap: 12px;
+  min-height: 56px;
+  padding: 8px 14px;
+}
+.ade-mx-srow + .ade-mx-srow {
+  border-top: 1px solid var(--kit-rule);
+}
+.ade-mx-srow-icon {
+  display: grid;
+  place-items: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  color: var(--color-accent);
+}
+.ade-mx-srow-text {
+  min-width: 0;
+  display: grid;
+  gap: 2px;
+}
+.ade-mx-srow-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--color-fg);
+}
+.ade-mx-srow-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--kit-text-3);
+}
+.ade-mx-srow-control {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 0;
+}
+.ade-mx-srow-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.ade-mx-srow-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--kit-panel-edge);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--kit-text-2);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.ade-mx-srow-link:hover {
+  background: var(--kit-hover);
+  color: var(--color-fg);
+}
+.ade-mx-srow-hint {
+  font-size: 12px;
+  color: var(--kit-text-3);
+  white-space: nowrap;
+}
+.ade-mx-row-meter {
+  display: block;
+  width: 140px;
+}
+.ade-restarts-on {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }

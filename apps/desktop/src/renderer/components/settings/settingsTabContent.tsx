@@ -44,7 +44,6 @@ import { SecretsSection } from "./SecretsSection";
 import { ServiceStatusSection } from "./health/HealthService";
 import { GeneralPage } from "./general/GeneralPage";
 import { MachinesPage } from "./machines/MachinesPage";
-import { ProvidersMachinePicker } from "./ProvidersMachinePicker";
 import { LanesSettingsPage, StorageSettingsPage } from "./lanes/LanesSettingsPage";
 import { PrChatTranscriptsSection } from "./PrChatTranscriptsSection";
 import { LocationPage } from "./location/LocationPage";
@@ -417,7 +416,9 @@ const TAB_SECTIONS: Partial<Record<SettingsTabId, readonly TabSection[]>> = {
   // App → Behaviour: what this computer does on its own. A machine's own page
   // (Machines) shows the sections that reach that machine.
   behaviour: [
-    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "local", title: "Keep awake" },
+    // Read and set through the machine's own brain (`keep_awake` actions take
+    // the pin); only the Mac's own admin prompt stays on This computer.
+    { entryIds: ["general.keep-awake"], render: () => <KeepAwakeSection />, machine: "routed", title: "Keep awake" },
     { entryIds: ["general.capture-gesture"], render: () => <CaptureGestureSection />, machine: "local", title: "Capture gesture" },
     // Detected and stored on the machine the terminals run on; every call
     // carries that machine's pin.
@@ -561,9 +562,6 @@ export function TabContent({
     }
     return (
       <SettingsColumn wide>
-        {/* One picker for the machine the providers run on, never a copy of
-            the page per machine. Hidden on the web client and with one machine. */}
-        {isWebClientMode() ? null : <ProvidersMachinePicker />}
         <AgentsTabContent />
       </SettingsColumn>
     );

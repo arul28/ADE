@@ -1,4 +1,5 @@
 import type { NewLaneDefaults } from "../../../shared/laneStart";
+import { readSavedUpdateTrack } from "../../../../../ade-cli/src/services/runtime/updateTrackStore";
 import {
   resolveContinueAfterRestart,
   writeSavedContinueAfterRestart,
@@ -5647,6 +5648,9 @@ export function registerIpc({
   // in ~/.ade, which this computer's brain reads when it decides a resume.
   ipcMain.handle(IPC.aiGetContinueAfterRestart, async (): Promise<{ enabled: boolean }> => ({
     enabled: resolveContinueAfterRestart(),
+  }));
+  ipcMain.handle(IPC.aiGetMachineUpdateTrack, async (): Promise<{ track: "stable" | "beta" | null }> => ({
+    track: readSavedUpdateTrack()?.track ?? null,
   }));
   ipcMain.handle(IPC.aiSetContinueAfterRestart, async (_event, args: { enabled?: unknown }): Promise<{ enabled: boolean }> => {
     if (typeof args?.enabled !== "boolean") throw new Error("enabled must be true or false.");

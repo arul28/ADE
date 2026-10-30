@@ -1,28 +1,25 @@
-import { useMemo, type CSSProperties, type ReactNode } from "react";
+import { useMemo, type CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
-import { AppleLogo, ArrowRight, Brain, CaretRight, Palette, Wrench } from "@phosphor-icons/react";
+import { ArrowRight, CaretRight } from "@phosphor-icons/react";
 import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import type { ProjectMachine } from "../../../state/projectMachines";
-import { isMacPlatform } from "../../../lib/platform";
 import { useAutoUpdateSnapshot } from "../../app/useAutoUpdateSnapshot";
 import { UpdateTrackChip } from "../../app/ChannelBadge";
 import { MachineAvatar, machineFormFactor, useMachineColor } from "../../remoteTargets/MachineIdentity";
 import { FreeSpaceMeter } from "../health/healthCharts";
 import { formatBytes, freeSpaceLevel } from "../storage/storageView";
 import { osLabel } from "../general/GeneralPage";
-import { machineSectionAvailable, type SettingsMachinePage } from "../SettingsMachinesNav";
+import type { SettingsMachinePage } from "../SettingsMachinesNav";
 import { knownAdeVersions, machineUpdateTargetVersion } from "../../remoteTargets/remoteMachineModel";
-import { TabContent } from "../settingsTabContent";
 import { useMachineFacts, type MachineFacts } from "./machineFacts";
-import { SingleMachineUpdateRow } from "../general/MachineUpdateRows";
 import { useSettingsMachines } from "./settingsMachinesContext";
 import { useThisComputerFacts } from "./useThisComputerFacts";
+import { MachineSettings } from "./MachineSettings";
 import "./machinesPage.css";
 
 /**
  * System → Machines: every machine on one page, this one first. A machine
- * opens to its own page with only the sections that work for it from here;
- * anything that would only say "open ADE over there" is left out.
+ * opens to its own page: everything Settings knows or can change about it.
  */
 export function MachinesPage({ machine }: { machine: SettingsMachinePage | null }) {
   const [searchParams] = useSearchParams();
@@ -202,12 +199,13 @@ function platformWord(platform: MachineFacts["platform"] | undefined): string | 
 }
 
 /**
- * One machine's page: what it is, then the settings that reach it from here.
- * Its Behaviour sections come in through the page's machine scope (the pin
- * Settings built for it), so each one acts on this machine and no other.
+ * One machine's page: who it is, then everything Settings knows or can change
+ * about it, grouped (`MachineSettings`). Its controls act through the page's
+ * machine scope (the pin Settings built for it), so each one reaches this
+ * machine and no other.
  */
 function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
-  const { machines, thisMachineName, openMachine, openTab } = useSettingsMachines();
+  const { machines, thisMachineName } = useSettingsMachines();
   const update = useAutoUpdateSnapshot();
   const machine = machines.find((candidate) => candidate.machineId === scope.machineId) ?? null;
   const facts = useMachineFacts(machine ? [machine] : [], update.currentVersion || null);
@@ -216,29 +214,7 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
   const name = machine ? machineDisplayName(machine, thisMachineName) : scope.machineName;
   const color = useMachineColor(fact?.colorKey ?? scope.machineId);
   const offline = !scope.online && !scope.isThisMachine;
-  const providersReach = machineSectionAvailable("routed", scope);
   const os = scope.isThisMachine ? osLabel(local.info?.platform) : platformWord(fact?.platform);
-  const runtime = scope.isThisMachine ? local.info?.localRuntime ?? null : null;
-  const serviceOk = runtime ? runtime.connectionState === "connected" && runtime.runtimeMode === "primary" : null;
-  const pressure = scope.isThisMachine ? local.pressure : null;
-
-  const links: Array<{ id: string; icon: ReactNode; title: string; hint: string; onOpen: () => void }> = [];
-  if (providersReach) {
-    links.push({
-      id: "providers",
-      icon: <Brain size={15} />,
-      title: "Providers",
-      hint: "Sign-ins and models",
-      onOpen: () => openMachine(scope.machineId, "agents"),
-    });
-  }
-  if (scope.isThisMachine) {
-    links.push({ id: "appearance", icon: <Palette size={15} />, title: "Appearance", hint: "Theme, fonts and terminal", onOpen: () => openTab("appearance") });
-    if (isMacPlatform()) {
-      links.push({ id: "apple", icon: <AppleLogo size={15} />, title: "Apple devices", hint: "Simulators and recordings", onOpen: () => openTab("apple") });
-    }
-    links.push({ id: "advanced", icon: <Wrench size={15} />, title: "Advanced", hint: "Service, command line, reports", onOpen: () => openTab("advanced") });
-  }
 
   return (
     <div className="ade-mx">
@@ -260,50 +236,18 @@ function MachineDetail({ scope }: { scope: SettingsMachinePage }) {
             </div>
             <div className="ade-mx-hero-sub">
               <span className="kit-dot" data-state={offline ? undefined : "ok"} aria-hidden />
-              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", os].filter(Boolean).join(" · ")}
+              {[scope.isThisMachine ? "This machine" : offline ? "Offline" : "Online", os, fact?.versionLabel ? `ADE ${fact.versionLabel}` : null].filter(Boolean).join(" · ")}
             </div>
-          </div>
-          <div className="ade-mx-detail-facts">
-            {machine ? <SingleMachineUpdateRow machine={machine} name={name} /> : null}
-            {serviceOk != null ? (
-              <span className="ade-mx-fact">
-                <span className="kit-eyebrow">Service</span>
-                <span className="ade-mx-fact-value"><span className="kit-dot" data-state={serviceOk ? "ok" : "crit"} aria-hidden />{serviceOk ? "Running" : "Not running"}</span>
-              </span>
-            ) : null}
-            {pressure && pressure.totalBytes > 0 ? (
-              <span className="ade-mx-fact ade-mx-fact--disk">
-                <span className="kit-eyebrow">Disk</span>
-                <span className="ade-mx-fact-value"><span className="kit-num">{formatBytes(pressure.freeBytes)} free</span></span>
-                <FreeSpaceMeter freeBytes={pressure.freeBytes} totalBytes={pressure.totalBytes} level={freeSpaceLevel(pressure.freeBytes, pressure.totalBytes)} />
-              </span>
-            ) : null}
           </div>
         </div>
       </section>
 
       {offline ? (
-        <div className="ade-mx-quiet">Its settings come back when it is online.</div>
-      ) : (
-        <>
-          {links.length > 0 ? (
-            <div className="ade-mx-links" aria-label="Settings for this machine">
-              {links.map((link) => (
-                <button key={link.id} type="button" className="ade-mx-link" onClick={link.onOpen}>
-                  <span className="ade-mx-link-icon">{link.icon}</span>
-                  <span className="ade-mx-link-text">
-                    <span className="ade-mx-link-title">{link.title}</span>
-                    <span className="ade-mx-link-hint">{link.hint}</span>
-                  </span>
-                  <CaretRight size={12} aria-hidden />
-                </button>
-              ))}
-            </div>
-          ) : null}
-          {/* The Behaviour sections that reach this machine; the rest are left out. */}
-          <TabContent tab="behaviour" machine={scope} embedded />
-        </>
-      )}
+        // An offline machine still shows what Settings knows; its controls
+        // come back when it does.
+        <div className="ade-mx-quiet">Its settings can be changed when it is back online.</div>
+      ) : null}
+      <MachineSettings scope={scope} machine={machine} name={name} fact={fact} local={local} />
     </div>
   );
 }

@@ -5507,6 +5507,10 @@ const adeBridge = {
       pin
         ? callPinnedRuntimeAction<{ enabled: boolean }>(pin, "ai", "getContinueAfterRestart")
         : ipcRenderer.invoke(IPC.aiGetContinueAfterRestart),
+    getMachineUpdateTrack: (pin?: OpenProjectBinding | null): Promise<{ track: "stable" | "beta" | null }> =>
+      pin
+        ? callPinnedRuntimeAction<{ track: "stable" | "beta" | null }>(pin, "ai", "getMachineUpdateTrack")
+        : ipcRenderer.invoke(IPC.aiGetMachineUpdateTrack),
     setContinueAfterRestart: (enabled: boolean, pin?: OpenProjectBinding | null): Promise<{ enabled: boolean }> =>
       pin
         ? callPinnedRuntimeAction<{ enabled: boolean }>(pin, "ai", "setContinueAfterRestart", { args: { enabled } })

@@ -232,7 +232,7 @@ export const ADE_ACTION_ACCESS: AdeActionAccessTable = {
   },
   ai: {
     read: [
-      "getStatus", "jevDecide", "jevStatus", "getContinueAfterRestart", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "getProviderContextInventory", "antigravitySignInStatus", "listApiCredentials",
+      "getStatus", "jevDecide", "jevStatus", "getContinueAfterRestart", "getMachineUpdateTrack", "getOpenCodeRuntimeDiagnostics", "isOpenCodeInstalled", "museBinaryStatus", "pinnedToolStatus", "getProviderContextInventory", "antigravitySignInStatus", "listApiCredentials",
       "getApiCredential", "listApiKeys", "opencodeAuthMethods", "opencodeAccounts", "listHarnessRoutes",
       "piLoginProviders", "cursorAuthStatus", "listCursorCloudRepositories",
       "listCursorCloudAgents", "listCursorCloudRuns", "getCursorCloudLaneSecretNames",

@@ -1656,6 +1656,11 @@ declare global {
          */
         getContinueAfterRestart: (pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
         setContinueAfterRestart: (enabled: boolean, pin?: OpenProjectBinding | null) => Promise<{ enabled: boolean }>;
+        /**
+         * The update track a machine saved (`~/.ade/update-track.json`), or
+         * null when it follows its build. Unpinned: This computer.
+         */
+        getMachineUpdateTrack: (pin?: OpenProjectBinding | null) => Promise<{ track: "stable" | "beta" | null }>;
         getStatus: (args?: {
           force?: boolean;
           refreshOpenCodeInventory?: boolean;

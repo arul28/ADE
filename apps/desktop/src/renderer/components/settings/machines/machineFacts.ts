@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { THIS_MACHINE_ID } from "../../../../shared/machineIdentity";
+import type { RemoteRuntimeConnectionStatus } from "../../../../shared/types";
 import { updateTrackOfVersion, type UpdateTrack } from "../../../../shared/updateTrack";
 import { rendererRuntimeTarget } from "../../../lib/platform";
 import { useRemoteConnectionSnapshot, type ProjectMachine } from "../../../state/projectMachines";
@@ -21,6 +22,8 @@ export type MachineFacts = {
   track: UpdateTrack;
   /** The connection as the snapshot has it, for another machine. */
   connected: ConnectedMachine | null;
+  /** The raw connection: its route and the projects it has. Null for This computer. */
+  connection: RemoteRuntimeConnectionStatus | null;
 };
 
 let thisColorKey: string | null = null;
@@ -68,6 +71,7 @@ export function useMachineFacts(
   const thisKey = useThisComputerColorKey();
   return useMemo(() => {
     const connected = new Map(connectedMachinesFromSnapshot(snapshot).map((machine) => [machine.id, machine]));
+    const connections = new Map((snapshot?.connections ?? []).map((connection) => [connection.target.id, connection]));
     const facts = new Map<string, MachineFacts>();
     for (const machine of machines) {
       if (machine.isThisMachine) {
@@ -78,6 +82,7 @@ export function useMachineFacts(
           versionLabel: thisVersion,
           track: updateTrackOfVersion(thisVersion),
           connected: null,
+          connection: null,
         });
         continue;
       }
@@ -90,6 +95,7 @@ export function useMachineFacts(
         versionLabel: connection?.versionLabel ?? version,
         track: connection?.track ?? updateTrackOfVersion(version),
         connected: connection,
+        connection: connections.get(machine.machineId) ?? null,
       });
     }
     return facts;

@@ -137,7 +137,7 @@ function MachineUpdateRow({
   remoteUpdates: boolean;
   /** Absent on the machine's own page, where the row is not a link. */
   onOpen?: () => void;
-  /** Version and action only: the machine's page already names it. */
+  /** Version and action only, for a row on the machine's own page. */
   bare?: boolean;
 }) {
   const snapshot = useAutoUpdateSnapshot();
@@ -229,7 +229,6 @@ function MachineUpdateRow({
   if (bare) {
     return (
       <div className="ade-gen-mup-bare">
-        <span className="kit-eyebrow">ADE</span>
         <span className="ade-gen-mup-bare-row">
           {versionLine}
           {action}

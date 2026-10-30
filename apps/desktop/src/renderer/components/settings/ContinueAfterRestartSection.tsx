@@ -4,6 +4,9 @@ import { isAdeAvailable } from "../../lib/adeAvailability";
 import { showToast } from "../app/toast/toastStore";
 import { ModernRow, ModernRows, ModernSection, SettingsToggle } from "./primitives";
 import { useSettingsMachineScope } from "./SettingsMachineScope";
+import { settingsMachinePageFor } from "./SettingsMachinesNav";
+import { useSettingsMachines } from "./machines/settingsMachinesContext";
+import { MachinePicker, reachableMachines } from "./ProvidersMachinePicker";
 
 /** The anchor every link to this setting uses, including ones made before it moved here. */
 export const CONTINUE_AFTER_RESTART_ANCHOR = "continue-after-restart";
@@ -15,7 +18,16 @@ export const CONTINUE_AFTER_RESTART_ANCHOR = "continue-after-restart";
  * Renders nothing where the call does not exist (the hosted web client).
  */
 export function ContinueAfterRestartSection() {
-  const { pin, machineName, isThisMachine } = useSettingsMachineScope();
+  const scope = useSettingsMachineScope();
+  const { machines, thisMachineName } = useSettingsMachines();
+  // One value per machine: the section can act on any machine whose brain is
+  // reachable from here, through that machine's pin. This computer by default.
+  const [pickedId, setPickedId] = useState<string>(scope.machineId);
+  const picked = machines.find((machine) => machine.machineId === pickedId) ?? null;
+  const pickedScope = picked && !picked.isThisMachine ? settingsMachinePageFor(picked) : null;
+  const pin = pickedScope ? pickedScope.pin : scope.pin;
+  const isThisMachine = pickedScope ? false : scope.isThisMachine;
+  const machineName = pickedScope ? pickedScope.machineName : scope.machineName;
   const pinKey = pin?.key ?? null;
   const available = isAdeAvailable(window.ade.ai?.getContinueAfterRestart);
   const [enabled, setEnabled] = useState<boolean | null>(null);
@@ -67,7 +79,17 @@ export function ContinueAfterRestartSection() {
       group="Restarts"
       anchor="chat-restarts"
       title="Restarts"
-      hint={isThisMachine ? "On this computer." : `On ${machineName}.`}
+      hint={reachableMachines(machines).length > 1 ? (
+        <span className="ade-restarts-on">
+          On
+          <MachinePicker
+            machines={machines}
+            selectedId={pickedId}
+            thisMachineName={thisMachineName}
+            onPick={setPickedId}
+          />
+        </span>
+      ) : isThisMachine ? "On this computer." : `On ${machineName}.`}
       icon={<ArrowClockwise size={16} weight="bold" />}
       tone="green"
     >
