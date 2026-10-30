@@ -45,7 +45,7 @@ const BOUNDS_SETTLE_MIN_FRAME_MS = 32;
 const BOUNDS_DRAG_SETTLE_MS = 400;
 /** A snapshot older than this is repainted before the next menu opens. */
 const UNDERLAY_MAX_AGE_MS = 20_000;
-const OVERLAY_MOTION_EVENTS = ["animationend", "animationiteration", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
+const OVERLAY_MOTION_EVENTS = ["animationend", "animationstart", "transitioncancel", "transitionend", "transitionrun", "transitionstart"] as const;
 const OVERLAY_CANDIDATE_SELECTOR = [
   '[role="alertdialog"]',
   '[role="dialog"]',

@@ -892,6 +892,88 @@ renders per switch; warm first frame 55-65 → 50-57 ms, worst frame ~86 → 53-
 - **Seed the first virtual window** from the last measured pane height and, for a
   scrolled-up chat, from the restore target, so rows mount in one wave.
 
+### A streamed reply against PandaCode and T3 Code (eleventh pass)
+
+`scripts/perf/ui/stream-render-compare.mjs` runs PandaCode's open method
+(a 50 KB Markdown reply as 2,000 deltas of 25 B, one every 16 ms) against the
+production web builds of ADE, PandaCode and T3 Code in one headless Chrome, and
+reports main-thread task time, process CPU, final paint, heap and an idle
+baseline with a turn running. It also records long tasks and a CPU profile
+(`--profile`), and runs ADE A/B arms (`--ade-init`).
+
+- **Parse each settled block once.** The paced row split its text into a
+  settled prefix and a tail, but the settled prefix parsed as one string, so
+  every newly settled block reparsed the whole reply. `useSplitRevealed` now
+  also returns `settledSegments` (append-only pieces cut at the scan's
+  boundaries) and `MarkdownBlock` renders each piece as its own memoized body.
+  Script time for the 50 KB reply fell from about 4.1 s to 2.3 s, and the heap
+  after it from 68 MB to 41 MB. Only the streaming row gets pieces: finished
+  rows keep one body through the parse cache, which a chat switch relies on.
+  The scan treats `$$` math blocks as fences, so no cut lands inside one.
+- **A looping indicator must move only transform and opacity, on its own
+  compositor animation.** The chat's thinking indicator morphed an SVG path
+  (`d:`) and swept a `background-position` sheen; both repaint on the main
+  thread. It is now a strip of the 120 pre-drawn shapes moved by a stepped
+  transform, and a bright copy of the label (`::before`, `attr(data-label)`)
+  seen through a sliding gradient window. Same steps and look.
+- **Chrome does not composite a percentage transform on an `<svg>` element**
+  (trace reason `compositeFailed: 1024`, "depends on box size"). Animate an
+  HTML wrapper and use `em` lengths. Read the reason with a trace of category
+  `blink.animations`.
+- **On a heavy page the stepped loop clock costs more than it saves.** Each
+  clock seek is a full main-thread frame (style, paint, and a layerize of the
+  whole page, about 1 ms with a chat open). The thinking indicator and the
+  Work list `Working` breathe now carry `data-loop-clock="off"`: idle main
+  thread with a running turn fell from about 2-3 s to 0.25-0.4 s per 32 s.
+  Giving clock-driven loops their own layer (`will-change`) did not help: a
+  loop the clock pauses runs on the main thread anyway.
+- **Put stepped loops on one grid.** Loops whose steps fall on different
+  instants each force a compositor draw. The breathe's stops now sit on the
+  1/30 s grid the indicator steps on (draws about 40 → 32 a second).
+- **Share the one-second timer.** A counter that writes its text straight to
+  the DOM subscribes with `subscribeToTicker(1000, …)` (`lib/ticker.ts`), so
+  it changes in the same frame as the Work row's elapsed label.
+- **Load Shiki grammars on first use.** Creating the highlighter with all 23
+  languages was a 60-70 ms task at the first code block of a reply.
+- **The paced reveal is off by default** (`DEFAULT_TEXT_REVEAL_HORIZON_MS = 0`).
+  It committed up to 60 times a second and drained its backlog with
+  exponential decay, so the last text painted about 600 ms after the last
+  delivery and a 50 KB reply cost twice the main-thread time. Side by side at
+  the brain's 100 ms buffer, paint on arrival looked the same. A 50 ms buffer
+  costs about 1 s more main thread per reply for no visible gain.
+- **No `animationiteration` listener anywhere.** While any node listens for it,
+  Chrome wakes the main thread at the end of every pass of every CSS loop to
+  send the event, even for a composited loop, and React adds one at every root
+  and portal. `installAnimationPhaseAlignment` turns the listener type away
+  (before `createRoot`): idle main-thread frames with a turn running fell from
+  173 to 55 per 32 s, and the idle main thread from about 155 to 105 ms. A
+  trace shows it as frames with `EventDispatch` > React `Pn` at each loop end.
+- **A worker canvas for a loop that has no compositor form.** The glyph morph
+  is drawn by a shared `OffscreenCanvas` worker (`thinkingGlyphPainter.ts`) on
+  the page timeline's 1/30 s grid. Read the size and color from observers, not
+  on each render: reading them per render forced a layout per streamed event.
+- **Pin the bottom from the content's ResizeObserver,** not from the next
+  animation frame. Layout is current in the callback, so the pin forces no
+  layout and lands in the frame of the growth. The rAF pin with two follow-up
+  frames, run from three places per update (the observer, the measure tick and
+  a layout effect on `totalHeight`), drew three frames per streamed update.
+- **Commit a scroll position only when it changes what the list draws.** The
+  bottom pin called `setScrollTop` on each update, a whole-list render; it now
+  goes through the same commit key `handleScroll` uses.
+- **A pinned reader's growing last row needs no measure tick.** It moves no
+  row's start offset; the virtual box is a `minHeight`, so the row pushes the
+  next element down instead of drawing over it until the next render.
+- **Flush queued chat events on the next animation frame** (with the 16 ms
+  timer as the fallback for a hidden window). The live-events subscribers
+  render inside that frame: last delivery to final paint fell from 41-53 ms to
+  17-31 ms.
+- **Bound text work by what it keeps.** `summarizeInlineText` reads a 4 KB
+  prefix first; it ran its Markdown strip over a whole streaming reply on
+  every update.
+- **Measure with `--profile` and read the trace, not only the CPU profile.**
+  The profile shows JS; the frame count (`Commit`, `FireAnimationFrame` and
+  who requested them) showed the scroll and listener costs.
+
 ### A keystroke renders only what reads the text (ninth pass)
 
 `scripts/perf/ui/composer-typing-renders.mjs` (browser mock, real transcript,

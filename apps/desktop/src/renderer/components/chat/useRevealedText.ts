@@ -189,13 +189,21 @@ export function useRevealedLength(
  * store. The reveal catches up between most bursts of deltas; handing the
  * whole text over as one settled string there, and splitting again when the
  * next delta lands, reparsed the entire message twice per burst.
+ *
+ * `settledSegments` is the settled prefix cut at every point the cut has
+ * moved through: each piece ends where a later piece cannot change it, so each
+ * parses on its own once. Parsing `settled` as one string instead reparses the
+ * whole reply each time a block settles, which made a long streamed reply
+ * quadratic (a 50 KB reply spent about a second of its stream in the parser).
+ * A finished row gets none: its one body goes through the parse cache, which a
+ * chat switch relies on.
  */
 export function useSplitRevealed(
   text: string,
   revealedLength: number,
   paced = false,
-): { settled: string; tail: string } {
-  const cacheRef = useRef<{ scan: SplitScanState; settled: string } | null>(null);
+): { settled: string; settledSegments?: readonly string[]; tail: string } {
+  const cacheRef = useRef<{ scan: SplitScanState; settled: string; segments: readonly string[] } | null>(null);
   if (!paced && revealedLength >= text.length) {
     cacheRef.current = null;
     return { settled: text, tail: "" };
@@ -214,6 +222,14 @@ export function useSplitRevealed(
   const settled = previous && previous.settled.length === scan.settledEnd
     ? previous.settled
     : parts.settled;
-  cacheRef.current = { scan, settled };
-  return { settled, tail: parts.tail };
+  // A resumed scan only moves the cut forward over text it already settled, so
+  // the new piece is appended and every earlier piece keeps its identity. A
+  // scan that restarted (the text was replaced) starts the pieces over as one.
+  const segments = previous && settled === previous.settled
+    ? previous.segments
+    : resumable && previous && settled.startsWith(previous.settled)
+      ? [...previous.segments, settled.slice(previous.settled.length)]
+      : settled.length > 0 ? [settled] : [];
+  cacheRef.current = { scan, settled, segments };
+  return { settled, settledSegments: segments, tail: parts.tail };
 }

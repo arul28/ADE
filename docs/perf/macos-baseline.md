@@ -715,6 +715,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `music.mjs first-play cold\|warm`, `music.mjs pushes <secs>` | Time from Play to the first playing state, with the host stopped or running; Music state pushes a window receives |
 | `music-library.mjs detail\|grid\|scroll\|memory` | Apple Music library: time to a playlist's first rows and full list, Playlists grid open and scroll (long tasks, IPC and Apple requests through the main process's inspector, artwork requests), renderer heap after opening playlists |
 | `loop-cost.mjs <case>,... [secs] [socket]` | One looping animation (the app's own markup) at a time, as plain CSS and on the stepped loop clock: compositor ticks, frames drawn, style recalcs and timers per second, plus process CPU with a socket |
+| `stream-render-compare.mjs --pandacode <dir> --t3 <dir> --ade-dist <dir>` | No app needed: PandaCode's open streaming bench (a 50 KB reply as 2,000 deltas of 25 B every 16 ms) against production web builds of ADE, PandaCode and T3 Code in one headless Chrome. Main-thread time and its parts, final paint, renderer and GPU process CPU, heap, DOM mutations, and an idle baseline with a turn running (compositor draws per second). `--profile` adds a trace and CPU profile, `--ade-init`/`--ade-b-init` run A/B arms |
 
 Brain and services, no app needed (`scripts/perf/service/`, run from
 `apps/ade-cli` with `npx tsx ../../scripts/perf/service/<name>.bench.mts`):
@@ -2297,3 +2298,39 @@ the logo still holds still. The Work page's own first frames after the boot
 (one 25-29 ms frame) are there with or without the window. One run of
 five had a single 217 ms frame within 1.5 s of the switch; the other four,
 and the three flight runs, had none over 34 ms.
+
+## Mac Studio (M4 Max): a streamed reply against PandaCode and T3 Code (2026-10-30)
+
+`scripts/perf/ui/stream-render-compare.mjs`, PandaCode's open streaming bench
+(W1: a 50 KB Markdown reply as 2,000 deltas of 25 B, one every 16 ms) run on
+production web builds of ADE, PandaCode (`0336a2fb5`) and T3 Code
+(`6575ce325`) in one headless Chrome 155, 3 cold runs per app and mode,
+interleaved, median (min–max). ADE on top of `ff074045a` with this branch.
+Load average 10–40 from other agents during the runs. The idle rows keep a turn
+running for the same 32 s and deliver nothing.
+
+| Metric | Before (`ff074045a`, typing reveal on) | Baseline | PandaCode | T3 Code | Ceiling |
+|---|---:|---:|---:|---:|---:|
+| W1 main-thread task time | 5,064 ms | 1,774 (1,602–1,991) ms | 2,541 ms | 3,511 ms | not set (new row; ceilings are the owner's call) |
+| W1 script | 2,074 ms | 732 (662–821) ms | 250 ms | 1,092 ms | not set |
+| W1 last delivery to final paint | 602 ms | 19 (19–35) ms | 41 ms | 32 ms | not set |
+| W1 renderer process CPU | 8.1 s | 3.5 (3.2–3.9) s | 3.8 s | 6.6 s | not set |
+| W1 GPU process CPU | 3.6 s | 2.2 s | 3.6 s | 3.3 s | not set |
+| W1 JS heap after (after GC) | 34.4 MB | 33.3 MB | 10.4 MB | 51.4 MB | not set |
+| W1 DOM mutation records | 5,832 | 1,879 | 7,128 | 3,842 | not set |
+| Idle with a turn running: main-thread task time | 133 ms | 131 (110–135) ms | 30 ms | 117 ms | not set |
+| Idle with a turn running: GPU process CPU | 1.8 s | 2.2 (1.7–2.6) s | 1.3 s | 0.7 s | not set |
+| Idle with a turn running: compositor draws per second | 38 | 39 (31–57) | 60 | 13 | not set |
+
+What moved the streaming rows: the paced reveal off by default, the bottom pin
+from the content's ResizeObserver, pin scroll positions committed only when the
+list draws something different, no measure tick for a pinned reader's growing
+last row, queued chat events flushed on the next animation frame, and a bounded
+`summarizeInlineText`. Idle frames with a turn running fell from 173 to 55 per
+32 s once `animationiteration` listeners were refused; the idle main-thread
+time that is left is mostly the one-second elapsed counters (one frame with
+layout and paint each second). The idle draw rate swings between 31 and 57 a
+second from run to run, and the GPU row swings with it. ADE's loops step at
+30 a second (the owner turned down 15); T3 Code draws about 13 frames a
+second. PandaCode's lower script and heap come from a much smaller app and a
+WebAssembly Markdown parser.

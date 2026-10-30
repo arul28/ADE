@@ -45,7 +45,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const revealedLength = useRevealedLength(text, paced, hostRef);
-  const { settled, tail } = useSplitRevealed(text, revealedLength, paced);
+  const { settled, settledSegments, tail } = useSplitRevealed(text, revealedLength, paced);
 
   return (
     /*
@@ -72,6 +72,7 @@ export const AssistantTextBody = React.memo(function AssistantTextBody({
     >
       <MarkdownBlock
         markdown={settled}
+        settledSegments={settledSegments}
         tailMarkdown={tail.length > 0 ? tail : undefined}
         onOpenWorkspacePath={onOpenWorkspacePath}
         sceneScopeKey={sceneScopeKey}

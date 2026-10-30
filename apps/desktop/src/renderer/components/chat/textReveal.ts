@@ -23,8 +23,14 @@
  * arrival exactly as before.
  */
 
-/** Default reveal horizon. `<= 0` disables pacing (paint on arrival). */
-export const DEFAULT_TEXT_REVEAL_HORIZON_MS = 150;
+/**
+ * Default reveal horizon. `<= 0` disables pacing (paint on arrival), which is
+ * the default: side by side, paint on arrival at the brain's 100 ms buffer
+ * looked no different from the paced reveal, and the reveal cost a 50 KB
+ * reply about twice the main-thread time and painted the last text about
+ * 600 ms after it arrived. `ade.textRevealHorizonMs` turns it back on.
+ */
+export const DEFAULT_TEXT_REVEAL_HORIZON_MS = 0;
 
 /**
  * Upper bound on the elapsed time fed into one commit. Without it, a tab that
@@ -363,14 +369,20 @@ function startsTopLevelBlock(line: string): boolean {
   return after !== undefined && after !== " " && after !== "\t";
 }
 
+/**
+ * The fence run a line opens or closes: ``` or ~~~ (code), or $$ (a math block,
+ * which can hold blank lines just as code can). A `$$` run followed by more `$`
+ * on the line is inline math (`$$x$$`), not a fence.
+ */
 function fenceRunAt(line: string): string | null {
   let index = 0;
   while (index < line.length && line[index] === " " && index < 3) index += 1;
   const char = line[index];
-  if (char !== "`" && char !== "~") return null;
+  if (char !== "`" && char !== "~" && char !== "$") return null;
   let end = index;
   while (end < line.length && line[end] === char) end += 1;
-  if (end - index < 3) return null;
+  if (end - index < (char === "$" ? 2 : 3)) return null;
+  if (char === "$" && line.includes("$", end)) return null;
   return line.slice(index, end);
 }
 

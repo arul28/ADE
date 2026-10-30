@@ -2253,48 +2253,51 @@ button, [role="button"] {
    0.02-opacity steps, derived the same way as `activity-hdr-pulse`: each stop is
    the time where cubic-bezier(0.42, 0, 0.58, 1), rounded to the nearest 0.02,
    changes value. The `step-end` timing in SessionStatusLabel is load-bearing: a
-   smooth opacity animation makes the compositor draw every display frame. To
-   change the range, re-derive the stops from the same curve. */
+   smooth opacity animation makes the compositor draw every display frame. Each
+   stop then sits on the nearest 1/30 s of the 2.6 s loop (78 slots, k/78), the
+   grid the chat's thinking indicator steps on, so the two share their frames
+   instead of each drawing its own. To change the range, re-derive the stops
+   from the same curve and round them to that grid. */
 @keyframes ade-session-working-breathe {
   0% { opacity: 1.00; }
-  5.76% { opacity: 0.98; }
-  9.84% { opacity: 0.96; }
-  12.61% { opacity: 0.94; }
-  14.87% { opacity: 0.92; }
-  16.85% { opacity: 0.90; }
-  18.64% { opacity: 0.88; }
-  20.32% { opacity: 0.86; }
-  21.92% { opacity: 0.84; }
-  23.47% { opacity: 0.82; }
-  25% { opacity: 0.80; }
-  26.53% { opacity: 0.78; }
-  28.08% { opacity: 0.76; }
-  29.68% { opacity: 0.74; }
-  31.36% { opacity: 0.72; }
-  33.15% { opacity: 0.70; }
-  35.13% { opacity: 0.68; }
-  37.39% { opacity: 0.66; }
-  40.16% { opacity: 0.64; }
-  44.24% { opacity: 0.62; }
-  55.76% { opacity: 0.64; }
-  59.84% { opacity: 0.66; }
-  62.61% { opacity: 0.68; }
-  64.87% { opacity: 0.70; }
-  66.85% { opacity: 0.72; }
-  68.64% { opacity: 0.74; }
-  70.32% { opacity: 0.76; }
-  71.92% { opacity: 0.78; }
-  73.47% { opacity: 0.80; }
-  75% { opacity: 0.82; }
-  76.53% { opacity: 0.84; }
-  78.08% { opacity: 0.86; }
-  79.68% { opacity: 0.88; }
-  81.36% { opacity: 0.90; }
-  83.15% { opacity: 0.92; }
-  85.13% { opacity: 0.94; }
-  87.39% { opacity: 0.96; }
-  90.16% { opacity: 0.98; }
-  94.24% { opacity: 1.00; }
+  5.1282% { opacity: 0.98; }
+  10.2564% { opacity: 0.96; }
+  12.8205% { opacity: 0.94; }
+  15.3846% { opacity: 0.92; }
+  16.6667% { opacity: 0.90; }
+  19.2308% { opacity: 0.88; }
+  20.5128% { opacity: 0.86; }
+  21.7949% { opacity: 0.84; }
+  23.0769% { opacity: 0.82; }
+  25.641% { opacity: 0.80; }
+  26.9231% { opacity: 0.78; }
+  28.2051% { opacity: 0.76; }
+  29.4872% { opacity: 0.74; }
+  30.7692% { opacity: 0.72; }
+  33.3333% { opacity: 0.70; }
+  34.6154% { opacity: 0.68; }
+  37.1795% { opacity: 0.66; }
+  39.7436% { opacity: 0.64; }
+  44.8718% { opacity: 0.62; }
+  55.1282% { opacity: 0.64; }
+  60.2564% { opacity: 0.66; }
+  62.8205% { opacity: 0.68; }
+  65.3846% { opacity: 0.70; }
+  66.6667% { opacity: 0.72; }
+  69.2308% { opacity: 0.74; }
+  70.5128% { opacity: 0.76; }
+  71.7949% { opacity: 0.78; }
+  73.0769% { opacity: 0.80; }
+  75.641% { opacity: 0.82; }
+  76.9231% { opacity: 0.84; }
+  78.2051% { opacity: 0.86; }
+  79.4872% { opacity: 0.88; }
+  80.7692% { opacity: 0.90; }
+  83.3333% { opacity: 0.92; }
+  84.6154% { opacity: 0.94; }
+  87.1795% { opacity: 0.96; }
+  89.7436% { opacity: 0.98; }
+  94.8718% { opacity: 1.00; }
 }
 
 
@@ -4968,17 +4971,25 @@ button, [role="button"] {
 
 /* ThinkingIndicator (components/ui/ThinkingIndicator.tsx): a sparkle that
    melts into a circle and back, a twinkle at the turn, a sheen across the
-   label. Every loop is stepped at 30 changes a second so the stepped loop clock
-   drives it from a timer (it adopts a loop at <= 31/s); nothing here ticks at
-   the display rate. A step count applies to each keyframe segment, so each
-   segment gets 30 x its seconds: 36 steps for a 1.2 s segment, 24 for 0.8 s.
+   label. Every loop is stepped at 30 changes a second and moves only transform
+   or opacity, so the compositor runs it and the main thread paints nothing per
+   step. The indicator is `data-loop-clock="off"`: the stepped loop clock would
+   seek each loop from the main thread instead. A step count applies to each
+   keyframe segment, so each segment gets 30 x its seconds: 36 steps for a
+   1.2 s segment, 24 for 0.8 s.
+   - The shape morph is a strip of its 120 shapes (drawn once, in the
+     component) behind a one-shape window; one step moves the strip one shape.
+   - The sheen is the label's bright copy (the window's `::before`) seen through
+     a soft gradient window. The window is 250% of the label wide and slides
+     right while the copy slides left by the same distance, so the text holds
+     still and only the light moves: the same band, at the same steps, as the
+     `background-position` sweep it replaces.
    Measured with `loop-cost.mjs thinking` (docs/perf/macos-baseline.md). */
-@keyframes ade-thinking-glyph-shape {
-  0% { d: path("M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"); animation-timing-function: steps(36, jump-none); }
-  30% { d: path("M 12 4.2 C 16.8 3.4 20.6 7.2 19.8 12 C 20.6 16.4 16.4 20.6 12 19.8 C 7.8 20.6 3.4 16.8 4.2 12 C 3.4 7.6 7.2 3.4 12 4.2 Z"); animation-timing-function: steps(24, jump-none); }
-  50% { d: path("M 12 5 C 15.87 5 19 8.13 19 12 C 19 15.87 15.87 19 12 19 C 8.13 19 5 15.87 5 12 C 5 8.13 8.13 5 12 5 Z"); animation-timing-function: steps(24, jump-none); }
-  70% { d: path("M 12 3.6 C 16.4 4.6 18.6 8 19.2 12 C 18.6 16.2 16.2 19.4 12 20.4 C 8 19.4 5.2 16.4 4.8 12 C 5.4 7.8 7.6 4.4 12 3.6 Z"); animation-timing-function: steps(36, jump-none); }
-  100% { d: path("M 12 3 C 12.9 7.4 16.6 11.1 21 12 C 16.6 12.9 12.9 16.6 12 21 C 11.1 16.6 7.4 12.9 3 12 C 7.4 11.1 11.1 7.4 12 3 Z"); }
+/* In em, not %: a transform that depends on the box's size is not composited.
+   One shape is the glyph box, 1.3em (ThinkingIndicator.tsx); the strip is 120. */
+@keyframes ade-thinking-glyph-strip {
+  from { transform: translateX(0); }
+  to { transform: translateX(calc(-120 * 1.3em)); }
 }
 @keyframes ade-thinking-glyph-turn {
   0% { transform: rotate(0deg) scale(1); animation-timing-function: steps(36, jump-none); }
@@ -4992,9 +5003,15 @@ button, [role="button"] {
   50% { opacity: 1; transform: rotate(90deg) scale(1); animation-timing-function: steps(24, jump-none); }
   70%, 100% { opacity: 0; transform: rotate(0deg) scale(0.2); }
 }
-@keyframes ade-thinking-sheen {
-  from { background-position: 100% center, 0 0; }
-  to { background-position: 0% center, 0 0; }
+/* The window's -60% is the gradient's 100% `background-position` (its 250%
+   width less the label's, 150% of the label); the copy's 150% undoes it. */
+@keyframes ade-thinking-sheen-window {
+  from { transform: translateX(-60%); }
+  to { transform: translateX(0); }
+}
+@keyframes ade-thinking-sheen-text {
+  from { transform: translateX(150%); }
+  to { transform: translateX(0); }
 }
 @keyframes ade-thinking-label-in {
   from { opacity: 0; transform: translateY(70%); }
@@ -5003,8 +5020,10 @@ button, [role="button"] {
 .ade-thinking-glyph {
   animation: ade-thinking-glyph-turn 4s infinite;
 }
-.ade-thinking-glyph-shape {
-  animation: ade-thinking-glyph-shape 4s infinite;
+.ade-thinking-glyph-strip {
+  width: calc(120 * 1.3em);
+  /* steps(120, end) shows offsets 0 .. 119/120 of the strip: one shape per 1/30 s. */
+  animation: ade-thinking-glyph-strip 4s steps(120, end) infinite;
 }
 .ade-thinking-twinkle {
   transform-origin: 79% 21%;
@@ -5012,34 +5031,51 @@ button, [role="button"] {
 }
 .ade-thinking-label {
   --ade-thinking-spread: 2.5em;
-  background-image:
-    linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), var(--color-fg), transparent calc(50% + var(--ade-thinking-spread))),
-    linear-gradient(color-mix(in srgb, var(--color-fg) 55%, transparent), color-mix(in srgb, var(--color-fg) 55%, transparent));
-  background-size: 250% 100%, auto;
-  background-repeat: no-repeat, padding-box;
-  -webkit-background-clip: text;
-  background-clip: text;
-  color: transparent;
+  color: color-mix(in srgb, var(--color-fg) 55%, transparent);
   --ade-thinking-label-in: ade-thinking-label-in 0.28s cubic-bezier(0.4, 0, 0.2, 1) both;
-  animation: var(--ade-thinking-label-in), ade-thinking-sheen 2s steps(60, jump-none) infinite;
+  animation: var(--ade-thinking-label-in);
 }
-/* ADE is not the focused app: no loops at all, so the step clock drops them
-   (a paused loop would still wake its timer). The label keeps its slide-in. */
+.ade-thinking-sheen-window {
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  width: 250%;
+  pointer-events: none;
+  -webkit-mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
+  mask-image: linear-gradient(90deg, transparent calc(50% - var(--ade-thinking-spread)), #000, transparent calc(50% + var(--ade-thinking-spread)));
+  animation: ade-thinking-sheen-window 2s steps(60, jump-none) infinite;
+}
+.ade-thinking-sheen-window::before {
+  content: attr(data-label);
+  position: absolute;
+  inset-block: 0;
+  left: 0;
+  /* The label's own width: 40% of the 250% window. */
+  width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-fg);
+  animation: ade-thinking-sheen-text 2s steps(60, jump-none) infinite;
+}
+/* ADE is not the focused app: no loops at all. Every part rests where its loop
+   starts (the sheen at its 0% position, as the old sweep did). The label keeps
+   its slide-in. */
 .ade-thinking-indicator[data-resting] .ade-thinking-glyph,
-.ade-thinking-indicator[data-resting] .ade-thinking-glyph-shape,
-.ade-thinking-indicator[data-resting] .ade-thinking-twinkle {
+.ade-thinking-indicator[data-resting] .ade-thinking-glyph-strip,
+.ade-thinking-indicator[data-resting] .ade-thinking-twinkle,
+.ade-thinking-indicator[data-resting] .ade-thinking-sheen-window,
+.ade-thinking-indicator[data-resting] .ade-thinking-sheen-window::before {
   animation: none;
 }
 .ade-thinking-indicator[data-resting] .ade-thinking-twinkle { opacity: 0; }
-.ade-thinking-indicator[data-resting] .ade-thinking-label {
-  animation: var(--ade-thinking-label-in);
-}
 @media (prefers-reduced-motion: reduce) {
   .ade-thinking-glyph,
-  .ade-thinking-glyph-shape,
+  .ade-thinking-glyph-strip,
   .ade-thinking-twinkle,
   .ade-thinking-label,
-  .ade-thinking-indicator[data-resting] .ade-thinking-label {
+  .ade-thinking-sheen-window,
+  .ade-thinking-sheen-window::before {
     animation: none;
   }
   .ade-thinking-twinkle { opacity: 0.5; transform: none; }

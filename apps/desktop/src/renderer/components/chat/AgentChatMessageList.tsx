@@ -70,6 +70,7 @@ import { cn } from "../ui/cn";
 import { ChatSubagentGlyph, chatSubagentColor } from "./chatSubagentIdentity";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
+import { subscribeToTicker } from "../../lib/ticker";
 import { toLayoutPx } from "../../lib/webZoom";
 import { navigateToAppTarget, openExternalUrl, openLinkFromUi } from "../../lib/openExternal";
 import { ChipText } from "./ChipText";
@@ -2095,16 +2096,16 @@ function WorkingIndicator({
   useEffect(() => {
     const startMs = startedAt ?? Date.now();
     startMsRef.current = startMs;
-    let handle = 0;
     const tick = () => {
       const elapsedSec = Math.max(0, Math.floor((Date.now() - startMs) / 1000));
       // Re-read the ref every tick — see attachTimer above.
       const el = timerRef.current;
       if (el) el.textContent = formatElapsedSeconds(elapsedSec);
-      handle = window.setTimeout(tick, 1000);
     };
     tick();
-    return () => window.clearTimeout(handle);
+    // The shared one-second timer, so this counter and the Work row's elapsed
+    // label change in one frame rather than two each second.
+    return subscribeToTicker(1000, tick);
   }, [startedAt]);
   const scenePreview = useMemo(() => {
     if (replyWritesScene) return null;
@@ -6385,6 +6386,17 @@ function AgentChatMessageListMain({
   }
   /** What a scroll to `top` would change in the last render (mounted rows, active tick). */
   const scrollCommitKeyRef = useRef<((top: number) => string) | null>(null);
+  /**
+   * Records a scroll the list made itself (the bottom pin) and renders only
+   * when it changes what the list draws, as `handleScroll` does for the
+   * reader's scrolls. A streamed reply pins the view after each update, and
+   * committing every pin rendered the whole list a second time per update.
+   */
+  const commitPinnedScrollTop = useCallback((top: number) => {
+    liveScrollTopRef.current = top;
+    const commitKey = scrollCommitKeyRef.current;
+    if (!commitKey || commitKey(top) !== renderedScrollKeyRef.current) setScrollTop(top);
+  }, []);
   const scrollSettleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [containerHeight, setContainerHeight] = useState(0);
   const [measurementTick, setMeasurementTick] = useState(0);
@@ -7524,8 +7536,8 @@ function AgentChatMessageListMain({
     if (Math.abs(before - pinTarget) < 1) return;
     el.scrollTop = pinTarget;
     programmaticScrollTargetRef.current = el.scrollTop;
-    setScrollTop(el.scrollTop);
-  }, []);
+    commitPinnedScrollTop(el.scrollTop);
+  }, [commitPinnedScrollTop]);
 
   // The composer floats over the bottom of this list (see ChatSurfaceShell
   // `overlayFooter`). Reserve its height at the end of the scroll content so
@@ -7612,7 +7624,7 @@ function AgentChatMessageListMain({
       const before = el.scrollTop;
       if (Math.abs(before - target) >= 1) {
         el.scrollTop = target;
-        setScrollTop(el.scrollTop);
+        commitPinnedScrollTop(el.scrollTop);
         // Only register a pending programmatic scroll event if the assignment
         // actually moved the element. Otherwise (clamped to the same value,
         // hidden element, etc.) no scroll event will fire and the next real
@@ -7628,7 +7640,7 @@ function AgentChatMessageListMain({
       }
     };
     scrollRafRef.current = requestAnimationFrame(run);
-  }, []);
+  }, [commitPinnedScrollTop]);
   scrollToBottomSoonRef.current = scrollToBottomSoon;
 
   /** Row the transcript ended on at the moment bottom-follow broke. */
@@ -7725,12 +7737,17 @@ function AgentChatMessageListMain({
       // maths. The rail costs no extra observer, and the width setter has a 1px
       // deadband so streaming height churn never re-renders for it.
       measureContentColumnWidth();
-      if (stickToBottomRef.current) scrollToBottomSoon(2);
+      // Layout is current in an observer callback, so the pin reads the new
+      // height without forcing a layout and moves the view in the same frame
+      // as the growth. A pin from the next animation frame showed each
+      // streamed update a frame late and kept two more frames running after it.
+      const el = scrollRef.current;
+      if (stickToBottomRef.current && el) pinScrollToBottomNow(el);
     });
     ro.observe(wrapper);
     measureContentColumnWidth();
     return () => ro.disconnect();
-  }, [measureContentColumnWidth, scrollToBottomSoon]);
+  }, [measureContentColumnWidth, pinScrollToBottomNow, scrollToBottomSoon]);
 
   // Observe the scroll container's size so we know the viewport height.
   useEffect(() => {
@@ -8076,6 +8093,14 @@ function AgentChatMessageListMain({
       // Debounce measurement tick updates to batch rapid height changes
       // into a single re-render instead of one per row.
       const isFollowingBottom = stickToBottomRef.current;
+      // A pinned reader's last row growing moves no row's start offset: the
+      // plain list draws nothing from heights, the virtual window stays
+      // anchored to the end with no spacer below, its box only has a minimum
+      // height, and the scroll memory of a pinned reader reads none. So a
+      // reply that grows at the end needs no list render (this was one per
+      // streamed update), and the content observer keeps the view pinned. The
+      // next render reads the new height.
+      if (isFollowingBottom && index === rowIndexByKey.size - 1) return;
       if (measureFlushTimer.current) {
         if (!isFollowingBottom) return;
         clearTimeout(measureFlushTimer.current);
@@ -8150,9 +8175,12 @@ function AgentChatMessageListMain({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shouldVirtualize, stickToBottom, groupedRows.length, windowScrollTop, windowContainerHeight, rowHeight, rowStartOffsets, timelineRowGapPx]);
 
+  // Not on `totalHeight`: it moves on every render of a growing reply, and the
+  // content observer already pins the view when the content's box grows. This
+  // effect ran three animation frames per streamed update for nothing.
   useLayoutEffect(() => {
     if (stickToBottomRef.current) scrollToBottomSoon(2);
-  }, [containerHeight, groupedRows.length, measurementTick, scrollToBottomSoon, shouldVirtualize, totalHeight]);
+  }, [containerHeight, groupedRows.length, measurementTick, scrollToBottomSoon, shouldVirtualize]);
 
   /**
    * Row start offsets under the measured-height model (the per-kind estimate
@@ -8521,7 +8549,7 @@ function AgentChatMessageListMain({
     })) {
       programmaticScrollTargetRef.current = null;
       lastScrollClientHeightRef.current = target.clientHeight;
-      setScrollTop(target.scrollTop);
+      commitPinnedScrollTop(target.scrollTop);
       return;
     }
     programmaticScrollTargetRef.current = null;
@@ -8604,7 +8632,7 @@ function AgentChatMessageListMain({
     // A scrollbar drag upward (wheel, keys and touch arm through the scroll direction).
     if (readerPointerHeldRef.current && target.scrollTop < previousScrollTop - 0.5) armOlderHistoryBackfill();
     maybeRequestOlderHistory(target.scrollTop, "reader");
-  }, [armOlderHistoryBackfill, captureScrollMemory, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
+  }, [armOlderHistoryBackfill, captureScrollMemory, commitPinnedScrollTop, markDetachAnchor, maybeRequestOlderHistory, onReturnToLatest, pinScrollToBottomNow, scrollToBottomSoon, sessionId]);
 
   /** The reader scrolled up (true) or down (false): starts or ends the re-pin hold. */
   const noteReaderScrollDirection = useCallback((up: boolean) => {
@@ -9125,7 +9153,9 @@ function AgentChatMessageListMain({
           ) : shouldVirtualize ? (
             /* ── Virtualized path: only render rows in / near the viewport ── */
             <div className="flex min-w-0 max-w-full flex-col gap-[length:var(--chat-row-gap)]">
-              <div style={{ height: totalHeight, position: "relative" }}>
+              {/* A minimum, not a height: a mounted row that grew since this
+                  render pushes what follows down instead of drawing over it. */}
+              <div style={{ minHeight: totalHeight, position: "relative" }}>
                 {/* Top spacer pushes rendered rows to their correct scroll position */}
                 <div style={{ height: offsetTop }} aria-hidden />
                 <div className="flex flex-col gap-[length:var(--chat-row-gap)]">
