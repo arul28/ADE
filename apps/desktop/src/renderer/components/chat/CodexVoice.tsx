@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Microphone, MicrophoneSlash, PhoneDisconnect, Waveform } from "@phosphor-icons/react";
 import type { AgentChatCodexRealtimeCaption, OpenProjectBinding } from "../../../shared/types";
 import { formatCodexVoiceDuration, type CodexVoicePreferences } from "../../../shared/codexVoice";
@@ -344,7 +344,9 @@ export function useCodexVoice({
     };
   }, [phase, teardown]);
 
-  return {
+  // One object per change, so the voice bar and button skip the composer's
+  // renders (every keystroke) while nothing about the call moved.
+  return useMemo(() => ({
     phase,
     muted,
     startedAt,
@@ -355,7 +357,7 @@ export function useCodexVoice({
     start: startVoice,
     stop,
     toggleMute,
-  };
+  }), [captions, micLevel, muted, phase, speaking, startVoice, startedAt, stop, toggleMute, working]);
 }
 
 /** The toolbar control: starts voice, and ends it while a session is live. */

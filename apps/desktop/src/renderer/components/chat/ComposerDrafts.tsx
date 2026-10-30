@@ -29,6 +29,7 @@ import {
 } from "../../../shared/types";
 import { cn } from "../ui/cn";
 import { readAttachmentImageDataUrl } from "../../lib/attachmentImage";
+import { useStateSkippingSameValue } from "../../lib/stableIdentity";
 import { SmartTooltip } from "../ui/SmartTooltip";
 import { ViewportOverlayPortal } from "../ui/ViewportOverlayHost";
 import { Banner } from "../ui/notice/Banner";
@@ -224,7 +225,9 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
   const [editText, setEditText] = useState<string>("");
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Cleared on every draft change: a plain `useState` rendered this again per
+  // keystroke for the same-value write.
+  const [error, setError] = useStateSkippingSameValue<string | null>(null);
   const [saveReceiptKey, setSaveReceiptKey] = useState(0);
   const [saveReceiptVisible, setSaveReceiptVisible] = useState(false);
   const [menuPosition, setMenuPosition] = useState({ left: 0, top: 0 });
@@ -286,7 +289,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       if (sequence !== refreshSequenceRef.current) return;
       setError(draftErrorMessage(refreshError, "Could not load drafts."));
     }
-  }, [composerMachineBinding]);
+  }, [composerMachineBinding, setError]);
 
   useEffect(() => {
     if (active) void refresh(composerMachineBinding);
@@ -300,7 +303,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
 
   useEffect(() => {
     setError(null);
-  }, [attachmentSignature, draft]);
+  }, [attachmentSignature, draft, setError]);
 
   useEffect(() => {
     if (!menuOpen) return;
@@ -480,7 +483,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [composerMachineBinding, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh]);
+  }, [composerMachineBinding, disabled, entries.length, modelId, onDraftChange, onRemoveAttachment, provider, refresh, setError]);
 
   const save = useCallback(
     (preserveDraft = false) => persistComposerDraft(null, preserveDraft),
@@ -509,7 +512,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, []);
+  }, [setError]);
 
   /**
    * Claim a draft and put it in the composer.
@@ -549,7 +552,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
         onAddAttachment(attachment);
       }
     });
-  }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh, runDraftOperation]);
+  }, [entriesOwnerBinding, onAddAttachment, onDraftChange, refresh, runDraftOperation, setError]);
 
   const remove = useCallback(async (entry: DraftEntry): Promise<boolean> => {
     if (operationInFlightRef.current) return false;
@@ -582,7 +585,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       operationInFlightRef.current = false;
       setBusy(false);
     }
-  }, [entriesOwnerBinding, refresh]);
+  }, [entriesOwnerBinding, refresh, setError]);
 
   const saveEdit = useCallback(async (entry: DraftEntry, text: string) => {
     const operationBinding = entriesOwnerBinding;
@@ -603,7 +606,7 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
       ));
       setOpenEntry(updated);
     });
-  }, [entriesOwnerBinding, refresh, runDraftOperation]);
+  }, [entriesOwnerBinding, refresh, runDraftOperation, setError]);
 
   /**
    * Deliver a draft immediately. The row keeps whatever schedule it had, so a
@@ -695,55 +698,59 @@ export const ComposerDrafts = forwardRef<ComposerDraftsHandle, ComposerDraftsPro
     setOpenEntry(entry);
   }, []);
 
+  // The button reads only facts about the draft (empty or not), so it skips
+  // the keystrokes that do not change them.
+  const saveButton = useMemo(() => (renderButton ? (
+      <SmartTooltip
+        forceEnabled
+        content={{
+          label: hasComposerContent || nothingToShow ? "Save draft" : "Open drafts",
+          description: hasComposerContent || nothingToShow
+            ? "Save this prompt and its images across connected machines."
+            : `Open your drafts and scheduled sends. Press ${shortcutLabel} with text to save one.`,
+          shortcut: shortcutLabel,
+        }}
+      >
+        <button
+          type="button"
+          aria-label={hasComposerContent
+            ? "Save draft"
+            : `Open ${entries.length} draft${entries.length === 1 ? "" : "s"}`}
+          aria-expanded={menuOpen}
+          disabled={disabled || busy || nothingToShow}
+          className={cn(
+            "relative inline-flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color,transform] duration-150",
+            "text-muted-fg/38 hover:bg-violet-500/[0.07] hover:text-violet-200/75",
+            menuOpen && "bg-violet-500/[0.09] text-violet-100/80",
+            saveReceiptVisible && "text-emerald-200/80",
+            "disabled:cursor-not-allowed disabled:opacity-35",
+          )}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={() => void save()}
+        >
+          {busy ? (
+            <SpinnerGap size={14} className="animate-spin" aria-hidden />
+          ) : saveReceiptVisible && !menuOpen ? (
+            <Check key={saveReceiptKey} size={14} weight="bold" className="animate-in zoom-in-75 fade-in duration-150" aria-hidden />
+          ) : (
+            <BookmarkSimple size={14} weight={entries.length ? "fill" : "regular"} aria-hidden />
+          )}
+          {entries.length > 0 ? (
+            <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-3.5 items-center justify-center rounded-full border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] px-1 font-mono text-[8px] font-bold leading-3.5 tabular-nums text-fg/68">
+              {entries.length}
+            </span>
+          ) : null}
+        </button>
+      </SmartTooltip>
+  ) : null), [busy, disabled, entries.length, hasComposerContent, menuOpen, nothingToShow, renderButton, save, saveReceiptKey, saveReceiptVisible, shortcutLabel]);
+
   return (
     <div
       ref={rootRef}
       className={cn("relative shrink-0", renderButton ? "w-7" : "w-0")}
       data-composer-drafts-idle={renderButton && nothingToShow && !menuOpen ? "" : undefined}
     >
-      {renderButton ? (
-        <SmartTooltip
-          forceEnabled
-          content={{
-            label: hasComposerContent || nothingToShow ? "Save draft" : "Open drafts",
-            description: hasComposerContent || nothingToShow
-              ? "Save this prompt and its images across connected machines."
-              : `Open your drafts and scheduled sends. Press ${shortcutLabel} with text to save one.`,
-            shortcut: shortcutLabel,
-          }}
-        >
-          <button
-            type="button"
-            aria-label={hasComposerContent
-              ? "Save draft"
-              : `Open ${entries.length} draft${entries.length === 1 ? "" : "s"}`}
-            aria-expanded={menuOpen}
-            disabled={disabled || busy || nothingToShow}
-            className={cn(
-              "relative inline-flex h-7 w-7 items-center justify-center rounded-lg transition-[color,background-color,transform] duration-150",
-              "text-muted-fg/38 hover:bg-violet-500/[0.07] hover:text-violet-200/75",
-              menuOpen && "bg-violet-500/[0.09] text-violet-100/80",
-              saveReceiptVisible && "text-emerald-200/80",
-              "disabled:cursor-not-allowed disabled:opacity-35",
-            )}
-            onPointerDown={(event) => event.preventDefault()}
-            onClick={() => void save()}
-          >
-            {busy ? (
-              <SpinnerGap size={14} className="animate-spin" aria-hidden />
-            ) : saveReceiptVisible && !menuOpen ? (
-              <Check key={saveReceiptKey} size={14} weight="bold" className="animate-in zoom-in-75 fade-in duration-150" aria-hidden />
-            ) : (
-              <BookmarkSimple size={14} weight={entries.length ? "fill" : "regular"} aria-hidden />
-            )}
-            {entries.length > 0 ? (
-              <span className="absolute -right-0.5 -top-0.5 inline-flex min-w-3.5 items-center justify-center rounded-full border border-[color:var(--chat-panel-border)] bg-[var(--chat-panel-bg)] px-1 font-mono text-[8px] font-bold leading-3.5 tabular-nums text-fg/68">
-                {entries.length}
-              </span>
-            ) : null}
-          </button>
-        </SmartTooltip>
-      ) : null}
+      {saveButton}
 
       {menuOpen ? (
         // The composer's other menus anchor inside the named popover layer

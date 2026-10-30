@@ -18,6 +18,15 @@
     return t.displayName || t.name || (t.render && (t.render.displayName || t.render.name)) || (t.type && (t.type.displayName || t.type.name)) || null;
   };
   const bump = (m, k) => m.set(k, (m.get(k) || 0) + 1);
+  const contextName = (fiber, ctx) => {
+    if (ctx.displayName) return ctx.displayName;
+    for (let f = fiber.return; f; f = f.return) {
+      if (f.tag === 10 && (f.type === ctx || (f.type && f.type._context === ctx))) {
+        for (let o = f.return; o; o = o.return) { const n = isComponent(o) ? nameOf(o) : null; if (n) return `provided by ${n}`; }
+      }
+    }
+    return "(unnamed)";
+  };
   const isComponent = (f) => f.tag === 0 || f.tag === 1 || f.tag === 11 || f.tag === 15 || f.tag === 14;
   const visit = (next, parentRendered, path) => {
     const prev = next.alternate;
@@ -37,6 +46,13 @@
             const isEffect = v && typeof v === "object" && "create" in v;
             if (v !== av && !isMemo && !isEffect) bump(hookDiffs, `${name} hook#${i} ${preview(av)} -> ${preview(v)}`);
             h = h.next; ah = ah.next; i++;
+          }
+          // Context reads that changed value: a re-render with the same props and no state
+          // change is a context update. Named by the component that renders the provider.
+          let d = next.dependencies && next.dependencies.firstContext, ad = prev.dependencies && prev.dependencies.firstContext;
+          while (d && ad) {
+            if (d.memoizedValue !== ad.memoizedValue) bump(hookDiffs, `${name} context ${contextName(next, d.context)}`);
+            d = d.next; ad = ad.next;
           }
         }
         if (prev && window.__watchNames.has(name) && prev.memoizedProps !== next.memoizedProps) {

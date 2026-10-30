@@ -871,8 +871,49 @@ events fell from 3,890 ms to 2,200 ms, and the row builder from 3.5 ms to
   same-value write.
 
 Open: the pane's own chrome (header, composer, three closed dialogs) still
-renders once per event and once per keystroke, about 150 component renders
-each. A selected chat at its resident cap (60,000 events or 32 MB) trims one
+renders once per streamed event, about 150 component renders each.
+
+### A chat switch renders each new row once (tenth pass)
+
+`scripts/perf/ui/chat-switch-renders.mjs` and `interaction.mjs chats` on the
+owner's real data, two other machines connected: about 2,000 → 1,235 component
+renders per switch; warm first frame 55-65 → 50-57 ms, worst frame ~86 → 53-70 ms.
+
+- **Keep `presenceAffectsLayout={false}` on the chat-view `AnimatePresence`.**
+  The default builds a new presence context on every pane render, which
+  re-renders every `motion.*` and nested `AnimatePresence` in the transcript.
+- **The markdown `components` map must not depend on the chat's scope.** Its
+  entries are component types; a new map remounts every element of every reply.
+  Read the pin at click time (ref) or inside a small component that reads
+  `useChatRuntimeScope()`.
+- **Props that settle one render after a switch must not reach every row**
+  (`assistantLabel`, the transcript provider, handlers keyed on
+  `selectedSessionId`): pass them only where read, or through `useLatestCallback`.
+- **Seed the first virtual window** from the last measured pane height and, for a
+  scrolled-up chat, from the restore target, so rows mount in one wave.
+
+### A keystroke renders only what reads the text (ninth pass)
+
+`scripts/perf/ui/composer-typing-renders.mjs` (browser mock, real transcript,
+20 keys, 3 runs): 1,267 component renders → 135.
+
+- **Subscribe inside the memo.** `LiveDraftComposer` (in
+  `AgentChatComposer.tsx`) is `memoWithLatestHandlers` around the draft-store
+  subscription, so a key renders the reader and the composer, not the wrapper.
+- **The composer's draft-free JSX is `useMemo`'d** (issue pickers, toolbar,
+  pickers, tooltips, voice bar, command menu, preview dialog). Deps come from
+  `react-hooks/exhaustive-deps`; handlers that change with the draft reach
+  them through `useLatestCallback`. Pass facts (`draftHasText`), not the text.
+- **No same-value writes per key.** An effect on `[draft]` that sets `null`
+  rendered the composer twice per key: use `useStateSkippingSameValue`.
+- **The pane must not read the draft.** The sidebar draft indicator is
+  published by `ComposerDraftPresencePublisher`; the pane's own subscription
+  re-rendered it and the transcript animations on the first key.
+- **Hooks return memoized objects.** `useCodexVoice` returned a new object per
+  render and re-rendered the voice bar on every key.
+- Left: `ComposerDrafts` takes the draft text (20 renders per 20 keys).
+
+A selected chat at its resident cap (60,000 events or 32 MB) trims one
 event from the front on every flush, which gives a new list each time and
 sends the merge and the row builder back to full passes; trim in steps instead.
 

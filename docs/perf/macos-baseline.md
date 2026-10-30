@@ -145,6 +145,8 @@ be far smaller; it was not measured that way.
 | Renderer work per keystroke (dev) | `keystroke-trace.mjs` | — | ~4.5 ms (style 2.3, script 1.6) | 8 ms |
 | Input to next frame, 10k plain draft with ultrathink (dev) | CDP input-to-next-rAF, 120 keys/run, 3 runs; 2026-10-16 at `d36087c5b` | — | p50 3.4 ms; p90 4.1–4.2 ms (1327×800, throwaway project, no model messages) | 8 ms |
 | Keystrokes slower than 16 ms (dev) | `typing.mjs` | — | 8 of 80 events | 16 of 80 |
+| Component renders for 20 typed characters, median and worst of 3 (browser mock, dev) | `composer-typing-renders.mjs`, real transcript loaded; 2026-10-29 on `46c4fcff9` (the composer change; PR #1985) | 1,267 / 1,268 | 135 / 135 (composer 4 per key, plus one sidebar draft-indicator update) | 166 |
+| Work chat switch, warm, dev app on the owner's real ~/.ade with two other machines connected: first changed frame median / worst long frame; component renders per switch | `interaction.mjs chats 4` (3 alternated pairs), `chat-switch-renders.mjs 9333 8`; 2026-10-29 on `20465883b` (PR #1985) | 55-65 / ~86 ms; ~2,000 renders | 50-57 / 53-70 ms; 1,235 renders | 60 ms first frame |
 | Renderer busy per keystroke (production build, headless) | `scripts/perf-chat-stream.mjs` harness | 12–15 ms | 12–15 ms | 16 ms |
 | Streaming: cost per event (production build) | `scripts/perf-chat-stream.mjs` | 8.1 ms | 7.7 ms | 10 ms |
 
@@ -631,10 +633,10 @@ vs 1.3 s / 17 KB.
   (network) and dominate the Lanes and PRs IPC totals.
 - **Prewarmed Claude processes:** 150–420 MB each until they are reaped
   after 3 minutes idle.
-- **Typing:** each keystroke still re-renders the whole chat pane (about 150
-  component renders and 3 ms of script per key in the dev build). The pane's
-  header, composer and closed dialogs render with it; the same chrome renders
-  once per streamed event.
+- **Typing:** a keystroke renders the composer's store reader, the composer,
+  its shell and the drafts button (about 7 component renders per key in the
+  browser mock). The drafts button still takes the draft text as a prop; the
+  pane's chrome still renders once per streamed event.
 - **A chat at its resident cap** (60,000 events or 32 MB) used to drop one
   event from the front on every flush, so every flush was a new list and the
   live merge and the row builder took the full path on every streamed event.
@@ -705,6 +707,7 @@ UI, against a running dev app (`scripts/perf/ui/`). The packaged app works too: 
 | `press-to-paint.mjs chats\|tabs\|projects [rounds]` | The same switches from the hand: real mouse input (move, press, a held button, release) and the time from the press to the first frame that shows the new chat, page or project. `interaction.mjs` starts its clock in the click handler and cannot see the time the button is held |
 | `press-to-paint.mjs rapid [runs]` | Presses several chat rows a fixed interval apart: time from the last press to the last chat's content, which earlier chats painted on the way, and the main-thread work of the whole burst |
 | `typing.mjs <keys>` | Types into the composer; keystroke events slower than 16 ms |
+| `composer-typing-renders.mjs --port <cdp> --transcript <chat .jsonl>` | Browser mock: component renders while 20 keys are typed into a real chat's composer, median and worst of 3, the top components, and with `--detail` which component started each render and which props changed |
 | `terminal-flood.mjs <laneId> seq\|yes [secs]` | Starts a shell in the lane and floods it (16 MB `seq` or 200 MB colored `yes`) while the renderer calls `sessions.get` again 100 ms after each reply: time to finish, that round trip (p50, p95, max over answered calls, plus failures), frame gaps, long tasks, and the brain's CPU (`ADE_RUNTIME_SOCKET`) |
 | `keystroke-trace.mjs <keys>` | Renderer work per keystroke, split into style, layout, paint and script |
 | `cdp.mjs eval\|metrics\|profile\|shot\|anim` | One-off probes: evaluate, metrics delta, CPU profile with top functions, screenshot, running animations |

@@ -51,6 +51,15 @@ export default [
     },
   },
   {
+    // The composer keeps its draft-free controls in memos with long, hand-kept
+    // dependency lists so a keystroke skips them. A missed dependency there
+    // leaves a control showing stale state with CI green, so it fails lint here.
+    files: ["src/renderer/components/chat/AgentChatComposer.tsx"],
+    rules: {
+      "react-hooks/exhaustive-deps": "error",
+    },
+  },
+  {
     // A chat is bound to the machine its lane lives on, which is frequently NOT
     // the machine the project tab is bound to. Global store reads answer the
     // tab's question, so inside chat-scoped surfaces they are the wrong answer
