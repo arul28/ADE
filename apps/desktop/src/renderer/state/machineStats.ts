@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { OpenProjectBinding } from "../../shared/types";
 import type { MachineStats } from "../../shared/types/machineStats";
+import { useAppStore } from "./appStore";
 
 /**
  * Machine load and capabilities (`machine_stats.get`), read through each
@@ -14,19 +15,27 @@ import type { MachineStats } from "../../shared/types/machineStats";
  */
 
 const TTL_MS = 5_000;
-const SLOW_FOLLOW_UP_MS = 4_000;
-const UNPINNED = "__tab_machine__";
+/** Past the brain's own 5 s answer cache, so the follow-up gets a new answer. */
+const SLOW_FOLLOW_UP_MS = 6_000;
 
 type Entry = { at: number; value: Promise<MachineStats | null> };
 const cache = new Map<string, Entry>();
 
-function cacheKey(pin: OpenProjectBinding | null): string {
-  return pin?.key ?? UNPINNED;
+/**
+ * A pin's key, or for the unpinned path the tab's own binding: unpinned calls
+ * reach whichever machine the tab is bound to, so two tabs (or one tab after
+ * a rebind) must not share an answer.
+ */
+function cacheKey(pin: OpenProjectBinding | null, tabKey: string | null): string {
+  return pin?.key ?? `tab:${tabKey ?? ""}`;
 }
 
 /** One machine's stats; null when it cannot answer (an older ADE, no runtime, a failed call). */
-export function readMachineStats(pin: OpenProjectBinding | null, options?: { fresh?: boolean }): Promise<MachineStats | null> {
-  const key = cacheKey(pin);
+export function readMachineStats(
+  pin: OpenProjectBinding | null,
+  options?: { fresh?: boolean; tabKey?: string | null },
+): Promise<MachineStats | null> {
+  const key = cacheKey(pin, options?.tabKey ?? null);
   const hit = cache.get(key);
   if (!options?.fresh && hit && Date.now() - hit.at < TTL_MS) return hit.value;
   const api = typeof window === "undefined" ? undefined : window.ade?.machineStats;
@@ -54,9 +63,12 @@ export function useMachineStatsMap(
 ): { stats: ReadonlyMap<string, MachineStats | null>; refresh: () => void } {
   const [stats, setStats] = useState<ReadonlyMap<string, MachineStats | null>>(() => new Map());
   const [epoch, setEpoch] = useState(0);
+  const tabKey = useAppStore((state) => state.projectBinding?.key ?? state.project?.rootPath ?? null);
   const requestsRef = useRef(requests);
   requestsRef.current = requests;
-  const signature = requests.map((request) => `${request.id}=${cacheKey(request.pin)}`).join("|");
+  const tabKeyRef = useRef(tabKey);
+  tabKeyRef.current = tabKey;
+  const signature = requests.map((request) => `${request.id}=${cacheKey(request.pin, tabKey)}`).join("|");
   const freshRef = useRef(false);
 
   useEffect(() => {
@@ -67,7 +79,7 @@ export function useMachineStatsMap(
     freshRef.current = false;
     const readAll = (forceFresh: boolean) => {
       const current = requestsRef.current;
-      return Promise.all(current.map(async (request) => [request.id, await readMachineStats(request.pin, { fresh: forceFresh })] as const))
+      return Promise.all(current.map(async (request) => [request.id, await readMachineStats(request.pin, { fresh: forceFresh, tabKey: tabKeyRef.current })] as const))
         .then((rows) => {
           if (cancelled) return rows;
           setStats(new Map(rows));
