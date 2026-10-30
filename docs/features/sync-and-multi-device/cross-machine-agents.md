@@ -94,6 +94,10 @@ on the first command; nothing is installed in advance, and ignored files
   `--discard` resets anyway.
 - **One command at a time.** A sync waits for no one: while a shell still runs
   in the copy the next synced command is refused; `--no-sync` runs beside it.
+- **Limits.** Submodules are not initialised in a copy. Untracked files that
+  are not ignored travel in the patch, so a large one must be committed or
+  ignored. The copy follows the chat's commit, not a branch: commit and push
+  from there with `git push origin HEAD:<branch>`.
 - **The run.** The command runs in that machine's own shell, not interactive
   (`$SHELL -c`; PowerShell `-Command` on Windows), so the output is the
   command's and the shell ends with its exit code. `--wait` streams the output
@@ -113,10 +117,17 @@ on the first command; nothing is installed in advance, and ignored files
   when none is free does ADE make one. `launch`, `installApp` and `runTests`
   sync the copy first; other verbs use it as it is. When the copy goes, the
   cleanup pass gives the device back.
-- **Where it shows.** The chat's own brain records each such shell as it
-  forwards the call (`noteRemoteWork`); the chat header and session card show
+- **Where it shows.** The chat's own brain records each shell and each
+  simulator call as it forwards it (`noteRemoteWork`, in memory only, so a
+  restart of that brain forgets it). The other machine returns its work
+  copy's lane id with each answer (`workCopy.laneId`); an older machine does
+  not, and then only the shells show. The chat header and session card show
   that machine's logo while the current turn uses it, with the commands and
-  Stop. Settings › Machines reads `remote_work.list` (every project on that
+  Stop. The terminal tool adds those commands, each with the machine's logo,
+  read and stopped through that machine's pin. The iOS tool offers
+  "Simulator · <machine>" beside "This lane" and stays visible on a host that
+  cannot run a simulator; it never starts a device there, and says so when
+  there is none. Settings › Machines reads `remote_work.list` (every project on that
   machine, from `<ADE_HOME>/remote-work/projects.json`) and deletes with
   `remote_work.delete` (desktop only).
 
