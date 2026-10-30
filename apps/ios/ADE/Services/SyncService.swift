@@ -4200,6 +4200,11 @@ final class SyncService: ObservableObject {
   @Published private(set) var currentAddress: String?
   @Published private(set) var lastConnectDurationMs: Int?
   @Published private(set) var lastConnectedRouteKind: SyncConnectionRouteKind?
+  /// Each machine's ADE version from the focused connection's last hello with
+  /// it (`brain.appVersion`), by machine key (`machine:<device id>`). Keyed
+  /// per machine so a focus switch never shows one machine's track on
+  /// another. A machine that sent no version has no entry.
+  @Published private(set) var hostAppVersionByMachineKey: [String: String] = [:]
   /// The machine the project's CTO lives on (account setting
   /// `cto.homeMachine`), as a fleet key. Nil = the primary machine.
   @Published var ctoHomeMachineKey: String?
@@ -21391,6 +21396,13 @@ final class SyncService: ObservableObject {
     let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
+    if let identity = syncNonEmpty(remoteHostIdentity) {
+      let machineKey = HiddenMachineStore.fleetKey(deviceId: identity)
+      let version = syncNonEmpty(brain?["appVersion"] as? String)
+      if hostAppVersionByMachineKey[machineKey] != version {
+        hostAppVersionByMachineKey[machineKey] = version
+      }
+    }
     // A user-initiated transition records the machine it LEFT before
     // `saveProfile` retargets everything below, so prefer it. Without that
     // baseline this comparison reads a field the switch itself already

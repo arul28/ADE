@@ -55,6 +55,8 @@ final class MachineFleet: ObservableObject {
     var gaveUp: Bool = false
     /// The route its live link actually took.
     var routeKind: SyncConnectionRouteKind? = nil
+    /// The machine's ADE version from its last hello, nil for an older host.
+    var appVersion: String? = nil
     var id: String { machineKey }
   }
 
@@ -527,7 +529,8 @@ final class MachineFleet: ObservableObject {
         lastUpdateAt: connection.lastUpdateAt,
         isPinned: pinned.contains(key),
         gaveUp: connection.gaveUp,
-        routeKind: state == .live ? connection.liveRouteKind : nil
+        routeKind: state == .live ? connection.liveRouteKind : nil,
+        appVersion: connection.hostAppVersion
       )
     }
     if next != machines {

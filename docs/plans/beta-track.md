@@ -111,8 +111,9 @@ Asset `release-manifest.json`:
 6. CLI: `ade brain update` follows the machine's track; `ade doctor` shows it.
 7. CI: beta workflow, prerelease publish, feed, prune, notes, failure issue,
    launch check with an old database, `scope.sh` look-back fix.
-8. iOS: defer changes for unknown columns (as desktop does), "Beta" chip,
-   TestFlight builds from CI to Internal Testers.
+8. iOS: defer changes for unknown columns and replay them once the column
+   exists (as desktop does), "Beta" chip, TestFlight builds from CI to
+   Internal Testers.
 9. Resume: cap automatic resumes at 3 in a row (persisted), never resume a
    chat that waits for the user, resume before optional work.
 10. Release skill: stable promotes the newest beta that passes the Sentry gate.
@@ -188,7 +189,46 @@ How the pipeline is built, and what is still open.
   beta, and a replaced pending run is harmless because each run resolves the
   newest green commit itself.
 
-Open (updated 2026-10-29):
+### iOS TestFlight from CI (work item 8)
+
+- `beta.yml`'s `ios` job calls `ios-testflight.yml` once a real beta is
+  public, beside the feed. Previews never call it. The feed, prune and report
+  jobs do not wait for it.
+- Its `gate` job (Ubuntu) builds only when `apps/ios`, the workflow or the
+  script changed since the newest `ios-v*-build*` tag, the base `scope.sh`
+  uses. Not the previous beta: a beta whose TestFlight build failed would
+  otherwise hide its iOS changes from the next one.
+- The `testflight` job (`macos-26`, Xcode 26, `asc` 1.2.3 pinned by checksum)
+  runs `scripts/release-tools/ios-testflight-ci.sh`: next build number from
+  App Store Connect, `xcodebuild archive` and `-exportArchive` with
+  `-allowProvisioningUpdates` and the API key, IPA check (app, App Clip,
+  widgets, versions), `altool` validate, upload, dSYMs to Sentry, wait for
+  processing, encryption flag, What to Test, the "Internal Testers" group
+  only (no beta review), then the `ios-v<mv>-build<n>` tag. `--dry-run`
+  stops after the IPA check. Dispatch it by hand with `git_ref`, `force` and
+  `dry_run`.
+- A failure never fails the beta: the step and the job continue on error,
+  and the job opens or comments on the "iOS TestFlight failed" issue (label
+  `beta`), closed by the next build that reaches testers.
+- Signing. With no `IOS_SIGNING_P12_BASE64` secret it is cloud signing:
+  Xcode makes an Apple Development certificate on the runner for the archive
+  and signs the export with a cloud-managed Apple Distribution certificate.
+  Both need the `APPLE_API_KEY_*` key to have the **Admin** role; an App
+  Manager or Developer key fails at the archive ("No signing certificate")
+  or the export (cloud signing permission). The app's capabilities (push,
+  Sign in with Apple, associated domains, App Group, App Clip) all work with
+  automatic signing; none needs a manual profile. Each cloud run leaves one
+  "Created via API" development certificate on the team; revoke old ones now
+  and then. If the key is not Admin, the owner adds two secrets and nothing
+  else changes: `IOS_SIGNING_P12_BASE64` (a base64 .p12 with an Apple
+  Development and an Apple Distribution certificate and their private keys)
+  and `IOS_SIGNING_P12_PASSWORD`. The key then needs only App Manager, for
+  profiles and uploads.
+- Not yet checked on a runner: the first real run. Start it with a dry run
+  (`gh workflow run ios-testflight.yml -f dry_run=true`) once the key role is
+  known.
+
+Open (updated 2026-10-30):
 
 - **In-app release notes: decided.** A stable build takes only `changelog/`
   from `main` before it packages (`release-core.yml`, "Take release notes from
@@ -200,14 +240,22 @@ Open (updated 2026-10-29):
   and in `build-win-release`. The last stable release's runtime makes a
   project database; the new app's own brain must open it, list the same lane,
   write its compat record and copy the old file first.
-- iOS TestFlight from CI (work item 8) is not built; the skill still uses
-  `ios-testflight.sh`.
-- iOS: a change for a column the phone does not have is kept in the phone's
-  own change table and not applied (`insertRow`/`updateRow` write only known
-  columns), so sync never freezes on it. After a phone update adds the
-  column, existing rows get the value only when that cell changes again.
-  Follow-up: replay stored changes for a newly added column on open.
-- iOS "Beta" chip on a machine that runs Beta: not built.
+- iOS TestFlight from CI (work item 8): built, never run. See "iOS
+  TestFlight from CI" below. Its first run needs the owner to confirm the
+  API key's role (or add the signing .p12). Stable releases still use
+  `ios-testflight.sh` from the release skill.
+- iOS columns: done. A change for a column the phone does not have is kept in
+  the phone's own change table and not applied, so sync never freezes on it.
+  Each `alter table ... add column` on a table with rows now records the
+  column (`sync_pending_column_replays`, local only); the next open writes the
+  newest stored value into each existing row, once, with change capture off.
+  It never inserts or resurrects a row and skips a value a later delete
+  superseded.
+- iOS "Beta" chip: done. Settings › Machines and the machine page show it.
+  The version is the machine's own: `brain.appVersion` in its hello (new,
+  optional; older brains send none and show no chip), else its Bonjour
+  `runtimeVersion`. Account rows of machines the phone never connected to
+  show no chip: the account directory has no version.
 - What's new on a beta build: done. `beta.yml` passes the beta's GitHub
   release notes to `release-core.yml`, whose packaging jobs write them as
   `changelog/v<beta>.mdx` in the runner's checkout
@@ -223,10 +271,12 @@ Open (updated 2026-10-29):
 - Tests broken on purpose by the channel removal: fixed in `/test`
   (`packagedSyncHostLaunchGate.test.ts` passes, checked 2026-10-30).
 
-## Status (2026-10-29)
+## Status (2026-10-30)
 
 Built on `ade/beta-track`: work items 1, 2, 3 (compat level, records,
 copies), 4 (switch + guard + remote guard), 5 (header label, About, orange
 icon via CI, Sentry `beta` environment), 6 (`brain update` follows the
-track), 7 (CI), 9 (resume cap of 3), 10 (release skill). Not built: 8 (iOS
-CI + chip), 11 (real-machine tests), and the open items above.
+track), 7 (CI), 9 (resume cap of 3), 10 (release skill). Built on
+`ios/beta-track-followups`: 8 (column replay, Beta chip, TestFlight CI; the
+CI has not run on GitHub yet). Not built: 11 (real-machine tests), and the
+open items above.

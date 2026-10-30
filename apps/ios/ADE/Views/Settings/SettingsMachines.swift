@@ -34,6 +34,12 @@ struct SettingsMachine: Identifiable, Equatable {
   /// The rest of the second line after the state word ("Local network · 11% battery").
   let detail: String?
   let projects: [RemoteRosterProject]
+  /// This machine's own ADE version, from its last hello or its LAN
+  /// advertisement. Nil when the phone has not heard it.
+  var appVersion: String? = nil
+
+  /// The machine runs a Beta-track build of ADE.
+  var runsBeta: Bool { adeVersionIsBetaTrack(appVersion) }
 
   var isPrimary: Bool {
     if case .primary = link { return true }
@@ -137,6 +143,20 @@ func settingsMachines(
     return fleet.machine(for: key)?.projects ?? []
   }
 
+  let discovered = syncService.discoveredHosts
+
+  /// The machine's own version: its connection's last hello first, then what
+  /// it advertises on this network. Never another machine's.
+  func appVersion(for key: String?, identity: String?) -> String? {
+    if let key {
+      if key != focusedKey, let version = fleet.machine(for: key)?.appVersion { return version }
+      if let version = syncService.hostAppVersionByMachineKey[key] { return version }
+    }
+    guard let identity = identity?.lowercased() else { return nil }
+    let host = discovered.first { $0.hostIdentity?.lowercased() == identity }
+    return nonEmptyTrimmed(host?.runtimeVersion) ?? nonEmptyTrimmed(host?.appVersion)
+  }
+
   for machine in account.machines {
     let identity = nonEmptyTrimmed(machine.deviceId)
     let dedupeKey = (identity ?? machine.machineKey).lowercased()
@@ -171,11 +191,11 @@ func settingsMachines(
       lastSeenAt: lastSeen,
       hiddenIdentity: identity ?? "account:\(machine.machineKey)",
       detail: detail.isEmpty ? nil : detail,
-      projects: projects(for: key)
+      projects: projects(for: key),
+      appVersion: appVersion(for: key, identity: identity)
     ))
   }
 
-  let discovered = syncService.discoveredHosts
   for host in syncService.savedReconnectHosts {
     let identity = nonEmptyTrimmed(host.hostIdentity)
     let dedupeKey = identity?.lowercased() ?? "name:\(host.hostName.lowercased())"
@@ -193,7 +213,8 @@ func settingsMachines(
       lastSeenAt: machineLastSeenDate(iso8601: host.lastResolvedAt),
       hiddenIdentity: identity ?? "name:\(host.hostName)",
       detail: key == focusedKey ? syncService.lastConnectedRouteKind?.label : nil,
-      projects: projects(for: key)
+      projects: projects(for: key),
+      appVersion: appVersion(for: key, identity: identity)
     ))
   }
 
@@ -555,6 +576,9 @@ struct SettingsMachineRow: View {
           if machine.isPrimary {
             ADEKitTag(text: "Primary", tone: .accent)
           }
+          if machine.runsBeta {
+            ADEKitTag(text: "Beta", tone: .warn)
+          }
         }
         Text(machine.subtitle)
           .font(.system(size: 12.5))
@@ -823,6 +847,9 @@ struct SettingsMachinePageContent: View {
             .font(.system(size: 18, weight: .semibold))
             .foregroundStyle(ADEColor.textPrimary)
             .lineLimit(2)
+          if machine.runsBeta {
+            ADEKitTag(text: "Beta", tone: .warn)
+          }
           if let rename = actions.rename {
             Button(action: rename) {
               Image(systemName: "pencil")

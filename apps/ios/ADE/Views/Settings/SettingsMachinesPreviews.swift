@@ -14,7 +14,8 @@ struct SettingsMachinesPreviewHost: View {
       hiddenIdentity: "studio", detail: "Local network · plugged in",
       projects: [
         RemoteRosterProject(projectId: "ade", displayName: "ADE", booted: true, runningCount: 2, attentionCount: 0, lanes: [], chats: []),
-      ]
+      ],
+      appVersion: "1.2.127"
     ),
     SettingsMachine(
       id: "mbp", name: "MacBook Pro (97) · ADE", symbol: "laptopcomputer", machineKey: "machine:mbp",
@@ -23,7 +24,9 @@ struct SettingsMachinesPreviewHost: View {
       projects: [
         RemoteRosterProject(projectId: "ade", displayName: "ADE", booted: true, runningCount: 1, attentionCount: 0, lanes: [], chats: []),
         RemoteRosterProject(projectId: "versic", displayName: "Versic", booted: true, runningCount: 0, attentionCount: 0, lanes: [], chats: []),
-      ]
+      ],
+      // This machine runs Beta; the Studio above runs Stable.
+      appVersion: "1.2.128-beta.3"
     ),
     SettingsMachine(
       id: "alpha", name: "arul · ADE Alpha", symbol: "desktopcomputer", machineKey: "machine:alpha",

@@ -27964,6 +27964,7 @@ async function runServe(
       secretsDir: layout.secretsDir,
       localDeviceIdPath,
       localSiteIdPath: path.join(layout.secretsDir, "sync-site-id"),
+      appVersion: VERSION,
       // A computer whose owner turned ADE Relay off never offers the route.
       getCloudRelayWssUrl: () => machineCloudRelayStore.isRelayEnabled()
         ? machineCloudRelayStore.getRelayWssUrl()
