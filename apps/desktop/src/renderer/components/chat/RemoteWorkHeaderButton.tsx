@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AppleLogo, Desktop, LinuxLogo, Stop, WindowsLogo } from "@phosphor-icons/react";
 import type { AgentChatRemoteWorkUse, AgentChatSessionSummary } from "../../../shared/types/chat";
+import { activeRemoteWork } from "../../../shared/chatRemoteWork";
 import type { OpenProjectBinding } from "../../../shared/types";
 import type { ChatTerminalSession } from "../../../shared/types/sessions";
 import { remoteProjectBindingKey } from "../../../shared/projectIdentity";
@@ -11,19 +12,7 @@ import { WORK_HEADER_ICON_BUTTON_CLASS } from "../work/WorkHeaderPaneToggles";
 import { machinePlatform } from "../remoteTargets/MachineIdentity";
 import { useRemoteConnectionSnapshot } from "../../state/projectMachines";
 
-/**
- * The machines this chat is running commands on right now
- * (`ade shell start --machine`): those used since the current turn began.
- * Empty when the chat is idle, so the mark shows only while work is there.
- */
-export function activeRemoteWork(session: Pick<AgentChatSessionSummary, "remoteWork" | "status" | "currentTurnStartedAt"> | null | undefined): AgentChatRemoteWorkUse[] {
-  if (!session?.remoteWork?.length || session.status !== "active") return [];
-  const turnStart = Date.parse(session.currentTurnStartedAt ?? "");
-  return session.remoteWork.filter((use) =>
-    !Number.isFinite(turnStart) || Date.parse(use.lastStartedAt) >= turnStart);
-}
-
-function PlatformGlyph({ platform, size }: { platform: string | null | undefined; size: number }) {
+export function PlatformGlyph({ platform, size }: { platform: string | null | undefined; size: number }) {
   switch (machinePlatform(platform)) {
     case "windows": return <WindowsLogo size={size} weight="bold" />;
     case "mac": return <AppleLogo size={size} weight="bold" />;
@@ -155,5 +144,16 @@ function RemoteWorkMachine({ use, active }: { use: AgentChatRemoteWorkUse; activ
           </div>
         ))}
     </div>
+  );
+}
+
+/** The same mark on a session card: the machine logo, while the turn works there. */
+export function RemoteWorkBadge({ uses, size = 11 }: { uses: AgentChatRemoteWorkUse[] | null | undefined; size?: number }) {
+  if (!uses?.length) return null;
+  const label = `Working on ${uses.map((use) => use.machineName).join(" and ")}`;
+  return (
+    <span data-testid="remote-work-badge" role="img" title={label} aria-label={label} className="inline-flex shrink-0 items-center justify-center text-muted-fg/80">
+      <PlatformGlyph platform={uses[uses.length - 1]!.machinePlatform} size={size} />
+    </span>
   );
 }

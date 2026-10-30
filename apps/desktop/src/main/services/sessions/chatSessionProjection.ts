@@ -8,6 +8,7 @@ import type {
 } from "../../../shared/types";
 import { sanitizeResumeTargetId } from "../../utils/terminalSessionSignals";
 import { getErrorMessage } from "../shared/utils";
+import { activeRemoteWork } from "../../../shared/chatRemoteWork";
 
 type ChatProjectionServices = {
   sessionService: {
@@ -201,6 +202,8 @@ export function projectChatOntoSession(
       : {}),
     ...(chat.spawnKind ? { spawnKind: chat.spawnKind } : {}),
     ...(chat.sideChatSessionId ? { sideChatSessionId: chat.sideChatSessionId } : {}),
+    // Only while the current turn runs commands on another machine.
+    ...(activeRemoteWork(chat).length ? { remoteWork: activeRemoteWork(chat) } : {}),
     ...(chat.steeringInput ? { steeringInput: true } : {}),
     ...(chat.asyncQuestion ? { asyncQuestion: true } : {}),
     ...(chat.promptCache ? { chatPromptCache: chat.promptCache } : {}),

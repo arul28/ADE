@@ -18,6 +18,7 @@ import type {
   AgentChatUsageLimitResume,
   WorkBoardColumn,
   WorkBoardMoveTarget,
+  AgentChatRemoteWorkUse,
 } from "./chat";
 import type { ClaudePromptCache } from "../claudePromptCache";
 import type { ModelId } from "./core";
@@ -513,6 +514,8 @@ export type TerminalSessionSummary = {
   spawnKind?: AgentChatSpawnKind;
   /** The chat's side chat (`shared/sideChat.ts`), while it has one. Drives the session card's side-chat mark. */
   sideChatSessionId?: string;
+  /** Other machines the chat's current turn runs commands on (`shared/chatRemoteWork.ts`). Drives the card's machine mark. */
+  remoteWork?: AgentChatRemoteWorkUse[];
   /**
    * Identity key of the spawn parent, when the parent is an IDENTITY
    * session rather than an ordinary chat (today the only one is the CTO, whose
