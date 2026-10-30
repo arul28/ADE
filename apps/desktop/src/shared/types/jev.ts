@@ -113,14 +113,16 @@ export type JevFallbackReason = Exclude<JevOutcome, "ok" | "cached">;
  * - `key_spent`: the account's or ADE's daily cap, or the key's spend cap.
  * - `key_failing`: the bonus route is backing off after errors.
  * - `key_rejected`: the account directory refused this account's token.
- * - `no_account_token`: no ADE account token could be had in time.
+ * - `signed_out`: this machine is not signed in to ADE.
+ * - `no_account_token`: signed in, but no ADE account token could be read.
  * - `no_account_server`: no account directory address.
- * - `out_of_time`: the call's time ran out on earlier routes.
+ * - `out_of_time`: the call's time ran out before the bonus could be tried.
  */
 export const JEV_KEY_SKIP_REASONS = [
   "key_spent",
   "key_failing",
   "key_rejected",
+  "signed_out",
   "no_account_token",
   "no_account_server",
   "out_of_time",

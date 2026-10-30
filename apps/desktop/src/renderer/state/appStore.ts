@@ -320,10 +320,10 @@ export type WorkProjectViewState = {
   /**
    * By-lane "Fold busy lanes" (Focus): lanes whose live work is all running or
    * waiting on a PR collapse into a Working shelf until something needs the
-   * user. On by default: an absent key reads as on, and v7 turned it on once
-   * for every blob saved before then.
+   * user. On by default; v7 turned it on once for every blob saved before
+   * then, and only an explicit `false` turns it off.
    */
-  workFoldBusyLanes?: boolean;
+  workFoldBusyLanes: boolean;
   /**
    * Focus grid: while Focus (`workFoldBusyLanes`) is on, the work area shows
    * every chat that needs the user as a live tile instead of one open

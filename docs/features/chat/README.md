@@ -5009,15 +5009,19 @@ its label, and one probability per criterion.
   runtime, and the day tally counts answers per route (`answeredByRoute`).
 - **Why it fell back.** A call with no answer that never reached the bonus
   records why (`JEV_KEY_SKIP_REASONS`: `key_spent`, `key_failing`,
-  `key_rejected`, `no_account_token`, `no_account_server`, `out_of_time`) in
+  `key_rejected`, `signed_out`, `no_account_token`, `no_account_server`,
+  `out_of_time`) in
   the day tally (`keySkippedByReason`), next to unsent calls per feature
   (`unsentByFeature`). Problems that are ADE's to fix are logged once per UTC
   day per brain at `error`, which makes each a Sentry issue:
-  `jev.key_unreachable` (no account server, or no token while signed in),
-  `jev.key_rejected`, `jev.key_call_failed`, `jev.decide_failed`. Expected
-  ones log at `info` (`jev.key_spent`, `jev.key_unreachable` while signed
-  out), and odd answers from OpenCode at `warn` (`jev.route_failed`).
-  `status().answerable` says whether any route could take a call now.
+  `jev.key_no_account_server`, `jev.key_no_token` (signed in, no token),
+  `jev.key_rejected`, `jev.key_call_failed`, `jev.decide_failed`. A token
+  read that outlasts the call's time is `warn` (`jev.key_token_slow`);
+  expected ones are `info` (`jev.key_spent`, `jev.key_signed_out`); odd
+  answers from OpenCode are `warn` (`jev.route_failed`).
+  `status().answerable` says whether any route could take a call now: the
+  free route is not backing off, the Zen credit is on and signed in, or the
+  bonus is not backing off and the machine is not signed out.
 - **Reach.** `ai.jevDecide` and `ai.jevStatus` are ADE actions (read, reachable
   remotely); the renderer calls `window.ade.ai.jevDecide(request, pin)` and
   `window.ade.ai.jevStatus(pin)`, routed to the pinned machine, and both answer

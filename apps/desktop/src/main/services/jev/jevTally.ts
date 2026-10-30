@@ -210,7 +210,7 @@ export function createJevTally(store: JevTallyStore | null | undefined, logger: 
         current.unsentByFeature[feature] = (current.unsentByFeature[feature] ?? 0) + 1;
         if (details.estimatedInputTokens) current.unsentInputTokensEstimate += details.estimatedInputTokens;
       }
-      if (details.keySkip && outcome !== "ok" && outcome !== "cached") {
+      if (details.keySkip) {
         current.keySkippedByReason[details.keySkip] = (current.keySkippedByReason[details.keySkip] ?? 0) + 1;
       }
       if (details.breakerOpened) current.breakerOpens += 1;

@@ -201,10 +201,10 @@ export function captureDailyJevAnalytics(args: {
   const perFeature: Record<string, number> = {};
   for (const feature of JEV_FEATURES) {
     perFeature[`jev_sent_${feature}`] = tally.sentByFeature[feature] ?? 0;
-    perFeature[`jev_unsent_${feature}`] = tally.unsentByFeature?.[feature] ?? 0;
+    perFeature[`jev_unsent_${feature}`] = tally.unsentByFeature[feature] ?? 0;
   }
   for (const reason of JEV_KEY_SKIP_REASONS) {
-    perFeature[`jev_key_skip_${reason}`] = tally.keySkippedByReason?.[reason] ?? 0;
+    perFeature[`jev_key_skip_${reason}`] = tally.keySkippedByReason[reason] ?? 0;
   }
   const result = args.analytics.captureInternal({
     event: "ade_daily_usage_summary",
