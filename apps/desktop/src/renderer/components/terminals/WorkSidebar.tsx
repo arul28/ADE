@@ -319,6 +319,11 @@ export function WorkSidebar({
     prSessionId: panelSessionId,
     activeTool: tool,
     appleDeviceRefreshKey,
+    remoteShellCount: activeSession?.remoteWorkActiveMachineKeys?.length
+      ? activeSession.remoteWork
+        ?.filter((use) => activeSession.remoteWorkActiveMachineKeys?.includes(use.machineKey))
+        .reduce((total, use) => total + use.terminalIds.length, 0)
+      : 0,
   });
 
   // No lane warning: every tool here is this lane's own. Another lane's App

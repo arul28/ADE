@@ -522,6 +522,12 @@ export function useWorkToolStatuses(args: {
    * events, but the hosted web client does not, so this covers that client.
    */
   appleDeviceRefreshKey?: unknown;
+  /**
+   * Commands the owning chat's current turn runs on other machines
+   * (`ade shell start --machine`). Counted with the attached shells when the
+   * terminal panel is not mounted; a mounted panel already counts them.
+   */
+  remoteShellCount?: number;
 }): {
   statuses: WorkToolStatusMap;
   loading: boolean;
@@ -538,7 +544,7 @@ export function useWorkToolStatuses(args: {
    */
   appleDevice: AppleLaneDeviceCard | null;
 } {
-  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null, appleDeviceRefreshKey } = args;
+  const { enabled, laneId, lane, runtimePin, terminalOwnerSessionId, prSessionId = null, activeTool = null, appleDeviceRefreshKey, remoteShellCount = 0 } = args;
 
   const [browserErrors, setBrowserErrors] = useState<WorkToolErrorsByTab>(EMPTY_WORK_TOOL_ERRORS);
   const [prCount, setPrCount] = useState<number | null>(null);
@@ -690,7 +696,12 @@ export function useWorkToolStatuses(args: {
         devServerPorts,
       );
     return {
-      terminal: terminalStatusLine(terminalTitles, panelShellCount),
+      terminal: terminalStatusLine(
+        panelShellCount == null && terminalTitles && remoteShellCount
+          ? [...terminalTitles, ...Array.from({ length: remoteShellCount }, () => "")]
+          : terminalTitles,
+        panelShellCount,
+      ),
       browser: !offline && remoteChatMachineName
         ? browserStatusLineForRemoteChat(browserLine, remoteChatMachineName)
         : browserLine,
@@ -722,6 +733,7 @@ export function useWorkToolStatuses(args: {
     openIssueTabCount,
     remoteChatMachineName,
     terminalTitles,
+    remoteShellCount,
   ]);
 
   return {
