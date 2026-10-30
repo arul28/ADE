@@ -11,14 +11,21 @@ import { execFileSync } from "node:child_process";
 import { flag, median, requireCopyRoot } from "./bench-kit.mts";
 
 const root = requireCopyRoot(flag("--project"));
-const fileCount = Number(flag("--files") ?? 1000);
-const runs = Number(flag("--runs") ?? 5);
+const positiveInt = (name: string, fallback: number) => {
+  const raw = flag(name);
+  const value = raw === undefined ? fallback : Number(raw);
+  if (!Number.isInteger(value) || value < 1) throw new Error(`${name} must be a positive integer`);
+  return value;
+};
+const fileCount = positiveInt("--files", 1000);
+const runs = positiveInt("--runs", 5);
 
 const { buildChangeTree, buildChangeTreeStatsByPath, flattenChangeTreeRows } = await import("../../../apps/desktop/src/renderer/components/lanes/laneGitChangeList");
 const { buildDiffFileTree } = await import("../../../apps/desktop/src/renderer/components/shared/DiffFileTree");
 
-const paths = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
-  .split("\n").filter(Boolean).slice(0, fileCount);
+// -z: unquoted paths (git quotes non-ASCII names otherwise, and the quotes would read as folders).
+const paths = execFileSync("git", ["ls-files", "-z"], { cwd: root, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 })
+  .split("\0").filter(Boolean).slice(0, fileCount);
 if (paths.length < fileCount) throw new Error(`the copy has only ${paths.length} tracked files`);
 const changes = paths.map((path, index) => ({ path, kind: index % 7 === 0 ? "added" : "modified", additions: index % 40, deletions: index % 13 }));
 const diffEntries = paths.map((path, index) => ({ path, status: index % 7 === 0 ? "A" : "M" }));

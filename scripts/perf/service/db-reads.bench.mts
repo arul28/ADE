@@ -87,8 +87,16 @@ const prDiscoveryPass = () => {
 // F5 at an outside target's size: --seed-sessions <n> [--seed-running <m>] adds n chat session rows to the temp
 // copy (never the source), m of them left running with no owner process recorded, which the read recovers (a row
 // whose owner pid the process registry does not know is left alone: it may be another live ADE process). The outside target's larger figure is 4.0 ms on a 5.5k-item thread.
-const seedSessions = Number(flag("--seed-sessions") ?? 0);
-const seedRunning = Math.min(seedSessions, Number(flag("--seed-running") ?? 0));
+// An absent flag is 0; a flag with a missing, negative or non-integer operand is an error, not a different workload.
+const seedCount = (name: string): number => {
+  if (!argv.includes(name)) return 0;
+  const raw = flag(name);
+  const value = raw === undefined || raw.startsWith("--") ? NaN : Number(raw);
+  if (!Number.isInteger(value) || value < 0) throw new Error(`${name} needs a non-negative integer`);
+  return value;
+};
+const seedSessions = seedCount("--seed-sessions");
+const seedRunning = Math.min(seedSessions, seedCount("--seed-running"));
 if (seedSessions > 0) {
   const laneId = db.get<{ id: string }>("select id from lanes order by created_at limit 1")?.id ?? "lane-seed";
   db.run("begin");
@@ -96,7 +104,8 @@ if (seedSessions > 0) {
     const running = i < seedRunning;
     db.run(
       "insert into terminal_sessions(id, lane_id, title, started_at, ended_at, transcript_path, status, tool_type, owner_pid) values (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-      [`seed-${i}`, laneId, `seeded ${i}`, new Date(Date.now() - (seedSessions - i) * 60_000).toISOString(), running ? null : new Date().toISOString(), path.join(dir, `seed-${i}.jsonl`), running ? "running" : "detached", "claude-chat", null],
+      // Every row starts before the recovery's fresh-activity grace (2 minutes), so a running one is really stale.
+      [`seed-${i}`, laneId, `seeded ${i}`, new Date(Date.now() - (10 + seedSessions - i) * 60_000).toISOString(), running ? null : new Date().toISOString(), path.join(dir, `seed-${i}.jsonl`), running ? "running" : "detached", "claude-chat", null],
     );
   }
   db.run("commit");
